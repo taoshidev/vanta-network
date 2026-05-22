@@ -18,7 +18,8 @@ from time_util.time_util import MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
+from vali_objects.challenge_period.challengeperiod_manager import MinerBucketState
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.scoring.weight_calculator_manager import WeightCalculatorManager
 from vali_objects.utils.vali_utils import ValiUtils
@@ -181,34 +182,23 @@ class TestEliminationWeightCalculation(TestBase):
 
     def _setup_challenge_period_status(self):
         """Set up challenge period status for miners"""
-        # Build miners dict
-        miners = {}
-
-        # Main competition miners - use start of ledger window as bucket start time
         bucket_start_ms = self.TEST_TIME_MS - ValiConfig.TARGET_LEDGER_WINDOW_MS
+
+        miner_states_data = {}
         for miner in [self.HEALTHY_MINER_1, self.HEALTHY_MINER_2, self.ELIMINATED_MINER, self.ZOMBIE_MINER]:
-            miners[miner] = (MinerBucket.MAINCOMP, bucket_start_ms, None, None)
+            miner_states_data[miner] = MinerBucketState(miner, [BucketEntry(MinerBucket.MAINCOMP, bucket_start_ms)]).to_json()
 
-        # Challenge period miner
-        miners[self.CHALLENGE_MINER] = (
-            MinerBucket.CHALLENGE,
-            self.TEST_TIME_MS - MS_IN_24_HOURS,
-            None,
-            None
-        )
+        miner_states_data[self.CHALLENGE_MINER] = MinerBucketState(
+            self.CHALLENGE_MINER,
+            [BucketEntry(MinerBucket.CHALLENGE, self.TEST_TIME_MS - MS_IN_24_HOURS)]
+        ).to_json()
 
-        # Probation miner
-        miners[self.PROBATION_MINER] = (
-            MinerBucket.PROBATION,
-            self.TEST_TIME_MS - MS_IN_24_HOURS * 3,
-            None,
-            None
-        )
+        miner_states_data[self.PROBATION_MINER] = MinerBucketState(
+            self.PROBATION_MINER,
+            [BucketEntry(MinerBucket.PROBATION, self.TEST_TIME_MS - MS_IN_24_HOURS * 3)]
+        ).to_json()
 
-        # Update using client API
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners(miners)
-        # Note: Data persistence handled automatically by server - no manual disk write needed
+        self.challenge_period_client.sync_challenge_period_data(miner_states_data)
 
     def _setup_perf_ledgers(self):
         """Set up performance ledgers for testing"""
@@ -279,15 +269,15 @@ class TestEliminationWeightCalculation(TestBase):
     def _setup_eliminations(self):
         """Set up initial eliminations"""
         # Eliminate the MDD miner
-        self.elimination_client.add_elimination(self.ELIMINATED_MINER, {
-            'hotkey': self.ELIMINATED_MINER,
-            'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
-            'dd': 0.12,
-            'elimination_initiated_time_ms': self.TEST_TIME_MS
-        })
+        self.elimination_client.append_elimination_row(
+            self.ELIMINATED_MINER,
+            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            elimination_drawdown_pct=0.12,
+            elimination_time_ms=self.TEST_TIME_MS
+        )
 
         # Remove eliminated miners from challenge period client
-        self.challenge_period_client.remove_eliminated()
+        self.challenge_period_client.remove_miners(list(self.elimination_client.get_eliminated_hotkeys()))
 
     # ========== Weight Calculation Tests (from test_weight_calculation_eliminations.py) ==========
 
@@ -346,15 +336,14 @@ class TestEliminationWeightCalculation(TestBase):
     def test_weight_distribution_after_eliminations(self):
         """Test that weights are properly redistributed after eliminations"""
         # Eliminate multiple miners
-        self.elimination_client.add_elimination(self.ZOMBIE_MINER, {
-            'hotkey': self.ZOMBIE_MINER,
-            'reason': EliminationReason.ZOMBIE.value,
-            'dd': 0.0,
-            'elimination_initiated_time_ms': self.TEST_TIME_MS
-        })
+        self.elimination_client.append_elimination_row(
+            self.ZOMBIE_MINER,
+            EliminationReason.ZOMBIE.value,
+            elimination_time_ms=self.TEST_TIME_MS
+        )
 
         # Remove the newly eliminated miner from active_miners
-        self.challenge_period_client.remove_eliminated()
+        self.challenge_period_client.remove_miners(list(self.elimination_client.get_eliminated_hotkeys()))
 
         # Compute weights
         checkpoint_results, transformed_list = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
@@ -465,8 +454,12 @@ class TestEliminationWeightCalculation(TestBase):
         # Test with no eliminations
         self.elimination_client.clear_eliminations()
         # Re-add the eliminated miner to active_miners since we cleared eliminations
-        miners = {self.ELIMINATED_MINER: (MinerBucket.MAINCOMP, 0, None, None)}
-        self.challenge_period_client.update_miners(miners)
+        current_state = self.challenge_period_client.to_checkpoint_dict()
+        current_state[self.ELIMINATED_MINER] = MinerBucketState(
+            self.ELIMINATED_MINER,
+            [BucketEntry(MinerBucket.MAINCOMP, self.TEST_TIME_MS - ValiConfig.TARGET_LEDGER_WINDOW_MS)]
+        ).to_json()
+        self.challenge_period_client.sync_challenge_period_data(current_state)
         _, transformed_list = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
 
         # The transformed_list contains raw scores, not normalized weights
@@ -491,15 +484,14 @@ class TestEliminationWeightCalculation(TestBase):
         initial_non_zero = sum(1 for _, w in initial_weights if w > 0)
 
         # Add another elimination
-        self.elimination_client.add_elimination(self.HEALTHY_MINER_2, {
-            'hotkey': self.HEALTHY_MINER_2,
-            'reason': EliminationReason.PLAGIARISM.value,
-            'dd': 0.0,
-            'elimination_initiated_time_ms': self.TEST_TIME_MS
-        })
+        self.elimination_client.append_elimination_row(
+            self.HEALTHY_MINER_2,
+            EliminationReason.PLAGIARISM.value,
+            elimination_time_ms=self.TEST_TIME_MS
+        )
 
         # Remove the newly eliminated miner from active_miners
-        self.challenge_period_client.remove_eliminated()
+        self.challenge_period_client.remove_miners(list(self.elimination_client.get_eliminated_hotkeys()))
 
         # Recompute weights
         _, new_weights = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
@@ -589,15 +581,15 @@ class TestEliminationWeightCalculation(TestBase):
         """Test behavior when almost all miners are eliminated"""
         # Eliminate all but one miner
         for miner in self.all_miners[1:]:  # Keep first miner
-            self.elimination_client.add_elimination(miner, {
-                'hotkey': miner,
-                'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
-                'dd': 0.15,
-                'elimination_initiated_time_ms': self.TEST_TIME_MS
-            })
+            self.elimination_client.append_elimination_row(
+                miner,
+                EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+                elimination_drawdown_pct=0.15,
+                elimination_time_ms=self.TEST_TIME_MS
+            )
 
         # Remove all newly eliminated miners from active_miners
-        self.challenge_period_client.remove_eliminated()
+        self.challenge_period_client.remove_miners(list(self.elimination_client.get_eliminated_hotkeys()))
 
         # Compute weights
         checkpoint_results, transformed_list = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)

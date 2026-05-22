@@ -134,6 +134,10 @@ class ChallengePeriodClient(RPCClientBase):
         """Sync challenge period data from another validator."""
         self._server.sync_challenge_period_data_rpc(active_miners_sync)
 
+    def clear_test_state(self) -> None:
+        """Clear all miner states for test isolation."""
+        self._server.clear_test_state_rpc()
+
     def to_checkpoint_dict(self) -> dict:
         """Get challenge period data as a checkpoint dict for serialization."""
         return self._server.to_checkpoint_dict_rpc()

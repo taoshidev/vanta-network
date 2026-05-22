@@ -85,9 +85,9 @@ class MinerBucketState:
         if time_ms is None:
             return self.entries[-1].bucket
         for entry in reversed(self.entries):
-            if entry.start_time_ms >= time_ms:
+            if entry.start_time_ms <= time_ms:
                 return entry.bucket
-        raise ValueError(f"No bucket found for time {time_ms}")
+        return MinerBucket.UNKNOWN
 
     def to_json(self) -> list:
         """Only sync or save bucket entries - drawdown/rank should not be synced."""
