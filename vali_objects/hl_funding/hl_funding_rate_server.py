@@ -39,6 +39,8 @@ class HLFundingRateServer(RPCServerBase):
         daemon_interval_s = ValiConfig.HL_FUNDING_DAEMON_INTERVAL_S
         hang_timeout_s = daemon_interval_s * 2.0
 
+        self._backfilled = False
+
         super().__init__(
             service_name=self.service_name,
             port=self.service_port,
@@ -49,10 +51,6 @@ class HLFundingRateServer(RPCServerBase):
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
         )
-
-        # Backfill on startup
-        if not running_unit_tests:
-            self._backfill()
 
     def _get_coins(self) -> list:
         """Return all known HL coins (static TradePairs + dynamic registry union)."""
@@ -73,8 +71,12 @@ class HLFundingRateServer(RPCServerBase):
         self._manager.fetch_and_store_rates(coins, start_ms, now_ms)
 
     def run_daemon_iteration(self):
-        """Fetch last 2 hours of rates for all HL coins."""
+        """Fetch recent rates for all HL coins. Backfills on first run."""
         now_ms = TimeUtil.now_in_millis()
+        if not self._backfilled and not self.running_unit_tests:
+            self._backfill()
+            self._backfilled = True
+            return
         start_ms = now_ms - 2 * 3600 * 1000  # 2 hours back
         coins = self._get_coins()
         if not coins:

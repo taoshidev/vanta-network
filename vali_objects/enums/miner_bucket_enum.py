@@ -94,17 +94,7 @@ class MinerBucket(Enum):
                 )
 
     @property
-    def is_evaluation_eligible(self):
-        return self in (
-                MinerBucket.CHALLENGE,
-                MinerBucket.MAINCOMP,
-                MinerBucket.PROBATION,
-                MinerBucket.SUBACCOUNT_CHALLENGE,
-                MinerBucket.SUBACCOUNT_FUNDED,
-                MinerBucket.SUBACCOUNT_ALPHA
-                )
-    @property
-    def is_elimination_eligible(self):
+    def is_active(self):
         return self in (
                 MinerBucket.CHALLENGE,
                 MinerBucket.MAINCOMP,
@@ -114,7 +104,6 @@ class MinerBucket(Enum):
                 MinerBucket.SUBACCOUNT_FUNDED,
                 MinerBucket.SUBACCOUNT_ALPHA
                 )
-
 
 @dataclass
 class BucketEntry:

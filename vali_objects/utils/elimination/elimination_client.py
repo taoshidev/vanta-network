@@ -21,6 +21,7 @@ from typing import Dict, Set, List, Optional
 import bittensor as bt
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from time_util.time_util import TimeUtil
 
@@ -128,10 +129,11 @@ class EliminationClient(RPCClientBase):
         self,
         hotkey: str,
         reason: str,
-        elimination_dd: float | None = None,
-        intraday_dd: float | None = None,
-        eod_dd: float | None = None,
-        t_ms: int = None,
+        elimination_drawdown_pct: float | None = None,
+        intraday_drawdown_pct: float | None = None,
+        eod_drawdown_pct: float | None = None,
+        elimination_time_ms: int | None = None,
+        bucket_at_elimination: MinerBucket | None = None,
     ) -> None:
         """
         Add elimination row.
@@ -143,11 +145,12 @@ class EliminationClient(RPCClientBase):
             intraday_dd: Intraday drawdown at elimination
             eod_dd: End-of-day drawdown at elimination
             t_ms: Optional timestamp in milliseconds
+            bucket_at_elimination: The miner's bucket at the time of elimination
         """
         self._server.append_elimination_row_rpc(
-            hotkey, reason,
-            elimination_dd=elimination_dd,
-            intraday_dd=intraday_dd, eod_dd=eod_dd, t_ms=t_ms
+            hotkey, reason, elimination_drawdown_pct=elimination_drawdown_pct,
+            intraday_drawdown_pct=intraday_drawdown_pct, eod_drawdown_pct=eod_drawdown_pct,
+            elimination_time_ms=elimination_time_ms, bucket_at_elimination=bucket_at_elimination,
         )
 
     def remove_elimination(self, hotkey: str) -> bool:
@@ -333,42 +336,6 @@ class EliminationClient(RPCClientBase):
     def start_daemon(self) -> None:
         """Request daemon start on server."""
         self._server.start_daemon_rpc()
-
-    # ==================== Utility Methods ====================
-
-    def generate_elimination_row(
-        self,
-        hotkey: str,
-        current_dd: float,
-        reason: str,
-        t_ms: int = None,
-        price_info: dict = None,
-        return_info: dict = None
-    ) -> dict:
-        """
-        Generate elimination row dict (client-side helper).
-
-        Args:
-            hotkey: The hotkey to eliminate
-            current_dd: Current drawdown
-            reason: Elimination reason
-            t_ms: Optional timestamp in milliseconds
-            price_info: Optional price information
-            return_info: Optional return information
-
-        Returns:
-            Elimination row dict
-        """
-        if t_ms is None:
-            t_ms = TimeUtil.now_in_millis()
-        return {
-            'hotkey': hotkey,
-            'dd': current_dd,
-            'reason': reason,
-            'elimination_initiated_time_ms': t_ms,
-            'price_info': price_info or {},
-            'return_info': return_info or {}
-        }
 
     # ==================== Local Cache Support ====================
 

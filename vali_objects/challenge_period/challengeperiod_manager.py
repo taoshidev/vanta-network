@@ -225,7 +225,7 @@ class ChallengePeriodManager(CacheController):
 
         self._current_iteration_epoch = iteration_epoch
 
-        evaluation_hotkeys = [hotkey for hotkey, state in self.miner_states.items() if state.current_bucket.is_evaluation_eligible]
+        evaluation_hotkeys = [hotkey for hotkey, state in self.miner_states.items() if state.current_bucket.is_active]
         rank_hotkeys = [hotkey for hotkey, state in self.miner_states.items() if state.current_bucket.is_rank_based]
 
         accounts = self._miner_account_client.get_accounts(evaluation_hotkeys)
@@ -308,7 +308,7 @@ class ChallengePeriodManager(CacheController):
             bt.logging.warning(f"[CHALLENGE] intraday drawdown elimination: {state}")
             if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
-            elif state.current_bucket.is_elimination_eligible:
+            else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
         elif state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct * 0.75:
             bt.logging.warning(f"[CHALLENGE] near intraday drawdown elimination: {state}")
@@ -320,7 +320,7 @@ class ChallengePeriodManager(CacheController):
             bt.logging.warning(f"[CHALLENGE] EOD drawdown elimination: {state}")
             if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN
-            elif state.current_bucket.is_elimination_eligible:
+            else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
         elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
             bt.logging.warning(f"[CHALLENGE] near EOD drawdown elimination: {state}")
@@ -365,16 +365,28 @@ class ChallengePeriodManager(CacheController):
 
         for hotkey, elimination_reason in eliminations.items():
             state = self.miner_states[hotkey]
-            if not state.current_bucket.is_elimination_eligible:
+            if not state.current_bucket.is_active:
                 bt.logging.warning(f"[CHALLENGE] attempted elimination in non-eligible bucket: {state}")
 
             bt.logging.info(f"[CHALLENGE] eliminating reason={elimination_reason.value}: {state}")
+
+            elimination_time_ms = current_time_ms
+            if elimination_reason.is_eod_drawdown:
+                elimination_drawdown_pct = state.drawdown.eod_drawdown_pct
+                elimination_time_ms = (current_time_ms // 86400000) * 86400000  # kinda jank patch
+            elif elimination_reason.is_intraday_drawdown:
+                elimination_drawdown_pct = state.drawdown.intraday_drawdown_pct
+            else:
+                elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
+
             self._elimination_client.append_elimination_row(
                 hotkey,
                 elimination_reason.value,
-                intraday_dd=state.drawdown.intraday_drawdown_pct,
-                eod_dd=state.drawdown.eod_drawdown_pct,
-                t_ms=current_time_ms,
+                elimination_drawdown_pct=elimination_drawdown_pct,
+                intraday_drawdown_pct=state.drawdown.intraday_drawdown_pct,
+                eod_drawdown_pct=state.drawdown.eod_drawdown_pct,
+                elimination_time_ms=elimination_time_ms,
+                bucket_at_elimination=state.current_bucket,
             )
 
         return self.remove_miners(list(eliminations.keys()))

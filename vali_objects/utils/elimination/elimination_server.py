@@ -27,6 +27,7 @@ import threading
 
 from vali_objects.utils.elimination.elimination_manager import EliminationManager
 from typing import Dict, Set, List, Optional
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig, TradePair
 from setproctitle import setproctitle
 from shared_objects.rpc.common_data_client import CommonDataClient
@@ -234,12 +235,17 @@ class EliminationServer(RPCServerBase):
         """Load eliminations from disk"""
         return self._manager.get_eliminations_from_disk()
 
-    def append_elimination_row_rpc(self, hotkey: str, reason: str, elimination_dd: float | None = None,
-                                    intraday_dd: float | None = None, eod_dd: float | None = None,
-                                    close_positions: bool = True, t_ms: int = None) -> None:
+    def append_elimination_row_rpc(
+            self, hotkey: str, reason: str, elimination_drawdown_pct: float | None = None,
+            intraday_drawdown_pct: float | None = None, eod_drawdown_pct: float | None = None,
+            elimination_time_ms: int | None = None,
+            bucket_at_elimination: MinerBucket | None = None) -> None:
         """Add elimination row."""
-        self._manager.append_elimination_row(hotkey, reason, elimination_dd=elimination_dd,
-                                             intraday_dd=intraday_dd, eod_dd=eod_dd, t_ms=t_ms)
+        self._manager.append_elimination_row(
+            hotkey, reason, elimination_drawdown_pct=elimination_drawdown_pct,
+            intraday_drawdown_pct=intraday_drawdown_pct, eod_drawdown_pct=eod_drawdown_pct,
+            elimination_time_ms=elimination_time_ms, bucket_at_elimination=bucket_at_elimination,
+        )
 
     def remove_elimination_rpc(self, hotkey: str) -> bool:
         """Remove elimination. Returns True if removed, False if not found."""
@@ -412,19 +418,6 @@ class EliminationServer(RPCServerBase):
     def get_eliminations_lock(self):
         """Get the local eliminations lock (server-side only)"""
         return self._manager.get_eliminations_lock()
-
-    def generate_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
-        """Generate elimination row dict."""
-        return self._manager.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
-                                                      price_info=price_info, return_info=return_info)
-
-    def append_elimination_row(self, hotkey: str, reason: str, elimination_dd: float | None = None,
-                               intraday_dd: float | None = None, eod_dd: float | None = None,
-                               close_positions: bool = True, t_ms: int = None):
-        """Add elimination row"""
-        self._manager.append_elimination_row(hotkey, reason, elimination_dd=elimination_dd,
-                                             intraday_dd=intraday_dd, eod_dd=eod_dd,
-                                             close_positions=close_positions, t_ms=t_ms)
 
     def delete_eliminations(self, deleted_hotkeys):
         """Delete multiple eliminations"""

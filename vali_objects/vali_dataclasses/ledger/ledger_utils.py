@@ -516,7 +516,7 @@ class LedgerUtils:
         return final_drawdown
 
     @staticmethod
-    def is_beyond_max_drawdown(ledger_element: PerfLedger, maximum_drawdown_percent: Optional[float] = None):
+    def is_beyond_max_drawdown(ledger_element: PerfLedger | None, maximum_drawdown_percent: Optional[float] = None):
         """Checks if the maximum drawdown percentage is surpassed"""
         if ledger_element is None:
             return False, 0
