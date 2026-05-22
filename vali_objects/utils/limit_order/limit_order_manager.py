@@ -1,6 +1,5 @@
 import os
 import traceback
-import uuid
 
 import bittensor as bt
 
@@ -1501,12 +1500,6 @@ class LimitOrderManager(CacheController):
                 try:
                     order = Order.from_dict(order_dict)
                     trade_pair = order.trade_pair
-
-                    # Backwards compatibility for limit stop limit orders with unfilled bracket orders
-                    if order.bracket_orders:
-                        for o in order.bracket_orders:
-                            if "order_uuid" not in o:
-                                o["order_uuid"] = str(uuid.uuid4())
 
                     # Initialize nested structure
                     if trade_pair not in self._limit_orders:

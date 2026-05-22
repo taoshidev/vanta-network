@@ -121,6 +121,15 @@ class Order(Signal):
             return [PriceSource(**ps) if isinstance(ps, dict) else ps for ps in v]
         return v
 
+    @field_validator('bracket_orders', mode='before')
+    @classmethod
+    def ensure_bracket_order_uuids(cls, v):
+        if isinstance(v, list):
+            for sub in v:
+                if isinstance(sub, dict) and 'order_uuid' not in sub:
+                    sub['order_uuid'] = str(uuid.uuid4())
+        return v
+
     # @model_validator(mode='before')
     # def validate_size(cls, values):
     #     """
@@ -248,7 +257,8 @@ class Order(Signal):
                     tsl_compact["pct"] = sub_order["trailing_percent"]
                 if 'trailing_value' in sub_order:
                     tsl_compact["val"] = sub_order["trailing_value"]
-                if not tsl_compact:
+
+                if tsl_compact:
                     sub_bracket_orders["tsl"] = tsl_compact
 
                 unfilled_orders[sub_order["order_uuid"]] = sub_bracket_orders
