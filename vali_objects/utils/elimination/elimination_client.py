@@ -106,6 +106,10 @@ class EliminationClient(RPCClientBase):
         """Get all eliminated hotkeys as a set."""
         return self._server.get_eliminated_hotkeys_rpc()
 
+    def get_eliminated_hotkeys_by_bucket(self, buckets: List[MinerBucket]) -> Set[str]:
+        """Get eliminated hotkeys whose bucket_at_elimination is in the given list."""
+        return self._server.get_eliminated_hotkeys_by_bucket_rpc(buckets)
+
     def get_eliminations_from_memory(self) -> List[dict]:
         """Get all eliminations as a list."""
         return self._server.get_eliminations_from_memory_rpc()

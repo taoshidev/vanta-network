@@ -17,6 +17,7 @@ from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from shared_objects.sn8_multiprocessing import ParallelizationMode
 from time_util.time_util import UnifiedMarketCalendar, TimeUtil, timeme
 from vali_objects.enums.misc import ShortcutReason, TradePairReturnStatus
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
@@ -1693,7 +1694,12 @@ class PerfLedgerManager(CacheController):
 
         # Remove keys from perf ledgers if they aren't inx the metagraph anymore
         metagraph_hotkeys = set(self._metagraph_client.get_hotkeys())
-        hotkeys_to_delete = set([x for x in hotkeys_with_no_positions if x in perf_ledger_bundles])
+
+        # Freeze funded subaccount perf ledgers (exclude from hotkeys to delete)
+        frozen_ledger_hotkeys = self._elimination_client.get_eliminated_hotkeys_by_bucket(
+            [MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA]
+        )
+        hotkeys_to_delete = set([x for x in hotkeys_with_no_positions if x in perf_ledger_bundles and x not in frozen_ledger_hotkeys])
         rss_modified = False
         # Recently re-registered
         hotkeys_rrr = []
@@ -1726,6 +1732,8 @@ class PerfLedgerManager(CacheController):
                 hotkeys_to_iterate.append(k)
 
         for hotkey in hotkeys_to_iterate:
+            if hotkey in frozen_ledger_hotkeys:
+                continue
             if not is_synthetic_hotkey(hotkey) and hotkey not in metagraph_hotkeys:
                 hotkeys_to_delete.add(hotkey)
             elif not len(hotkey_to_positions.get(hotkey, [])):

@@ -90,6 +90,24 @@ class EliminationRow:
     bucket_at_elimination: MinerBucket | None = None
     positions_closed: bool = False  # Don't necesesarily have to track, but saves calls to position rpc
 
+    def __post_init__(self):
+        if self.bucket_at_elimination is not None:
+            return
+
+        if self.reason in (EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
+                           EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value):
+            self.bucket_at_elimination = MinerBucket.SUBACCOUNT_FUNDED
+        elif self.reason in (EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
+                           EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value):
+            self.bucket_at_elimination = MinerBucket.SUBACCOUNT_CHALLENGE
+        elif self.reason in (EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value,
+                             EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value):
+            self.bucket_at_elimination = MinerBucket.CHALLENGE
+        elif self.reason == EliminationReason.FAILED_PROBATION_TIME.value:
+            self.bucket_at_elimination = MinerBucket.PROBATION
+        elif self.reason == EliminationReason.PLAGIARISM.value:
+            self.bucket_at_elimination = MinerBucket.PLAGIARISM
+
     @classmethod
     def from_dict(cls, d: dict) -> 'EliminationRow':
         raw_bucket = d.get('bucket_at_elimination')
@@ -861,7 +879,7 @@ class EliminationManager(CacheController):
             "dd": elimination.elimination_drawdown_pct,
         }
 
-    def get_eliminated_hotkeys(self) -> Set[str]:
+    def get_eliminated_hotkeys(self) -> set[str]:
         """
         Get all eliminated hotkeys (thread-safe).
 
@@ -870,7 +888,15 @@ class EliminationManager(CacheController):
         with self.eliminations_lock:
             return set(self.eliminations.keys())
 
-    def get_eliminations_from_memory(self) -> List[dict]:
+    def get_eliminated_hotkeys_by_bucket(self, buckets: list[MinerBucket]) -> set[str]:
+        """
+        Get eliminated hotkeys whose bucket_at_elimination is in the given list (thread-safe).
+        """
+        bucket_set = set(buckets)
+        with self.eliminations_lock:
+            return {hk for hk, row in self.eliminations.items() if row.bucket_at_elimination in bucket_set}
+
+    def get_eliminations_from_memory(self) -> list[dict]:
         """
         Get all eliminations as a list (thread-safe).
 

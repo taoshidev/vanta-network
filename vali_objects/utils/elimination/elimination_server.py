@@ -227,6 +227,10 @@ class EliminationServer(RPCServerBase):
         """Get all eliminated hotkeys"""
         return self._manager.get_eliminated_hotkeys()
 
+    def get_eliminated_hotkeys_by_bucket_rpc(self, buckets: List[MinerBucket]) -> Set[str]:
+        """Get eliminated hotkeys whose bucket_at_elimination is in the given list"""
+        return self._manager.get_eliminated_hotkeys_by_bucket(buckets)
+
     def get_eliminations_from_memory_rpc(self) -> List[dict]:
         """Get all eliminations as a list"""
         return self._manager.get_eliminations_from_memory()
@@ -299,6 +303,10 @@ class EliminationServer(RPCServerBase):
     def get_eliminated_hotkeys(self) -> Set[str]:
         """Get all eliminated hotkeys"""
         return self.get_eliminated_hotkeys_rpc()
+
+    def get_eliminated_hotkeys_by_bucket(self, buckets: List[MinerBucket]) -> Set[str]:
+        """Get eliminated hotkeys whose bucket_at_elimination is in the given list"""
+        return self.get_eliminated_hotkeys_by_bucket_rpc(buckets)
 
     def get_eliminations_from_memory(self) -> List[dict]:
         """Get all eliminations as a list"""
