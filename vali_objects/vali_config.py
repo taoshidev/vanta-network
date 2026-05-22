@@ -63,10 +63,10 @@ class SubaccountTierBaseLeverage(NamedTuple):
     """Tagged wrapper for the per-pair Tier-1 base used by subaccount tier dispatch.
 
     The dedicated type lets the TradePair.subaccount_tier_base_leverage property locate
-    it via isinstance scan over the value list, independent of position (mirrors the
-    InstrumentType pattern from B.1). NamedTuple keeps the wrapper distinct from the
-    raw fees/min_leverage/max_leverage floats — `isinstance(_, float)` returns False
-    and hash/equality don't collide with regular floats. Unwrap via `.value`.
+    it via isinstance scan over the value list, independent of position. NamedTuple keeps
+    the wrapper distinct from the raw fees/min_leverage/max_leverage floats —
+    `isinstance(_, float)` returns False and hash/equality don't collide with regular
+    floats. Unwrap via `.value`.
     """
     value: float
 

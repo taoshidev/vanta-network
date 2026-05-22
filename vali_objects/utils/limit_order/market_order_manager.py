@@ -332,7 +332,7 @@ class MarketOrderManager():
             if trade_pair.is_equities and abs(order.value) > balance - (capital_used - total_borrowed_usd):
                 order.margin_loan = abs(order.value) * 0.5
 
-            self._miner_account_client.process_order_buy(miner_hotkey, abs(order.value), order.margin_loan, transaction_fee)
+            self._miner_account_client.process_order_buy(miner_hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair_category)
         else:
             # Sell: free capital_used and compound realized PNL to equity
             entry_value = abs(order.quantity) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
@@ -350,7 +350,7 @@ class MarketOrderManager():
             transaction_fee = exit_value * transaction_fee_rate
 
             loan_repaid = min(existing_position.margin_loan, exit_value)
-            self._miner_account_client.process_order_sell(miner_hotkey, entry_value, order_realized_pnl, loan_repaid, transaction_fee)
+            self._miner_account_client.process_order_sell(miner_hotkey, entry_value, order_realized_pnl, loan_repaid, transaction_fee, trade_pair_category)
 
             # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
             order.margin_loan = -loan_repaid
