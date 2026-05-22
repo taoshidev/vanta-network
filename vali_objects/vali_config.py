@@ -660,6 +660,7 @@ class ValiConfig:
     # 100% percent of collateral deposit is at risk of slashing based on drawdown
     DRAWDOWN_SLASH_PROPORTION = 1.0
 
+    FLAT_ONLY_TRADE_PAIR_IDS = {'BCHUSD'}
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
         'USDMXN'
@@ -671,11 +672,8 @@ class ValiConfig:
 
     MAX_UNFILLED_LIMIT_ORDERS = 100
     LIMIT_ORDER_CHECK_REFRESH_MS = 4 * 1000 # 4 seconds
-    LIMIT_ORDER_FILL_INTERVAL_MS = 30 * 1000 # 30 seconds
-
-    LIMIT_ORDER_PRICE_BUFFER_TOLERANCE = 0.001 # +-0.1% tolerance
+    LIMIT_ORDER_FILL_INTERVAL_MS = 10 * 1000 # 10 seconds
     LIMIT_ORDER_PRICE_BUFFER_MS = 30 * 1000
-    MIN_UNIQUE_PRICES_FOR_LIMIT_FILL = 10
 
 assert ValiConfig.CRYPTO_MIN_LEVERAGE >= ValiConfig.ORDER_MIN_LEVERAGE
 assert ValiConfig.CRYPTO_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE

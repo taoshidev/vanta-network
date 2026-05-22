@@ -11,7 +11,7 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 
@@ -76,7 +76,6 @@ class LimitOrderManager(CacheController):
         self._closed_orders = {}
         self._last_fill_time = {}
         self._last_print_time_ms = 0
-        self._price_stats = {}
 
         self._read_limit_orders_from_disk()
         self._needs_initial_bracket_sync = True
@@ -390,10 +389,9 @@ class LimitOrderManager(CacheController):
             if order.execution_type != ExecutionType.STOP_LIMIT:
                 price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
                 if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
-                    trigger_price = self._evaluate_trigger_price(order, open_position, price_sources[0])
-
-                    if trigger_price:
-                        should_fill_immediately = True
+                    _ps = price_sources[0]
+                    _, trigger_price = self._evaluate_order_trigger(order, open_position, _ps, _ps)
+                    should_fill_immediately = trigger_price is not None
 
         # Fill outside the lock to avoid reentrant lock issue
         # Treat order that fills immediately as market order
@@ -751,16 +749,9 @@ class LimitOrderManager(CacheController):
             self._attach_order_to_position()
             self._needs_initial_bracket_sync = False
 
-        if now_ms - self._last_print_time_ms > 4 * 60 * 1000:
+        if now_ms - self._last_print_time_ms > 60 * 1000:
             total_orders = sum(len(orders) for hotkey_dict in list(self._limit_orders.values()) for orders in list(hotkey_dict.values()))
             bt.logging.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
-            for trade_pair, stats in self._price_stats.items():
-                bt.logging.info(
-                    f"[PRICE_STATS][{trade_pair.trade_pair_id}] "
-                    f"calls={stats['calls']} no_data={stats['no_data']} "
-                    f"full_window={stats['full_window_used']}(n={stats['full_window_cnt']}) "
-                    f"recent_window={stats['recent_window_used']}(n={stats['recent_window_cnt']})"
-                )
             self._last_print_time_ms = now_ms
 
         for trade_pair, hotkey_dict in list(self._limit_orders.items()):
@@ -773,7 +764,7 @@ class LimitOrderManager(CacheController):
 
             # Get price sources for this trade pair
             # price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
-            price_sources = self._get_best_price_source(trade_pair, now_ms)
+            price_sources = self._get_price_sources(trade_pair, now_ms)
             if not price_sources:
                 if self.running_unit_tests:
                     print(f"[CHECK_ORDERS DEBUG] No price sources for {trade_pair.trade_pair_id}")
@@ -941,54 +932,45 @@ class LimitOrderManager(CacheController):
                     orders_to_cancel.append(order)
         return orders_to_cancel
 
-    def _get_best_price_source(self, trade_pair, now_ms):
+    def _get_price_sources(self, trade_pair, now_ms):
         """
-        Get the best price source for a trade pair at a given time.
-        Uses the median price source to avoid outliers.
+        Get the best price sources for a trade pair at a given time.
+        Returns (ask) price source for LONG orders and (bid) price source for SHORT orders.
 
         Args:
             trade_pair: TradePair to get price for
             now_ms: Current timestamp in milliseconds
 
         Returns:
-            The median price source, or None if no price sources available
+            Tuple of (bid_price_source, ask_price_source), or None if no price sources available
         """
-        if trade_pair not in self._price_stats:
-            self._price_stats[trade_pair] = {
-                "calls": 0,
-                "no_data": 0,
-                "full_window_used": 0,
-                "full_window_cnt": 0,
-                "recent_window_used": 0,
-                "recent_window_cnt": 0,
-            }
-        stats = self._price_stats[trade_pair]
-        stats["calls"] += 1
-
         end_ms = now_ms
         start_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS
         price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
-        if not price_sources:
-            stats["no_data"] += 1
+        if not price_sources or len(price_sources) < 3:
+            bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources or [])} no ws price sources")
             return None
 
-        self._price_stats[trade_pair]["full_window_cnt"] = len(price_sources)
-
-        recent_cutoff_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS / 2
-        recent_price_sources = [ps for ps in price_sources if ps.start_ms > recent_cutoff_ms]
-        self._price_stats[trade_pair]["recent_window_cnt"] = len(recent_price_sources)
-
-        # Use the smaller window if there are enough price sources
-        if len(recent_price_sources) > ValiConfig.MIN_UNIQUE_PRICES_FOR_LIMIT_FILL:
-            price_sources = recent_price_sources
-            stats["recent_window_used"] += 1
+        bid_ps_sorted = sorted(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)
+        ask_ps_sorted = sorted(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
+        max_bid_ps, min_ask_ps = bid_ps_sorted[0], ask_ps_sorted[0]
+        unique_sources = len({ps.source for ps in price_sources})
+        if unique_sources > 1:
+            bid_ps = next((ps for ps in bid_ps_sorted[1:] if ps.source != max_bid_ps.source and abs(ps.start_ms - max_bid_ps.start_ms) > 1000), None)
+            ask_ps = next((ps for ps in ask_ps_sorted[1:] if ps.source != min_ask_ps.source and abs(ps.start_ms - min_ask_ps.start_ms) > 1000), None)
         else:
-            stats["full_window_used"] += 1
+            # require 3 data points, start walk at index 2
+            bid_ps = next((ps for ps in bid_ps_sorted[2:] if abs(ps.start_ms - max_bid_ps.start_ms) > 2000), None)
+            ask_ps = next((ps for ps in ask_ps_sorted[2:] if abs(ps.start_ms - min_ask_ps.start_ms) > 2000), None)
 
-        # Sort price sources by close price and return median
-        sorted_sources = sorted(price_sources, key=lambda ps: ps.close)
-        median_index = len(sorted_sources) // 2
-        return [sorted_sources[median_index]]
+        if not bid_ps or not ask_ps or ask_ps.ask == 0 or bid_ps.bid == 0:
+            bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} no bid/ask price")
+            return None
+
+        # bt.logging.info(
+        #     f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} bid/ask ({max_bid_ps.bid:.4f}->{bid_ps.bid:.4f}/{min_ask_ps.ask:.4f}->{ask_ps.ask:.4f}) {bid_ps.source} {ask_ps.source} "
+        # )
+        return (bid_ps, ask_ps)
 
 
     def _attempt_fill_limit_order(self, miner_hotkey, order, price_sources, now_ms):
@@ -1000,9 +982,7 @@ class LimitOrderManager(CacheController):
         method calls _close_limit_order which also acquires a lock).
         """
         trade_pair = order.trade_pair
-        should_fill = False
-        best_price_source = None
-        trigger_price = None
+        trigger_ps, trigger_price = None, None
 
         try:
             # Check if order should be filled (under limit_order_locks)
@@ -1012,21 +992,21 @@ class LimitOrderManager(CacheController):
                     return False
 
                 # Check if limit price triggered
-                best_price_source = price_sources[0]
+                bid_ps, ask_ps = price_sources
                 position = self._get_open_position(miner_hotkey, order)
-                trigger_price = self._evaluate_trigger_price(order, position, best_price_source)
+                trigger_ps, trigger_price = self._evaluate_order_trigger(order, position, ask_ps, bid_ps)
 
-                if trigger_price is not None:
-                    should_fill = True
+                if trigger_ps and trigger_ps.start_ms < order.processed_ms:
+                    return False
 
             # Fill OUTSIDE the lock to avoid deadlock with _close_limit_order
             # Note: There's a small window where order could be cancelled between check and fill,
             # but _fill_limit_order_with_price_source handles this gracefully
-            if should_fill:
+            if trigger_price is not None:
                 if order.execution_type == ExecutionType.STOP_LIMIT:
                     self._convert_stop_limit_to_limit_order(miner_hotkey, order, TimeUtil.now_in_millis())
                 else:
-                    self._fill_limit_order_with_price_source(miner_hotkey, order, best_price_source, trigger_price)
+                    self._fill_limit_order_with_price_source(miner_hotkey, order, trigger_ps, trigger_price)
                 return True
 
             return False
@@ -1334,23 +1314,36 @@ class LimitOrderManager(CacheController):
         trade_pair_id = order.trade_pair.trade_pair_id
         return self.position_manager.get_open_position_for_trade_pair(hotkey, trade_pair_id)
 
-    def _evaluate_trigger_price(self, order, position, ps):
+    def _evaluate_order_trigger(self, order, position, ask_ps, bid_ps):
+        trigger_ps, trigger_price = None, None
         if order.execution_type == ExecutionType.LIMIT:
-            return self._evaluate_limit_trigger_price(order.order_type, position, ps, order.limit_price)
+            # LONG buys at ask, SHORT sells at bid
+            trigger_ps = ask_ps if order.order_type == OrderType.LONG else bid_ps
+            trigger_price = self._evaluate_limit_trigger_price(order, trigger_ps)
 
         elif order.execution_type == ExecutionType.BRACKET:
-            return self._evaluate_bracket_trigger_price(order, position, ps)
+            if not position:
+                return None, None
+            # Closing LONG sells at bid, closing SHORT buys at ask
+            trigger_ps = bid_ps if position.position_type == OrderType.LONG else ask_ps
+            trigger_price = self._evaluate_bracket_trigger_price(order, position, trigger_ps)
 
         elif order.execution_type == ExecutionType.STOP_LIMIT:
-            return self._evaluate_stop_limit_trigger_price(order, ps)
+            # GTE triggers on upside breakout: use ask (higher, more favorable)
+            # LTE triggers on downside breakout: use bid (lower, more favorable)
+            trigger_ps = ask_ps if order.stop_condition == StopCondition.GTE else bid_ps
+            trigger_price = self._evaluate_stop_limit_trigger_price(order, trigger_ps)
 
-        return None
+        return trigger_ps, trigger_price
 
 
-    def _evaluate_limit_trigger_price(self, order_type, position, ps, limit_price):
+    def _evaluate_limit_trigger_price(self, order, ps):
         """Check if limit price is triggered. Returns the limit_price if triggered, None otherwise."""
         bid_price = ps.bid if ps.bid > 0 else ps.open
         ask_price = ps.ask if ps.ask > 0 else ps.open
+
+        order_type = order.order_type
+        limit_price = order.limit_price
 
         if order_type == OrderType.LONG:
             return limit_price if ask_price <= limit_price else None
