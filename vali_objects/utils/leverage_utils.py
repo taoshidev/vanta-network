@@ -1,11 +1,14 @@
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import TradePair, ValiConfig  # noqa: E402
+from vali_objects.vali_config import InstrumentType, TradePair, TradePairCategory, ValiConfig  # noqa: E402
 
 
 # Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will
 # be deprecated as the HL-sourced commodity lineup (GOLDUSDC, SILVERUSDC, etc.) takes over
 # the commodities category; this block goes away with them.
 _LEGACY_XAU_XAG_TIER_POSITIONAL = {1: 1.0, 2: 1.0, 3: 1.5, 4: 2.0}
+
+# Reg T overnight margin caps equity SPOT at 2x regardless of subaccount tier.
+REG_T_OVERNIGHT_EQUITY_SPOT_CAP = 2.0
 
 
 def get_order_leverage_bounds() -> tuple[float, float]:
@@ -34,13 +37,20 @@ def get_leverage_tier(miner_bucket, account_size: float) -> int:
 
 
 def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
-    """Return the positional leverage limit for a given tier and trade pair.
+    """Per-pair positional leverage for the subaccount path.
 
-    Looked up by (trade_pair_category, instrument_type). XAUUSD/XAGUSD are FOREX-categorized
-    but draw from a dedicated legacy column (_LEGACY_XAU_XAG_TIER_POSITIONAL); they will be
-    deprecated.
+    Linear scaling: pair.subaccount_tier_base_leverage * tier (tier ∈ {1, 2, 3, 4} maps to 1x-4x base).
+    If the tier curve ever needs to be non-linear, replace the multiplication with a
+    {tier: multiplier} dict in ValiConfig and update this helper.
+
+    Two exceptions:
+      - XAUUSD/XAGUSD bypass via the legacy mini-dict (non-linear, retained until external
+        deprecation of XAU/XAG completes).
+      - EQUITIES SPOT hard-capped at the Reg T overnight margin (2x).
     """
     if trade_pair.trade_pair_id in ("XAUUSD", "XAGUSD"):
         return _LEGACY_XAU_XAG_TIER_POSITIONAL[tier]
-    key = (trade_pair.trade_pair_category, trade_pair.instrument_type)
-    return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][key]
+    scaled = trade_pair.subaccount_tier_base_leverage * tier
+    if trade_pair.trade_pair_category == TradePairCategory.EQUITIES and trade_pair.instrument_type == InstrumentType.SPOT:
+        scaled = min(scaled, REG_T_OVERNIGHT_EQUITY_SPOT_CAP)  # Reg T overnight equity-margin cap
+    return scaled

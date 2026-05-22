@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from flask import Flask
-from vali_objects.vali_config import ValiConfig, TradePairCategory, InstrumentType
+from vali_objects.vali_config import ValiConfig, TradePairCategory
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
@@ -25,14 +25,14 @@ VALID_HL_ADDRESS_2 = "0x" + "1234567890abcdef" * 2 + "12345678"
 ACCOUNT_SIZE = 50_000.0  # Tier 2 (<$200K)
 
 # Expected limits — Tier 2 (SUBACCOUNT_FUNDED, account_size < $200K), crypto
-TIER2_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[2][(TradePairCategory.CRYPTO, InstrumentType.PERP)]  # 1.0x
+TIER2_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[2][TradePairCategory.CRYPTO]   # 1.0x
 TIER2_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][TradePairCategory.CRYPTO]   # 2.0x
 
 EXPECTED_MAX_POSITION = ACCOUNT_SIZE * TIER2_POSITIONAL   # 50_000
 EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER2_PORTFOLIO   # 100_000
 
 # Expected limits — Tier 1 (SUBACCOUNT_CHALLENGE), crypto
-TIER1_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[1][(TradePairCategory.CRYPTO, InstrumentType.PERP)]  # 0.5x
+TIER1_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[1][TradePairCategory.CRYPTO]   # 0.5x
 TIER1_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][TradePairCategory.CRYPTO]   # 1.0x
 
 EXPECTED_CHALLENGE_MAX_POSITION = ACCOUNT_SIZE * TIER1_POSITIONAL  # 25_000
