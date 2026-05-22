@@ -231,26 +231,28 @@ class Order(Signal):
             results["tk"] = self.take_profit
 
         if self.bracket_orders is not None:
-            bo = {}
-            for order in self.bracket_orders:
-                bracket_orders = {}
-                if sl := order.get("stop_loss"):
-                    bracket_orders["sl"] = sl
-                if tp := order.get("take_profit"):
-                    bracket_orders["tp"] = tp
-                if val := order.get("value"):
-                    bracket_orders["v"] = val
-                if qty := order.get("quantity"):
-                    bracket_orders["q"] = qty
-                if tsl := order.get("trailing_stop"):
-                    tsl_compact = {}
-                    if 'trailing_percent' in tsl:
-                        tsl_compact["pct"] = tsl["trailing_percent"]
-                    if 'trailing_value' in tsl:
-                        tsl_compact["val"] = tsl["trailing_value"]
-                    bracket_orders["tsl"] = tsl_compact
-                bo[order["order_uuid"]] = bracket_orders
-            results["uo"] = bo  # index as uo to match positions
+            unfilled_orders = {}
+            for sub_order in self.bracket_orders:
+                sub_bracket_orders = {}
+                if sl := sub_order.get("stop_loss"):
+                    sub_bracket_orders["sl"] = sl
+                if tp := sub_order.get("take_profit"):
+                    sub_bracket_orders["tp"] = tp
+                if val := sub_order.get("value"):
+                    sub_bracket_orders["v"] = val
+                if qty := sub_order.get("quantity"):
+                    sub_bracket_orders["q"] = qty
+
+                tsl_compact = {}
+                if 'trailing_percent' in sub_order:
+                    tsl_compact["pct"] = sub_order["trailing_percent"]
+                if 'trailing_value' in sub_order:
+                    tsl_compact["val"] = sub_order["trailing_value"]
+                if not tsl_compact:
+                    sub_bracket_orders["tsl"] = tsl_compact
+
+                unfilled_orders[sub_order["order_uuid"]] = sub_bracket_orders
+            results["uo"] = unfilled_orders  # index as uo to match positions
 
         if self.execution_type == ExecutionType.STOP_LIMIT:
             results["sp"] = self.stop_price
