@@ -954,7 +954,8 @@ class LimitOrderManager(CacheController):
         bid_ps_sorted = sorted(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)
         ask_ps_sorted = sorted(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
         max_bid_ps, min_ask_ps = bid_ps_sorted[0], ask_ps_sorted[0]
-        if trade_pair.trade_pair_category == TradePairCategory.FOREX:
+        unique_sources = len({ps.source for ps in price_sources})
+        if unique_sources > 1:
             bid_ps = next((ps for ps in bid_ps_sorted[1:] if ps.source != max_bid_ps.source and abs(ps.start_ms - max_bid_ps.start_ms) > 1000), None)
             ask_ps = next((ps for ps in ask_ps_sorted[1:] if ps.source != min_ask_ps.source and abs(ps.start_ms - min_ask_ps.start_ms) > 1000), None)
         else:
