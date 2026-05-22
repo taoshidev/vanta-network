@@ -596,13 +596,18 @@ class ValiConfig:
     #
     # TIER_POSITIONAL_LEVERAGE below is a SEPARATE per-category table kept ONLY for the
     # /hl-traders/<addr>/limits REST endpoint (which knows only the subaccount asset class,
-    # not a specific pair). Values mirror main exactly so the external API contract is
-    # preserved. Do NOT use this table for order-entry dispatch — that's the helper above.
-    # XAUUSD/XAGUSD draw from leverage_utils._LEGACY_XAU_XAG_TIER_POSITIONAL on the order
-    # path; the COMMODITIES values here intentionally retain main's legacy XAU/XAG shape
-    # (1.0/1.0/1.5/2.0) so the endpoint reports the same numbers main did.
+    # not a specific pair). Do NOT use this table for order-entry dispatch — that's the
+    # helper above.
+    #
+    # XAUUSD/XAGUSD are FOREX-categorized and never reach the COMMODITIES column here;
+    # they draw from leverage_utils._LEGACY_XAU_XAG_TIER_POSITIONAL on the order path,
+    # which keeps their existing non-linear curve (1.0/1.0/1.5/2.0).
+    #
+    # The COMMODITIES column applies to COMMODITIES subaccounts holding HL commodity pairs
+    # (GOLDUSDC, SILVERUSDC, etc.). HL commodity pairs use base 0.5 × tier on the order
+    # path, so this column reports the same values to keep endpoint and order entry in sync.
     TIER_POSITIONAL_LEVERAGE = {
-        1: {TradePairCategory.HL_ALL: 0.5, TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  TradePairCategory.COMMODITIES: 1.0},
+        1: {TradePairCategory.HL_ALL: 0.5, TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  TradePairCategory.COMMODITIES: 0.5},
         2: {TradePairCategory.HL_ALL: 1.0, TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  TradePairCategory.COMMODITIES: 1.0},
         3: {TradePairCategory.HL_ALL: 1.5, TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 7.5,  TradePairCategory.COMMODITIES: 1.5},
         4: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 2.0},

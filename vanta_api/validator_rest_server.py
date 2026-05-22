@@ -36,7 +36,7 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import MULTI_CLASS_CATEGORIES, ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY, InstrumentType
+from vali_objects.vali_config import MULTI_CLASS_CATEGORIES, ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -1317,30 +1317,37 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 account_size = original_account.get('account_size', ValiConfig.MIN_CAPITAL)
                 rebuilt_account['balance'] = account_size + computed['total_realized_pnl'] - computed['total_fees_paid']
 
-                # Recompute buying_power = balance * multiplier - capital_used
+                # Recompute buying_power using the same multiplier logic MinerAccount.multiplier
+                # applies (asset_class-keyed via TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS, with
+                # multi-class subaccounts going through TIER_MULTI_CLASS_OVERALL_CAP). This keeps
+                # the preview number equal to what MinerAccount.buying_power would report on the
+                # actual rebuilt state — no SPOT/PERP or per-pair-table assumption. EQUITIES
+                # accounts follow the margin-loan-adjusted formula in MinerAccount.buying_power.
                 asset_class_str = original_account.get('asset_class')
                 bucket_str = original_account.get('miner_bucket')
                 bucket = MinerBucket(bucket_str) if bucket_str else None
-                _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
                 if asset_class_str:
                     try:
                         asset_class = TradePairCategory(asset_class_str)
-                        if bucket in _subaccount_buckets:
-                            tier = get_leverage_tier(bucket, account_size)
-                            if asset_class in MULTI_CLASS_CATEGORIES:
-                                # Multi-class subaccount: buying_power uses the cross-class overall
-                                # cap; per-class sub-caps are enforced separately at order entry.
-                                multiplier = ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
-                            else:
-                                multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
+                        tier = get_leverage_tier(bucket, account_size)
+                        if asset_class in MULTI_CLASS_CATEGORIES:
+                            multiplier = ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
                         else:
-                            # Non-subaccount rebuild path: assume SPOT (regular Vanta miners).
-                            multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get((asset_class, InstrumentType.SPOT), 1.0)
+                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
                     except ValueError:
+                        asset_class = None
                         multiplier = 1.0
                 else:
+                    asset_class = None
                     multiplier = 1.0
-                rebuilt_account['buying_power'] = rebuilt_account['balance'] * multiplier - computed['capital_used']
+
+                if asset_class == TradePairCategory.EQUITIES:
+                    rebuilt_account['buying_power'] = (
+                        rebuilt_account['balance']
+                        - (computed['capital_used'] - computed['total_borrowed_amount'])
+                    ) * multiplier
+                else:
+                    rebuilt_account['buying_power'] = rebuilt_account['balance'] * multiplier - computed['capital_used']
             else:
                 # Actual rebuild - persists to disk, preserving bucket and max_return
                 self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
