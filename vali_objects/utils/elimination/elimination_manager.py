@@ -18,12 +18,10 @@ Usage:
     # Process eliminations
     manager.process_eliminations(iteration_epoch)
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import shutil
 import threading
-from copy import deepcopy
 from enum import Enum
-from typing import Dict, Set, List, Optional
 
 import bittensor as bt
 
@@ -224,7 +222,6 @@ class EliminationManager(CacheController):
 
     **Locked Check-Then-Act** (prevent TOCTOU):
     - `is_hotkey_re_registered()` - check departed + check metagraph
-    - `handle_challenge_period_eliminations()` - check exists + add elimination
 
     **Unlocked Methods** (no shared state or read-only):
     - `is_hotkey_eliminated()` - single dict lookup (GIL-protected)
@@ -312,8 +309,8 @@ class EliminationManager(CacheController):
             connect_immediately=False
         )
 
-        self.eliminations: Dict[str, EliminationRow] = {}
-        self.departed_hotkeys: Dict[str, dict] = {}
+        self.eliminations: dict[str, EliminationRow] = {}
+        self.departed_hotkeys: dict[str, dict] = {}
         self.eliminations_lock = threading.Lock()
 
         # Populate from disk, filtering out development hotkey
@@ -398,47 +395,12 @@ class EliminationManager(CacheController):
         """Get the local eliminations lock (manager-side only)"""
         return self.eliminations_lock
 
-    def handle_perf_ledger_eliminations(self, iteration_epoch=None):
-        """
-        Process performance ledger eliminations (thread-safe).
-
-        Identifies new eliminations, adds them atomically, then handles cleanup.
-        Lock scope is minimized - only held during dict operations, not I/O.
-        """
-        perf_ledger_eliminations = self.perf_ledger_manager.get_perf_ledger_eliminations()
-
-        # Step 1: Identify new eliminations (short lock for read)
-        new_eliminations = []
-        with self.eliminations_lock:
-            for e in perf_ledger_eliminations:
-                if e['hotkey'] not in self.eliminations:
-                    new_eliminations.append(e)
-
-        if not new_eliminations:
-            return
-
-        # Step 2: Add all new eliminations atomically (short lock for batch write)
-        with self.eliminations_lock:
-            for e in new_eliminations:
-                # Double-check (another thread may have added it between step 1 and step 2)
-                if e['hotkey'] not in self.eliminations:
-                    self.eliminations[e['hotkey']] = EliminationRow.from_dict(e)
-            # Batch save while holding lock
-            self._save_eliminations_locked()
-
-        bt.logging.info(f'Wrote {len(new_eliminations)} perf ledger eliminations to disk')
-
-        for e in new_eliminations:
-            if self._contract_client:
-                self._contract_client.slash_miner_collateral_proportion(e['hotkey'])
-            self._entity_collateral_client.try_slash_on_elimination(e['hotkey'])
-
     def _close_position(
         self,
         hotkey: str,
         position: Position,
         position_close_ms: int | None,
-        iteration_epoch: int | None =None
+        iteration_epoch: int | None = None
     ):
         """Add flat orders for eliminated miner"""
         if position.is_closed_position:
@@ -511,10 +473,6 @@ class EliminationManager(CacheController):
 
             bt.logging.debug("[ELIM_PROCESS] Starting _update_departed_hotkeys")
             self._update_departed_hotkeys()
-
-            # TODO No perf ledger eliminations anymore?
-            # bt.logging.debug("[ELIM_PROCESS] Starting handle_perf_ledger_eliminations")
-            # self.handle_perf_ledger_eliminations(iteration_epoch)
 
             bt.logging.debug("[ELIM_PROCESS] Starting handle_mdd_eliminations")
             self.handle_mdd_eliminations(iteration_epoch)
@@ -888,7 +846,7 @@ class EliminationManager(CacheController):
         """Fast existence check (O(1))"""
         return hotkey in self.eliminations
 
-    def get_elimination(self, hotkey: str) -> Optional[dict]:
+    def get_elimination(self, hotkey: str) -> dict | None:
         """Get full elimination details"""
         elimination = self.eliminations.get(hotkey)
         return elimination.to_dict() if elimination else None
@@ -936,7 +894,7 @@ class EliminationManager(CacheController):
         This prevents readers from seeing an empty dict during the sync window.
 
         Returns:
-            List of removed hotkeys
+            list of removed hotkeys
         """
         with self.eliminations_lock:
             hotkeys_before = set(self.eliminations.keys())
@@ -1036,15 +994,15 @@ class EliminationManager(CacheController):
             is_in_metagraph = self._metagraph_client.has_hotkey(hotkey)
             return is_in_metagraph
 
-    def get_departed_hotkeys(self) -> Dict[str, dict]:
+    def get_departed_hotkeys(self) -> dict[str, dict]:
         """Get all departed hotkeys"""
         return self.departed_hotkeys
 
-    def get_departed_hotkey_info(self, hotkey: str) -> Optional[dict]:
+    def get_departed_hotkey_info(self, hotkey: str) -> dict | None:
         """Get departed info for a single hotkey (O(1) lookup)"""
         return self.departed_hotkeys.get(hotkey)
 
-    def get_eliminations_dict(self) -> Dict[str, dict]:
+    def get_eliminations_dict(self) -> dict[str, dict]:
         """
         Get eliminations dict (copy, thread-safe).
 
