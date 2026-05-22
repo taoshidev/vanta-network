@@ -2,6 +2,7 @@
 # Copyright (c) 2024 Taoshi Inc
 
 from typing import Optional as OptionalType
+import uuid
 
 from time_util.time_util import TimeUtil
 from pydantic import field_validator, model_validator
@@ -120,6 +121,15 @@ class Order(Signal):
             return [PriceSource(**ps) if isinstance(ps, dict) else ps for ps in v]
         return v
 
+    @field_validator('bracket_orders', mode='before')
+    @classmethod
+    def ensure_bracket_order_uuids(cls, v):
+        if isinstance(v, list):
+            for sub in v:
+                if isinstance(sub, dict) and 'order_uuid' not in sub:
+                    sub['order_uuid'] = str(uuid.uuid4())
+        return v
+
     # @model_validator(mode='before')
     # def validate_size(cls, values):
     #     """
@@ -228,6 +238,31 @@ class Order(Signal):
 
         if self.take_profit is not None:
             results["tk"] = self.take_profit
+
+        if self.bracket_orders is not None:
+            unfilled_orders = {}
+            for sub_order in self.bracket_orders:
+                sub_bracket_orders = {}
+                if sl := sub_order.get("stop_loss"):
+                    sub_bracket_orders["sl"] = sl
+                if tp := sub_order.get("take_profit"):
+                    sub_bracket_orders["tp"] = tp
+                if val := sub_order.get("value"):
+                    sub_bracket_orders["v"] = val
+                if qty := sub_order.get("quantity"):
+                    sub_bracket_orders["q"] = qty
+
+                tsl_compact = {}
+                if 'trailing_percent' in sub_order:
+                    tsl_compact["pct"] = sub_order["trailing_percent"]
+                if 'trailing_value' in sub_order:
+                    tsl_compact["val"] = sub_order["trailing_value"]
+
+                if tsl_compact:
+                    sub_bracket_orders["tsl"] = tsl_compact
+
+                unfilled_orders[sub_order["order_uuid"]] = sub_bracket_orders
+            results["uo"] = unfilled_orders  # index as uo to match positions
 
         if self.execution_type == ExecutionType.STOP_LIMIT:
             results["sp"] = self.stop_price

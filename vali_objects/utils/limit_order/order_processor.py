@@ -304,7 +304,7 @@ class OrderProcessor:
 
     @staticmethod
     def process_limit_cancel(signal: dict, trade_pair, order_uuid: str, now_ms: int,
-                            miner_hotkey: str, limit_order_client) -> dict:
+                            miner_hotkey: str, limit_order_client, execution_type=None) -> dict:
         """
         Process a LIMIT_CANCEL operation by calling limit_order_client.
 
@@ -315,6 +315,7 @@ class OrderProcessor:
             now_ms: Current timestamp in milliseconds
             miner_hotkey: Miner's hotkey
             limit_order_client: Client to process the cancellation
+            execution_type: Optional ExecutionType filter — when set with cancel_all, only cancels orders of this type
 
         Returns:
             Result dictionary from limit_order_client
@@ -328,7 +329,8 @@ class OrderProcessor:
             miner_hotkey,
             trade_pair.trade_pair_id if trade_pair else None,
             order_uuid,
-            now_ms
+            now_ms,
+            execution_type
         )
 
         bt.logging.debug(f"Cancelled LIMIT order(s) for {miner_hotkey}: {order_uuid or 'all'}")
@@ -509,12 +511,10 @@ class OrderProcessor:
                 bracket_uuid = bracket.get("order_uuid")
 
                 # Check if this bracket order exists (for update)
-                if bracket_uuid:
-                    existing_bracket = limit_order_client.get_limit_order_by_uuid(miner_hotkey, bracket_uuid)
-                    if not existing_bracket:
-                        bt.logging.warning(f"Cannot edit order {bracket_uuid}: order not found, skipping")
-                        continue
+                existing_bracket = limit_order_client.get_limit_order_by_uuid(miner_hotkey, bracket_uuid) if bracket_uuid else None
 
+                if existing_bracket:
+                    is_edit = True
                     # If bracket_uuid exists but no SL, TP, or trailing fields, cancel the order
                     has_trailing = bracket.get("trailing_percent") is not None or bracket.get("trailing_value") is not None
                     if bracket.get("stop_loss") is None and bracket.get("take_profit") is None and not has_trailing:
@@ -528,12 +528,11 @@ class OrderProcessor:
                         except SignalException as e:
                             bt.logging.warning(f"Failed to cancel bracket order {bracket_uuid}: {e}, skipping")
                         continue
-
-                    is_edit = True
                 else:
-                    # No UUID provided - generate new one
                     is_edit = False
-                    bracket_uuid = str(uuid.uuid4())
+                    # UUID not found or not provided - create new order using provided uuid (or generate one)
+                    if not bracket_uuid:
+                        bracket_uuid = str(uuid.uuid4())
 
                 # Build bracket signal
                 # Build trailing_stop dict if trailing fields present in bracket entry
@@ -711,7 +710,7 @@ class OrderProcessor:
             )
 
             try:
-                OrderProcessor.process_limit_cancel(None, None, "ALL", now_ms, miner_hotkey, limit_order_client)
+                OrderProcessor.process_limit_cancel(None, None, "ALL", now_ms, miner_hotkey, limit_order_client, ExecutionType.BRACKET)
             except Exception as e:
                 bt.logging.warning(f"Failed to cancel bracket orders after FLAT_ALL: {e}")
 
@@ -735,7 +734,7 @@ class OrderProcessor:
             # Cancel unfilled bracket orders immediately if position is now closed
             if updated_position and updated_position.is_closed_position:
                 try:
-                    OrderProcessor.process_limit_cancel(None, updated_position.trade_pair, "ALL", now_ms, miner_hotkey, limit_order_client)
+                    OrderProcessor.process_limit_cancel(None, updated_position.trade_pair, "ALL", now_ms, miner_hotkey, limit_order_client, ExecutionType.BRACKET)
                 except Exception as e:
                     bt.logging.warning(f"Failed to cancel bracket orders after position close: {e}")
 
