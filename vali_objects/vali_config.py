@@ -667,11 +667,13 @@ class ValiConfig:
         },
     }
 
+    # Single-class subaccounts only — multi-class (HL_ALL) overall cap is in TIER_MULTI_CLASS_OVERALL_CAP,
+    # and per-class sub-caps for multi-class subaccounts reuse the same per-class entries below.
     TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
-        1: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  TradePairCategory.COMMODITIES: 2.0},
-        2: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 2.0},
-        3: {TradePairCategory.HL_ALL: 3.0, TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0, TradePairCategory.COMMODITIES: 3.0},
-        4: {TradePairCategory.HL_ALL: 4.0, TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0, TradePairCategory.COMMODITIES: 4.0},
+        1: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  TradePairCategory.COMMODITIES: 2.0},
+        2: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 2.0},
+        3: {TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0, TradePairCategory.COMMODITIES: 3.0},
+        4: {TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0, TradePairCategory.COMMODITIES: 4.0},
     }
 
     # Overall portfolio cap multiplier for multi-class subaccounts (see MULTI_CLASS_CATEGORIES),
