@@ -49,6 +49,13 @@ class TradePairCategory(str, Enum):
     HL_ALL = "hl_all"            # Asset-selection token only, enables trading all categories for hyperliquid
 
 
+# Subaccount asset_class values that represent a multi-class subaccount (one that may hold
+# positions across more than one TradePairCategory). Multi-class subaccounts are subject to
+# per-class portfolio sub-caps plus a tighter overall cap; single-class subaccounts use a
+# single per-class cap.
+MULTI_CLASS_CATEGORIES = frozenset({TradePairCategory.HL_ALL})
+
+
 class TradePairSource(str, Enum):
     VANTA = "vanta"
     HYPERLIQUID = "hyperliquid"
@@ -666,6 +673,14 @@ class ValiConfig:
         3: {TradePairCategory.HL_ALL: 3.0, TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0, TradePairCategory.COMMODITIES: 3.0},
         4: {TradePairCategory.HL_ALL: 4.0, TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0, TradePairCategory.COMMODITIES: 4.0},
     }
+
+    # Overall portfolio cap multiplier for multi-class subaccounts (see MULTI_CLASS_CATEGORIES),
+    # applied on top of per-class sub-caps from TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS. Designed
+    # to be strictly tighter than the sum of per-class caps so a multi-class miner cannot stack
+    # every class to its individual limit simultaneously. Placeholder values mirror the current
+    # HL_ALL row of TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS to preserve today's overall behavior;
+    # research will set risk-driven values in a follow-up.
+    TIER_MULTI_CLASS_OVERALL_CAP = {1: 2.0, 2: 2.0, 3: 3.0, 4: 4.0}
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size

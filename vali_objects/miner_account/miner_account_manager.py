@@ -19,7 +19,7 @@ import bittensor as bt
 
 from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import MULTI_CLASS_CATEGORIES, TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
@@ -111,6 +111,12 @@ class MinerAccount:
         from vali_objects.utils.leverage_utils import get_leverage_tier
         tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
         return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
+
+    def is_multi_class(self) -> bool:
+        """True if this subaccount can hold positions across more than one TradePairCategory
+        (e.g. HL_ALL). Multi-class subaccounts are subject to per-class portfolio sub-caps plus
+        a tighter overall cap (see TIER_MULTI_CLASS_OVERALL_CAP)."""
+        return self.asset_class is not None and self.asset_class in MULTI_CLASS_CATEGORIES
 
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""
