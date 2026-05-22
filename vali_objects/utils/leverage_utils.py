@@ -1,11 +1,7 @@
-from typing import TYPE_CHECKING
+from typing import Optional
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import InstrumentType, TradePair, TradePairCategory, ValiConfig  # noqa: E402
-
-if TYPE_CHECKING:
-    # Avoid circular import at runtime — MinerAccount already imports from this module.
-    from vali_objects.miner_account.miner_account_manager import MinerAccount
+from vali_objects.vali_config import InstrumentType, MULTI_CLASS_CATEGORIES, TradePair, TradePairCategory, ValiConfig  # noqa: E402
 
 
 # Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will
@@ -42,12 +38,17 @@ def get_leverage_tier(miner_bucket, account_size: float) -> int:
     return 2
 
 
-def get_portfolio_caps(account: 'MinerAccount', trade_pair: TradePair) -> tuple[float, float]:
+def get_portfolio_caps(
+    subaccount_asset_class: Optional[TradePairCategory],
+    miner_bucket: MinerBucket,
+    account_size: float,
+    trade_pair_category: TradePairCategory,
+) -> tuple[float, float]:
     """Return (per_class_cap_multiplier, overall_cap_multiplier) for subaccount portfolio caps.
 
     For multi-class subaccounts (see MULTI_CLASS_CATEGORIES, today only HL_ALL), the two
     values differ:
-      - per_class_cap_multiplier limits exposure within `trade_pair`'s asset class
+      - per_class_cap_multiplier limits exposure within `trade_pair_category`
       - overall_cap_multiplier limits total subaccount exposure across all classes; this
         is designed to be strictly tighter than the sum of per-class caps
 
@@ -55,14 +56,16 @@ def get_portfolio_caps(account: 'MinerAccount', trade_pair: TradePair) -> tuple[
     the caller's overall-cap check is a no-op (it can apply the same two-gate logic blindly).
 
     Multipliers are returned, not USD amounts; the caller multiplies by balance to get the cap.
+    Takes primitives (not a MinerAccount object) so it can be called from the order-entry path
+    where the account is materialized as an RPC dict, not the live MinerAccount.
     """
-    tier = get_leverage_tier(account.miner_bucket, account.get_account_size())
+    tier = get_leverage_tier(miner_bucket, account_size)
 
-    if account.is_multi_class():
-        per_class_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(trade_pair.trade_pair_category, 1.0)
+    if subaccount_asset_class is not None and subaccount_asset_class in MULTI_CLASS_CATEGORIES:
+        per_class_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(trade_pair_category, 1.0)
         overall_cap = ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
     else:
-        single_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(account.asset_class, 1.0)
+        single_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
         per_class_cap = single_cap
         overall_cap = single_cap
 

@@ -17,7 +17,7 @@ import bittensor as bt
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import ValiConfig, TradePair, TradePairCategory, RPCConnectionMode
-from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
+from vali_objects.utils.leverage_utils import get_leverage_tier, get_portfolio_caps, get_tier_positional_leverage
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -287,6 +287,32 @@ class MarketOrderManager():
             account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(leverage_key, 1.0)
         max_position_value = max_position_leverage * balance
 
+        # Multi-class portfolio cap dispatch: tighten buying_power for subaccounts that span
+        # multiple asset classes (today only HL_ALL). Single-class subaccounts retain the existing
+        # single-cap behavior — get_portfolio_caps returns equal per_class/overall multipliers
+        # so the min() collapses back to the existing buying_power. The per-class room shields
+        # one class from being eaten by another; the overall room is a strictly tighter ceiling
+        # across all classes. Old checkpoints with empty capital_used_by_class are safe: the
+        # per_class_used falls back to 0, so per_class_room ≥ buying_power and the min() is a no-op
+        # until lazy backfill populates the dict.
+        effective_buying_power = buying_power
+        if miner_bucket in _subaccount_buckets:
+            asset_class_str = account.get('asset_class')
+            subaccount_asset_class = None
+            if asset_class_str:
+                try:
+                    subaccount_asset_class = TradePairCategory(asset_class_str)
+                except ValueError:
+                    subaccount_asset_class = None
+            per_class_cap, overall_cap = get_portfolio_caps(
+                subaccount_asset_class, miner_bucket, account['account_size'], trade_pair_category
+            )
+            capital_used_by_class_raw = account.get('capital_used_by_class') or {}
+            per_class_used = capital_used_by_class_raw.get(trade_pair_category.value, 0.0)
+            per_class_room = balance * per_class_cap - per_class_used
+            overall_room = balance * overall_cap - capital_used
+            effective_buying_power = min(buying_power, per_class_room, overall_room)
+
         # Validate order before processing cash balance (raises ValueError if invalid)
         # Note: validate_order_size may clamp order.value/quantity/leverage in place
         bt.logging.info(f"[ORDER DETAIL] pre-validation quantity: {order.quantity}, value: {order.value}")
@@ -297,22 +323,22 @@ class MarketOrderManager():
         transaction_fee_rate = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair_category, 0)
 
         if order.order_type == existing_position.position_type:
-            if buying_power <= 0:
-                raise SignalException(f"Order Rejected: Insufficient buying power (available: ${buying_power:.2f})")
+            if effective_buying_power <= 0:
+                raise SignalException(f"Order Rejected: Insufficient buying power (available: ${effective_buying_power:.2f})")
 
-            if abs(order.value) * (1 + transaction_fee_rate * account_multiplier) >= buying_power:
+            if abs(order.value) * (1 + transaction_fee_rate * account_multiplier) >= effective_buying_power:
                 sign = (-1 if order.order_type == OrderType.SHORT else 1)
-                order.value = buying_power / (1 + transaction_fee_rate * account_multiplier) * sign
+                order.value = effective_buying_power / (1 + transaction_fee_rate * account_multiplier) * sign
                 order_resized = True
 
         if order_resized:
             order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, balance, use_floor=True)
             order.quantity, order.leverage, order.value = order_sizes
-            bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {buying_power}")
+            bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {effective_buying_power}")
 
         if abs(order.value) < 1e-9 or abs(order.quantity) < 1e-9:
             raise SignalException(
-                f"Order rejected: 0 order size due to max position value ${max_position_value} or max buying power ${buying_power}"
+                f"Order rejected: 0 order size due to max position value ${max_position_value} or max buying power ${effective_buying_power}"
             )
 
         # Entity cross-margin gating for subaccounts
