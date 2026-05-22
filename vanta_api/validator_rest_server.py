@@ -36,7 +36,7 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY, InstrumentType
+from vali_objects.vali_config import MULTI_CLASS_CATEGORIES, ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY, InstrumentType
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -1327,7 +1327,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                         asset_class = TradePairCategory(asset_class_str)
                         if bucket in _subaccount_buckets:
                             tier = get_leverage_tier(bucket, account_size)
-                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
+                            if asset_class in MULTI_CLASS_CATEGORIES:
+                                # Multi-class subaccount: buying_power uses the cross-class overall
+                                # cap; per-class sub-caps are enforced separately at order entry.
+                                multiplier = ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
+                            else:
+                                multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
                         else:
                             # Non-subaccount rebuild path: assume SPOT (regular Vanta miners).
                             multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get((asset_class, InstrumentType.SPOT), 1.0)
@@ -2063,20 +2068,35 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
         tier = get_leverage_tier(_bucket, account_size)
         max_position_per_pair_usd = account_size * ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][category]
-        max_portfolio_usd = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][category]
 
-        response_body = json.dumps(
-            {
-                'status': 'success',
-                'hl_address': hl_address,
-                'account_size': account_size,
-                'max_position_per_pair_usd': max_position_per_pair_usd,
-                'max_portfolio_usd': max_portfolio_usd,
-                'in_challenge_period': in_challenge,
-                'timestamp': TimeUtil.now_in_millis(),
-            },
-            cls=CustomEncoder,
-        )
+        response_payload = {
+            'status': 'success',
+            'hl_address': hl_address,
+            'account_size': account_size,
+            'max_position_per_pair_usd': max_position_per_pair_usd,
+            'in_challenge_period': in_challenge,
+            'timestamp': TimeUtil.now_in_millis(),
+        }
+
+        if category in MULTI_CLASS_CATEGORIES:
+            # Multi-class subaccount (today only HL_ALL): expose the cross-class overall cap
+            # plus a per-asset-class breakdown. The overall cap is strictly tighter than the
+            # sum of per-class caps, so traders cannot max out every class simultaneously.
+            response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
+            response_payload['max_asset_class_usd'] = {
+                c.value: account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][c]
+                for c in (
+                    TradePairCategory.CRYPTO,
+                    TradePairCategory.FOREX,
+                    TradePairCategory.EQUITIES,
+                    TradePairCategory.INDICES,
+                    TradePairCategory.COMMODITIES,
+                )
+            }
+        else:
+            response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][category]
+
+        response_body = json.dumps(response_payload, cls=CustomEncoder)
         return Response(response_body, content_type='application/json'), 200
 
     def get_hl_leaderboard(self):
