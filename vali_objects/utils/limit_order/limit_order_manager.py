@@ -1499,6 +1499,7 @@ class LimitOrderManager(CacheController):
             for order_dict in miner_order_dicts:
                 try:
                     order = Order.from_dict(order_dict)
+                    self._write_to_disk(hotkey, order)
                     trade_pair = order.trade_pair
 
                     # Initialize nested structure
