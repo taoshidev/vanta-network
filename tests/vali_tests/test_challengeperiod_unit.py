@@ -52,7 +52,7 @@ def manager():
 
 
 def _state(bucket: MinerBucket, start_ms: int = NOW_MS) -> MinerBucketState:
-    return MinerBucketState([BucketEntry(bucket, start_ms)])
+    return MinerBucketState("test_hk", [BucketEntry(bucket, start_ms)])
 
 
 def _setup_refresh_clients(manager, hk: str):
@@ -75,14 +75,14 @@ def _setup_refresh_clients(manager, hk: str):
 def test_bucket_state_sorted_on_init():
     later = BucketEntry(MinerBucket.MAINCOMP, NOW_MS + 1000)
     earlier = BucketEntry(MinerBucket.CHALLENGE, NOW_MS)
-    state = MinerBucketState([later, earlier])
+    state = MinerBucketState("test_hk", [later, earlier])
     assert state.entries[0].start_time_ms == NOW_MS
     assert state.entries[1].start_time_ms == NOW_MS + 1000
 
 
 def test_bucket_state_empty_raises():
     with pytest.raises(ValueError):
-        MinerBucketState([])
+        MinerBucketState("test_hk", [])
 
 
 def test_add_bucket_entry_same_bucket_noop():
@@ -193,7 +193,7 @@ def test_should_promote_challenge_too_early():
     state = _state(MinerBucket.CHALLENGE, start_ms)
     state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
     state.rank = 1
-    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is False
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
 def test_should_promote_challenge_met_threshold():
@@ -202,7 +202,7 @@ def test_should_promote_challenge_met_threshold():
     # current_returns = equity - 1.0 = THRESHOLD + 0.01 > THRESHOLD → promote
     state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD + 0.01, current_balance=1.0 + THRESHOLD + 0.01)
     state.rank = 1
-    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is True
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
 
 
 def test_should_promote_challenge_below_equity_threshold():
@@ -211,65 +211,63 @@ def test_should_promote_challenge_below_equity_threshold():
     # current_returns = THRESHOLD - 0.01 < THRESHOLD → no promote
     state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD - 0.01, current_balance=1.0 + THRESHOLD - 0.01)
     state.rank = 1
-    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is False
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
 def test_should_promote_rank_based_good_rank():
-    state = _state(MinerBucket.MAINCOMP)  # rank-based, no time gate
+    state = _state(MinerBucket.PROBATION)  # rank-based, promotes to MAINCOMP
     # current_returns = 0.5 > THRESHOLD → equity condition met
     state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
     state.rank = RANK_LIMIT  # at the boundary (≤ 25 passes)
-    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is True
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
 
 
 def test_should_promote_rank_based_bad_rank():
-    state = _state(MinerBucket.MAINCOMP)
+    state = _state(MinerBucket.PROBATION)
     state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
     state.rank = RANK_LIMIT + 1
-    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is False
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
 def test_should_promote_rank_based_no_rank():
-    state = _state(MinerBucket.MAINCOMP)
+    state = _state(MinerBucket.PROBATION)
     state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
     state.rank = None
-    assert ChallengePeriodManager._should_promote(state, THRESHOLD, NOW_MS) is False
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
 def test_should_demote_maincomp_bad_rank():
     state = _state(MinerBucket.MAINCOMP)
     state.rank = RANK_LIMIT + 1
     state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    assert ChallengePeriodManager._should_demote(state, THRESHOLD) is True
+    assert ChallengePeriodManager._check_demotion(state) is True
 
 
-def test_should_demote_maincomp_good_rank_good_equity():
+def test_should_demote_maincomp_good_rank():
     state = _state(MinerBucket.MAINCOMP)
-    state.rank = RANK_LIMIT
-    # current_returns = min(1.5, 1.5) - 1.0 = 0.5 > THRESHOLD → equity condition not triggered
+    state.rank = RANK_LIMIT  # at boundary (not > 25) → no demotion
     state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    assert ChallengePeriodManager._should_demote(state, THRESHOLD) is False
+    assert ChallengePeriodManager._check_demotion(state) is False
 
 
-def test_should_demote_maincomp_low_equity():
+def test_should_demote_maincomp_good_rank_low_equity():
     state = _state(MinerBucket.MAINCOMP)
-    state.rank = 1  # good rank
-    # current_returns = THRESHOLD - 0.01 < THRESHOLD → demote
+    state.rank = 1  # good rank → demotion is rank-only, equity does not trigger it
     state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD - 0.01)
-    assert ChallengePeriodManager._should_demote(state, THRESHOLD) is True
+    assert ChallengePeriodManager._check_demotion(state) is False
 
 
 def test_should_demote_maincomp_no_rank():
     state = _state(MinerBucket.MAINCOMP)
     state.rank = None
-    assert ChallengePeriodManager._should_demote(state, THRESHOLD) is False
+    assert ChallengePeriodManager._check_demotion(state) is False
 
 
 def test_should_demote_non_maincomp():
     for bucket in (MinerBucket.CHALLENGE, MinerBucket.PROBATION):
         state = _state(bucket)
         state.rank = RANK_LIMIT + 10
-        assert ChallengePeriodManager._should_demote(state, THRESHOLD) is False
+        assert ChallengePeriodManager._check_demotion(state) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -417,7 +415,7 @@ def test_refresh_no_changes_skips_save(manager):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Section 6 — sync_elimination_miners / _prune_deregistered_metagraph
+# Section 6 — sync_elimination_miners / _prune_hotkeys_no_positions
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_sync_elimination_miners_removes(manager):
@@ -440,7 +438,7 @@ def test_prune_skips_entity_bucket(manager):
     hk = "entity_hk"
     manager.miner_states[hk] = _state(MinerBucket.ENTITY)
     manager._position_client.get_all_hotkeys.return_value = []
-    state_changed = manager._prune_deregistered_metagraph()
+    state_changed = manager._prune_hotkeys_no_positions()
     assert hk in manager.miner_states
     assert state_changed is False
 
@@ -449,7 +447,7 @@ def test_prune_skips_subaccount_funded(manager):
     hk = "funded_hk"
     manager.miner_states[hk] = _state(MinerBucket.SUBACCOUNT_FUNDED)
     manager._position_client.get_all_hotkeys.return_value = []
-    state_changed = manager._prune_deregistered_metagraph()
+    state_changed = manager._prune_hotkeys_no_positions()
     assert hk in manager.miner_states
     assert state_changed is False
 
@@ -459,5 +457,5 @@ def test_prune_removes_missing_regular(manager):
     hk = "regular_hk"
     manager.miner_states[hk] = _state(MinerBucket.CHALLENGE)
     manager._position_client.get_all_hotkeys.return_value = []
-    manager._prune_deregistered_metagraph()
+    manager._prune_hotkeys_no_positions()
     assert hk not in manager.miner_states
