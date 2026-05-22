@@ -966,9 +966,9 @@ class LimitOrderManager(CacheController):
             bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} no bid/ask price")
             return None
 
-        bt.logging.info(
-            f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} bid/ask ({max_bid_ps.bid:.4f}->{bid_ps.bid:.4f}/{min_ask_ps.ask:.4f}->{ask_ps.ask:.4f}) {bid_ps.source} {ask_ps.source} "
-        )
+        # bt.logging.info(
+        #     f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} bid/ask ({max_bid_ps.bid:.4f}->{bid_ps.bid:.4f}/{min_ask_ps.ask:.4f}->{ask_ps.ask:.4f}) {bid_ps.source} {ask_ps.source} "
+        # )
         return (bid_ps, ask_ps)
 
 
