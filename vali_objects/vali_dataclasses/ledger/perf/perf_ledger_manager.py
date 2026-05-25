@@ -51,7 +51,6 @@ class PerfLedgerManager(CacheController):
         self.parallel_mode = parallel_mode
 
 
-        self.pl_elimination_rows = []
         self.hotkey_to_perf_bundle = {}
         self.running_unit_tests = running_unit_tests
 
@@ -117,7 +116,6 @@ class PerfLedgerManager(CacheController):
         self.now_ms = 0  # The largest timestamp we want to buffer candles for. time.time() - UPDATE_LOOKBACK_S
         #self.base_dd_stats = {'worst_dd':1.0, 'last_dd':0, 'mrpv':1.0, 'n_closed_pos':0, 'n_checks':0, 'current_portfolio_return': 1.0}
         #self.hk_to_dd_stats = defaultdict(lambda: deepcopy(self.base_dd_stats))
-        self.candidate_pl_elimination_rows = []
         self.hk_to_last_order_processed_ms = {}
         self.mode_to_n_updates = {}
         self.update_to_n_open_positions = {}
@@ -133,13 +131,6 @@ class PerfLedgerManager(CacheController):
             bt.logging.success(f"[PERF_LEDGER] Loaded {len(initial_perf_ledgers)} performance ledger bundles from disk")
             for k, v in initial_perf_ledgers.items():
                 self.hotkey_to_perf_bundle[k] = v
-            # ipc list does not update the object without using __setitem__
-            temp = self.get_perf_ledger_eliminations(first_fetch=True)
-            bt.logging.info(f"[PERF_LEDGER] Loaded {len(temp)} pl elimination rows from disk")
-            self.pl_elimination_rows.extend(temp)
-            for i, x in enumerate(temp):
-                self.pl_elimination_rows[i] = x
-
         if secrets:
             self.secrets = secrets
         else:
@@ -170,8 +161,6 @@ class PerfLedgerManager(CacheController):
         assert self.running_unit_tests, 'this is only valid for unit tests'
         self.hotkey_to_perf_bundle.clear()
         self.clear_perf_ledgers_from_disk()  # Also clears in-memory
-        self.pl_elimination_rows.clear()
-        self.clear_perf_ledger_eliminations_from_disk()
         self.perf_ledger_hks_to_invalidate.clear()  # Clear invalidation list for test isolation
 
     def re_init_perf_ledger_data(self):
@@ -355,13 +344,6 @@ class PerfLedgerManager(CacheController):
 
         for k in list(self.hotkey_to_perf_bundle.keys()):
             del self.hotkey_to_perf_bundle[k]
-
-    def clear_perf_ledger_eliminations_from_disk(self):
-        assert self.running_unit_tests, 'this is only valid for unit tests'
-        self.pl_elimination_rows = []
-        file_path = ValiBkpUtils.get_perf_ledger_eliminations_dir(running_unit_tests=self.running_unit_tests)
-        if os.path.exists(file_path):
-            ValiBkpUtils.write_file(file_path, [])
 
     @staticmethod
     def clear_perf_ledgers_from_disk_autosync(hotkeys:list):
@@ -765,9 +747,6 @@ class PerfLedgerManager(CacheController):
     def check_liquidated(self, miner_hotkey, portfolio_return, t_ms, tp_to_historical_positions, portfolio_pl: PerfLedger):
         if portfolio_return == 0:
             bt.logging.warning(f"Portfolio value is {portfolio_return} for miner {miner_hotkey} at {t_ms}. Eliminating miner.")
-            elimination_row = self.generate_elimination_row(miner_hotkey, 0.0, "LIQUIDATED", t_ms=t_ms, price_info=portfolio_pl.last_known_prices, return_info={'dd_stats': {}, 'returns': {'portfolio': self.portfolio_ret, 'portfolio_prev': self.portfolio_ret_prev}})
-            self.candidate_pl_elimination_rows.append(elimination_row)
-            self.candidate_pl_elimination_rows[-1] = elimination_row  # Trigger the update on the multiprocessing Manager
             #self.hk_to_dd_stats[miner_hotkey]['eliminated'] = True
             for _, v in tp_to_historical_positions.items():
                 for pos in v:
@@ -1583,26 +1562,12 @@ class PerfLedgerManager(CacheController):
             # Write candidate at the very end in case an exception leads to a partial update
             existing_perf_ledger_bundles[hotkey] = portfolio_pl
 
-    @timeme
-    def write_perf_ledger_eliminations_to_disk(self, eliminations):
-        output_location = ValiBkpUtils.get_perf_ledger_eliminations_dir(running_unit_tests=self.running_unit_tests)
-        ValiBkpUtils.write_file(output_location, eliminations)
-
-    def get_perf_ledger_eliminations(self, first_fetch=False):
-        if first_fetch:
-            location = ValiBkpUtils.get_perf_ledger_eliminations_dir(running_unit_tests=self.running_unit_tests)
-            cached_eliminations = ValiUtils.get_vali_json_file(location)
-            return cached_eliminations
-        else:
-            return self.pl_elimination_rows
-
     def update_all_perf_ledgers(self, hotkey_to_positions: dict[str, List[Position]],
                                 existing_perf_ledgers: dict[str, PerfLedger],
                                 now_ms: int,
                                 hotkey_to_account_size: dict = None) -> None | dict[str, PerfLedger]:
         t_init = time.time()
         self.now_ms = now_ms
-        self.candidate_pl_elimination_rows = []
 
         n_hotkeys = len(hotkey_to_positions)
         for hotkey_i, (hotkey, positions) in enumerate(hotkey_to_positions.items()):
@@ -1619,14 +1584,6 @@ class PerfLedgerManager(CacheController):
         n_perf_ledgers = len(existing_perf_ledgers) if existing_perf_ledgers else 0
         n_hotkeys_with_positions = len(hotkey_to_positions) if hotkey_to_positions else 0
         bt.logging.success(f"Done updating perf ledger for all hotkeys in {time.time() - t_init} s. n_perf_ledgers {n_perf_ledgers}. n_hotkeys_with_positions {n_hotkeys_with_positions}")
-        if not self.is_backtesting:
-            self.write_perf_ledger_eliminations_to_disk(self.candidate_pl_elimination_rows)
-        # clear and populate proxy list in a multiprocessing-friendly way
-        del self.pl_elimination_rows[:]
-        self.pl_elimination_rows.extend(self.candidate_pl_elimination_rows)
-        for i, x in enumerate(self.candidate_pl_elimination_rows):
-            self.pl_elimination_rows[i] = x
-
         if self._is_shutdown():
             return
 

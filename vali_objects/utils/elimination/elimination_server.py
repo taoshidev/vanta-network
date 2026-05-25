@@ -356,10 +356,6 @@ class EliminationServer(RPCServerBase):
         """Trigger elimination processing via RPC."""
         self._manager.process_eliminations(iteration_epoch=iteration_epoch)
 
-    def handle_perf_ledger_eliminations_rpc(self, iteration_epoch=None) -> None:
-        """Process performance ledger eliminations."""
-        self._manager.handle_perf_ledger_eliminations(iteration_epoch=iteration_epoch)
-
     def get_first_refresh_ran_rpc(self) -> bool:
         """Get the first_refresh_ran flag."""
         return self._manager.first_refresh_ran

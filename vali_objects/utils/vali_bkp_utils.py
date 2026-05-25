@@ -198,11 +198,6 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + f"{suffix}/validation/departed_hotkeys.json"
 
     @staticmethod
-    def get_perf_ledger_eliminations_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledger_eliminations.json"
-
-    @staticmethod
     def get_perf_ledgers_path(running_unit_tests=False) -> str:
         """Get current perf_ledgers path (compressed JSON format)."""
         suffix = "/tests" if running_unit_tests else ""

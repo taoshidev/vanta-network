@@ -81,31 +81,6 @@ class PerfLedgerClient(RPCClientBase):
             hotkeys=hotkeys
         )
 
-    def get_perf_ledger_eliminations(self, first_fetch: bool = False) -> list:
-        """
-        Get performance ledger eliminations.
-
-        Args:
-            first_fetch: If True, load from disk instead of memory
-
-        Returns:
-            List of elimination dictionaries
-        """
-        return self._server.get_perf_ledger_eliminations_rpc(first_fetch=first_fetch)
-
-    def write_perf_ledger_eliminations_to_disk(self, eliminations: list) -> None:
-        """
-        Write performance ledger eliminations to disk.
-
-        Args:
-            eliminations: List of elimination dictionaries to write
-        """
-        self._server.write_perf_ledger_eliminations_to_disk_rpc(eliminations)
-
-    def clear_perf_ledger_eliminations(self) -> None:
-        """Clear all perf ledger eliminations in memory (for testing)."""
-        self._server.clear_perf_ledger_eliminations_rpc()
-
     def save_perf_ledgers(self, perf_ledgers: dict) -> None:
         """
         Save performance ledgers.
@@ -218,17 +193,6 @@ class PerfLedgerClient(RPCClientBase):
             if hotkey in hks_to_invalidate:
                 del hks_to_invalidate[hotkey]
                 self._server.set_perf_ledger_hks_to_invalidate_rpc(hks_to_invalidate)
-
-    def add_elimination_row(self, elimination_row: dict) -> None:
-        """
-        Add an elimination row to the perf ledger eliminations.
-
-        This is used by tests to simulate performance ledger eliminations.
-
-        Args:
-            elimination_row: Elimination dict with hotkey, reason, dd, etc.
-        """
-        self._server.add_elimination_row_rpc(elimination_row)
 
     def get_bypass_values_if_applicable(
         self,

@@ -278,12 +278,6 @@ class EliminationClient(RPCClientBase):
             iteration_epoch=iteration_epoch
         )
 
-    def handle_perf_ledger_eliminations(self, iteration_epoch=None) -> None:
-        """Process performance ledger eliminations."""
-        self._server.handle_perf_ledger_eliminations_rpc(
-            iteration_epoch=iteration_epoch
-        )
-
     def handle_first_refresh(self, iteration_epoch=None) -> None:
         """Handle first refresh on startup."""
         self._server.handle_first_refresh_rpc(iteration_epoch)
