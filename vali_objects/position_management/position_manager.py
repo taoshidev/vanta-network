@@ -1090,6 +1090,7 @@ class PositionManager:
                 # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
                 if self._challenge_period_client:
                     # self._challenge_period_client.remove_miner(miner_hotkey)
+                    self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, 1776991090311)
                     self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_FUNDED, 1746521913370)
                     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
                     print(f'Removed challenge period status for {miner_hotkey}')
