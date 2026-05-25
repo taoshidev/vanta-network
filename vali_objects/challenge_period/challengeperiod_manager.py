@@ -449,7 +449,7 @@ class ChallengePeriodManager(CacheController):
         """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
         Returns None if account or position data is unavailable.
         """
-        if account is None or positions is None:
+        if account is None or not positions:
             return None, None
 
         account_size = account.get('account_size', 0)
@@ -491,6 +491,7 @@ class ChallengePeriodManager(CacheController):
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
             current_equity, current_balance = self._compute_portfolio_return(accounts.get(hotkey), positions.get(hotkey))
             if current_equity is None or current_balance is None:
+                bt.logging.warning(f"[CHALLENGE] {hotkey} invalid account or has no positions, skipping evaluation")
                 continue
 
             ledger = ledgers.get(hotkey)
