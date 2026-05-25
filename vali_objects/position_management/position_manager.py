@@ -34,7 +34,7 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
-TARGET_MS = 1778202000000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1779739135000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -1008,7 +1008,7 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = []
+            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_147"]
             position_uuids_to_delete = []
             position_uuids_to_archive = []
             miners_to_promote = []
@@ -1034,12 +1034,12 @@ class PositionManager:
                 miners_to_promote.remove(e['hotkey'])
 
         # Promote miners that would have passed challenge period
-        if self._challenge_period_client:
-            for miner in miners_to_promote:
-                if self._challenge_period_client.has_miner(miner):
-                    if self._challenge_period_client.get_miner_bucket(miner) != MinerBucket.MAINCOMP:
-                        self._challenge_period_client.promote_challengeperiod_in_memory([miner], now_ms)
-            self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        # if self._challenge_period_client:
+        #     for miner in miners_to_promote:
+        #         if self._challenge_period_client.has_miner(miner):
+        #             if self._challenge_period_client.get_miner_bucket(miner) != MinerBucket.MAINCOMP:
+        #                 self._challenge_period_client.promote_challengeperiod_in_memory([miner], now_ms)
+        #     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
 
         # Wipe miners_to_wipe below
         for k in miners_to_wipe:
@@ -1081,21 +1081,23 @@ class PositionManager:
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
 
-                # # # Restore subaccount status for erroneously eliminated synthetic hotkeys
-                # if is_synthetic_hotkey(miner_hotkey) and self._entity_client:
-                #     success, msg = self._entity_client.restore_subaccount(miner_hotkey)
-                #     print(f"Restored subaccount {miner_hotkey}: {msg}")
-                #
-                # # Remove from challenge period so the next refresh re-adds them to the
-                # # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
-                # if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
-                #     self._challenge_period_client.remove_miner(miner_hotkey)
-                #     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
-                #     print(f'Removed challenge period status for {miner_hotkey}')
+                # # Restore subaccount status for erroneously eliminated synthetic hotkeys
+                if is_synthetic_hotkey(miner_hotkey) and self._entity_client:
+                    success, msg = self._entity_client.restore_subaccount(miner_hotkey)
+                    print(f"Restored subaccount {miner_hotkey}: {msg}")
+
+                # Remove from challenge period so the next refresh re-adds them to the
+                # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
+                if self._challenge_period_client:
+                    self._challenge_period_client.remove_miner(miner_hotkey)
+                    self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, 1776991090311)
+                    self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_FUNDED, 1778072313000)
+                    self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+                    print(f'Removed challenge period status for {miner_hotkey}')
 
                 # Rebuild account state from current positions after corrections
                 current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
-                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions)
+                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions, miner_bucket=MinerBucket.SUBACCOUNT_FUNDED)
 
         bt.logging.warning(
             f"Applied {n_corrections} order corrections out of {n_attempts} attempts. unique positions corrected: {len(unique_corrections)}")
