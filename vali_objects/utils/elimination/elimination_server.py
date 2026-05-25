@@ -95,7 +95,6 @@ class EliminationServer(RPCServerBase):
 
         # Cache for fast fail-early checks (auto-refreshed by daemon)
         self._eliminations_cache = {}  # {hotkey: elimination_dict}
-        self._departed_hotkeys_cache = {}  # {hotkey: departure_info_dict}
         self._cache_lock = threading.Lock()
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
@@ -163,18 +162,11 @@ class EliminationServer(RPCServerBase):
 
         # Acquire manager lock to get consistent snapshot
         with manager_lock:
-            # Get snapshots while holding manager lock
             eliminations_snapshot = dict(self._manager.eliminations)
-            departed_snapshot = dict(self._manager.departed_hotkeys)
 
-        # Update cache (release manager lock first to avoid nested locking)
         with self._cache_lock:
             self._eliminations_cache = eliminations_snapshot
-            self._departed_hotkeys_cache = departed_snapshot
-            bt.logging.debug(
-                f"[CACHE_REFRESH] Refreshed: {len(self._eliminations_cache)} eliminated, "
-                f"{len(self._departed_hotkeys_cache)} departed hotkeys"
-            )
+            bt.logging.debug(f"[CACHE_REFRESH] Refreshed: {len(self._eliminations_cache)} eliminated")
 
     def _cache_refresh_loop(self):
         """Background daemon that refreshes cache periodically."""
@@ -209,7 +201,7 @@ class EliminationServer(RPCServerBase):
         """Add service-specific health check details."""
         return {
             "num_eliminations": len(self._manager.eliminations),
-            "num_departed_hotkeys": len(self._manager.departed_hotkeys)
+            "num_deregistered": sum(1 for r in self._manager.eliminations.values() if r.reason == "DEREGISTERED")
         }
 
     def is_hotkey_eliminated_rpc(self, hotkey: str) -> bool:
@@ -343,7 +335,9 @@ class EliminationServer(RPCServerBase):
     def get_cached_elimination_data_rpc(self) -> tuple:
         """Get cached elimination data."""
         with self._cache_lock:
-            return (dict(self._eliminations_cache), dict(self._departed_hotkeys_cache))
+            eliminations = dict(self._eliminations_cache)
+        departed = self._manager.get_departed_hotkeys()
+        return (eliminations, departed)
 
     def get_eliminations_lock_rpc(self):
         """This method should not be called via RPC - lock is local to server"""
@@ -410,12 +404,6 @@ class EliminationServer(RPCServerBase):
     def get_eliminations_dict_rpc(self) -> Dict[str, dict]:
         """Get eliminations dict (copy)."""
         return self._manager.get_eliminations_dict()
-
-    def handle_first_refresh_rpc(self, iteration_epoch=None) -> None:
-        """Handle first refresh on startup."""
-        self._manager.handle_first_refresh(iteration_epoch)
-
-    # start_daemon_rpc() inherited from RPCServerBase
 
     # ==================== Internal Methods ====================
 

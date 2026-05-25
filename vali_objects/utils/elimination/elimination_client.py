@@ -171,8 +171,7 @@ class EliminationClient(RPCClientBase):
 
     def delete_eliminations(self, deleted_hotkeys) -> None:
         """Delete multiple eliminations."""
-        for hotkey in deleted_hotkeys:
-            self.remove_elimination(hotkey)
+        self._server.delete_eliminations_rpc(deleted_hotkeys)
 
     def sync_eliminations(self, dat: list) -> list:
         """
@@ -278,10 +277,6 @@ class EliminationClient(RPCClientBase):
             iteration_epoch=iteration_epoch
         )
 
-    def handle_first_refresh(self, iteration_epoch=None) -> None:
-        """Handle first refresh on startup."""
-        self._server.handle_first_refresh_rpc(iteration_epoch)
-
     def handle_mdd_eliminations(self, iteration_epoch=None) -> None:
         """Check for maximum drawdown eliminations."""
         self._server.handle_mdd_eliminations_rpc(
@@ -345,14 +340,10 @@ class EliminationClient(RPCClientBase):
         local_cache_refresh_period_ms is configured.
 
         Returns:
-            Dict with keys: 'eliminations', 'departed_hotkeys'
+            Dict with key: 'eliminations'
         """
         eliminations = self._server.get_eliminations_dict_rpc()
-        departed_hotkeys = self._server.get_departed_hotkeys_rpc()
-        return {
-            "eliminations": eliminations,
-            "departed_hotkeys": departed_hotkeys
-        }
+        return {"eliminations": eliminations}
 
     def get_elimination_local_cache(self, hotkey: str) -> Optional[dict]:
         """
@@ -382,11 +373,14 @@ class EliminationClient(RPCClientBase):
             hotkey: The hotkey to look up
 
         Returns:
-            Departed hotkey info dict if found, None otherwise
+            Elimination dict if found and reason is DEREGISTERED, None otherwise
         """
         with self._local_cache_lock:
-            departed = self._local_cache.get("departed_hotkeys", {})
-            return departed.get(hotkey)
+            eliminations = self._local_cache.get("eliminations", {})
+            info = eliminations.get(hotkey)
+            if info and info.get("reason") == "DEREGISTERED":
+                return info
+            return None
 
     def is_hotkey_eliminated_local_cache(self, hotkey: str) -> bool:
         """
@@ -416,8 +410,9 @@ class EliminationClient(RPCClientBase):
             hotkey: The hotkey to check
 
         Returns:
-            True if hotkey is in departed_hotkeys, False otherwise
+            True if hotkey has a DEREGISTERED elimination, False otherwise
         """
         with self._local_cache_lock:
-            departed = self._local_cache.get("departed_hotkeys", {})
-            return hotkey in departed
+            eliminations = self._local_cache.get("eliminations", {})
+            info = eliminations.get(hotkey)
+            return bool(info and info.get("reason") == "DEREGISTERED")

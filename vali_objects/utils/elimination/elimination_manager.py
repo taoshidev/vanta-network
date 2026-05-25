@@ -67,6 +67,7 @@ class EliminationReason(Enum):
     FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN = "FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN"
     FAILED_FUNDED_PERIOD_EOD_DRAWDOWN = "FAILED_FUNDED_PERIOD_EOD_DRAWDOWN"
     LIQUIDATED = "LIQUIDATED"
+    DEREGISTERED = "DEREGISTERED"
 
     @property
     def is_intraday_drawdown(self):
@@ -150,8 +151,7 @@ class EliminationManager(CacheController):
     ## Thread Safety and Lock Ordering
 
     This manager uses `self.eliminations_lock` (threading.Lock) to protect access
-    to shared state: `self.eliminations`, `self.departed_hotkeys`, and
-    `self.previous_metagraph_hotkeys`.
+    to shared state: `self.eliminations` and `self.previous_metagraph_hotkeys`.
 
     ### Lock Type
     - `eliminations_lock` is a non-reentrant lock (threading.Lock)
@@ -327,35 +327,23 @@ class EliminationManager(CacheController):
             connect_immediately=False
         )
 
-        self.eliminations: dict[str, EliminationRow] = {}
-        self.departed_hotkeys: dict[str, dict] = {}
+        self.ELIMINATIONS_FILE = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
         self.eliminations_lock = threading.Lock()
-
-        # Populate from disk, filtering out development hotkey
-        eliminations_from_disk = self.get_eliminations_from_disk()
-        filtered_count = 0
-        for elim in eliminations_from_disk:
-            hotkey = elim['hotkey']
-            # Skip development hotkey - it should never be eliminated
-            if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
-                filtered_count += 1
-                bt.logging.debug(f"[ELIM_INIT] Filtered out DEVELOPMENT_HOTKEY from eliminations during disk load")
-                continue
-            self.eliminations[hotkey] = EliminationRow.from_dict(elim)
-
-        if filtered_count > 0:
-            bt.logging.info(f"[ELIM_INIT] Filtered out {filtered_count} DEVELOPMENT_HOTKEY elimination(s) from disk load")
+        self.eliminations: dict[str, EliminationRow] = self._load_eliminations_from_disk()
 
         if len(self.eliminations) == 0:
-            ValiBkpUtils.write_file(
-                ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
-                {CacheController.ELIMINATIONS: []}
-            )
+            ValiBkpUtils.write_file(self.ELIMINATIONS_FILE, {CacheController.ELIMINATIONS: []})
 
-        # Initialize departed hotkeys tracking
-        self.departed_hotkeys.update(self._get_departed_hotkeys_from_disk())
-        if len(self.departed_hotkeys) == 0:
-            self._save_departed_hotkeys()
+        # Migrate legacy departed_hotkeys.json into eliminations as DEREGISTERED rows
+        departed_from_disk = self._get_departed_hotkeys_from_disk()
+        for hotkey, info in departed_from_disk.items():
+            if hotkey not in self.eliminations:
+                detected_ms = info.get("detected_ms") if isinstance(info, dict) else None
+                self.eliminations[hotkey] = EliminationRow(
+                    hotkey=hotkey,
+                    reason=EliminationReason.DEREGISTERED.value,
+                    elimination_initiated_time_ms=detected_ms or TimeUtil.now_in_millis(),
+                )
 
         # Track previous metagraph hotkeys to detect changes
         try:
@@ -489,9 +477,6 @@ class EliminationManager(CacheController):
                 f"{dict(self._perf_ledger_client.get_perf_ledger_hks_to_invalidate())}"
             )
 
-            bt.logging.debug("[ELIM_PROCESS] Starting _update_departed_hotkeys")
-            self._update_departed_hotkeys()
-
             bt.logging.debug("[ELIM_PROCESS] Starting handle_mdd_eliminations")
             self.handle_mdd_eliminations(iteration_epoch)
 
@@ -500,6 +485,10 @@ class EliminationManager(CacheController):
 
             bt.logging.debug("[ELIM_PROCESS] Starting handle_idle_miners")
             self.handle_idle_miners(iteration_epoch)
+
+            # Run after other checks so MDD/zombie/etc. take priority over DEREGISTERED
+            bt.logging.debug("[ELIM_PROCESS] Starting handle_departed_hotkeys")
+            self.handle_departed_hotkeys()
 
             bt.logging.debug("[ELIM_PROCESS] Starting _cleanup_eliminated_miners")
             self._cleanup_eliminated_miners(iteration_epoch)
@@ -518,47 +507,6 @@ class EliminationManager(CacheController):
             return False
         return hotkey not in all_hotkeys_set
 
-    def _save_eliminations_locked(self):
-        """
-        PRIVATE: Save eliminations to disk (caller MUST hold eliminations_lock).
-
-        This is a private helper method. Callers must acquire self.eliminations_lock
-        before calling this method to ensure atomic read-then-write to disk.
-        """
-        if not self.is_backtesting:
-            self.write_eliminations_to_disk([v.to_dict() for v in self.eliminations.values()])
-
-    def save_eliminations(self):
-        """
-        PUBLIC: Save eliminations to disk (thread-safe).
-
-        Acquires eliminations_lock to ensure atomic read-then-write.
-        """
-        with self.eliminations_lock:
-            self._save_eliminations_locked()
-
-    def write_eliminations_to_disk(self, eliminations):
-        """Write eliminations to disk"""
-        if not isinstance(eliminations, list):
-            eliminations = list(eliminations)
-        vali_eliminations = {CacheController.ELIMINATIONS: eliminations}
-        output_location = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
-        ValiBkpUtils.write_file(output_location, vali_eliminations)
-        bt.logging.info(f"[ELIM_DEBUG] Successfully wrote {len(eliminations)} eliminations to disk")
-
-    def get_eliminations_from_disk(self) -> list:
-        """Load eliminations from disk"""
-        location = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
-        try:
-            cached_eliminations = ValiUtils.get_vali_json_file(location, CacheController.ELIMINATIONS)
-            if cached_eliminations is None:
-                cached_eliminations = []
-            bt.logging.trace(f"Loaded [{len(cached_eliminations)}] eliminations from disk. Dir: {location}")
-            return cached_eliminations
-        except Exception as e:
-            bt.logging.warning(f"Could not load eliminations from disk: {e}. Starting with empty list.")
-            return []
-
     def append_elimination_row(
         self,
         hotkey: str,
@@ -575,6 +523,9 @@ class EliminationManager(CacheController):
         Acquires eliminations_lock to ensure atomic check-update-save operation.
         """
         bt.logging.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
+        if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+            return
+
         if hotkey in self.eliminations:
             bt.logging.warning(f"[ELIM_DEBUG] Attempted to eliminate {hotkey} already in eliminations "
                                f"(original elimination: {self.eliminations[hotkey]})")
@@ -712,17 +663,18 @@ class EliminationManager(CacheController):
             self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.INACTIVE.value)
 
 
-    def _update_departed_hotkeys(self):
+    def handle_departed_hotkeys(self):
         """
         Track departed hotkeys (thread-safe).
 
         Acquires eliminations_lock to ensure atomic read-modify-write of departed_hotkeys
-        and previous_metagraph_hotkeys state.
+        and previous_metagraph_hotkeys state. After the lock is released, issues
+        DEREGISTERED eliminations for any newly departed hotkeys.
         """
         if self.is_backtesting:
             return
 
-        # Acquire lock for entire operation (reads previous state, modifies departed_hotkeys, updates previous state)
+        new_departures = set()
         with self.eliminations_lock:
             current_hotkeys = set(self._metagraph_client.get_hotkeys())
             lost_hotkeys = self.previous_metagraph_hotkeys - current_hotkeys
@@ -733,8 +685,8 @@ class EliminationManager(CacheController):
             if gained_hotkeys:
                 bt.logging.debug(f"Metagraph gained hotkeys: {gained_hotkeys}")
 
-            departed_hotkeys_set = set(self.departed_hotkeys.keys())
-            re_registered_hotkeys = gained_hotkeys & departed_hotkeys_set
+            deregistered_set = {hk for hk, row in self.eliminations.items() if row.reason == EliminationReason.DEREGISTERED.value}
+            re_registered_hotkeys = gained_hotkeys & deregistered_set
             if re_registered_hotkeys:
                 bt.logging.warning(
                     f"Detected {len(re_registered_hotkeys)} re-registered miners: {re_registered_hotkeys}. "
@@ -743,15 +695,11 @@ class EliminationManager(CacheController):
 
             is_anomalous, _ = is_anomalous_hotkey_loss(lost_hotkeys, len(self.previous_metagraph_hotkeys))
             if lost_hotkeys and not is_anomalous:
-                new_departures = lost_hotkeys - departed_hotkeys_set
+                new_departures = lost_hotkeys - set(self.eliminations.keys())
                 if new_departures:
-                    current_time_ms = TimeUtil.now_in_millis()
-                    for hotkey in new_departures:
-                        self.departed_hotkeys[hotkey] = {"detected_ms": current_time_ms}
-                    self._save_departed_hotkeys()
                     bt.logging.info(
                         f"Tracked {len(new_departures)} newly departed hotkeys: {new_departures}. "
-                        f"Total departed hotkeys: {len(self.departed_hotkeys)}"
+                        f"Total deregistered: {len(deregistered_set) + len(new_departures)}"
                     )
             elif lost_hotkeys:
                 bt.logging.warning(
@@ -760,8 +708,11 @@ class EliminationManager(CacheController):
                     f"Not tracking as departed to avoid false positives."
                 )
 
-            # Update previous state while still holding lock
             self.previous_metagraph_hotkeys = current_hotkeys
+
+        # Issue DEREGISTERED eliminations after releasing the lock (append_elimination_row acquires it)
+        for hotkey in new_departures:
+            self.append_elimination_row(hotkey, EliminationReason.DEREGISTERED.value)
 
     def _cleanup_eliminated_miners(self, iteration_epoch=None):
         """post-elimination cleanup: close open positions and delete unfilled limit orders"""
@@ -815,48 +766,34 @@ class EliminationManager(CacheController):
             pass
 
     def _get_departed_hotkeys_from_disk(self) -> dict:
-        """Load departed hotkeys from disk"""
+        """Load departed hotkeys from disk (legacy) and default file for migration."""
+        import os
         location = ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=self.running_unit_tests)
         try:
             departed_data = ValiUtils.get_vali_json_file(location, DEPARTED_HOTKEYS_KEY)
             if departed_data is None:
                 departed_data = {}
             if isinstance(departed_data, list):
-                bt.logging.info(f"Converting legacy departed hotkeys list to dict format")
                 departed_data = {hotkey: {"detected_ms": 0} for hotkey in departed_data}
-            bt.logging.trace(f"Loaded {len(departed_data)} departed hotkeys from disk. Dir: {location}")
+            if departed_data:
+                bt.logging.info(f"Migrating {len(departed_data)} departed hotkeys from disk into eliminations")
             return departed_data
-        except Exception as e:
-            bt.logging.warning(f"Could not load departed hotkeys from disk: {e}. Trying default file...")
-            return self._get_departed_hotkeys_from_default_file()
+        except Exception:
+            pass
 
-    def _get_departed_hotkeys_from_default_file(self) -> dict:
-        """Load departed hotkeys from default file"""
-        import os
         base_dir = ValiBkpUtils.get_vali_dir(running_unit_tests=self.running_unit_tests).replace('/validation/', '')
         default_location = os.path.join(base_dir, 'data', 'default_departed_hotkeys.json')
-
         try:
             departed_data = ValiUtils.get_vali_json_file(default_location, DEPARTED_HOTKEYS_KEY)
             if departed_data is None:
                 departed_data = {}
             if isinstance(departed_data, list):
-                bt.logging.info(f"Converting legacy default departed hotkeys list to dict format")
                 departed_data = {hotkey: {"detected_ms": 0} for hotkey in departed_data}
-            bt.logging.info(f"Loaded {len(departed_data)} departed hotkeys from default file: {default_location}")
+            if departed_data:
+                bt.logging.info(f"Migrating {len(departed_data)} departed hotkeys from default file into eliminations")
             return departed_data
-        except Exception as e:
-            bt.logging.warning(f"Could not load departed hotkeys from default file: {e}. Starting with empty dict.")
+        except Exception:
             return {}
-
-    def _save_departed_hotkeys(self):
-        """Save departed hotkeys to disk"""
-        if not self.is_backtesting:
-            departed_dict = dict(self.departed_hotkeys)
-            departed_data = {DEPARTED_HOTKEYS_KEY: departed_dict}
-            bt.logging.trace(f"Writing {len(departed_dict)} departed hotkeys to disk")
-            output_location = ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=self.running_unit_tests)
-            ValiBkpUtils.write_file(output_location, departed_data)
 
     # ==================== Query Methods (used by Server) ====================
 
@@ -944,89 +881,49 @@ class EliminationManager(CacheController):
         """Clear all eliminations for testing"""
         if not self.running_unit_tests:
             raise Exception('clear_eliminations can only be called during unit tests')
-        ValiBkpUtils.write_file(
-            ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
-            {CacheController.ELIMINATIONS: []}
-        )
+        ValiBkpUtils.write_file(self.ELIMINATIONS_FILE, {CacheController.ELIMINATIONS: []})
         self.eliminations.clear()
 
-    def _load_eliminations_from_disk(self) -> None:
-        """
-        Load eliminations from disk into memory (for testing recovery scenarios).
-        This method reloads the eliminations dict from disk, useful for simulating
-        validator restarts in tests.
-        """
-        if not self.running_unit_tests:
-            raise Exception('_load_eliminations_from_disk can only be called during unit tests')
-
-        with self.eliminations_lock:
-            # Load from disk
-            eliminations_from_disk = self.get_eliminations_from_disk()
-
-            # Clear and repopulate, filtering out development hotkey
-            self.eliminations.clear()
-            filtered_count = 0
-
-            for elim in eliminations_from_disk:
-                hotkey = elim['hotkey']
-                # Skip development hotkey - it should never be eliminated
-                if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
-                    filtered_count += 1
-                    bt.logging.debug(f"[ELIM_RELOAD] Filtered out DEVELOPMENT_HOTKEY from eliminations during disk reload")
-                    continue
-                self.eliminations[hotkey] = EliminationRow.from_dict(elim)
-
-            if filtered_count > 0:
-                bt.logging.info(f"[ELIM_RELOAD] Filtered out {filtered_count} DEVELOPMENT_HOTKEY elimination(s) from disk reload")
-
-            bt.logging.info(f"[ELIM_RELOAD] Loaded {len(self.eliminations)} elimination(s) from disk")
-
     def clear_departed_hotkeys(self) -> None:
-        """Clear all departed hotkeys for testing"""
+        """Clear all DEREGISTERED eliminations for testing"""
         if not self.running_unit_tests:
             raise Exception('clear_departed_hotkeys can only be called during unit tests')
-        ValiBkpUtils.write_file(
-            ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=self.running_unit_tests),
-            {DEPARTED_HOTKEYS_KEY: {}}
-        )
-        self.departed_hotkeys.clear()
-        # Reset previous_metagraph_hotkeys to current state to avoid false departures
+        with self.eliminations_lock:
+            deregistered = [hk for hk, row in self.eliminations.items() if row.reason == EliminationReason.DEREGISTERED.value]
+            for hk in deregistered:
+                del self.eliminations[hk]
+            self._save_eliminations_locked()
         try:
             self.previous_metagraph_hotkeys = set(self._metagraph_client.get_hotkeys())
         except (AttributeError, RuntimeError):
-            # MetagraphClient not connected yet (test mode without server setup)
             self.previous_metagraph_hotkeys = set()
 
     def is_hotkey_re_registered(self, hotkey: str) -> bool:
-        """
-        Check if hotkey is re-registered (was departed, now back) - thread-safe.
-
-        Acquires eliminations_lock to prevent TOCTOU (time-of-check, time-of-use) race
-        where departed_hotkeys could change between check and metagraph lookup.
-        """
+        """Check if hotkey was deregistered and is now back in the metagraph (thread-safe)."""
         if not hotkey:
             return False
-
-        # Atomic check-then-use: Lock prevents departed_hotkeys from changing
-        # between the check and the metagraph lookup
         with self.eliminations_lock:
-            # Fast path: Check departed_hotkeys first
-            is_departed = hotkey in self.departed_hotkeys
-            if not is_departed:
+            row = self.eliminations.get(hotkey)
+            if not row or row.reason != EliminationReason.DEREGISTERED.value:
                 return False
-
-            # Slow path: Check if back in metagraph
-            # Lock is held, so departed_hotkeys can't change during this call
-            is_in_metagraph = self._metagraph_client.has_hotkey(hotkey)
-            return is_in_metagraph
+            return self._metagraph_client.has_hotkey(hotkey)
 
     def get_departed_hotkeys(self) -> dict[str, dict]:
-        """Get all departed hotkeys"""
-        return self.departed_hotkeys
+        """Get all DEREGISTERED eliminations as {hotkey: {detected_ms: ...}}"""
+        with self.eliminations_lock:
+            return {
+                hk: {"detected_ms": row.elimination_initiated_time_ms}
+                for hk, row in self.eliminations.items()
+                if row.reason == EliminationReason.DEREGISTERED.value
+            }
 
     def get_departed_hotkey_info(self, hotkey: str) -> dict | None:
-        """Get departed info for a single hotkey (O(1) lookup)"""
-        return self.departed_hotkeys.get(hotkey)
+        """Get departure info for a single hotkey."""
+        with self.eliminations_lock:
+            row = self.eliminations.get(hotkey)
+            if row and row.reason == EliminationReason.DEREGISTERED.value:
+                return {"detected_ms": row.elimination_initiated_time_ms}
+            return None
 
     def get_eliminations_dict(self) -> dict[str, dict]:
         """
@@ -1036,3 +933,41 @@ class EliminationManager(CacheController):
         """
         with self.eliminations_lock:
             return {k: v.to_dict() for k, v in self.eliminations.items()}
+
+    def _load_eliminations_from_disk(self) -> dict[str, EliminationRow]:
+        """Load eliminations from disk, returning {hotkey: EliminationRow}."""
+        if self.is_backtesting:
+            return {}
+        try:
+            data = ValiUtils.get_vali_json_file(self.ELIMINATIONS_FILE, CacheController.ELIMINATIONS)
+            if not data:
+                return {}
+            result = {e['hotkey']: EliminationRow.from_dict(e) for e in data}
+            bt.logging.trace(f"Loaded {len(result)} eliminations from disk")
+            return result
+        except Exception as e:
+            bt.logging.warning(f"Could not load eliminations from disk: {e}. Starting with empty dict.")
+            return {}
+
+    def _save_eliminations_to_disk(self, eliminations: list) -> None:
+        """Write eliminations list to disk."""
+        if self.is_backtesting:
+            return
+        if not isinstance(eliminations, list):
+            eliminations = list(eliminations)
+        ValiBkpUtils.write_file(self.ELIMINATIONS_FILE, {CacheController.ELIMINATIONS: eliminations})
+        bt.logging.info(f"[ELIM_DEBUG] Successfully wrote {len(eliminations)} eliminations to disk")
+
+    def _save_eliminations_locked(self):
+        """Save eliminations to disk (caller MUST hold eliminations_lock)."""
+        self._save_eliminations_to_disk([v.to_dict() for v in self.eliminations.values()])
+
+    def save_eliminations(self):
+        """Save eliminations to disk (thread-safe)."""
+        with self.eliminations_lock:
+            self._save_eliminations_locked()
+
+    def write_eliminations_to_disk(self, eliminations):
+        """Write arbitrary eliminations list to disk (public API for restore scripts)."""
+        self._save_eliminations_to_disk(eliminations)
+

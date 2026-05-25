@@ -305,25 +305,25 @@ class ChallengePeriodManager(CacheController):
     @staticmethod
     def _check_intraday_drawdown(state: MinerBucketState) -> EliminationReason | None:
         if state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct:
-            bt.logging.warning(f"[CHALLENGE] intraday drawdown elimination: {state}")
+            bt.logging.warning(f"[CHALLENGE] intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
             if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
         elif state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct * 0.75:
-            bt.logging.warning(f"[CHALLENGE] near intraday drawdown elimination: {state}")
+            bt.logging.warning(f"[CHALLENGE] near intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
         return None
 
     @staticmethod
     def _check_eod_drawdown(state: MinerBucketState) -> EliminationReason | None:
         if state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct:
-            bt.logging.warning(f"[CHALLENGE] EOD drawdown elimination: {state}")
+            bt.logging.warning(f"[CHALLENGE] EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
             if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
         elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
-            bt.logging.warning(f"[CHALLENGE] near EOD drawdown elimination: {state}")
+            bt.logging.warning(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
         return None
 
     @staticmethod
