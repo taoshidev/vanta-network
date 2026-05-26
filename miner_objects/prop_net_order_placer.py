@@ -15,6 +15,7 @@ from typing import Dict, List, Any, Optional
 from collections import defaultdict
 
 from miner_config import MinerConfig
+from shared_objects.slack_notifier import SlackNotifier, SignalMetrics
 from template.protocol import SendSignal
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -25,68 +26,6 @@ with open(ValiBkpUtils.get_meta_json_path(), 'r') as f:
     REPO_VERSION = json.loads(f.read()).get("subnet_version", "unknown")
 
 CONNECTION_ERROR_MSG = "Failed to connect to Vanta Network, please try again soon"
-
-# DEPRECATED: No longer used by simplified retry logic
-class SignalMetrics:
-    def __init__(self, signal_uuid: str, trade_pair_id: str):
-        self.signal_uuid = signal_uuid
-        self.trade_pair_id = trade_pair_id
-        self.network_start_time = None
-        self.network_end_time = None
-        self.validators_attempted = 0
-        self.validators_succeeded = 0
-        self.high_trust_total = 0
-        self.high_trust_succeeded = 0
-        self.retry_counts: Dict[str, int] = defaultdict(int)
-        self.validator_errors: Dict[str, List[str]] = defaultdict(list)
-        self.validator_response_times: Dict[str, float] = {}  # Only successful ones
-        self.all_high_trust_succeeded = False
-        self.exception = None
-
-    def mark_network_start(self):
-        self.network_start_time = time.time()
-
-    def mark_network_end(self):
-        self.network_end_time = time.time()
-
-    def complete(self):
-        if self.network_end_time is None:
-            self.network_end_time = time.time()
-
-    @property
-    def processing_time(self) -> float:
-        if self.network_start_time is None or self.network_end_time is None:
-            return 0.0
-        return self.network_end_time - self.network_start_time
-
-    @property
-    def total_retries(self) -> int:
-        return sum(self.retry_counts.values())
-
-    @property
-    def average_response_time(self) -> float:
-        if not self.validator_response_times:
-            return 0
-        return sum(self.validator_response_times.values()) / len(self.validator_response_times)
-
-    def to_summary(self, miner_hotkey: str) -> Dict[str, Any]:
-        return {
-            "signal_uuid": self.signal_uuid,
-            "trade_pair_id": self.trade_pair_id,
-            "miner_hotkey": miner_hotkey,
-            "validators_attempted": self.validators_attempted,
-            "validators_succeeded": self.validators_succeeded,
-            "high_trust_total": self.high_trust_total,
-            "high_trust_succeeded": self.high_trust_succeeded,
-            "all_high_trust_succeeded": self.all_high_trust_succeeded,
-            "total_retries": self.total_retries,
-            "processing_time": self.processing_time,
-            "average_response_time": self.average_response_time,
-            "validator_response_times": self.validator_response_times,
-            "validator_errors": dict(self.validator_errors),
-            "exception": str(self.exception) if self.exception else None,
-            "timestamp": datetime.now().isoformat()
-        }
 
 
 class PropNetOrderPlacer:
@@ -106,7 +45,7 @@ class PropNetOrderPlacer:
         self.trade_pair_id_to_last_order_send = {tp.trade_pair_id: 0 for tp in TradePair}
         self.used_miner_uuids = set()
         self.position_inspector = position_inspector
-        self.slack_notifier = slack_notifier
+        self.slack_notifier: SlackNotifier = slack_notifier
         # DEPRECATED: Thread pool for file-based signal processing. Use REST server instead.
         self.executor = ThreadPoolExecutor(
             max_workers=self.MAX_WORKERS,
@@ -155,7 +94,6 @@ class PropNetOrderPlacer:
     async def _safe_process_signal(self, signal_file_path, signal_data):
         """Wrapper for process_a_signal with error handling and Slack notifications"""
         signal_uuid = signal_file_path.split('/')[-1]
-        # Support both object {"trade_pair_id": "BTCUSD"} and string "BTCUSD"
         trade_pair = signal_data.get('trade_pair', 'Unknown')
         if isinstance(trade_pair, dict):
             trade_pair_id = trade_pair.get('trade_pair_id', 'Unknown')
@@ -163,25 +101,22 @@ class PropNetOrderPlacer:
             trade_pair_id = trade_pair
         else:
             trade_pair_id = 'Unknown'
+        execution_type = signal_data.get('execution_type', 'MARKET')
 
         try:
+            start_time = time.time()
             result = await self.process_a_signal(signal_file_path, signal_data)
+            response_time_ms = int((time.time() - start_time) * 1000)
 
-            # Send summary to Slack
             if self.slack_notifier and result:
-                summary = {
-                    "signal_uuid": signal_uuid,
-                    "trade_pair_id": trade_pair_id,
-                    "miner_hotkey": self.wallet.hotkey.ss58_address,
-                    "validators_attempted": 1,
-                    "validators_succeeded": 1 if result.get("success") else 0,
-                    "all_high_trust_succeeded": result.get("success", False),
-                    "average_response_time": 0,
-                    "validator_errors": {},
-                    "exception": None,
-                    "timestamp": datetime.now().isoformat()
-                }
-                self.slack_notifier.send_signal_summary(summary)
+                self.slack_notifier.send_signal_summary(SignalMetrics(
+                    uuid=signal_uuid,
+                    trade_pair_id=trade_pair_id,
+                    execution_type=execution_type,
+                    response_time_ms=response_time_ms,
+                    success=result.get("success", False),
+                    exception=None,
+                ))
 
             return result
 
@@ -190,23 +125,16 @@ class PropNetOrderPlacer:
             import traceback
             bt.logging.error(traceback.format_exc())
 
-            # Send error notification to Slack
             if self.slack_notifier:
-                summary = {
-                    "signal_uuid": signal_uuid,
-                    "trade_pair_id": trade_pair_id,
-                    "miner_hotkey": self.wallet.hotkey.ss58_address,
-                    "validators_attempted": 1,
-                    "validators_succeeded": 0,
-                    "all_high_trust_succeeded": False,
-                    "average_response_time": 0,
-                    "validator_errors": {},
-                    "exception": str(e),
-                    "timestamp": datetime.now().isoformat()
-                }
-                self.slack_notifier.send_signal_summary(summary)
+                self.slack_notifier.send_signal_summary(SignalMetrics(
+                    uuid=signal_uuid,
+                    trade_pair_id=trade_pair_id,
+                    execution_type=execution_type,
+                    response_time_ms=0,
+                    success=False,
+                    exception=str(e),
+                ))
 
-                # Send additional detailed error message
                 error_details = (f"Signal Processing Exception:\n"
                                  f"Signal UUID: {signal_uuid}\n"
                                  f"Trade Pair: {trade_pair_id}\n"
@@ -435,7 +363,7 @@ class PropNetOrderPlacer:
 
             result = asyncio.run(self._send_order(send_signal_request, mothership_axon, other_axons))
 
-            processing_time = time.time() - start_time
+            processing_time_s = time.time() - start_time
 
             # Archive result
             fake_signal_file_path = f"/rest-api/{order_uuid}"
@@ -446,17 +374,28 @@ class PropNetOrderPlacer:
                 self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
                 message = f"Order failed on Vanta Network: {result['error_message']}"
 
+            trade_pair_id = signal.trade_pair.trade_pair_id if signal.trade_pair else "UNKNOWN"
+            self.slack_notifier.update_daily_metrics(SignalMetrics(
+                uuid=order_uuid,
+                trade_pair_id=trade_pair_id,
+                execution_type=signal.execution_type.value,
+                response_time_ms=int(processing_time_s * 1000),
+                success=True,
+                exception=None
+            ))
+
             return {
                 "success": result["success"],
                 "order_uuid": order_uuid,
                 "order_json": result["order_json"] or None,
                 "error_message": result["error_message"],
-                "processing_time": processing_time,
+                "processing_time": processing_time_s,
                 "message": message
             }
 
         except Exception as e:
             bt.logging.error(f"Error processing REST order {order_uuid}: {e}")
+            processing_time_s = time.time() - start_time
 
             # Archive to failed_signals/ for audit trail
             fake_signal_file_path = f"/rest-api/{order_uuid}"
@@ -467,12 +406,22 @@ class PropNetOrderPlacer:
                 except Exception:
                     pass
 
+            trade_pair_id = signal.trade_pair.trade_pair_id if signal.trade_pair else "UNKNOWN"
+            self.slack_notifier.update_daily_metrics(SignalMetrics(
+                uuid=order_uuid,
+                trade_pair_id=trade_pair_id,
+                execution_type=signal.execution_type.value,
+                response_time_ms=int(processing_time_s * 1000),
+                success=False,
+                exception=str(e)
+            ))
+
             return {
                 "success": False,
                 "order_uuid": order_uuid,
                 "order_json": None,
                 "error_message": str(e),
-                "processing_time": time.time() - start_time,
+                "processing_time": processing_time_s,
                 "message": f"Internal error: {str(e)}"
             }
 
