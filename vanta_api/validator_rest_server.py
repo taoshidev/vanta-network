@@ -2074,6 +2074,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
         tier = get_leverage_tier(_bucket, account_size)
+        # TIER_POSITIONAL_LEVERAGE is a per-category stand-in for the per-pair limit the order
+        # path actually enforces (pair.subaccount_tier_base_leverage × tier). It only stays
+        # accurate while every pair in a category shares one base. TODO: once per-pair bases
+        # diverge within a category, switch this to a per-pair lookup (or report a dict /
+        # canonical pair), otherwise max_position_per_pair_usd will misreport for some pairs.
         max_position_per_pair_usd = account_size * ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][category]
 
         response_payload = {

@@ -606,11 +606,15 @@ class ValiConfig:
     # The COMMODITIES column applies to COMMODITIES subaccounts holding HL commodity pairs
     # (GOLDUSDC, SILVERUSDC, etc.). HL commodity pairs use base 0.5 × tier on the order
     # path, so this column reports the same values to keep endpoint and order entry in sync.
+    #
+    # The INDICES column reports HL index perp values (SP500USDC, XYZ100USDC, EWYUSDC use
+    # base 1.5 × tier). All SPOT indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) are blocked,
+    # so the endpoint never needs to report SPOT-era values here.
     TIER_POSITIONAL_LEVERAGE = {
-        1: {TradePairCategory.HL_ALL: 0.5, TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 2.5,  TradePairCategory.COMMODITIES: 0.5},
-        2: {TradePairCategory.HL_ALL: 1.0, TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  TradePairCategory.COMMODITIES: 1.0},
-        3: {TradePairCategory.HL_ALL: 1.5, TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 7.5,  TradePairCategory.COMMODITIES: 1.5},
-        4: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 2.0},
+        1: {TradePairCategory.HL_ALL: 0.5, TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 1.5,  TradePairCategory.COMMODITIES: 0.5},
+        2: {TradePairCategory.HL_ALL: 1.0, TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0,  TradePairCategory.COMMODITIES: 1.0},
+        3: {TradePairCategory.HL_ALL: 1.5, TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 4.5,  TradePairCategory.COMMODITIES: 1.5},
+        4: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 6.0,  TradePairCategory.COMMODITIES: 2.0},
     }
 
     # Per-tier portfolio leverage caps. Split into two dicts because the underlying lookup is
@@ -675,19 +679,20 @@ class ValiConfig:
     # Single-class subaccounts only — multi-class (HL_ALL) overall cap is in TIER_MULTI_CLASS_OVERALL_CAP,
     # and per-class sub-caps for multi-class subaccounts reuse the same per-class entries below.
     TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
-        1: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 5.0,  TradePairCategory.COMMODITIES: 2.0},
-        2: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 2.0},
-        3: {TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 15.0, TradePairCategory.COMMODITIES: 3.0},
-        4: {TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 20.0, TradePairCategory.COMMODITIES: 4.0},
+        1: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0,  TradePairCategory.COMMODITIES: 2.0},
+        2: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 6.0,  TradePairCategory.COMMODITIES: 2.0},
+        3: {TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 8.0,  TradePairCategory.COMMODITIES: 3.0},
+        4: {TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 4.0},
     }
 
     # Overall portfolio cap multiplier for multi-class subaccounts (see MULTI_CLASS_CATEGORIES),
     # applied on top of per-class sub-caps from TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS. Designed
     # to be strictly tighter than the sum of per-class caps so a multi-class miner cannot stack
-    # every class to its individual limit simultaneously. Placeholder values mirror the current
-    # HL_ALL row of TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS to preserve today's overall behavior;
-    # research will set risk-driven values in a follow-up.
-    TIER_MULTI_CLASS_OVERALL_CAP = {1: 2.0, 2: 2.0, 3: 3.0, 4: 4.0}
+    # every class to its individual limit simultaneously, but loose enough that the overall cap
+    # is never below the max per-class cap (otherwise a class would be unreachable for an
+    # all-market miner). Current values give an all-market miner ~20% diversification headroom
+    # over the highest single-class cap (Forex) at each tier.
+    TIER_MULTI_CLASS_OVERALL_CAP = {1: 6.0, 2: 12.0, 3: 18.0, 4: 24.0}
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
@@ -1070,9 +1075,9 @@ class TradePair(Enum):
     PLATINUMUSDC = ["PLATINUMUSDC", "PLATINUM/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:PLATINUM", InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
 
     # Index perp futures (synthetic, track equity index prices — not ETFs)
-    SP500USDC  = ["SP500USDC",  "SP500/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:SP500",  InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
-    XYZ100USDC = ["XYZ100USDC", "XYZ100/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:XYZ100", InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
-    EWYUSDC    = ["EWYUSDC",    "EWY/USDC",    0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:EWY",    InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
+    SP500USDC  = ["SP500USDC",  "SP500/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:SP500",  InstrumentType.PERP, SubaccountTierBaseLeverage(1.5)]
+    XYZ100USDC = ["XYZ100USDC", "XYZ100/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:XYZ100", InstrumentType.PERP, SubaccountTierBaseLeverage(1.5)]
+    EWYUSDC    = ["EWYUSDC",    "EWY/USDC",    0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.INDICES, None, TradePairSource.HYPERLIQUID, "xyz:EWY",    InstrumentType.PERP, SubaccountTierBaseLeverage(1.5)]
 
     # Equity perp futures (synthetic, track single-stock prices — not actual shares)
     NVDAUSDC  = ["NVDAUSDC",  "NVDA/USDC",  0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.EQUITIES, None, TradePairSource.HYPERLIQUID, "xyz:NVDA",  InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
