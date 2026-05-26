@@ -122,7 +122,7 @@ class MinerBucketState:
         so versioned thresholds (V0/V1) are selected based on when the miner registered,
         not when they were promoted. For all other buckets, returns current bucket start."""
         if self.current_bucket == MinerBucket.SUBACCOUNT_FUNDED:
-            challenge_entry = next(e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE)
+            challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
             return challenge_entry.start_time_ms if challenge_entry else None
         return self.current_bucket_start_ms
 

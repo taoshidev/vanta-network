@@ -114,7 +114,8 @@ class BucketEntry:
         """Convert to dict for serialization."""
         return {
             'bucket': self.bucket.value,
-            'start_time_ms': self.start_time_ms
+            'start_time_ms': self.start_time_ms,
+            'bucket_start_time': self.start_time_ms  # for backwards compatibility TODO remove
         }
 
     @classmethod
