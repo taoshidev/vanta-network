@@ -48,7 +48,7 @@ class ChallengePeriodServer(RPCServerBase):
 
         # Create own CommonDataClient (forward compatibility - no parameter passing)
         self._common_data_client = CommonDataClient(
-            connect_immediately=(connection_mode == RPCConnectionMode.RPC),
+            connect_immediately=False,  # Lazy connect on first use
             connection_mode=connection_mode
         )
 
