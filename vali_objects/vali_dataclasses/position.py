@@ -893,9 +893,10 @@ class Position(BaseModel):
             raise ValueError(
                 f"{self.trade_pair.trade_pair_id}: order leverage {abs(order.leverage):.5f} below minimum {min_order_lev}")
 
+        position_sign = 1 if self.position_type == OrderType.LONG else -1
         proposed_leverage = self.net_leverage + (order.leverage or 0)
         proposed_quantity = self.net_quantity + (order.quantity or 0)
-        proposed_value = self.net_value + self.unrealized_pnl + (order.value or 0)
+        proposed_value = self.net_value + position_sign * self.unrealized_pnl + (order.value or 0)
 
         bt.logging.info(f"[POSITION VALIDATION] unrealized pnl: {self.unrealized_pnl}")
         bt.logging.info(f"[POSITION VALIDATION] proposed quantity: {proposed_quantity}, proposed_value: {proposed_value}")
@@ -922,8 +923,7 @@ class Position(BaseModel):
 
             max_order_value = max_position_value - abs(self.net_value)
             if abs(order.value) > max_order_value:
-                sign = 1 if self.position_type == OrderType.LONG else -1
-                order.value = sign * max_order_value
+                order.value = position_sign * max_order_value
                 order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
                 proposed_quantity = self.net_quantity + order.quantity
                 clamped = True
