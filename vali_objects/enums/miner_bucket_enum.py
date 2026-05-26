@@ -3,9 +3,6 @@ from enum import Enum
 
 from vali_objects.vali_config import ValiConfig
 
-# Registration cutoffs for versioned SUBACCOUNT_FUNDED thresholds (ms)
-_FUNDED_V0_CUTOFF_MS = 1773532799000  # Mar 14, 2026 23:59:59 UTC
-_FUNDED_V1_CUTOFF_MS = 1778828399000  # May 15, 2026 06:59:59 UTC
 
 class MinerBucket(Enum):
     MAINCOMP = "MAINCOMP"
@@ -30,9 +27,9 @@ class MinerBucket(Enum):
             return ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
 
         if self == MinerBucket.SUBACCOUNT_FUNDED:
-            if time_ms is not None and time_ms < _FUNDED_V0_CUTOFF_MS:
+            if time_ms is not None and time_ms < ValiConfig.FUNDED_V0_CUTOFF_MS:
                 return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0
-            if time_ms is not None and time_ms < _FUNDED_V1_CUTOFF_MS:
+            if time_ms is not None and time_ms < ValiConfig.FUNDED_V1_CUTOFF_MS:
                 return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V1
             return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
 
@@ -51,7 +48,7 @@ class MinerBucket(Enum):
             return ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD
 
         if self == MinerBucket.SUBACCOUNT_FUNDED:
-            if time_ms is not None and time_ms < _FUNDED_V0_CUTOFF_MS:
+            if time_ms is not None and time_ms < ValiConfig.FUNDED_V0_CUTOFF_MS:
                 return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD_V0
             return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
 

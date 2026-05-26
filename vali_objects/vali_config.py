@@ -504,6 +504,10 @@ class ValiConfig:
     FUNDED_EOD_DRAWDOWN_THRESHOLD_V0 = 0.10  # V0 applies to subaccounts registered before Sun Mar 15, 2026
     FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
 
+    # Registration cutoffs for versioned SUBACCOUNT_FUNDED thresholds (ms)
+    FUNDED_V0_CUTOFF_MS = 1773532799000  # Mar 14, 2026 23:59:59 UTC
+    FUNDED_V1_CUTOFF_MS = 1779840000000  # May 27, 2026 00:00:00 UTC
+
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
 
