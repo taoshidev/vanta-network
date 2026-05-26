@@ -57,13 +57,8 @@ class LimitOrderManager(CacheController):
 
         # Create own RPC clients (forward compatibility - no parameter passing)
         from vali_objects.position_management.position_manager_client import PositionManagerClient
-        from vali_objects.utils.elimination.elimination_client import EliminationClient
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=False,
-            connection_mode=connection_mode
-        )
-        self._elimination_client = EliminationClient(
             connect_immediately=False,
             connection_mode=connection_mode
         )
@@ -112,11 +107,6 @@ class LimitOrderManager(CacheController):
     def position_manager(self):
         """Get position manager client."""
         return self._position_client
-
-    @property
-    def elimination_manager(self):
-        """Get elimination manager client."""
-        return self._elimination_client
 
     @property
     def market_order_manager(self):
