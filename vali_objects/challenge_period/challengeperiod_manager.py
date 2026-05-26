@@ -10,7 +10,7 @@ This follows the same pattern as EliminationManager.
 """
 from dataclasses import asdict, dataclass, field
 
-import bittensor as bt
+from bittensor.utils.btlogging import logging as btlogging
 import threading
 from datetime import datetime
 
@@ -195,13 +195,15 @@ class ChallengePeriodManager(CacheController):
         self._cached_asset_softmaxed_scores: dict[TradePairCategory, dict[str, float]] = {}
         self._cached_asset_competitiveness: dict[TradePairCategory, float] = {}
 
-        bt.logging.info("[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
+        btlogging.info("[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
 
     # ==================== Core Business Logic ====================
 
     def refresh(self, current_time_ms: int | None = None, iteration_epoch: int | None = None):
         if current_time_ms is None:
             current_time_ms = TimeUtil.now_in_millis()
+
+        btlogging.info(f"[CHALLENGE] Starting challenge period loop {current_time_ms} iteration_epoch={iteration_epoch}")
 
         asset_selections = self._asset_selection_client.get_asset_selections()
         filtered_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
@@ -239,7 +241,7 @@ class ChallengePeriodManager(CacheController):
         for hotkey, state in self.miner_states.items():
             if hotkey not in evaluation_hotkeys:
                 if state.current_bucket == MinerBucket.UNKNOWN:
-                    bt.logging.warning(f"[CHALLENGE] {hotkey} bucket unknown")
+                    btlogging.warning(f"[CHALLENGE] {hotkey} bucket unknown")
                 continue
 
             if reason := self._check_time(state, current_time_ms):
@@ -257,7 +259,9 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             _asset = asset_selections.get(hotkey)
-            if _asset is None: continue
+            if _asset is None:
+                btlogging.warning(f"[CHALLENGE] {hotkey} no asset selection, skipping evaluation")
+                continue
             asset_class = TradePairCategory(_asset)
 
             if self._check_demotion(state):
@@ -281,7 +285,7 @@ class ChallengePeriodManager(CacheController):
         for state in self.miner_states.values():
             counts[state.current_bucket] = counts.get(state.current_bucket, 0) + 1
         snapshot = " | ".join(f"{b.value}={n}" for b, n in sorted(counts.items(), key=lambda x: x[0].value))
-        bt.logging.info(f"[CHALLENGE] snapshot: {snapshot} (total={len(self.miner_states)})")
+        btlogging.info(f"[CHALLENGE] snapshot: {snapshot} (total={len(self.miner_states)})")
 
     # ==================== Evaluation Methods ====================
 
@@ -298,32 +302,32 @@ class ChallengePeriodManager(CacheController):
             }
             reason = reason_map.get(bucket)
             if reason:
-                bt.logging.warning(f"[CHALLENGE] time limit expired: {state}")
+                btlogging.warning(f"[CHALLENGE] ELIMINATION time limit expired: {state}")
             return reason
         return None
 
     @staticmethod
     def _check_intraday_drawdown(state: MinerBucketState) -> EliminationReason | None:
         if state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct:
-            bt.logging.warning(f"[CHALLENGE] intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
+            btlogging.warning(f"[CHALLENGE] ELIMINATION intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
             if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
         elif state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct * 0.75:
-            bt.logging.warning(f"[CHALLENGE] near intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
+            btlogging.warning(f"[CHALLENGE] near intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
         return None
 
     @staticmethod
     def _check_eod_drawdown(state: MinerBucketState) -> EliminationReason | None:
         if state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct:
-            bt.logging.warning(f"[CHALLENGE] EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
+            btlogging.warning(f"[CHALLENGE] ELIMINATION EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
             if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
         elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
-            bt.logging.warning(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
+            btlogging.warning(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
         return None
 
     @staticmethod
@@ -333,7 +337,7 @@ class ChallengePeriodManager(CacheController):
                       if state.rank is not None
                       else False)
             if result:
-                bt.logging.info(f"[CHALLENGE] demotion: {state}")
+                btlogging.info(f"[CHALLENGE] DEMOTION {state}")
             return result
         return False
 
@@ -352,23 +356,23 @@ class ChallengePeriodManager(CacheController):
             else:
                 result = True
             if result:
-                bt.logging.info(f"[CHALLENGE] promotion: {state}")
+                btlogging.info(f"[CHALLENGE] PROMOTION {state}")
             return result
         elif state.drawdown.current_return > returns_threshold * 0.75:
-            bt.logging.info(f"[CHALLENGE] near promotion: {state}")
+            btlogging.info(f"[CHALLENGE] near promotion: {state}")
 
         return False
 
     def eliminate_hotkeys(self, eliminations: dict[str, EliminationReason], current_time_ms: int):
         if eliminations:
-            bt.logging.info(f"[CHALLENGE] eliminating {len(eliminations)} miners")
+            btlogging.info(f"[CHALLENGE] eliminating {len(eliminations)} miners {list(eliminations.keys())}")
 
         for hotkey, elimination_reason in eliminations.items():
             state = self.miner_states[hotkey]
             if not state.current_bucket.is_active:
-                bt.logging.warning(f"[CHALLENGE] attempted elimination in non-eligible bucket: {state}")
+                btlogging.warning(f"[CHALLENGE] attempted elimination in non-eligible bucket: {state}")
 
-            bt.logging.info(f"[CHALLENGE] eliminating reason={elimination_reason.value}: {state}")
+            btlogging.info(f"[CHALLENGE] eliminating reason={elimination_reason.value}: {state}")
 
             elimination_time_ms = current_time_ms
             if elimination_reason.is_eod_drawdown:
@@ -380,8 +384,8 @@ class ChallengePeriodManager(CacheController):
                 elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
 
             self._elimination_client.append_elimination_row(
-                hotkey,
-                elimination_reason.value,
+                hotkey=hotkey,
+                reason=elimination_reason.value,
                 elimination_drawdown_pct=elimination_drawdown_pct,
                 intraday_drawdown_pct=state.drawdown.intraday_drawdown_pct,
                 eod_drawdown_pct=state.drawdown.eod_drawdown_pct,
@@ -394,19 +398,19 @@ class ChallengePeriodManager(CacheController):
     def demote_hotkeys(self, hotkeys: list[str], current_time_ms) -> bool:
         """Demote miners to probation."""
         if hotkeys:
-            bt.logging.info(f"[CHALLENGE] demoting {len(hotkeys)} miners to probation")
+            btlogging.info(f"[CHALLENGE] demoting {len(hotkeys)} miners to probation")
 
         state_changed = False
         with self._buckets_lock:
             for hotkey in hotkeys:
-                bt.logging.info(f"[CHALLENGE] demoting: {self.miner_states[hotkey]}")
+                btlogging.info(f"[CHALLENGE] demoting: {self.miner_states[hotkey]}")
                 state_changed |= self.miner_states[hotkey].add_bucket_entry(MinerBucket.PROBATION, current_time_ms)
         return state_changed
 
     def promote_hotkeys(self, hotkeys: list[str], current_time_ms: int) -> bool:
         """Promote miners to next tier."""
         if hotkeys:
-            bt.logging.info(f"[CHALLENGE] promoting {len(hotkeys)} miners")
+            btlogging.info(f"[CHALLENGE] promoting {len(hotkeys)} miners")
 
         state_changed = False
         for hotkey in hotkeys:
@@ -414,10 +418,10 @@ class ChallengePeriodManager(CacheController):
             current_bucket = state.current_bucket
             target_bucket = current_bucket.next_bucket
             if target_bucket is None:
-                bt.logging.warning(f"[CHALLENGE] no next bucket for promotion: {state}")
+                btlogging.warning(f"[CHALLENGE] no next bucket for promotion: {state}")
                 continue
 
-            bt.logging.info(f"[CHALLENGE] promoting to {target_bucket.value}: {state}")
+            btlogging.info(f"[CHALLENGE] promoting to {target_bucket.value}: {state}")
 
             if target_bucket == MinerBucket.SUBACCOUNT_FUNDED:
                 # Close all existing positions
@@ -491,12 +495,12 @@ class ChallengePeriodManager(CacheController):
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
             current_equity, current_balance = self._compute_portfolio_return(accounts.get(hotkey), positions.get(hotkey))
             if current_equity is None or current_balance is None:
-                bt.logging.warning(f"[CHALLENGE] {hotkey} invalid account or has no positions, skipping evaluation")
+                btlogging.warning(f"[CHALLENGE] {hotkey} invalid account or has no positions, skipping evaluation")
                 continue
 
             ledger = ledgers.get(hotkey)
             if ledger is None:
-                bt.logging.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
+                btlogging.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
                 continue
 
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
@@ -565,9 +569,9 @@ class ChallengePeriodManager(CacheController):
     def sync_challenge_period_data(self, miner_states_data: dict):
         """Sync challenge period data from another validator."""
         if not miner_states_data:
-            bt.logging.error(f'challenge_period_data appears invalid')
+            btlogging.error(f'challenge_period_data appears invalid')
 
-        bt.logging.info("syncing challenge period data")
+        btlogging.info("syncing challenge period data")
         with self._buckets_lock:
             self.miner_states.clear()
             self.miner_states.update(self.parse_checkpoint_dict(miner_states_data))
@@ -595,7 +599,7 @@ class ChallengePeriodManager(CacheController):
         """Sync eliminated miners from elimination manager. Method for peace of mind."""
         new_eliminations = [hk for hk in elimination_miners if hk in self.miner_states]
         if new_eliminations:
-            bt.logging.warning(f"[CHALLENGE] syncing {len(new_eliminations)} eliminated miners: {new_eliminations}")
+            btlogging.warning(f"[CHALLENGE] syncing {len(new_eliminations)} eliminated miners: {new_eliminations}")
         return self.remove_miners(elimination_miners)
 
     def _prune_hotkeys_no_positions(self, hotkeys=None) -> bool:
@@ -620,7 +624,7 @@ class ChallengePeriodManager(CacheController):
                 if bucket in [MinerBucket.ENTITY, MinerBucket.SUBACCOUNT_FUNDED]:
                     continue
                 hotkeys_prune.append(hotkey)
-                bt.logging.warning(f"[CHALLENGE] {hotkey} pruned from {bucket.value}: no longer in metagraph")
+                btlogging.warning(f"[CHALLENGE] {hotkey} pruned from {bucket.value}: no longer in metagraph")
 
         self.remove_miners(hotkeys_prune)
         return bool(hotkeys_prune)
@@ -642,7 +646,7 @@ class ChallengePeriodManager(CacheController):
             start_time = hk_to_first_order_time_ms.get(hotkey, default_time)
             bucket = MinerBucket.SUBACCOUNT_CHALLENGE if is_synthetic_hotkey(hotkey) else MinerBucket.CHALLENGE
             self.set_miner_bucket(hotkey, bucket, start_time)
-            bt.logging.info(f"Adding {hotkey} to challenge period with start time {start_time}")
+            btlogging.info(f"Adding {hotkey} to challenge period with start time {start_time}")
             state_changed = True
 
         for hotkey in self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE):
@@ -651,7 +655,7 @@ class ChallengePeriodManager(CacheController):
                 continue
             start_time_ms = self.miner_states[hotkey].current_bucket_start_ms
             if start_time_ms != first_order_time_ms:
-                bt.logging.info(f"Challengeperiod start time for {hotkey} updated from: {datetime.fromtimestamp(start_time_ms/1000)} "
+                btlogging.info(f"Challengeperiod start time for {hotkey} updated from: {datetime.fromtimestamp(start_time_ms/1000)} "
                                 f"to: {datetime.fromtimestamp(first_order_time_ms/1000)}, {(start_time_ms-first_order_time_ms)/1000}s delta")
                 self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time_ms, replace_top=True)
                 state_changed = True
@@ -666,8 +670,8 @@ class ChallengePeriodManager(CacheController):
                 self._miner_account_client.set_miner_bucket(hotkey, state.current_bucket)
                 synced += 1
             except Exception as e:
-                bt.logging.warning(f"Failed to sync miner_bucket for {hotkey}: {e}")
-        bt.logging.info(f"[CP_MANAGER] Synced {synced}/{len(self.miner_states)} miner buckets to MinerAccount")
+                btlogging.warning(f"Failed to sync miner_bucket for {hotkey}: {e}")
+        btlogging.info(f"[CP_MANAGER] Synced {synced}/{len(self.miner_states)} miner buckets to MinerAccount")
 
     def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int, *, replace_top=False) -> bool:
         """
@@ -691,7 +695,7 @@ class ChallengePeriodManager(CacheController):
         with self._buckets_lock:
             for hotkey in hotkeys:
                 if hotkey in self.miner_states:
-                    bt.logging.info(f"[CHALLENGE] {hotkey} removed from bucket {self.miner_states[hotkey].current_bucket.value}")
+                    btlogging.info(f"[CHALLENGE] {hotkey} removed from bucket {self.miner_states[hotkey].current_bucket.value}")
                     del self.miner_states[hotkey]
                     state_changed = True
 
@@ -844,14 +848,14 @@ class ChallengePeriodManager(CacheController):
     def _save_to_disk(self):
         """Write challenge period data from memory to disk."""
         if self.is_backtesting:
-            bt.logging.info("don't save challengeperiod disk")
+            btlogging.info("don't save challengeperiod disk")
             return
 
         # Epoch-based validation: check if sync occurred during our iteration
         if self._current_iteration_epoch is not None:
             current_epoch = self._common_data_client.get_sync_epoch()
             if current_epoch != self._current_iteration_epoch:
-                bt.logging.warning(
+                btlogging.warning(
                     f"Sync occurred during ChallengePeriodManager iteration "
                     f"(epoch {self._current_iteration_epoch} -> {current_epoch}). "
                     f"Skipping save to avoid data corruption"
