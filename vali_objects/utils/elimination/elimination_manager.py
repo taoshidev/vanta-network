@@ -478,13 +478,13 @@ class EliminationManager(CacheController):
             )
 
             bt.logging.debug("[ELIM_PROCESS] Starting handle_mdd_eliminations")
-            self.handle_mdd_eliminations(iteration_epoch)
+            self.handle_mdd_eliminations()
 
             bt.logging.debug("[ELIM_PROCESS] Starting handle_zombies")
-            self.handle_zombies(iteration_epoch)
+            self.handle_zombies()
 
             bt.logging.debug("[ELIM_PROCESS] Starting handle_idle_miners")
-            self.handle_idle_miners(iteration_epoch)
+            self.handle_idle_miners()
 
             # Run after other checks so MDD/zombie/etc. take priority over DEREGISTERED
             bt.logging.debug("[ELIM_PROCESS] Starting handle_departed_hotkeys")
@@ -577,7 +577,7 @@ class EliminationManager(CacheController):
             # Save while holding lock to prevent concurrent disk writes
             self._save_eliminations_locked()
 
-    def handle_mdd_eliminations(self, iteration_epoch=None):
+    def handle_mdd_eliminations(self):
         """Check for MDD eliminations."""
         bt.logging.info("checking main competition for maximum drawdown eliminations.")
 
@@ -599,7 +599,7 @@ class EliminationManager(CacheController):
                 if self._contract_client:
                     self._contract_client.slash_miner_collateral_proportion(miner_hotkey)
 
-    def handle_zombies(self, iteration_epoch=None):
+    def handle_zombies(self):
         """Handle zombie miners"""
 
         all_miners_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
@@ -613,7 +613,7 @@ class EliminationManager(CacheController):
             elif self.is_zombie_hotkey(hotkey, all_hotkeys_set):
                 self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.ZOMBIE.value)
 
-    def handle_idle_miners(self, iteration_epoch=None):
+    def handle_idle_miners(self):
         """Eliminate MAINCOMP, CHALLENGE, and PROBATION miners that have not submitted any orders in the past 60 days."""
         now_ms = TimeUtil.now_in_millis()
         IDLE_ELIMINATION_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-06-08 00:00:00")
@@ -715,7 +715,7 @@ class EliminationManager(CacheController):
         for hotkey in new_departures:
             self.append_elimination_row(hotkey, EliminationReason.DEREGISTERED.value)
 
-    def _cleanup_eliminated_miners(self, iteration_epoch=None):
+    def _cleanup_eliminated_miners(self, iteration_epoch: int | None = None):
         """post-elimination cleanup: close open positions and delete unfilled limit orders"""
         now_ms = TimeUtil.now_in_millis()
 
@@ -733,7 +733,7 @@ class EliminationManager(CacheController):
 
                 positions = self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
                 for p in positions:
-                    self._close_position(hotkey, p, elimination_data.elimination_initiated_time_ms, iteration_epoch)
+                    self._close_position(hotkey, p, elimination_data.elimination_initiated_time_ms, iteration_epoch=iteration_epoch)
 
                 with self.eliminations_lock:
                     self.eliminations[hotkey].positions_closed = True
