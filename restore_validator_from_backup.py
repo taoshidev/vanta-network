@@ -60,11 +60,6 @@ def start_servers_for_restore():
         split_positions_on_disk_load=False  # CRITICAL: Disable position splitting during restore
     )
 
-    servers['contract'] = ContractServer(
-        start_server=True,
-        running_unit_tests=True
-    )
-
     servers['miner_account'] = MinerAccountServer(
         start_server=True,
         running_unit_tests=True
