@@ -893,6 +893,9 @@ class Position(BaseModel):
             raise ValueError(
                 f"{self.trade_pair.trade_pair_id}: order leverage {abs(order.leverage):.5f} below minimum {min_order_lev}")
 
+        if self.is_closed_position:
+            raise ValueError(f"{self.trade_pair.trade_pair_id}: cannot validate {order.order_type} order on already-closed position (closed at {self.close_ms})")
+
         position_sign = 1 if self.position_type == OrderType.LONG else -1
         proposed_leverage = self.net_leverage + (order.leverage or 0)
         proposed_quantity = self.net_quantity + (order.quantity or 0)
