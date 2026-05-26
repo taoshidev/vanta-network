@@ -111,7 +111,7 @@ class EliminationServer(RPCServerBase):
             daemon_interval_s=ValiConfig.ELIMINATION_CHECK_INTERVAL_MS // 1000,  # 5 minutes (300s)
             hang_timeout_s=600.0,  # 10 minutes (prevents false alarms during startup)
             connection_mode=connection_mode,
-            daemon_stagger_s=20
+            daemon_stagger_s=60
         )
 
         # Initial cache population
