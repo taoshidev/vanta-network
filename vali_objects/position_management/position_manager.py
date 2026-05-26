@@ -1008,7 +1008,7 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_147"]
+            miners_to_wipe = []
             position_uuids_to_delete = []
             position_uuids_to_archive = []
             miners_to_promote = []
@@ -1088,12 +1088,12 @@ class PositionManager:
 
                 # Remove from challenge period so the next refresh re-adds them to the
                 # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
-                if self._challenge_period_client:
-                    self._challenge_period_client.remove_miner(miner_hotkey)
-                    self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, 1776991090311)
-                    self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_FUNDED, 1778072313000)
-                    self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
-                    print(f'Removed challenge period status for {miner_hotkey}')
+                # if self._challenge_period_client:
+                #     self._challenge_period_client.remove_miner(miner_hotkey)
+                #     self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, 1776991090311)
+                #     self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_FUNDED, 1778072313000)
+                #     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+                #     print(f'Removed challenge period status for {miner_hotkey}')
 
                 # Rebuild account state from current positions after corrections
                 current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
