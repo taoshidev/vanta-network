@@ -155,6 +155,7 @@ class ChallengePeriodManager(CacheController):
     - Server delegates all RPC methods to manager methods
     - Manager creates its own clients internally (forward compatibility)
     """
+    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-06-08 00:00:00")
 
     def __init__(
         self,
@@ -248,15 +249,17 @@ class ChallengePeriodManager(CacheController):
                 eliminations[hotkey] = reason
                 continue
 
-            # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
-            if reason := self._check_intraday_drawdown(state):
-                eliminations[hotkey] = reason
-                continue
+            # Active intraday/eod drawdown for regular miners after activation
+            if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
+                if reason := self._check_intraday_drawdown(state):
+                    eliminations[hotkey] = reason
+                    continue
 
-            # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
-            if reason := self._check_eod_drawdown(state):
-                eliminations[hotkey] = reason
-                continue
+                # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
+                if reason := self._check_eod_drawdown(state):
+                    eliminations[hotkey] = reason
+                    continue
 
             _asset = asset_selections.get(hotkey)
             if _asset is None:

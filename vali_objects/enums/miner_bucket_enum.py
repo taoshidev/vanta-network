@@ -58,6 +58,14 @@ class MinerBucket(Enum):
         raise ValueError(f"No intraday drawdown threshold defined for bucket {self}")
 
     @property
+    def is_regular_miner(self) -> bool:
+        return self in (MinerBucket.CHALLENGE, MinerBucket.PROBATION, MinerBucket.MAINCOMP)
+
+    @property
+    def is_subaccount(self) -> bool:
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA)
+
+    @property
     def next_bucket(self) -> "MinerBucket | None":
         if self == MinerBucket.CHALLENGE:
             return MinerBucket.MAINCOMP

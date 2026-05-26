@@ -582,10 +582,11 @@ class EliminationManager(CacheController):
         bt.logging.info("checking main competition for maximum drawdown eliminations.")
 
         # Get MAINCOMP hotkeys from cp_client
-        challengeperiod_success_hotkeys = self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
+        regular_miner_buckets = [bucket for bucket in MinerBucket if bucket.is_regular_miner]
+        miner_hotkeys = self._challenge_period_client.get_hotkeys_by_bucket(regular_miner_buckets)
 
         filtered_ledger = self.perf_ledger_manager.filtered_ledger_for_scoring(
-            hotkeys=challengeperiod_success_hotkeys
+            hotkeys=miner_hotkeys
         )
         for miner_hotkey, ledger in filtered_ledger.items():
             if miner_hotkey in self.eliminations:
