@@ -16,7 +16,7 @@ from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 
 SLIPPAGE_V2_TIME_MS = 1759431540000
@@ -229,7 +229,7 @@ class PriceSlippageModel:
                 bt.logging.error(f"Crypto slippage estimates not loaded")
                 return 0.0001  # Return minimal slippage as fallback
 
-            trade_pair_key = order.trade_pair.trade_pair_id + "C"
+            trade_pair_key = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(order.trade_pair, order.trade_pair).trade_pair_id
             if trade_pair_key not in cls.slippage_estimates["crypto"]:
                 bt.logging.error(f"Slippage estimates not found for crypto trade pair {trade_pair_key}")
                 return 0.0001  # Return minimal slippage as fallback
