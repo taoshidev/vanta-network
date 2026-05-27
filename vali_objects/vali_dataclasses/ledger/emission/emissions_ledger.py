@@ -840,10 +840,10 @@ class EmissionsLedgerManager:
             ValueError: If no coldkey found
             Exception: If substrate query fails
         """
-        # Check if ledger exists and has coldkey
+        # Check if ledger exists and has coldkey (skip mock coldkeys from test runs)
         if hotkey_ss58 in self.emissions_ledgers:
             ledger = self.emissions_ledgers[hotkey_ss58]
-            if ledger.coldkey:
+            if ledger.coldkey and not ledger.coldkey.startswith("5Mock"):
                 return ledger.coldkey
 
         # In test mode, return mock coldkey
