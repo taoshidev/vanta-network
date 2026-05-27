@@ -31,7 +31,6 @@ from vali_objects.utils.entity_collateral.entity_collateral_client import Entity
 # ==================== Constants ====================
 
 TARGET_MS = 1778619600000
-NOV_1_MS = 1761951599000
 
 
 # ==================== Manager Implementation ====================
@@ -175,35 +174,41 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         if now_ms > TARGET_MS:
             return
 
-        miners_to_reinstate = {"5FFPGFS4MzAxEBmWdy6RHKjbPbwde3jSuX4dZ7ZgutRxDm8Y": 174.686580896}
+        miners_to_reinstate = {}
         for miner, amount in miners_to_reinstate.items():
             self.force_deposit(amount, miner)
 
-        # Update CPT
-        # update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
-        # update_thread.start()
-        # bt.logging.info("COST_PER_THETA migration started in background thread")
+        update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
+        update_thread.start()
+        bt.logging.info("Miner account size refresh started in background thread")
 
     def refresh_miner_account_sizes(self):
         """
-        refresh miner account sizes for new CPT
+        refresh miner account sizes
         """
+        # Let the orchestrator finish bringing up the miner_account RPC server before the first call.
+        time.sleep(5)
+        hotkeys = [
+            "5DnnuQvAZXEXnzCQMudynQjE4t4QdXbYTqoxKkeMMbuQPwus",
+            "5DnvGJvxLFbiCfXuF3ctKMqCPHpJF4TTKY9o9iDCdf8nkKv3",
+            "5FhGLQpV1bnFZYw9PttyXpBHFsGszxAU1hntSa6TD8kDEdEd",
+            "5FsYk9twJTTijrf3wh7kQE9gHRwm7rRENXA4jkQpgz6ARq1x",
+            "5FCPYqbYEq2y7NwQTCLxNApP2UjUE86J8QnhdWTHFkzzFWL1",
+            "5FFPGFS4MzAxEBmWdy6RHKjbPbwde3jSuX4dZ7ZgutRxDm8Y",
+            "5FCtg9mLGkiNbEiXCd751QqSxRJgBce8SNYqQVRhc9iyq9dn",
+            "5EABiwxKg1FG2NCuRRXzSbYpUywx9UmV4TkxAHK1ZZMsWxsC",
+        ]
         update_count = 0
-
-        # Get all hotkeys from MinerAccountClient
-        hotkeys = self._miner_account_client.get_all_hotkeys()
-
-        # Process each miner
         for hotkey in hotkeys:
             try:
                 prev_acct_size = self._miner_account_client.get_miner_account_size(hotkey)
                 bt.logging.info(f"Current account size for {hotkey}: ${prev_acct_size:,.2f}")
-                self._set_miner_account_size(hotkey, NOV_1_MS)
+                self._set_miner_account_size(hotkey)
                 update_count += 1
                 time.sleep(0.5)
             except Exception as e:
                 bt.logging.error(f"Failed to update account size for {hotkey}: {e}")
-        bt.logging.info(f"COST_PER_THETA update completed for {update_count} miners")
+        bt.logging.info(f"Account size refresh completed for {update_count} miners")
 
     def health_check(self) -> dict:
         """Health check for monitoring."""

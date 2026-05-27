@@ -478,7 +478,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance_theta) * ValiConfig.COST_PER_THETA
 
             # Check if this is the first record for this miner
-            is_first_record = hotkey not in self.accounts or not self.accounts[hotkey]
+            is_first_record = hotkey not in self.accounts or not self.accounts[hotkey].collateral_records
             collateral_record = CollateralRecord(account_size, collateral_balance_theta, timestamp_ms, is_first_record)
 
             # Get or create account
