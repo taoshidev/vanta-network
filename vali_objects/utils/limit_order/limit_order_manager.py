@@ -996,7 +996,8 @@ class LimitOrderManager(CacheController):
                 position = self._get_open_position(miner_hotkey, order)
                 trigger_ps, trigger_price = self._evaluate_order_trigger(order, position, ask_ps, bid_ps)
 
-                if trigger_ps and trigger_ps.start_ms < order.processed_ms:
+                last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
+                if trigger_ps and (trigger_ps.start_ms < order.processed_ms or trigger_ps.start_ms < last_fill_time):
                     return False
 
             # Fill OUTSIDE the lock to avoid deadlock with _close_limit_order
