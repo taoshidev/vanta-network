@@ -1447,19 +1447,6 @@ class PerfLedgerManager(CacheController):
                 # Track realtime_position_to_pop per trade pair
                 if batch_realtime_position_to_pop:
                     tp_id = batch_realtime_position_to_pop.trade_pair.trade_pair_id
-                    if tp_id in tp_id_to_realtime_position_to_pop:
-                        pos1_dup_order = tp_id_to_realtime_position_to_pop[tp_id].orders[-1]
-                        pos1_no_orders = tp_id_to_realtime_position_to_pop[tp_id]
-                        pos1_no_orders.orders = []
-
-                        pos2_dup_order = batch_realtime_position_to_pop.orders[-1]
-                        pos2_no_orders = batch_realtime_position_to_pop
-                        pos2_no_orders.orders = []
-                        raise ValueError(f"Multiple realtime_position_to_pop for hotkey {hotkey} for same trade pair "
-                                         f"{tp_id} in same millisecond {order.processed_ms}."
-                                         f" pos1 {pos1_no_orders}, pos2 {pos2_no_orders}, "
-                                         f"order1 {pos1_dup_order}, order2 {pos2_dup_order}"
-                    )
                     tp_id_to_realtime_position_to_pop[tp_id] = batch_realtime_position_to_pop
 
                 if (symbol in tp_to_historical_positions and
