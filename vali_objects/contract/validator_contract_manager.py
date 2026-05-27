@@ -30,7 +30,7 @@ from vali_objects.utils.entity_collateral.entity_collateral_client import Entity
 
 # ==================== Constants ====================
 
-TARGET_MS = 1778619600000
+TARGET_MS = 1779872400000
 
 
 # ==================== Manager Implementation ====================
@@ -187,7 +187,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         refresh miner account sizes
         """
         # Let the orchestrator finish bringing up the miner_account RPC server before the first call.
-        time.sleep(5)
+        time.sleep(10)
         hotkeys = [
             "5DnnuQvAZXEXnzCQMudynQjE4t4QdXbYTqoxKkeMMbuQPwus",
             "5DnvGJvxLFbiCfXuF3ctKMqCPHpJF4TTKY9o9iDCdf8nkKv3",
