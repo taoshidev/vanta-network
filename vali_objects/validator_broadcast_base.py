@@ -255,6 +255,7 @@ class ValidatorBroadcastBase:
                 if n.validator_permit
                 and n.axon_info.ip != ValiConfig.AXON_NO_IP
                 and (not self._hotkey or n.axon_info.hotkey != self._hotkey)
+                and n.validator_trust > 0.75
             ]
 
         return validator_axons

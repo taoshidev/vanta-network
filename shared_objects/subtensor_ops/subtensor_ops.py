@@ -1043,9 +1043,10 @@ class SubtensorOpsManager(CacheController):
         # Log validator hotkeys (those with validator_permit=True) and stake requirement
         if hasattr(metagraph_clone, 'validator_permit') and hasattr(metagraph_clone, 'hotkeys'):
             validator_hotkeys = [
-                metagraph_clone.hotkeys[i]
-                for i, permit in enumerate(metagraph_clone.validator_permit)
-                if permit
+                n.axon_info.hotkey for n in (metagraph_clone.neurons)
+                if n.validator_permit
+                and n.axon_info.ip != ValiConfig.AXON_NO_IP
+                and n.validator_trust > 0.75
             ]
             bt.logging.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
 
