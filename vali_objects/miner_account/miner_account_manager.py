@@ -272,20 +272,20 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     def _load_accounts_from_disk(self):
         """Load miner accounts from disk during initialization - protected by locks"""
-        with self._disk_lock:
-            try:
+        try:
+            with self._disk_lock:
                 accounts_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNTS_FILE)
                 accounts_data.pop("_cost_per_theta", None)  # ignore legacy field
                 asset_selection_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
                 parsed_accounts = self._parse_accounts_dict(accounts_data, asset_selection_data)
 
-                with self._accounts_lock:
-                    self.accounts.clear()
-                    self.accounts.update(parsed_accounts)
+            with self._accounts_lock:
+                self.accounts.clear()
+                self.accounts.update(parsed_accounts)
 
-                bt.logging.info(f"Loaded {len(self.accounts)} miner accounts from disk")
-            except Exception as e:
-                bt.logging.warning(f"Failed to load miner accounts from disk: {e}")
+            bt.logging.info(f"Loaded {len(self.accounts)} miner accounts from disk")
+        except Exception as e:
+            bt.logging.warning(f"Failed to load miner accounts from disk: {e}")
 
     def re_init_account_sizes(self):
         """Public method to reload accounts from disk (useful for tests)"""

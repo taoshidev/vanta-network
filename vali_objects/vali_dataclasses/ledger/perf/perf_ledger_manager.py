@@ -1566,15 +1566,14 @@ class PerfLedgerManager(CacheController):
         pl_update_start_time_ms = portfolio_pl.last_update_ms
         if pl_update_start_time_ms == 0:
             pl_update_start_time_ms = portfolio_pl.initialization_time_ms
-        if verbose:
-            bt.logging.success(
-                f"Done updating perf ledger for {hotkey} {hotkey_i + 1}/{n_hotkeys} in {time.time() - t0} "
-                f"Update start time {TimeUtil.millis_to_formatted_date_str(pl_update_start_time_ms)}. End time {TimeUtil.millis_to_formatted_date_str(now_ms)}. "
-                f"(s). Lag: {lag} (s). Total product: {total_product}. Last portfolio value: {last_portfolio_value}."
-                f" n_api_calls: {self.n_api_calls} dd stats {None}. "
-                f" last cp {portfolio_perf_ledger.cps[-1] if portfolio_perf_ledger.cps else None}. perf_ledger_mpv {portfolio_perf_ledger.max_return} "
-                f"perf_ledger_initialization_time {TimeUtil.millis_to_formatted_date_str(portfolio_perf_ledger.initialization_time_ms)}. "
-                f"mode_to_n_updates {self.mode_to_n_updates}. update_to_n_open_positions {self.update_to_n_open_positions}, self.tp_to_mfs {self.tp_to_mfs}")
+        bt.logging.info(
+            f"Done updating perf ledger for {hotkey} {hotkey_i + 1}/{n_hotkeys} in {time.time() - t0:.2f}s. "
+            f"Update start time {TimeUtil.millis_to_formatted_date_str(pl_update_start_time_ms)}. End time {TimeUtil.millis_to_formatted_date_str(now_ms)}. "
+            f"Lag: {lag}s. Total product: {total_product}. Last portfolio value: {last_portfolio_value}."
+            f" n_api_calls: {self.n_api_calls}."
+            f" last cp {portfolio_perf_ledger.cps[-1] if portfolio_perf_ledger.cps else None}. perf_ledger_mpv {portfolio_perf_ledger.max_return} "
+            f"perf_ledger_initialization_time {TimeUtil.millis_to_formatted_date_str(portfolio_perf_ledger.initialization_time_ms)}. "
+            f"mode_to_n_updates {self.mode_to_n_updates}. update_to_n_open_positions {self.update_to_n_open_positions}, self.tp_to_mfs {self.tp_to_mfs}")
 
         # If running in parallel mode, return the result instead of updating in place
         if self.parallel_mode != ParallelizationMode.SERIAL:
@@ -1607,6 +1606,7 @@ class PerfLedgerManager(CacheController):
         n_hotkeys = len(hotkey_to_positions)
         for hotkey_i, (hotkey, positions) in enumerate(hotkey_to_positions.items()):
             try:
+                bt.logging.info(f"Building perf ledger for {hotkey} ({hotkey_i + 1}/{n_hotkeys})")
                 account_size = hotkey_to_account_size.get(hotkey) if hotkey_to_account_size else None
                 self.update_one_perf_ledger_bundle(hotkey_i, n_hotkeys, hotkey, positions, now_ms, existing_perf_ledgers,
                                                    account_size=account_size)
@@ -1770,7 +1770,9 @@ class PerfLedgerManager(CacheController):
             bt.logging.warning(traceback.format_exc())
 
         # Time in the past to start updating the perf ledgers
+        bt.logging.info("Fetching miner account sizes...")
         hotkey_to_account_size = self._miner_account_client.get_all_miner_account_sizes()
+        bt.logging.info(f"Got {len(hotkey_to_account_size)} miner account sizes. Starting update_all_perf_ledgers for {len(hotkey_to_positions)} hotkeys.")
         self.update_all_perf_ledgers(hotkey_to_positions, perf_ledger_bundles, t_ms, hotkey_to_account_size=hotkey_to_account_size)
 
         # Clear invalidations after successful update. Prevent race condition by only clearing if we attempted invalidation for specific hk

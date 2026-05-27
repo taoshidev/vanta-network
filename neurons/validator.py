@@ -205,7 +205,6 @@ class Validator(ValidatorBase):
         # Start remaining server daemons
         orchestrator.start_server_daemons([
             'perf_ledger',
-            'miner_account',
             'challenge_period',
             'elimination',
             'position_manager',
