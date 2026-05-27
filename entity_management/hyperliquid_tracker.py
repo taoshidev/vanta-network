@@ -683,10 +683,10 @@ class HyperliquidTracker:
                     self._address_to_shard[addr] = new_shard.shard_id
                     assigned = True
 
-            if not assigned:
-                bt.logging.warning(
-                    f"[HL_TRACKER] Cannot assign address {addr} - all ports exhausted or unhealthy"
-                )
+            # if not assigned:
+            #     bt.logging.warning(
+            #         f"[HL_TRACKER] Cannot assign address {addr} - all ports exhausted or unhealthy"
+            #     )
 
         # 5. Tear down empty shards
         self._teardown_empty_shards()
