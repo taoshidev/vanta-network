@@ -786,15 +786,52 @@ class DebtLedgerManager():
 
             bt.logging.info(f"Aggregating debt ledgers for {len(all_entities)} entities")
 
+            # Get frozen perf ledgers and convert to debt ledgers grouped by entity
+            # Manually conver them to debt ledger checkpoints to reuse realized hwm gated emissions
+            frozen_perf_ledgers = self._perf_ledger_client.get_frozen_ledgers()
+            entity_to_frozen_debt_ledgers: Dict[str, list] = {}
+            for synthetic_hotkey, perf_ledger in frozen_perf_ledgers.items():
+                entity_hk, _ = entity_utils.parse_synthetic_hotkey(synthetic_hotkey)
+                if entity_hk is None or not perf_ledger.cps:
+                    continue
+
+                debt_checkpoints = []
+                for cp in perf_ledger.cps:
+                    if cp.accum_ms != target_cp_duration_ms:
+                        continue
+                    debt_cp = DebtCheckpoint(
+                        timestamp_ms=cp.last_update_ms,
+                        realized_pnl=cp.realized_pnl,
+                        cumulative_fees_usd=cp.cumulative_fees_usd,
+                        challenge_period_status=MinerBucket.SUBACCOUNT_FUNDED.value,
+                        max_portfolio_value=cp.mpv,
+                        max_drawdown=cp.mdd,
+                        portfolio_return=cp.gain,
+                        open_ms=cp.open_ms,
+                        accum_ms=cp.accum_ms,
+                        n_updates=cp.n_updates,
+                    )
+                    debt_checkpoints.append(debt_cp)
+
+                if debt_checkpoints:
+                    frozen_debt_ledger = DebtLedger(hotkey=synthetic_hotkey, checkpoints=debt_checkpoints)
+                    if entity_hk not in entity_to_frozen_debt_ledgers:
+                        entity_to_frozen_debt_ledgers[entity_hk] = []
+                    entity_to_frozen_debt_ledgers[entity_hk].append((synthetic_hotkey, frozen_debt_ledger))
+
+            if entity_to_frozen_debt_ledgers:
+                bt.logging.info(f"Converted frozen perf ledgers to debt ledgers for {len(entity_to_frozen_debt_ledgers)} entities")
+
             entity_count = 0
             for entity_hotkey, entity_data in all_entities.items():
                 # Get active subaccounts for this entity
                 active_subaccounts = [sa for sa in entity_data.get('subaccounts', {}).values()
                                      if sa.get('status') == 'active']
 
-                if not active_subaccounts:
+                has_frozen_ledgers = entity_hotkey in entity_to_frozen_debt_ledgers
+                if not active_subaccounts and not has_frozen_ledgers:
                     if verbose:
-                        bt.logging.info(f"Entity {entity_hotkey} has no active subaccounts - skipping")
+                        bt.logging.info(f"Entity {entity_hotkey} has no active subaccounts or frozen ledgers - skipping")
                     continue
 
                 # Get debt ledgers for all active subaccounts
@@ -808,6 +845,10 @@ class DebtLedgerManager():
                     ledger = self.debt_ledgers.get(synthetic_hotkey)
                     if ledger and ledger.checkpoints:
                         subaccount_ledgers.append((synthetic_hotkey, ledger))
+
+                # Add frozen debt ledgers for this entity
+                frozen_ledgers_for_entity = entity_to_frozen_debt_ledgers.get(entity_hotkey, [])
+                subaccount_ledgers.extend(frozen_ledgers_for_entity)
 
                 if not subaccount_ledgers:
                     if verbose:

@@ -52,6 +52,7 @@ class PerfLedgerManager(CacheController):
 
 
         self.hotkey_to_perf_bundle = {}
+        self._frozen_ledgers: dict[str, PerfLedger] = {}
         self.running_unit_tests = running_unit_tests
 
         self._position_manager_client = PositionManagerClient(
@@ -131,6 +132,10 @@ class PerfLedgerManager(CacheController):
             bt.logging.success(f"[PERF_LEDGER] Loaded {len(initial_perf_ledgers)} performance ledger bundles from disk")
             for k, v in initial_perf_ledgers.items():
                 self.hotkey_to_perf_bundle[k] = v
+            initial_frozen_ledgers = self.get_frozen_ledgers(from_disk=True)
+            bt.logging.success(f"[PERF_LEDGER] Loaded {len(initial_frozen_ledgers)} frozen performance ledgers from disk")
+            for k, v in initial_frozen_ledgers.items():
+                self._frozen_ledgers[k] = v
         if secrets:
             self.secrets = secrets
         else:
@@ -160,7 +165,9 @@ class PerfLedgerManager(CacheController):
         # Clear in-memory and on-disk ledgers. Only for unit tests.
         assert self.running_unit_tests, 'this is only valid for unit tests'
         self.hotkey_to_perf_bundle.clear()
+        self._frozen_ledgers.clear()
         self.clear_perf_ledgers_from_disk()  # Also clears in-memory
+        self.clear_frozen_ledgers_from_disk()
         self.perf_ledger_hks_to_invalidate.clear()  # Clear invalidation list for test isolation
 
     def re_init_perf_ledger_data(self):
@@ -178,7 +185,13 @@ class PerfLedgerManager(CacheController):
         for hk, bundle in ledgers_from_disk.items():
             self.hotkey_to_perf_bundle[hk] = bundle
 
-        bt.logging.info(f"Reinitialized {len(self.hotkey_to_perf_bundle)} perf ledgers from disk")
+        # Reload frozen ledgers
+        frozen_from_disk = self.get_frozen_ledgers(from_disk=True)
+        self._frozen_ledgers.clear()
+        for hk, ledger in frozen_from_disk.items():
+            self._frozen_ledgers[hk] = ledger
+
+        bt.logging.info(f"Reinitialized {len(self.hotkey_to_perf_bundle)} perf ledgers and {len(self._frozen_ledgers)} frozen ledgers from disk")
 
     def __getstate__(self):
         """
@@ -272,6 +285,28 @@ class PerfLedgerManager(CacheController):
 
         return dict(self.hotkey_to_perf_bundle)
 
+    def get_frozen_ledgers(self, from_disk=False) -> dict[str, PerfLedger]:
+        ret = {}
+        if from_disk:
+            compressed_json_path = ValiBkpUtils.get_frozen_perf_ledgers_path(self.running_unit_tests)
+
+            if not os.path.exists(compressed_json_path):
+                return ret
+
+            data = ValiBkpUtils.read_compressed_json(compressed_json_path)
+
+            for hk, value in data.items():
+                if isinstance(value, dict):
+                    if 'cps' in value:
+                        ret[hk] = PerfLedger.from_dict(value)
+                    elif 'portfolio' in value:
+                        ret[hk] = PerfLedger.from_dict(value['portfolio'])
+                elif isinstance(value, PerfLedger):
+                    ret[hk] = value
+            return ret
+
+        return dict(self._frozen_ledgers)
+
     def get_returns(self, hotkey: str) -> float | None:
         """
         Calculate returns for a specific hotkey's portfolio.
@@ -344,6 +379,14 @@ class PerfLedgerManager(CacheController):
 
         for k in list(self.hotkey_to_perf_bundle.keys()):
             del self.hotkey_to_perf_bundle[k]
+
+    def clear_frozen_ledgers_from_disk(self):
+        assert self.running_unit_tests, 'this is only valid for unit tests'
+        self._frozen_ledgers = {}
+
+        json_gz_path = ValiBkpUtils.get_frozen_perf_ledgers_path(self.running_unit_tests)
+        if os.path.exists(json_gz_path):
+            os.remove(json_gz_path)
 
     @staticmethod
     def clear_perf_ledgers_from_disk_autosync(hotkeys:list):
@@ -1588,6 +1631,8 @@ class PerfLedgerManager(CacheController):
             return
 
         self.save_perf_ledgers(existing_perf_ledgers)
+        if self._frozen_ledgers and not self.is_backtesting:
+            self.save_frozen_ledgers_to_disk()
         return existing_perf_ledgers
 
 
@@ -1652,11 +1697,19 @@ class PerfLedgerManager(CacheController):
         # Remove keys from perf ledgers if they aren't inx the metagraph anymore
         metagraph_hotkeys = set(self._metagraph_client.get_hotkeys())
 
-        # Freeze funded subaccount perf ledgers (exclude from hotkeys to delete)
+        # Freeze funded subaccount perf ledgers (move to separate frozen storage)
         frozen_ledger_hotkeys = self._elimination_client.get_eliminated_hotkeys_by_bucket(
             [MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA]
         )
-        hotkeys_to_delete = set([x for x in hotkeys_with_no_positions if x in perf_ledger_bundles and x not in frozen_ledger_hotkeys])
+
+        # Move frozen ledgers from active to frozen storage
+        for hk in frozen_ledger_hotkeys:
+            if hk in perf_ledger_bundles and hk not in self._frozen_ledgers:
+                self._frozen_ledgers[hk] = perf_ledger_bundles[hk]
+                del perf_ledger_bundles[hk]
+                bt.logging.info(f"Moved frozen ledger for {hk} to frozen storage")
+
+        hotkeys_to_delete = set([x for x in hotkeys_with_no_positions if x in perf_ledger_bundles])
         rss_modified = False
         # Recently re-registered
         hotkeys_rrr = []
@@ -1759,6 +1812,29 @@ class PerfLedgerManager(CacheController):
                 serializable_ledgers[hotkey] = ledger.to_dict()
             elif isinstance(ledger, dict):
                 # Handle old bundle format or already-serialized dict
+                if 'portfolio' in ledger:
+                    pl = ledger['portfolio']
+                    serializable_ledgers[hotkey] = pl.to_dict() if isinstance(pl, PerfLedger) else pl
+                elif 'cps' in ledger:
+                    serializable_ledgers[hotkey] = ledger
+                else:
+                    serializable_ledgers[hotkey] = ledger
+            else:
+                serializable_ledgers[hotkey] = ledger
+
+        ValiBkpUtils.write_compressed_json(file_path, serializable_ledgers)
+
+    def save_frozen_ledgers_to_disk(self, frozen_ledgers: dict[str, PerfLedger] = None):
+        if frozen_ledgers is None:
+            frozen_ledgers = self._frozen_ledgers
+
+        file_path = ValiBkpUtils.get_frozen_perf_ledgers_path(self.running_unit_tests)
+
+        serializable_ledgers = {}
+        for hotkey, ledger in frozen_ledgers.items():
+            if isinstance(ledger, PerfLedger):
+                serializable_ledgers[hotkey] = ledger.to_dict()
+            elif isinstance(ledger, dict):
                 if 'portfolio' in ledger:
                     pl = ledger['portfolio']
                     serializable_ledgers[hotkey] = pl.to_dict() if isinstance(pl, PerfLedger) else pl
@@ -1956,4 +2032,6 @@ class PerfLedgerManager(CacheController):
                            f"n_perf_ledgers: {n_perf_ledgers}, n_hotkeys_with_positions: {n_hotkeys_with_positions}")
 
         self.save_perf_ledgers(updated_perf_ledgers)
+        if self._frozen_ledgers and not self.is_backtesting:
+            self.save_frozen_ledgers_to_disk()
         return updated_perf_ledgers

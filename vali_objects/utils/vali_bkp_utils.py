@@ -216,6 +216,12 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json"
 
     @staticmethod
+    def get_frozen_perf_ledgers_path(running_unit_tests=False) -> str:
+        """Get frozen perf_ledgers path (compressed JSON format) for eliminated miners."""
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/frozen_perf_ledgers.json.gz"
+
+    @staticmethod
     def migrate_perf_ledgers_to_compressed(running_unit_tests=False) -> bool:
         """
         Migrate perf_ledgers from .pkl or .json to .json.gz and delete old file.

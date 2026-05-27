@@ -159,6 +159,10 @@ class PerfLedgerServer(RPCServerBase):
         # Return PerfLedger objects directly - BaseManager's pickle handles serialization
         return self._manager.get_perf_ledgers(from_disk=from_disk)
 
+    def get_frozen_ledgers_rpc(self, from_disk: bool = False) -> dict:
+        """Get frozen performance ledgers via RPC."""
+        return self._manager.get_frozen_ledgers(from_disk=from_disk)
+
     def filtered_ledger_for_scoring_rpc(
         self,
         hotkeys: List[str] = None

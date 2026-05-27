@@ -59,6 +59,18 @@ class PerfLedgerClient(RPCClientBase):
         # PerfLedger objects returned directly - BaseManager's pickle handles serialization
         return self._server.get_perf_ledgers_rpc(from_disk=from_disk)
 
+    def get_frozen_ledgers(self, from_disk: bool = False) -> dict:
+        """
+        Get frozen performance ledgers for eliminated miners.
+
+        Args:
+            from_disk: If True, read from disk instead of memory
+
+        Returns:
+            Dict mapping hotkey to PerfLedger
+        """
+        return self._server.get_frozen_ledgers_rpc(from_disk=from_disk)
+
     def generate_perf_ledgers_for_analysis(self, hotkey_to_positions, t_ms: int = None) -> dict:
         """Generate performance ledgers for analysis."""
         return self._server.generate_perf_ledgers_for_analysis_rpc(hotkey_to_positions, t_ms=t_ms)
