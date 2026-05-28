@@ -142,27 +142,27 @@ class EliminationRow:
     def pretty_str(self) -> str:
         """
         Formatted string for slack webhook
-        `<hotkey>`
-        CHALLENGE_INTRADAY_DRAWDOWN
+        X `<hotkey>`
+        > ELIMINATION_REASON
         > Intraday drawdown: 0.00% | EOD drawdown: 0.00%
         > Elimination drawdown: 0.00%
         """
         lines = [
                 f"`{self.hotkey}`",
-                f"*{self.reason}*"
+                f"> *{self.reason}*"
                 ]
 
         drawdown_lines = []
         if self.intraday_drawdown_pct is not None:
-            drawdown_lines.append(f"Intraday drawdown: {self.intraday_drawdown_pct:.2%}")
+            drawdown_lines.append(f"Intraday drawdown: {self.intraday_drawdown_pct:.2f}%")
         if self.eod_drawdown_pct is not None:
-            drawdown_lines.append(f"EOD drawdown: {self.eod_drawdown_pct:.2%}")
+            drawdown_lines.append(f"EOD drawdown: {self.eod_drawdown_pct:.2f}%")
 
         if drawdown_lines:
             lines.append(f"> {' | '.join(drawdown_lines)}")
 
         if self.elimination_drawdown_pct is not None:
-            lines.append(f"> Elimination drawdown: {self.elimination_drawdown_pct:.2%}")
+            lines.append(f"> Elimination drawdown: {self.elimination_drawdown_pct:.2}%")
 
         return "\n".join(lines) + "\n"
 
@@ -637,7 +637,9 @@ class EliminationManager(CacheController):
             miner_exceeds_mdd, drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger_element=ledger)
 
             if miner_exceeds_mdd:
-                self.append_elimination_row(miner_hotkey, EliminationReason.MAX_TOTAL_DRAWDOWN.value, elimination_drawdown_pct=drawdown_percentage)
+                bt.logging.info(f"[ELIMINATION] {miner_hotkey} mdd={drawdown_percentage:.2f}%, mdd elimination disabled for now")
+                # TODO enable mdd
+                # self.append_elimination_row(miner_hotkey, EliminationReason.MAX_TOTAL_DRAWDOWN.value, elimination_drawdown_pct=drawdown_percentage)
 
     def handle_zombies(self):
         """Handle zombie miners"""
