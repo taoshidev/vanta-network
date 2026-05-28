@@ -45,6 +45,7 @@ class DrawdownStats:
     last_eod_equity: float = 1.0
     intraday_drawdown_pct: float = 0.0
     eod_drawdown_pct: float = 0.0
+    last_eod_checked_ms: int | None = None
 
     @property
     def current_return(self):
@@ -380,7 +381,7 @@ class ChallengePeriodManager(CacheController):
             elimination_time_ms = current_time_ms
             if elimination_reason.is_eod_drawdown:
                 elimination_drawdown_pct = state.drawdown.eod_drawdown_pct
-                elimination_time_ms = (current_time_ms // 86400000) * 86400000  # kinda jank patch
+                elimination_time_ms = state.drawdown.last_eod_checked_ms or current_time_ms
             elif elimination_reason.is_intraday_drawdown:
                 elimination_drawdown_pct = state.drawdown.intraday_drawdown_pct
             else:
@@ -473,18 +474,19 @@ class ChallengePeriodManager(CacheController):
         return equity_ret, balance_ret
 
     @staticmethod
-    def _parse_eod_checkpoints(ledger: PerfLedger, now_ms: int) -> tuple[float, float, float]:
+    def _parse_eod_checkpoints(ledger: PerfLedger, now_ms: int) -> tuple[float, float, float, int | None]:
         """
         Parse midnight checkpoints from a ledger.
-        Returns (last_eod, daily_open_equity, eod_hwm).
+        Returns (last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms).
         """
         midnight_cps = [cp for cp in ledger.cps if cp.last_update_ms % 86400000 == 0 and cp.equity_ret > 0]
         last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
+        last_eod_checked_ms = midnight_cps[-1].last_update_ms if midnight_cps else None
         today_midnight_ms = (now_ms // 86400000) * 86400000
         today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
         daily_open_equity = today_open_cp.equity_ret if today_open_cp else last_eod
         eod_hwm = max(max(cp.equity_ret for cp in midnight_cps), 1.0) if midnight_cps else 1.0
-        return last_eod, daily_open_equity, eod_hwm
+        return last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms
 
     def _refresh_drawdown_cache(
         self,
@@ -507,7 +509,7 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
-            last_eod, daily_open_equity, eod_hwm = self._parse_eod_checkpoints(ledger, now_ms)
+            last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
             intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
 
@@ -519,7 +521,8 @@ class ChallengePeriodManager(CacheController):
                 eod_drawdown_pct=eod_drawdown_pct,
                 eod_hwm=eod_hwm,
                 intraday_drawdown_pct=intraday_drawdown_pct,
-                last_eod_equity=last_eod
+                last_eod_equity=last_eod,
+                last_eod_checked_ms=last_eod_checked_ms,
             )
 
     def _refresh_rank_cache(
