@@ -1018,7 +1018,7 @@ class EliminationManager(CacheController):
         if not recent:
             return None
 
-        msg = "*New Eliminations*\n"
+        msg = f":x: *Eliminations!* (since {TimeUtil.millis_to_formatted_date_str(since_ms)})\n"
         msg += "\n".join(row.pretty_str() for row in recent)
 
         return msg

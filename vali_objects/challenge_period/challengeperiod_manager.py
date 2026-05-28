@@ -877,7 +877,7 @@ class ChallengePeriodManager(CacheController):
         if not promotions:
             return None
 
-        msg = "*Challenge Period Promotions*\n"
-        msg += "".join(f"`{hotkey}`\n" for hotkey in promotions)
+        msg = ":moneybag: *Promotions!* :money_mouth_face:\n"
+        msg += "\n".join(f"`{hotkey} -> {self.miner_states[hotkey].current_bucket.value}`" for hotkey in promotions)
 
         return msg
