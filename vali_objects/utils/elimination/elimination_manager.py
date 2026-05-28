@@ -551,7 +551,7 @@ class EliminationManager(CacheController):
                 intraday_drawdown_pct=intraday_drawdown_pct,
                 eod_drawdown_pct=eod_drawdown_pct,
                 bucket_at_elimination=bucket_at_elimination,
-        )
+                )
 
         with self.eliminations_lock:
             dict_len_before = len(self.eliminations)
@@ -562,7 +562,14 @@ class EliminationManager(CacheController):
             # Save while holding lock to prevent concurrent disk writes
             self._save_eliminations_locked()
 
+        # Slash on new eliminations
         bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
+        is_subaccount = is_synthetic_hotkey(hotkey)
+        if not is_subaccount:
+            self._contract_client.slash_miner_collateral_proportion(hotkey)
+
+        if is_subaccount and bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            self._entity_collateral_client.try_slash_on_elimination(hotkey)
 
     def delete_eliminations(self, deleted_hotkeys):
         """
@@ -596,8 +603,6 @@ class EliminationManager(CacheController):
 
             if miner_exceeds_mdd:
                 self.append_elimination_row(miner_hotkey, EliminationReason.MAX_TOTAL_DRAWDOWN.value, elimination_drawdown_pct=drawdown_percentage)
-                if self._contract_client:
-                    self._contract_client.slash_miner_collateral_proportion(miner_hotkey)
 
     def handle_zombies(self):
         """Handle zombie miners"""
