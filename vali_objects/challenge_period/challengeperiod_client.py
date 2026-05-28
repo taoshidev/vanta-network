@@ -20,10 +20,8 @@ Usage:
         client = ChallengePeriodClient()
         client.get_testing_miners()
 """
-from typing import Optional, List
-
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
 
@@ -64,122 +62,54 @@ class ChallengePeriodClient(RPCClientBase):
             connection_mode=connection_mode
         )
 
-    # ==================== Elimination Reasons Methods ====================
-
-    def get_all_elimination_reasons(self) -> dict:
-        """Get all elimination reasons as a dict."""
-        return self._server.get_all_elimination_reasons_rpc()
-
-    def has_elimination_reasons(self) -> bool:
-        """Check if there are any elimination reasons."""
-        return self._server.has_elimination_reasons_rpc()
-
-    def clear_elimination_reasons(self) -> None:
-        """Clear all elimination reasons."""
-        self._server.clear_elimination_reasons_rpc()
-
-    def update_elimination_reasons(self, reasons_dict: dict) -> int:
-        """Bulk update elimination reasons from a dict."""
-        return self._server.update_elimination_reasons_rpc(reasons_dict)
-
-    def pop_elimination_reason(self, hotkey: str):
-        """Atomically get and remove an elimination reason for a single hotkey."""
-        return self._server.pop_elimination_reason_rpc(hotkey)
-
     # ==================== Active Miners Methods ====================
 
     def has_miner(self, hotkey: str) -> bool:
         """Fast check if a miner is in active_miners (O(1))."""
         return self._server.has_miner_rpc(hotkey)
 
-    def get_miner_bucket(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[MinerBucket]:
+    def get_miner_bucket(self, hotkey: str, timestamp_ms: int | None = None) -> MinerBucket | None:
         """Get the bucket of a miner, optionally at a specific timestamp."""
-        bucket_value = self._server.get_miner_bucket_rpc(hotkey, timestamp_ms)
-        return MinerBucket(bucket_value) if bucket_value else None
+        return self._server.get_miner_bucket_rpc(hotkey, timestamp_ms)
 
-    def get_miner_start_time(self, hotkey: str) -> Optional[int]:
+    def get_miner_start_time(self, hotkey: str) -> int | None:
         """Get the start time of a miner's current bucket."""
         return self._server.get_miner_start_time_rpc(hotkey)
 
-    def get_hotkeys_by_bucket(self, bucket: MinerBucket) -> List[str]:
+    def get_hotkeys_by_bucket(self, buckets: MinerBucket | list[MinerBucket]) -> list[str]:
         """Get all hotkeys in a specific bucket."""
-        return self._server.get_hotkeys_by_bucket_rpc(bucket.value)
+        return self._server.get_hotkeys_by_bucket_rpc(buckets)
 
-    def get_all_miner_hotkeys(self) -> List[str]:
+    def get_all_miner_hotkeys(self) -> list[str]:
         """Get list of all active miner hotkeys."""
         return self._server.get_all_miner_hotkeys_rpc()
-
-    def set_miner_bucket(
-        self,
-        hotkey: str,
-        bucket: MinerBucket,
-        start_time: int,
-    ) -> bool:
-        """Set or update a miner's bucket information."""
-        return self._server.set_miner_bucket_rpc(hotkey, bucket.value, start_time)
 
     def get_dashboard(self, hotkey) -> dict | None:
         return self._server.get_dashboard_rpc(hotkey)
 
-    def remove_miner(self, hotkey: str) -> bool:
+    def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int) -> bool:
+        """Set or update a miner's bucket information."""
+        return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms)
+
+    def remove_miners(self, hotkeys: str) -> bool:
         """Remove a miner from active_miners."""
-        return self._server.remove_miner_rpc(hotkey)
+        return self._server.remove_miners_rpc(hotkeys)
 
-    def write_challengeperiod_from_memory_to_disk(self):
-        return self._server.write_challengeperiod_from_memory_to_disk_rpc()
-
-    def clear_all_miners(self) -> None:
-        """Clear all miners from active_miners."""
-        self._server.clear_all_miners_rpc()
-
-    def update_miners(self, miners_dict) -> int:
-        """Bulk update active_miners from a dict."""
-        # Convert List[BucketEntry] to list-of-dicts for RPC serialization
-        miners_rpc_dict = {}
-        for hotkey, data in miners_dict.items():
-            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], BucketEntry):
-                miners_rpc_dict[hotkey] = [
-                    {"bucket": entry.bucket.value, "bucket_start_time": entry.start_time_ms}
-                    for entry in data
-                ]
-            elif isinstance(data, list):
-                miners_rpc_dict[hotkey] = data
-            elif isinstance(data, tuple): # support for testing
-                miners_rpc_dict[hotkey] = [
-                    BucketEntry(data[0], data[1]),
-                    BucketEntry(data[2], data[3])
-                ]
-            else:
-                raise ValueError(f"Invalid data type for miner {hotkey}: {type(data)}")
-
-        return self._server.update_miners_rpc(miners_rpc_dict)
-
-    def get_testing_miners(self) -> dict:
+    def get_testing_miners(self) -> dict[str, int]:
         """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_testing_miners_rpc()
+        return self._server.get_miners_rpc([MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE])
 
-    def get_success_miners(self) -> dict:
+    def get_success_miners(self) -> dict[str, int]:
         """Get all MAINCOMP bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_success_miners_rpc()
+        return self._server.get_miners_rpc([MinerBucket.MAINCOMP, MinerBucket.SUBACCOUNT_FUNDED])
 
-    def get_probation_miners(self) -> dict:
+    def get_probation_miners(self) -> dict[str, int]:
         """Get all PROBATION bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_probation_miners_rpc()
+        return self._server.get_miners_rpc(MinerBucket.PROBATION)
 
-    def get_plagiarism_miners(self) -> dict:
+    def get_plagiarism_miners(self) -> dict[str, int]:
         """Get all PLAGIARISM bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_plagiarism_miners_rpc()
-
-    def get_miner_scores(self) -> tuple:
-        """
-        Get cached miner scores for MinerStatisticsManager.
-
-        Returns:
-            tuple containing:
-            - asset_softmaxed_scores: dict[asset_class, dict[hotkey, score]]
-            - asset_competitiveness: dict[asset_class, competitiveness_score]
-        """
-        return self._server.get_miner_scores_rpc()
+        return self._server.get_miners_rpc(MinerBucket.PLAGIARISM)
 
     # ==================== Daemon Methods ====================
 
@@ -200,116 +130,23 @@ class ChallengePeriodClient(RPCClientBase):
 
     # ==================== Management Methods ====================
 
-    def _clear_challengeperiod_in_memory_and_disk(self):
-        """Clear all challenge period data (memory and disk)."""
-        self._server.clear_challengeperiod_in_memory_and_disk_rpc()
-
-    def clear_test_state(self) -> None:
-        """
-        Clear ALL test-sensitive state (comprehensive reset for test isolation).
-
-        This resets:
-        - Challenge period data (active_miners, elimination_reasons)
-        - refreshed_challengeperiod_start_time flag (prevents test contamination)
-        - Any other stateful flags
-
-        Should be called by ServerOrchestrator.clear_all_test_data() to ensure
-        complete test isolation when servers are shared across tests.
-
-        Use this instead of _clear_challengeperiod_in_memory_and_disk() alone to prevent test contamination.
-        """
-        self._server.clear_test_state_rpc()
-
-    def _write_challengeperiod_from_memory_to_disk(self):
-        """Write challenge period data from memory to disk."""
-        self._server.write_challengeperiod_from_memory_to_disk_rpc()
-
     def sync_challenge_period_data(self, active_miners_sync):
         """Sync challenge period data from another validator."""
         self._server.sync_challenge_period_data_rpc(active_miners_sync)
 
-    def refresh(self, current_time: int = None, iteration_epoch=None):
-        """Refresh the challenge period manager."""
-        self._server.refresh_rpc(current_time=current_time, iteration_epoch=iteration_epoch)
-
-    def meets_time_criteria(self, current_time, bucket_start_time, bucket):
-        """Check if a miner meets time criteria for their bucket."""
-        return self._server.meets_time_criteria_rpc(current_time, bucket_start_time, bucket.value)
-
-    def remove_eliminated(self, eliminations=None):
-        """Remove eliminated miners from active_miners."""
-        self._server.remove_eliminated_rpc(eliminations=eliminations)
-
-    def update_plagiarism_miners(self, current_time, plagiarism_miners):
-        """Update plagiarism miners."""
-        self._server.update_plagiarism_miners_rpc(current_time, plagiarism_miners)
-
-    def prepare_plagiarism_elimination_miners(self, current_time):
-        """Prepare plagiarism miners for elimination."""
-        return self._server.prepare_plagiarism_elimination_miners_rpc(current_time)
-
-    def _demote_plagiarism_in_memory(self, hotkeys, current_time):
-        """Demote miners to plagiarism bucket (exposed for testing)."""
-        self._server.demote_plagiarism_in_memory_rpc(hotkeys, current_time)
-
-    def promote_plagiarism_to_previous_bucket_in_memory(self, hotkeys, current_time):
-        """Promote plagiarism miners to their previous bucket (exposed for testing)."""
-        self._server.promote_plagiarism_to_previous_bucket_in_memory_rpc(hotkeys, current_time)
-
-    def eliminate_challenge_period_in_memory(self, eliminations_with_reasons):
-        """Eliminate miners from challenge period (exposed for testing)."""
-        self._server.eliminate_challengeperiod_in_memory_rpc(eliminations_with_reasons)
-
-    def add_challenge_period_testing_in_memory_and_disk(
-        self,
-        new_hotkeys,
-        eliminations,
-        hk_to_first_order_time,
-        default_time
-    ):
-        """Add miners to challenge period (exposed for testing)."""
-        self._server.add_challengeperiod_testing_in_memory_and_disk_rpc(
-            new_hotkeys=new_hotkeys,
-            eliminations=eliminations,
-            hk_to_first_order_time=hk_to_first_order_time,
-            default_time=default_time
-        )
-
-    def promote_challengeperiod_in_memory(self, hotkeys, current_time):
-        """Promote miners to main competition (exposed for testing)."""
-        self._server.promote_challengeperiod_in_memory_rpc(hotkeys, current_time)
-
-    def inspect(
-        self,
-        positions,
-        ledger,
-        success_hotkeys,
-        probation_hotkeys,
-        inspection_hotkeys,
-        current_time,
-        hk_to_first_order_time=None,
-        asset_softmaxed_scores=None
-    ):
-        """Run challenge period inspection (exposed for testing)."""
-        return self._server.inspect_rpc(
-            positions=positions,
-            ledger=ledger,
-            success_hotkeys=success_hotkeys,
-            probation_hotkeys=probation_hotkeys,
-            inspection_hotkeys=inspection_hotkeys,
-            current_time=current_time,
-            hk_to_first_order_time=hk_to_first_order_time,
-            asset_softmaxed_scores=asset_softmaxed_scores
-        )
+    def clear_test_state(self) -> None:
+        """Clear all miner states for test isolation."""
+        self._server.clear_test_state_rpc()
 
     def to_checkpoint_dict(self) -> dict:
         """Get challenge period data as a checkpoint dict for serialization."""
         return self._server.to_checkpoint_dict_rpc()
 
-    def set_last_update_time(self, timestamp_ms: int = 0) -> None:
-        """Set the last update time (for testing - to force-allow refresh)."""
-        self._server.set_last_update_time_rpc(timestamp_ms)
-
-    def get_drawdown_stats(self, synthetic_hotkey: str) -> Optional[dict]:
+    def get_drawdown_stats(self, synthetic_hotkey: str) -> dict | None:
         """Get drawdown statistics for a synthetic hotkey for dashboard display."""
         return self._server.get_drawdown_stats_rpc(synthetic_hotkey)
+
+    def get_miner_scores(self) -> tuple:
+        """ Get cached miner scores for MinerStatisticsManager. """
+        return self._server.get_miner_scores_rpc()
+

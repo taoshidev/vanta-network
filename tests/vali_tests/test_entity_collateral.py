@@ -88,7 +88,7 @@ class TestEntityCollateral(TestBase):
         ])
 
         # MDD percentage (same as manager uses)
-        self.mdd_percent = ValiConfig.SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
+        self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
 
     def tearDown(self):
         """Per-test teardown: Clear data."""

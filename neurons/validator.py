@@ -447,7 +447,7 @@ class Validator(ValidatorBase):
             else:
                 return False
 
-        # don't process eliminated miners
+        # don't process eliminated or deregistered miners
         # Fast local lookup from EliminationClient cache (no RPC call!) - saves 66.81ms per order
         elim_check_start = time.perf_counter()
         elimination_info = self.elimination_client.get_elimination_local_cache(synapse.dendrite.hotkey)
@@ -455,28 +455,16 @@ class Validator(ValidatorBase):
         bt.logging.info(f"[FAIL_EARLY_DEBUG] get_elimination_local_cache took {elim_check_ms:.2f}ms")
 
         if elimination_info:
-            msg = f"This miner hotkey {synapse.dendrite.hotkey} has been eliminated and cannot participate in this subnet. Try again after re-registering. elimination_info {elimination_info}"
-            bt.logging.debug(msg)
-            synapse.successfully_processed = False
-            synapse.error_message = msg
-            return True
-
-        # don't process re-registered miners
-        # Fast local lookup from EliminationClient cache (no RPC call!) - saves 11.26ms per order
-        rereg_check_start = time.perf_counter()
-        rereg_info = self.elimination_client.get_departed_hotkey_info_local_cache(synapse.dendrite.hotkey)
-        rereg_check_ms = (time.perf_counter() - rereg_check_start) * 1000
-        bt.logging.info(f"[FAIL_EARLY_DEBUG] get_departed_hotkey_info_local_cache took {rereg_check_ms:.2f}ms")
-
-        if rereg_info:
-            # Use cached departure info (already fetched in thread-safe read above)
-            detected_ms = rereg_info.get("detected_ms", 0)
-            dereg_date = TimeUtil.millis_to_formatted_date_str(detected_ms) if detected_ms else "unknown"
-
-            msg = (f"This miner hotkey {synapse.dendrite.hotkey} was previously de-registered and is not allowed to re-register. "
-                   f"De-registered on: {dereg_date} UTC. "
-                   f"Re-registration is not permitted on this subnet.")
-            bt.logging.warning(msg)
+            if elimination_info.get("reason") == "DEREGISTERED":
+                detected_ms = elimination_info.get("elimination_initiated_time_ms", 0)
+                dereg_date = TimeUtil.millis_to_formatted_date_str(detected_ms) if detected_ms else "unknown"
+                msg = (f"This miner hotkey {synapse.dendrite.hotkey} was previously de-registered and is not allowed to re-register. "
+                       f"De-registered on: {dereg_date} UTC. "
+                       f"Re-registration is not permitted on this subnet.")
+                bt.logging.warning(msg)
+            else:
+                msg = f"This miner hotkey {synapse.dendrite.hotkey} has been eliminated and cannot participate in this subnet. Try again after re-registering. elimination_info {elimination_info}"
+                bt.logging.debug(msg)
             synapse.successfully_processed = False
             synapse.error_message = msg
             return True

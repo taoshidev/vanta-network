@@ -21,6 +21,7 @@ from typing import Dict, Set, List, Optional
 import bittensor as bt
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from time_util.time_util import TimeUtil
 
@@ -105,6 +106,10 @@ class EliminationClient(RPCClientBase):
         """Get all eliminated hotkeys as a set."""
         return self._server.get_eliminated_hotkeys_rpc()
 
+    def get_eliminated_hotkeys_by_bucket(self, buckets: List[MinerBucket]) -> Set[str]:
+        """Get eliminated hotkeys whose bucket_at_elimination is in the given list."""
+        return self._server.get_eliminated_hotkeys_by_bucket_rpc(buckets)
+
     def get_eliminations_from_memory(self) -> List[dict]:
         """Get all eliminations as a list."""
         return self._server.get_eliminations_from_memory_rpc()
@@ -127,40 +132,30 @@ class EliminationClient(RPCClientBase):
     def append_elimination_row(
         self,
         hotkey: str,
-        current_dd: float,
         reason: str,
-        t_ms: int = None,
-        price_info: dict = None,
-        return_info: dict = None
+        elimination_drawdown_pct: float | None = None,
+        intraday_drawdown_pct: float | None = None,
+        eod_drawdown_pct: float | None = None,
+        elimination_time_ms: int | None = None,
+        bucket_at_elimination: MinerBucket | None = None,
     ) -> None:
         """
         Add elimination row.
 
         Args:
             hotkey: The hotkey to eliminate
-            current_dd: Current drawdown
             reason: Elimination reason
+            elimination_dd: Overall drawdown at elimination
+            intraday_dd: Intraday drawdown at elimination
+            eod_dd: End-of-day drawdown at elimination
             t_ms: Optional timestamp in milliseconds
-            price_info: Optional price information
-            return_info: Optional return information
+            bucket_at_elimination: The miner's bucket at the time of elimination
         """
         self._server.append_elimination_row_rpc(
-            hotkey, current_dd, reason,
-            t_ms=t_ms, price_info=price_info, return_info=return_info
+            hotkey, reason, elimination_drawdown_pct=elimination_drawdown_pct,
+            intraday_drawdown_pct=intraday_drawdown_pct, eod_drawdown_pct=eod_drawdown_pct,
+            elimination_time_ms=elimination_time_ms, bucket_at_elimination=bucket_at_elimination,
         )
-
-    def add_elimination(self, hotkey: str, elimination_data: dict) -> bool:
-        """
-        Add or update an elimination record.
-
-        Args:
-            hotkey: The hotkey to eliminate
-            elimination_data: Elimination dict with required fields
-
-        Returns:
-            True if added (new), False if already exists (updated)
-        """
-        return self._server.add_elimination_rpc(hotkey, elimination_data)
 
     def remove_elimination(self, hotkey: str) -> bool:
         """
@@ -176,8 +171,7 @@ class EliminationClient(RPCClientBase):
 
     def delete_eliminations(self, deleted_hotkeys) -> None:
         """Delete multiple eliminations."""
-        for hotkey in deleted_hotkeys:
-            self.remove_elimination(hotkey)
+        self._server.delete_eliminations_rpc(deleted_hotkeys)
 
     def sync_eliminations(self, dat: list) -> list:
         """
@@ -283,16 +277,6 @@ class EliminationClient(RPCClientBase):
             iteration_epoch=iteration_epoch
         )
 
-    def handle_perf_ledger_eliminations(self, iteration_epoch=None) -> None:
-        """Process performance ledger eliminations."""
-        self._server.handle_perf_ledger_eliminations_rpc(
-            iteration_epoch=iteration_epoch
-        )
-
-    def handle_first_refresh(self, iteration_epoch=None) -> None:
-        """Handle first refresh on startup."""
-        self._server.handle_first_refresh_rpc(iteration_epoch)
-
     def handle_mdd_eliminations(self, iteration_epoch=None) -> None:
         """Check for maximum drawdown eliminations."""
         self._server.handle_mdd_eliminations_rpc(
@@ -346,42 +330,6 @@ class EliminationClient(RPCClientBase):
         """Request daemon start on server."""
         self._server.start_daemon_rpc()
 
-    # ==================== Utility Methods ====================
-
-    def generate_elimination_row(
-        self,
-        hotkey: str,
-        current_dd: float,
-        reason: str,
-        t_ms: int = None,
-        price_info: dict = None,
-        return_info: dict = None
-    ) -> dict:
-        """
-        Generate elimination row dict (client-side helper).
-
-        Args:
-            hotkey: The hotkey to eliminate
-            current_dd: Current drawdown
-            reason: Elimination reason
-            t_ms: Optional timestamp in milliseconds
-            price_info: Optional price information
-            return_info: Optional return information
-
-        Returns:
-            Elimination row dict
-        """
-        if t_ms is None:
-            t_ms = TimeUtil.now_in_millis()
-        return {
-            'hotkey': hotkey,
-            'dd': current_dd,
-            'reason': reason,
-            'elimination_initiated_time_ms': t_ms,
-            'price_info': price_info or {},
-            'return_info': return_info or {}
-        }
-
     # ==================== Local Cache Support ====================
 
     def populate_cache(self) -> Dict[str, any]:
@@ -392,14 +340,10 @@ class EliminationClient(RPCClientBase):
         local_cache_refresh_period_ms is configured.
 
         Returns:
-            Dict with keys: 'eliminations', 'departed_hotkeys'
+            Dict with key: 'eliminations'
         """
         eliminations = self._server.get_eliminations_dict_rpc()
-        departed_hotkeys = self._server.get_departed_hotkeys_rpc()
-        return {
-            "eliminations": eliminations,
-            "departed_hotkeys": departed_hotkeys
-        }
+        return {"eliminations": eliminations}
 
     def get_elimination_local_cache(self, hotkey: str) -> Optional[dict]:
         """
@@ -429,11 +373,14 @@ class EliminationClient(RPCClientBase):
             hotkey: The hotkey to look up
 
         Returns:
-            Departed hotkey info dict if found, None otherwise
+            Elimination dict if found and reason is DEREGISTERED, None otherwise
         """
         with self._local_cache_lock:
-            departed = self._local_cache.get("departed_hotkeys", {})
-            return departed.get(hotkey)
+            eliminations = self._local_cache.get("eliminations", {})
+            info = eliminations.get(hotkey)
+            if info and info.get("reason") == "DEREGISTERED":
+                return info
+            return None
 
     def is_hotkey_eliminated_local_cache(self, hotkey: str) -> bool:
         """
@@ -463,8 +410,9 @@ class EliminationClient(RPCClientBase):
             hotkey: The hotkey to check
 
         Returns:
-            True if hotkey is in departed_hotkeys, False otherwise
+            True if hotkey has a DEREGISTERED elimination, False otherwise
         """
         with self._local_cache_lock:
-            departed = self._local_cache.get("departed_hotkeys", {})
-            return hotkey in departed
+            eliminations = self._local_cache.get("eliminations", {})
+            info = eliminations.get(hotkey)
+            return bool(info and info.get("reason") == "DEREGISTERED")

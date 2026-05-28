@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 import copy
 from datetime import datetime, timezone, timedelta, date
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from time_util.time_util import ForexHolidayCalendar
 import bittensor as bt
@@ -516,7 +516,7 @@ class LedgerUtils:
         return final_drawdown
 
     @staticmethod
-    def is_beyond_max_drawdown(ledger_element: PerfLedger, maximum_drawdown_percent: Optional[float] = None):
+    def is_beyond_max_drawdown(ledger_element: PerfLedger | None, maximum_drawdown_percent: Optional[float] = None):
         """Checks if the maximum drawdown percentage is surpassed"""
         if ledger_element is None:
             return False, 0
@@ -593,8 +593,8 @@ class LedgerUtils:
     @staticmethod
     def calculate_dynamic_minimum_days_for_asset_classes(
         ledger_dict: dict[str, PerfLedger],
-        asset_classes: list
-    ) -> dict:
+        asset_classes: list[TradePairCategory]
+    ) -> dict[TradePairCategory, int]:
         """
         Calculates the dynamic minimum participation days for specific asset classes.
         Returns the number of days that the Nth longest participating miner has (where N is

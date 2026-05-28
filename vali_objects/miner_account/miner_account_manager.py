@@ -503,13 +503,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         return collateral_record
 
-    def reset_account_fields(self, hotkey: str) -> bool:
+    def reset_account_fields(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
             if not account:
                 return False
 
             account.reset_account_fields()
+            if miner_bucket:
+                account.miner_bucket = miner_bucket
 
             self._save_accounts_to_disk()
 

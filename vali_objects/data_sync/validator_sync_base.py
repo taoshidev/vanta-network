@@ -163,26 +163,8 @@ class ValidatorSyncBase():
             self._limit_order_client.sync_limit_orders(limit_orders_data)
 
         challengeperiod_data = candidate_data.get('challengeperiod', {})
-        if challengeperiod_data:  # Only in autosync as of now.
-            orig_testing_keys = set(self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.CHALLENGE))
-            orig_success_keys = set(self._challenge_period_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP))
-
-            challengeperiod_dict = ChallengePeriodManager.parse_checkpoint_dict(challengeperiod_data)
-            new_testing_keys = {
-                    hotkey for hotkey, history in challengeperiod_dict.items()
-                    if history[0].bucket is MinerBucket.CHALLENGE
-                    }
-            new_success_keys = {
-                    hotkey for hotkey, history in challengeperiod_dict.items()
-                    if history[0].bucket is MinerBucket.MAINCOMP
-                    }
-
-            bt.logging.info(f"Challengeperiod testing sync keys added: {new_testing_keys-orig_testing_keys}\n"
-                            f"Challengeperiod testing sync keys removed: {orig_testing_keys - new_testing_keys}\n"
-                            f"Challengeperiod success sync keys added: {new_success_keys - orig_success_keys}\n"
-                            f"Challengeperiod success sync keys removed: {orig_success_keys - new_success_keys}")
-            if not shadow_mode:
-                self._challenge_period_client.sync_challenge_period_data(challengeperiod_data)
+        if challengeperiod_data and not shadow_mode:  # Only in autosync as of now.
+            self._challenge_period_client.sync_challenge_period_data(challengeperiod_data)
 
         # Sync miner account sizes if available
         miner_account_sizes_data = candidate_data.get('miner_account_sizes', {})

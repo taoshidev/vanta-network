@@ -27,6 +27,7 @@ import threading
 
 from vali_objects.utils.elimination.elimination_manager import EliminationManager
 from typing import Dict, Set, List, Optional
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig, TradePair
 from setproctitle import setproctitle
 from shared_objects.rpc.common_data_client import CommonDataClient
@@ -94,7 +95,6 @@ class EliminationServer(RPCServerBase):
 
         # Cache for fast fail-early checks (auto-refreshed by daemon)
         self._eliminations_cache = {}  # {hotkey: elimination_dict}
-        self._departed_hotkeys_cache = {}  # {hotkey: departure_info_dict}
         self._cache_lock = threading.Lock()
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
@@ -111,7 +111,7 @@ class EliminationServer(RPCServerBase):
             daemon_interval_s=ValiConfig.ELIMINATION_CHECK_INTERVAL_MS // 1000,  # 5 minutes (300s)
             hang_timeout_s=600.0,  # 10 minutes (prevents false alarms during startup)
             connection_mode=connection_mode,
-            daemon_stagger_s=20
+            daemon_stagger_s=60
         )
 
         # Initial cache population
@@ -127,7 +127,7 @@ class EliminationServer(RPCServerBase):
 
     # ==================== RPCServerBase Abstract Methods ====================
 
-    def run_daemon_iteration(self) -> None:
+    def run_daemon_iteration(self) -> str | None:
         """
         Single iteration of daemon work. Called by RPCServerBase daemon loop.
 
@@ -138,7 +138,7 @@ class EliminationServer(RPCServerBase):
             return
 
         iteration_epoch = self.sync_epoch
-        self._manager.process_eliminations(iteration_epoch=iteration_epoch)
+        return self._manager.process_eliminations(iteration_epoch=iteration_epoch)
 
     @property
     def sync_in_progress(self):
@@ -162,18 +162,11 @@ class EliminationServer(RPCServerBase):
 
         # Acquire manager lock to get consistent snapshot
         with manager_lock:
-            # Get snapshots while holding manager lock
             eliminations_snapshot = dict(self._manager.eliminations)
-            departed_snapshot = dict(self._manager.departed_hotkeys)
 
-        # Update cache (release manager lock first to avoid nested locking)
         with self._cache_lock:
             self._eliminations_cache = eliminations_snapshot
-            self._departed_hotkeys_cache = departed_snapshot
-            bt.logging.debug(
-                f"[CACHE_REFRESH] Refreshed: {len(self._eliminations_cache)} eliminated, "
-                f"{len(self._departed_hotkeys_cache)} departed hotkeys"
-            )
+            bt.logging.debug(f"[CACHE_REFRESH] Refreshed: {len(self._eliminations_cache)} eliminated")
 
     def _cache_refresh_loop(self):
         """Background daemon that refreshes cache periodically."""
@@ -208,7 +201,7 @@ class EliminationServer(RPCServerBase):
         """Add service-specific health check details."""
         return {
             "num_eliminations": len(self._manager.eliminations),
-            "num_departed_hotkeys": len(self._manager.departed_hotkeys)
+            "num_deregistered": sum(1 for r in self._manager.eliminations.values() if r.reason == "DEREGISTERED")
         }
 
     def is_hotkey_eliminated_rpc(self, hotkey: str) -> bool:
@@ -226,6 +219,10 @@ class EliminationServer(RPCServerBase):
         """Get all eliminated hotkeys"""
         return self._manager.get_eliminated_hotkeys()
 
+    def get_eliminated_hotkeys_by_bucket_rpc(self, buckets: List[MinerBucket]) -> Set[str]:
+        """Get eliminated hotkeys whose bucket_at_elimination is in the given list"""
+        return self._manager.get_eliminated_hotkeys_by_bucket(buckets)
+
     def get_eliminations_from_memory_rpc(self) -> List[dict]:
         """Get all eliminations as a list"""
         return self._manager.get_eliminations_from_memory()
@@ -234,15 +231,17 @@ class EliminationServer(RPCServerBase):
         """Load eliminations from disk"""
         return self._manager.get_eliminations_from_disk()
 
-    def append_elimination_row_rpc(self, hotkey: str, current_dd: float, reason: str,
-                                    t_ms: int = None, price_info: dict = None, return_info: dict = None) -> None:
+    def append_elimination_row_rpc(
+            self, hotkey: str, reason: str, elimination_drawdown_pct: float | None = None,
+            intraday_drawdown_pct: float | None = None, eod_drawdown_pct: float | None = None,
+            elimination_time_ms: int | None = None,
+            bucket_at_elimination: MinerBucket | None = None) -> None:
         """Add elimination row."""
-        self._manager.append_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
-                                            price_info=price_info, return_info=return_info)
-
-    def add_elimination_rpc(self, hotkey: str, elimination_data: dict) -> bool:
-        """Add or update an elimination record. Returns True if new, False if updated."""
-        return self._manager.add_elimination(hotkey, elimination_data)
+        self._manager.append_elimination_row(
+            hotkey, reason, elimination_drawdown_pct=elimination_drawdown_pct,
+            intraday_drawdown_pct=intraday_drawdown_pct, eod_drawdown_pct=eod_drawdown_pct,
+            elimination_time_ms=elimination_time_ms, bucket_at_elimination=bucket_at_elimination,
+        )
 
     def remove_elimination_rpc(self, hotkey: str) -> bool:
         """Remove elimination. Returns True if removed, False if not found."""
@@ -297,6 +296,10 @@ class EliminationServer(RPCServerBase):
         """Get all eliminated hotkeys"""
         return self.get_eliminated_hotkeys_rpc()
 
+    def get_eliminated_hotkeys_by_bucket(self, buckets: List[MinerBucket]) -> Set[str]:
+        """Get eliminated hotkeys whose bucket_at_elimination is in the given list"""
+        return self.get_eliminated_hotkeys_by_bucket_rpc(buckets)
+
     def get_eliminations_from_memory(self) -> List[dict]:
         """Get all eliminations as a list"""
         return self.get_eliminations_from_memory_rpc()
@@ -332,7 +335,9 @@ class EliminationServer(RPCServerBase):
     def get_cached_elimination_data_rpc(self) -> tuple:
         """Get cached elimination data."""
         with self._cache_lock:
-            return (dict(self._eliminations_cache), dict(self._departed_hotkeys_cache))
+            eliminations = dict(self._eliminations_cache)
+        departed = self._manager.get_departed_hotkeys()
+        return (eliminations, departed)
 
     def get_eliminations_lock_rpc(self):
         """This method should not be called via RPC - lock is local to server"""
@@ -344,10 +349,6 @@ class EliminationServer(RPCServerBase):
     def process_eliminations_rpc(self, iteration_epoch=None) -> None:
         """Trigger elimination processing via RPC."""
         self._manager.process_eliminations(iteration_epoch=iteration_epoch)
-
-    def handle_perf_ledger_eliminations_rpc(self, iteration_epoch=None) -> None:
-        """Process performance ledger eliminations."""
-        self._manager.handle_perf_ledger_eliminations(iteration_epoch=iteration_epoch)
 
     def get_first_refresh_ran_rpc(self) -> bool:
         """Get the first_refresh_ran flag."""
@@ -404,27 +405,11 @@ class EliminationServer(RPCServerBase):
         """Get eliminations dict (copy)."""
         return self._manager.get_eliminations_dict()
 
-    def handle_first_refresh_rpc(self, iteration_epoch=None) -> None:
-        """Handle first refresh on startup."""
-        self._manager.handle_first_refresh(iteration_epoch)
-
-    # start_daemon_rpc() inherited from RPCServerBase
-
     # ==================== Internal Methods ====================
 
     def get_eliminations_lock(self):
         """Get the local eliminations lock (server-side only)"""
         return self._manager.get_eliminations_lock()
-
-    def generate_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
-        """Generate elimination row dict."""
-        return self._manager.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
-                                                      price_info=price_info, return_info=return_info)
-
-    def append_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
-        """Add elimination row"""
-        self._manager.append_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
-                                             price_info=price_info, return_info=return_info)
 
     def delete_eliminations(self, deleted_hotkeys):
         """Delete multiple eliminations"""

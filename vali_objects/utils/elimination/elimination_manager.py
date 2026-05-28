@@ -18,14 +18,14 @@ Usage:
     # Process eliminations
     manager.process_eliminations(iteration_epoch)
 """
+from dataclasses import dataclass
 import shutil
 import threading
-from copy import deepcopy
 from enum import Enum
-from typing import Dict, Set, List, Optional
 
 import bittensor as bt
 
+from vali_objects.enums.order_source_enum import OrderSource
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
@@ -48,6 +48,7 @@ from entity_management.entity_utils import is_synthetic_hotkey
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_utils.position_utils import PositionUtils
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 
 
 # ==================== Elimination Types ====================
@@ -55,20 +56,115 @@ from vali_objects.position_management.position_utils.position_utils import Posit
 class EliminationReason(Enum):
     """Reasons for miner elimination."""
     ZOMBIE = "ZOMBIE"
-    IDLE = "IDLE"
+    INACTIVE = "INACTIVE"
     PLAGIARISM = "PLAGIARISM"
     MAX_TOTAL_DRAWDOWN = "MAX_TOTAL_DRAWDOWN"
     FAILED_CHALLENGE_PERIOD_TIME = "FAILED_CHALLENGE_PERIOD_TIME"
+    FAILED_PROBATION_TIME = "FAILED_PROBATION_TIME"
     FAILED_CHALLENGE_PERIOD_DRAWDOWN = "FAILED_CHALLENGE_PERIOD_DRAWDOWN"
     FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN = "FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN"
     FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN = "FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN"
     FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN = "FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN"
     FAILED_FUNDED_PERIOD_EOD_DRAWDOWN = "FAILED_FUNDED_PERIOD_EOD_DRAWDOWN"
     LIQUIDATED = "LIQUIDATED"
+    DEREGISTERED = "DEREGISTERED"
 
+    @property
+    def is_intraday_drawdown(self):
+        return self in (self.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN, self.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
+
+    @property
+    def is_eod_drawdown(self):
+        return self in (self.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN, self.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN)
 
 # Constants for departed hotkeys tracking
 DEPARTED_HOTKEYS_KEY = "departed_hotkeys"
+
+@dataclass
+class EliminationRow:
+    hotkey: str
+    reason: str
+    elimination_initiated_time_ms: int
+    elimination_drawdown_pct: float | None = None
+    intraday_drawdown_pct: float | None = None
+    eod_drawdown_pct: float | None = None
+    bucket_at_elimination: MinerBucket | None = None
+    positions_closed: bool = False  # Don't necesesarily have to track, but saves calls to position rpc
+    row_added_ms: int | None = None
+
+    def __post_init__(self):
+        if self.bucket_at_elimination is not None:
+            return
+
+        if self.reason in (EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
+                           EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value):
+            self.bucket_at_elimination = MinerBucket.SUBACCOUNT_FUNDED
+        elif self.reason in (EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
+                           EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value):
+            self.bucket_at_elimination = MinerBucket.SUBACCOUNT_CHALLENGE
+        elif self.reason in (EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value,
+                             EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value):
+            self.bucket_at_elimination = MinerBucket.CHALLENGE
+        elif self.reason == EliminationReason.FAILED_PROBATION_TIME.value:
+            self.bucket_at_elimination = MinerBucket.PROBATION
+        elif self.reason == EliminationReason.PLAGIARISM.value:
+            self.bucket_at_elimination = MinerBucket.PLAGIARISM
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'EliminationRow':
+        raw_bucket = d.get('bucket_at_elimination')
+        return cls(
+            hotkey=d['hotkey'],
+            reason=d['reason'],
+            elimination_initiated_time_ms=d['elimination_initiated_time_ms'],
+            elimination_drawdown_pct=d.get('elimination_drawdown_pct') or d.get('dd'),
+            intraday_drawdown_pct=d.get('intraday_dd'),
+            eod_drawdown_pct=d.get('eod_dd'),
+            bucket_at_elimination=MinerBucket(raw_bucket) if raw_bucket is not None else None,
+            positions_closed=d.get('positions_closed', False),
+            row_added_ms=d.get('row_added_ms'),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            'hotkey': self.hotkey,
+            'dd': self.elimination_drawdown_pct,  # TODO remove after dashboard update
+            'elimination_drawdown_pct': self.elimination_drawdown_pct,
+            'intraday_dd': self.intraday_drawdown_pct,
+            'eod_dd': self.eod_drawdown_pct,
+            'reason': self.reason,
+            'elimination_initiated_time_ms': self.elimination_initiated_time_ms,
+            'bucket_at_elimination': self.bucket_at_elimination.value if self.bucket_at_elimination is not None else None,
+            'positions_closed': self.positions_closed,
+            'row_added_ms': self.row_added_ms,
+        }
+
+    def pretty_str(self) -> str:
+        """
+        Formatted string for slack webhook
+        X `<hotkey>`
+        > ELIMINATION_REASON
+        > Intraday drawdown: 0.00% | EOD drawdown: 0.00%
+        > Elimination drawdown: 0.00%
+        """
+        lines = [
+                f"`{self.hotkey}`",
+                f"> *{self.reason}*"
+                ]
+
+        drawdown_lines = []
+        if self.intraday_drawdown_pct is not None:
+            drawdown_lines.append(f"Intraday drawdown: {self.intraday_drawdown_pct:.2f}%")
+        if self.eod_drawdown_pct is not None:
+            drawdown_lines.append(f"EOD drawdown: {self.eod_drawdown_pct:.2f}%")
+
+        if drawdown_lines:
+            lines.append(f"> {' | '.join(drawdown_lines)}")
+
+        if self.elimination_drawdown_pct is not None:
+            lines.append(f"> Elimination drawdown: {self.elimination_drawdown_pct:.2}%")
+
+        return "\n".join(lines) + "\n"
 
 
 # ==================== Manager Implementation ====================
@@ -85,8 +181,7 @@ class EliminationManager(CacheController):
     ## Thread Safety and Lock Ordering
 
     This manager uses `self.eliminations_lock` (threading.Lock) to protect access
-    to shared state: `self.eliminations`, `self.departed_hotkeys`, and
-    `self.previous_metagraph_hotkeys`.
+    to shared state: `self.eliminations` and `self.previous_metagraph_hotkeys`.
 
     ### Lock Type
     - `eliminations_lock` is a non-reentrant lock (threading.Lock)
@@ -175,8 +270,6 @@ class EliminationManager(CacheController):
 
     **Locked Check-Then-Act** (prevent TOCTOU):
     - `is_hotkey_re_registered()` - check departed + check metagraph
-    - `handle_first_refresh()` - check + set first_refresh_ran flag
-    - `handle_challenge_period_eliminations()` - check exists + add elimination
 
     **Unlocked Methods** (no shared state or read-only):
     - `is_hotkey_eliminated()` - single dict lookup (GIL-protected)
@@ -228,11 +321,10 @@ class EliminationManager(CacheController):
         )
 
         # Create RPC client for ChallengePeriodManager
-        self.cp_client = ChallengePeriodClient(
+        self._challenge_period_client = ChallengePeriodClient(
             connection_mode=connection_mode
         )
 
-        self.first_refresh_ran = False
         # Use LOCAL mode for WebSocketNotifier in tests (server not started in test mode)
         ws_connection_mode = RPCConnectionMode.LOCAL if running_unit_tests else connection_mode
         self.websocket_notifier_client = WebSocketNotifierClient(connection_mode=ws_connection_mode)
@@ -265,37 +357,23 @@ class EliminationManager(CacheController):
             connect_immediately=False
         )
 
-        # Local dicts (no IPC) - much faster!
-        # TODO: Fix these using dataclasses with named properties
-        self.eliminations: Dict[str, dict] = {}
-        self.departed_hotkeys: Dict[str, dict] = {}
+        self.ELIMINATIONS_FILE = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
         self.eliminations_lock = threading.Lock()
-
-        # Populate from disk, filtering out development hotkey
-        eliminations_from_disk = self.get_eliminations_from_disk()
-        filtered_count = 0
-        for elim in eliminations_from_disk:
-            hotkey = elim['hotkey']
-            # Skip development hotkey - it should never be eliminated
-            if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
-                filtered_count += 1
-                bt.logging.debug(f"[ELIM_INIT] Filtered out DEVELOPMENT_HOTKEY from eliminations during disk load")
-                continue
-            self.eliminations[hotkey] = elim
-
-        if filtered_count > 0:
-            bt.logging.info(f"[ELIM_INIT] Filtered out {filtered_count} DEVELOPMENT_HOTKEY elimination(s) from disk load")
+        self.eliminations: dict[str, EliminationRow] = self._load_eliminations_from_disk()
 
         if len(self.eliminations) == 0:
-            ValiBkpUtils.write_file(
-                ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
-                {CacheController.ELIMINATIONS: []}
-            )
+            ValiBkpUtils.write_file(self.ELIMINATIONS_FILE, {CacheController.ELIMINATIONS: []})
 
-        # Initialize departed hotkeys tracking
-        self.departed_hotkeys.update(self._get_departed_hotkeys_from_disk())
-        if len(self.departed_hotkeys) == 0:
-            self._save_departed_hotkeys()
+        # Migrate legacy departed_hotkeys.json into eliminations as DEREGISTERED rows
+        departed_from_disk = self._get_departed_hotkeys_from_disk()
+        for hotkey, info in departed_from_disk.items():
+            if hotkey not in self.eliminations:
+                detected_ms = info.get("detected_ms") if isinstance(info, dict) else None
+                self.eliminations[hotkey] = EliminationRow(
+                    hotkey=hotkey,
+                    reason=EliminationReason.DEREGISTERED.value,
+                    elimination_initiated_time_ms=detected_ms or TimeUtil.now_in_millis(),
+                )
 
         # Track previous metagraph hotkeys to detect changes
         try:
@@ -303,6 +381,11 @@ class EliminationManager(CacheController):
         except (AttributeError, RuntimeError):
             # MetagraphClient not connected yet (test mode without server setup)
             self.previous_metagraph_hotkeys = set()
+
+        # TODO remove
+        self.first_refresh_ran = False
+
+        self.last_new_eliminations_checked_ms: int = TimeUtil.now_in_millis()
 
         bt.logging.info(f"[ELIM_MANAGER] EliminationManager initialized with {len(self.eliminations)} eliminations")
 
@@ -350,74 +433,20 @@ class EliminationManager(CacheController):
         """Get the local eliminations lock (manager-side only)"""
         return self.eliminations_lock
 
-    def generate_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
-        """Generate elimination row dict."""
-        if t_ms is None:
-            t_ms = TimeUtil.now_in_millis()
-        return {
-            'hotkey': hotkey,
-            'dd': current_dd,
-            'reason': reason,
-            'elimination_initiated_time_ms': t_ms,
-            'price_info': price_info or {},
-            'return_info': return_info or {}
-        }
-
-    def handle_perf_ledger_eliminations(self, iteration_epoch=None):
-        """
-        Process performance ledger eliminations (thread-safe).
-
-        Identifies new eliminations, adds them atomically, then handles cleanup.
-        Lock scope is minimized - only held during dict operations, not I/O.
-        """
-        perf_ledger_eliminations = self.perf_ledger_manager.get_perf_ledger_eliminations()
-
-        # Step 1: Identify new eliminations (short lock for read)
-        new_eliminations = []
-        with self.eliminations_lock:
-            for e in perf_ledger_eliminations:
-                if e['hotkey'] not in self.eliminations:
-                    new_eliminations.append(e)
-
-        if not new_eliminations:
-            return
-
-        # Step 2: Add all new eliminations atomically (short lock for batch write)
-        with self.eliminations_lock:
-            for e in new_eliminations:
-                # Double-check (another thread may have added it between step 1 and step 2)
-                if e['hotkey'] not in self.eliminations:
-                    self.eliminations[e['hotkey']] = e
-            # Batch save while holding lock
-            self._save_eliminations_locked()
-
-        bt.logging.info(f'Wrote {len(new_eliminations)} perf ledger eliminations to disk')
-
-        # Step 3: Handle cleanup outside lock (I/O operations - no lock needed)
-        for e in new_eliminations:
-            price_info = e['price_info']
-            trade_pair_to_price_source_used_for_elimination_check = {}
-            for k, v in price_info.items():
-                trade_pair = TradePair.get_latest_tade_pair_from_trade_pair_str(k)
-                elimination_initiated_time_ms = e['elimination_initiated_time_ms']
-                trade_pair_to_price_source_used_for_elimination_check[trade_pair] = PriceSource(
-                    source='elim', open=v, close=v,
-                    start_ms=elimination_initiated_time_ms,
-                    timespan_ms=1000, websocket=False
-                )
-            self.handle_eliminated_miner(e['hotkey'], trade_pair_to_price_source_used_for_elimination_check,
-                                        iteration_epoch)
-            # Skip slashing in test mode (no contract manager)
-            if self._contract_client:
-                self._contract_client.slash_miner_collateral_proportion(e['hotkey'])
-
-            # slash entity collateral
-            self._entity_collateral_client.try_slash_on_elimination(e['hotkey'])
-
-    def add_manual_flat_order(self, hotkey: str, position: Position, corresponding_elimination,
-                             source_for_elimination, iteration_epoch=None):
+    def _close_position(
+        self,
+        hotkey: str,
+        position: Position,
+        position_close_ms: int | None,
+        iteration_epoch: int | None = None
+    ):
         """Add flat orders for eliminated miner"""
-        elimination_time_ms = corresponding_elimination['elimination_initiated_time_ms'] if corresponding_elimination else TimeUtil.now_in_millis()
+        if position.is_closed_position:
+            return False
+
+        if not position_close_ms:
+            position_close_ms = TimeUtil.now_in_millis()
+
         with self._position_lock_client.get_lock(hotkey, position.trade_pair.trade_pair_id):
             position_refreshed = self._position_client.get_miner_position_by_uuid(hotkey, position.position_uuid)
             if position_refreshed is None:
@@ -431,50 +460,16 @@ class EliminationManager(CacheController):
             if position.is_closed_position:
                 return
 
-            fake_flat_order_time = elimination_time_ms
-            if position.orders and position.orders[-1].processed_ms > elimination_time_ms:
+            fake_flat_order_time = position_close_ms
+            if position.orders and position.orders[-1].processed_ms > position_close_ms:
                 bt.logging.warning(
                     f'Unexpectedly found a position with a processed_ms {position.orders[-1].processed_ms} '
-                    f'greater than the elimination time {elimination_time_ms}'
+                    f'greater than the elimination time {position_close_ms}'
                 )
                 fake_flat_order_time = position.orders[-1].processed_ms + 1
 
-            flat_order = Position.generate_fake_flat_order(position, fake_flat_order_time,
-                                                           self.live_price_fetcher_client, source_for_elimination)
-
-            # Skip if price == 0 (price fetch failed) to avoid bogus MinerAccount state.
-            if flat_order.price > 0:
-                trade_pair = position.trade_pair
-                processed_qty = position.net_quantity  # FLAT always closes entire position
-                entry_value = (
-                    abs(processed_qty)
-                    * trade_pair.lot_size
-                    * position.average_entry_price
-                    * flat_order.quote_usd_rate
-                )
-                if position.position_type == OrderType.SHORT:
-                    exit_price = flat_order.price * (1 + flat_order.slippage)
-                    order_realized_pnl = (
-                        (position.average_entry_price - exit_price)
-                        * abs(processed_qty) * trade_pair.lot_size * flat_order.quote_usd_rate
-                    )
-                else:
-                    exit_price = flat_order.price * (1 - flat_order.slippage)
-                    order_realized_pnl = (
-                        (exit_price - position.average_entry_price)
-                        * abs(processed_qty) * trade_pair.lot_size * flat_order.quote_usd_rate
-                    )
-                transaction_fee_rate = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair.trade_pair_category, 0)
-                transaction_fee = entry_value * transaction_fee_rate
-                bt.logging.info(
-                    f"[ELIM_FLAT] hotkey={hotkey} tp={trade_pair.trade_pair_id} "
-                    f"entry_value=${entry_value:.2f} realized_pnl=${order_realized_pnl:.2f} fee=${transaction_fee:.2f}"
-                )
-                loan_repaid = min(position.margin_loan, entry_value + order_realized_pnl)
-                self._miner_account_client.process_order_sell(
-                    hotkey, entry_value, order_realized_pnl, loan_repaid, transaction_fee
-                )
-                flat_order.margin_loan = -loan_repaid
+            flat_order = Position.generate_fake_flat_order(
+                    position, fake_flat_order_time, self.live_price_fetcher_client, src=OrderSource.ELIMINATION_FLAT)
 
             position.add_order(flat_order, self.live_price_fetcher_client)
 
@@ -495,128 +490,10 @@ class EliminationManager(CacheController):
             bt.logging.info(
                 f'Added flat order for miner {hotkey} that has been eliminated. '
                 f'Trade pair: {position.trade_pair.trade_pair_id}. flat order: {flat_order}. '
-                f'position uuid {position.position_uuid}. Source for elimination {source_for_elimination}'
+                f'position uuid {position.position_uuid}.'
             )
 
-    def handle_eliminated_miner(self, hotkey: str,
-                                trade_pair_to_price_source_used_for_elimination_check: Dict[TradePair, PriceSource],
-                                iteration_epoch=None):
-        """Handle cleanup for eliminated miner"""
-        # Clean up limit orders using internal LimitOrderClient (forward compatibility)
-        result = self._limit_order_client.delete_all_limit_orders_for_hotkey(hotkey)
-        bt.logging.info(f"Cleaned up limit orders for eliminated miner [{hotkey}]: {result}")
 
-        for p in self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True):
-            source_for_elimination = trade_pair_to_price_source_used_for_elimination_check.get(p.trade_pair)
-            corresponding_elimination = self.eliminations.get(hotkey)
-            if corresponding_elimination:
-                self.add_manual_flat_order(hotkey, p, corresponding_elimination,
-                                          source_for_elimination, iteration_epoch)
-
-    def handle_challenge_period_eliminations(self, iteration_epoch=None):
-        """
-        Process challenge period eliminations (thread-safe).
-
-        Atomically checks and adds eliminations to prevent redundant processing.
-        Lock scope is minimized - only held during dict operations, not I/O.
-        """
-        # Check if there are any eliminations to process
-        if not self.cp_client.has_elimination_reasons():
-                return
-        eliminations_snapshot = self.cp_client.get_all_elimination_reasons()
-
-        hotkeys = list(eliminations_snapshot.keys())
-
-        if not hotkeys:
-            return
-
-        bt.logging.info(f"[ELIM_DEBUG] Processing {len(hotkeys)} challenge period eliminations: {hotkeys}")
-        bt.logging.info(f"[ELIM_DEBUG] Current eliminations dict has {len(self.eliminations)} entries")
-
-        # Collect eliminations that were successfully added
-        newly_added_eliminations = []  # [(hotkey, elim_reason, elim_mdd), ...]
-
-        # Process each hotkey individually, popping atomically to avoid race conditions
-        for hotkey in hotkeys:
-            # Atomically pop the elimination reason (get + remove in one operation)
-            elim_data = self.cp_client.pop_elimination_reason(hotkey)
-            # Skip if already removed (another thread might have processed it)
-            if elim_data is None:
-                bt.logging.debug(f"[ELIM_DEBUG] Hotkey {hotkey} already processed/removed")
-                continue
-
-            elim_reason = elim_data[0]
-            elim_mdd = elim_data[1]
-            # Use the detection time recorded by the CP manager so the flat order timestamp
-            # reflects when the violation was detected, not when this loop runs.
-            detection_time_ms = elim_data[2] if len(elim_data) > 2 else None
-
-            # Atomic check-then-add: Lock prevents another thread from adding
-            # the same elimination between check and add
-            with self.eliminations_lock:
-                already_eliminated = hotkey in self.eliminations
-                if already_eliminated:
-                    bt.logging.warning(
-                        f"[ELIM_DEBUG] Hotkey {hotkey} is ALREADY in eliminations list. Skipping. "
-                        f"Elimination: {self.eliminations[hotkey]}"
-                    )
-                    continue
-
-                # Add elimination directly (we're already holding the lock)
-                bt.logging.info(f"[ELIM_DEBUG] Adding new elimination for {hotkey}")
-                elimination_row = self.generate_elimination_row(hotkey, elim_mdd, elim_reason, t_ms=detection_time_ms)
-                self.eliminations[hotkey] = elimination_row
-                # Save while holding lock
-                self._save_eliminations_locked()
-
-                # Track that we successfully added this elimination
-                newly_added_eliminations.append((hotkey, elim_reason, elim_mdd))
-
-                bt.logging.info(f"[ELIM_DEBUG] Verified {hotkey} was added to eliminations list")
-
-        bt.logging.info(f"[ELIM_DEBUG] After processing, eliminations dict has {len(self.eliminations)} entries")
-
-        # Handle cleanup outside lock (I/O operations - only for newly added eliminations)
-        _funded_elim_reasons = {
-            EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
-            EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value,
-        }
-        for hotkey, elim_reason, elim_mdd in newly_added_eliminations:
-            self.handle_eliminated_miner(hotkey, {}, iteration_epoch)
-            # Skip slashing in test mode (no contract manager)
-            if self._contract_client:
-                self._contract_client.slash_miner_collateral_proportion(hotkey)
-
-            # slash entity collateral only for funded subaccount eliminations
-            if elim_reason in _funded_elim_reasons:
-                self._entity_collateral_client.try_slash_on_elimination(hotkey)
-
-    def handle_first_refresh(self, iteration_epoch=None):
-        """
-        Handle first refresh on startup (thread-safe).
-
-        Acquires eliminations_lock to ensure atomic check-set of first_refresh_ran flag
-        and consistent snapshot of eliminated_hotkeys.
-        """
-        if self.is_backtesting:
-            return
-
-        # Atomic check-then-set of first_refresh_ran flag
-        with self.eliminations_lock:
-            if self.first_refresh_ran:
-                return
-            self.first_refresh_ran = True
-            # Get snapshot of eliminated hotkeys while holding lock
-            eliminated_hotkeys = list(self.eliminations.keys())
-
-        # Process outside lock (I/O operations don't need lock)
-        hotkey_to_positions = self._position_client.get_positions_for_hotkeys(eliminated_hotkeys,
-                                                                              only_open_positions=True)
-        for hotkey, open_positions in hotkey_to_positions.items():
-            if not open_positions:
-                continue
-            for p in open_positions:
-                self.add_manual_flat_order(hotkey, p, self.eliminations.get(hotkey), None, iteration_epoch)
 
     def process_eliminations(self, iteration_epoch=None):
         """Main elimination processing loop"""
@@ -624,45 +501,35 @@ class EliminationManager(CacheController):
             # Check if we should process:
             # 1. Process if time-based refresh is due
             # 2. OR process if there are urgent challenge period eliminations
-            refresh_due = self.refresh_allowed(ValiConfig.ELIMINATION_CHECK_INTERVAL_MS)
-
-            # Check for urgent eliminations using cp_client
-            has_urgent_eliminations = self.cp_client.has_elimination_reasons()
-
-            if not refresh_due and not has_urgent_eliminations:
-                return
+            if not self.first_refresh_ran:
+                self.first_refresh_ran = True
 
             bt.logging.info(
                 f"running elimination manager. invalidation data "
                 f"{dict(self._perf_ledger_client.get_perf_ledger_hks_to_invalidate())}"
             )
 
-            bt.logging.debug("[ELIM_PROCESS] Starting _update_departed_hotkeys")
-            self._update_departed_hotkeys()
-
-            bt.logging.debug("[ELIM_PROCESS] Starting handle_first_refresh")
-            self.handle_first_refresh(iteration_epoch)
-
-            bt.logging.debug("[ELIM_PROCESS] Starting handle_perf_ledger_eliminations")
-            self.handle_perf_ledger_eliminations(iteration_epoch)
-
-            bt.logging.debug("[ELIM_PROCESS] Starting handle_challenge_period_eliminations")
-            self.handle_challenge_period_eliminations(iteration_epoch)
-
             bt.logging.debug("[ELIM_PROCESS] Starting handle_mdd_eliminations")
-            self.handle_mdd_eliminations(iteration_epoch)
+            self.handle_mdd_eliminations()
 
             bt.logging.debug("[ELIM_PROCESS] Starting handle_zombies")
-            self.handle_zombies(iteration_epoch)
+            self.handle_zombies()
 
             bt.logging.debug("[ELIM_PROCESS] Starting handle_idle_miners")
-            self.handle_idle_miners(iteration_epoch)
+            self.handle_idle_miners()
 
-            bt.logging.debug("[ELIM_PROCESS] Starting _delete_eliminated_expired_miners")
-            self._delete_eliminated_expired_miners()
+            # Run after other checks so MDD/zombie/etc. take priority over DEREGISTERED
+            bt.logging.debug("[ELIM_PROCESS] Starting handle_departed_hotkeys")
+            self.handle_departed_hotkeys()
+
+            bt.logging.debug("[ELIM_PROCESS] Starting _cleanup_eliminated_miners")
+            self._cleanup_eliminated_miners(iteration_epoch)
 
             bt.logging.debug("[ELIM_PROCESS] Completed successfully")
-            self.set_last_update_time()
+            # self.set_last_update_time()
+
+            return self._to_slack_message()
+
         except Exception as e:
             bt.logging.error(f"[ELIM_PROCESS] process_eliminations() failed with exception: {e}", exc_info=True)
             # Re-raise to let RPC framework handle it properly
@@ -674,56 +541,52 @@ class EliminationManager(CacheController):
             return False
         return hotkey not in all_hotkeys_set
 
-    def _save_eliminations_locked(self):
-        """
-        PRIVATE: Save eliminations to disk (caller MUST hold eliminations_lock).
-
-        This is a private helper method. Callers must acquire self.eliminations_lock
-        before calling this method to ensure atomic read-then-write to disk.
-        """
-        if not self.is_backtesting:
-            self.write_eliminations_to_disk(list(self.eliminations.values()))
-
-    def save_eliminations(self):
-        """
-        PUBLIC: Save eliminations to disk (thread-safe).
-
-        Acquires eliminations_lock to ensure atomic read-then-write.
-        """
-        with self.eliminations_lock:
-            self._save_eliminations_locked()
-
-    def write_eliminations_to_disk(self, eliminations):
-        """Write eliminations to disk"""
-        if not isinstance(eliminations, list):
-            eliminations = list(eliminations)
-        vali_eliminations = {CacheController.ELIMINATIONS: eliminations}
-        output_location = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
-        ValiBkpUtils.write_file(output_location, vali_eliminations)
-        bt.logging.info(f"[ELIM_DEBUG] Successfully wrote {len(eliminations)} eliminations to disk")
-
-    def get_eliminations_from_disk(self) -> list:
-        """Load eliminations from disk"""
-        location = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
-        try:
-            cached_eliminations = ValiUtils.get_vali_json_file(location, CacheController.ELIMINATIONS)
-            if cached_eliminations is None:
-                cached_eliminations = []
-            bt.logging.trace(f"Loaded [{len(cached_eliminations)}] eliminations from disk. Dir: {location}")
-            return cached_eliminations
-        except Exception as e:
-            bt.logging.warning(f"Could not load eliminations from disk: {e}. Starting with empty list.")
-            return []
-
-    def append_elimination_row(self, hotkey, current_dd, reason, t_ms=None, price_info=None, return_info=None):
+    def append_elimination_row(
+        self,
+        hotkey: str,
+        reason: str,
+        elimination_drawdown_pct: float | None = None,
+        intraday_drawdown_pct: float | None = None,
+        eod_drawdown_pct: float | None = None,
+        elimination_time_ms: int | None = None,
+        bucket_at_elimination: MinerBucket | None = None,
+    ):
         """
         Add elimination row (thread-safe).
 
         Acquires eliminations_lock to ensure atomic check-update-save operation.
         """
         bt.logging.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
-        elimination_row = self.generate_elimination_row(hotkey, current_dd, reason, t_ms=t_ms,
-                                                        price_info=price_info, return_info=return_info)
+        if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
+            return
+
+        if hotkey in self.eliminations:
+            bt.logging.warning(f"[ELIM_DEBUG] Attempted to eliminate {hotkey} already in eliminations "
+                               f"(original elimination: {self.eliminations[hotkey]})")
+            return
+
+        if not elimination_time_ms:
+            elimination_time_ms = TimeUtil.now_in_millis()
+
+
+        if bucket_at_elimination is None:
+            bucket_at_elimination = self._challenge_period_client.get_miner_bucket(hotkey, elimination_time_ms)
+
+        # Empty elimination drawdown for stuff zombie/inactive eliminations
+        if elimination_drawdown_pct is None and intraday_drawdown_pct is None and eod_drawdown_pct is None:
+            ledger = self.perf_ledger_manager.filtered_ledger_for_scoring([hotkey]).get(hotkey)
+            _, elimination_drawdown_pct = LedgerUtils.is_beyond_max_drawdown(ledger)
+
+        elimination_row = EliminationRow(
+                hotkey=hotkey,
+                reason=reason,
+                elimination_initiated_time_ms=elimination_time_ms,
+                elimination_drawdown_pct=elimination_drawdown_pct,
+                intraday_drawdown_pct=intraday_drawdown_pct,
+                eod_drawdown_pct=eod_drawdown_pct,
+                bucket_at_elimination=bucket_at_elimination,
+                row_added_ms=TimeUtil.now_in_millis(),
+        )
 
         with self.eliminations_lock:
             dict_len_before = len(self.eliminations)
@@ -734,7 +597,14 @@ class EliminationManager(CacheController):
             # Save while holding lock to prevent concurrent disk writes
             self._save_eliminations_locked()
 
+        # Slash on new eliminations
         bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
+        is_subaccount = is_synthetic_hotkey(hotkey)
+        if not is_subaccount:
+            self._contract_client.slash_miner_collateral_proportion(hotkey)
+
+        if is_subaccount and bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            self._entity_collateral_client.try_slash_on_elimination(hotkey)
 
     def delete_eliminations(self, deleted_hotkeys):
         """
@@ -749,16 +619,16 @@ class EliminationManager(CacheController):
             # Save while holding lock to prevent concurrent disk writes
             self._save_eliminations_locked()
 
-    def handle_mdd_eliminations(self, iteration_epoch=None):
+    def handle_mdd_eliminations(self):
         """Check for MDD eliminations."""
-        from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
         bt.logging.info("checking main competition for maximum drawdown eliminations.")
 
         # Get MAINCOMP hotkeys from cp_client
-        challengeperiod_success_hotkeys = self.cp_client.get_hotkeys_by_bucket(MinerBucket.MAINCOMP)
+        regular_miner_buckets = [bucket for bucket in MinerBucket if bucket.is_regular_miner]
+        miner_hotkeys = self._challenge_period_client.get_hotkeys_by_bucket(regular_miner_buckets)
 
         filtered_ledger = self.perf_ledger_manager.filtered_ledger_for_scoring(
-            hotkeys=challengeperiod_success_hotkeys
+            hotkeys=miner_hotkeys
         )
         for miner_hotkey, ledger in filtered_ledger.items():
             if miner_hotkey in self.eliminations:
@@ -767,13 +637,11 @@ class EliminationManager(CacheController):
             miner_exceeds_mdd, drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger_element=ledger)
 
             if miner_exceeds_mdd:
-                self.append_elimination_row(miner_hotkey, drawdown_percentage, EliminationReason.MAX_TOTAL_DRAWDOWN.value)
-                self.handle_eliminated_miner(miner_hotkey, {}, iteration_epoch)
-                # Skip slashing in test mode (no contract manager)
-                if self._contract_client:
-                    self._contract_client.slash_miner_collateral_proportion(miner_hotkey)
+                bt.logging.info(f"[ELIMINATION] {miner_hotkey} mdd={drawdown_percentage:.2f}%, mdd elimination disabled for now")
+                # TODO enable mdd
+                # self.append_elimination_row(miner_hotkey, EliminationReason.MAX_TOTAL_DRAWDOWN.value, elimination_drawdown_pct=drawdown_percentage)
 
-    def handle_zombies(self, iteration_epoch=None):
+    def handle_zombies(self):
         """Handle zombie miners"""
 
         all_miners_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
@@ -781,29 +649,27 @@ class EliminationManager(CacheController):
 
         for hotkey in CacheController.get_directory_names(all_miners_dir):
             corresponding_elimination = self.eliminations.get(hotkey)
-            elimination_reason = corresponding_elimination.get('reason') if corresponding_elimination else None
+            elimination_reason = corresponding_elimination.reason if corresponding_elimination else None
             if elimination_reason:
                 continue
             elif self.is_zombie_hotkey(hotkey, all_hotkeys_set):
-                self.append_elimination_row(hotkey=hotkey, current_dd=None, reason=EliminationReason.ZOMBIE.value)
-                self.handle_eliminated_miner(hotkey, {}, iteration_epoch)
+                self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.ZOMBIE.value)
 
-    def handle_idle_miners(self, iteration_epoch=None):
+    def handle_idle_miners(self):
         """Eliminate MAINCOMP, CHALLENGE, and PROBATION miners that have not submitted any orders in the past 60 days."""
         now_ms = TimeUtil.now_in_millis()
         IDLE_ELIMINATION_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-06-08 00:00:00")
 
-        bt.logging.info("checking all active buckets for idle miner eliminations.")
+        bt.logging.info("checking all active buckets for inactive miner eliminations.")
 
         active_buckets = [MinerBucket.MAINCOMP, MinerBucket.CHALLENGE, MinerBucket.PROBATION,
                           MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA]
 
         candidate_hotkeys = set()
-        for bucket in active_buckets:
-            candidate_hotkeys.update(self.cp_client.get_hotkeys_by_bucket(bucket))
+        candidate_hotkeys.update(self._challenge_period_client.get_hotkeys_by_bucket(active_buckets))
 
         if not candidate_hotkeys:
-            return
+            return set()
 
         hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
             list(candidate_hotkeys), only_open_positions=False
@@ -824,34 +690,34 @@ class EliminationManager(CacheController):
             if last_order_ms is not None and (now_ms - last_order_ms) > idle_threshold_ms:
                 idle_hotkeys[hotkey] = last_order_ms
                 bt.logging.info(
-                    f"Idle miner detected: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
+                    f"inactive miner detected: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
                 )
             elif last_order_ms is not None and (now_ms - last_order_ms) > near_idle_threshold_ms:
                 near_idle_hotkeys[hotkey] = last_order_ms
                 bt.logging.info(
-                    f"Miner approaching idle threshold: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
+                    f"Miner approaching inactive threshold: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
                 )
 
         if now_ms < IDLE_ELIMINATION_ACTIVATION_MS:
             return
 
         for hotkey, last_order_ms in idle_hotkeys.items():
-            bt.logging.info(f"Eliminating idle miner {hotkey}.")
-            self.append_elimination_row(hotkey=hotkey, current_dd=None, reason=EliminationReason.IDLE.value)
-            self.handle_eliminated_miner(hotkey, {}, iteration_epoch)
+            bt.logging.info(f"Eliminating inactive miner {hotkey}.")
+            self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.INACTIVE.value)
 
 
-    def _update_departed_hotkeys(self):
+    def handle_departed_hotkeys(self):
         """
         Track departed hotkeys (thread-safe).
 
         Acquires eliminations_lock to ensure atomic read-modify-write of departed_hotkeys
-        and previous_metagraph_hotkeys state.
+        and previous_metagraph_hotkeys state. After the lock is released, issues
+        DEREGISTERED eliminations for any newly departed hotkeys.
         """
         if self.is_backtesting:
             return
 
-        # Acquire lock for entire operation (reads previous state, modifies departed_hotkeys, updates previous state)
+        new_departures = set()
         with self.eliminations_lock:
             current_hotkeys = set(self._metagraph_client.get_hotkeys())
             lost_hotkeys = self.previous_metagraph_hotkeys - current_hotkeys
@@ -862,8 +728,8 @@ class EliminationManager(CacheController):
             if gained_hotkeys:
                 bt.logging.debug(f"Metagraph gained hotkeys: {gained_hotkeys}")
 
-            departed_hotkeys_set = set(self.departed_hotkeys.keys())
-            re_registered_hotkeys = gained_hotkeys & departed_hotkeys_set
+            deregistered_set = {hk for hk, row in self.eliminations.items() if row.reason == EliminationReason.DEREGISTERED.value}
+            re_registered_hotkeys = gained_hotkeys & deregistered_set
             if re_registered_hotkeys:
                 bt.logging.warning(
                     f"Detected {len(re_registered_hotkeys)} re-registered miners: {re_registered_hotkeys}. "
@@ -872,15 +738,11 @@ class EliminationManager(CacheController):
 
             is_anomalous, _ = is_anomalous_hotkey_loss(lost_hotkeys, len(self.previous_metagraph_hotkeys))
             if lost_hotkeys and not is_anomalous:
-                new_departures = lost_hotkeys - departed_hotkeys_set
+                new_departures = lost_hotkeys - set(self.eliminations.keys())
                 if new_departures:
-                    current_time_ms = TimeUtil.now_in_millis()
-                    for hotkey in new_departures:
-                        self.departed_hotkeys[hotkey] = {"detected_ms": current_time_ms}
-                    self._save_departed_hotkeys()
                     bt.logging.info(
                         f"Tracked {len(new_departures)} newly departed hotkeys: {new_departures}. "
-                        f"Total departed hotkeys: {len(self.departed_hotkeys)}"
+                        f"Total deregistered: {len(deregistered_set) + len(new_departures)}"
                     )
             elif lost_hotkeys:
                 bt.logging.warning(
@@ -889,89 +751,92 @@ class EliminationManager(CacheController):
                     f"Not tracking as departed to avoid false positives."
                 )
 
-            # Update previous state while still holding lock
             self.previous_metagraph_hotkeys = current_hotkeys
 
-    def _delete_eliminated_expired_miners(self):
-        """Delete expired eliminated miners."""
-        now_ms = TimeUtil.now_in_millis()
-        metagraph_hotkeys_set = set(self._metagraph_client.get_hotkeys())
+        # Issue DEREGISTERED eliminations after releasing the lock (append_elimination_row acquires it)
+        for hotkey in new_departures:
+            self.append_elimination_row(hotkey, EliminationReason.DEREGISTERED.value)
 
-        # Get snapshot while holding lock to avoid RuntimeError during iteration
+    def _cleanup_eliminated_miners(self, iteration_epoch: int | None = None):
+        """post-elimination cleanup: close open positions and delete unfilled limit orders"""
+        now_ms = TimeUtil.now_in_millis()
+
         with self.eliminations_lock:
             eliminations_snapshot = list(self.eliminations.values())
 
-        # Iterate over snapshot (safe - won't crash if dict is modified by other threads)
-        for x in eliminations_snapshot:
-            hotkey = x['hotkey']
-            elimination_initiated_time_ms = x['elimination_initiated_time_ms']
+        write_to_disk = False
+        for elimination_data in eliminations_snapshot:
+            if not elimination_data.positions_closed:
+                hotkey = elimination_data.hotkey
 
-            if now_ms - elimination_initiated_time_ms < ValiConfig.ELIMINATION_FILE_DELETION_DELAY_MS:
-                continue
-            if hotkey in metagraph_hotkeys_set:
-                bt.logging.trace(f"miner [{hotkey}] has not been deregistered by BT yet. Not deleting miner dir.")
-                continue
+                deleted_limit_orders = self._limit_order_client.delete_all_limit_orders_for_hotkey(hotkey)
+                if deleted_limit_orders:
+                    bt.logging.info(f"Cancelled {deleted_limit_orders} pending limit orders for eliminated miner [{hotkey}]")
 
-            # Delete limit orders for eliminated miner (both in-memory and on-disk)
-            result = self._limit_order_client.delete_all_limit_orders_for_hotkey(hotkey)
-            bt.logging.info(f"Deleted limit orders for expired elimination [{hotkey}]: {result}")
+                positions = self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
+                for p in positions:
+                    self._close_position(hotkey, p, elimination_data.elimination_initiated_time_ms, iteration_epoch=iteration_epoch)
 
-            miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests) + hotkey
-            all_positions = self._position_client.get_positions_for_one_hotkey(hotkey)
-            for p in all_positions:
-                self._position_client.delete_position(p.miner_hotkey, p.position_uuid)
-            try:
-                shutil.rmtree(miner_dir)
-            except FileNotFoundError:
-                bt.logging.info(f"miner dir not found. Already deleted. [{miner_dir}]")
-            bt.logging.info(
-                f"miner eliminated with hotkey [{hotkey}] with max dd of [{x.get('dd', 'N/A')}]. "
-                f"reason: [{x['reason']}] Removing miner dir [{miner_dir}]"
-            )
+                with self.eliminations_lock:
+                    self.eliminations[hotkey].positions_closed = True
+                    write_to_disk = True
+
+            self._purge_expired_elimination(elimination_data, now_ms)
+
+        if write_to_disk:
+            self.save_eliminations()
+
+    def _purge_expired_elimination(self, elimination_data, now_ms):
+        """Delete position files and miner directory after the retention window expires.
+        Skips funded subaccounts to preserve accrued realized pnl.
+        """
+        if elimination_data.bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            return
+
+        is_expired = now_ms - elimination_data.elimination_initiated_time_ms >= ValiConfig.ELIMINATION_FILE_DELETION_DELAY_MS
+        if not is_expired:
+            return
+
+        hotkey = elimination_data.hotkey
+        miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests) + hotkey
+        positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+        for p in positions:
+            self._position_client.delete_position(p.miner_hotkey, p.position_uuid)
+
+        try:
+            shutil.rmtree(miner_dir)
+        except FileNotFoundError:
+            pass
 
     def _get_departed_hotkeys_from_disk(self) -> dict:
-        """Load departed hotkeys from disk"""
+        """Load departed hotkeys from disk (legacy) and default file for migration."""
+        import os
         location = ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=self.running_unit_tests)
         try:
             departed_data = ValiUtils.get_vali_json_file(location, DEPARTED_HOTKEYS_KEY)
             if departed_data is None:
                 departed_data = {}
             if isinstance(departed_data, list):
-                bt.logging.info(f"Converting legacy departed hotkeys list to dict format")
                 departed_data = {hotkey: {"detected_ms": 0} for hotkey in departed_data}
-            bt.logging.trace(f"Loaded {len(departed_data)} departed hotkeys from disk. Dir: {location}")
+            if departed_data:
+                bt.logging.info(f"Migrating {len(departed_data)} departed hotkeys from disk into eliminations")
             return departed_data
-        except Exception as e:
-            bt.logging.warning(f"Could not load departed hotkeys from disk: {e}. Trying default file...")
-            return self._get_departed_hotkeys_from_default_file()
+        except Exception:
+            pass
 
-    def _get_departed_hotkeys_from_default_file(self) -> dict:
-        """Load departed hotkeys from default file"""
-        import os
         base_dir = ValiBkpUtils.get_vali_dir(running_unit_tests=self.running_unit_tests).replace('/validation/', '')
         default_location = os.path.join(base_dir, 'data', 'default_departed_hotkeys.json')
-
         try:
             departed_data = ValiUtils.get_vali_json_file(default_location, DEPARTED_HOTKEYS_KEY)
             if departed_data is None:
                 departed_data = {}
             if isinstance(departed_data, list):
-                bt.logging.info(f"Converting legacy default departed hotkeys list to dict format")
                 departed_data = {hotkey: {"detected_ms": 0} for hotkey in departed_data}
-            bt.logging.info(f"Loaded {len(departed_data)} departed hotkeys from default file: {default_location}")
+            if departed_data:
+                bt.logging.info(f"Migrating {len(departed_data)} departed hotkeys from default file into eliminations")
             return departed_data
-        except Exception as e:
-            bt.logging.warning(f"Could not load departed hotkeys from default file: {e}. Starting with empty dict.")
+        except Exception:
             return {}
-
-    def _save_departed_hotkeys(self):
-        """Save departed hotkeys to disk"""
-        if not self.is_backtesting:
-            departed_dict = dict(self.departed_hotkeys)
-            departed_data = {DEPARTED_HOTKEYS_KEY: departed_dict}
-            bt.logging.trace(f"Writing {len(departed_dict)} departed hotkeys to disk")
-            output_location = ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=self.running_unit_tests)
-            ValiBkpUtils.write_file(output_location, departed_data)
 
     # ==================== Query Methods (used by Server) ====================
 
@@ -979,22 +844,22 @@ class EliminationManager(CacheController):
         """Fast existence check (O(1))"""
         return hotkey in self.eliminations
 
-    def get_elimination(self, hotkey: str) -> Optional[dict]:
+    def get_elimination(self, hotkey: str) -> dict | None:
         """Get full elimination details"""
         elimination = self.eliminations.get(hotkey)
-        return deepcopy(elimination) if elimination else None
+        return elimination.to_dict() if elimination else None
 
     def get_dashboard(self, hotkey: str) -> dict | None:
         elimination = self.eliminations.get(hotkey)
         if elimination is None:
             return None
         return {
-            "elimination_initiated_time_ms": elimination["elimination_initiated_time_ms"],
-            "reason": elimination["reason"],
-            "dd": elimination["dd"],
+            "elimination_initiated_time_ms": elimination.elimination_initiated_time_ms,
+            "reason": elimination.reason,
+            "dd": elimination.elimination_drawdown_pct,
         }
 
-    def get_eliminated_hotkeys(self) -> Set[str]:
+    def get_eliminated_hotkeys(self) -> set[str]:
         """
         Get all eliminated hotkeys (thread-safe).
 
@@ -1003,29 +868,22 @@ class EliminationManager(CacheController):
         with self.eliminations_lock:
             return set(self.eliminations.keys())
 
-    def get_eliminations_from_memory(self) -> List[dict]:
+    def get_eliminated_hotkeys_by_bucket(self, buckets: list[MinerBucket]) -> set[str]:
+        """
+        Get eliminated hotkeys whose bucket_at_elimination is in the given list (thread-safe).
+        """
+        bucket_set = set(buckets)
+        with self.eliminations_lock:
+            return {hk for hk, row in self.eliminations.items() if row.bucket_at_elimination in bucket_set}
+
+    def get_eliminations_from_memory(self) -> list[dict]:
         """
         Get all eliminations as a list (thread-safe).
 
         Returns a consistent snapshot of all elimination records.
         """
         with self.eliminations_lock:
-            return list(self.eliminations.values())
-
-    def add_elimination(self, hotkey: str, elimination_data: dict) -> bool:
-        """Add or update an elimination record. Returns True if new, False if updated."""
-        # Validate required fields
-        required_fields = ['hotkey', 'reason', 'elimination_initiated_time_ms']
-        for field in required_fields:
-            if field not in elimination_data:
-                raise ValueError(f"Missing required field: {field}")
-
-        if elimination_data['hotkey'] != hotkey:
-            raise ValueError(f"Hotkey mismatch: {hotkey} != {elimination_data['hotkey']}")
-
-        already_exists = hotkey in self.eliminations
-        self.eliminations[hotkey] = elimination_data
-        return not already_exists
+            return [v.to_dict() for v in self.eliminations.values()]
 
     def remove_elimination(self, hotkey: str) -> bool:
         """Remove elimination. Returns True if removed, False if not found."""
@@ -1042,7 +900,7 @@ class EliminationManager(CacheController):
         This prevents readers from seeing an empty dict during the sync window.
 
         Returns:
-            List of removed hotkeys
+            list of removed hotkeys
         """
         with self.eliminations_lock:
             hotkeys_before = set(self.eliminations.keys())
@@ -1056,7 +914,7 @@ class EliminationManager(CacheController):
             self.eliminations.clear()
             for elim in eliminations_list:
                 hotkey = elim['hotkey']
-                self.eliminations[hotkey] = elim
+                self.eliminations[hotkey] = EliminationRow.from_dict(elim)
 
             # Save while holding lock to prevent concurrent disk writes
             self._save_eliminations_locked()
@@ -1066,95 +924,108 @@ class EliminationManager(CacheController):
         """Clear all eliminations for testing"""
         if not self.running_unit_tests:
             raise Exception('clear_eliminations can only be called during unit tests')
-        ValiBkpUtils.write_file(
-            ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests),
-            {CacheController.ELIMINATIONS: []}
-        )
+        ValiBkpUtils.write_file(self.ELIMINATIONS_FILE, {CacheController.ELIMINATIONS: []})
         self.eliminations.clear()
 
-    def _load_eliminations_from_disk(self) -> None:
-        """
-        Load eliminations from disk into memory (for testing recovery scenarios).
-        This method reloads the eliminations dict from disk, useful for simulating
-        validator restarts in tests.
-        """
-        if not self.running_unit_tests:
-            raise Exception('_load_eliminations_from_disk can only be called during unit tests')
-
-        with self.eliminations_lock:
-            # Load from disk
-            eliminations_from_disk = self.get_eliminations_from_disk()
-
-            # Clear and repopulate, filtering out development hotkey
-            self.eliminations.clear()
-            filtered_count = 0
-
-            for elim in eliminations_from_disk:
-                hotkey = elim['hotkey']
-                # Skip development hotkey - it should never be eliminated
-                if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
-                    filtered_count += 1
-                    bt.logging.debug(f"[ELIM_RELOAD] Filtered out DEVELOPMENT_HOTKEY from eliminations during disk reload")
-                    continue
-                self.eliminations[hotkey] = elim
-
-            if filtered_count > 0:
-                bt.logging.info(f"[ELIM_RELOAD] Filtered out {filtered_count} DEVELOPMENT_HOTKEY elimination(s) from disk reload")
-
-            bt.logging.info(f"[ELIM_RELOAD] Loaded {len(self.eliminations)} elimination(s) from disk")
-
     def clear_departed_hotkeys(self) -> None:
-        """Clear all departed hotkeys for testing"""
+        """Clear all DEREGISTERED eliminations for testing"""
         if not self.running_unit_tests:
             raise Exception('clear_departed_hotkeys can only be called during unit tests')
-        ValiBkpUtils.write_file(
-            ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=self.running_unit_tests),
-            {DEPARTED_HOTKEYS_KEY: {}}
-        )
-        self.departed_hotkeys.clear()
-        # Reset previous_metagraph_hotkeys to current state to avoid false departures
+        with self.eliminations_lock:
+            deregistered = [hk for hk, row in self.eliminations.items() if row.reason == EliminationReason.DEREGISTERED.value]
+            for hk in deregistered:
+                del self.eliminations[hk]
+            self._save_eliminations_locked()
         try:
             self.previous_metagraph_hotkeys = set(self._metagraph_client.get_hotkeys())
         except (AttributeError, RuntimeError):
-            # MetagraphClient not connected yet (test mode without server setup)
             self.previous_metagraph_hotkeys = set()
 
     def is_hotkey_re_registered(self, hotkey: str) -> bool:
-        """
-        Check if hotkey is re-registered (was departed, now back) - thread-safe.
-
-        Acquires eliminations_lock to prevent TOCTOU (time-of-check, time-of-use) race
-        where departed_hotkeys could change between check and metagraph lookup.
-        """
+        """Check if hotkey was deregistered and is now back in the metagraph (thread-safe)."""
         if not hotkey:
             return False
-
-        # Atomic check-then-use: Lock prevents departed_hotkeys from changing
-        # between the check and the metagraph lookup
         with self.eliminations_lock:
-            # Fast path: Check departed_hotkeys first
-            is_departed = hotkey in self.departed_hotkeys
-            if not is_departed:
+            row = self.eliminations.get(hotkey)
+            if not row or row.reason != EliminationReason.DEREGISTERED.value:
                 return False
+            return self._metagraph_client.has_hotkey(hotkey)
 
-            # Slow path: Check if back in metagraph
-            # Lock is held, so departed_hotkeys can't change during this call
-            is_in_metagraph = self._metagraph_client.has_hotkey(hotkey)
-            return is_in_metagraph
+    def get_departed_hotkeys(self) -> dict[str, dict]:
+        """Get all DEREGISTERED eliminations as {hotkey: {detected_ms: ...}}"""
+        with self.eliminations_lock:
+            return {
+                hk: {"detected_ms": row.elimination_initiated_time_ms}
+                for hk, row in self.eliminations.items()
+                if row.reason == EliminationReason.DEREGISTERED.value
+            }
 
-    def get_departed_hotkeys(self) -> Dict[str, dict]:
-        """Get all departed hotkeys"""
-        return self.departed_hotkeys
+    def get_departed_hotkey_info(self, hotkey: str) -> dict | None:
+        """Get departure info for a single hotkey."""
+        with self.eliminations_lock:
+            row = self.eliminations.get(hotkey)
+            if row and row.reason == EliminationReason.DEREGISTERED.value:
+                return {"detected_ms": row.elimination_initiated_time_ms}
+            return None
 
-    def get_departed_hotkey_info(self, hotkey: str) -> Optional[dict]:
-        """Get departed info for a single hotkey (O(1) lookup)"""
-        return self.departed_hotkeys.get(hotkey)
-
-    def get_eliminations_dict(self) -> Dict[str, dict]:
+    def get_eliminations_dict(self) -> dict[str, dict]:
         """
         Get eliminations dict (copy, thread-safe).
 
         Returns a consistent snapshot of the eliminations dictionary.
         """
         with self.eliminations_lock:
-            return dict(self.eliminations)
+            return {k: v.to_dict() for k, v in self.eliminations.items()}
+
+    def _load_eliminations_from_disk(self) -> dict[str, EliminationRow]:
+        """Load eliminations from disk, returning {hotkey: EliminationRow}."""
+        if self.is_backtesting:
+            return {}
+        try:
+            data = ValiUtils.get_vali_json_file(self.ELIMINATIONS_FILE, CacheController.ELIMINATIONS)
+            if not data:
+                return {}
+            result = {e['hotkey']: EliminationRow.from_dict(e) for e in data}
+            bt.logging.trace(f"Loaded {len(result)} eliminations from disk")
+            return result
+        except Exception as e:
+            bt.logging.warning(f"Could not load eliminations from disk: {e}. Starting with empty dict.")
+            return {}
+
+    def _save_eliminations_to_disk(self, eliminations) -> None:
+        """Write eliminations list to disk."""
+        if self.is_backtesting:
+            return
+        if not isinstance(eliminations, list):
+            eliminations = list(eliminations)
+        ValiBkpUtils.write_file(self.ELIMINATIONS_FILE, {CacheController.ELIMINATIONS: eliminations})
+        bt.logging.info(f"[ELIM_DEBUG] Successfully wrote {len(eliminations)} eliminations to disk")
+
+    def _save_eliminations_locked(self):
+        """Save eliminations to disk (caller MUST hold eliminations_lock)."""
+        self._save_eliminations_to_disk([v.to_dict() for v in self.eliminations.values()])
+
+    def save_eliminations(self):
+        """Save eliminations to disk (thread-safe)."""
+        with self.eliminations_lock:
+            self._save_eliminations_locked()
+
+    def write_eliminations_to_disk(self, eliminations):
+        """Write arbitrary eliminations list to disk (public API for restore scripts)."""
+        self._save_eliminations_to_disk(eliminations)
+
+    def _to_slack_message(self) -> str | None:
+        since_ms = self.last_new_eliminations_checked_ms
+        self.last_new_eliminations_checked_ms = TimeUtil.now_in_millis()
+
+        recent = [
+            row for row in self.eliminations.values()
+            if row.row_added_ms is not None and row.row_added_ms >= since_ms
+        ]
+        if not recent:
+            return None
+
+        msg = f":x: *Eliminations!* (since {TimeUtil.millis_to_formatted_date_str(since_ms)})\n"
+        msg += "\n".join(row.pretty_str() for row in recent)
+
+        return msg

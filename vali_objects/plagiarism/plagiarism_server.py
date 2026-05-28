@@ -27,7 +27,6 @@ import bittensor as bt
 
 from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
 
@@ -109,9 +108,9 @@ class PlagiarismServer(RPCServerBase):
             "refreshed_plagiarism_time_ms": self.refreshed_plagiarism_time_ms
         }
 
-    def get_plagiarism_miners_rpc(self) -> Dict[str, dict]:
-        """Get current plagiarism miners dict."""
-        return dict(self.plagiarism_miners)
+    def get_plagiarism_miners_rpc(self) -> list[str]:
+        """Get current plagiarism miners as a list of hotkeys."""
+        return list(self.plagiarism_miners.keys())
 
     def _check_plagiarism_refresh_rpc(self, current_time: int) -> bool:
         """Check if plagiarism data needs refresh."""
@@ -141,7 +140,7 @@ class PlagiarismServer(RPCServerBase):
                 miners_to_eliminate[hotkey] = current_time
         return miners_to_eliminate
 
-    def update_plagiarism_miners_rpc(self, current_time: int, plagiarism_miners: Dict[str, MinerBucket]) -> tuple:
+    def update_plagiarism_miners_rpc(self, current_time: int, plagiarism_miners: list[str]) -> tuple[list[str], list[str]]:
         """
         Update plagiarism miners based on current data.
 
@@ -184,15 +183,15 @@ class PlagiarismServer(RPCServerBase):
         self.plagiarism_miners.clear()
         self.refreshed_plagiarism_time_ms = 0
 
-    def set_plagiarism_miners_for_test_rpc(self, plagiarism_miners: dict, current_time: int) -> None:
+    def set_plagiarism_miners_for_test_rpc(self, plagiarism_miners: list[str], current_time: int) -> None:
         """
         Set plagiarism miners directly for testing (bypasses API).
 
         Args:
-            plagiarism_miners: Dict of {hotkey: {"time": timestamp_ms}}
-            current_time: Current timestamp to set as refresh time
+            plagiarism_miners: List of hotkey strings flagged as plagiarists
+            current_time: Timestamp (ms) used as both the plagiarism flag time and refresh time
         """
-        self._update_plagiarism_in_memory_rpc(current_time, plagiarism_miners)
+        self._update_plagiarism_in_memory_rpc(current_time, {hk: {"time": current_time} for hk in plagiarism_miners})
 
     def get_plagiarism_elimination_scores_rpc(self, current_time: int, api_base_url: str = None) -> Optional[dict]:
         """
@@ -256,15 +255,15 @@ class PlagiarismServer(RPCServerBase):
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 
-    def get_plagiarism_miners(self) -> Dict[str, dict]:
-        """Get current plagiarism miners dict."""
+    def get_plagiarism_miners(self) -> list[str]:
+        """Get current plagiarism miners as a list of hotkeys."""
         return self.get_plagiarism_miners_rpc()
 
     def plagiarism_miners_to_eliminate(self, current_time: int) -> Dict[str, int]:
         """Returns a dict of miners that should be eliminated."""
         return self.plagiarism_miners_to_eliminate_rpc(current_time)
 
-    def update_plagiarism_miners(self, current_time: int, plagiarism_miners: Dict[str, MinerBucket]) -> tuple:
+    def update_plagiarism_miners(self, current_time: int, plagiarism_miners: list[str]) -> tuple[list[str], list[str]]:
         """Update plagiarism miners based on current data."""
         return self.update_plagiarism_miners_rpc(current_time, plagiarism_miners)
 

@@ -1034,12 +1034,12 @@ class PositionManager:
                 miners_to_promote.remove(e['hotkey'])
 
         # Promote miners that would have passed challenge period
-        # if self._challenge_period_client:
-        #     for miner in miners_to_promote:
-        #         if self._challenge_period_client.has_miner(miner):
-        #             if self._challenge_period_client.get_miner_bucket(miner) != MinerBucket.MAINCOMP:
-        #                 self._challenge_period_client.promote_challengeperiod_in_memory([miner], now_ms)
-        #     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        if self._challenge_period_client:
+            for miner in miners_to_promote:
+                if self._challenge_period_client.has_miner(miner):
+                    if self._challenge_period_client.get_miner_bucket(miner) != MinerBucket.MAINCOMP:
+                        self._challenge_period_client.promote_challengeperiod_in_memory([miner], now_ms)
+            # self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
 
         # Wipe miners_to_wipe below
         for k in miners_to_wipe:
@@ -1081,17 +1081,15 @@ class PositionManager:
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
 
-                # # Restore subaccount status for erroneously eliminated synthetic hotkeys
-                if is_synthetic_hotkey(miner_hotkey) and self._entity_client:
-                    success, msg = self._entity_client.restore_subaccount(miner_hotkey)
-                    print(f"Restored subaccount {miner_hotkey}: {msg}")
-
-                # Remove from challenge period so the next refresh re-adds them to the
-                # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
-                # if self._challenge_period_client:
-                #     self._challenge_period_client.remove_miner(miner_hotkey)
-                #     self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, 1776991090311)
-                #     self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.SUBACCOUNT_FUNDED, 1778072313000)
+                # # # Restore subaccount status for erroneously eliminated synthetic hotkeys
+                # if is_synthetic_hotkey(miner_hotkey) and self._entity_client:
+                #     success, msg = self._entity_client.restore_subaccount(miner_hotkey)
+                #     print(f"Restored subaccount {miner_hotkey}: {msg}")
+                #
+                # # Remove from challenge period so the next refresh re-adds them to the
+                # # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
+                # if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
+                #     self._challenge_period_client.remove_miners(miner_hotkey)
                 #     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
                 #     print(f'Removed challenge period status for {miner_hotkey}')
 
@@ -1230,18 +1228,6 @@ class PositionManager:
 
     # ==================== Compaction Methods ====================
 
-    @staticmethod
-    def strip_old_price_sources(position: Position, time_now_ms: int) -> int:
-        """Strip price_sources from orders older than 1 week to save disk space."""
-        n_removed = 0
-        one_week_ago_ms = time_now_ms - 1000 * 60 * 60 * 24 * 7
-        for o in position.orders:
-            if o.processed_ms < one_week_ago_ms:
-                if o.price_sources:
-                    o.price_sources = []
-                    n_removed += 1
-        return n_removed
-
     @timeme
     def compact_price_sources(self):
         """
@@ -1260,7 +1246,7 @@ class PositionManager:
                 elif any(o.processed_ms > cutoff_time_ms for o in position.orders):
                     continue  # Could be subject to retro price correction and we don't want to deal with locking
 
-                n = self.strip_old_price_sources(position, time_now)
+                n = PositionUtils.strip_old_price_sources(position, time_now)
                 if n:
                     n_price_sources_removed += n
                     # Save to disk
@@ -1782,8 +1768,8 @@ class PositionManager:
 
         # Remove from challenge period so next refresh re-adds to correct bucket
         if self._challenge_period_client and self._challenge_period_client.has_miner(hotkey):
-            self._challenge_period_client.remove_miner(hotkey)
-            self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+            self._challenge_period_client.remove_miners(hotkey)
+            # self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
             log.append(f"Removed challenge period entry for {hotkey}")
 
         # Rebuild account state from remaining positions

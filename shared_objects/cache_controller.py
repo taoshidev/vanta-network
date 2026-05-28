@@ -22,6 +22,7 @@ class CacheController:
         self.is_backtesting = is_backtesting
         self._last_update_time_ms = 0
         self.DD_V2_TIME = TimeUtil.millis_to_datetime(1715359820000 + 1000 * 60 * 60 * 2)  # 5/10/24 TODO: Update before mainnet release
+        self.attempted_start_time_ms = TimeUtil.now_in_millis()
 
         # Create metagraph client with connect_immediately=False to defer connection
         # Client objects are instantiated where needed, not passed around

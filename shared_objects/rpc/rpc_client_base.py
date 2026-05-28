@@ -620,11 +620,7 @@ class RPCClientBase:
             def populate_cache(self) -> Dict[str, Any]:
                 # Fetch data from server via RPC
                 eliminations = self._server.get_eliminations_dict_rpc()
-                departed = self._server.get_departed_hotkeys_rpc()
-                return {
-                    "eliminations": eliminations,
-                    "departed_hotkeys": departed
-                }
+                return {"eliminations": eliminations}
         """
         raise NotImplementedError(
             f"{self.__class__.__name__} must implement populate_cache() "

@@ -450,6 +450,7 @@ class ValiConfig:
     CHALLENGE_PERIOD_MIN_WEIGHT = 1.5e-05  # essentially nothing
     CHALLENGE_PERIOD_MAX_WEIGHT = 2.4e-05
     CHALLENGE_PERIOD_MINIMUM_DAYS = 61
+    CHALLENGE_PERIOD_MINIMUM_MS = CHALLENGE_PERIOD_MINIMUM_DAYS * DAILY_MS
     CHALLENGE_PERIOD_MAXIMUM_DAYS = 90
     CHALLENGE_PERIOD_MAXIMUM_MS = CHALLENGE_PERIOD_MAXIMUM_DAYS * DAILY_MS
     CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75 # miners must pass 75th percentile to enter the main competition
@@ -495,13 +496,17 @@ class ValiConfig:
         TradePairCategory.EQUITIES: 0.1, # 10% returns required to pass equities evaluation
         TradePairCategory.HL_ALL: 0.1,   # 10% returns required to pass hl all markets evaluation
     }
-    SUBACCOUNT_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05    # Rule 1: 5% intraday drop from day-open equity eliminates
-    SUBACCOUNT_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: 5% drop from highest-ever EOD equity eliminates
-    SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0 = 0.10 # V0 applies to subaccounts registered before Sun Mar 15, 2026
-    SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V1 = 0.08 # V1 applies to subaccounts registered before Wed May 27, 2026
-    SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
-    SUBACCOUNT_FUNDED_EOD_DRAWDOWN_THRESHOLD_V0 = 0.10  # V0 applies to subaccounts registered before Sun Mar 15, 2026
-    SUBACCOUNT_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
+    CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05    # Rule 1: 5% intraday drop from day-open equity eliminates
+    CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: 5% drop from highest-ever EOD equity eliminates
+    FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0 = 0.10 # V0 applies to subaccounts registered before Sun Mar 15, 2026
+    FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V1 = 0.08 # V1 applies to subaccounts registered before Wed May 27, 2026
+    FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
+    FUNDED_EOD_DRAWDOWN_THRESHOLD_V0 = 0.10  # V0 applies to subaccounts registered before Sun Mar 15, 2026
+    FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
+
+    # Registration cutoffs for versioned SUBACCOUNT_FUNDED thresholds (ms)
+    FUNDED_V0_CUTOFF_MS = 1773532799000  # Mar 14, 2026 23:59:59 UTC
+    FUNDED_V1_CUTOFF_MS = 1779840000000  # May 27, 2026 00:00:00 UTC
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA

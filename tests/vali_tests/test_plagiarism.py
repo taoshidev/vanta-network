@@ -91,11 +91,9 @@ class TestPlagiarism(TestBase):
     def test_update_plagiarism_miners_new_plagiarists(self):
         """Test demotion of miners to plagiarism bucket when new plagiarists are detected"""
         # Inject plagiarism data via client - mark miners as plagiarists
-        plagiarism_data = {
-            self.MINER_HOTKEY1: {"time": self.current_time},
-            self.MINER_HOTKEY2: {"time": self.current_time}
-        }
-        self.plagiarism_client.set_plagiarism_miners_for_test(plagiarism_data, self.current_time)
+        self.plagiarism_client.set_plagiarism_miners_for_test(
+            [self.MINER_HOTKEY1, self.MINER_HOTKEY2], self.current_time
+        )
 
         initial_bucket = self.challenge_period_client.get_miner_bucket(self.MINER_HOTKEY1)
         self.assertEqual(initial_bucket, MinerBucket.MAINCOMP)
@@ -103,7 +101,7 @@ class TestPlagiarism(TestBase):
         # Call update_plagiarism_miners via client
         self.challenge_period_client.update_plagiarism_miners(
             current_time=self.current_time,
-            plagiarism_miners={}
+            plagiarism_miners=[]
         )
 
         # Verify miners were demoted to plagiarism

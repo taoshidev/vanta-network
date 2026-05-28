@@ -13,23 +13,37 @@ A long position is a bet that the trade pair will increase, while a short positi
    - There is an immunity period of 4 hours. Eliminated miners do not benefit from being in the immunity period.
 2. Your miner will start in the challenge period upon entry. Miners must demonstrate consistent performance within 90 days to pass the challenge period. During this period, they will receive a small amount of TAO that will help them avoid getting deregistered. The minimum requirements to pass the challenge period:
    - Have at least 61 full days of trading
-   - Don't exceed 10% max drawdown
+   - Don't exceed a 5% intraday drawdown (measured from the day-open equity) or a 5% EOD drawdown (measured from the highest-ever end-of-day equity)
+   - Achieve cumulative returns above 10% (crypto/equities) or 8% (forex)
    - Score at or above the 25th miner in each asset class in main competition. The details may be found [here](https://docs.taoshi.io/tips/p21/).
 3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral.
 4. Miner's must select an asset category in order to submit trades. Miners will be restricted to only submitting trades in their chosen asset class.
 5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
    it can't flip SHORT. If you try and have it flip SHORT (using more leverage SHORT than exists LONG) it will close out
    the position. You'll then need to open a second position which is SHORT with the difference.
-6. Position leverage is bound per trade pair. If an order would cause the position's leverage to exceed the upper boundary, the position leverage will be clamped. Minimum order leverage is 0.001. Crypto positional leverage limit is [0.01, 2.5]. Forex positional leverage limit is [0.1, 10]. Equities positional leverage limit is [0.1, 2].
-7. Leverage is capped across all open positions in a miner's portfolio. Crypto portfolio leverage is capped at 5x. Forex portfolio leverage is capped at 20x. Equities portfolio leverage is capped at 2x.
-   to the leverage cap. <a href="https://docs.taoshi.io/tips/p10/">View for more details and examples.</a>
+6. Position leverage is bound per trade pair and scales with your leverage tier. Tier is determined purely by account size: **Tier 2** applies below $200K; **Tier 3** applies from $200K to $1M; **Tier 4** applies at $1M and above. Minimum order leverage is 0.001. Positional leverage limits by tier:
+
+   | Tier | Crypto | Forex  | Commodities | Equities |
+   |------|--------|--------|-------------|----------|
+   | 2 (<$200K)    | 1.0x | 5.0x  | 1.0x | 1.0x |
+   | 3 ($200K–$1M) | 1.5x | 7.5x  | 1.5x | 1.5x |
+   | 4 (≥$1M)      | 2.0x | 10.0x | 2.0x | 2.0x |
+
+7. Portfolio leverage (the sum of all open position leverages) is also capped by tier.
+
+   | Tier | Crypto | Forex  | Equities |
+   |------|--------|--------|----------|
+   | 2 (<$200K)    | 2.0x | 10.0x | 1.5x |
+   | 3 ($200K–$1M) | 3.0x | 15.0x | 2.0x |
+   | 4 (≥$1M)      | 4.0x | 20.0x | 2.0x |
 8. You can take profit on an open position using LONG and SHORT. Say you have an open LONG position with .5x
    leverage and you want to reduce it to a .25x leverage position to start taking profit on it. You would send in a SHORT signal
    of size .25x leverage to reduce the size of the position. LONG and SHORT signals can be thought of working in opposite
    directions in this way.
-9. Miners that have passed challenge period will be eliminated for a drawdown that exceeds 10%.
-10. Miners in main competition who fall below the top 25 in each asset class will be observed under a probation period. 
-   - Miners in probation period have 60 days from time of demotion to be promoted back into main competition.
+9. Miners that have passed the challenge period will be eliminated for exceeding a 5% intraday drawdown (measured from the day-open equity) or an 8% EOD drawdown (measured from the highest-ever end-of-day equity).
+10. Miners in main competition who fall below the top 25 in each asset class will be observed under a probation period.
+   - Miners in probation have 60 days from time of demotion to be promoted back into main competition.
+   - Promotion requires cumulative returns above 10% (crypto/equities) or 8% (forex) and ranking back into the top 25.
    - If they fail to do so within this window, they will be eliminated.
 11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
 12. A miner's order will be ignored if placing a trade outside of market hours.
@@ -273,7 +287,7 @@ $$
 
 There are two primary penalties in place for each miner:
 
-1. Max Drawdown: Vanta eliminates miners who exceed 10% max drawdown.
+1. Drawdown Limits: Vanta eliminates miners who exceed their intraday or EOD drawdown thresholds. Challenge-period miners are eliminated at 5% intraday or 5% EOD. Miners in main competition are eliminated at 5% intraday or 8% EOD.
 2. Risk-Profiling: Miners are penalized for having positions that may create undue risk for copy traders.
 
 To avoid the impact of a risk profiling penalty, we recommend that you avoid doing the following:
@@ -318,16 +332,33 @@ A carry fee is charged at each interval based on the current market value of the
 
 ### Leverage Limits
 
-We also set limits on leverage usage, to ensure that the network has a level of risk protection and mitigation of naive strategies. The [positional leverage limits](https://docs.taoshi.io/tips/p5/) are as follows:
+We also set limits on leverage usage, to ensure that the network has a level of risk protection and mitigation of naive strategies. The [positional leverage limits](https://docs.taoshi.io/tips/p5/) scale with your leverage tier, which is determined by your miner status and account size:
 
-| Market        | Leverage Limit |
-|---------------|----------------|
-| Forex         | 0.1x - 10x     |
-| Commodities   | 0.1x - 4x      |
-| Crypto        | 0.01x - 2.5x   |
-| Equities      | 0.1x - 2x      |
+Leverage tier is determined purely by account size:
 
-We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips/p10/), which is the sum of all the leverages from each open position. This limit is set at 5x for crypto, 20x for forex, and 2x for equities. You can therefore open 20 forex positions at 1x leverage each, 10 forex positions at 2x leverage each, 5 crypto positions at 1x, 2 equities positions at 1x, etc.
+- **Tier 2**: account size < $200K
+- **Tier 3**: $200K ≤ account size < $1M
+- **Tier 4**: account size ≥ $1M
+
+**Positional leverage limits by tier:**
+
+| Tier | Crypto | Forex  | Commodities | Equities | Indices |
+|------|--------|--------|-------------|----------|---------|
+| 2 (<$200K)    | 1.0x | 5.0x  | 1.0x | 1.0x | 5.0x  |
+| 3 ($200K–$1M) | 1.5x | 7.5x  | 1.5x | 1.5x | 7.5x  |
+| 4 (≥$1M)      | 2.0x | 10.0x | 2.0x | 2.0x | 10.0x |
+
+We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips/p10/), which is the sum of all the leverages from each open position. This limit also scales with tier:
+
+**Portfolio leverage caps by tier:**
+
+| Tier | Crypto | Forex  | Equities | Indices |
+|------|--------|--------|----------|---------|
+| 2 (<$200K)    | 2.0x | 10.0x | 1.5x | 10.0x |
+| 3 ($200K–$1M) | 3.0x | 15.0x | 2.0x | 15.0x |
+| 4 (≥$1M)      | 4.0x | 20.0x | 2.0x | 20.0x |
+
+For example, a Tier 4 forex miner can open 20 positions at 1x leverage each, or 10 positions at 2x leverage each.
 
 ## Incentive Distribution
 

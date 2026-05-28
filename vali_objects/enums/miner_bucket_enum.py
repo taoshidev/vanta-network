@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from vali_objects.vali_config import ValiConfig
+
 
 class MinerBucket(Enum):
     MAINCOMP = "MAINCOMP"
@@ -15,7 +17,119 @@ class MinerBucket(Enum):
     SUBACCOUNT_ALPHA = "SUBACCOUNT_ALPHA"
 
 
+    def intraday_drawdown_threshold(self, time_ms: int | None = None) -> float:
+        """
+        Returns the intraday drawdown threshold for this bucket from ValiConfig.
+        For SUBACCOUNT_FUNDED, time_ms is the miner's SUBACCOUNT_CHALLENGE registration
+        timestamp and determines which versioned threshold applies.
+        """
+        if self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.CHALLENGE):
+            return ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
+
+        if self == MinerBucket.SUBACCOUNT_FUNDED:
+            if time_ms is not None and time_ms < ValiConfig.FUNDED_V0_CUTOFF_MS:
+                return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0
+            if time_ms is not None and time_ms < ValiConfig.FUNDED_V1_CUTOFF_MS:
+                return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V1
+            return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+
+        if self in (MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.SUBACCOUNT_ALPHA):
+            return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+
+        raise ValueError(f"No intraday drawdown threshold defined for bucket {self}")
+
+    def eod_drawdown_threshold(self, time_ms: int | None = None) -> float:
+        """
+        Returns the intraday drawdown threshold for this bucket from ValiConfig.
+        For SUBACCOUNT_FUNDED, time_ms is the miner's SUBACCOUNT_CHALLENGE registration
+        timestamp and determines which versioned threshold applies.
+        """
+        if self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.CHALLENGE):
+            return ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD
+
+        if self == MinerBucket.SUBACCOUNT_FUNDED:
+            if time_ms is not None and time_ms < ValiConfig.FUNDED_V0_CUTOFF_MS:
+                return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD_V0
+            return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
+
+        if self in (MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.SUBACCOUNT_ALPHA):
+            return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
+
+        raise ValueError(f"No intraday drawdown threshold defined for bucket {self}")
+
+    @property
+    def is_regular_miner(self) -> bool:
+        return self in (MinerBucket.CHALLENGE, MinerBucket.PROBATION, MinerBucket.MAINCOMP)
+
+    @property
+    def is_subaccount(self) -> bool:
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA)
+
+    @property
+    def next_bucket(self) -> "MinerBucket | None":
+        if self == MinerBucket.CHALLENGE:
+            return MinerBucket.MAINCOMP
+        elif self == MinerBucket.PROBATION:
+            return MinerBucket.MAINCOMP
+        elif self == MinerBucket.SUBACCOUNT_CHALLENGE:
+            return MinerBucket.SUBACCOUNT_FUNDED
+        # TODO determine if we need alpha or keep subaccounts as funded
+        # elif self == MinerBucket.SUBACCOUNT_FUNDED:
+        #     return MinerBucket.SUBACCOUNT_ALPHA
+        return None
+
+    @property
+    def max_time_ms(self) -> int | None:
+        if self == MinerBucket.CHALLENGE:
+            return ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS
+        elif self == MinerBucket.PROBATION:
+            return ValiConfig.PROBATION_MAXIMUM_MS
+        elif self == MinerBucket.PLAGIARISM:
+            return   ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS
+        else:
+            return None
+
+    @property
+    def is_rank_based(self):
+        return self in (
+                MinerBucket.CHALLENGE,
+                MinerBucket.MAINCOMP,
+                MinerBucket.PROBATION,
+                MinerBucket.SUBACCOUNT_ALPHA
+                )
+
+    @property
+    def is_active(self):
+        return self in (
+                MinerBucket.CHALLENGE,
+                MinerBucket.MAINCOMP,
+                MinerBucket.PROBATION,
+                MinerBucket.PLAGIARISM,
+                MinerBucket.SUBACCOUNT_CHALLENGE,
+                MinerBucket.SUBACCOUNT_FUNDED,
+                MinerBucket.SUBACCOUNT_ALPHA
+                )
+
 @dataclass
 class BucketEntry:
     bucket: MinerBucket
     start_time_ms: int
+
+    def to_dict(self) -> dict:
+        """Convert to dict for serialization."""
+        return {
+            'bucket': self.bucket.value,
+            'start_time_ms': self.start_time_ms,
+            'bucket_start_time': self.start_time_ms  # for backwards compatibility TODO remove
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'BucketEntry':
+        """Create from dict for deserialization."""
+        bucket = d.get('bucket', MinerBucket.UNKNOWN)
+        if isinstance(bucket, str):
+            bucket = MinerBucket(bucket)
+        return cls(
+            bucket=bucket,
+            start_time_ms=d.get('start_time_ms') or d.get('bucket_start_time', 0)
+        )

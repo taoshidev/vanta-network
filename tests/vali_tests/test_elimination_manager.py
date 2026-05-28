@@ -117,11 +117,8 @@ class TestEliminationManager(TestBase):
         self.perf_ledger_client.save_perf_ledgers(ledgers)
 
         # Set up challenge period status
-        miners = {}
-        miners[self.MDD_MINER] = (MinerBucket.MAINCOMP, 0, None, None)
-        miners[self.REGULAR_MINER] = (MinerBucket.MAINCOMP, 0, None, None)
-        self.challenge_period_client.update_miners(miners)
-        self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        self.challenge_period_client.set_miner_bucket(self.MDD_MINER, MinerBucket.MAINCOMP, 0)
+        self.challenge_period_client.set_miner_bucket(self.REGULAR_MINER, MinerBucket.MAINCOMP, 0)
 
     def test_elimination_for_mdd(self):
         """Test MDD elimination and zombie detection"""
@@ -189,9 +186,9 @@ class TestEliminationManager(TestBase):
                 # Use client API - this creates RPC calls that the server handles concurrently
                 self.elimination_client.append_elimination_row(
                     hotkey=hotkey,
-                    current_dd=0.08,
                     reason="RACE_TEST_MDD",
-                    t_ms=1000 + hash(hotkey) % 1000  # Different timestamps
+                    elimination_drawdown_pct=0.08,
+                    elimination_time_ms=1000 + hash(hotkey) % 1000
                 )
                 results["success"] += 1
             except Exception as e:
@@ -248,8 +245,8 @@ class TestEliminationManager(TestBase):
         for miner in initial_miners:
             self.elimination_client.append_elimination_row(
                 hotkey=miner,
-                current_dd=0.05,
-                reason="INITIAL_SETUP"
+                reason="INITIAL_SETUP",
+                elimination_drawdown_pct=0.05
             )
 
         # Verify setup
@@ -330,9 +327,9 @@ class TestEliminationManager(TestBase):
         for i in range(50):
             self.elimination_client.append_elimination_row(
                 hotkey=f"iter_miner_{i}",
-                current_dd=0.05,
                 reason="ITER_TEST",
-                t_ms=current_time_ms  # Recent timestamp - won't be deleted
+                elimination_drawdown_pct=0.05,
+                elimination_time_ms=current_time_ms
             )
 
         iteration_results = {"crashed": False, "error": None, "completed": False}
@@ -359,9 +356,9 @@ class TestEliminationManager(TestBase):
             for i in range(50, 70):
                 self.elimination_client.append_elimination_row(
                     hotkey=f"new_miner_{i}",
-                    current_dd=0.06,
                     reason="CONCURRENT_ADD",
-                    t_ms=current_time_ms  # Recent timestamp
+                    elimination_drawdown_pct=0.06,
+                    elimination_time_ms=current_time_ms
                 )
                 modification_count["count"] += 1
                 time.sleep(0.001)

@@ -198,11 +198,6 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + f"{suffix}/validation/departed_hotkeys.json"
 
     @staticmethod
-    def get_perf_ledger_eliminations_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledger_eliminations.json"
-
-    @staticmethod
     def get_perf_ledgers_path(running_unit_tests=False) -> str:
         """Get current perf_ledgers path (compressed JSON format)."""
         suffix = "/tests" if running_unit_tests else ""
@@ -219,6 +214,12 @@ class ValiBkpUtils:
         """Get legacy uncompressed perf_ledgers path for migration."""
         suffix = "/tests" if running_unit_tests else ""
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json"
+
+    @staticmethod
+    def get_frozen_perf_ledgers_path(running_unit_tests=False) -> str:
+        """Get frozen perf_ledgers path (compressed JSON format) for eliminated miners."""
+        suffix = "/tests" if running_unit_tests else ""
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/frozen_perf_ledgers.json.gz"
 
     @staticmethod
     def migrate_perf_ledgers_to_compressed(running_unit_tests=False) -> bool:
@@ -242,7 +243,18 @@ class ValiBkpUtils:
                 # The .pkl file contains gzip-compressed JSON (created by write_compressed_json)
                 # despite having the wrong extension, so read it as compressed JSON
                 data = ValiBkpUtils.read_compressed_json(pkl_path)
+            except Exception:
+                # Actual pickle file — read with pickle
+                try:
+                    import pickle
+                    with open(pkl_path, 'rb') as f:
+                        data = pickle.load(f)
+                    bt.logging.info(f"Read perf_ledgers from actual pickle file {pkl_path}")
+                except Exception as e:
+                    bt.logging.error(f"Failed to migrate perf_ledgers from .pkl: {e}")
+                    return False
 
+            try:
                 # Write to correct .json.gz path
                 ValiBkpUtils.write_compressed_json(new_path, data)
 

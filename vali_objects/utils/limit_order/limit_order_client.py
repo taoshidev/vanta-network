@@ -153,7 +153,7 @@ class LimitOrderClient(RPCClientBase):
 
     # ==================== Mutation Methods ====================
 
-    def delete_all_limit_orders_for_hotkey(self, miner_hotkey: str) -> dict:
+    def delete_all_limit_orders_for_hotkey(self, miner_hotkey: str) -> int:
         """
         Delete all limit orders for a hotkey via RPC.
 
@@ -163,7 +163,7 @@ class LimitOrderClient(RPCClientBase):
             miner_hotkey: Miner's hotkey
 
         Returns:
-            dict with deletion details
+            number of orders deleted
 
         Raises:
             Exception: RPC or server errors

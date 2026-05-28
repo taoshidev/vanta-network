@@ -16,7 +16,8 @@ from time_util.time_util import TimeUtil, MS_IN_8_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
+from vali_objects.challenge_period.challengeperiod_manager import MinerBucketState
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
@@ -49,7 +50,6 @@ class TestEliminationCore(TestBase):
     ZOMBIE_MINER = "miner_zombie"
     PLAGIARIST_MINER = "miner_plagiarist"
     CHALLENGE_FAIL_MINER = "miner_challenge_fail"
-    LIQUIDATED_MINER = "miner_liquidated"
     DEFAULT_ACCOUNT_SIZE = 100_000
 
     @classmethod
@@ -81,7 +81,6 @@ class TestEliminationCore(TestBase):
             "miner_zombie",
             "miner_plagiarist",
             "miner_challenge_fail",
-            "miner_liquidated"
         ]
         # Initialize metagraph with test miners
         cls.metagraph_client.set_hotkeys(cls.all_test_miners)
@@ -120,7 +119,6 @@ class TestEliminationCore(TestBase):
             self.ZOMBIE_MINER,
             self.PLAGIARIST_MINER,
             self.CHALLENGE_FAIL_MINER,
-            self.LIQUIDATED_MINER
         ]
 
         # Set up metagraph with all miner names
@@ -164,8 +162,7 @@ class TestEliminationCore(TestBase):
         miners = {}
 
         # Most miners in main competition
-        for miner in [self.MDD_MINER, self.REGULAR_MINER, self.ZOMBIE_MINER,
-                      self.PLAGIARIST_MINER, self.LIQUIDATED_MINER]:
+        for miner in [self.MDD_MINER, self.REGULAR_MINER, self.ZOMBIE_MINER, self.PLAGIARIST_MINER]:
             miners[miner] = (MinerBucket.MAINCOMP, 0, None, None)
 
         # Challenge fail miner in challenge period
@@ -177,9 +174,11 @@ class TestEliminationCore(TestBase):
         )
 
         # Update using client API
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners(miners)
-        self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        miner_states_data = {
+            hotkey: MinerBucketState(hotkey, [BucketEntry(bucket, start_time)]).to_json()
+            for hotkey, (bucket, start_time, _, _) in miners.items()
+        }
+        self.challenge_period_client.sync_challenge_period_data(miner_states_data)
 
     def _setup_perf_ledgers(self):
         """Set up performance ledgers for testing"""
@@ -192,8 +191,7 @@ class TestEliminationCore(TestBase):
         )
 
         # Regular miners - good performance
-        for miner in [self.REGULAR_MINER, self.ZOMBIE_MINER,
-                      self.PLAGIARIST_MINER, self.LIQUIDATED_MINER]:
+        for miner in [self.REGULAR_MINER, self.ZOMBIE_MINER, self.PLAGIARIST_MINER]:
             ledgers[miner] = generate_winning_ledger(
                 0,
                 ValiConfig.TARGET_LEDGER_WINDOW_MS
@@ -215,7 +213,7 @@ class TestEliminationCore(TestBase):
         # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         # Initially no eliminations
-        self.assertEqual(len(self.challenge_period_client.get_success_miners()), 5)
+        self.assertEqual(len(self.challenge_period_client.get_success_miners()), 4)
 
         # Process eliminations
         self.elimination_client.process_eliminations()
@@ -262,38 +260,16 @@ class TestEliminationCore(TestBase):
 
     # ========== Comprehensive Elimination Tests (from test_elimination_manager_comprehensive.py) ==========
 
-    def test_mdd_elimination_comprehensive(self):
-        """Test comprehensive MDD elimination with position closure"""
-        # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
-
-        # Process MDD eliminations
-        self.elimination_client.handle_mdd_eliminations()
-
-        # Verify elimination
-        eliminations = self.elimination_client.get_eliminations_from_memory()
-        mdd_elim = next((e for e in eliminations if e["hotkey"] == self.MDD_MINER), None)
-        self.assertIsNotNone(mdd_elim)
-        self.assertEqual(mdd_elim["reason"], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
-        self.assertIn("dd", mdd_elim)
-        self.assertIn("elimination_initiated_time_ms", mdd_elim)
-
-        # Verify positions were closed
-        positions = self.position_client.get_positions_for_one_hotkey(self.MDD_MINER)
-        for pos in positions:
-            self.assertTrue(pos.is_closed_position)
-            self.assertEqual(pos.orders[-1].order_type, OrderType.FLAT)
-
     def test_challenge_period_elimination(self):
         """Test elimination for miners failing challenge period"""
         # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         # Set up challenge period failure
-        self.challenge_period_client.update_elimination_reasons({
-            self.CHALLENGE_FAIL_MINER: (
-                EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
-                0.08
-            )
-        })
+        self.elimination_client.append_elimination_row(
+            self.CHALLENGE_FAIL_MINER,
+            EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+            elimination_drawdown_pct=0.08
+        )
 
         # Process eliminations
         self.elimination_client.process_eliminations()
@@ -305,40 +281,6 @@ class TestEliminationCore(TestBase):
         self.assertEqual(challenge_elim["reason"], EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value)
         self.assertEqual(challenge_elim["dd"], 0.08)
 
-    def test_perf_ledger_elimination(self):
-        """Test elimination triggered by perf ledger manager"""
-        # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
-
-        # Create a perf ledger elimination
-        pl_elimination = {
-            'hotkey': self.LIQUIDATED_MINER,
-            'reason': EliminationReason.LIQUIDATED.value,
-            'dd': 0.15,
-            'elimination_initiated_time_ms': TimeUtil.now_in_millis(),
-            'price_info': {
-                str(TradePair.BTCUSD): 55000,
-                str(TradePair.ETHUSD): 2800
-            }
-        }
-
-        # Add to perf ledger eliminations
-        self.perf_ledger_client.add_elimination_row(pl_elimination)
-
-        # Process eliminations
-        self.elimination_client.process_eliminations()
-
-        # Check that liquidated miner was eliminated
-        eliminations = self.elimination_client.get_eliminations_from_memory()
-        liquidated_elim = next((e for e in eliminations if e["hotkey"] == self.LIQUIDATED_MINER), None)
-        self.assertIsNotNone(liquidated_elim)
-        self.assertEqual(liquidated_elim["reason"], EliminationReason.LIQUIDATED.value)
-
-        # Verify positions were closed for elimination
-        positions = self.position_client.get_positions_for_one_hotkey(self.LIQUIDATED_MINER)
-        for pos in positions:
-            self.assertTrue(pos.is_closed_position)
-            # Verify flat order was added
-            self.assertEqual(pos.orders[-1].order_type, OrderType.FLAT)
 
     def test_elimination_persistence(self):
         """Test that eliminations are persisted to disk correctly"""
@@ -349,9 +291,9 @@ class TestEliminationCore(TestBase):
 
         self.elimination_client.append_elimination_row(
             self.MDD_MINER,
-            test_dd,
             test_reason,
-            t_ms=test_time
+            elimination_drawdown_pct=test_dd,
+            elimination_time_ms=test_time
         )
 
         # Verify it's in memory
@@ -374,16 +316,17 @@ class TestEliminationCore(TestBase):
         test_reason = EliminationReason.MAX_TOTAL_DRAWDOWN.value
         test_time = TimeUtil.now_in_millis()
 
-        row = self.elimination_client.generate_elimination_row(
+        self.elimination_client.append_elimination_row(
             self.MDD_MINER,
-            test_dd,
             test_reason,
-            t_ms=test_time
+            elimination_drawdown_pct=test_dd,
+            elimination_time_ms=test_time
         )
+        row = self.elimination_client.get_elimination(self.MDD_MINER)
 
         # Verify structure
         self.assertEqual(row['hotkey'], self.MDD_MINER)
-        self.assertEqual(row['dd'], test_dd)
+        self.assertEqual(row['elimination_drawdown_pct'], test_dd)
         self.assertEqual(row['reason'], test_reason)
         self.assertEqual(row['elimination_initiated_time_ms'], test_time)
 
@@ -424,12 +367,11 @@ class TestEliminationCore(TestBase):
     def test_hotkey_in_eliminations(self):
         """Test checking if hotkey is in eliminations"""
         # Add elimination
-        self.elimination_client.add_elimination(self.MDD_MINER, {
-            'hotkey': self.MDD_MINER,
-            'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
-            'dd': 0.12,
-            'elimination_initiated_time_ms': TimeUtil.now_in_millis()
-        })
+        self.elimination_client.append_elimination_row(
+            self.MDD_MINER,
+            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            elimination_drawdown_pct=0.12
+        )
 
         # Test existing elimination
         result = self.elimination_client.hotkey_in_eliminations(self.MDD_MINER)
@@ -446,12 +388,11 @@ class TestEliminationCore(TestBase):
         self.elimination_client.clear_eliminations()
 
         # Test adding elimination via RPC
-        test_elim = self.elimination_client.generate_elimination_row(
+        self.elimination_client.append_elimination_row(
             self.MDD_MINER,
-            0.12,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value
+            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            elimination_drawdown_pct=0.12
         )
-        self.elimination_client.add_elimination(self.MDD_MINER, test_elim)
 
         # Verify it works with RPC
         eliminations = self.elimination_client.get_eliminations_from_memory()
@@ -462,12 +403,11 @@ class TestEliminationCore(TestBase):
         # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         # First elimination
-        self.elimination_client.add_elimination(self.MDD_MINER, {
-            'hotkey': self.MDD_MINER,
-            'reason': EliminationReason.MAX_TOTAL_DRAWDOWN.value,
-            'dd': 0.12,
-            'elimination_initiated_time_ms': TimeUtil.now_in_millis()
-        })
+        self.elimination_client.append_elimination_row(
+            self.MDD_MINER,
+            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            elimination_drawdown_pct=0.12
+        )
 
         # Try to add another elimination for same miner
         # Process eliminations should not duplicate
@@ -485,13 +425,12 @@ class TestEliminationCore(TestBase):
         # Create an old elimination
         old_time = TimeUtil.now_in_millis() - ValiConfig.ELIMINATION_FILE_DELETION_DELAY_MS - MS_IN_8_HOURS
 
-        old_elim = self.elimination_client.generate_elimination_row(
+        self.elimination_client.append_elimination_row(
             'old_miner',
-            0.15,
             EliminationReason.MAX_TOTAL_DRAWDOWN.value,
-            t_ms=old_time
+            elimination_drawdown_pct=0.15,
+            elimination_time_ms=old_time
         )
-        self.elimination_client.add_elimination('old_miner', old_elim)
 
         # Remove from metagraph
         new_hotkeys = [hk for hk in self.metagraph_client.get_hotkeys() if hk != 'old_miner']
@@ -501,14 +440,16 @@ class TestEliminationCore(TestBase):
         miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=True) + 'old_miner'
         os.makedirs(miner_dir, exist_ok=True)
 
-        # Process eliminations (should clean up)
+        # Process eliminations (should purge files but retain elimination record)
         self.elimination_client.process_eliminations()
 
-        # Verify cleanup
+        # Verify miner directory was purged
+        self.assertFalse(os.path.exists(miner_dir))
+
+        # Elimination record is retained in state after purge
         eliminations = self.elimination_client.get_eliminations_from_memory()
         old_miner_elim = next((e for e in eliminations if e['hotkey'] == 'old_miner'), None)
-        self.assertIsNone(old_miner_elim)
-        self.assertFalse(os.path.exists(miner_dir))
+        self.assertIsNotNone(old_miner_elim)
 
     def test_elimination_with_no_positions(self):
         """Test elimination handling when miner has no positions"""

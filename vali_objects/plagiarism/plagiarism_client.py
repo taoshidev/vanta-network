@@ -1,7 +1,4 @@
-from typing import Dict, Optional
-
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 
 
@@ -42,11 +39,11 @@ class PlagiarismClient(RPCClientBase):
 
     # ==================== Query Methods ====================
 
-    def get_plagiarism_miners(self) -> Dict[str, dict]:
-        """Get current plagiarism miners dict."""
+    def get_plagiarism_miners(self) -> list[str]:
+        """Get current plagiarism miners as a list of hotkeys."""
         return self._server.get_plagiarism_miners_rpc()
 
-    def plagiarism_miners_to_eliminate(self, current_time: int) -> Dict[str, int]:
+    def plagiarism_miners_to_eliminate(self, current_time: int) -> dict[str, int]:
         """
         Returns a dict of miners that should be eliminated.
 
@@ -58,20 +55,20 @@ class PlagiarismClient(RPCClientBase):
         """
         return self._server.plagiarism_miners_to_eliminate_rpc(current_time)
 
-    def update_plagiarism_miners(self, current_time: int, plagiarism_miners: Dict[str, MinerBucket]) -> tuple:
+    def update_plagiarism_miners(self, current_time: int, plagiarism_miners: list[str]) -> tuple[list[str], list[str]]:
         """
         Update plagiarism miners based on current data.
 
         Args:
             current_time: Current timestamp in milliseconds
-            plagiarism_miners: Current dict of plagiarism miners
+            plagiarism_miners: Current list of plagiarist hotkeys
 
         Returns:
             Tuple of (new_plagiarism_miners list, whitelisted_miners list)
         """
         return self._server.update_plagiarism_miners_rpc(current_time, plagiarism_miners)
 
-    def get_plagiarism_elimination_scores(self, current_time: int, api_base_url: str = None) -> Optional[dict]:
+    def get_plagiarism_elimination_scores(self, current_time: int, api_base_url: str = None) -> dict | None:
         """
         Get elimination scores from the plagiarism API.
 
@@ -104,13 +101,13 @@ class PlagiarismClient(RPCClientBase):
         """Clear all plagiarism data (for testing)."""
         self._server.clear_plagiarism_data_rpc()
 
-    def set_plagiarism_miners_for_test(self, plagiarism_miners: dict, current_time: int) -> None:
+    def set_plagiarism_miners_for_test(self, plagiarism_miners: list[str], current_time: int) -> None:
         """
         Set plagiarism miners directly for testing (bypasses API).
 
         Args:
-            plagiarism_miners: Dict of {hotkey: {"time": timestamp_ms}}
-            current_time: Current timestamp to set as refresh time
+            plagiarism_miners: List of hotkey strings flagged as plagiarists
+            current_time: Timestamp (ms) used as both the plagiarism flag time and refresh time
         """
         self._server.set_plagiarism_miners_for_test_rpc(plagiarism_miners, current_time)
 

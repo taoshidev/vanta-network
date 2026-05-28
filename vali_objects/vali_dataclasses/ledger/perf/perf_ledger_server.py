@@ -148,8 +148,7 @@ class PerfLedgerServer(RPCServerBase):
     def get_health_check_details(self) -> dict:
         """Add service-specific health check details."""
         return {
-            "num_ledgers": len(self._manager.hotkey_to_perf_bundle),
-            "num_eliminations": len(self._manager.pl_elimination_rows)
+            "num_ledgers": len(self._manager.hotkey_to_perf_bundle)
         }
 
     def update_rpc(self, testing_one_hotkey=None, regenerate_all_ledgers=False, t_ms=None) -> dict:
@@ -160,6 +159,10 @@ class PerfLedgerServer(RPCServerBase):
         # Return PerfLedger objects directly - BaseManager's pickle handles serialization
         return self._manager.get_perf_ledgers(from_disk=from_disk)
 
+    def get_frozen_ledgers_rpc(self, from_disk: bool = False) -> dict:
+        """Get frozen performance ledgers via RPC."""
+        return self._manager.get_frozen_ledgers(from_disk=from_disk)
+
     def filtered_ledger_for_scoring_rpc(
         self,
         hotkeys: List[str] = None
@@ -169,31 +172,6 @@ class PerfLedgerServer(RPCServerBase):
         return self._manager.filtered_ledger_for_scoring(
             hotkeys=hotkeys
         )
-
-    def get_perf_ledger_eliminations_rpc(self, first_fetch: bool = False) -> list:
-        """
-        Get performance ledger eliminations via RPC.
-
-        Args:
-            first_fetch: If True, load from disk instead of memory
-
-        Returns:
-            List of elimination dictionaries
-        """
-        return list(self._manager.get_perf_ledger_eliminations(first_fetch=first_fetch))
-
-    def write_perf_ledger_eliminations_to_disk_rpc(self, eliminations: list) -> None:
-        """
-        Write performance ledger eliminations to disk via RPC.
-
-        Args:
-            eliminations: List of elimination dictionaries to write
-        """
-        self._manager.write_perf_ledger_eliminations_to_disk(eliminations)
-
-    def clear_perf_ledger_eliminations_rpc(self) -> None:
-        """Clear all perf ledger eliminations in memory via RPC (for testing)."""
-        self._manager.pl_elimination_rows.clear()
 
     def save_perf_ledgers_rpc(self, perf_ledgers: dict) -> None:
         """Save performance ledgers via RPC."""
@@ -329,17 +307,6 @@ class PerfLedgerServer(RPCServerBase):
         else:
             self._manager.perf_ledger_hks_to_invalidate[hotkey] = timestamp_ms
 
-    def add_elimination_row_rpc(self, elimination_row: dict) -> None:
-        """
-        Add an elimination row to the perf ledger eliminations via RPC.
-
-        This is used by tests to simulate performance ledger eliminations.
-
-        Args:
-            elimination_row: Elimination dict with hotkey, reason, dd, etc.
-        """
-        self._manager.pl_elimination_rows.append(elimination_row)
-
     def get_bypass_values_if_applicable_rpc(
         self,
         ledger: PerfLedger,
@@ -375,11 +342,6 @@ class PerfLedgerServer(RPCServerBase):
     def perf_ledger_hks_to_invalidate(self):
         """Direct access to invalidation dict (for tests)."""
         return self._manager.perf_ledger_hks_to_invalidate
-
-    @property
-    def pl_elimination_rows(self):
-        """Direct access to elimination rows (for tests)."""
-        return self._manager.pl_elimination_rows
 
     @property
     def hotkey_to_perf_bundle(self):

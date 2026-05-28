@@ -666,7 +666,7 @@ class LimitOrderManager(CacheController):
             bt.logging.error(f"Error getting all limit orders: {e}")
             return {}
 
-    def delete_all_limit_orders_for_hotkey_rpc(self, miner_hotkey):
+    def delete_all_limit_orders_for_hotkey(self, miner_hotkey):
         """
         RPC method to delete all limit orders (both in-memory and on-disk) for a hotkey.
 
@@ -676,7 +676,7 @@ class LimitOrderManager(CacheController):
             miner_hotkey: The miner's hotkey
 
         Returns:
-            dict with deletion details
+            Number of deleted orders
         """
         try:
             deleted_count = 0
@@ -707,13 +707,10 @@ class LimitOrderManager(CacheController):
                             if trade_pair in self._last_fill_time:
                                 del self._last_fill_time[trade_pair]
 
-            bt.logging.info(f"Deleted {deleted_count} limit orders for eliminated miner [{miner_hotkey}]")
+            if deleted_count > 0:
+                bt.logging.info(f"Deleted {deleted_count} limit orders for eliminated miner [{miner_hotkey}]")
 
-            return {
-                "status": "deleted",
-                "miner_hotkey": miner_hotkey,
-                "deleted_count": deleted_count
-            }
+            return deleted_count
 
         except Exception as e:
             bt.logging.error(f"Error deleting limit orders for hotkey {miner_hotkey}: {e}")
