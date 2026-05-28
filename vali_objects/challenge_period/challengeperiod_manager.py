@@ -292,7 +292,7 @@ class ChallengePeriodManager(CacheController):
         for state in self.miner_states.values():
             counts[state.current_bucket] = counts.get(state.current_bucket, 0) + 1
         snapshot = " | ".join(f"{b.value}={n}" for b, n in sorted(counts.items(), key=lambda x: x[0].value))
-        btlogging.info(f"[CHALLENGE] snapshot: {snapshot} (total={len(self.miner_states)})")
+        btlogging.success(f"[CHALLENGE] snapshot: {snapshot} (total={len(self.miner_states)})")
 
         return self._to_slack_message(promotions)
 
@@ -324,7 +324,7 @@ class ChallengePeriodManager(CacheController):
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
         elif state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct * 0.75:
-            btlogging.warning(f"[CHALLENGE] near intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
+            btlogging.info(f"[CHALLENGE] near intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
         return None
 
     @staticmethod
@@ -336,7 +336,7 @@ class ChallengePeriodManager(CacheController):
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
         elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
-            btlogging.warning(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
+            btlogging.info(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
         return None
 
     @staticmethod
