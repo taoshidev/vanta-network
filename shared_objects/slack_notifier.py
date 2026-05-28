@@ -853,6 +853,7 @@ class SlackNotifier:
                 worst_response_time = self.daily_metrics.worst_response_time_ms or 0
 
                 total_today = self.daily_metrics.signals_succeeded + self.daily_metrics.signals_failed
+                signals_succeeded = self.daily_metrics.signals_succeeded
                 success_rate = (self.daily_metrics.signals_succeeded / max(1, total_today)) * 100
 
                 trade_pairs = sorted(
@@ -888,7 +889,7 @@ class SlackNotifier:
                     },
                     {
                         "title": "✅ Success Rate",
-                        "value": f"{success_rate:.1f}%",
+                        "value": f"{signals_succeeded}/{total_today} {success_rate:.1f}%",
                         "short": True
                     },
                     {

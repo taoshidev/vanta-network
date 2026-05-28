@@ -380,8 +380,8 @@ class PropNetOrderPlacer:
                 trade_pair_id=trade_pair_id,
                 execution_type=signal.execution_type.value,
                 response_time_ms=int(processing_time_s * 1000),
-                success=True,
-                exception=None
+                success=result["success"],
+                exception=result["error_message"]
             ))
 
             return {
