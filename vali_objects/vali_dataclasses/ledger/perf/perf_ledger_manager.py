@@ -1589,14 +1589,16 @@ class PerfLedgerManager(CacheController):
         pl_update_start_time_ms = portfolio_pl.last_update_ms
         if pl_update_start_time_ms == 0:
             pl_update_start_time_ms = portfolio_pl.initialization_time_ms
-        bt.logging.info(
-            f"Done updating perf ledger for {hotkey} {hotkey_i + 1}/{n_hotkeys} in {time.time() - t0:.2f}s. "
-            f"Update start time {TimeUtil.millis_to_formatted_date_str(pl_update_start_time_ms)}. End time {TimeUtil.millis_to_formatted_date_str(now_ms)}. "
-            f"Lag: {lag}s. Total product: {total_product}. Last portfolio value: {last_portfolio_value}."
-            f" n_api_calls: {self.n_api_calls}."
-            f" last cp {portfolio_perf_ledger.cps[-1] if portfolio_perf_ledger.cps else None}. perf_ledger_mpv {portfolio_perf_ledger.max_return} "
-            f"perf_ledger_initialization_time {TimeUtil.millis_to_formatted_date_str(portfolio_perf_ledger.initialization_time_ms)}. "
-            f"mode_to_n_updates {self.mode_to_n_updates}. update_to_n_open_positions {self.update_to_n_open_positions}, self.tp_to_mfs {self.tp_to_mfs}")
+
+        if verbose:
+            bt.logging.info(
+                f"Done updating perf ledger for {hotkey} {hotkey_i + 1}/{n_hotkeys} in {time.time() - t0:.2f}s. "
+                f"Update start time {TimeUtil.millis_to_formatted_date_str(pl_update_start_time_ms)}. End time {TimeUtil.millis_to_formatted_date_str(now_ms)}. "
+                f"Lag: {lag}s. Total product: {total_product}. Last portfolio value: {last_portfolio_value}."
+                f" n_api_calls: {self.n_api_calls}."
+                f" last cp {portfolio_perf_ledger.cps[-1] if portfolio_perf_ledger.cps else None}. perf_ledger_mpv {portfolio_perf_ledger.max_return} "
+                f"perf_ledger_initialization_time {TimeUtil.millis_to_formatted_date_str(portfolio_perf_ledger.initialization_time_ms)}. "
+                f"mode_to_n_updates {self.mode_to_n_updates}. update_to_n_open_positions {self.update_to_n_open_positions}, self.tp_to_mfs {self.tp_to_mfs}")
 
         # If running in parallel mode, return the result instead of updating in place
         if self.parallel_mode != ParallelizationMode.SERIAL:
