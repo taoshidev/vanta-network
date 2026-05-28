@@ -26,9 +26,12 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -e .
-          pip install pytest
+          pip install pytest pytest-timeout
 
       - name: Run unit tests
-        timeout-minutes: 60
+        # Per-test timeout (pytest.ini: timeout=300, timeout_method=signal) fails a
+        # hung test and lets the suite continue, with an all-thread stack dump first.
+        # This job-level backstop just guards against the harness itself wedging.
+        timeout-minutes: 20
         run: |
           pytest tests/vali_tests/

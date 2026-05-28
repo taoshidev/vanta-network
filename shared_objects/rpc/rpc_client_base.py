@@ -722,36 +722,29 @@ class RPCClientBase:
             bt.logging.debug(f"[{self.service_name}_UNPICKLE] LOCAL mode - no reconnection needed")
             return
 
-        # Reconnect to existing RPC server (RPC mode)
+        # RPC mode: reset connection state so the client reconnects LAZILY on first
+        # use (via _get_proxy), instead of eagerly connecting here.
+        #
+        # We deliberately do NOT call connect() (and raise on failure) inside
+        # __setstate__. __setstate__ runs while a multiprocessing.Pool worker is
+        # DESERIALIZING its task; raising there kills the worker before it can
+        # return a result, which deadlocks pool.map() in the parent forever
+        # (observed as multi-hour CI hangs when an embedded client's server, e.g.
+        # HLFundingRateServer, isn't reachable from the worker). Deferring to lazy
+        # connect means an unreachable server surfaces as a normal exception at the
+        # call site, which propagates cleanly through the pool and fails fast.
+        #
+        # Embedding RPC clients in objects that cross a process boundary is still an
+        # architectural smell, so warn loudly to keep it visible.
         if state.get('_needs_reconnect', False):
-            bt.logging.debug(
-                f"[{self.service_name}_UNPICKLE] Reconnecting to RPC server on port {self.port}"
+            self._connected = False
+            self._proxy = None
+            self._manager = None
+            bt.logging.warning(
+                f"[{self.service_name}_UNPICKLE] Client unpickled in PID {os.getpid()} "
+                f"(port {self.port}); will reconnect lazily on first use. Embedding RPC "
+                f"clients in objects sent across process boundaries is discouraged."
             )
-
-            # Use faster retry settings for unpickle reconnection
-            original_retries = self._max_retries
-            original_delay = self._retry_delay_s
-            self._max_retries = 5  # Fewer retries - server should be running
-            self._retry_delay_s = 0.5
-
-            try:
-                self.connect()
-                bt.logging.success(
-                    f"[{self.service_name}_UNPICKLE] Reconnected to RPC server at {self._address}"
-                )
-            except Exception as e:
-                # Always fail loudly to catch architectural issues where clients are pickled
-                import traceback
-                stack_trace = ''.join(traceback.format_stack())
-                raise RuntimeError(
-                    f"[{self.service_name}_UNPICKLE] Failed to reconnect after unpickle: {e}\n"
-                    f"This indicates clients are being pickled when they shouldn't be.\n"
-                    f"Clients embedded in server managers should never leave their process.\n"
-                    f"\nStack trace showing unpickle location:\n{stack_trace}"
-                ) from e
-            finally:
-                self._max_retries = original_retries
-                self._retry_delay_s = original_delay
 
     def _restore_unpicklable_state(self, state: dict) -> None:
         """
