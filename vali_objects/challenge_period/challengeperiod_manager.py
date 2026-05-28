@@ -294,6 +294,8 @@ class ChallengePeriodManager(CacheController):
         snapshot = " | ".join(f"{b.value}={n}" for b, n in sorted(counts.items(), key=lambda x: x[0].value))
         btlogging.info(f"[CHALLENGE] snapshot: {snapshot} (total={len(self.miner_states)})")
 
+        return self._to_slack_message(promotions)
+
     # ==================== Evaluation Methods ====================
 
     @staticmethod
@@ -873,3 +875,12 @@ class ChallengePeriodManager(CacheController):
 
         challengeperiod_data = self.to_checkpoint_dict()
         ValiBkpUtils.write_file(self.CHALLENGE_FILE, challengeperiod_data)
+
+    def _to_slack_message(self, promotions: list[str]) -> str | None:
+        if not promotions:
+            return None
+
+        msg = ":moneybag: *Promotions!* :money_mouth_face:\n"
+        msg += "\n".join(f"`{hotkey} -> {self.miner_states[hotkey].current_bucket.value}`" for hotkey in promotions)
+
+        return msg

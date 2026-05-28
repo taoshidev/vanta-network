@@ -399,7 +399,7 @@ class RPCServerBase(ABC):
     # ==================== Abstract Methods ====================
 
     @abstractmethod
-    def run_daemon_iteration(self) -> None:
+    def run_daemon_iteration(self) -> str | None:
         """
         Single iteration of daemon work. Called repeatedly by daemon loop.
 
@@ -410,6 +410,7 @@ class RPCServerBase(ABC):
         - Check self._is_shutdown() before long operations
         - Handle exceptions gracefully (or let base class handle them)
         - Complete in reasonable time to avoid watchdog alerts
+        - returns message to ping slack
 
         Example:
             def run_daemon_iteration(self):
@@ -786,11 +787,18 @@ class RPCServerBase(ABC):
                         break
 
                 self._watchdog.update_heartbeat("processing")
-                self.run_daemon_iteration()
+                message = self.run_daemon_iteration()
                 self._watchdog.update_heartbeat("idle")
 
                 # Success - reset backoff
                 self._backoff.reset()
+
+                # Don't trigger daemon level exception - slack fail is trivial
+                try:
+                    if message and self.slack_notifier:
+                        self.slack_notifier.send_message(message)
+                except:
+                    pass
 
                 time.sleep(self.daemon_interval_s)
 
