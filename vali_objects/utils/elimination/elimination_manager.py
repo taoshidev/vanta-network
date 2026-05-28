@@ -83,13 +83,14 @@ DEPARTED_HOTKEYS_KEY = "departed_hotkeys"
 @dataclass
 class EliminationRow:
     hotkey: str
-    reason: str  # TODO use as Enum?
+    reason: str
     elimination_initiated_time_ms: int
     elimination_drawdown_pct: float | None = None
     intraday_drawdown_pct: float | None = None
     eod_drawdown_pct: float | None = None
     bucket_at_elimination: MinerBucket | None = None
     positions_closed: bool = False  # Don't necesesarily have to track, but saves calls to position rpc
+    row_added_ms: int | None = None
 
     def __post_init__(self):
         if self.bucket_at_elimination is not None:
@@ -121,6 +122,7 @@ class EliminationRow:
             eod_drawdown_pct=d.get('eod_dd'),
             bucket_at_elimination=MinerBucket(raw_bucket) if raw_bucket is not None else None,
             positions_closed=d.get('positions_closed', False),
+            row_added_ms=d.get('row_added_ms'),
         )
 
     def to_dict(self) -> dict:
@@ -134,7 +136,35 @@ class EliminationRow:
             'elimination_initiated_time_ms': self.elimination_initiated_time_ms,
             'bucket_at_elimination': self.bucket_at_elimination.value if self.bucket_at_elimination is not None else None,
             'positions_closed': self.positions_closed,
+            'row_added_ms': self.row_added_ms,
         }
+
+    def pretty_str(self) -> str:
+        """
+        Formatted string for slack webhook
+        `<hotkey>`
+        CHALLENGE_INTRADAY_DRAWDOWN
+        > Intraday drawdown: 0.00% | EOD drawdown: 0.00%
+        > Elimination drawdown: 0.00%
+        """
+        lines = [
+                f"`{self.hotkey}`",
+                f"*{self.reason}*"
+                ]
+
+        drawdown_lines = []
+        if self.intraday_drawdown_pct is not None:
+            drawdown_lines.append(f"Intraday drawdown: {self.intraday_drawdown_pct:.2%}")
+        if self.eod_drawdown_pct is not None:
+            drawdown_lines.append(f"EOD drawdown: {self.eod_drawdown_pct:.2%}")
+
+        if drawdown_lines:
+            lines.append(f"> {' | '.join(drawdown_lines)}")
+
+        if self.elimination_drawdown_pct is not None:
+            lines.append(f"> Elimination drawdown: {self.elimination_drawdown_pct:.2%}")
+
+        return "\n".join(lines) + "\n"
 
 
 # ==================== Manager Implementation ====================
@@ -355,6 +385,8 @@ class EliminationManager(CacheController):
         # TODO remove
         self.first_refresh_ran = False
 
+        self.last_new_eliminations_checked_ms: int = TimeUtil.now_in_millis()
+
         bt.logging.info(f"[ELIM_MANAGER] EliminationManager initialized with {len(self.eliminations)} eliminations")
 
     # ==================== Pickle Prevention ====================
@@ -496,6 +528,8 @@ class EliminationManager(CacheController):
             bt.logging.debug("[ELIM_PROCESS] Completed successfully")
             # self.set_last_update_time()
 
+            return self._to_slack_message()
+
         except Exception as e:
             bt.logging.error(f"[ELIM_PROCESS] process_eliminations() failed with exception: {e}", exc_info=True)
             # Re-raise to let RPC framework handle it properly
@@ -551,6 +585,7 @@ class EliminationManager(CacheController):
                 intraday_drawdown_pct=intraday_drawdown_pct,
                 eod_drawdown_pct=eod_drawdown_pct,
                 bucket_at_elimination=bucket_at_elimination,
+                row_added_ms=TimeUtil.now_in_millis(),
         )
 
         with self.eliminations_lock:
@@ -627,7 +662,7 @@ class EliminationManager(CacheController):
         candidate_hotkeys.update(self._challenge_period_client.get_hotkeys_by_bucket(active_buckets))
 
         if not candidate_hotkeys:
-            return
+            return set()
 
         hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
             list(candidate_hotkeys), only_open_positions=False
@@ -972,3 +1007,18 @@ class EliminationManager(CacheController):
         """Write arbitrary eliminations list to disk (public API for restore scripts)."""
         self._save_eliminations_to_disk(eliminations)
 
+    def _to_slack_message(self) -> str | None:
+        since_ms = self.last_new_eliminations_checked_ms
+        self.last_new_eliminations_checked_ms = TimeUtil.now_in_millis()
+
+        recent = [
+            row for row in self.eliminations.values()
+            if row.row_added_ms is not None and row.row_added_ms >= since_ms
+        ]
+        if not recent:
+            return None
+
+        msg = "*New Eliminations*\n"
+        msg += "\n".join(row.pretty_str() for row in recent)
+
+        return msg

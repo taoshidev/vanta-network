@@ -127,7 +127,7 @@ class EliminationServer(RPCServerBase):
 
     # ==================== RPCServerBase Abstract Methods ====================
 
-    def run_daemon_iteration(self) -> None:
+    def run_daemon_iteration(self) -> str | None:
         """
         Single iteration of daemon work. Called by RPCServerBase daemon loop.
 
@@ -138,7 +138,7 @@ class EliminationServer(RPCServerBase):
             return
 
         iteration_epoch = self.sync_epoch
-        self._manager.process_eliminations(iteration_epoch=iteration_epoch)
+        return self._manager.process_eliminations(iteration_epoch=iteration_epoch)
 
     @property
     def sync_in_progress(self):
