@@ -2,6 +2,7 @@ import bittensor as bt
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
+from vali_objects.vali_dataclasses.ledger.emission.emissions_ledger import EmissionsLedger
 
 
 class DebtLedgerClient(RPCClientBase):
@@ -187,7 +188,7 @@ class DebtLedgerClient(RPCClientBase):
 
     # ==================== Emissions Ledger Methods ====================
 
-    def get_emissions_ledger(self, hotkey: str):
+    def get_emissions_ledger(self, hotkey: str) -> EmissionsLedger:
         """
         Get emissions ledger for a specific hotkey.
 
@@ -203,7 +204,7 @@ class DebtLedgerClient(RPCClientBase):
             bt.logging.debug(f"DebtLedgerClient: Get emissions ledger failed: {e}")
             return None
 
-    def get_all_emissions_ledgers(self):
+    def get_all_emissions_ledgers(self) -> dict[str, EmissionsLedger]:
         """
         Get all emissions ledgers.
 

@@ -55,6 +55,8 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.scoring.scoring import Scoring
 from collections import defaultdict
 
+from vali_objects.vali_dataclasses.ledger.emission.emissions_ledger import EmissionsLedger
+
 
 class DebtBasedScoring:
     """
@@ -241,14 +243,15 @@ class DebtBasedScoring:
 
     @staticmethod
     def compute_results(
-        ledger_dict: dict[str, DebtLedger],
+        debt_ledgers: dict[str, DebtLedger],
         metagraph_client: 'MetagraphClient',
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
-        current_time_ms: int = None,
+        current_time_ms: int | None = None,
         verbose: bool = False,
         is_testnet: bool = False,
-        eligible_hotkeys: list[str] = None
+        eligible_hotkeys: list[str] | None = None,
+        emissions_ledgers: dict[str, EmissionsLedger] | None = None
     ) -> List[Tuple[str, float]]:
         """
         Compute miner weights based on debt ledger information with real-time emission projections.
@@ -289,10 +292,10 @@ class DebtBasedScoring:
 
         # Resolve the full set of hotkeys to produce weights for.
         if eligible_hotkeys is None:
-            eligible_hotkeys = list(ledger_dict.keys())
+            eligible_hotkeys = list(debt_ledgers.keys())
 
         # Handle edge cases
-        if not ledger_dict and not eligible_hotkeys:
+        if not debt_ledgers and not eligible_hotkeys:
             bt.logging.info("No debt ledgers or hotkeys provided, setting burn address weight to 1.0")
             burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph_client, is_testnet)
             return [(burn_hotkey, 1.0)]
@@ -303,7 +306,7 @@ class DebtBasedScoring:
         if verbose:
             bt.logging.info(
                 f"Computing debt-based weights for {current_dt.strftime('%B %Y')} "
-                f"({len(ledger_dict)} miners)"
+                f"({len(debt_ledgers)} miners)"
             )
 
         # Calculate boundaries
@@ -338,7 +341,7 @@ class DebtBasedScoring:
         miner_penalty_loss_usd = {}  # Track how much was lost to penalties
         miner_needed_payouts_usd = {}  # Track needed payout before clamping
 
-        for hotkey, debt_ledger in ledger_dict.items():
+        for hotkey, debt_ledger in debt_ledgers.items():
             if not debt_ledger.checkpoints:
                 if verbose:
                     bt.logging.debug(f"Skipping {hotkey}: no checkpoints")
@@ -384,11 +387,19 @@ class DebtBasedScoring:
             # Calculate actual payout (in USD)
             # Use cumulative approach: sum all emissions from activation through current time
             # This matches the cumulative needed payout calculation
-            cumulative_payout_checkpoints = [
-                cp for cp in debt_ledger.checkpoints
-                if payout_calc_start_ms <= cp.timestamp_ms <= current_time_ms
-            ]
-            actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
+            # Prioritize longer history emissions ledger if provided
+            if emissions_ledgers and hotkey in emissions_ledgers:
+                cumulative_payout_checkpoints = [
+                    cp for cp in emissions_ledgers[hotkey].checkpoints
+                    if payout_calc_start_ms <= cp.chunk_start_ms <= current_time_ms
+                ]
+                actual_payout_usd = sum(cp.chunk_emissions_usd for cp in emissions_ledgers[hotkey].checkpoints)
+            else:
+                cumulative_payout_checkpoints = [
+                    cp for cp in debt_ledger.checkpoints
+                    if payout_calc_start_ms <= cp.timestamp_ms <= current_time_ms
+                ]
+                actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
 
             # Calculate remaining payout (in USD)
             remaining_payout_usd = needed_payout_usd - actual_payout_usd
@@ -415,7 +426,7 @@ class DebtBasedScoring:
         )
 
         if verbose:
-            _payouts_sorted = sorted(ledger_dict.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
+            _payouts_sorted = sorted(debt_ledgers.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
             for hotkey in _payouts_sorted:
                 remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
                 actual = miner_actual_payouts_usd.get(hotkey, 0.0)
@@ -479,7 +490,7 @@ class DebtBasedScoring:
         miner_weights_with_minimums = DebtBasedScoring._apply_minimum_weights(
             eligible_hotkeys=eligible_hotkeys,
             raw_debt_weights=raw_debt_weights,
-            ledger_dict=ledger_dict,
+            ledger_dict=debt_ledgers,
             challengeperiod_client=challengeperiod_client,
             miner_account_client=miner_account_client,
             current_time_ms=current_time_ms,

@@ -286,8 +286,15 @@ class WeightCalculatorManager(CacheController):
             if hotkey in hotkeys_to_compute_weights_for
         }
 
+        all_emissions_ledgers = self._debt_ledger_client.get_all_emissions_ledgers()
+        filtered_emissions_ledgers = {
+            hotkey: ledger
+            for hotkey, ledger in all_emissions_ledgers.items()
+            if hotkey in hotkeys_to_compute_weights_for
+        }
+
         if len(filtered_debt_ledgers) == 0:
-            total_ledgers = len(all_debt_ledgers)
+            total_ledgers = len(all_emissions_ledgers)
             if total_ledgers == 0:
                 bt.logging.info(
                     f"No debt ledgers loaded yet. "
@@ -308,14 +315,15 @@ class WeightCalculatorManager(CacheController):
         if verbose:
             self._last_verbose_ms = current_time
         checkpoint_results = DebtBasedScoring.compute_results(
-            ledger_dict=filtered_debt_ledgers,
+            debt_ledgers=filtered_debt_ledgers,
             metagraph_client=self._metagraph_client,
             challengeperiod_client=self._challengeperiod_client,
             miner_account_client=self._miner_account_client,
             current_time_ms=current_time,
             verbose=verbose,
             is_testnet=not self.is_mainnet,
-            eligible_hotkeys=hotkeys_to_compute_weights_for
+            eligible_hotkeys=hotkeys_to_compute_weights_for,
+            emissions_ledgers=filtered_emissions_ledgers
         )
 
         bt.logging.info(f"Debt-based scoring results: [{checkpoint_results}]")
