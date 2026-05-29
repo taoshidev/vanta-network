@@ -6,11 +6,34 @@ lifecycle across all tests, ensuring:
 - Fast test startup (servers pre-started before any test runs)
 - Clean shutdown to prevent CI hangs
 """
+import os
+import sys
 import time
 import pytest
 import bittensor as bt
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from vali_objects.utils.vali_utils import ValiUtils
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """
+    Force a clean, immediate process exit once results are reported.
+
+    The validator suite leaves lingering non-daemon threads (e.g. HealthMonitor
+    threads) and/or un-reaped RPC server child processes alive after the session
+    fixture teardown runs. The Python interpreter then blocks at shutdown trying
+    to join them, so pytest prints its summary but the process never returns and
+    CI hangs until the job wall-clock timeout.
+
+    This hook is registered trylast, so it runs AFTER the terminal reporter has
+    printed (and flushed) the summary line. At that point pytest's result is
+    final, so we exit hard with the real status code -- CI still sees the correct
+    pass/fail, but we skip the interpreter-shutdown join that would otherwise hang.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(int(exitstatus))
 
 
 @pytest.fixture(scope="session", autouse=True)
