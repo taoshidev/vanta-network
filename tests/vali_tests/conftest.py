@@ -15,25 +15,44 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from vali_objects.utils.vali_utils import ValiUtils
 
 
-@pytest.hookimpl(trylast=True)
+# Final exit status, recorded at session finish and used by the forced exit below.
+_session_exit_code = {"value": 0}
+
+
 def pytest_sessionfinish(session, exitstatus):
-    """
-    Force a clean, immediate process exit once results are reported.
+    """Record the final status code for the forced exit in pytest_unconfigure."""
+    _session_exit_code["value"] = int(exitstatus)
 
-    The validator suite leaves lingering non-daemon threads (e.g. HealthMonitor
-    threads) and/or un-reaped RPC server child processes alive after the session
-    fixture teardown runs. The Python interpreter then blocks at shutdown trying
-    to join them, so pytest prints its summary but the process never returns and
-    CI hangs until the job wall-clock timeout.
 
-    This hook is registered trylast, so it runs AFTER the terminal reporter has
-    printed (and flushed) the summary line. At that point pytest's result is
-    final, so we exit hard with the real status code -- CI still sees the correct
-    pass/fail, but we skip the interpreter-shutdown join that would otherwise hang.
+def pytest_unconfigure(config):
     """
+    Force a clean, immediate process exit AFTER results are fully reported.
+
+    Why this is needed: the validator suite leaves RPC server child processes and
+    non-daemon threads (e.g. HealthMonitor) alive. At interpreter shutdown Python
+    blocks joining the threads, and -- more importantly in CI -- the live child
+    processes keep the step's stdout pipe open, so the runner never receives EOF
+    and the job hangs to its wall-clock timeout even after pytest is done.
+
+    Why pytest_unconfigure (not pytest_sessionfinish): the terminal reporter prints
+    its "N passed / N failed" summary in the post-yield half of its sessionfinish
+    hookwrapper, which runs after all plain sessionfinish hooks. Exiting from
+    sessionfinish therefore swallows the summary. pytest_unconfigure runs later,
+    after the summary is written, so results are preserved.
+
+    We kill the multiprocessing children (releasing the stdout pipe) and os._exit
+    with the real status code (skipping the thread-join), so CI still reports the
+    correct pass/fail but the job actually terminates.
+    """
+    import multiprocessing
     sys.stdout.flush()
     sys.stderr.flush()
-    os._exit(int(exitstatus))
+    for child in multiprocessing.active_children():
+        try:
+            child.kill()
+        except Exception:
+            pass
+    os._exit(_session_exit_code["value"])
 
 
 @pytest.fixture(scope="session", autouse=True)
