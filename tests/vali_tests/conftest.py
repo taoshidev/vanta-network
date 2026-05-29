@@ -34,12 +34,15 @@ from vali_objects.utils.vali_utils import ValiUtils
 # the RPC server child processes too, which closes the CI stdout pipe so the
 # runner receives EOF and the job actually ends.
 #
-# The cap is set just above pytest-timeout's signal timeout (pytest.ini) so the
-# (cheaper, non-fatal) signal timeout gets first chance to fail an *interruptible*
-# hang and let the suite continue; the watchdog is the hard backstop for the
-# uninterruptible ones. No single test should legitimately take this long.
+# The cap must sit ABOVE the orchestrator's own per-server ready_timeout (120s in
+# TESTING mode, see server_orchestrator._start_server). Server startup runs inside
+# the FIRST test's setup, so if a server stalls, the orchestrator self-times-out at
+# ~120s and raises a clean "Failed to start <server>" error -- we want that named
+# error, not a watchdog SIGKILL at the same instant. The watchdog is the hard
+# backstop for hangs that no other timeout catches (C-level blocks that pytest-
+# timeout's signal method can't interrupt).
 # ---------------------------------------------------------------------------
-WATCHDOG_PER_TEST_S = 120
+WATCHDOG_PER_TEST_S = 180
 
 _current_test = {"id": None, "start": None}
 _watchdog_started = False
