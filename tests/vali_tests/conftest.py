@@ -9,10 +9,82 @@ lifecycle across all tests, ensuring:
 import os
 import sys
 import time
+import signal
+import threading
+import faulthandler
 import pytest
 import bittensor as bt
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from vali_objects.utils.vali_utils import ValiUtils
+
+
+# ---------------------------------------------------------------------------
+# Hang watchdog
+#
+# pytest-timeout's `signal` method cannot interrupt this suite's hangs: they
+# occur in C-level blocking calls (RPC socket recv, multiprocessing joins, lock
+# acquires) that never return to the interpreter, so SIGALRM is never handled
+# and the per-test timeout silently does nothing -- the job then runs to the CI
+# wall clock with no diagnostics.
+#
+# This watchdog is a daemon THREAD, so it does not depend on the main thread
+# being interruptible. If any single test (including its setup/teardown) exceeds
+# WATCHDOG_PER_TEST_S, it dumps the stacks of all threads (so we can see what is
+# stuck) and then SIGKILLs the whole process group. Killing the group takes out
+# the RPC server child processes too, which closes the CI stdout pipe so the
+# runner receives EOF and the job actually ends.
+#
+# The cap is set just above pytest-timeout's signal timeout (pytest.ini) so the
+# (cheaper, non-fatal) signal timeout gets first chance to fail an *interruptible*
+# hang and let the suite continue; the watchdog is the hard backstop for the
+# uninterruptible ones. No single test should legitimately take this long.
+# ---------------------------------------------------------------------------
+WATCHDOG_PER_TEST_S = 120
+
+_current_test = {"id": None, "start": None}
+_watchdog_started = False
+
+
+def pytest_runtest_logstart(nodeid, location):
+    _current_test["id"] = nodeid
+    _current_test["start"] = time.time()
+
+
+def pytest_runtest_logfinish(nodeid, location):
+    _current_test["start"] = None
+
+
+def _watchdog_loop():
+    while True:
+        time.sleep(5)
+        start = _current_test["start"]
+        if start is None:
+            continue
+        elapsed = time.time() - start
+        if elapsed > WATCHDOG_PER_TEST_S:
+            sys.stderr.write(
+                f"\n[watchdog] Test '{_current_test['id']}' exceeded "
+                f"{WATCHDOG_PER_TEST_S}s ({elapsed:.0f}s elapsed). Dumping all "
+                f"thread stacks and killing the process group.\n"
+            )
+            sys.stderr.flush()
+            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+            sys.stderr.flush()
+            sys.stdout.flush()
+            try:
+                # SIGKILL the whole group: pytest + RPC server children + pool
+                # workers. Closes the CI stdout pipe so the runner stops waiting.
+                os.killpg(os.getpgid(0), signal.SIGKILL)
+            except Exception:
+                os._exit(1)
+
+
+def _start_watchdog():
+    global _watchdog_started
+    if _watchdog_started:
+        return
+    _watchdog_started = True
+    threading.Thread(target=_watchdog_loop, name="CIHangWatchdog", daemon=True).start()
 
 
 # Final exit status, recorded at session finish and used by the forced exit below.
@@ -74,6 +146,9 @@ def orchestrator_lifecycle():
     1. Starting servers once before test collection completes
     2. Avoiding per-test-class server startup costs
     """
+    # Start the hang watchdog before anything else can block.
+    _start_watchdog()
+
     # SETUP: Pre-start all servers before any test runs
     start_time = time.time()
     print("\n[conftest] Pre-starting all RPC servers for test session...")
