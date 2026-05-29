@@ -471,18 +471,19 @@ class TestChallengePeriodManagerLogic(TestBase):
 
     def test_refresh_eliminates_intraday_drawdown(self):
         """Miner whose intraday drawdown exceeds the threshold is eliminated during refresh."""
-        now = TimeUtil.now_in_millis()
+        from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
+        eval_ms = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS
         hk = "hk_intraday"
         mgr, stack = self._make_manager()
         with stack:
-            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 3)
+            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, eval_ms - DAILY_MS * 3)
             mgr.miner_states[hk].drawdown = DrawdownStats(
                 intraday_drawdown_pct=INTRADAY_DD_PCT + 1.0,
                 current_equity=1.0 - (INTRADAY_DD_PCT + 1.0) / 100,
                 current_balance=1.0,
                 daily_open_equity=1.0,
             )
-            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            _wire_refresh_clients(mgr, hk, eval_ms, elapsed_ms=DAILY_MS * 3)
 
             with (
                 patch.object(mgr, '_refresh_drawdown_cache'),
@@ -490,23 +491,24 @@ class TestChallengePeriodManagerLogic(TestBase):
                 patch.object(mgr, '_save_to_disk'),
                 patch.object(mgr, '_sync_buckets_to_accounts'),
             ):
-                mgr.refresh(current_time_ms=now)
+                mgr.refresh(current_time_ms=eval_ms)
 
         self.assertFalse(mgr.has_miner(hk))
 
     def test_refresh_eliminates_eod_drawdown(self):
         """Miner whose EOD trailing drawdown exceeds the threshold is eliminated during refresh."""
-        now = TimeUtil.now_in_millis()
+        from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
+        eval_ms = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS
         hk = "hk_eod"
         mgr, stack = self._make_manager()
         with stack:
-            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 5)
+            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, eval_ms - DAILY_MS * 5)
             mgr.miner_states[hk].drawdown = DrawdownStats(
                 eod_drawdown_pct=EOD_DD_PCT + 1.0,
                 eod_hwm=1.1,
                 last_eod_equity=1.1 * (1 - (EOD_DD_PCT + 1.0) / 100),
             )
-            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 5)
+            _wire_refresh_clients(mgr, hk, eval_ms, elapsed_ms=DAILY_MS * 5)
 
             with (
                 patch.object(mgr, '_refresh_drawdown_cache'),
@@ -514,7 +516,7 @@ class TestChallengePeriodManagerLogic(TestBase):
                 patch.object(mgr, '_save_to_disk'),
                 patch.object(mgr, '_sync_buckets_to_accounts'),
             ):
-                mgr.refresh(current_time_ms=now)
+                mgr.refresh(current_time_ms=eval_ms)
 
         self.assertFalse(mgr.has_miner(hk))
 
@@ -602,7 +604,11 @@ class TestChallengePeriodManagerLogic(TestBase):
 
         intraday_drop = 0.07
         accounts = {hk: {'account_size': account_size, 'balance': account_size * (1 - intraday_drop)}}
-        positions = {hk: []}  # no open positions → equity = balance / account_size
+        from unittest.mock import MagicMock
+        flat_pos = MagicMock()
+        flat_pos.unrealized_pnl = 0.0
+        flat_pos.is_open_position = True
+        positions = {hk: [flat_pos]}  # flat position → equity = balance / account_size
 
         mgr, stack = self._make_manager()
         with stack:
@@ -630,7 +636,11 @@ class TestChallengePeriodManagerLogic(TestBase):
         ])
 
         accounts = {hk: {'account_size': account_size, 'balance': account_size * 1.04}}
-        positions = {hk: []}
+        from unittest.mock import MagicMock
+        flat_pos = MagicMock()
+        flat_pos.unrealized_pnl = 0.0
+        flat_pos.is_open_position = True
+        positions = {hk: [flat_pos]}  # flat position → equity = balance / account_size
 
         mgr, stack = self._make_manager()
         with stack:

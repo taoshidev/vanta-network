@@ -110,10 +110,8 @@ class TestDebtBasedScoring(TestBase):
         Args:
             miner_buckets: Dict of {hotkey: MinerBucket enum}
         """
-        miners = {}
         for hotkey, bucket in miner_buckets.items():
-            miners[hotkey] = (bucket, 1000, None, None)  # (bucket, start_time, prev_bucket, prev_time)
-        self.challengeperiod_client.update_miners(miners)
+            self.challengeperiod_client.set_miner_bucket(hotkey, bucket, 1000)
 
     def _set_miner_collateral(self, miner_collateral: dict):
         """
