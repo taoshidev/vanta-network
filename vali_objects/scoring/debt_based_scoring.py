@@ -393,7 +393,7 @@ class DebtBasedScoring:
                     cp for cp in emissions_ledgers[hotkey].checkpoints
                     if payout_calc_start_ms <= cp.chunk_start_ms <= current_time_ms
                 ]
-                actual_payout_usd = sum(cp.chunk_emissions_usd for cp in emissions_ledgers[hotkey].checkpoints)
+                actual_payout_usd = sum(cp.chunk_emissions_usd for cp in cumulative_payout_checkpoints)
             else:
                 cumulative_payout_checkpoints = [
                     cp for cp in debt_ledger.checkpoints
