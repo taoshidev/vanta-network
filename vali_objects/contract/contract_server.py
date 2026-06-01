@@ -126,10 +126,6 @@ class ContractServer(RPCServerBase):
         """Slash miner's collateral by a raw theta amount."""
         return self._manager.slash_miner_collateral(miner_hotkey, slash_amount)
 
-    def compute_slash_amount_rpc(self, miner_hotkey: str, drawdown: float = None) -> float:
-        """Compute the slash amount based on drawdown."""
-        return self._manager.compute_slash_amount(miner_hotkey, drawdown)
-
     def get_miner_collateral_balance_rpc(self, miner_address: str, max_retries: int = 4) -> Optional[float]:
         """Get a miner's current collateral balance in theta tokens."""
         return self._manager.get_miner_collateral_balance(miner_address, max_retries)
@@ -178,9 +174,6 @@ class ContractServer(RPCServerBase):
 
     def slash_miner_collateral_proportion(self, miner_hotkey: str, slash_proportion: float) -> bool:
         return self._manager.slash_miner_collateral_proportion(miner_hotkey, slash_proportion)
-
-    def compute_slash_amount(self, miner_hotkey: str, drawdown: float = None) -> float:
-        return self._manager.compute_slash_amount(miner_hotkey, drawdown)
 
     def get_total_collateral(self) -> int:
         return self._manager.get_total_collateral()

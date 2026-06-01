@@ -90,6 +90,7 @@ class EliminationRow:
     eod_drawdown_pct: float | None = None
     bucket_at_elimination: MinerBucket | None = None
     positions_closed: bool = False  # Don't necesesarily have to track, but saves calls to position rpc
+    collateral_slashed: bool = True # TODO turn false after initial migration
     row_added_ms: int | None = None
 
     def __post_init__(self):
@@ -577,6 +578,7 @@ class EliminationManager(CacheController):
             ledger = self.perf_ledger_manager.filtered_ledger_for_scoring([hotkey]).get(hotkey)
             _, elimination_drawdown_pct = LedgerUtils.is_beyond_max_drawdown(ledger)
 
+        bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
         elimination_row = EliminationRow(
                 hotkey=hotkey,
                 reason=reason.value,
@@ -588,19 +590,8 @@ class EliminationManager(CacheController):
                 row_added_ms=TimeUtil.now_in_millis(),
         )
 
-        with self.eliminations_lock:
-            dict_len_before = len(self.eliminations)
-            self.eliminations[hotkey] = elimination_row
-            dict_len_after = len(self.eliminations)
-            bt.logging.info(f"[ELIM_DEBUG] Eliminations dict grew from {dict_len_before} to {dict_len_after} entries")
-
-            # Save while holding lock to prevent concurrent disk writes
-            self._save_eliminations_locked()
-
         # Slash on new eliminations
-        bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
         is_subaccount = is_synthetic_hotkey(hotkey)
-
         _drawdown_thresholds = {
             EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN: ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
             EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
@@ -611,11 +602,21 @@ class EliminationManager(CacheController):
             drawdown_threshold = _drawdown_thresholds.get(reason, 1 - ValiConfig.MAX_TOTAL_DRAWDOWN)  # Other elimination reasons default to max drawdown 10%
             slash_proportion = (elimination_drawdown_pct or 0) / (drawdown_threshold*100)
             bt.logging.info(f"Elimination slash proportion: {slash_proportion}")
-            if not self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion):
+            elimination_row.collateral_slashed = self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion)
+            if not elimination_row.collateral_slashed:
                 bt.logging.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}")
 
         if is_subaccount and bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
             self._entity_collateral_client.try_slash_on_elimination(hotkey)
+
+        with self.eliminations_lock:
+            dict_len_before = len(self.eliminations)
+            self.eliminations[hotkey] = elimination_row
+            dict_len_after = len(self.eliminations)
+            bt.logging.info(f"[ELIM_DEBUG] Eliminations dict grew from {dict_len_before} to {dict_len_after} entries")
+
+            # Save while holding lock to prevent concurrent disk writes
+            self._save_eliminations_locked()
 
     def delete_eliminations(self, deleted_hotkeys):
         """

@@ -814,40 +814,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Set the asset selection client (for testing or lazy initialization)."""
         self._asset_selection_client = client
 
-    def can_withdraw_collateral(self, hotkey: str, amount_theta: float) -> bool:
-        """
-        Check if miner can withdraw the specified amount of collateral.
-
-        Uses buying_power to determine how much collateral can be freed.
-        Formula:
-            collateral_freeable_usd = buying_power / multiplier
-            max_withdrawable_theta = collateral_freeable_usd / COST_PER_THETA
-
-        Args:
-            hotkey: Miner's hotkey
-            amount_theta: Requested withdrawal amount in theta
-
-        Returns:
-            True if withdrawal is allowed, False otherwise
-        """
-        # No asset selection = no positions possible = no restrictions
-        asset_selection = self._asset_selection_client.get_asset_selection(hotkey)
-        if asset_selection is None:
-            return True
-
-        with self._accounts_lock:
-            account = self.accounts.get(hotkey)
-            if account is None:
-                return True
-
-            multiplier = account.multiplier
-
-            # Max collateral freeable = buying_power / multiplier
-            max_withdrawable_usd = account.buying_power / multiplier
-            max_withdrawable_theta = max_withdrawable_usd / ValiConfig.COST_PER_THETA
-
-            return amount_theta <= max(0.0, max_withdrawable_theta)
-
     @staticmethod
     def compute_account_state_from_positions(positions: list) -> dict:
         """
