@@ -544,7 +544,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             bt.logging.info(f"No slashing available for {miner_hotkey}, balance is {current_balance_theta}")
             return False
 
-        slash_amount = max(current_balance_theta, self.max_theta) * slash_proportion
+        slash_amount = min(current_balance_theta, self.max_theta) * slash_proportion
         return self.slash_miner_collateral(miner_hotkey, slash_amount)
 
     def slash_miner_collateral(self, miner_hotkey: str, slash_amount: float) -> bool:
