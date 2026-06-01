@@ -38,6 +38,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from datetime import datetime, timezone
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
 from shared_objects.cache_controller import CacheController
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
@@ -168,6 +169,13 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Create DebtLedgerClient with connect_immediately=False to defer connection
         self._debt_ledger_client = DebtLedgerClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create PerfLedgerClient with connect_immediately=False to defer connection
+        self._perf_ledger_client = PerfLedgerClient(
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
@@ -982,6 +990,14 @@ class EntityManager(ValidatorBroadcastBase):
             if not debt_ledger:
                 return None
 
+            _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
+            if not _perf_ledger:
+                return None
+
+            perf_ledger = _perf_ledger.get(synthetic_hotkey)
+            if not perf_ledger:
+                return None
+
             EMPTY_RESPONSE = {
                 'hotkey': synthetic_hotkey,
                 'total_checkpoints': 0,
@@ -1049,9 +1065,8 @@ class EntityManager(ValidatorBroadcastBase):
                     running_balance -= fees[idx_fee]["amount"]
                     idx_fee += 1
 
-                # debt checkpoint timestamp is start_ms, but unrealized pnl is at the end_ms
-                # so must offset by a checkpoint for correct unrealized pnl at end time
-                cp = debt_ledger.get_checkpoint_at_time(end_time - CP_DURATION, CP_DURATION)
+                # Use perf ledger instead of delayed debt ledger
+                cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
                 unrealized_pnl = cp.unrealized_pnl if cp else 0.0
                 if end_time == end_time_ms and realtime:
                     unrealized_pnl = realtime_unrealized
