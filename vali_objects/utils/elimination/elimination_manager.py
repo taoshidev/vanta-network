@@ -680,6 +680,7 @@ class EliminationManager(CacheController):
         idle_hotkeys = {}
         near_idle_hotkeys = {}
 
+        bt.logging.info(f"Inactive miner cutoff: {TimeUtil.millis_to_formatted_date_str(now_ms - idle_threshold_ms)}")
         for hotkey, positions in hotkey_to_positions.items():
             if hotkey in self.eliminations:
                 continue
@@ -703,7 +704,7 @@ class EliminationManager(CacheController):
 
         for hotkey, last_order_ms in idle_hotkeys.items():
             bt.logging.info(f"Eliminating inactive miner {hotkey}.")
-            self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.INACTIVE.value)
+            self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.INACTIVE.value, elimination_time_ms=last_order_ms+idle_threshold_ms)
 
 
     def handle_departed_hotkeys(self):
