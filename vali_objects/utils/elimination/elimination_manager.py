@@ -165,7 +165,10 @@ class EliminationRow:
             lines.append(f"> {' | '.join(drawdown_lines)}")
 
         if self.elimination_drawdown_pct is not None:
-            lines.append(f"> Elimination drawdown: {self.elimination_drawdown_pct:.2}%")
+            lines.append(f"> Elimination drawdown: {self.elimination_drawdown_pct:.2f}%")
+
+        if not self.collateral_slashed:
+            lines.append(f"> Collateral slashing failed!")
 
         return "\n".join(lines) + "\n"
 
