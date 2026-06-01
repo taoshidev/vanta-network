@@ -583,17 +583,6 @@ class EliminationManager(CacheController):
             ledger = self.perf_ledger_manager.filtered_ledger_for_scoring([hotkey]).get(hotkey)
             _, elimination_drawdown_pct = LedgerUtils.is_beyond_max_drawdown(ledger)
 
-        bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
-        elimination_row = EliminationRow(
-                hotkey=hotkey,
-                reason=reason.value,
-                elimination_initiated_time_ms=elimination_time_ms,
-                elimination_drawdown_pct=elimination_drawdown_pct,
-                intraday_drawdown_pct=intraday_drawdown_pct,
-                eod_drawdown_pct=eod_drawdown_pct,
-                bucket_at_elimination=bucket_at_elimination,
-                row_added_ms=TimeUtil.now_in_millis(),
-        )
 
         # Slash on new eliminations
         is_subaccount = is_synthetic_hotkey(hotkey)
@@ -603,17 +592,34 @@ class EliminationManager(CacheController):
             EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN: ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD,
             EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD,
         }
+
+        collateral_slashed = True
         if not is_subaccount:
             drawdown_threshold = _drawdown_thresholds.get(reason, 1 - ValiConfig.MAX_TOTAL_DRAWDOWN)  # Other elimination reasons default to max drawdown 10%
             slash_proportion = (elimination_drawdown_pct or 0) / (drawdown_threshold*100)
             slash_proportion = max(0.0, min(1.0, slash_proportion))
             bt.logging.info(f"Elimination slash proportion: {slash_proportion}")
-            elimination_row.collateral_slashed = self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion)
-            if not elimination_row.collateral_slashed:
+            collateral_slashed = self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion)
+            if not collateral_slashed:
                 bt.logging.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}")
 
         if is_subaccount and bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            # Assume succes (slashed on entity collateral daemon)
+            # Also collateral slashed not relevant for subaccounts
             self._entity_collateral_client.try_slash_on_elimination(hotkey)
+
+        elimination_row = EliminationRow(
+                hotkey=hotkey,
+                reason=reason.value,
+                elimination_initiated_time_ms=elimination_time_ms,
+                elimination_drawdown_pct=elimination_drawdown_pct,
+                intraday_drawdown_pct=intraday_drawdown_pct,
+                eod_drawdown_pct=eod_drawdown_pct,
+                bucket_at_elimination=bucket_at_elimination,
+                row_added_ms=TimeUtil.now_in_millis(),
+                collateral_slashed=collateral_slashed
+        )
+        bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
 
         with self.eliminations_lock:
             dict_len_before = len(self.eliminations)
