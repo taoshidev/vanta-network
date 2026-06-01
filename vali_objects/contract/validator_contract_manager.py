@@ -416,8 +416,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 max_return = 1.0
                 if perf_ledger:
                     ledger = perf_ledger[miner_hotkey]
-                    ledger.init_max_portfolio_value()
-                    max_return = max(1.0, ledger.max_return)
+                    max_return = max(max(cp.equity_ret for cp in ledger.cps), 1.0) if ledger.cps else 1.0
                 elif account:
                     max_return = account.get("max_return", 1.0)
 
@@ -436,6 +435,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
                 # Don't slash penalty_free theta on withdrawal
                 slashed_amount = penalty_amount * min(max(drawdown, 0) / drawdown_threshold, 1.0)
+
             withdrawal_amount = amount - slashed_amount
             new_balance = theta_current_balance - amount
 

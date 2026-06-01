@@ -603,6 +603,7 @@ class EliminationManager(CacheController):
         if not is_subaccount:
             drawdown_threshold = _drawdown_thresholds.get(reason, 1 - ValiConfig.MAX_TOTAL_DRAWDOWN)  # Other elimination reasons default to max drawdown 10%
             slash_proportion = (elimination_drawdown_pct or 0) / (drawdown_threshold*100)
+            slash_proportion = max(0.0, min(1.0, slash_proportion))
             bt.logging.info(f"Elimination slash proportion: {slash_proportion}")
             elimination_row.collateral_slashed = self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion)
             if not elimination_row.collateral_slashed:
