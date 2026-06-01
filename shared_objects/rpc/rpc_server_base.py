@@ -692,7 +692,7 @@ class RPCServerBase(ABC):
             bt.logging.success(restart_msg)
 
             if self.slack_notifier:
-                self.slack_notifier.send_message(restart_msg, level="info")
+                self.slack_notifier.send_message(restart_msg, level="info", bypass_cooldown=True)
 
         except Exception as e:
             error_trace = traceback.format_exc()
