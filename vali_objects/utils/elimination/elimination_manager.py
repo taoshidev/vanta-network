@@ -544,7 +544,7 @@ class EliminationManager(CacheController):
     def append_elimination_row(
         self,
         hotkey: str,
-        reason: str,
+        reason: EliminationReason,
         elimination_drawdown_pct: float | None = None,
         intraday_drawdown_pct: float | None = None,
         eod_drawdown_pct: float | None = None,
@@ -579,7 +579,7 @@ class EliminationManager(CacheController):
 
         elimination_row = EliminationRow(
                 hotkey=hotkey,
-                reason=reason,
+                reason=reason.value,
                 elimination_initiated_time_ms=elimination_time_ms,
                 elimination_drawdown_pct=elimination_drawdown_pct,
                 intraday_drawdown_pct=intraday_drawdown_pct,
@@ -600,8 +600,19 @@ class EliminationManager(CacheController):
         # Slash on new eliminations
         bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
         is_subaccount = is_synthetic_hotkey(hotkey)
+
+        _drawdown_thresholds = {
+            EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN: ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+            EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+            EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN: ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD,
+            EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD,
+        }
         if not is_subaccount:
-            self._contract_client.slash_miner_collateral_proportion(hotkey)
+            drawdown_threshold = _drawdown_thresholds.get(reason, 1 - ValiConfig.MAX_TOTAL_DRAWDOWN)  # Other elimination reasons default to max drawdown 10%
+            slash_proportion = (elimination_drawdown_pct or 0) / (drawdown_threshold*100)
+            bt.logging.info(f"Elimination slash proportion: {slash_proportion}")
+            if not self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion):
+                bt.logging.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}")
 
         if is_subaccount and bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
             self._entity_collateral_client.try_slash_on_elimination(hotkey)
@@ -653,7 +664,7 @@ class EliminationManager(CacheController):
             if elimination_reason:
                 continue
             elif self.is_zombie_hotkey(hotkey, all_hotkeys_set):
-                self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.ZOMBIE.value)
+                self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.ZOMBIE)
 
     def handle_idle_miners(self):
         """Eliminate MAINCOMP, CHALLENGE, and PROBATION miners that have not submitted any orders in the past 60 days."""
@@ -704,7 +715,7 @@ class EliminationManager(CacheController):
 
         for hotkey, last_order_ms in idle_hotkeys.items():
             bt.logging.info(f"Eliminating inactive miner {hotkey}.")
-            self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.INACTIVE.value, elimination_time_ms=last_order_ms+idle_threshold_ms)
+            self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.INACTIVE, elimination_time_ms=last_order_ms+idle_threshold_ms)
 
 
     def handle_departed_hotkeys(self):
@@ -756,7 +767,7 @@ class EliminationManager(CacheController):
 
         # Issue DEREGISTERED eliminations after releasing the lock (append_elimination_row acquires it)
         for hotkey in new_departures:
-            self.append_elimination_row(hotkey, EliminationReason.DEREGISTERED.value)
+            self.append_elimination_row(hotkey, EliminationReason.DEREGISTERED)
 
     def _cleanup_eliminated_miners(self, iteration_epoch: int | None = None):
         """post-elimination cleanup: close open positions and delete unfilled limit orders"""
