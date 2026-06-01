@@ -319,20 +319,6 @@ class PositionManagerClient(RPCClientBase):
         """
         return self._server.calculate_net_portfolio_leverage_rpc(hotkey)
 
-    def compute_realtime_drawdown(self, hotkey: str) -> float:
-        """
-        Compute the realtime drawdown from positions.
-        Bypasses perf ledger, since perf ledgers are refreshed in 5 min intervals and may be out of date.
-        Used to enable realtime withdrawals based on drawdown.
-
-        Args:
-            hotkey: The miner hotkey
-
-        Returns:
-            Drawdown ratio (1.0 = 0% drawdown, 0.9 = 10% drawdown)
-        """
-        return self._server.compute_realtime_drawdown_rpc(hotkey)
-
     def get_unrealized_pnl(self, hotkey: str) -> float:
         """
         Get total unrealized PnL across all open positions for a hotkey.
