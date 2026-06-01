@@ -33,7 +33,7 @@ class MinerBucket(Enum):
                 return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V1
             return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
 
-        if self in (MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.SUBACCOUNT_ALPHA):
+        if self in (MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.SUBACCOUNT_ALPHA, MinerBucket.PLAGIARISM):
             return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
 
         raise ValueError(f"No intraday drawdown threshold defined for bucket {self}")
@@ -52,7 +52,7 @@ class MinerBucket(Enum):
                 return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD_V0
             return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
 
-        if self in (MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.SUBACCOUNT_ALPHA):
+        if self in (MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.SUBACCOUNT_ALPHA, MinerBucket.PLAGIARISM):
             return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
 
         raise ValueError(f"No intraday drawdown threshold defined for bucket {self}")

@@ -18,6 +18,7 @@ from typing import Dict, Any, Optional, List
 import time
 from time_util.time_util import TimeUtil
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.position_management.position_manager_client import PositionManagerClient
@@ -431,7 +432,12 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
                 # max drawdown closer to eod drawdown
                 bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
-                drawdown_threshold = bucket.eod_drawdown_threshold() if bucket else ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD
+                if bucket is None and elimination:
+                    bucket_at_elimination = elimination["bucket_at_elimination"]
+                    if bucket_at_elimination:
+                        bucket = MinerBucket(bucket_at_elimination)
+
+                drawdown_threshold = bucket.eod_drawdown_threshold() if bucket else (1 - ValiConfig.MAX_TOTAL_DRAWDOWN)
 
                 # Don't slash penalty_free theta on withdrawal
                 slashed_amount = penalty_amount * min(max(drawdown, 0) / drawdown_threshold, 1.0)
