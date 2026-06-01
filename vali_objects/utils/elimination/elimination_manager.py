@@ -90,7 +90,7 @@ class EliminationRow:
     eod_drawdown_pct: float | None = None
     bucket_at_elimination: MinerBucket | None = None
     positions_closed: bool = False  # Don't necesesarily have to track, but saves calls to position rpc
-    collateral_slashed: bool = True # TODO turn false after initial migration
+    collateral_slashed: bool = True  # TODO turn false after initial migration
     row_added_ms: int | None = None
 
     def __post_init__(self):
@@ -123,6 +123,7 @@ class EliminationRow:
             eod_drawdown_pct=d.get('eod_dd'),
             bucket_at_elimination=MinerBucket(raw_bucket) if raw_bucket is not None else None,
             positions_closed=d.get('positions_closed', False),
+            collateral_slashed=d.get('collateral_slashed', True),
             row_added_ms=d.get('row_added_ms'),
         )
 
@@ -137,6 +138,7 @@ class EliminationRow:
             'elimination_initiated_time_ms': self.elimination_initiated_time_ms,
             'bucket_at_elimination': self.bucket_at_elimination.value if self.bucket_at_elimination is not None else None,
             'positions_closed': self.positions_closed,
+            'collateral_slashed': self.collateral_slashed,
             'row_added_ms': self.row_added_ms,
         }
 
