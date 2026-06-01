@@ -439,7 +439,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             withdrawal_amount = amount - slashed_amount
             new_balance = theta_current_balance - amount
 
-            return {
+            result = {
                 "successfully_processed": True,
                 "error_message": "",
                 "drawdown": drawdown,
@@ -447,6 +447,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 "withdrawal_amount": withdrawal_amount,
                 "new_balance": new_balance
             }
+            bt.logging.info(f"{miner_hotkey} Query withdrawal request results: {result}")
+            return result
+
         except Exception as e:
             error_msg = f"Withdrawal query error: {str(e)}"
             bt.logging.error(error_msg)
@@ -477,7 +480,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
             bt.logging.info(
                 f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {drawdown*100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
-            self.slash_miner_collateral(miner_hotkey, slashed_amount)
+            if slashed_amount > 0:
+                self.slash_miner_collateral(miner_hotkey, slashed_amount)
 
             owner_address = ValiUtils.get_secret("collateral_owner_address")
             owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
