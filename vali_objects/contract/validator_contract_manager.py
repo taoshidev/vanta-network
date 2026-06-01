@@ -437,7 +437,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     if bucket_at_elimination:
                         bucket = MinerBucket(bucket_at_elimination)
 
-                drawdown_threshold = bucket.eod_drawdown_threshold() if bucket else (1 - ValiConfig.MAX_TOTAL_DRAWDOWN)
+                drawdown_threshold = bucket.eod_drawdown_threshold() if bucket and bucket.is_active else (1 - ValiConfig.MAX_TOTAL_DRAWDOWN)
 
                 # Don't slash penalty_free theta on withdrawal
                 slashed_amount = penalty_amount * min(max(drawdown, 0) / drawdown_threshold, 1.0)
