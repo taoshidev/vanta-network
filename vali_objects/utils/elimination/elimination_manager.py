@@ -785,9 +785,11 @@ class EliminationManager(CacheController):
                 if deleted_limit_orders:
                     bt.logging.info(f"Cancelled {deleted_limit_orders} pending limit orders for eliminated miner [{hotkey}]")
 
-                positions = self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
+                positions = self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=False)
                 for p in positions:
                     self._close_position(hotkey, p, elimination_data.elimination_initiated_time_ms, iteration_epoch=iteration_epoch)
+
+                self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
 
                 with self.eliminations_lock:
                     self.eliminations[hotkey].positions_closed = True
@@ -814,6 +816,8 @@ class EliminationManager(CacheController):
         positions = self._position_client.get_positions_for_one_hotkey(hotkey)
         for p in positions:
             self._position_client.delete_position(p.miner_hotkey, p.position_uuid)
+
+        self._miner_account_client.delete_miner_account_size(hotkey)
 
         try:
             shutil.rmtree(miner_dir)
