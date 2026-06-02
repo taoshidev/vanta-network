@@ -74,6 +74,8 @@ class Position(BaseModel):
             trade_pair_id = tp[0]  # legacy list from disk
 
         trade_pair = TradePair.get_latest_trade_pair_from_trade_pair_id(trade_pair_id)
+        if trade_pair is None:
+            raise ValueError(f"Skipping position with unresolvable trade_pair_id '{trade_pair_id}'")
         orders = values.get('orders', [])
 
         # Add the position-level trade_pair to each order
