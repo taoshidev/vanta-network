@@ -231,10 +231,6 @@ class PositionManagerServer(RPCServerBase):
         """Calculate portfolio leverage - delegates to manager."""
         return self._manager.calculate_net_portfolio_leverage(hotkey)
 
-    def compute_realtime_drawdown_rpc(self, hotkey: str) -> float:
-        """Compute realtime drawdown - delegates to manager."""
-        return self._manager.compute_realtime_drawdown(hotkey)
-
     def get_unrealized_pnl_rpc(self, hotkey: str) -> float:
         """Get total unrealized PnL across all open positions - delegates to manager."""
         return self._manager.get_unrealized_pnl(hotkey)

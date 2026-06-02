@@ -293,19 +293,6 @@ class MinerAccountClient(RPCClientBase):
         """Get total borrowed amount for a miner."""
         return self._server.get_total_borrowed_amount(hotkey)
 
-    def can_withdraw_collateral(self, hotkey: str, amount_theta: float) -> bool:
-        """
-        Check if miner can withdraw the specified amount of collateral.
-
-        Args:
-            hotkey: Miner's hotkey
-            amount_theta: Requested withdrawal amount in theta
-
-        Returns:
-            True if withdrawal is allowed, False otherwise
-        """
-        return self._server.can_withdraw_collateral(hotkey, amount_theta)
-
     def rebuild_account_state_from_positions(
         self,
         hotkey: str,

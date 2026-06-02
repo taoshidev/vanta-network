@@ -104,7 +104,7 @@ class EntityCollateralManager(CacheController):
 
     # ==================== Cache Management ====================
 
-    def refresh_collateral_cache(self) -> int:
+    def refresh_collateral_cache(self) -> str | None:
         """
         Refresh cached collateral balances for all known entities from on-chain contracts.
 
@@ -116,7 +116,7 @@ class EntityCollateralManager(CacheController):
         """
         all_entities = self._entity_client.get_all_entities()
         if not all_entities:
-            return 0
+            return None
 
         refreshed = 0
         for entity_hotkey in all_entities:
@@ -131,7 +131,7 @@ class EntityCollateralManager(CacheController):
 
         self._save_cache_to_disk()
         bt.logging.info(f"[ENTITY_COLLATERAL] Refreshed collateral cache for {refreshed}/{len(all_entities)} entities")
-        return refreshed
+        return self._to_slack_message(self._collateral_cache)
 
     def get_cached_collateral(self, entity_hotkey: str) -> Optional[float]:
         """
@@ -500,13 +500,14 @@ class EntityCollateralManager(CacheController):
                 return 0.0
             return tracking.get("cumulative_slashed", 0.0)
 
-    def process_pending_slashes(self):
+    def process_pending_slashes(self) -> str | None:
         all_entities = self._entity_client.get_all_entities()
         if not all_entities:
-            return 0
+            return None
 
         refreshed = 0
         total_theta_slashed = 0.0
+        slashed_per_entity: Dict[str, float] = {}
 
         for entity_hotkey, entity_data in all_entities.items():
             try:
@@ -553,11 +554,13 @@ class EntityCollateralManager(CacheController):
                 if success:
                     refreshed += 1
                     total_theta_slashed += theta_slash
-                    bt.logging.info(
+                    slashed_per_entity[entity_hotkey] = theta_slash
+                    msg = (
                         f"[ENTITY_COLLATERAL] slash_pending_fees: slashed {theta_slash:.4f} theta "
                         f"({total_pending_reg_theta:.4f} reg fees + {total_pending_loss_theta:.4f} loss theta) "
                         f"from entity {entity_hotkey} for subaccounts {list(pending_reg_theta.keys())}"
                     )
+                    bt.logging.info(msg)
                 else:
                     # Revert both marks so the slash is retried on the next iteration.
                     for subaccount_id in pending_reg_theta:
@@ -566,10 +569,11 @@ class EntityCollateralManager(CacheController):
                         for synthetic_hotkey, usd in pending_loss_usd.items():
                             self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] -= usd
                     self._save_slash_tracking_to_disk()
-                    bt.logging.error(
+                    msg = (
                         f"[ENTITY_COLLATERAL] slash_pending_fees: on-chain slash failed for entity {entity_hotkey} "
                         f"({theta_slash:.4f} theta, subaccounts: {list(pending_reg_theta.keys())}); marks reverted"
                     )
+                    bt.logging.error(msg)
 
                 # Refresh collateral cache is called before slash pending
                 # need to offset cache until on-chain value is read in next daemon cycle
@@ -584,12 +588,30 @@ class EntityCollateralManager(CacheController):
             f"[ENTITY_COLLATERAL] slash_pending_fees: {refreshed}/{len(all_entities)} entities slashed, "
             f"{total_theta_slashed:.4f} theta total"
         )
-        return refreshed
+        return self._to_slack_message(slashed_per_entity=slashed_per_entity)
 
     def _get_loss_slash_usd(self, cumulative_realized_loss, cumulative_slashed, max_slash):
         target_slash = min(cumulative_realized_loss, max_slash)
         slash_delta = max(0, target_slash - cumulative_slashed)
         return slash_delta
+
+
+    def _to_slack_message(
+        self,
+        collateral_cache: dict[str, float] | None = None,
+        slashed_per_entity: dict[str, float] | None = None,
+    ) -> str | None:
+        if collateral_cache:
+            msg = ":bank: *Entity Collateral Overview*\n"
+            msg += "\n".join(f"`{hotkey}`: {collateral:.4f} theta" for hotkey, collateral in collateral_cache.items())
+            return msg
+
+        if slashed_per_entity:
+            msg = ":bank: *Entity Collateral Slashed*\n"
+            msg += "\n".join(f"`{hotkey}`: {slashed:.4f} theta slashed" for hotkey, slashed in slashed_per_entity.items())
+            return msg
+
+        return None
 
 
     # ==================== Test Helpers ====================

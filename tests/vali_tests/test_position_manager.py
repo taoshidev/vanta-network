@@ -292,64 +292,6 @@ class TestPositionManager(TestBase):
                                                                                 sort_positions=True)
         self.assertEqual(len(all_disk_positions), 2 * len(TradePair))
 
-    def test_compute_realtime_drawdown_with_various_drawdowns(self):
-        """Test compute_realtime_drawdown across range of drawdown percentages using proper client/server architecture"""
-        from time_util.time_util import TimeUtil
-
-        max_portfolio_value = 2.0
-        base_time_ms = TimeUtil.now_in_millis()
-
-        # Test cases: (current_value, expected_drawdown_ratio, description)
-        test_cases = [
-            (2.0, 1.0, "0% drawdown"),
-            (1.98, 0.99, "1% drawdown"),
-            (1.96, 0.98, "2% drawdown"),
-            (1.90, 0.95, "5% drawdown"),
-            (1.80, 0.90, "10% drawdown"),
-            (1.70, 0.85, "15% drawdown"),
-            (1.50, 0.75, "25% drawdown"),
-        ]
-
-        for current_value, expected_ratio, description in test_cases:
-            with self.subTest(description=description):
-                # Clear data for each subtest
-                self.position_client.clear_all_miner_positions_and_disk()
-                self.perf_ledger_client.save_perf_ledgers({})
-
-                # Create a PerfLedger with checkpoints that have the max portfolio value
-                checkpoint = PerfCheckpoint(
-                    last_update_ms=base_time_ms,
-                    prev_portfolio_ret=1.0,
-                    mpv=max_portfolio_value,  # Max portfolio value
-                    mdd=1.0
-                )
-                perf_ledger = PerfLedger(
-                    initialization_time_ms=base_time_ms - 1000000,
-                    max_return=max_portfolio_value,
-                    cps=[checkpoint],
-                )
-
-                # Save the perf ledger: {hotkey: PerfLedger}
-                self.perf_ledger_client.save_perf_ledgers({
-                    self.DEFAULT_MINER_HOTKEY: perf_ledger
-                })
-
-                # Create a position with return_at_close = current_value to get the desired current portfolio value
-                position = deepcopy(self.default_position)
-                position.position_uuid = f"drawdown_test_{description.replace(' ', '_')}"
-                position.open_ms = base_time_ms - 1000
-                position.close_out_position(base_time_ms)
-                # Manually set the return to the desired value for testing
-                position.return_at_close = current_value
-                self.position_client.save_miner_position(position)
-
-                # Compute drawdown using the actual method through the client
-                drawdown = self.position_client.compute_realtime_drawdown(self.DEFAULT_MINER_HOTKEY)
-
-                # Assert
-                self.assertAlmostEqual(drawdown, expected_ratio, places=4,
-                                      msg=f"{description}: Expected {expected_ratio}, got {drawdown}")
-
     # ==================== RACE CONDITION TESTS ====================
     # These tests demonstrate race conditions in PositionManager when accessed concurrently.
     # Based on actual access patterns in the codebase (market_order_manager.py, etc.)

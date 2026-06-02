@@ -69,12 +69,14 @@ class EntityCollateralServer(RPCServerBase):
 
     # ==================== RPCServerBase Abstract Methods ====================
 
-    def run_daemon_iteration(self) -> None:
+    def run_daemon_iteration(self) -> str | None:
         """
         Single daemon iteration: refresh the collateral cache from on-chain contracts.
         """
-        self._manager.process_pending_slashes()
-        self._manager.refresh_collateral_cache()
+        slash_update_msg = self._manager.process_pending_slashes()
+        overview_msg = self._manager.refresh_collateral_cache()
+        if slash_update_msg:
+            return "\n".join([slash_update_msg, overview_msg or ""])
 
     def get_health_check_details(self) -> dict:
         """Add service-specific health check details."""
@@ -126,10 +128,6 @@ class EntityCollateralServer(RPCServerBase):
     def get_max_slash_rpc(self, synthetic_hotkey: str) -> float:
         """Get max slashable amount for a subaccount (RPC method)."""
         return self._manager.get_max_slash(synthetic_hotkey)
-
-    def refresh_collateral_cache_rpc(self) -> int:
-        """Force-refresh the collateral cache (RPC method)."""
-        return self._manager.refresh_collateral_cache()
 
     # ==================== Test Helper RPC Methods ====================
 
