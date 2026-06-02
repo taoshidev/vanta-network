@@ -480,6 +480,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             bt.logging.info("Received withdrawal request")
 
             query_result = self.query_withdrawal_request(amount, miner_hotkey)
+            if not query_result["successfully_processed"]:
+                return query_result
             withdrawal_amount = query_result["withdrawal_amount"]
             slashed_amount = query_result["slashed_amount"]
             drawdown = query_result["drawdown"]
@@ -536,7 +538,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return False
 
         if not (0.0 <= slash_proportion <= 1.0):
-            bt.logging.error("Invalid collateral slash proportion: {slash_proportion}")
+            bt.logging.error(f"Invalid collateral slash proportion: {slash_proportion}")
             return False
 
         current_balance_theta = self.get_miner_collateral_balance(miner_hotkey)
@@ -557,7 +559,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         if not self.is_mothership:
             return False
 
-        if not slash_amount or slash_amount < 0:
+        if slash_amount is None or slash_amount < 0:
             bt.logging.error(f"Invalid collateral slash amount: {slash_amount}")
             return False
 

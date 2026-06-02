@@ -22,6 +22,7 @@ import bittensor as bt
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from time_util.time_util import TimeUtil
 
@@ -132,7 +133,7 @@ class EliminationClient(RPCClientBase):
     def append_elimination_row(
         self,
         hotkey: str,
-        reason: str,
+        reason: EliminationReason,
         elimination_drawdown_pct: float | None = None,
         intraday_drawdown_pct: float | None = None,
         eod_drawdown_pct: float | None = None,

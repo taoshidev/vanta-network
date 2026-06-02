@@ -21,7 +21,6 @@ Usage:
 from dataclasses import dataclass
 import shutil
 import threading
-from enum import Enum
 
 import bittensor as bt
 
@@ -33,6 +32,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
@@ -50,32 +50,6 @@ from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_utils.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 
-
-# ==================== Elimination Types ====================
-
-class EliminationReason(Enum):
-    """Reasons for miner elimination."""
-    ZOMBIE = "ZOMBIE"
-    INACTIVE = "INACTIVE"
-    PLAGIARISM = "PLAGIARISM"
-    MAX_TOTAL_DRAWDOWN = "MAX_TOTAL_DRAWDOWN"
-    FAILED_CHALLENGE_PERIOD_TIME = "FAILED_CHALLENGE_PERIOD_TIME"
-    FAILED_PROBATION_TIME = "FAILED_PROBATION_TIME"
-    FAILED_CHALLENGE_PERIOD_DRAWDOWN = "FAILED_CHALLENGE_PERIOD_DRAWDOWN"
-    FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN = "FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN"
-    FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN = "FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN"
-    FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN = "FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN"
-    FAILED_FUNDED_PERIOD_EOD_DRAWDOWN = "FAILED_FUNDED_PERIOD_EOD_DRAWDOWN"
-    LIQUIDATED = "LIQUIDATED"
-    DEREGISTERED = "DEREGISTERED"
-
-    @property
-    def is_intraday_drawdown(self):
-        return self in (self.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN, self.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
-
-    @property
-    def is_eod_drawdown(self):
-        return self in (self.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN, self.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN)
 
 # Constants for departed hotkeys tracking
 DEPARTED_HOTKEYS_KEY = "departed_hotkeys"

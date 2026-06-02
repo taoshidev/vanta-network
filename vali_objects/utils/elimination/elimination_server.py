@@ -26,6 +26,7 @@ import time
 import threading
 
 from vali_objects.utils.elimination.elimination_manager import EliminationManager
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from typing import Dict, Set, List, Optional
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig, TradePair
@@ -232,7 +233,7 @@ class EliminationServer(RPCServerBase):
         return self._manager.get_eliminations_from_disk()
 
     def append_elimination_row_rpc(
-            self, hotkey: str, reason: str, elimination_drawdown_pct: float | None = None,
+            self, hotkey: str, reason: EliminationReason, elimination_drawdown_pct: float | None = None,
             intraday_drawdown_pct: float | None = None, eod_drawdown_pct: float | None = None,
             elimination_time_ms: int | None = None,
             bucket_at_elimination: MinerBucket | None = None) -> None:

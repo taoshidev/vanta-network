@@ -29,7 +29,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.utils.elimination.elimination_manager import EliminationReason
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
@@ -394,7 +394,7 @@ class ChallengePeriodManager(CacheController):
 
             self._elimination_client.append_elimination_row(
                 hotkey=hotkey,
-                reason=elimination_reason.value,
+                reason=elimination_reason,
                 elimination_drawdown_pct=elimination_drawdown_pct,
                 intraday_drawdown_pct=state.drawdown.intraday_drawdown_pct,
                 eod_drawdown_pct=state.drawdown.eod_drawdown_pct,
