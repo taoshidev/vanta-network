@@ -80,6 +80,7 @@ class MinerAccount:
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
     max_return: float = 1.0  # High water mark for portfolio return
+    display_name: Optional[str] = None  # display name for vanta network dashboard
     # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
     # (HL_ALL) for per-class portfolio cap enforcement. Empty for older checkpoints;
     # lazy-backfilled on next rebuild_account_state_from_positions call.
@@ -186,6 +187,7 @@ class MinerAccount:
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
             'hl_address': self.hl_address,
             'max_return': self.max_return,
+            'display_name': self.display_name,
             # JSON keys must be str; convert TradePairCategory enum to its .value
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
         }
@@ -373,6 +375,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket_str = last_record.get("miner_bucket")
                     hl_address = last_record.get("hl_address")
                     max_return = last_record.get("max_return", 1.0)
+                    display_name = last_record.get("display_name")
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
                 else:
                     total_realized_pnl = None
@@ -383,6 +386,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket_str = None
                     hl_address = None
                     max_return = 1.0
+                    display_name = None
                     capital_used_by_class_raw = {}
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
@@ -441,6 +445,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket=miner_bucket,
                     hl_address=hl_address,
                     max_return=max_return,
+                    display_name=display_name,
                     capital_used_by_class=capital_used_by_class,
                 )
 
@@ -721,6 +726,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
             account.hl_address = hl_address
+            self._save_accounts_to_disk()
+
+    def set_display_name(self, hotkey: str, display_name: Optional[str]) -> None:
+        """Set the display name on an account."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if not account:
+                raise ValueError("Account not found")
+            account.display_name = display_name
             self._save_accounts_to_disk()
 
     def get_all_hotkeys(self) -> list:

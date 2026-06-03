@@ -260,6 +260,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
         self.app.route("/asset-selection/update/", methods=["POST"])(self.update_asset_selection)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
+        self.app.route("/profile", methods=["POST"])(self.update_profile)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
 
         # Account management endpoints
@@ -1235,6 +1236,64 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error retrieving miner selections: {e}")
             return jsonify({'error': 'Internal server error retrieving miner selections'}), 500
+    
+    def update_profile(self):
+        """Process profile settings update request."""
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            for field in ('settings', 'miner_coldkey', 'miner_hotkey', 'signature'):
+                if field not in data:
+                    return jsonify({'error': f'Missing required field: {field}'}), 400
+
+            settings = data['settings']
+            if not isinstance(settings, dict) or not settings:
+                return jsonify({'error': 'settings must be a non-empty object'}), 400
+
+            if 'display_name' in settings and len(settings['display_name']) > 48:
+                return jsonify({'error': 'display_name must be 48 characters or fewer'}), 400
+
+            subaccount_id = data.get('subaccount_id')
+            hotkey = data['miner_hotkey']
+            if subaccount_id:
+                hotkey += "_" + str(subaccount_id)
+
+            keypair = Keypair(ss58_address=data['miner_coldkey'])
+            message = json.dumps({
+                "settings": settings,
+                "miner_coldkey": data['miner_coldkey'],
+                "miner_hotkey": data['miner_hotkey']
+            }, sort_keys=True).encode('utf-8')
+            is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Profile update request unauthorized'}), 401
+
+            owns_hotkey = self._verify_coldkey_owns_hotkey(data['miner_coldkey'], data['miner_hotkey'])
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            if 'display_name' in settings:
+                self._miner_account_client.set_display_name(hotkey, settings['display_name'])
+
+            return jsonify({'message': 'Profile updated successfully'})
+
+        except Exception as e:
+            bt.logging.error(f"Error processing profile update: {e}")
+            return jsonify({'error': 'Internal server error processing profile update'}), 500
 
     def process_development_order(self):
         """
