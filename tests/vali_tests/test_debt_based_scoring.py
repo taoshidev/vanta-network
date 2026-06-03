@@ -2228,7 +2228,7 @@ class TestDebtBasedScoring(TestBase):
         other_ledger = DebtLedger(hotkey=other_hotkey, checkpoints=[])
 
         result = DebtBasedScoring.compute_results(
-            debt_ledgers={other_hotkey: other_ledger},
+            ledger_dict={other_hotkey: other_ledger},
             metagraph_client=self.metagraph_client,
             challengeperiod_client=self.challengeperiod_client,
             miner_account_client=self.miner_account_client,
