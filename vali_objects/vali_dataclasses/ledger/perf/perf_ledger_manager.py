@@ -1288,7 +1288,7 @@ class PerfLedgerManager(CacheController):
                             portfolio_unrealized_pnl -= hist_pos.unrealized_pnl
                             portfolio_realized_pnl += closed_position.realized_pnl
                             bt.logging.debug(
-                                f"Converted PnL for position {closed_position.position_uuid[:8]} closing during checkpoint: "
+                                f"Converted PnL for position {closed_position.position_uuid} closing during checkpoint: "
                                 f"removed unrealized ${hist_pos.unrealized_pnl:.2f}, added realized ${closed_position.realized_pnl:.2f}"
                             )
                             break
@@ -1374,7 +1374,7 @@ class PerfLedgerManager(CacheController):
         changes_str = ", ".join(changes_parts)
 
         bt.logging.info(
-            f"perf ledger price continuity applied for miner {hotkey[:8]}... | "
+            f"perf ledger price continuity applied for miner {hotkey}... | "
             f"Open positions: {n_open_positions} | "
             f"Trade pairs traded: {n_trade_pairs_traded} | "
             f"Updates: {{{changes_str}}}"

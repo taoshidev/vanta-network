@@ -213,9 +213,9 @@ class MDDChecker(CacheController):
                 try:
                     current_positions = self._position_client.get_positions_for_one_hotkey(hotkey)
                     self._miner_account_client.rebuild_account_state_from_positions(hotkey, current_positions)
-                    bt.logging.info(f"Rebuilt account state for {hotkey[:8]}... after price correction")
+                    bt.logging.info(f"Rebuilt account state for {hotkey}... after price correction")
                 except Exception as e:
-                    bt.logging.error(f"Failed to rebuild account state for {hotkey[:8]}...: {e}")
+                    bt.logging.error(f"Failed to rebuild account state for {hotkey}...: {e}")
 
         # Update max_return (HWM) on MinerAccount for all miners
         accounts = self._miner_account_client.get_accounts(list(hotkey_to_positions.keys()))
@@ -361,7 +361,7 @@ class MDDChecker(CacheController):
         lock_request_time = time.perf_counter()
         with self._position_lock_client.get_lock(hotkey, trade_pair_id):
             lock_acquired_ms = (time.perf_counter() - lock_request_time) * 1000
-            bt.logging.trace(f"[MDD_LOCK_TIMING] Lock acquired for {hotkey[:8]}.../{trade_pair_id} in {lock_acquired_ms:.2f}ms")
+            bt.logging.trace(f"[MDD_LOCK_TIMING] Lock acquired for {hotkey}.../{trade_pair_id} in {lock_acquired_ms:.2f}ms")
 
             # Refresh position inside lock for TOCTOU protection
             refresh_start = time.perf_counter()
@@ -370,8 +370,8 @@ class MDDChecker(CacheController):
 
             if position_refreshed is None:
                 bt.logging.warning(
-                    f"mdd_checker: Position not found (uuid {position.position_uuid[:8]}... "
-                    f"for {hotkey[:8]}.../{trade_pair_id}). Skipping."
+                    f"mdd_checker: Position not found (uuid {position.position_uuid}... "
+                    f"for {hotkey}.../{trade_pair_id}). Skipping."
                 )
                 return False
 

@@ -897,7 +897,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             self._save_accounts_to_disk()
 
             bt.logging.info(
-                f"[{hotkey[:8]}] Set asset class to {asset_selection.value}: "
+                f"[{hotkey}] Set asset class to {asset_selection.value}: "
                 f"balance: ${account.balance:.2f}, buying_power: ${account.buying_power:.2f}"
             )
             return True
