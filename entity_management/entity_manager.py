@@ -463,6 +463,15 @@ class EntityManager(ValidatorBroadcastBase):
                             f"to create new subaccount with ${account_size} account size"
                         )
 
+                    required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
+                    if current_balance - required_theta < required_min_theta:
+                        bt.logging.warning(
+                            f"[ENTITY_MANAGER] {entity_hotkey} collateral after fee {current_balance - required_theta:.2f} < required {required_min_theta:.2f} theta"
+                        )
+                        return False, None, (
+                            f"Insufficient collateral: {current_balance - required_theta:.2f} theta after fee < {required_min_theta:.2f} theta required"
+                        )
+
                 # Decrement collateral cache immediately to prevent double-spend before daemon slashes on-chain
                 if required_theta > 0:
                     self._entity_collateral_client.decrement_collateral_cache(entity_hotkey, required_theta)
