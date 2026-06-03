@@ -556,8 +556,14 @@ class ChallengePeriodManager(CacheController):
             all_miner_account_sizes=account_sizes
         )
 
-        # Cache scores for MinerStatisticsManager
-        self._cached_asset_softmaxed_scores = asset_softmaxed_scores
+        # Cache scores for MinerStatisticsManager, filtered to only hotkeys that selected each asset class
+        self._cached_asset_softmaxed_scores = {
+            asset_class: {
+                hotkey: score for hotkey, score in asset_scores.items()
+                if asset_selections.get(hotkey) == asset_class
+            }
+            for asset_class, asset_scores in asset_softmaxed_scores.items()
+        }
         self._cached_asset_competitiveness = asset_competitiveness
 
         for asset_class, asset_scores in asset_softmaxed_scores.items():
