@@ -22,6 +22,7 @@ class Signal(BaseModel):
     stop_condition: Optional[StopCondition] = None
     trailing_stop: Optional[dict] = None
     bracket_orders: Optional[list[dict]] = None
+    origin: Optional[str] = None
 
     @field_validator('trade_pair', mode='before')
     @classmethod
