@@ -74,7 +74,9 @@ class EntityCollateralServer(RPCServerBase):
         Single daemon iteration: refresh the collateral cache from on-chain contracts.
         """
         slash_update_msg = self._manager.process_pending_slashes()
+        bt.logging.info(f"[ENTITY_COLLATERAL_SERVER] {slash_update_msg}")
         overview_msg = self._manager.refresh_collateral_cache()
+        bt.logging.info(f"[ENTITY_COLLATERAL_SERVER] {overview_msg}")
         if slash_update_msg:
             return "\n".join([slash_update_msg, overview_msg or ""])
 
