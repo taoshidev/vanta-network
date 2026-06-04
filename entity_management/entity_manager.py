@@ -969,33 +969,42 @@ class EntityManager(ValidatorBroadcastBase):
             end_time_ms = TimeUtil.now_in_millis()
             realtime = True
 
+        bt.logging.info(f"calculate_subaccount_payout query subaccount uuid: {subaccount_uuid}")
+
         # Translate UUID to hotkey
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
+            bt.logging.error(f"calculate_subaccount_payout: no synthetic hotkey ")
             return None
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
         if not entity_hotkey or not subaccount_id:
+            bt.logging.error(f"calculate_subaccount_payout: no entity hotkey ord subaccount_id {entity_hotkey} {subaccount_id}")
             return None
         entity_data = self.get_entity_data(entity_hotkey)
         if not entity_data:
+            bt.logging.error(f"calculate_subaccount_payout: no entity data")
             return None
         subaccount = entity_data.subaccounts.get(subaccount_id)
         if not subaccount:
+            bt.logging.error(f"calculate_subaccount_payout: no subaccount data")
             return None
 
         # Get debt ledger for this hotkey
         try:
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
             if not debt_ledger:
+                bt.logging.error(f"calculate_subaccount_payout: no debt ledger")
                 return None
 
             _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
             if not _perf_ledger:
+                bt.logging.error(f"calculate_subaccount_payout: no perf ledger")
                 return None
 
             perf_ledger = _perf_ledger.get(synthetic_hotkey)
             if not perf_ledger:
+                bt.logging.error(f"calculate_subaccount_payout: no hotkey indexed perf ledger")
                 return None
 
             EMPTY_RESPONSE = {
