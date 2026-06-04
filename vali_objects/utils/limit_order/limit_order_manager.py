@@ -382,7 +382,7 @@ class LimitOrderManager(CacheController):
 
             bt.logging.info(
                 f"{'EDIT' if is_edit else 'INCOMING'} {order.execution_type} ORDER | {trade_pair.trade_pair_id} | "
-                f"{order.order_type.name} | stop_loss={order.stop_loss} | take_profit={order.take_profit}"
+                f"{order.order_type.name} | limit_price={order.limit_price} | stop_loss={order.stop_loss} | take_profit={order.take_profit}"
             )
 
             # Check if order can be filled immediately (only if market is open)
@@ -1333,6 +1333,9 @@ class LimitOrderManager(CacheController):
             # LTE triggers on downside breakout: use bid (lower, more favorable)
             trigger_ps = ask_ps if order.stop_condition == StopCondition.GTE else bid_ps
             trigger_price = self._evaluate_stop_limit_trigger_price(order, trigger_ps)
+
+        if trigger_price:
+            bt.logging.info(f"{order.execution_type} triggered: {order.trade_pair.trade_pair_id} {order.order_uuid} trigger_price={trigger_price} price_source={trigger_ps}")
 
         return trigger_ps, trigger_price
 
