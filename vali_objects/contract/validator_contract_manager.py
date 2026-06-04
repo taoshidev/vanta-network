@@ -698,11 +698,15 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         return collateral_record_dict is not None
 
     @staticmethod
-    def min_collateral_penalty(collateral: float) -> float:
+    def min_collateral_penalty(collateral_theta: float, min_theta: float) -> float:
         """
-        Penalize miners who do not reach the min collateral
+        Penalize miners who do not reach the min collateral.
+
+        Args:
+            collateral_theta: Miner's deposited collateral balance in theta.
+            min_theta: Testnet-aware minimum collateral threshold in theta (see min_theta property).
         """
-        if collateral >= ValiConfig.MIN_COLLATERAL_VALUE:
+        if collateral_theta >= min_theta:
             return 1
         return 0.01
 

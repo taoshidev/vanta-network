@@ -413,7 +413,8 @@ class MinerStatisticsManager:
             weighting = True
             for metric in self.metrics_calculator.metrics.values():
                 metric.requires_weighting = True
-        all_miner_account_sizes = self._miner_account_client.get_all_miner_account_sizes(timestamp_ms=time_now)
+        all_miner_collateral_theta = self._miner_account_client.get_all_miner_collateral_theta(timestamp_ms=time_now)
+        min_theta = self._contract_client.min_theta
         asset_class_scores = Scoring.score_miners(
             ledger_dict=ledgers,
             positions=positions,
@@ -421,7 +422,8 @@ class MinerStatisticsManager:
             evaluation_time_ms=time_now,
             weighting=weighting,
             scoring_config=self.extract_scoring_config(self.metrics_calculator.metrics),
-            all_miner_account_sizes=all_miner_account_sizes
+            all_miner_collateral_theta=all_miner_collateral_theta,
+            min_theta=min_theta
         )
 
         metric_results = {asset_class.value: {} for asset_class in asset_class_scores.keys()}
@@ -721,7 +723,8 @@ class MinerStatisticsManager:
             maincomp_ledger, asset_classes
         )
         bt.logging.info(f"generate_minerstats asset_class_min_days: {asset_class_min_days}")
-        all_miner_account_sizes = self._miner_account_client.get_all_miner_account_sizes(timestamp_ms=time_now)
+        all_miner_collateral_theta = self._miner_account_client.get_all_miner_collateral_theta(timestamp_ms=time_now)
+        min_theta = self._contract_client.min_theta
 
         # Get cached scores from ChallengePeriodManager (computed in evaluate_promotions)
         asset_softmaxed_scores, success_competitiveness = self.challengeperiod_manager.get_miner_scores()
@@ -741,7 +744,8 @@ class MinerStatisticsManager:
             verbose=False,
             weighting=final_results_weighting,
             metrics=self.extract_scoring_config(self.metrics_calculator.metrics),
-            all_miner_account_sizes=all_miner_account_sizes
+            all_miner_collateral_theta=all_miner_collateral_theta,
+            min_theta=min_theta
         )  # returns list of (hotkey, weightVal)
 
         # Only used for testing weight calculation
@@ -757,7 +761,8 @@ class MinerStatisticsManager:
             verbose=False,
             weighting=final_results_weighting,
             metrics= self.extract_scoring_config( self.metrics_calculator.metrics),
-            all_miner_account_sizes=all_miner_account_sizes
+            all_miner_collateral_theta=all_miner_collateral_theta,
+            min_theta=min_theta
         )
 
         challengeperiod_scores = Scoring.score_testing_miners(testing_ledger, testing_checkpoint_results)

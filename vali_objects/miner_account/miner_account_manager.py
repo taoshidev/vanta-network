@@ -140,6 +140,23 @@ class MinerAccount:
         # No valid record for the timestamp, return MIN_CAPITAL
         return ValiConfig.MIN_CAPITAL
 
+    def get_account_size_theta(self, timestamp_ms: Optional[int] = None) -> float:
+        """Get deposited collateral balance in theta at a given timestamp. Returns 0.0 if no records."""
+        if not self.collateral_records:
+            return 0.0
+
+        if timestamp_ms is None:
+            return self.collateral_records[-1].account_size_theta
+
+        # valid_date_timestamp is already midnight-aligned, so compare against the raw timestamp.
+        # Iterate in reversed order, return first record valid for or before the requested time.
+        for record in reversed(self.collateral_records):
+            if record.valid_date_timestamp <= timestamp_ms:
+                return record.account_size_theta
+
+        # No valid record for the timestamp
+        return 0.0
+
     def reset_account_fields(self):
         self.total_realized_pnl = 0
         self.capital_used = 0
@@ -578,6 +595,39 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 if account_size is not None:
                     all_miner_account_sizes[hotkey] = account_size
             return all_miner_account_sizes
+
+    def get_miner_collateral_theta(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
+                                   use_account_floor: bool = False) -> float | None:
+        """
+        Get a miner's deposited collateral balance in theta at a given timestamp.
+
+        Reads the cached account_size_theta from collateral records (no on-chain query).
+
+        Returns:
+            Collateral balance in theta. Returns 0.0 for accounts without collateral records.
+            Returns None if account doesn't exist (or 0.0 if use_account_floor=True).
+        """
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if not account:
+                return 0.0 if use_account_floor else None
+
+            if most_recent or timestamp_ms is None:
+                return account.get_account_size_theta()
+
+            return account.get_account_size_theta(timestamp_ms)
+
+    def get_all_miner_collateral_theta(self, timestamp_ms: Optional[int] = None) -> dict[str, float]:
+        """
+        Return a dict of all miner collateral balances in theta. If timestamp_ms is None, returns most recent.
+        """
+        with self._accounts_lock:
+            all_miner_collateral_theta = {}
+            for hotkey in self.accounts.keys():
+                theta = self.get_miner_collateral_theta(hotkey, timestamp_ms=timestamp_ms)
+                if theta is not None:
+                    all_miner_collateral_theta[hotkey] = theta
+            return all_miner_collateral_theta
 
     def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str = None) -> bool:
         """
