@@ -796,9 +796,9 @@ class RPCServerBase(ABC):
                 # Don't trigger daemon level exception - slack fail is trivial
                 try:
                     if message and self.slack_notifier:
-                        self.slack_notifier.send_message(message)
-                except:
-                    pass
+                        self.slack_notifier.send_message(message, bypass_cooldown=True)
+                except Exception as e:
+                    bt.logging.error(f"[RPC_SERVER_BASE] Error sending slack message: {message} {e}")
 
                 time.sleep(self.daemon_interval_s)
 

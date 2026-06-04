@@ -382,7 +382,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
-            bt.logging.info("Received withdrawal query")
+            bt.logging.info("Received withdrawal query {miner_hotkey} withdraw amount: {amount:.4f}")
 
             # Check collateral balance
             theta_current_balance = self.get_miner_collateral_balance(miner_hotkey)
@@ -394,6 +394,12 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             if amount > theta_current_balance:
                 error_msg = f"Insufficient collateral balance. Available: {theta_current_balance}, Requested: {amount}"
                 bt.logging.error(error_msg)
+                return {"successfully_processed": False, "error_message": error_msg}
+
+            required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(miner_hotkey)
+            if theta_current_balance - amount < required_min_theta:
+                error_msg = f"Insufficient collateral: {theta_current_balance - amount:.2f} theta after withdrawal < {required_min_theta:.2f} theta required"
+                bt.logging.error(f"{error_msg}")
                 return {"successfully_processed": False, "error_message": error_msg}
 
             positions = self._position_client.get_positions_for_one_hotkey(miner_hotkey)
