@@ -95,10 +95,18 @@ class PriceSlippageModel:
             # calc_slippage_crypto returns unclamped L2-simulation slippage when available,
             # and self-clamps its local-model fallback. No outer clip.
             return cls.calc_slippage_crypto(order)
-        if trade_pair.is_commodities or trade_pair.is_indices:
-            # HL commodity/index slippage is pre-computed from the L2 orderbook and stored
-            # on the order before calculate_slippage runs. This branch is a fallback (e.g.
-            # limit order fills) — a dedicated model should be added here.
+        if trade_pair.is_commodities:
+            # HL commodity slippage is normally pre-computed from the L2 orderbook and stored
+            # on the order before calculate_slippage runs. When it's missing (e.g. limit fills
+            # or signals without a pre-computed value), measure it directly from the HL L2
+            # orderbook like crypto. Returned unclamped — real execution cost can exceed 3%.
+            hl_slippage = cls._simulate_slippage_hl(order)
+            if hl_slippage is not None:
+                return hl_slippage
+            return 0.0
+        if trade_pair.is_indices:
+            # HL index slippage is pre-computed from the L2 orderbook and stored on the order
+            # before calculate_slippage runs. No dedicated fallback model yet.
             return 0.0
         raise ValueError(f"Invalid trade pair {trade_pair.trade_pair_id} to calculate slippage")
 
