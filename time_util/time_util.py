@@ -437,7 +437,8 @@ class TimeUtil:
     @staticmethod
     def ms_at_start_of_week(time: int) -> int:
         start_dt = TimeUtil.millis_to_datetime(time)
-        return int(start_dt.replace(day=0, hour=0, minute=0, second=0).timestamp() * 1000)
+        monday = start_dt - timedelta(days=start_dt.weekday())
+        return int(monday.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
 
 
     @staticmethod
