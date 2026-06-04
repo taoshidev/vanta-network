@@ -245,6 +245,7 @@ class DebtBasedScoring:
         metagraph_client: 'MetagraphClient',
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
+        min_theta: float,
         current_time_ms: int = None,
         verbose: bool = False,
         is_testnet: bool = False,
@@ -482,6 +483,7 @@ class DebtBasedScoring:
             ledger_dict=ledger_dict,
             challengeperiod_client=challengeperiod_client,
             miner_account_client=miner_account_client,
+            min_theta=min_theta,
             current_time_ms=current_time_ms,
             verbose=verbose
         )
@@ -850,20 +852,20 @@ class DebtBasedScoring:
 
         Priority tiers (lower number = higher priority for 0 weight/dereg):
         - Tier 0: Zero collateral (ALWAYS get 0 weight, no cap)
-        - Tier 1: Below MIN_COLLATERAL_VALUE (prioritized for 0 weight)
+        - Tier 1: Below min collateral threshold (prioritized for 0 weight)
         - Tier 2: Adequate collateral (use PnL as tiebreaker)
 
         Args:
             pnl_scores: Dict of hotkey -> PnL score (in USD)
-            collateral_balances: Dict of hotkey -> collateral balance (in USD)
-            min_collateral_threshold: Minimum required collateral (default: ValiConfig.MIN_COLLATERAL_VALUE)
+            collateral_balances: Dict of hotkey -> collateral balance (in theta)
+            min_collateral_threshold: Minimum required collateral in theta (default: ValiConfig.MIN_COLLATERAL_BALANCE_THETA)
 
         Returns:
             Dict mapping hotkey -> (priority_tier, pnl_score)
             Lower priority_tier = higher priority for elimination
         """
         if min_collateral_threshold is None:
-            min_collateral_threshold = ValiConfig.MIN_COLLATERAL_VALUE
+            min_collateral_threshold = ValiConfig.MIN_COLLATERAL_BALANCE_THETA
 
         priority_scores = {}
 
@@ -888,6 +890,7 @@ class DebtBasedScoring:
     def _calculate_challenge_zero_weight_miners(
         pnl_scores: dict[str, float],
         miner_account_client: 'MinerAccountClient',
+        min_theta: float,
         percentile: float = 0.25,
         max_zero_weight_miners: int = 10
     ) -> set[str]:
@@ -911,20 +914,21 @@ class DebtBasedScoring:
         if len(pnl_scores) <= 1:
             return set()
 
-        # Get cached collateral balances (in USD) for all miners
+        # Get cached collateral balances (in theta) for all miners
         # Use cached data to avoid rate limiting on-chain queries
         collateral_balances = {}
         for hotkey in pnl_scores.keys():
-            collateral_usd = miner_account_client.get_miner_account_size(hotkey, most_recent=True)
+            collateral_theta = miner_account_client.get_miner_collateral_theta(hotkey, most_recent=True)
             # Handle None or negative values
-            if collateral_usd is None or collateral_usd <= 0:
-                collateral_usd = 0.0
-            collateral_balances[hotkey] = collateral_usd
+            if collateral_theta is None or collateral_theta <= 0:
+                collateral_theta = 0.0
+            collateral_balances[hotkey] = collateral_theta
 
         # Calculate priority scores (tier, pnl) for each miner
         priority_scores = DebtBasedScoring._calculate_collateral_priority_scores(
             pnl_scores=pnl_scores,
-            collateral_balances=collateral_balances
+            collateral_balances=collateral_balances,
+            min_collateral_threshold=min_theta
         )
 
         # Sort by priority: (tier ASC, pnl ASC)
@@ -1134,6 +1138,7 @@ class DebtBasedScoring:
         ledger_dict: dict[str, DebtLedger],
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
+        min_theta: float,
         current_time_ms: int,
         base_dust: float,
         verbose: bool = False
@@ -1228,6 +1233,7 @@ class DebtBasedScoring:
                 zero_weight_miners = DebtBasedScoring._calculate_challenge_zero_weight_miners(
                     pnl_scores=pnl_scores,
                     miner_account_client=miner_account_client,
+                    min_theta=min_theta,
                     percentile=0.25,
                     max_zero_weight_miners=10
                 )
@@ -1261,6 +1267,7 @@ class DebtBasedScoring:
         ledger_dict: dict[str, DebtLedger],
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
+        min_theta: float,
         current_time_ms: int = None,
         verbose: bool = False
     ) -> dict[str, float]:
@@ -1310,6 +1317,7 @@ class DebtBasedScoring:
                     ledger_dict=ledger_dict,
                     challengeperiod_client=challengeperiod_client,
                     miner_account_client=miner_account_client,
+                    min_theta=min_theta,
                     current_time_ms=current_time_ms,
                     base_dust=DUST,
                     verbose=verbose
@@ -1463,61 +1471,5 @@ class DebtBasedScoring:
 
         # Sort by weight descending
         result = sorted(result, key=lambda x: x[1], reverse=True)
-
-        return result
-
-    @staticmethod
-    def _apply_pre_activation_weights(
-        ledger_dict: dict[str, DebtLedger],
-        metagraph_client: 'MetagraphClient',
-        challengeperiod_client: 'ChallengePeriodClient',
-        miner_account_client: 'MinerAccountClient',
-        current_time_ms: int = None,
-        is_testnet: bool = False,
-        verbose: bool = False
-    ) -> List[Tuple[str, float]]:
-        """
-        Apply weights for pre-activation period (before December 2025).
-
-        During pre-activation, miners only receive minimum dust weights based on
-        their challenge period status. Excess weight goes to burn address.
-        Performance-based scaling within buckets is always enabled (using static dust value).
-
-        Args:
-            ledger_dict: Dict of {hotkey: DebtLedger}
-            metagraph_client: Bittensor metagraph for accessing hotkeys
-            challengeperiod_client: Client for querying current challenge period status (required)
-            miner_account_client: Client for querying miner account sizes (required)
-            current_time_ms: Current timestamp (required for performance-scaled dust calculation)
-            is_testnet: True for testnet (uid 220), False for mainnet (uid 229)
-            verbose: Enable detailed logging
-
-        Returns:
-            List of (hotkey, weight) tuples with dust weights + burn address
-        """
-        # Apply minimum dust weights only (no debt-based earnings)
-        miner_dust_weights = DebtBasedScoring._apply_minimum_weights(
-            eligible_hotkeys=list(ledger_dict.keys()),
-            raw_debt_weights={hotkey: 0.0 for hotkey in ledger_dict.keys()},
-            ledger_dict=ledger_dict,
-            challengeperiod_client=challengeperiod_client,
-            miner_account_client=miner_account_client,
-            current_time_ms=current_time_ms,
-            verbose=verbose
-        )
-
-        # Apply burn address normalization
-        result = DebtBasedScoring._normalize_with_burn_address(
-            weights=miner_dust_weights,
-            metagraph_client=metagraph_client,
-            is_testnet=is_testnet,
-            verbose=verbose
-        )
-
-        if verbose:
-            bt.logging.info(
-                f"Pre-activation weights: {len(ledger_dict)} miners with dust weights, "
-                f"excess to burn address"
-            )
 
         return result

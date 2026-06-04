@@ -33,6 +33,7 @@ from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.contract.contract_client import ContractClient
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
 
@@ -183,6 +184,7 @@ class ChallengePeriodManager(CacheController):
         self._elimination_client = EliminationClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._plagiarism_client = PlagiarismClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        self._contract_client = ContractClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._common_data_client = CommonDataClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._debt_ledger_client = DebtLedgerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
@@ -235,8 +237,13 @@ class ChallengePeriodManager(CacheController):
         accounts = self._miner_account_client.get_accounts(evaluation_hotkeys)
         ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
         positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
+
+        # Testnet-aware minimum collateral (theta) required for regular CHALLENGE -> MAINCOMP promotion
+        min_theta = self._contract_client.min_theta
+        all_miner_collateral_theta = self._miner_account_client.get_all_miner_collateral_theta()
+
         self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
-        self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
+        self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, all_miner_collateral_theta, min_theta, asset_selections, current_time_ms)
 
         eliminations = {}
         promotions, demotions = [], []
@@ -276,7 +283,8 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[asset_class]
-            if self._check_promotion(state, returns_threshold, current_time_ms):
+            collateral_theta = all_miner_collateral_theta.get(hotkey, 0.0)
+            if self._check_promotion(state, returns_threshold, current_time_ms, collateral_theta, min_theta):
                 promotions.append(hotkey)
                 continue
 
@@ -351,9 +359,15 @@ class ChallengePeriodManager(CacheController):
         return False
 
     @staticmethod
-    def _check_promotion(state: MinerBucketState, returns_threshold: float, current_time_ms: int) -> bool:
+    def _check_promotion(state: MinerBucketState, returns_threshold: float, current_time_ms: int,
+                         collateral_theta: float, min_theta: float) -> bool:
         if state.current_bucket == MinerBucket.CHALLENGE:
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
+                return False
+            # Regular miners must deposit the minimum collateral (theta) before promotion to MAINCOMP
+            if collateral_theta < min_theta:
+                btlogging.info(f"[CHALLENGE] promotion blocked, insufficient collateral "
+                               f"({collateral_theta} < {min_theta} theta): {state}")
                 return False
 
         if state.current_bucket.next_bucket is None:
@@ -535,7 +549,8 @@ class ChallengePeriodManager(CacheController):
         hotkeys: list[str],
         ledgers: dict[str,PerfLedger],
         positions: dict[str,list[Position]],
-        accounts: dict[str,dict],
+        all_miner_collateral_theta: dict[str,float],
+        min_theta: float,
         asset_selections: dict[str,TradePairCategory],
         current_time_ms: int
     ):
@@ -544,7 +559,7 @@ class ChallengePeriodManager(CacheController):
 
         rank_ledgers = {hk: ledger for hk, ledger in ledgers.items() if hk in hotkeys}
         rank_positions = {hk: pos for hk, pos in positions.items() if hk in hotkeys}
-        account_sizes = {hk: account["account_size"] for hk, account in accounts.items() if hk in hotkeys}
+        rank_collateral_theta = {hk: theta for hk, theta in all_miner_collateral_theta.items() if hk in hotkeys}
 
         # Score all rank-eligible miners (including those without minimum days) for accurate threshold
         asset_competitiveness, asset_softmaxed_scores = Scoring.score_miner_asset_classes(
@@ -553,7 +568,8 @@ class ChallengePeriodManager(CacheController):
             asset_class_min_days=asset_class_min_days,
             evaluation_time_ms=current_time_ms,
             weighting=True,
-            all_miner_account_sizes=account_sizes
+            all_miner_collateral_theta=rank_collateral_theta,
+            min_theta=min_theta
         )
 
         # Cache scores for MinerStatisticsManager

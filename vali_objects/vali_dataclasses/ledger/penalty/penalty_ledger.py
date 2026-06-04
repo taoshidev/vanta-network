@@ -810,10 +810,11 @@ class PenaltyLedgerManager:
                         f"Delta update for {miner_hotkey}: resuming from {last_processed_ms}"
                     )
 
-            # Get miner's collateral/account size
-            miner_account_size = self._miner_account_client.get_miner_account_size(miner_hotkey)
-            if miner_account_size is None:
-                miner_account_size = 0
+            # Get miner's collateral balance in theta (testnet-aware threshold from the contract client)
+            miner_collateral_theta = self._miner_account_client.get_miner_collateral_theta(miner_hotkey)
+            if miner_collateral_theta is None:
+                miner_collateral_theta = 0
+            min_theta = self.contract_client.min_theta
 
             # Iterate through checkpoints in the portfolio ledger (only new ones if delta_update)
             checkpoints_processed = 0
@@ -858,7 +859,7 @@ class PenaltyLedgerManager:
                             penalty_value = penalty_config.function(miner_positions_at_checkpoint)
 
                         elif penalty_config.input_type == PenaltyInputType.COLLATERAL:
-                            penalty_value = penalty_config.function(miner_account_size)
+                            penalty_value = penalty_config.function(miner_collateral_theta, min_theta)
 
                     except Exception as e:
                         if verbose:

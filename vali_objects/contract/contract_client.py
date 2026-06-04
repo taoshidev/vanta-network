@@ -104,6 +104,11 @@ class ContractClient(RPCClientBase):
     # ==================== Static Methods ====================
 
     @staticmethod
-    def min_collateral_penalty(collateral: float) -> float:
-        """Penalize miners who do not reach the min collateral."""
-        return ContractServer.min_collateral_penalty(collateral)
+    def min_collateral_penalty(collateral_theta: float, min_theta: float) -> float:
+        """Penalize miners who do not reach the min collateral (theta-based)."""
+        return ContractServer.min_collateral_penalty(collateral_theta, min_theta)
+
+    @property
+    def min_theta(self) -> float:
+        """Get the testnet-aware minimum collateral balance threshold in theta."""
+        return self._server.get_min_theta_rpc()

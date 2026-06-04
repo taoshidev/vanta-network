@@ -85,7 +85,8 @@ class Scoring:
             verbose=True,
             weighting=False,
             metrics=None,
-            all_miner_account_sizes: dict[str, float]=None
+            all_miner_collateral_theta: dict[str, float]=None,
+            min_theta: float = None
     ) -> List[Tuple[str, float]]:
         bt.logging.info(f"compute_results_checkpoint called with {len(ledger_dict)} miners")
 
@@ -109,7 +110,7 @@ class Scoring:
         if metrics is not None:
             Scoring.scoring_config = metrics
         # Compute miner penalties
-        miner_penalties = Scoring.miner_penalties(filtered_positions, ledger_dict, all_miner_account_sizes)
+        miner_penalties = Scoring.miner_penalties(filtered_positions, ledger_dict, all_miner_collateral_theta, min_theta)
 
         # Miners with full penalty
         full_penalty_miner_scores: list[tuple[str, float]] = [
@@ -123,7 +124,8 @@ class Scoring:
             asset_class_min_days=asset_class_min_days,
             evaluation_time_ms=evaluation_time_ms,
             weighting=weighting,
-            all_miner_account_sizes=all_miner_account_sizes
+            all_miner_collateral_theta=all_miner_collateral_theta,
+            min_theta=min_theta
         )
         bt.logging.info(f"asset_softmaxed_scores has {len(asset_softmaxed_scores)} asset classes")
 
@@ -148,7 +150,8 @@ class Scoring:
             asset_class_min_days: dict[TradePairCategory, int],
             evaluation_time_ms: int | None = None,
             weighting=False,
-            all_miner_account_sizes: dict[str, float] | None =None
+            all_miner_collateral_theta: dict[str, float] | None =None,
+            min_theta: float | None = None
     ) -> tuple[dict[TradePairCategory, float], dict[TradePairCategory, dict[str, float]]]:
         """
         returns:
@@ -170,7 +173,8 @@ class Scoring:
             asset_class_min_days=asset_class_min_days,
             evaluation_time_ms=evaluation_time_ms,
             weighting=weighting,
-            all_miner_account_sizes=all_miner_account_sizes
+            all_miner_collateral_theta=all_miner_collateral_theta,
+            min_theta=min_theta
         )
 
         # Combine and penalize scores
@@ -194,7 +198,8 @@ class Scoring:
             evaluation_time_ms: int = None,
             weighting: bool = False,
             scoring_config: dict[str, dict[str, float]] = None,
-            all_miner_account_sizes: dict[str, float] = None
+            all_miner_collateral_theta: dict[str, float] = None,
+            min_theta: float = None
     ) -> dict[TradePairCategory, dict]:
         """
         Scores the miners based on their ledger and positions.
@@ -226,7 +231,7 @@ class Scoring:
         )
 
         # Compute miner penalties
-        miner_penalties = Scoring.miner_penalties(filtered_positions, ledger_dict, all_miner_account_sizes)
+        miner_penalties = Scoring.miner_penalties(filtered_positions, ledger_dict, all_miner_collateral_theta, min_theta)
 
         # Miners with full penalty
         full_penalty_miners = set([
@@ -313,10 +318,16 @@ class Scoring:
     def miner_penalties(
             hotkey_positions: dict[str, list[Position]],
             ledger_dict: dict[str, PerfLedger],
-            all_miner_account_sizes: dict[str, float]
+            all_miner_collateral_theta: dict[str, float] = None,
+            min_theta: float = None
     ) -> dict[str, float]:
         # Compute miner penalties
         miner_penalties = {}
+
+        if all_miner_collateral_theta is None:
+            all_miner_collateral_theta = {}
+        if min_theta is None:
+            min_theta = ValiConfig.MIN_COLLATERAL_BALANCE_THETA
 
         empty_ledger_miners = []
         for miner, ledger in ledger_dict.items():
@@ -328,9 +339,9 @@ class Scoring:
 
             portfolio_ledger = ledger if ledger else PerfLedger()
 
-            miner_account_size = all_miner_account_sizes.get(miner, 0)
-            if miner_account_size is None:
-                miner_account_size = 0
+            miner_collateral_theta = all_miner_collateral_theta.get(miner, 0)
+            if miner_collateral_theta is None:
+                miner_collateral_theta = 0
 
             cumulative_penalty = 1
             for penalty_name, penalty_config in Scoring.penalties_config.items():
@@ -342,7 +353,7 @@ class Scoring:
                     penalty = penalty_config.function(positions)
                 elif penalty_config.input_type == PenaltyInputType.COLLATERAL:
                     if not is_synthetic_hotkey(miner):
-                        penalty = penalty_config.function(miner_account_size)
+                        penalty = penalty_config.function(miner_collateral_theta, min_theta)
 
                 cumulative_penalty *= penalty
 

@@ -152,6 +152,22 @@ class MinerAccountClient(RPCClientBase):
         """Return a dict of all miner account sizes at a timestamp_ms."""
         return self._server.get_all_miner_account_sizes(timestamp_ms)
 
+    def get_miner_collateral_theta(
+        self,
+        hotkey: str,
+        timestamp_ms: Optional[int] = None,
+        most_recent: bool = False,
+        use_account_floor: bool = False
+    ) -> Optional[float]:
+        """Get a miner's deposited collateral balance in theta (from cached records, no on-chain query)."""
+        return self._server.get_miner_collateral_theta(
+            hotkey, timestamp_ms, most_recent, use_account_floor
+        )
+
+    def get_all_miner_collateral_theta(self, timestamp_ms: Optional[int] = None) -> Dict[str, float]:
+        """Return a dict of all miner collateral balances in theta at a timestamp_ms."""
+        return self._server.get_all_miner_collateral_theta(timestamp_ms)
+
     def accounts_dict(self, most_recent_only: bool = False) -> Dict[str, List[Dict[str, Any]]]:
         """Convert miner account sizes to checkpoint format for backup/sync."""
         return self._server.accounts_dict(most_recent_only)

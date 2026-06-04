@@ -197,10 +197,14 @@ class ContractServer(RPCServerBase):
         return self._manager.clear_test_collateral_balances()
 
     @staticmethod
-    def min_collateral_penalty(collateral: float) -> float:
-        """Penalize miners who do not reach the min collateral."""
+    def min_collateral_penalty(collateral_theta: float, min_theta: float) -> float:
+        """Penalize miners who do not reach the min collateral (theta-based)."""
         from vali_objects.contract.validator_contract_manager import ValidatorContractManager
-        return ValidatorContractManager.min_collateral_penalty(collateral)
+        return ValidatorContractManager.min_collateral_penalty(collateral_theta, min_theta)
+
+    def get_min_theta_rpc(self) -> float:
+        """Get the testnet-aware minimum collateral balance threshold in theta."""
+        return self._manager.min_theta
 
 
 # ==================== Server Entry Point ====================
