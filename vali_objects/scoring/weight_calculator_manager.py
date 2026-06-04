@@ -390,18 +390,14 @@ class WeightCalculatorManager(CacheController):
         # Debt ledger of entity miners should have full history from first funded miner's perf ledger
         entity_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.ENTITY)
         entity_miner_required_payouts = {
-            hotkey: DebtBasedScoring.calculate_payout_from_checkpoints([])
+            hotkey: DebtBasedScoring.calculate_payout_from_checkpoints(
+                all_debt_ledgers[hotkey].checkpoints if hotkey in all_debt_ledgers else [])
             for hotkey in entity_hotkeys
         }
-        entity_miner_emissions_cumulative = {}
-        for hotkey in entity_hotkeys:
-            debt_ledger = all_debt_ledgers.get(hotkey)
-            if not debt_ledger:
-                entity_miner_emissions_cumulative[hotkey] = 0
-                continue
-            entity_miner_emissions_cumulative[hotkey] = sum(
-                cp.chunk_emissions_usd for cp in debt_ledger.checkpoints
-            )
+        entity_miner_emissions_cumulative = {
+            hotkey: sum(cp.chunk_emissions_usd for cp in all_debt_ledgers[hotkey].checkpoints)
+            for hotkey in entity_hotkeys if hotkey in all_debt_ledgers
+        }
 
         # Combine miner and entity payouts/emissions into unified dicts
         all_required_payouts = {**miner_required_payouts, **entity_miner_required_payouts}

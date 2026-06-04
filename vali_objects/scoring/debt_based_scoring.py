@@ -408,11 +408,7 @@ class DebtBasedScoring:
                 start_time_ms=payout_start_ms,
                 end_time_ms=payout_end_ms
             )
-
             result[hotkey] = settlements
-            print(f"  {hotkey} settlements ({len(settlements)}):")
-            for s in settlements:
-                print(f"    {s}")
 
         return result
 
