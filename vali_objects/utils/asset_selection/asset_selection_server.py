@@ -197,19 +197,21 @@ class AssetSelectionServer(RPCServerBase):
     def process_asset_selection_request_rpc(
         self,
         asset_selection: str,
-        miner: str
+        miner: str,
+        overwrite: bool = False
     ) -> Dict[str, str]:
         """
-        Process an asset selection request from a miner (RPC method).
+        Process an asset selection request for a miner (RPC method).
 
         Args:
-            asset_selection: The asset class the miner wants to select
+            asset_selection: The asset class to select
             miner: The miner's hotkey
+            overwrite: Overwrite existing selection if True, otherwise selection is immutable
 
         Returns:
             Dict containing success status and message
         """
-        result = self._manager.process_asset_selection_request(asset_selection, miner)
+        result = self._manager.process_asset_selection_request(asset_selection, miner, overwrite=overwrite)
 
         # If successful, broadcast to validators (delegate to manager)
         if result.get('successfully_processed') and 'asset_class' in result:
@@ -340,9 +342,9 @@ class AssetSelectionServer(RPCServerBase):
         """Validate asset class (forward-compatible alias)."""
         return self.is_valid_asset_class_rpc(asset_class)
 
-    def process_asset_selection_request(self, asset_selection: str, miner: str) -> Dict[str, str]:
+    def process_asset_selection_request(self, asset_selection: str, miner: str, overwrite: bool = False) -> Dict[str, str]:
         """Process asset selection request (forward-compatible alias)."""
-        return self.process_asset_selection_request_rpc(asset_selection, miner)
+        return self.process_asset_selection_request_rpc(asset_selection, miner, overwrite=overwrite)
 
     def delete_asset_selection(self, hotkey: str) -> Dict[str, str]:
         """Delete asset selection (forward-compatible alias)."""

@@ -257,6 +257,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/orders/<minerid>", methods=["GET"])(self.get_orders_for_miner)
         self.app.route("/trade-pairs", methods=["GET"])(self.get_allowed_trade_pairs)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
+        self.app.route("/asset-selection/update/", methods=["POST"])(self.update_asset_selection)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
 
@@ -1100,6 +1101,98 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error processing asset selection: {e}")
             return jsonify({'error': 'Internal server error processing asset selection'}), 500
+
+    def update_asset_selection(self):
+        """
+        Update (override) a miner's asset class selection. Requires tier 300 access.
+
+        Unlike the miner-facing POST /asset-selection endpoint (which is immutable once set),
+        this endpoint overwrites the existing selection. Supports a single hotkey or a bulk list
+        of hotkeys, all updated to the same new asset selection. The transaction is logged with
+        the old and new selection.
+
+        Example (single):
+        curl -X POST http://localhost:48888/asset-selection/update/ \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"asset_selection": "forex", "miner_hotkeys": "5GhDr..."}'
+
+        Example (bulk):
+        curl -X POST http://localhost:48888/asset-selection/update/ \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"asset_selection": "crypto", "miner_hotkeys": ["5GhDr...", "5FxY..."]}'
+        """
+        # Check API key authentication
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        # Check if API key has tier 300 access
+        if not self.can_access_tier(api_key, 300):
+            return jsonify({'error': 'Asset selection update endpoint requires tier 300 access'}), 403
+
+        # Check if asset selection client is available
+        if not self._asset_selection_client:
+            return jsonify({'error': 'Asset selection data not available'}), 503
+
+        try:
+            # Parse JSON request
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            # Validate asset_selection
+            asset_selection = data.get('asset_selection')
+            if not asset_selection or not isinstance(asset_selection, str):
+                return jsonify({'error': 'Missing or invalid required field: asset_selection (string)'}), 400
+
+            if not self._asset_selection_client.is_valid_asset_class(asset_selection):
+                return jsonify({'error': f'Invalid asset class: {asset_selection}'}), 400
+
+            # Accept a single hotkey or a list of hotkeys (also accept singular miner_hotkey)
+            raw_hotkeys = data.get('miner_hotkeys', data.get('miner_hotkey'))
+            if raw_hotkeys is None:
+                return jsonify({'error': 'Missing required field: miner_hotkeys (string or list of strings)'}), 400
+            if isinstance(raw_hotkeys, str):
+                hotkeys = [raw_hotkeys]
+            elif isinstance(raw_hotkeys, list) and all(isinstance(h, str) for h in raw_hotkeys):
+                hotkeys = raw_hotkeys
+            else:
+                return jsonify({'error': 'miner_hotkeys must be a string or a list of strings'}), 400
+            if not hotkeys:
+                return jsonify({'error': 'miner_hotkeys list is empty'}), 400
+
+            # Update each hotkey to the same new asset selection
+            results = {}
+            for hotkey in hotkeys:
+                results[hotkey] = self._asset_selection_client.process_asset_selection_request(
+                    asset_selection=asset_selection,
+                    miner=hotkey,
+                    overwrite=True
+                )
+
+            total_updated = sum(1 for r in results.values() if r.get('successfully_processed'))
+            bt.logging.info(
+                f"[REST] Asset selection update to '{asset_selection}' for {len(hotkeys)} hotkey(s); "
+                f"{total_updated} succeeded"
+            )
+
+            return jsonify({
+                'status': 'success',
+                'asset_selection': asset_selection,
+                'results': results,
+                'total_updated': total_updated,
+                'total_requested': len(hotkeys),
+                'timestamp': TimeUtil.now_in_millis()
+            })
+
+        except Exception as e:
+            bt.logging.error(f"Error processing asset selection update: {e}")
+            return jsonify({'error': 'Internal server error processing asset selection update'}), 500
 
     def get_miner_selections(self):
         """Get all miner asset selection data."""

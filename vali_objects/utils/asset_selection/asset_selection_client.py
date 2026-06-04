@@ -130,19 +130,21 @@ class AssetSelectionClient(RPCClientBase):
     def process_asset_selection_request(
         self,
         asset_selection: str,
-        miner: str
+        miner: str,
+        overwrite: bool = False
     ) -> Dict[str, str]:
         """
-        Process an asset selection request from a miner.
+        Process an asset selection request for a miner.
 
         Args:
-            asset_selection: The asset class the miner wants to select
+            asset_selection: The asset class to select
             miner: The miner's hotkey
+            overwrite: Overwrite existing selection if True, otherwise selection is immutable
 
         Returns:
             Dict containing success status and message
         """
-        return self._server.process_asset_selection_request_rpc(asset_selection, miner)
+        return self._server.process_asset_selection_request_rpc(asset_selection, miner, overwrite=overwrite)
 
     def delete_asset_selection(self, hotkey: str) -> Dict[str, str]:
         """

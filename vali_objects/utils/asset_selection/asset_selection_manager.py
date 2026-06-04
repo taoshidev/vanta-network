@@ -264,13 +264,14 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
     # ==================== Mutation Methods ====================
 
-    def process_asset_selection_request(self, asset_selection: str, miner: str) -> Dict[str, str]:
+    def process_asset_selection_request(self, asset_selection: str, miner: str, overwrite: bool = False) -> Dict[str, str]:
         """
-        Process an asset selection request from a miner.
+        Process an asset selection request for a miner.
 
         Args:
-            asset_selection: The asset class the miner wants to select
+            asset_selection: The asset class to select
             miner: The miner's hotkey
+            overwrite: Overwrite existing selection if True, otherwise selection is immutable
 
         Returns:
             Dict containing success status and message
@@ -295,8 +296,8 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             # This prevents race where multiple threads could all pass the check before any sets the value
             with self._asset_selection_lock:
                 # Re-check inside lock (double-checked locking pattern)
-                if miner in self.asset_selections:
-                    current_selection = self.asset_selections.get(miner)
+                current_selection = self.asset_selections.get(miner)
+                if current_selection is not None and not overwrite:
                     return {
                         'successfully_processed': False,
                         'error_message': f'Asset class already selected: {current_selection.value}. Cannot change selection.'
@@ -306,14 +307,19 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 self.asset_selections[miner] = asset_class
                 self._save_asset_selections_to_disk()
 
-            bt.logging.info(f"[ASSET_MGR] Miner {miner} selected asset class: {asset_selection}")
+            current_value = current_selection.value if current_selection else None
+            if current_selection is not None:
+                success_message = f'Miner {miner} successfully updated asset class from {current_value} to {asset_selection}'
+            else:
+                success_message = f'Miner {miner} successfully selected asset class: {asset_selection}'
+            bt.logging.info(f"[ASSET_MGR] {success_message}")
 
             # Recalculate miner's cash balance based on the new asset selection multiplier
             self._recalculate_miner_cash_balance(miner, asset_class)
 
             return {
                 'successfully_processed': True,
-                'success_message': f'Miner {miner} successfully selected asset class: {asset_selection}',
+                'success_message': success_message,
                 'asset_class': asset_class  # Return the enum for server to use in broadcast
             }
 
@@ -426,11 +432,6 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                     bt.logging.warning(f"[ASSET_MGR] Invalid asset selection data received: {asset_selection_data}")
                     return False
 
-                # Check if we already have this record (avoid duplicates)
-                if hotkey in self.asset_selections:
-                    bt.logging.debug(f"[ASSET_MGR] Asset selection for {hotkey} already exists")
-                    return True
-
                 # Parse the asset selection string to TradePairCategory
                 try:
                     if isinstance(asset_selection, str):
@@ -442,13 +443,24 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                     bt.logging.warning(f"[ASSET_MGR] Invalid asset class value: {asset_selection}: {e}")
                     return False
 
-                # Add the new record
+                # Skip only true duplicate broadcasts (same value already stored).
+                # If the incoming value differs, this is a genuine change (e.g. an admin
+                # update) that must be applied so all validators stay consistent.
+                current_selection = self.asset_selections.get(hotkey)
+                if current_selection == asset_class:
+                    bt.logging.debug(f"[ASSET_MGR] Asset selection for {hotkey} already up to date")
+                    return True
+
+                # Add or update the record
                 self.asset_selections[hotkey] = asset_class
 
                 # Save to disk
                 self._save_asset_selections_to_disk()
 
-            bt.logging.info(f"[ASSET_MGR] Updated miner asset selection for {hotkey}: {asset_selection}")
+            current_value = current_selection.value if current_selection else None
+            bt.logging.info(
+                f"[ASSET_MGR] Updated miner asset selection for {hotkey}: {current_value} -> {asset_class.value}"
+            )
 
             # Recalculate miner's cash balance based on the new asset selection multiplier
             self._recalculate_miner_cash_balance(hotkey, asset_class)
