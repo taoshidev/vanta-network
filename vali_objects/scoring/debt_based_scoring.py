@@ -70,6 +70,19 @@ class PayoutSettlement:
     payout_penalized: float
     orders: list[Order] = field(default_factory=list)
 
+    def __str__(self):
+        from time_util.time_util import TimeUtil
+        start = TimeUtil.millis_to_datetime(self.start_ms).strftime('%Y-%m-%d')
+        end = TimeUtil.millis_to_datetime(self.end_ms).strftime('%Y-%m-%d')
+        return (
+            f"PayoutSettlement [{start} → {end}] "
+            f"balance={self.balance:.4f} unrealized_pnl={self.unrealized_pnl:.4f} "
+            f"payout_raw={self.payout_raw:.4f} payout_penalized={self.payout_penalized:.4f}"
+        )
+
+    def __repr__(self):
+        return self.__str__()
+
     # different field names for backwards compatibility with UI
     def to_dict(self):
         return {
@@ -395,6 +408,9 @@ class DebtBasedScoring:
             )
 
             result[hotkey] = settlements
+            print(f"  {hotkey} settlements ({len(settlements)}):")
+            for s in settlements:
+                print(f"    {s}")
 
         return result
 
