@@ -308,8 +308,8 @@ class DebtBasedScoring:
             return []
 
         weekly_settlements = []
-        balance = 0
-        eow_hwm = 0
+        balance_raw = 0
+        eow_hwm_raw = 0
 
         # Always start week_start at the Monday 00:00 UTC of the first order.
         week_start_ms = TimeUtil.ms_at_start_of_week(orders[0].processed_ms)
@@ -318,10 +318,11 @@ class DebtBasedScoring:
             week_end_ms = min(week_start_ms + MS_IN_WEEK, end_time_ms)
             realized_orders_in_week = []
 
-            weekly_net_pnl, weekly_penalized_pnl = 0, 0
+            weekly_pnl_raw, weekly_pnl_penalized = 0, 0
             while order_idx < len(orders) and orders[order_idx].processed_ms < week_end_ms:
                 order = orders[order_idx]
-                if order.realized_pnl != 0:
+                realized_pnl = order.realized_pnl
+                if realized_pnl != 0:
                     realized_orders_in_week.append(order)
 
                 order_penalty = 1.0
@@ -329,14 +330,15 @@ class DebtBasedScoring:
                     order_penalty_ms = TimeUtil.align_to_12hour_checkpoint_boundary(order.processed_ms)
                     penalty_checkpoint = debt_ledger.get_checkpoint_at_time(order_penalty_ms, CP_DURATION_MS)
                     order_penalty = penalty_checkpoint.total_penalty if penalty_checkpoint else 1.0
+                    order_penalty = min(1.0, max(0, order_penalty))
 
-                weekly_net_pnl += order.realized_pnl
-                weekly_penalized_pnl += order.realized_pnl * order_penalty
+                weekly_pnl_raw += realized_pnl
+                weekly_pnl_penalized += realized_pnl * order_penalty if realized_pnl > 0 else realized_pnl
 
                 order_idx += 1
             while fee_idx < len(fees) and fees[fee_idx]["time_ms"] < week_end_ms:
-                weekly_net_pnl -= fees[fee_idx]["amount"]
-                weekly_penalized_pnl -= fees[fee_idx]["amount"]
+                weekly_pnl_raw -= fees[fee_idx]["amount"]
+                weekly_pnl_penalized -= fees[fee_idx]["amount"]
                 fee_idx += 1
 
             # Use perf ledger instead of delayed debt ledger
@@ -345,24 +347,24 @@ class DebtBasedScoring:
             if week_end_ms == end_time_ms and is_realtime:
                 unrealized_pnl = realtime_unrealized_pnl
 
-            eow_balance = balance + weekly_net_pnl
-            eow_balance_penalty = balance + weekly_penalized_pnl
-            payout_raw = max(0.0, eow_balance - eow_hwm + min(0, unrealized_pnl))
-            payout_penalized = max(0.0, eow_balance_penalty - eow_hwm + min(0, unrealized_pnl))
+            eow_balance_raw = balance_raw + weekly_pnl_raw
+            eow_balance_penalized = balance_raw + weekly_pnl_penalized
+            payout_raw = max(0.0, eow_balance_raw - eow_hwm_raw + min(0, unrealized_pnl))
+            payout_penalized = max(0.0, eow_balance_penalized - eow_hwm_raw + min(0, unrealized_pnl))
             # Only return desired weekly settlements
             if week_start_ms >= start_time_ms and week_end_ms <= end_time_ms:
                 weekly_settlements.append(PayoutSettlement(
                     start_ms=week_start_ms,
                     end_ms=week_end_ms,
-                    balance=eow_balance,
+                    balance=eow_balance_raw,
                     unrealized_pnl=unrealized_pnl,
                     payout_raw=payout_raw,
                     payout_penalized=payout_penalized,
                     orders=realized_orders_in_week
                 ))
 
-            balance = eow_balance
-            eow_hwm = max(eow_hwm, balance)
+            balance_raw = eow_balance_raw
+            eow_hwm_raw = max(eow_hwm_raw, balance_raw)
             week_start_ms = week_end_ms
 
         return weekly_settlements
