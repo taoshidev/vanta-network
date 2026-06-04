@@ -38,6 +38,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from datetime import datetime, timezone
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
 from shared_objects.cache_controller import CacheController
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
@@ -168,6 +169,13 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Create DebtLedgerClient with connect_immediately=False to defer connection
         self._debt_ledger_client = DebtLedgerClient(
+            connection_mode=connection_mode,
+            connect_immediately=False,
+            running_unit_tests=running_unit_tests
+        )
+
+        # Create PerfLedgerClient with connect_immediately=False to defer connection
+        self._perf_ledger_client = PerfLedgerClient(
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
@@ -961,25 +969,42 @@ class EntityManager(ValidatorBroadcastBase):
             end_time_ms = TimeUtil.now_in_millis()
             realtime = True
 
+        bt.logging.info(f"calculate_subaccount_payout query subaccount uuid: {subaccount_uuid}")
+
         # Translate UUID to hotkey
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
+            bt.logging.error(f"calculate_subaccount_payout: no synthetic hotkey ")
             return None
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
         if not entity_hotkey or not subaccount_id:
+            bt.logging.error(f"calculate_subaccount_payout: no entity hotkey ord subaccount_id {entity_hotkey} {subaccount_id}")
             return None
         entity_data = self.get_entity_data(entity_hotkey)
         if not entity_data:
+            bt.logging.error(f"calculate_subaccount_payout: no entity data")
             return None
         subaccount = entity_data.subaccounts.get(subaccount_id)
         if not subaccount:
+            bt.logging.error(f"calculate_subaccount_payout: no subaccount data")
             return None
 
         # Get debt ledger for this hotkey
         try:
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
             if not debt_ledger:
+                bt.logging.error(f"calculate_subaccount_payout: no debt ledger")
+                return None
+
+            _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
+            if not _perf_ledger:
+                bt.logging.error(f"calculate_subaccount_payout: no perf ledger")
+                return None
+
+            perf_ledger = _perf_ledger.get(synthetic_hotkey)
+            if not perf_ledger:
+                bt.logging.error(f"calculate_subaccount_payout: no hotkey indexed perf ledger")
                 return None
 
             EMPTY_RESPONSE = {
@@ -1049,9 +1074,8 @@ class EntityManager(ValidatorBroadcastBase):
                     running_balance -= fees[idx_fee]["amount"]
                     idx_fee += 1
 
-                # debt checkpoint timestamp is start_ms, but unrealized pnl is at the end_ms
-                # so must offset by a checkpoint for correct unrealized pnl at end time
-                cp = debt_ledger.get_checkpoint_at_time(end_time - CP_DURATION, CP_DURATION)
+                # Use perf ledger instead of delayed debt ledger
+                cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
                 unrealized_pnl = cp.unrealized_pnl if cp else 0.0
                 if end_time == end_time_ms and realtime:
                     unrealized_pnl = realtime_unrealized
