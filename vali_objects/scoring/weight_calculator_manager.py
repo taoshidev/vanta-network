@@ -8,7 +8,7 @@ WeightCalculatorServer wraps this and exposes methods via RPC.
 
 This follows the same pattern as ChallengePeriodManager.
 """
-import time
+from datetime import datetime, timedelta, timezone
 import traceback
 import threading
 from typing import List, Tuple
@@ -18,10 +18,11 @@ import bittensor as bt
 from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
-from time_util.time_util import TimeUtil
+from time_util.time_util import MS_IN_WEEK, TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 
 
 class WeightCalculatorManager(CacheController):
@@ -104,6 +105,13 @@ class WeightCalculatorManager(CacheController):
 
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         self._miner_account_client = MinerAccountClient()
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
+
+        self._perf_ledger_client = PerfLedgerClient(
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False,
+            connection_mode=connection_mode
+        )
 
         from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
         self._debt_ledger_client = DebtLedgerClient(
@@ -285,7 +293,6 @@ class WeightCalculatorManager(CacheController):
             for hotkey, ledger in all_debt_ledgers.items()
             if hotkey in hotkeys_to_compute_weights_for
         }
-
         if len(filtered_debt_ledgers) == 0:
             total_ledgers = len(all_debt_ledgers)
             if total_ledgers == 0:
@@ -307,15 +314,194 @@ class WeightCalculatorManager(CacheController):
         verbose = current_time - self._last_verbose_ms >= 30 * 60 * 1000
         if verbose:
             self._last_verbose_ms = current_time
-        checkpoint_results = DebtBasedScoring.compute_results(
-            ledger_dict=filtered_debt_ledgers,
+
+        current_time_ms = TimeUtil.now_in_millis()
+        # Get current datetime
+        current_dt = TimeUtil.millis_to_datetime(current_time_ms)
+
+        if verbose:
+            bt.logging.info(
+                f"Computing debt-based weights for {current_dt.strftime('%B %Y')} "
+                f"({len(filtered_debt_ledgers)} miners)"
+            )
+
+        # Calculate boundaries
+        # Needed payout calculation: Sum from activation through end of previous
+        # week (considered midnight on Sunday 00:00:00)
+        # This allows negative PnL to carry across weeks and offset future gains
+        payout_activation_start_dt = datetime(
+            DebtBasedScoring.ACTIVATION_YEAR,
+            DebtBasedScoring.ACTIVATION_MONTH,
+            1, 0, 0, 0,
+            tzinfo=timezone.utc
+        ) - timedelta(days=7)
+        payout_activation_start_ms = int(payout_activation_start_dt.timestamp() * 1000)
+
+        current_weekday = current_dt.weekday()
+        prev_target_day_offset = (current_weekday + 1) % 7
+        days_until_target = 7 - prev_target_day_offset
+        prev_target_dt = current_dt - timedelta(days=prev_target_day_offset)
+        prev_target_end_dt = datetime.combine(prev_target_dt, datetime.min.time())
+        prev_target_end_ms = int(prev_target_end_dt.timestamp() * 1000)
+
+        all_positions = self._position_client.get_positions_for_all_miners()
+        all_perf_ledgers = self._perf_ledger_client.get_perf_ledgers()
+
+        # Calculate regular hotkey payouts
+        funded_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(
+            [MinerBucket.PROBATION, MinerBucket.MAINCOMP]
+        )
+
+        # Payout settlements are generated starting the first full week of each miner's debt ledger
+        miner_required_payout_settlements = DebtBasedScoring.generate_payout_settlements(
+            hotkeys=funded_hotkeys,
+            miner_positions=all_positions,
+            perf_ledgers=all_perf_ledgers,
+            debt_ledgers=all_debt_ledgers,
+            end_time_ms=prev_target_end_ms
+        )
+        miner_required_payouts = {
+            hotkey: sum(payout.payout_penalized for payout in payouts)
+            for hotkey, payouts in miner_required_payout_settlements.items()
+        }
+
+        # Emissions should be calculated starting from the full week after the first weekly settlement
+        miner_emissions_cumulative = {}
+        for hotkey, weekly_settlements in miner_required_payout_settlements.items():
+            if not weekly_settlements:
+                miner_emissions_cumulative[hotkey] = 0
+                continue
+
+            debt_ledger = all_debt_ledgers.get(hotkey)
+            if not debt_ledger:
+                miner_emissions_cumulative[hotkey] = 0
+                continue
+
+            emissions_start_ms = weekly_settlements[0].end_ms
+            emissions_end_ms = weekly_settlements[-1].end_ms + MS_IN_WEEK
+            miner_emissions_cumulative[hotkey] = sum(
+                cp.chunk_emissions_usd
+                for cp in debt_ledger.checkpoints
+                if emissions_start_ms <= cp.timestamp_ms <= emissions_end_ms
+            )
+
+        # Use regular checkopint calculations for entity miners for frozen ledgers
+        # Means we have to use the full cumulative emissions of the debt ledger
+        # Debt ledger of entity miners should have full history from first funded miner's perf ledger
+        entity_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.ENTITY)
+        entity_miner_required_payouts = {
+            hotkey: DebtBasedScoring.calculate_payout_from_checkpoints([])
+            for hotkey in entity_hotkeys
+        }
+        entity_miner_emissions_cumulative = {}
+        for hotkey in entity_hotkeys:
+            debt_ledger = all_debt_ledgers.get(hotkey)
+            if not debt_ledger:
+                entity_miner_emissions_cumulative[hotkey] = 0
+                continue
+            entity_miner_emissions_cumulative[hotkey] = sum(
+                cp.chunk_emissions_usd for cp in debt_ledger.checkpoints
+            )
+
+        # Combine miner and entity payouts/emissions into unified dicts
+        all_required_payouts = {**miner_required_payouts, **entity_miner_required_payouts}
+        all_emissions_cumulative = {**miner_emissions_cumulative, **entity_miner_emissions_cumulative}
+
+        # Calculate remaining payouts: needed minus already paid, clamped to zero
+        miner_remaining_payouts_usd = {}
+        for hotkey in all_required_payouts:
+            needed = all_required_payouts.get(hotkey, 0.0)
+            actual = all_emissions_cumulative.get(hotkey, 0.0)
+            miner_remaining_payouts_usd[hotkey] = max(0.0, needed - actual)
+
+        total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
+        total_actual_payout_usd = sum(all_emissions_cumulative.values())
+        total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
+        bt.logging.info(
+            f"[PAYOUT] SUMMARY ({len(miner_remaining_payouts_usd)} miners): "
+            f"remaining_payouts=${total_remaining_payout_usd:.2f}, "
+            f"required_payouts=${total_needed_payout_usd:.2f}, "
+            f"paid_out=${total_actual_payout_usd:.2f}"
+        )
+
+        if verbose:
+            _payouts_sorted = sorted(all_required_payouts.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
+            for hotkey in _payouts_sorted:
+                remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
+                actual = all_emissions_cumulative.get(hotkey, 0.0)
+                needed = all_required_payouts.get(hotkey, 0.0)
+                bt.logging.info(
+                    f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, required=${needed:.2f}"
+                )
+
+        # Estimate projected emissions in USD for weight normalization
+        projected_alpha_available = DebtBasedScoring._estimate_alpha_emissions_until_target(
             metagraph_client=self._metagraph_client,
+            days_until_target=days_until_target,
+            verbose=verbose
+        )
+        projected_usd_available = DebtBasedScoring._convert_alpha_to_usd(
+            alpha_amount=projected_alpha_available,
+            metagraph_client=self._metagraph_client,
+            verbose=verbose
+        )
+
+        if verbose:
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] PROJECTED EMISSIONS: {projected_alpha_available:.2f} ALPHA = "
+                f"${projected_usd_available:.2f} USD over {days_until_target} days "
+                f"(${projected_usd_available / days_until_target:.2f}/day)"
+            )
+
+        if total_remaining_payout_usd > 0:
+            DebtBasedScoring.log_projections(self._metagraph_client, days_until_target, verbose, total_remaining_payout_usd)
+
+        # Spread remaining payouts over days until target
+        miner_daily_target_payouts_usd = {
+            hotkey: remaining / days_until_target
+            for hotkey, remaining in miner_remaining_payouts_usd.items()
+        }
+        projected_daily_usd = projected_usd_available / days_until_target
+
+        # Normalize daily payouts against projected daily emissions to get raw weights
+        raw_debt_weights = DebtBasedScoring._compute_raw_weights_from_payouts(
+            miner_daily_target_payouts_usd=miner_daily_target_payouts_usd,
+            projected_daily_emissions_usd=projected_daily_usd,
+            verbose=verbose
+        )
+
+        # Enforce minimum dust weights per bucket for all eligible hotkeys
+        miner_weights_with_minimums = DebtBasedScoring._apply_minimum_weights(
+            eligible_hotkeys=hotkeys_to_compute_weights_for,
+            raw_debt_weights=raw_debt_weights,
+            ledger_dict=filtered_debt_ledgers,
             challengeperiod_client=self._challengeperiod_client,
             miner_account_client=self._miner_account_client,
-            current_time_ms=current_time,
-            verbose=verbose,
+            current_time_ms=current_time_ms,
+            verbose=verbose
+        )
+
+        if verbose:
+            bt.logging.info(
+                f"[PAYOUT_DEBUG] WEIGHT SUMMARY: {len(miner_weights_with_minimums)} miners, "
+                f"total_remaining=${total_remaining_payout_usd:.2f}, "
+                f"projected_daily_emissions=${projected_daily_usd:.2f}, "
+                f"days_until_target={days_until_target}"
+            )
+            for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1]):
+                daily_target = miner_daily_target_payouts_usd.get(hk, 0.0)
+                if daily_target > 0:
+                    bt.logging.info(
+                        f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, "
+                        f"daily_target=${daily_target:.2f}"
+                    )
+
+        # Normalize weights; excess emissions assigned to burn address
+        checkpoint_results = DebtBasedScoring._normalize_with_burn_address(
+            weights=miner_weights_with_minimums,
+            metagraph_client=self._metagraph_client,
             is_testnet=not self.is_mainnet,
-            eligible_hotkeys=hotkeys_to_compute_weights_for
+            verbose=verbose
         )
 
         bt.logging.info(f"Debt-based scoring results: [{checkpoint_results}]")
