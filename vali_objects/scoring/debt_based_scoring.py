@@ -319,6 +319,7 @@ class DebtBasedScoring:
             realized_orders_in_week = []
 
             weekly_pnl_raw, weekly_pnl_penalized = 0, 0
+            payout_eligible_pnl_raw, payout_eligible_pnl_penalized = 0, 0
             while order_idx < len(orders) and orders[order_idx].processed_ms < week_end_ms:
                 order = orders[order_idx]
                 realized_pnl = order.realized_pnl
@@ -332,13 +333,19 @@ class DebtBasedScoring:
                     order_penalty = penalty_checkpoint.total_penalty if penalty_checkpoint else 1.0
                     order_penalty = min(1.0, max(0, order_penalty))
 
+                _payout_pnl = realized_pnl if order.processed_ms > start_time_ms else 0
                 weekly_pnl_raw += realized_pnl
+                payout_eligible_pnl_raw += _payout_pnl
                 weekly_pnl_penalized += realized_pnl * order_penalty if realized_pnl > 0 else realized_pnl
+                payout_eligible_pnl_penalized += _payout_pnl * order_penalty if _payout_pnl > 0 else _payout_pnl
 
                 order_idx += 1
             while fee_idx < len(fees) and fees[fee_idx]["time_ms"] < week_end_ms:
+                _payout_fee = fees[fee_idx]["amount"] if fees[fee_idx]["time_ms"] > start_time_ms else 0
                 weekly_pnl_raw -= fees[fee_idx]["amount"]
+                payout_eligible_pnl_raw -= _payout_fee
                 weekly_pnl_penalized -= fees[fee_idx]["amount"]
+                payout_eligible_pnl_penalized -= _payout_fee
                 fee_idx += 1
 
             # Use perf ledger instead of delayed debt ledger
@@ -348,11 +355,17 @@ class DebtBasedScoring:
                 unrealized_pnl = realtime_unrealized_pnl
 
             eow_balance_raw = balance_raw + weekly_pnl_raw
-            eow_balance_penalized = balance_raw + weekly_pnl_penalized
-            payout_raw = max(0.0, eow_balance_raw - eow_hwm_raw + min(0, unrealized_pnl))
-            payout_penalized = max(0.0, eow_balance_penalized - eow_hwm_raw + min(0, unrealized_pnl))
+
+            # Cannot be paid out for more than payout eligible pnl (case if first earning checkpoint is mid-week)
+            eow_payout_balance_raw = balance_raw + min(weekly_pnl_raw, payout_eligible_pnl_raw)
+            eow_payout_balance_penalized = balance_raw + min(weekly_pnl_penalized, payout_eligible_pnl_penalized)
+
+            unrealized_losses = min(0, unrealized_pnl)
+            payout_raw = max(0.0, eow_payout_balance_raw - eow_hwm_raw + unrealized_losses)
+            payout_penalized = max(0.0, eow_payout_balance_penalized - eow_hwm_raw + unrealized_losses)
+
             # Only return desired weekly settlements
-            if week_start_ms >= start_time_ms and week_end_ms <= end_time_ms:
+            if start_time_ms <= week_end_ms <= end_time_ms:
                 weekly_settlements.append(PayoutSettlement(
                     start_ms=week_start_ms,
                     end_ms=week_end_ms,
@@ -395,10 +408,13 @@ class DebtBasedScoring:
                 continue
 
             # Start the payout cycle from the full week we have of the debt ledger
-            payout_start_ms = 0
-            if debt_ledger.checkpoints:
-                payout_start_ms = TimeUtil.ms_at_start_of_week(debt_ledger.checkpoints[0].timestamp_ms) + MS_IN_WEEK
+            first_earning_checkpoint = next((cp for cp in debt_ledger.checkpoints
+                                             if cp.challenge_period_status in DebtBasedScoring.EARNING_MINER_BUCKETS), None)
+            if first_earning_checkpoint is None:
+                result[hotkey] = []
+                continue
 
+            payout_start_ms = first_earning_checkpoint.timestamp_ms
             payout_end_ms = TimeUtil.ms_at_start_of_week(end_time_ms)
 
             settlements = DebtBasedScoring.generate_weekly_settlements(
