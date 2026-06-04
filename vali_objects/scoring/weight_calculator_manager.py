@@ -293,6 +293,7 @@ class WeightCalculatorManager(CacheController):
             for hotkey, ledger in all_debt_ledgers.items()
             if hotkey in hotkeys_to_compute_weights_for
         }
+        all_emissions_ledgers = self._debt_ledger_client.get_all_emissions_ledgers()
         if len(filtered_debt_ledgers) == 0:
             total_ledgers = len(all_debt_ledgers)
             if total_ledgers == 0:
@@ -357,7 +358,7 @@ class WeightCalculatorManager(CacheController):
             hotkeys=funded_hotkeys,
             miner_positions=all_positions,
             perf_ledgers=all_perf_ledgers,
-            debt_ledgers=all_debt_ledgers,
+            debt_ledgers=filtered_debt_ledgers,
             end_time_ms=prev_target_end_ms
         )
         miner_required_payouts = {
@@ -395,8 +396,8 @@ class WeightCalculatorManager(CacheController):
             for hotkey in entity_hotkeys
         }
         entity_miner_emissions_cumulative = {
-            hotkey: sum(cp.chunk_emissions_usd for cp in all_debt_ledgers[hotkey].checkpoints)
-            for hotkey in entity_hotkeys if hotkey in all_debt_ledgers
+            hotkey: sum(cp.chunk_emissions_usd for cp in all_emissions_ledgers[hotkey].checkpoints)
+            for hotkey in entity_hotkeys if hotkey in all_emissions_ledgers
         }
 
         # Combine miner and entity payouts/emissions into unified dicts
