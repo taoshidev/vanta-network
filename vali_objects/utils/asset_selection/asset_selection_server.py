@@ -159,29 +159,6 @@ class AssetSelectionServer(RPCServerBase):
         """
         return self._manager.get_all_miner_selections()
 
-    def validate_order_asset_class_rpc(
-        self,
-        miner_hotkey: str,
-        trade_pair_category: TradePairCategory,
-        trade_pair_src: TradePairSource,
-        timestamp_ms: int = None,
-    ) -> bool:
-        """
-        Check if a miner is allowed to trade a specific asset class (RPC method).
-
-        Args:
-            miner_hotkey: The miner's hotkey
-            trade_pair_category: The trade pair's category
-            trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
-            timestamp_ms: Optional timestamp in milliseconds
-
-        Returns:
-            True if the miner can trade this asset class, False otherwise
-        """
-        return self._manager.validate_order_asset_class(
-            miner_hotkey, trade_pair_category, trade_pair_src, timestamp_ms
-        )
-
     def is_valid_asset_class_rpc(self, asset_class: str) -> bool:
         """
         Validate if the provided asset class is valid (RPC method).
@@ -327,16 +304,6 @@ class AssetSelectionServer(RPCServerBase):
     def get_all_miner_selections(self) -> Dict[str, str]:
         """Get all miner selections (forward-compatible alias)."""
         return self.get_all_miner_selections_rpc()
-
-    def validate_order_asset_class(
-        self,
-        miner_hotkey: str,
-        trade_pair_category: TradePairCategory,
-        trade_pair_src: TradePairSource,
-        timestamp_ms: int = None,
-    ) -> bool:
-        """Validate order asset class (forward-compatible alias)."""
-        return self.validate_order_asset_class_rpc(miner_hotkey, trade_pair_category, trade_pair_src, timestamp_ms)
 
     def is_valid_asset_class(self, asset_class: str) -> bool:
         """Validate asset class (forward-compatible alias)."""
