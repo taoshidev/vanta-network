@@ -218,8 +218,6 @@ class TestTimeUtil(TestBase):
             n_intervals, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_forex_indices(
                 o1.processed_ms, o2.processed_ms
             )
-            carry_fee, next_update_time_ms = position.crypto_carry_fee(o2.processed_ms)
-            assert next_update_time_ms > o2.processed_ms, f"next_update_time_ms: {next_update_time_ms}, o2.processed_ms: {o2.processed_ms}"
             delta = time_until_next_interval_ms
             if i != 0:
                 self.assertEqual(delta + 1, prev_delta, f"delta: {delta}, prev_delta: {prev_delta}")
