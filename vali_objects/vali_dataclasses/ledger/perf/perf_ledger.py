@@ -4,58 +4,10 @@ from vali_objects.enums.misc import TradePairReturnStatus
 from typing import Dict, Tuple, Optional
 import bittensor as bt
 from shared_objects.sn8_multiprocessing import ParallelizationMode, get_spark_session, get_multiprocessing_pool
-from time_util.time_util import MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-
-class FeeCache():
-    def __init__(self):
-        self.spread_fee: float = 1.0
-        self.spread_fee_last_order_processed_ms: int = 0
-
-        self.carry_fee: float = 1.0  # product of all individual interval fees.
-        self.carry_fee_next_increase_time_ms: int = 0  # Compute fees based off the prior interval
-
-    def get_spread_fee(self, position: Position, current_time_ms: int) -> (float, bool):
-        if position.orders[-1].processed_ms == self.spread_fee_last_order_processed_ms:
-            return self.spread_fee, False
-
-        if position.is_closed_position:
-            current_time_ms = min(current_time_ms, position.close_ms)
-
-        self.spread_fee = position.get_spread_fee(current_time_ms)
-        self.spread_fee_last_order_processed_ms = position.orders[-1].processed_ms
-        return self.spread_fee, True
-
-    def get_carry_fee(self, current_time_ms, position: Position, funding_rates=None) -> (float, bool):
-        # Calculate the number of times a new day occurred (UTC). If a position is opened at 23:59:58 and this function is
-        # called at 00:00:02, the carry fee will be calculated as if a day has passed. Another example: if a position is
-        # opened at 23:59:58 and this function is called at 23:59:59, the carry fee will be calculated as 0 days have passed
-        if position.is_closed_position:
-            current_time_ms = min(current_time_ms, position.close_ms)
-        # cache hit?
-        if position.is_hl and funding_rates is not None:
-            start_time_cache_hit = self.carry_fee_next_increase_time_ms - MS_IN_1_HOUR
-        elif position.trade_pair.is_crypto:
-            start_time_cache_hit = self.carry_fee_next_increase_time_ms - MS_IN_8_HOURS
-        elif position.trade_pair.is_forex or position.trade_pair.is_indices or position.trade_pair.is_equities or position.trade_pair.is_commodities:
-            start_time_cache_hit = self.carry_fee_next_increase_time_ms - MS_IN_24_HOURS
-        else:
-            raise Exception(f"Unknown trade pair type: {position.trade_pair}")
-        if start_time_cache_hit <= current_time_ms < self.carry_fee_next_increase_time_ms:
-            return self.carry_fee, False
-
-        # cache miss
-        carry_fee, next_update_time_ms = position.get_carry_fee(current_time_ms, funding_rates=funding_rates)
-        assert next_update_time_ms > current_time_ms, [TimeUtil.millis_to_verbose_formatted_date_str(x) for x in (self.carry_fee_next_increase_time_ms, next_update_time_ms, current_time_ms)] + [carry_fee, position] + [self.carry_fee_next_increase_time_ms, next_update_time_ms, current_time_ms]
-
-        assert carry_fee >= 0, (carry_fee, next_update_time_ms, position)
-        self.carry_fee = carry_fee
-        self.carry_fee_next_increase_time_ms = next_update_time_ms
-        return self.carry_fee, True
 
 class PerfCheckpoint:
     def __init__(

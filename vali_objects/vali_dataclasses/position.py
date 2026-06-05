@@ -132,106 +132,6 @@ class Position(BaseModel):
 
         return 1.0 - (self.get_cumulative_leverage() * .001)
 
-    # TODO update with ledger update
-    def crypto_carry_fee(self, current_time_ms: int) -> (float, int):
-        # Fees every 8 hrs. 4 UTC, 12 UTC, 20 UTC
-        n_intervals_elapsed, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_crypto(self.open_ms, current_time_ms)
-        fee_product = 1.0
-        start_ms = self.open_ms
-        end_ms = start_ms + time_until_next_interval_ms
-        for n in range(n_intervals_elapsed):
-            if n != 0:
-                start_ms = end_ms
-                end_ms = start_ms + MS_IN_8_HOURS
-
-            max_lev = self.max_leverage_seen_in_interval(start_ms, end_ms)
-            fee_product *= CRYPTO_CARRY_FEE_PER_INTERVAL ** max_lev
-
-        final_fee = fee_product
-        #ct_formatted = TimeUtil.millis_to_formatted_date_str(current_time_ms)
-        #start_formatted = TimeUtil.millis_to_formatted_date_str(self.open_ms)
-        #print(f"start time {start_formatted}, end time {ct_formatted}, delta (days) {(current_time_ms - self.open_ms) / (1000 * 60 * 60 * 24)} final fee {final_fee}")
-        return final_fee, current_time_ms + time_until_next_interval_ms
-
-    # TODO update with ledger update
-    def forex_indices_carry_fee(self, current_time_ms: int) -> (float, int):
-        # Fees M-F where W gets triple fee.
-        n_intervals_elapsed, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_forex_indices(self.open_ms, current_time_ms)
-        fee_product = 1.0
-        start_ms = self.open_ms
-        end_ms = start_ms + time_until_next_interval_ms
-        for n in range(n_intervals_elapsed):
-            if n != 0:
-                start_ms = end_ms
-                end_ms = start_ms + MS_IN_8_HOURS
-            # Monday == 0...Sunday == 6
-            day_of_week_index = TimeUtil.get_day_of_week_from_timestamp(end_ms)
-            assert day_of_week_index in range(7)
-            if day_of_week_index in (5, 6):
-                continue  # no fees on Saturday, Sunday
-            else:
-                fee = 1.0
-                max_lev = self.max_leverage_seen_in_interval(start_ms, end_ms)
-                if self.trade_pair.is_forex:
-                    fee *= FOREX_CARRY_FEE_PER_INTERVAL ** max_lev
-                elif self.trade_pair.is_indices or self.trade_pair.is_equities or self.trade_pair.is_commodities:
-                    fee *= INDICES_CARRY_FEE_PER_INTERVAL ** max_lev
-                else:
-                    raise ValueError(f"Unexpected trade pair: {self.trade_pair.trade_pair_id}")
-                if day_of_week_index == 2:
-                    fee = fee ** 3  # triple fee on Wednesday
-
-            fee_product *= fee
-
-        next_update_time_ms = current_time_ms + time_until_next_interval_ms
-        assert next_update_time_ms > current_time_ms, (next_update_time_ms, current_time_ms, fee_product, n_intervals_elapsed, time_until_next_interval_ms)
-        return fee_product, next_update_time_ms
-
-    def hl_carry_fee(self, current_time_ms: int, funding_rates: dict) -> (float, int):
-        """Carry fee for Hyperliquid positions using actual funding rates.
-
-        funding_rates: dict mapping settlement_ms -> rate (e.g. {1722474000000: 0.001})
-        Returns (fee_product, next_update_time_ms).
-        """
-        sign = 1.0 if self.position_type == OrderType.LONG else -1.0
-        fee_product = 1.0
-        for settlement_ms, rate in sorted(funding_rates.items()):
-            if settlement_ms <= self.open_ms:
-                continue
-            if settlement_ms > current_time_ms:
-                break
-            lev = self.leverage_at_time(settlement_ms)
-            fee_product *= (1 - sign * rate * lev)
-        next_update_ms = current_time_ms + TimeUtil.ms_to_next_hour(current_time_ms)
-        return fee_product, next_update_ms
-
-    # TODO update with ledger update
-    def get_carry_fee(self, current_time_ms, funding_rates=None) -> (float, int):
-        # Calculate the number of times a new day occurred (UTC). If a position is opened at 23:59:58 and this function is
-        # called at 00:00:02, the carry fee will be calculated as if a day has passed. Another example: if a position is
-        # opened at 23:59:58 and this function is called at 23:59:59, the carry fee will be calculated as 0 days have passed
-        # Recalculate and update cache
-        assert current_time_ms
-
-        if self.is_closed_position and current_time_ms > self.close_ms:
-            current_time_ms = self.close_ms
-
-        if current_time_ms < self.open_ms:
-            delta = MS_IN_1_HOUR if (self.is_hl and funding_rates is not None) else (MS_IN_8_HOURS if self.trade_pair.is_crypto else MS_IN_24_HOURS)
-            return 1.0, min(current_time_ms + delta, self.open_ms)
-
-        # HL positions use actual funding rates when available
-        if self.is_hl and funding_rates is not None:
-            carry_fee, next_update_time_ms = self.hl_carry_fee(current_time_ms, funding_rates)
-        elif self.trade_pair.is_crypto:
-            carry_fee, next_update_time_ms = self.crypto_carry_fee(current_time_ms)
-        elif self.trade_pair.is_forex or self.trade_pair.is_indices or self.trade_pair.is_equities or self.trade_pair.is_commodities:
-            carry_fee, next_update_time_ms = self.forex_indices_carry_fee(current_time_ms)
-        else:
-            raise Exception(f'Unexpected trade pair: {self.trade_pair.trade_pair_id}')
-
-        return carry_fee, next_update_time_ms
-
     def refresh_carry_fee_usd(self, current_time_ms: int, hl_funding_rates: Optional[dict] = None) -> float:
         if self.is_closed_position:
             current_time_ms = self.close_ms
@@ -761,39 +661,11 @@ class Position(BaseModel):
         flat_order.usd_base_rate = price_fetcher_client.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
         return flat_order
 
-    def calculate_return_with_fees(self, current_return_no_fees, timestamp_ms=None):
-        if timestamp_ms is None:
-            timestamp_ms = TimeUtil.now_in_millis()
-        # Note: Closed positions will have static returns. This method is only called for open positions.
-        # V2 fee calculation. Crypto fee lowered from .003 to .002. Multiply fee by leverage for crypto pairs.
-        # V3 calculation. All fees scaled by leverage. Updated forex and indices fees.
-        # V4 calculation. Fees are now based on cumulative leverage
-        # V5 Crypto fees cut in half
-        # V6 introduce "carry fee"
-        if timestamp_ms < 1713198680000:  # V4 PR merged
-            fee = 1.0 - self.trade_pair.fees * self.max_leverage_seen()
-        else:
-            fee = self.get_carry_fee(timestamp_ms)[0] * self.get_spread_fee(timestamp_ms)
-        return current_return_no_fees * fee
-
-    def get_open_position_return_with_fees(self, realtime_price, live_price_fetcher, time_ms):
-        current_return = self.calculate_pnl(realtime_price, live_price_fetcher)
-        return self.calculate_return_with_fees(current_return, timestamp_ms=time_ms)
-
-    def set_returns_with_updated_fees(self, total_fees, time_ms, live_price_fetcher):
-        self.return_at_close = self.current_return * total_fees
-        if self.current_return == 0:
-            self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, live_price_fetcher)
-
     def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
         self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order)
-        if total_fees is None:
-            self.return_at_close = self.calculate_return_with_fees(self.current_return,
-                               timestamp_ms=TimeUtil.now_in_millis() if time_ms is None else time_ms)
-        else:
-            self.return_at_close = self.current_return * total_fees
+        self.return_at_close = self.current_return * (total_fees if total_fees is not None else 1.0)
 
         if self.current_return < 0:
             raise ValueError(f"current return must be positive {self.current_return}")
