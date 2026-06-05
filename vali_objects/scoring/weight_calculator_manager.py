@@ -360,6 +360,14 @@ class WeightCalculatorManager(CacheController):
             hotkey: sum(payout.payout_penalized for payout in payouts)
             for hotkey, payouts in miner_required_payout_settlements.items()
         }
+        miner_required_payouts_raw = {
+            hotkey: sum(payout.payout_raw for payout in payouts)
+            for hotkey, payouts in miner_required_payout_settlements.items()
+        }
+        miner_required_payouts_raw = {
+            hotkey: sum(payout.payout_raw for payout in payouts)
+            for hotkey, payouts in miner_required_payout_settlements.items()
+        }
 
         # Emissions should be calculated starting from the full week after the first weekly settlement
         miner_emissions_cumulative = {}
@@ -402,9 +410,9 @@ class WeightCalculatorManager(CacheController):
         # Calculate remaining payouts: needed minus already paid, clamped to zero
         miner_remaining_payouts_usd = {}
         for hotkey in all_required_payouts:
-            needed = all_required_payouts.get(hotkey, 0.0)
+            payout_penalized = all_required_payouts.get(hotkey, 0.0)
             actual = all_emissions_cumulative.get(hotkey, 0.0)
-            miner_remaining_payouts_usd[hotkey] = max(0.0, needed - actual)
+            miner_remaining_payouts_usd[hotkey] = max(0.0, payout_penalized - actual)
 
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
         total_actual_payout_usd = sum(all_emissions_cumulative.values())
@@ -426,7 +434,8 @@ class WeightCalculatorManager(CacheController):
             for hotkey in _payouts_sorted:
                 remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
                 actual = all_emissions_cumulative.get(hotkey, 0.0)
-                needed = all_required_payouts.get(hotkey, 0.0)
+                payout_penalized = all_required_payouts.get(hotkey, 0.0)
+                payout_raw = miner_required_payouts_raw.get(hotkey, 0.0)
                 all_time = all_time_emissions.get(hotkey, 0.0)
                 settlements = miner_required_payout_settlements.get(hotkey, [])
                 if settlements:
@@ -436,7 +445,8 @@ class WeightCalculatorManager(CacheController):
                 else:
                     week_range = ""
                 bt.logging.info(
-                    f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, required=${needed:.2f}, all_time_emissions=${all_time:.2f}{week_range}"
+                    f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, "
+                    f"payout_penalized=${payout_penalized:.2f}, payout_raw=${payout_raw:.2f}{week_range}, all_time_emissions=${all_time:.2f}"
                 )
 
         days_until_target = 7 - current_dt.weekday()
