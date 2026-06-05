@@ -337,13 +337,7 @@ class WeightCalculatorManager(CacheController):
             tzinfo=timezone.utc
         ) - timedelta(days=7)
         payout_activation_start_ms = int(payout_activation_start_dt.timestamp() * 1000)
-
-        current_weekday = current_dt.weekday()
-        prev_target_day_offset = (current_weekday + 1) % 7
-        days_until_target = 7 - prev_target_day_offset
-        prev_target_dt = current_dt - timedelta(days=prev_target_day_offset)
-        prev_target_end_dt = datetime.combine(prev_target_dt, datetime.min.time())
-        prev_target_end_ms = int(prev_target_end_dt.timestamp() * 1000)
+        prev_target_end_ms = TimeUtil.ms_at_start_of_week(current_time_ms)
 
         all_positions = self._position_client.get_positions_for_all_miners()
         all_perf_ledgers = self._perf_ledger_client.get_perf_ledgers()
@@ -419,7 +413,7 @@ class WeightCalculatorManager(CacheController):
             f"[PAYOUT] SUMMARY ({len(miner_remaining_payouts_usd)} miners): "
             f"remaining_payouts=${total_remaining_payout_usd:.2f}, "
             f"required_payouts=${total_needed_payout_usd:.2f}, "
-            f"paid_out=${total_actual_payout_usd:.2f}"
+            f"paid_out=${total_actual_payout_usd:.2f} (accumulated until {TimeUtil.millis_to_short_date_str(prev_target_end_ms)}"
         )
 
         all_time_emissions = {
@@ -445,6 +439,7 @@ class WeightCalculatorManager(CacheController):
                     f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, required=${needed:.2f}, all_time_emissions=${all_time:.2f}{week_range}"
                 )
 
+        days_until_target = 7 - current_dt.weekday()
         # Estimate projected emissions in USD for weight normalization
         projected_alpha_available = DebtBasedScoring._estimate_alpha_emissions_until_target(
             metagraph_client=self._metagraph_client,
