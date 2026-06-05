@@ -388,12 +388,15 @@ class DebtBasedScoring:
         miner_positions: dict[str, list[Position]],
         perf_ledgers: dict[str, PerfLedger],
         debt_ledgers: dict[str, DebtLedger],
+        start_time_ms: int | None = None,
         end_time_ms: int | None = None,
         # interval,  # TODO support different intervals base
     ) -> dict[str, list[PayoutSettlement]]:
         """
         Calculate weekly payout for hotkeys for what their debt ledger allows
         """
+        if not start_time_ms:
+            start_time_ms = 0
 
         if not end_time_ms:
             end_time_ms = TimeUtil.now_in_millis()
@@ -414,7 +417,7 @@ class DebtBasedScoring:
                 result[hotkey] = []
                 continue
 
-            payout_start_ms = first_earning_checkpoint.timestamp_ms
+            payout_start_ms = max(first_earning_checkpoint.timestamp_ms, start_time_ms)
             payout_end_ms = TimeUtil.ms_at_start_of_week(end_time_ms)
 
             settlements = DebtBasedScoring.generate_weekly_settlements(

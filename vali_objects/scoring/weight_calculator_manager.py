@@ -327,13 +327,13 @@ class WeightCalculatorManager(CacheController):
             )
 
         # Calculate boundaries
-        # Needed payout calculation: Sum from activation through end of previous
-        # week (considered midnight on Sunday 00:00:00)
+        # Needed payout calculation: Sum from activation through end of previous week
+        # Payout activation start Nov 3, 2025 Monday 00:00 UTC
         # This allows negative PnL to carry across weeks and offset future gains
         payout_activation_start_dt = datetime(
             DebtBasedScoring.ACTIVATION_YEAR,
             DebtBasedScoring.ACTIVATION_MONTH,
-            1, 0, 0, 0,
+            3, 0, 0, 0,
             tzinfo=timezone.utc
         ) - timedelta(days=7)
         payout_activation_start_ms = int(payout_activation_start_dt.timestamp() * 1000)
@@ -359,6 +359,7 @@ class WeightCalculatorManager(CacheController):
             miner_positions=all_positions,
             perf_ledgers=all_perf_ledgers,
             debt_ledgers=filtered_debt_ledgers,
+            start_time_ms=payout_activation_start_ms,
             end_time_ms=prev_target_end_ms
         )
         miner_required_payouts = {
