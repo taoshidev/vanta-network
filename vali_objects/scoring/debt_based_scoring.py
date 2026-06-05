@@ -365,7 +365,8 @@ class DebtBasedScoring:
             payout_penalized = max(0.0, eow_payout_balance_penalized - eow_hwm_raw + unrealized_losses)
 
             # Only return desired weekly settlements
-            if start_time_ms <= week_end_ms <= end_time_ms:
+            if (start_time_ms <= week_end_ms <= end_time_ms
+                    or start_time_ms <= week_start_ms <= end_time_ms):
                 weekly_settlements.append(PayoutSettlement(
                     start_ms=week_start_ms,
                     end_ms=week_end_ms,
