@@ -411,12 +411,13 @@ class LimitOrderManager(CacheController):
         else:
             self._write_to_disk(miner_hotkey, order)
             if is_edit:
-                # Replace existing order in list
+                # Pop existing order and append new one to maintain processed_ms order
                 orders_list = self._limit_orders[trade_pair][miner_hotkey]
                 for i, o in enumerate(orders_list):
                     if o.order_uuid == order_uuid:
-                        orders_list[i] = order
+                        orders_list.pop(i)
                         break
+                orders_list.append(order)
                 # Update bracket order on position for edits
                 if order.execution_type == ExecutionType.BRACKET:
                     self.position_manager.remove_bracket_order_from_position(
