@@ -602,8 +602,8 @@ class EntityCollateralManager(CacheController):
         slashed_per_entity: dict[str, float] | None = None,
     ) -> str | None:
         if collateral_cache:
-            msg = ":bank: *Entity Collateral Overview*\n"
-            msg += "\n".join(f"`{hotkey}`: {collateral:.4f} theta" for hotkey, collateral in collateral_cache.items())
+            msg = ":bangbang: *Entity Collateral Overview*\n"
+            msg += "\n".join(f"`{hotkey}`: {collateral:.4f} theta, required: {self.compute_entity_required_collateral(hotkey)}" for hotkey, collateral in collateral_cache.items())
             return msg
 
         if slashed_per_entity:
