@@ -511,7 +511,7 @@ class DebtBasedScoring:
         prev_target_day_offset = (current_weekday + 1) % 7
         days_until_target = 7 - prev_target_day_offset
         prev_target_dt = current_dt - timedelta(days=prev_target_day_offset)
-        prev_target_end_dt = datetime.combine(prev_target_dt, datetime.min.time())
+        prev_target_end_dt = datetime.combine(prev_target_dt, datetime.min.time(), tzinfo=timezone.utc)
         prev_target_end_ms = int(prev_target_end_dt.timestamp() * 1000)
 
         if verbose:
