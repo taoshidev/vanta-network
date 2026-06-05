@@ -422,14 +422,27 @@ class WeightCalculatorManager(CacheController):
             f"paid_out=${total_actual_payout_usd:.2f}"
         )
 
+        all_time_emissions = {
+            hotkey: sum(cp.chunk_emissions_usd for cp in ledger.checkpoints)
+            for hotkey, ledger in all_emissions_ledgers.items()
+        }
+
         if verbose:
             _payouts_sorted = sorted(all_required_payouts.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
             for hotkey in _payouts_sorted:
                 remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
                 actual = all_emissions_cumulative.get(hotkey, 0.0)
                 needed = all_required_payouts.get(hotkey, 0.0)
+                all_time = all_time_emissions.get(hotkey, 0.0)
+                settlements = miner_required_payout_settlements.get(hotkey, [])
+                if settlements:
+                    first_week = TimeUtil.millis_to_datetime(settlements[0].start_ms).strftime('%Y-%m-%d')
+                    last_week = TimeUtil.millis_to_datetime(settlements[-1].end_ms).strftime('%Y-%m-%d')
+                    week_range = f" ({first_week} - {last_week})"
+                else:
+                    week_range = ""
                 bt.logging.info(
-                    f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, required=${needed:.2f}"
+                    f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, required=${needed:.2f}, all_time_emissions=${all_time:.2f}{week_range}"
                 )
 
         # Estimate projected emissions in USD for weight normalization
