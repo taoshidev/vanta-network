@@ -21,6 +21,7 @@ from pandas.tseries.holiday import Holiday, nearest_workday, GoodFriday  # noqa:
 MS_IN_1_HOUR = 3600000
 MS_IN_8_HOURS =  28800000
 MS_IN_24_HOURS = 86400000
+MS_IN_WEEK = 604_800_000
 S_IN_24_HOURS = 86400
 
 
@@ -432,6 +433,13 @@ class TimeUtil:
     @staticmethod
     def ms_at_start_of_day(dt: datetime) -> int:
         return int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+    @staticmethod
+    def ms_at_start_of_week(time: int) -> int:
+        start_dt = TimeUtil.millis_to_datetime(time)
+        monday = start_dt - timedelta(days=start_dt.weekday())
+        return int(monday.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
 
     @staticmethod
     def ms_to_next_hour(t_ms: int) -> int:
