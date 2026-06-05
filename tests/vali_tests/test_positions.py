@@ -1241,7 +1241,6 @@ class TestPositions(TestBase):
         })
         self.assertEqual(position.max_leverage_seen(), 1.0)
         self.assertEqual(position.get_cumulative_leverage(), 2.0)
-        self.assertEqual(position.get_spread_fee(o2.processed_ms), 1.0 - position.trade_pair.fees * 2)
 
     def test_three_orders_with_a_loss_and_then_a_gain(self):
         o1 = Order(order_type=OrderType.LONG,

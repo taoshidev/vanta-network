@@ -111,27 +111,6 @@ class Position(BaseModel):
         return cumulative_leverage
 
 
-    def get_spread_fee(self, timestamp_ms: int) -> float:
-        """
-        transaction fee
-        HL positions: taker/maker exchange fee per order, applies to all HL asset classes
-        Vanta native crypto: 0.1% x cumulative leverage approximation
-        All other: no fee (returns 1.0)
-        """
-        if self.is_hl:
-            fee = 1.0
-            for order in self.orders:
-                if order.is_hl_taker is True:
-                    fee *= (1 - ValiConfig.HL_TAKER_FEE * abs(order.leverage))
-                elif order.is_hl_taker is False:
-                    fee *= (1 - ValiConfig.HL_MAKER_FEE * abs(order.leverage))
-            return fee
-
-        if not self.trade_pair.is_crypto:
-            return 1.0
-
-        return 1.0 - (self.get_cumulative_leverage() * .001)
-
     def refresh_carry_fee_usd(self, current_time_ms: int, hl_funding_rates: Optional[dict] = None) -> float:
         if self.is_closed_position:
             current_time_ms = self.close_ms
