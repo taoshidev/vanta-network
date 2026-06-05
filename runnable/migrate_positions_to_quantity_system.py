@@ -271,7 +271,7 @@ def process_hotkey(args):
             # Progress update every 100 positions
             if position_idx % 100 == 0:
                 print(
-                    f"  [{hotkey[:8]}...] Progress: {position_idx}/{len(positions)} positions "
+                    f"  [{hotkey}...] Progress: {position_idx}/{len(positions)} positions "
                     f"({position_idx/len(positions)*100:.1f}%)"
                 )
 

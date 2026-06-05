@@ -83,7 +83,7 @@ class ValidatorBroadcastBase:
             # Derive is_mothership using centralized utility
             from vali_objects.utils.vali_utils import ValiUtils
             self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet, self.is_testnet)
-            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Wallet created successfully (hotkey={self._hotkey[:8]}...)")
+            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Wallet created successfully (hotkey={self._hotkey}...)")
 
         # Create metagraph client with connect_immediately=False to defer connection
         from shared_objects.rpc.metagraph_client import MetagraphClient

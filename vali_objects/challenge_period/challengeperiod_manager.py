@@ -335,8 +335,12 @@ class ChallengePeriodManager(CacheController):
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
+
+        if 1 - state.drawdown.current_equity / state.drawdown.eod_hwm > state.eod_drawdown_threshold:
+            btlogging.info(f"[CHALLENGE] near ELIMINATION with current equity at EOD {state.eod_drawdown_threshold_pct}%: {state}")
         elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
             btlogging.info(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
+
         return None
 
     @staticmethod

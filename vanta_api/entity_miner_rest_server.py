@@ -1099,7 +1099,7 @@ class EntityMinerRestServer(MinerRestServer):
                     if is_hl:
                         payout_line = f"Payout Address: {payout_address}\n" if payout_address else ""
                         msg = (
-                            f"HL Subaccount created successfully!\n"
+                            f":hyperliquid: Subaccount created successfully!\n"
                             f"ID: {subaccount.get('subaccount_id')}\n"
                             f"UUID: {subaccount.get('subaccount_uuid')}\n"
                             f"Synthetic Hotkey: {subaccount.get('synthetic_hotkey')}\n"

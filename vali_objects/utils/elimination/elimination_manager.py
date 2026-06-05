@@ -801,6 +801,9 @@ class EliminationManager(CacheController):
         hotkey = elimination_data.hotkey
         miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests) + hotkey
         positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+        if not positions:
+            return
+
         for p in positions:
             self._position_client.delete_position(p.miner_hotkey, p.position_uuid)
 

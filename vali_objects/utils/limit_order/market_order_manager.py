@@ -572,7 +572,7 @@ class MarketOrderManager():
         bt.logging.info(f"[TIMING] Extract signal data took {extract_ms}ms")
 
         # Multiple threads can run receive_signal at once. Don't allow two threads to trample each other.
-        debug_lock_key = f"{miner_hotkey[:8]}.../{trade_pair.trade_pair_id}"
+        debug_lock_key = f"{miner_hotkey}.../{trade_pair.trade_pair_id}"
 
         # TIMING: Time from start to lock request
         time_to_lock_request = TimeUtil.now_in_millis() - now_ms

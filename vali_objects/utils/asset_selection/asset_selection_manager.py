@@ -478,9 +478,9 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             )
             if success:
                 bt.logging.info(
-                    f"[ASSET_MGR] Recalculated cash balance for {hotkey[:8]} after selecting {asset_selection.value}"
+                    f"[ASSET_MGR] Recalculated cash balance for {hotkey} after selecting {asset_selection.value}"
                 )
         except Exception as e:
             bt.logging.warning(
-                f"[ASSET_MGR] Failed to recalculate cash balance for {hotkey[:8]}: {e}"
+                f"[ASSET_MGR] Failed to recalculate cash balance for {hotkey}: {e}"
             )

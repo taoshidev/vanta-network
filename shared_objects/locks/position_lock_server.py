@@ -134,7 +134,7 @@ class PositionLockServer(RPCServerBase):
             self.locks[lock_key] = lock
 
             bt.logging.trace(
-                f"[LOCK_SERVER] Created lock for {miner_hotkey[:8]}.../{trade_pair_id}"
+                f"[LOCK_SERVER] Created lock for {miner_hotkey}.../{trade_pair_id}"
             )
 
             return lock
@@ -156,7 +156,7 @@ class PositionLockServer(RPCServerBase):
 
         if not acquired:
             bt.logging.warning(
-                f"[LOCK_SERVER] Failed to acquire lock for {miner_hotkey[:8]}.../{trade_pair_id} after {timeout}s"
+                f"[LOCK_SERVER] Failed to acquire lock for {miner_hotkey}.../{trade_pair_id} after {timeout}s"
             )
 
         return acquired
@@ -177,7 +177,7 @@ class PositionLockServer(RPCServerBase):
 
         if lock is None:
             bt.logging.warning(
-                f"[LOCK_SERVER] Attempted to release non-existent lock for {miner_hotkey[:8]}.../{trade_pair_id}"
+                f"[LOCK_SERVER] Attempted to release non-existent lock for {miner_hotkey}.../{trade_pair_id}"
             )
             return False
 
@@ -187,7 +187,7 @@ class PositionLockServer(RPCServerBase):
         except RuntimeError as e:
             # Lock was not held (already released)
             bt.logging.warning(
-                f"[LOCK_SERVER] Error releasing lock for {miner_hotkey[:8]}.../{trade_pair_id}: {e}"
+                f"[LOCK_SERVER] Error releasing lock for {miner_hotkey}.../{trade_pair_id}: {e}"
             )
             return False
 

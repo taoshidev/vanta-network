@@ -178,8 +178,8 @@ class TestValidatorSyncBase(TestBase):
         p2 = self.create_test_position(open_ms=1000)
         p1 = self.create_test_position(open_ms=2000)
 
-        print(f"p2 (older): UUID={p2.position_uuid[:8]}..., open_ms={p2.open_ms}")
-        print(f"p1 (newer): UUID={p1.position_uuid[:8]}..., open_ms={p1.open_ms}")
+        print(f"p2 (older): UUID={p2.position_uuid}..., open_ms={p2.open_ms}")
+        print(f"p1 (newer): UUID={p1.position_uuid}..., open_ms={p1.open_ms}")
 
         # Call close_older_open_position
         result = self.validator_sync.close_older_open_position(p1, p2)
@@ -200,8 +200,8 @@ class TestValidatorSyncBase(TestBase):
         self.assertEqual(p2.orders[-1].order_type, OrderType.FLAT)
         self.assertTrue(p2.is_closed_position)
 
-        print(f"✅ Newer position {p1.position_uuid[:8]}... kept")
-        print(f"✅ Older position {p2.position_uuid[:8]}... closed with synthetic FLAT")
+        print(f"✅ Newer position {p1.position_uuid}... kept")
+        print(f"✅ Older position {p2.position_uuid}... closed with synthetic FLAT")
 
     def test_memory_duplicate_different_uuid(self):
         """Test 3: Memory duplicate - existing_in_memory has different UUID than p1."""
@@ -216,8 +216,8 @@ class TestValidatorSyncBase(TestBase):
         # Create newer position to sync
         p1 = self.create_test_position(open_ms=2000)
 
-        print(f"Existing (older): UUID={existing_position.position_uuid[:8]}..., open_ms={existing_position.open_ms}")
-        print(f"p1 (newer): UUID={p1.position_uuid[:8]}..., open_ms={p1.open_ms}")
+        print(f"Existing (older): UUID={existing_position.position_uuid}..., open_ms={existing_position.open_ms}")
+        print(f"p1 (newer): UUID={p1.position_uuid}..., open_ms={p1.open_ms}")
 
         # Call close_older_open_position
         result = self.validator_sync.close_older_open_position(p1, None)
@@ -232,8 +232,8 @@ class TestValidatorSyncBase(TestBase):
             1
         )
 
-        print(f"✅ Newer position {p1.position_uuid[:8]}... kept")
-        print(f"✅ Older position {existing_position.position_uuid[:8]}... closed")
+        print(f"✅ Newer position {p1.position_uuid}... kept")
+        print(f"✅ Older position {existing_position.position_uuid}... closed")
 
     def test_triple_duplicate_all_different_uuids(self):
         """Test 4: Triple duplicate - all three (existing_in_memory, p2, p1) have different UUIDs."""
@@ -251,9 +251,9 @@ class TestValidatorSyncBase(TestBase):
         # Create newest position
         p1 = self.create_test_position(open_ms=2000)
 
-        print(f"Existing (oldest): UUID={existing_position.position_uuid[:8]}..., open_ms={existing_position.open_ms}")
-        print(f"p2 (middle): UUID={p2.position_uuid[:8]}..., open_ms={p2.open_ms}")
-        print(f"p1 (newest): UUID={p1.position_uuid[:8]}..., open_ms={p1.open_ms}")
+        print(f"Existing (oldest): UUID={existing_position.position_uuid}..., open_ms={existing_position.open_ms}")
+        print(f"p2 (middle): UUID={p2.position_uuid}..., open_ms={p2.open_ms}")
+        print(f"p1 (newest): UUID={p1.position_uuid}..., open_ms={p1.open_ms}")
 
         # Call close_older_open_position
         result = self.validator_sync.close_older_open_position(p1, p2)
@@ -268,7 +268,7 @@ class TestValidatorSyncBase(TestBase):
             2
         )
 
-        print(f"✅ Newest position {p1.position_uuid[:8]}... kept")
+        print(f"✅ Newest position {p1.position_uuid}... kept")
         print(f"✅ Two older positions closed")
 
     def test_same_uuid_in_batch_deduplication(self):
@@ -283,8 +283,8 @@ class TestValidatorSyncBase(TestBase):
         p2 = self.create_test_position(position_uuid=shared_uuid, open_ms=1000)
         p1 = self.create_test_position(position_uuid=shared_uuid, open_ms=1000)
 
-        print(f"p2: UUID={p2.position_uuid[:8]}..., open_ms={p2.open_ms}")
-        print(f"p1: UUID={p1.position_uuid[:8]}... (same UUID), open_ms={p1.open_ms}")
+        print(f"p2: UUID={p2.position_uuid}..., open_ms={p2.open_ms}")
+        print(f"p1: UUID={p1.position_uuid}... (same UUID), open_ms={p1.open_ms}")
 
         # Call close_older_open_position
         result = self.validator_sync.close_older_open_position(p1, p2)
@@ -316,8 +316,8 @@ class TestValidatorSyncBase(TestBase):
         # Create p1 with same UUID
         p1 = self.create_test_position(position_uuid=shared_uuid, open_ms=1000)
 
-        print(f"Existing: UUID={existing_position.position_uuid[:8]}..., open_ms={existing_position.open_ms}")
-        print(f"p1: UUID={p1.position_uuid[:8]}... (same UUID), open_ms={p1.open_ms}")
+        print(f"Existing: UUID={existing_position.position_uuid}..., open_ms={existing_position.open_ms}")
+        print(f"p1: UUID={p1.position_uuid}... (same UUID), open_ms={p1.open_ms}")
 
         # Call close_older_open_position
         result = self.validator_sync.close_older_open_position(p1, None)
@@ -349,7 +349,7 @@ class TestValidatorSyncBase(TestBase):
 
         # Should return p2_new (newer)
         self.assertEqual(result.position_uuid, p2_new.position_uuid)
-        print(f"✅ Kept newer position {p2_new.position_uuid[:8]}...")
+        print(f"✅ Kept newer position {p2_new.position_uuid}...")
 
         # Reset stats
         self.validator_sync.init_data()
@@ -363,7 +363,7 @@ class TestValidatorSyncBase(TestBase):
 
         # Should return p1_new (newer)
         self.assertEqual(result.position_uuid, p1_new.position_uuid)
-        print(f"✅ Kept newer position {p1_new.position_uuid[:8]}...")
+        print(f"✅ Kept newer position {p1_new.position_uuid}...")
 
     def test_synthetic_flat_order_added(self):
         """Test 8: Synthetic FLAT order - verify older positions get closed properly."""
@@ -443,7 +443,7 @@ class TestValidatorSyncBase(TestBase):
         # Should have FLAT order
         self.assertEqual(closed_position_on_disk.orders[-1].order_type, OrderType.FLAT)
 
-        print(f"✅ Closed position {p2_uuid[:8]}... found on disk")
+        print(f"✅ Closed position {p2_uuid}... found on disk")
         print(f"✅ Position correctly marked as closed")
         print(f"✅ FLAT order preserved in disk storage")
 
@@ -477,8 +477,8 @@ class TestValidatorSyncBase(TestBase):
             open_ms=1000  # Older
         )
 
-        print(f"Memory position (newer): UUID={memory_position_uuid[:8]}..., open_ms={memory_position.open_ms}")
-        print(f"Backup position (older): UUID={backup_position_uuid[:8]}..., open_ms={backup_position.open_ms}")
+        print(f"Memory position (newer): UUID={memory_position_uuid}..., open_ms={memory_position.open_ms}")
+        print(f"Backup position (older): UUID={backup_position_uuid}..., open_ms={backup_position.open_ms}")
 
         # This simulates autosync calling close_older_open_position before save
         result = self.validator_sync.close_older_open_position(backup_position, None)
@@ -515,8 +515,8 @@ class TestValidatorSyncBase(TestBase):
         self.assertEqual(open_positions[0].position_uuid, memory_position_uuid)
 
         print(f"✅ Production bug scenario handled correctly")
-        print(f"✅ Newer position {memory_position_uuid[:8]}... kept open")
-        print(f"✅ Older position {backup_position_uuid[:8]}... closed")
+        print(f"✅ Newer position {memory_position_uuid}... kept open")
+        print(f"✅ Older position {backup_position_uuid}... closed")
         print(f"✅ No ValiRecordsMisalignmentException raised")
 
 
