@@ -77,7 +77,6 @@ class LimitOrderManager(CacheController):
         self._last_fill_time = {}
         self._last_print_time_ms = 0
 
-        self._read_limit_orders_from_disk()
         self._needs_initial_bracket_sync = True
         self._last_trailing_disk_write_ms = {}  # {order_uuid: last_write_ms}
 
@@ -90,13 +89,15 @@ class LimitOrderManager(CacheController):
                     hotkey_to_orders[hotkey] = []
                 hotkey_to_orders[hotkey].extend(orders)
 
-        # limit_order_locks: protects _limit_orders dictionary operations
+# limit_order_locks: protects _limit_orders dictionary operations
         self.limit_order_locks = PositionLocks(
             hotkey_to_positions=hotkey_to_orders,
             is_backtesting=running_unit_tests,
             running_unit_tests=running_unit_tests,
             mode='local'
         )
+
+        self._read_limit_orders_from_disk()
 
     # ============================================================================
     # RPC Methods (called from client)
@@ -1476,24 +1477,24 @@ class LimitOrderManager(CacheController):
                 ValiBkpUtils.get_miner_dir(self.running_unit_tests)
             )
 
-        eliminated_hotkeys = self.elimination_manager.get_eliminated_hotkeys()
-
         total_orders_read = 0
         total_bracket_orders = 0
 
+        order_uuid_to_delete = {"ebd1cadc-ea41-4b06-91c0-8d1e47999b9d"}
+
         bt.logging.info(f"[LIMIT ORDER DISK] Reading limit orders from disk for {len(hotkeys)} hotkeys...")
 
+        now_ms = TimeUtil.now_in_millis()
         for hotkey in hotkeys:
-            if hotkey in eliminated_hotkeys:
-                continue
-
             miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, False, running_unit_tests=self.running_unit_tests)
             for order_dict in miner_order_dicts:
                 try:
                     order = Order.from_dict(order_dict)
-                    self._write_to_disk(hotkey, order)
-                    trade_pair = order.trade_pair
+                    if order.order_uuid in order_uuid_to_delete:
+                        self._close_limit_order(hotkey, order, 7, now_ms)
+                        continue
 
+                    trade_pair = order.trade_pair
                     # Initialize nested structure
                     if trade_pair not in self._limit_orders:
                         self._limit_orders[trade_pair] = {}
