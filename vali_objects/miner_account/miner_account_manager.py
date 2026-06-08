@@ -12,14 +12,14 @@ This module contains ALL account size functionality, previously split across
 ValidatorContractManager. The contract manager now delegates to this module.
 """
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
 import bittensor as bt
 
 from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import MULTI_CLASS_CATEGORIES, TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
@@ -74,11 +74,15 @@ class MinerAccount:
     total_borrowed_amount: float = 0.0   # Total margin loans outstanding (equities only)
     total_fees_paid: float = 0.0         # Cumulative fees paid (transaction, funding, interest, ...)
     total_dividend_income: float = 0.0   # Net dividend income
-    asset_class: Optional[TradePairCategory] = None  # EQUITIES, CRYPTO, FOREX
+    asset_class: Optional[TradePairCategory] = None  # CRYPTO, FOREX, EQUITIES, COMMODITIES, HL_ALL
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
     max_return: float = 1.0  # High water mark for portfolio return
+    # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
+    # (HL_ALL) for per-class portfolio cap enforcement. Empty for older checkpoints;
+    # lazy-backfilled on next rebuild_account_state_from_positions call.
+    capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -101,12 +105,27 @@ class MinerAccount:
 
     @property
     def multiplier(self) -> float:
+        """Subaccount-wide portfolio cap multiplier used by `buying_power`.
+
+        - Multi-class subaccounts (today only HL_ALL): returns TIER_MULTI_CLASS_OVERALL_CAP[tier],
+          the cross-class overall cap. Per-class sub-caps are enforced separately at order entry
+          via get_portfolio_caps; this property exposes only the overall ceiling.
+        - Single-class subaccounts: returns TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class].
+        """
         if not self.asset_class:
             return 1
 
         from vali_objects.utils.leverage_utils import get_leverage_tier
         tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
-        return ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier].get(self.asset_class, 1.0)
+        if self.is_multi_class():
+            return ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
+        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
+
+    def is_multi_class(self) -> bool:
+        """True if this subaccount can hold positions across more than one TradePairCategory
+        (e.g. HL_ALL). Multi-class subaccounts are subject to per-class portfolio sub-caps plus
+        a tighter overall cap (see TIER_MULTI_CLASS_OVERALL_CAP)."""
+        return self.asset_class is not None and self.asset_class in MULTI_CLASS_CATEGORIES
 
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""
@@ -148,6 +167,7 @@ class MinerAccount:
         self.total_dividend_income = 0
         self.miner_bucket = None
         self.max_return = 1.0
+        self.capital_used_by_class = {}
 
 
     def to_dict(self, include_collateral_records: bool = False) -> dict:
@@ -173,7 +193,9 @@ class MinerAccount:
             'total_dividend_income': self.total_dividend_income,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
             'hl_address': self.hl_address,
-            'max_return': self.max_return
+            'max_return': self.max_return,
+            # JSON keys must be str; convert TradePairCategory enum to its .value
+            'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
         }
 
         if include_collateral_records:
@@ -359,6 +381,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket_str = last_record.get("miner_bucket")
                     hl_address = last_record.get("hl_address")
                     max_return = last_record.get("max_return", 1.0)
+                    capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
                 else:
                     total_realized_pnl = None
                     capital_used = None
@@ -368,6 +391,17 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket_str = None
                     hl_address = None
                     max_return = 1.0
+                    capital_used_by_class_raw = {}
+
+                # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
+                # Missing field (older checkpoint) → empty dict; will be lazy-backfilled by
+                # the next rebuild_account_state_from_positions call.
+                capital_used_by_class: Dict[TradePairCategory, float] = {}
+                for cat_str, amount in (capital_used_by_class_raw or {}).items():
+                    try:
+                        capital_used_by_class[TradePairCategory(cat_str)] = float(amount)
+                    except ValueError:
+                        bt.logging.warning(f"Unknown asset_class '{cat_str}' in capital_used_by_class for {hotkey}; skipping")
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -414,7 +448,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     collateral_records=collateral_records,
                     miner_bucket=miner_bucket,
                     hl_address=hl_address,
-                    max_return=max_return
+                    max_return=max_return,
+                    capital_used_by_class=capital_used_by_class,
                 )
 
             except Exception as e:
@@ -716,7 +751,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0) -> None:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
         """
         Process buy order. Check buying_power and track capital_used.
 
@@ -725,6 +760,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             order_value_usd: Order value in USD (full leveraged value)
             borrowed_amount: Amount borrowed (calculated by caller, equities only)
             fee_usd: Transaction fee in USD
+            trade_pair_category: Asset class of the order's trade pair. Required to maintain
+                capital_used_by_class. Optional for backward compat with callers that haven't
+                been updated yet; if None, capital_used_by_class is not updated for this order.
 
         Raises: SignalException if insufficient buying power
         """
@@ -744,6 +782,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             account.capital_used += order_value_usd
             account.total_fees_paid += fee_usd
+            if trade_pair_category is not None:
+                account.capital_used_by_class[trade_pair_category] = (
+                    account.capital_used_by_class.get(trade_pair_category, 0.0) + order_value_usd
+                )
 
             self._save_accounts_to_disk()
 
@@ -752,7 +794,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0) -> None:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -762,6 +804,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             realized_pnl: Realized PNL from this sale (raw, unmultiplied)
             loan_repaid: Amount of loan repaid (calculated by caller, equities only)
             fee_usd: Transaction fee in USD
+            trade_pair_category: Asset class of the position being closed. Required to maintain
+                capital_used_by_class. Optional for backward compat; if None, the per-class
+                bookkeeping is not adjusted for this close.
         """
         account = self.get_or_create(hotkey)
         entry_value_usd = abs(entry_value_usd)
@@ -772,6 +817,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.capital_used = max(0.0, account.capital_used - entry_value_usd)
             account.total_realized_pnl += realized_pnl
             account.total_fees_paid += fee_usd
+            if trade_pair_category is not None:
+                account.capital_used_by_class[trade_pair_category] = max(
+                    0.0, account.capital_used_by_class.get(trade_pair_category, 0.0) - entry_value_usd
+                )
 
             if account.asset_class == TradePairCategory.EQUITIES and loan_repaid > 0:
                 # Clamp to actual borrowed amount and repay
@@ -820,26 +869,32 @@ class MinerAccountManager(ValidatorBroadcastBase):
         Compute account state fields from a list of positions.
 
         Returns:
-            dict with total_realized_pnl, total_fees_paid, capital_used, total_borrowed_amount
+            dict with total_realized_pnl, total_fees_paid, capital_used, total_borrowed_amount,
+            and capital_used_by_class (per-asset-class breakdown of capital_used).
         """
         total_realized_pnl = 0.0
         total_fees_paid = 0.0
         capital_used = 0.0
         total_borrowed_amount = 0.0
+        capital_used_by_class: Dict[TradePairCategory, float] = {}
 
         for position in positions:
             total_realized_pnl += position.realized_pnl
             total_fees_paid += position.total_fees
 
             if not position.is_closed_position:
-                capital_used += abs(position.net_value)
+                position_value = abs(position.net_value)
+                capital_used += position_value
                 total_borrowed_amount += position.margin_loan
+                category = position.trade_pair.trade_pair_category
+                capital_used_by_class[category] = capital_used_by_class.get(category, 0.0) + position_value
 
         return {
             'total_realized_pnl': total_realized_pnl,
             'total_fees_paid': total_fees_paid,
             'capital_used': capital_used,
             'total_borrowed_amount': total_borrowed_amount,
+            'capital_used_by_class': capital_used_by_class,
         }
 
     def rebuild_account_state_from_positions(
@@ -877,6 +932,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.total_fees_paid = computed['total_fees_paid']
             account.capital_used = computed['capital_used']
             account.total_borrowed_amount = computed['total_borrowed_amount']
+            account.capital_used_by_class = computed['capital_used_by_class']
 
             self._save_accounts_to_disk()
 

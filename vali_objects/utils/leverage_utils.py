@@ -1,5 +1,16 @@
+from typing import Optional
+
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig  # noqa: E402
+from vali_objects.vali_config import InstrumentType, MULTI_CLASS_CATEGORIES, TradePair, TradePairCategory, ValiConfig  # noqa: E402
+
+
+# Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will
+# be deprecated as the HL-sourced commodity lineup (GOLDUSDC, SILVERUSDC, etc.) takes over
+# the commodities category; this block goes away with them.
+_LEGACY_XAU_XAG_TIER_POSITIONAL = {1: 1.0, 2: 1.0, 3: 1.5, 4: 2.0}
+
+# Reg T overnight margin caps equity SPOT at 2x regardless of subaccount tier.
+REG_T_OVERNIGHT_EQUITY_SPOT_CAP = 2.0
 
 
 def get_order_leverage_bounds() -> tuple[float, float]:
@@ -8,10 +19,6 @@ def get_order_leverage_bounds() -> tuple[float, float]:
 
 def get_position_leverage_bounds(trade_pair: TradePair) -> tuple[float, float]:
     return trade_pair.min_leverage, trade_pair.max_leverage
-
-
-def get_portfolio_leverage_cap(trade_pair_category: TradePairCategory) -> float:
-    return ValiConfig.PORTFOLIO_LEVERAGE_CAP[trade_pair_category]
 
 
 def get_leverage_tier(miner_bucket, account_size: float) -> int:
@@ -31,15 +38,55 @@ def get_leverage_tier(miner_bucket, account_size: float) -> int:
     return 2
 
 
-def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
-    """Return the positional leverage limit for a given tier and trade pair.
+def get_portfolio_caps(
+    subaccount_asset_class: Optional[TradePairCategory],
+    miner_bucket: MinerBucket,
+    account_size: float,
+    trade_pair_category: TradePairCategory,
+) -> tuple[float, float]:
+    """Return (per_class_cap_multiplier, overall_cap_multiplier) for subaccount portfolio caps.
 
-    XAUUSD/XAGUSD (and any future commodity using COMMODITIES_MIN_LEVERAGE) share
-    the FOREX portfolio cap but have their own 'COMMODITIES' positional column.
-    HL trade pairs use CRYPTO limits for now regardless of their category.
+    For multi-class subaccounts (see MULTI_CLASS_CATEGORIES, today only HL_ALL), the two
+    values differ:
+      - per_class_cap_multiplier limits exposure within `trade_pair_category`
+      - overall_cap_multiplier limits total subaccount exposure across all classes; this
+        is designed to be strictly tighter than the sum of per-class caps
+
+    For single-class subaccounts, both return values equal the same per-class multiplier so
+    the caller's overall-cap check is a no-op (it can apply the same two-gate logic blindly).
+
+    Multipliers are returned, not USD amounts; the caller multiplies by balance to get the cap.
+    Takes primitives (not a MinerAccount object) so it can be called from the order-entry path
+    where the account is materialized as an RPC dict, not the live MinerAccount.
     """
-    if trade_pair.src == TradePairSource.HYPERLIQUID:
-        return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][TradePairCategory.CRYPTO]
-    if trade_pair.min_leverage == ValiConfig.COMMODITIES_MIN_LEVERAGE:
-        return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier]['COMMODITIES']
-    return ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][trade_pair.trade_pair_category]
+    tier = get_leverage_tier(miner_bucket, account_size)
+
+    if subaccount_asset_class is not None and subaccount_asset_class in MULTI_CLASS_CATEGORIES:
+        per_class_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(trade_pair_category, 1.0)
+        overall_cap = ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
+    else:
+        single_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
+        per_class_cap = single_cap
+        overall_cap = single_cap
+
+    return per_class_cap, overall_cap
+
+
+def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
+    """Per-pair positional leverage for the subaccount path.
+
+    Linear scaling: pair.subaccount_tier_base_leverage * tier (tier ∈ {1, 2, 3, 4} maps to 1x-4x base).
+    If the tier curve ever needs to be non-linear, replace the multiplication with a
+    {tier: multiplier} dict in ValiConfig and update this helper.
+
+    Two exceptions:
+      - XAUUSD/XAGUSD bypass via the legacy mini-dict (non-linear, retained until external
+        deprecation of XAU/XAG completes).
+      - EQUITIES SPOT hard-capped at the Reg T overnight margin (2x).
+    """
+    if trade_pair.trade_pair_id in ("XAUUSD", "XAGUSD"):
+        return _LEGACY_XAU_XAG_TIER_POSITIONAL[tier]
+    scaled = trade_pair.subaccount_tier_base_leverage * tier
+    if trade_pair.trade_pair_category == TradePairCategory.EQUITIES and trade_pair.instrument_type == InstrumentType.SPOT:
+        scaled = min(scaled, REG_T_OVERNIGHT_EQUITY_SPOT_CAP)  # Reg T overnight equity-margin cap
+    return scaled

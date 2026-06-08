@@ -425,6 +425,9 @@ class EntityManager(ValidatorBroadcastBase):
                 f"${ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE}"
             )
 
+        current_balance = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
+        required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
+
         # Use per-entity lock: only operates on single entity
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
@@ -440,13 +443,11 @@ class EntityManager(ValidatorBroadcastBase):
             # Calculate required collateral: account_size / ENTITY_COST_PER_THETA (lower rate for <=10k accounts)
             cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
             required_theta = account_size / cpt if not admin else 0
-            current_balance = None  # dummy init for collateral tracking on miner
 
             # Verify collateral balance
             try:
                 if not self.running_unit_tests:
                     t0 = time.time()
-                    current_balance = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
 
                     if current_balance is None:
                         bt.logging.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
@@ -463,7 +464,6 @@ class EntityManager(ValidatorBroadcastBase):
                             f"to create new subaccount with ${account_size} account size"
                         )
 
-                    required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
                     if current_balance - required_theta < required_min_theta:
                         bt.logging.warning(
                             f"[ENTITY_MANAGER] {entity_hotkey} collateral after fee {current_balance - required_theta:.2f} < required {required_min_theta:.2f} theta"

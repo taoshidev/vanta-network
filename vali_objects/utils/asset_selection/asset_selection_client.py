@@ -90,29 +90,6 @@ class AssetSelectionClient(RPCClientBase):
         """
         return self._server.get_all_miner_selections_rpc()
 
-    def validate_order_asset_class(
-        self,
-        miner_hotkey: str,
-        trade_pair_category: TradePairCategory,
-        trade_pair_src: TradePairSource,
-        timestamp_ms: int = None,
-    ) -> bool:
-        """
-        Check if a miner is allowed to trade a specific asset class.
-
-        Args:
-            miner_hotkey: The miner's hotkey
-            trade_pair_category: The trade pair's category
-            trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
-            timestamp_ms: Optional timestamp in milliseconds
-
-        Returns:
-            True if the miner can trade this asset class, False otherwise
-        """
-        return self._server.validate_order_asset_class_rpc(
-            miner_hotkey, trade_pair_category, trade_pair_src, timestamp_ms
-        )
-
     def is_valid_asset_class(self, asset_class: str) -> bool:
         """
         Validate if the provided asset class is valid.
@@ -130,19 +107,21 @@ class AssetSelectionClient(RPCClientBase):
     def process_asset_selection_request(
         self,
         asset_selection: str,
-        miner: str
+        miner: str,
+        overwrite: bool = False
     ) -> Dict[str, str]:
         """
-        Process an asset selection request from a miner.
+        Process an asset selection request for a miner.
 
         Args:
-            asset_selection: The asset class the miner wants to select
+            asset_selection: The asset class to select
             miner: The miner's hotkey
+            overwrite: Overwrite existing selection if True, otherwise selection is immutable
 
         Returns:
             Dict containing success status and message
         """
-        return self._server.process_asset_selection_request_rpc(asset_selection, miner)
+        return self._server.process_asset_selection_request_rpc(asset_selection, miner, overwrite=overwrite)
 
     def delete_asset_selection(self, hotkey: str) -> Dict[str, str]:
         """
@@ -251,6 +230,19 @@ class AssetSelectionClient(RPCClientBase):
         """
         return self._server.get_asset_selections_rpc()
 
+    def refresh_local_cache(self) -> None:
+        """
+        Synchronously refresh the local cache from the server.
+
+        Normally the cache is refreshed by the background daemon (when
+        local_cache_refresh_period_ms is configured). This method forces an
+        immediate refresh, which is useful for callers/tests that need the cache
+        to reflect a just-applied selection change without waiting for the daemon.
+        """
+        new_cache = self.populate_cache()
+        with self._local_cache_lock:
+            self._local_cache = new_cache
+
     def get_selection_local_cache(self, hotkey: str) -> Optional[TradePairCategory]:
         """
         Get asset selection for a hotkey from the local cache.
@@ -272,7 +264,6 @@ class AssetSelectionClient(RPCClientBase):
         miner_hotkey: str,
         trade_pair_category: TradePairCategory,
         trade_pair_src: TradePairSource,
-        timestamp_ms: int = None,
     ) -> bool:
         """
         Check if a miner is allowed to trade a specific asset class using local cache.
@@ -284,7 +275,6 @@ class AssetSelectionClient(RPCClientBase):
             miner_hotkey: The miner's hotkey
             trade_pair_category: The trade pair's category
             trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
-            timestamp_ms: Optional timestamp in milliseconds
 
         Returns:
             True if the miner can trade this asset class, False otherwise
@@ -295,4 +285,6 @@ class AssetSelectionClient(RPCClientBase):
                 return False
             if selected_asset_class == TradePairCategory.HL_ALL:
                 return trade_pair_src == TradePairSource.HYPERLIQUID
+            if selected_asset_class == TradePairCategory.COMMODITIES:
+                return trade_pair_src == TradePairSource.HYPERLIQUID and trade_pair_category == TradePairCategory.COMMODITIES
             return trade_pair_src == TradePairSource.VANTA and selected_asset_class == trade_pair_category

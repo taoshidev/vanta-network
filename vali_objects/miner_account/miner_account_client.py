@@ -262,7 +262,7 @@ class MinerAccountClient(RPCClientBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0) -> None:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
         """
         Process buy order cash/margin.
 
@@ -271,12 +271,14 @@ class MinerAccountClient(RPCClientBase):
             order_value_usd: Order value in USD
             borrowed_amount: Amount borrowed (calculated by caller, equities only)
             fee_usd: Transaction fee in USD
+            trade_pair_category: Asset class of the order's trade pair, for capital_used_by_class
+                tracking. Optional for backward compat with callers that haven't been updated.
 
         Raises: SignalException if insufficient funds for margin
         """
-        self._server.process_order_buy(hotkey, order_value_usd, borrowed_amount, fee_usd)
+        self._server.process_order_buy(hotkey, order_value_usd, borrowed_amount, fee_usd, trade_pair_category)
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0) -> None:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -286,8 +288,10 @@ class MinerAccountClient(RPCClientBase):
             realized_pnl: Realized PNL from this sale
             loan_repaid: Amount of loan repaid (calculated by caller, equities only)
             fee_usd: Transaction fee in USD
+            trade_pair_category: Asset class of the position being closed, for capital_used_by_class
+                tracking. Optional for backward compat with callers that haven't been updated.
         """
-        self._server.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd)
+        self._server.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd, trade_pair_category)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""

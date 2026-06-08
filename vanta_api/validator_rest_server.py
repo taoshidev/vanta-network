@@ -36,7 +36,7 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY
+from vali_objects.vali_config import MULTI_CLASS_CATEGORIES, ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -257,6 +257,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/orders/<minerid>", methods=["GET"])(self.get_orders_for_miner)
         self.app.route("/trade-pairs", methods=["GET"])(self.get_allowed_trade_pairs)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
+        self.app.route("/asset-selection/update/", methods=["POST"])(self.update_asset_selection)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
 
@@ -1101,6 +1102,98 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error processing asset selection: {e}")
             return jsonify({'error': 'Internal server error processing asset selection'}), 500
 
+    def update_asset_selection(self):
+        """
+        Update (override) a miner's asset class selection. Requires tier 300 access.
+
+        Unlike the miner-facing POST /asset-selection endpoint (which is immutable once set),
+        this endpoint overwrites the existing selection. Supports a single hotkey or a bulk list
+        of hotkeys, all updated to the same new asset selection. The transaction is logged with
+        the old and new selection.
+
+        Example (single):
+        curl -X POST http://localhost:48888/asset-selection/update/ \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"asset_selection": "forex", "miner_hotkeys": "5GhDr..."}'
+
+        Example (bulk):
+        curl -X POST http://localhost:48888/asset-selection/update/ \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"asset_selection": "crypto", "miner_hotkeys": ["5GhDr...", "5FxY..."]}'
+        """
+        # Check API key authentication
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        # Check if API key has tier 300 access
+        if not self.can_access_tier(api_key, 300):
+            return jsonify({'error': 'Asset selection update endpoint requires tier 300 access'}), 403
+
+        # Check if asset selection client is available
+        if not self._asset_selection_client:
+            return jsonify({'error': 'Asset selection data not available'}), 503
+
+        try:
+            # Parse JSON request
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            # Validate asset_selection
+            asset_selection = data.get('asset_selection')
+            if not asset_selection or not isinstance(asset_selection, str):
+                return jsonify({'error': 'Missing or invalid required field: asset_selection (string)'}), 400
+
+            if not self._asset_selection_client.is_valid_asset_class(asset_selection):
+                return jsonify({'error': f'Invalid asset class: {asset_selection}'}), 400
+
+            # Accept a single hotkey or a list of hotkeys (also accept singular miner_hotkey)
+            raw_hotkeys = data.get('miner_hotkeys', data.get('miner_hotkey'))
+            if raw_hotkeys is None:
+                return jsonify({'error': 'Missing required field: miner_hotkeys (string or list of strings)'}), 400
+            if isinstance(raw_hotkeys, str):
+                hotkeys = [raw_hotkeys]
+            elif isinstance(raw_hotkeys, list) and all(isinstance(h, str) for h in raw_hotkeys):
+                hotkeys = raw_hotkeys
+            else:
+                return jsonify({'error': 'miner_hotkeys must be a string or a list of strings'}), 400
+            if not hotkeys:
+                return jsonify({'error': 'miner_hotkeys list is empty'}), 400
+
+            # Update each hotkey to the same new asset selection
+            results = {}
+            for hotkey in hotkeys:
+                results[hotkey] = self._asset_selection_client.process_asset_selection_request(
+                    asset_selection=asset_selection,
+                    miner=hotkey,
+                    overwrite=True
+                )
+
+            total_updated = sum(1 for r in results.values() if r.get('successfully_processed'))
+            bt.logging.info(
+                f"[REST] Asset selection update to '{asset_selection}' for {len(hotkeys)} hotkey(s); "
+                f"{total_updated} succeeded"
+            )
+
+            return jsonify({
+                'status': 'success',
+                'asset_selection': asset_selection,
+                'results': results,
+                'total_updated': total_updated,
+                'total_requested': len(hotkeys),
+                'timestamp': TimeUtil.now_in_millis()
+            })
+
+        except Exception as e:
+            bt.logging.error(f"Error processing asset selection update: {e}")
+            return jsonify({'error': 'Internal server error processing asset selection update'}), 500
+
     def get_miner_selections(self):
         """Get all miner asset selection data."""
         try:
@@ -1317,24 +1410,37 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 account_size = original_account.get('account_size', ValiConfig.MIN_CAPITAL)
                 rebuilt_account['balance'] = account_size + computed['total_realized_pnl'] - computed['total_fees_paid']
 
-                # Recompute buying_power = balance * multiplier - capital_used
+                # Recompute buying_power using the same multiplier logic MinerAccount.multiplier
+                # applies (asset_class-keyed via TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS, with
+                # multi-class subaccounts going through TIER_MULTI_CLASS_OVERALL_CAP). This keeps
+                # the preview number equal to what MinerAccount.buying_power would report on the
+                # actual rebuilt state — no SPOT/PERP or per-pair-table assumption. EQUITIES
+                # accounts follow the margin-loan-adjusted formula in MinerAccount.buying_power.
                 asset_class_str = original_account.get('asset_class')
                 bucket_str = original_account.get('miner_bucket')
                 bucket = MinerBucket(bucket_str) if bucket_str else None
-                _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
                 if asset_class_str:
                     try:
                         asset_class = TradePairCategory(asset_class_str)
-                        if bucket in _subaccount_buckets:
-                            tier = get_leverage_tier(bucket, account_size)
-                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier].get(asset_class, 1.0)
+                        tier = get_leverage_tier(bucket, account_size)
+                        if asset_class in MULTI_CLASS_CATEGORIES:
+                            multiplier = ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
                         else:
-                            multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(asset_class, 1.0)
+                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
                     except ValueError:
+                        asset_class = None
                         multiplier = 1.0
                 else:
+                    asset_class = None
                     multiplier = 1.0
-                rebuilt_account['buying_power'] = rebuilt_account['balance'] * multiplier - computed['capital_used']
+
+                if asset_class == TradePairCategory.EQUITIES:
+                    rebuilt_account['buying_power'] = (
+                        rebuilt_account['balance']
+                        - (computed['capital_used'] - computed['total_borrowed_amount'])
+                    ) * multiplier
+                else:
+                    rebuilt_account['buying_power'] = rebuilt_account['balance'] * multiplier - computed['capital_used']
             else:
                 # Actual rebuild - persists to disk, preserving bucket and max_return
                 self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
@@ -2057,28 +2163,45 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             category = TradePairCategory(asset_class)
         except ValueError:
             category = TradePairCategory.CRYPTO
-        # todo: hl_all subaccounts use crypto leverage tiers for now
-        if category == TradePairCategory.HL_ALL:
-            category = TradePairCategory.CRYPTO
 
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
         tier = get_leverage_tier(_bucket, account_size)
+        # TIER_POSITIONAL_LEVERAGE is a per-category stand-in for the per-pair limit the order
+        # path actually enforces (pair.subaccount_tier_base_leverage × tier). It only stays
+        # accurate while every pair in a category shares one base. TODO: once per-pair bases
+        # diverge within a category, switch this to a per-pair lookup (or report a dict /
+        # canonical pair), otherwise max_position_per_pair_usd will misreport for some pairs.
         max_position_per_pair_usd = account_size * ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][category]
-        max_portfolio_usd = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE[tier][category]
 
-        response_body = json.dumps(
-            {
-                'status': 'success',
-                'hl_address': hl_address,
-                'account_size': account_size,
-                'max_position_per_pair_usd': max_position_per_pair_usd,
-                'max_portfolio_usd': max_portfolio_usd,
-                'in_challenge_period': in_challenge,
-                'timestamp': TimeUtil.now_in_millis(),
-            },
-            cls=CustomEncoder,
-        )
+        response_payload = {
+            'status': 'success',
+            'hl_address': hl_address,
+            'account_size': account_size,
+            'max_position_per_pair_usd': max_position_per_pair_usd,
+            'in_challenge_period': in_challenge,
+            'timestamp': TimeUtil.now_in_millis(),
+        }
+
+        if category in MULTI_CLASS_CATEGORIES:
+            # Multi-class subaccount (today only HL_ALL): expose the cross-class overall cap
+            # plus a per-asset-class breakdown. The overall cap is strictly tighter than the
+            # sum of per-class caps, so traders cannot max out every class simultaneously.
+            response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
+            response_payload['max_asset_class_usd'] = {
+                c.value: account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][c]
+                for c in (
+                    TradePairCategory.CRYPTO,
+                    TradePairCategory.FOREX,
+                    TradePairCategory.EQUITIES,
+                    TradePairCategory.INDICES,
+                    TradePairCategory.COMMODITIES,
+                )
+            }
+        else:
+            response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][category]
+
+        response_body = json.dumps(response_payload, cls=CustomEncoder)
         return Response(response_body, content_type='application/json'), 200
 
     def get_hl_leaderboard(self):

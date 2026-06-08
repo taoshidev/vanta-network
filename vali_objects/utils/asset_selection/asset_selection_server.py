@@ -159,29 +159,6 @@ class AssetSelectionServer(RPCServerBase):
         """
         return self._manager.get_all_miner_selections()
 
-    def validate_order_asset_class_rpc(
-        self,
-        miner_hotkey: str,
-        trade_pair_category: TradePairCategory,
-        trade_pair_src: TradePairSource,
-        timestamp_ms: int = None,
-    ) -> bool:
-        """
-        Check if a miner is allowed to trade a specific asset class (RPC method).
-
-        Args:
-            miner_hotkey: The miner's hotkey
-            trade_pair_category: The trade pair's category
-            trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
-            timestamp_ms: Optional timestamp in milliseconds
-
-        Returns:
-            True if the miner can trade this asset class, False otherwise
-        """
-        return self._manager.validate_order_asset_class(
-            miner_hotkey, trade_pair_category, trade_pair_src, timestamp_ms
-        )
-
     def is_valid_asset_class_rpc(self, asset_class: str) -> bool:
         """
         Validate if the provided asset class is valid (RPC method).
@@ -197,19 +174,21 @@ class AssetSelectionServer(RPCServerBase):
     def process_asset_selection_request_rpc(
         self,
         asset_selection: str,
-        miner: str
+        miner: str,
+        overwrite: bool = False
     ) -> Dict[str, str]:
         """
-        Process an asset selection request from a miner (RPC method).
+        Process an asset selection request for a miner (RPC method).
 
         Args:
-            asset_selection: The asset class the miner wants to select
+            asset_selection: The asset class to select
             miner: The miner's hotkey
+            overwrite: Overwrite existing selection if True, otherwise selection is immutable
 
         Returns:
             Dict containing success status and message
         """
-        result = self._manager.process_asset_selection_request(asset_selection, miner)
+        result = self._manager.process_asset_selection_request(asset_selection, miner, overwrite=overwrite)
 
         # If successful, broadcast to validators (delegate to manager)
         if result.get('successfully_processed') and 'asset_class' in result:
@@ -326,23 +305,13 @@ class AssetSelectionServer(RPCServerBase):
         """Get all miner selections (forward-compatible alias)."""
         return self.get_all_miner_selections_rpc()
 
-    def validate_order_asset_class(
-        self,
-        miner_hotkey: str,
-        trade_pair_category: TradePairCategory,
-        trade_pair_src: TradePairSource,
-        timestamp_ms: int = None,
-    ) -> bool:
-        """Validate order asset class (forward-compatible alias)."""
-        return self.validate_order_asset_class_rpc(miner_hotkey, trade_pair_category, trade_pair_src, timestamp_ms)
-
     def is_valid_asset_class(self, asset_class: str) -> bool:
         """Validate asset class (forward-compatible alias)."""
         return self.is_valid_asset_class_rpc(asset_class)
 
-    def process_asset_selection_request(self, asset_selection: str, miner: str) -> Dict[str, str]:
+    def process_asset_selection_request(self, asset_selection: str, miner: str, overwrite: bool = False) -> Dict[str, str]:
         """Process asset selection request (forward-compatible alias)."""
-        return self.process_asset_selection_request_rpc(asset_selection, miner)
+        return self.process_asset_selection_request_rpc(asset_selection, miner, overwrite=overwrite)
 
     def delete_asset_selection(self, hotkey: str) -> Dict[str, str]:
         """Delete asset selection (forward-compatible alias)."""

@@ -854,8 +854,8 @@ class TestEquities(TestBase):
 
     # ==================== SUBACCOUNT_CHALLENGE Buying Power Tests ====================
 
-    EQUITIES_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE[2][TradePairCategory.EQUITIES]   # 1.5 (Tier 2, <$200K)
-    REDUCED_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE[1][TradePairCategory.EQUITIES]    # 1.0 (Tier 1, challenge)
+    EQUITIES_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][TradePairCategory.EQUITIES]   # 1.5 (Tier 2, <$200K)
+    REDUCED_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][TradePairCategory.EQUITIES]    # 1.0 (Tier 1, challenge)
 
     def test_subaccount_challenge_buying_power_reduced(self):
         """

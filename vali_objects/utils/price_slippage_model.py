@@ -79,19 +79,36 @@ class PriceSlippageModel:
         if cls.is_backtesting:
             cls.refresh_features_daily(order.processed_ms, write_to_disk=False)
 
+        # Outlier-clamp policy:
+        #   * Local fitted models (equities, forex, crypto V2 fallback) clamp to [0, 3%]
+        #   * Hyperliquid L2 orderbook simulation is a direct read of real execution cost
+        #     and on thin books can legitimately exceed 3%; it must NOT be clamped or we
+        #     silently understate slippage on the affected fills.
+        # Clamps live inside each branch / inside calc_slippage_crypto, NOT here at the top.
         if trade_pair.is_equities:
             slippage_percentage = cls.calc_slippage_equities(bid, ask, order)
-        elif trade_pair.is_forex:
+            return float(np.clip(slippage_percentage, 0.0, 0.03))
+        if trade_pair.is_forex:
             slippage_percentage = cls.calc_slippage_forex(bid, ask, order)
-        elif trade_pair.is_crypto:
-            slippage_percentage = cls.calc_slippage_crypto(order)
-        elif trade_pair.is_commodities or trade_pair.is_indices:
-            # HL commodity/index slippage is pre-computed from the L2 orderbook and stored on the order.
-            # This branch is a fallback (e.g. limit order fills) — a dedicated model should be added here.
-            slippage_percentage = 0.0
-        else:
-            raise ValueError(f"Invalid trade pair {trade_pair.trade_pair_id} to calculate slippage")
-        return float(np.clip(slippage_percentage, 0.0, 0.03))
+            return float(np.clip(slippage_percentage, 0.0, 0.03))
+        if trade_pair.is_crypto:
+            # calc_slippage_crypto returns unclamped L2-simulation slippage when available,
+            # and self-clamps its local-model fallback. No outer clip.
+            return cls.calc_slippage_crypto(order)
+        if trade_pair.is_commodities:
+            # HL commodity slippage is normally pre-computed from the L2 orderbook and stored
+            # on the order before calculate_slippage runs. When it's missing (e.g. limit fills
+            # or signals without a pre-computed value), measure it directly from the HL L2
+            # orderbook like crypto. Returned unclamped — real execution cost can exceed 3%.
+            hl_slippage = cls._simulate_slippage_hl(order)
+            if hl_slippage is not None:
+                return hl_slippage
+            return 0.0
+        if trade_pair.is_indices:
+            # HL index slippage is pre-computed from the L2 orderbook and stored on the order
+            # before calculate_slippage runs. No dedicated fallback model yet.
+            return 0.0
+        raise ValueError(f"Invalid trade pair {trade_pair.trade_pair_id} to calculate slippage")
 
     @classmethod
     def _simulate_slippage_hl(cls, order: Order) -> float | None:
@@ -213,13 +230,20 @@ class PriceSlippageModel:
     def calc_slippage_crypto(cls, order:Order) -> float:
         """
         slippage values for crypto
+
+        Returns unclamped slippage from Hyperliquid L2 orderbook simulation when available
+        (real execution cost can legitimately exceed the 3% local-model clamp on thin books).
+        Falls back to a self-clamped local fitted model otherwise.
         """
-        # Try Hyperliquid L2 orderbook simulation first
+        # Try Hyperliquid L2 orderbook simulation first — direct measurement of execution
+        # cost, returned unclamped.
         if order.processed_ms > HL_CRYPTO_TIME_MS:
             hl_slippage = cls._simulate_slippage_hl(order)
             if hl_slippage is not None:
                 return hl_slippage
 
+        # Local fitted model fallback — clamped to [0, 3%] before returning so the outer
+        # dispatch (which no longer clamps the crypto path) doesn't lose the outlier guard.
         if order.processed_ms > SLIPPAGE_V2_TIME_MS:
             side = "long" if order.leverage > 0 else "short"
             size = abs(order.value)
@@ -244,8 +268,8 @@ class PriceSlippageModel:
                 low, high = bucket[1:-1].split(",")
                 last_slippage = slippage
                 if int(low) <= size < int(high):
-                    return last_slippage * 3     # conservative 3x multiplier on slippage
-            return last_slippage * 3
+                    return float(np.clip(last_slippage * 3, 0.0, 0.03))     # conservative 3x multiplier on slippage
+            return float(np.clip(last_slippage * 3, 0.0, 0.03))
 
         trade_pair = order.trade_pair
         if trade_pair in [TradePair.BTCUSD, TradePair.ETHUSD]:

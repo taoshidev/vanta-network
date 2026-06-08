@@ -24,7 +24,6 @@ from typing import Tuple
 from setproctitle import setproctitle
 from neurons.validator_base import ValidatorBase
 from template.protocol import SendSignal
-from vali_objects.utils.asset_selection.asset_selection_manager import ASSET_CLASS_SELECTION_TIME_MS
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.data_sync.auto_sync import PositionSyncer
 from vali_objects.data_sync.order_sync_state import OrderSyncState
@@ -514,21 +513,14 @@ class Validator(ValidatorBase):
             synapse.error_message = msg
 
         elif signal and tp and not synapse.error_message:
-            # Fast local validation using background-refreshed cache (no RPC call, no refresh penalty!)
+            # Fast local validation against the AssetSelectionClient's background-refreshed
+            # cache (no RPC call, no refresh penalty). selected_asset is read separately
+            # only for the error message.
             asset_validate_start = time.perf_counter()
-            # Check timestamp and validate locally using cached data
-            if now_ms >= ASSET_CLASS_SELECTION_TIME_MS:
-                # Fast local lookup from AssetSelectionClient cache
-                selected_asset = self.asset_selection_client.get_selection_local_cache(sender_hotkey)
-                if selected_asset is None:
-                    is_valid_asset = False
-                elif selected_asset == TradePairCategory.HL_ALL:
-                    is_valid_asset = tp.src == TradePairSource.HYPERLIQUID
-                else:
-                    is_valid_asset = tp.src == TradePairSource.VANTA and selected_asset == tp.trade_pair_category
-            else:
-                is_valid_asset = True  # Pre-cutoff, all assets allowed
-                selected_asset = "unknown (pre-cutoff)"
+            selected_asset = self.asset_selection_client.get_selection_local_cache(sender_hotkey)
+            is_valid_asset = self.asset_selection_client.validate_order_asset_class_local_cache(
+                sender_hotkey, tp.trade_pair_category, tp.src
+            )
 
             asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
             bt.logging.info(f"[FAIL_EARLY_DEBUG] validate_order_asset_class_local_cache took {asset_validate_ms:.2f}ms")
