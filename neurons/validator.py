@@ -518,9 +518,9 @@ class Validator(ValidatorBase):
             # only for the error message.
             asset_validate_start = time.perf_counter()
             selected_asset = self.asset_selection_client.get_selection_local_cache(sender_hotkey)
-            is_valid_asset = self.asset_selection_client.validate_order_asset_class_local_cache(
-                sender_hotkey, tp.trade_pair_category, tp.src
-            )
+            if not selected_asset:
+                msg = f"miner [{sender_hotkey}] must select an asset class. View https://github.com/taoshidev/vanta-cli for further instructions on how to select your asset class"
+            is_valid_asset = self.asset_selection_client.validate_order_asset_class_local_cache(selected_asset, tp)
 
             asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
             bt.logging.info(f"[FAIL_EARLY_DEBUG] validate_order_asset_class_local_cache took {asset_validate_ms:.2f}ms")
@@ -528,8 +528,7 @@ class Validator(ValidatorBase):
             if not is_valid_asset:
                 msg = (
                     f"miner [{sender_hotkey}] cannot trade asset class [{tp.trade_pair_category.value}]. "
-                    f"Selected asset class: [{selected_asset or 'unknown'}]. Only trade pairs from your selected asset class are allowed. "
-                    f"See https://docs.taoshi.io/ptn/ptncli#miner-operations for more information."
+                    f"Selected asset class: [{selected_asset or 'unknown'}]. Only trade pairs from your selected asset class are allowed."
                 )
                 synapse.error_message = msg
             else:

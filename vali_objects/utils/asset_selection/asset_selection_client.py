@@ -22,7 +22,7 @@ Usage:
 from typing import Dict, Optional
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.vali_config import TradePairCategory, TradePairSource, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig, RPCConnectionMode
 import template.protocol
 
 
@@ -261,9 +261,8 @@ class AssetSelectionClient(RPCClientBase):
 
     def validate_order_asset_class_local_cache(
         self,
-        miner_hotkey: str,
-        trade_pair_category: TradePairCategory,
-        trade_pair_src: TradePairSource,
+        asset_class: TradePairCategory,
+        trade_pair: TradePair,
     ) -> bool:
         """
         Check if a miner is allowed to trade a specific asset class using local cache.
@@ -279,12 +278,14 @@ class AssetSelectionClient(RPCClientBase):
         Returns:
             True if the miner can trade this asset class, False otherwise
         """
-        with self._local_cache_lock:
-            selected_asset_class = self._local_cache.get(miner_hotkey)
-            if selected_asset_class is None:
-                return False
-            if selected_asset_class == TradePairCategory.HL_ALL:
-                return trade_pair_src == TradePairSource.HYPERLIQUID
-            if selected_asset_class == TradePairCategory.COMMODITIES:
-                return trade_pair_src == TradePairSource.HYPERLIQUID and trade_pair_category == TradePairCategory.COMMODITIES
-            return trade_pair_src == TradePairSource.VANTA and selected_asset_class == trade_pair_category
+        category = trade_pair.trade_pair_category
+        src = trade_pair.src
+
+        if asset_class == TradePairCategory.HL_ALL:
+            is_supported_forex = category == TradePairCategory.FOREX and trade_pair not in {TradePair.XAUUSD, TradePair.XAGUSD}
+            return src == TradePairSource.HYPERLIQUID and is_supported_forex
+
+        if asset_class == TradePairCategory.COMMODITIES:
+            return src == TradePairSource.HYPERLIQUID and category == TradePairCategory.COMMODITIES
+
+        return src == TradePairSource.VANTA and asset_class == category
