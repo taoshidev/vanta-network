@@ -275,6 +275,12 @@ class CoreOutputsManager:
         except Exception as e:
             bt.logging.warning(f"Could not fetch entity data: {e}")
 
+        frozen_perf_ledgers = {}
+        try:
+            frozen_perf_ledgers = self._perf_ledger_client.get_frozen_ledgers()
+        except Exception as e:
+            bt.logging.warning(f"Could not fetch frozen perf ledgers: {e}")
+
         final_dict = {
             'version': ValiConfig.VERSION,
             'created_timestamp_ms': time_now,
@@ -287,6 +293,7 @@ class CoreOutputsManager:
             'oldest_order_processed_ms': oldest_order_processed_ms,
             'positions': ord_dict_hotkey_position_map,
             'perf_ledgers': perf_ledgers,
+            'frozen_perf_ledgers': frozen_perf_ledgers,
             'asset_selections': asset_selections,
             'limit_orders': limit_orders_dict,
             'archived_positions': archived_positions or {}

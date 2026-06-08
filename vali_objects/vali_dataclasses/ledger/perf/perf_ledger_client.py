@@ -71,6 +71,15 @@ class PerfLedgerClient(RPCClientBase):
         """
         return self._server.get_frozen_ledgers_rpc(from_disk=from_disk)
 
+    def sync_frozen_ledgers(self, frozen_ledgers_data: dict) -> None:
+        """
+        Sync frozen performance ledgers from auto sync checkpoint data.
+
+        Args:
+            frozen_ledgers_data: Dict mapping hotkey to frozen perf ledger dict
+        """
+        self._server.sync_frozen_ledgers_rpc(frozen_ledgers_data)
+
     def generate_perf_ledgers_for_analysis(self, hotkey_to_positions, t_ms: int = None) -> dict:
         """Generate performance ledgers for analysis."""
         return self._server.generate_perf_ledgers_for_analysis_rpc(hotkey_to_positions, t_ms=t_ms)
