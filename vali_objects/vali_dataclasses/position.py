@@ -89,28 +89,6 @@ class Position(BaseModel):
         values['trade_pair'] = trade_pair
         return values
 
-    def get_cumulative_leverage(self) -> float:
-        current_leverage = 0.0
-        cumulative_leverage = 0.0
-        for order in self.orders:
-            # Explicit flat
-            if order.order_type == OrderType.FLAT:
-                cumulative_leverage += abs(current_leverage)
-                break
-
-            prev_leverage = current_leverage
-            current_leverage += order.leverage
-
-            # Implicit FLAT
-            if current_leverage == 0.0 or self._leverage_flipped(prev_leverage, current_leverage):
-                cumulative_leverage += abs(prev_leverage)
-                break
-            else:
-                cumulative_leverage += abs(current_leverage - prev_leverage)
-
-        return cumulative_leverage
-
-
     def refresh_carry_fee_usd(self, current_time_ms: int, hl_funding_rates: Optional[dict] = None) -> float:
         if self.is_closed_position:
             current_time_ms = self.close_ms
@@ -396,9 +374,6 @@ class Position(BaseModel):
     def _position_log(message):
         bt.logging.trace("Position Notification - " + message)
 
-    def get_net_leverage(self):
-        return self.net_leverage
-
     def rebuild_position_with_updated_orders(self, price_fetcher_client):
         self.current_return = 1.0
         self.close_ms = None
@@ -499,94 +474,6 @@ class Position(BaseModel):
             return 0
         net_return = 1 + gain
         return net_return
-
-    def leverage_at_time(self, target_ms: int) -> float:
-        """Return the absolute net leverage at a specific timestamp.
-
-        Walks orders up to target_ms and returns the cumulative absolute leverage,
-        handling FLAT orders and leverage flips the same way as max_leverage_seen.
-        """
-        current_leverage = 0.0
-        for order in self.orders:
-            if order.processed_ms > target_ms:
-                break
-            prev_leverage = current_leverage
-            current_leverage += order.leverage
-            if order.order_type == OrderType.FLAT or self._leverage_flipped(prev_leverage, current_leverage):
-                current_leverage = 0.0
-        return abs(current_leverage)
-
-    def _leverage_flipped(self, prev_leverage, cur_leverage):
-        return prev_leverage * cur_leverage < 0 or prev_leverage != 0 and cur_leverage == 0
-
-    def max_leverage_seen_in_interval(self, start_ms: int, end_ms: int) -> float:
-        #print(f"Seeking max leverage between {TimeUtil.millis_to_formatted_date_str(start_ms)} and {TimeUtil.millis_to_formatted_date_str(end_ms)}")
-        #for x in self.orders:
-        #    print(f"    Found order at time {TimeUtil.millis_to_formatted_date_str(x.processed_ms)}")
-        """
-        Returns the max leverage seen in the interval [start_ms, end_ms] (inclusive). If no orders are in the interval,
-        raise an exception
-        """
-        # check valid bounds and throw ValueError if bad data
-        if start_ms > end_ms:
-            raise ValueError(f"start_ms [{start_ms}] is greater than end_ms [{end_ms}]")
-        if end_ms < self.open_ms:
-            raise ValueError(f"end_ms [{end_ms}] is less than open_ms [{self.open_ms}]")
-        if end_ms < 0 or start_ms < 0:
-            raise ValueError(f"start_ms [{start_ms}] or end_ms [{end_ms}] is less than 0")
-        if len(self.orders) == 0:
-            raise ValueError("No orders in position")
-        if self.orders[0].processed_ms > end_ms:
-            raise ValueError(f"First order processed_ms [{self.orders[0].processed_ms}] is greater than end_ms [{end_ms}]")
-        if self.is_closed_position and start_ms > self.close_ms:
-            raise ValueError(f"Position closed before interval start_ms [{start_ms}]")
-
-
-        interval_data = {'start_ms': start_ms, 'end_ms': end_ms, 'max_leverage': -float('inf')}
-        self.max_leverage_seen(interval_data=interval_data)
-
-        if interval_data['max_leverage'] == -float('inf'):
-            raise ValueError('Unable to find max leverage in interval')
-        assert interval_data['max_leverage'] >= 0, (interval_data, self.orders, str(self))
-        return interval_data['max_leverage']
-
-    def max_leverage_seen(self, interval_data=None):
-        max_leverage = 0
-        current_leverage = 0
-        stop_signaled = False
-        for idx, order in enumerate(self.orders):
-            if stop_signaled:
-                break
-
-            prev_leverage = current_leverage
-            current_leverage += order.leverage
-            # Explicit flat / implicit FLAT
-            if order.order_type == OrderType.FLAT or self._leverage_flipped(prev_leverage, current_leverage):
-                stop_signaled = True
-                current_leverage = 0
-
-            if abs(current_leverage) > max_leverage:
-                max_leverage = abs(current_leverage)
-
-            if interval_data:
-                if order.processed_ms < interval_data['start_ms']:
-                    pass
-                elif order.processed_ms == interval_data['start_ms']:
-                    interval_data['max_leverage'] = max(abs(current_leverage), interval_data['max_leverage'])
-                elif order.processed_ms <= interval_data['end_ms']:
-                    interval_data['max_leverage'] = max(abs(current_leverage), interval_data['max_leverage'], abs(prev_leverage))
-
-                # An order passes the interval for the first time
-                elif order.processed_ms > interval_data['end_ms']:
-                    interval_data['max_leverage'] = max(abs(prev_leverage), interval_data['max_leverage'])
-                    stop_signaled = True
-
-        if interval_data:
-            # The position's last order is way before the interval start. Use the last known position leverage
-            if interval_data['max_leverage'] == -float('inf'):
-                interval_data['max_leverage'] = abs(current_leverage)
-
-        return max_leverage
 
     def _handle_liquidation(self, time_ms, price_fetcher_client):
         self._position_log("position liquidated. Trade pair: " + str(self.trade_pair.trade_pair_id))

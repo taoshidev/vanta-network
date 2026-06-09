@@ -655,7 +655,7 @@ class PositionManager:
 
         portfolio_leverage = 0.0
         for position in self.hotkey_to_open_positions[hotkey].values():
-            portfolio_leverage += abs(position.get_net_leverage())
+            portfolio_leverage += abs(position.net_leverage)
 
         return portfolio_leverage
 
