@@ -265,25 +265,27 @@ class AssetSelectionClient(RPCClientBase):
         trade_pair: TradePair,
     ) -> bool:
         """
-        Check if a miner is allowed to trade a specific asset class using local cache.
-
-        This is a fast local lookup without any RPC call.
-        Requires local_cache_refresh_period_ms to be configured.
+        Check if a trade pair is allowed for a specific asset class.
 
         Args:
-            miner_hotkey: The miner's hotkey
-            trade_pair_category: The trade pair's category
-            trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
+            asset_class: The selected asset class category
+            trade_pair: The TradePair object to validate
 
         Returns:
-            True if the miner can trade this asset class, False otherwise
+            True if the trade pair can be traded under this asset class, False otherwise
+
+        Notes:
+            - HL_ALL allows Hyperliquid pairs plus forex (except XAUUSD/XAGUSD)
+            - COMMODITIES requires Hyperliquid source and commodity category
+            - Other classes require Vanta source and matching category
         """
         category = trade_pair.trade_pair_category
         src = trade_pair.src
 
         if asset_class == TradePairCategory.HL_ALL:
-            is_supported_forex = category == TradePairCategory.FOREX and trade_pair not in {TradePair.XAUUSD, TradePair.XAGUSD}
-            return src == TradePairSource.HYPERLIQUID and is_supported_forex
+            EXCLUDED_FOREX_PAIRS = {TradePair.XAUUSD, TradePair.XAGUSD}
+            is_supported_forex = category == TradePairCategory.FOREX and trade_pair not in EXCLUDED_FOREX_PAIRS
+            return src == TradePairSource.HYPERLIQUID or is_supported_forex
 
         if asset_class == TradePairCategory.COMMODITIES:
             return src == TradePairSource.HYPERLIQUID and category == TradePairCategory.COMMODITIES
