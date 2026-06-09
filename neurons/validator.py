@@ -518,20 +518,22 @@ class Validator(ValidatorBase):
             # only for the error message.
             asset_validate_start = time.perf_counter()
             selected_asset = self.asset_selection_client.get_selection_local_cache(sender_hotkey)
-            is_valid_asset = self.asset_selection_client.validate_order_asset_class_local_cache(
-                sender_hotkey, tp.trade_pair_category, tp.src
-            )
+            if not selected_asset:
+                msg = (f"No asset class selected for hotkey [{sender_hotkey}]. "
+                       f"Select an asset class using the Vanta CLI before placing orders: "
+                       f"https://github.com/taoshidev/vanta-cli")
+                synapse.error_message = msg
 
-            asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
-            bt.logging.info(f"[FAIL_EARLY_DEBUG] validate_order_asset_class_local_cache took {asset_validate_ms:.2f}ms")
+            elif not self.asset_selection_client.validate_order_asset_class_local_cache(selected_asset, tp):
+                asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
+                bt.logging.info(f"[FAIL_EARLY_DEBUG] validate_order_asset_class_local_cache took {asset_validate_ms:.2f}ms")
 
-            if not is_valid_asset:
                 msg = (
-                    f"miner [{sender_hotkey}] cannot trade asset class [{tp.trade_pair_category.value}]. "
-                    f"Selected asset class: [{selected_asset or 'unknown'}]. Only trade pairs from your selected asset class are allowed. "
-                    f"See https://docs.taoshi.io/ptn/ptncli#miner-operations for more information."
+                    f"Selected asset class [{selected_asset}] cannot submit orders for trade pair [{tp.trade_pair}]. "
+                    f"You can only trade pairs within your selected asset class."
                 )
                 synapse.error_message = msg
+
             else:
                 is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
                 execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())

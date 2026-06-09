@@ -22,7 +22,7 @@ Usage:
 from typing import Dict, Optional
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.vali_config import TradePairCategory, TradePairSource, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig, RPCConnectionMode
 import template.protocol
 
 
@@ -261,30 +261,33 @@ class AssetSelectionClient(RPCClientBase):
 
     def validate_order_asset_class_local_cache(
         self,
-        miner_hotkey: str,
-        trade_pair_category: TradePairCategory,
-        trade_pair_src: TradePairSource,
+        asset_class: TradePairCategory,
+        trade_pair: TradePair,
     ) -> bool:
         """
-        Check if a miner is allowed to trade a specific asset class using local cache.
-
-        This is a fast local lookup without any RPC call.
-        Requires local_cache_refresh_period_ms to be configured.
+        Check if a trade pair is allowed for a specific asset class.
 
         Args:
-            miner_hotkey: The miner's hotkey
-            trade_pair_category: The trade pair's category
-            trade_pair_src: The trade pair's source (VANTA or HYPERLIQUID)
+            asset_class: The selected asset class category
+            trade_pair: The TradePair object to validate
 
         Returns:
-            True if the miner can trade this asset class, False otherwise
+            True if the trade pair can be traded under this asset class, False otherwise
+
+        Notes:
+            - HL_ALL allows Hyperliquid pairs plus forex (except XAUUSD/XAGUSD)
+            - COMMODITIES requires Hyperliquid source and commodity category
+            - Other classes require Vanta source and matching category
         """
-        with self._local_cache_lock:
-            selected_asset_class = self._local_cache.get(miner_hotkey)
-            if selected_asset_class is None:
-                return False
-            if selected_asset_class == TradePairCategory.HL_ALL:
-                return trade_pair_src == TradePairSource.HYPERLIQUID
-            if selected_asset_class == TradePairCategory.COMMODITIES:
-                return trade_pair_src == TradePairSource.HYPERLIQUID and trade_pair_category == TradePairCategory.COMMODITIES
-            return trade_pair_src == TradePairSource.VANTA and selected_asset_class == trade_pair_category
+        category = trade_pair.trade_pair_category
+        src = trade_pair.src
+
+        if asset_class == TradePairCategory.HL_ALL:
+            EXCLUDED_FOREX_PAIRS = {TradePair.XAUUSD, TradePair.XAGUSD}
+            is_supported_forex = category == TradePairCategory.FOREX and trade_pair not in EXCLUDED_FOREX_PAIRS
+            return src == TradePairSource.HYPERLIQUID or is_supported_forex
+
+        if asset_class == TradePairCategory.COMMODITIES:
+            return src == TradePairSource.HYPERLIQUID and category == TradePairCategory.COMMODITIES
+
+        return src == TradePairSource.VANTA and asset_class == category
