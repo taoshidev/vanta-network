@@ -475,14 +475,6 @@ class Position(BaseModel):
         net_return = 1 + gain
         return net_return
 
-    def _handle_liquidation(self, time_ms, price_fetcher_client):
-        self._position_log("position liquidated. Trade pair: " + str(self.trade_pair.trade_pair_id))
-        if self.is_closed_position:
-            return
-        else:
-            self.orders.append(self.generate_fake_flat_order(self, time_ms, price_fetcher_client))
-            self.close_out_position(time_ms)
-
     @staticmethod
     def generate_fake_flat_order(position, elimination_time_ms, price_fetcher_client, extra_price_source=None, src=None):
         fake_flat_order_time = elimination_time_ms
@@ -535,9 +527,6 @@ class Position(BaseModel):
 
         if self.current_return < 0:
             raise ValueError(f"current return must be positive {self.current_return}")
-
-        if self.current_return == 0:
-            self._handle_liquidation(TimeUtil.now_in_millis() if time_ms is None else time_ms, price_fetcher_client)
 
     def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage, price_fetcher_client=None):
         """
