@@ -9,6 +9,7 @@ class MinerBucket(Enum):
     CHALLENGE = "CHALLENGE"
     PROBATION = "PROBATION"
     PLAGIARISM = "PLAGIARISM"
+    ELIMINATED = "ELIMINATED"
     UNKNOWN = "unknown"
     # Entity system buckets
     ENTITY = "ENTITY"

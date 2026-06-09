@@ -249,7 +249,7 @@ class ChallengePeriodManager(CacheController):
         timings["sync_plagiarism_miners"] = time.perf_counter() - _t0
 
         _t0 = time.perf_counter()
-        state_changed |= self.sync_elimination_miners(hotkeys_elimination_sync)
+        state_changed |= self.sync_elimination_miners(hotkeys_elimination_sync, current_time_ms)
         timings["sync_elimination_miners"] = time.perf_counter() - _t0
 
         _t0 = time.perf_counter()
@@ -474,7 +474,12 @@ class ChallengePeriodManager(CacheController):
                 bucket_at_elimination=state.current_bucket,
             )
 
-        return self.remove_miners(list(eliminations.keys()))
+        state_changed = False
+        with self._buckets_lock:
+            for hotkey in eliminations:
+                state_changed |= self.miner_states[hotkey].add_bucket_entry(MinerBucket.ELIMINATED, current_time_ms)
+
+        return state_changed
 
     def demote_hotkeys(self, hotkeys: list[str], current_time_ms) -> bool:
         """Demote miners to probation."""
@@ -684,12 +689,18 @@ class ChallengePeriodManager(CacheController):
 
         return state_changed
 
-    def sync_elimination_miners(self, elimination_miners: list[str]) -> bool:
+    def sync_elimination_miners(self, eliminated_hotkeys: list[str], current_time_ms: int) -> bool:
         """Sync eliminated miners from elimination manager. Method for peace of mind."""
-        new_eliminations = [hk for hk in elimination_miners if hk in self.miner_states]
+        new_eliminations = [hk for hk in eliminated_hotkeys if hk in self.miner_states]
         if new_eliminations:
             btlogging.warning(f"[CHALLENGE] syncing {len(new_eliminations)} eliminated miners: {new_eliminations}")
-        return self.remove_miners(new_eliminations)
+
+        state_changed = False
+        with self._buckets_lock:
+            for hotkey in new_eliminations:
+                state_changed |= self.miner_states[hotkey].add_bucket_entry(MinerBucket.ELIMINATED, current_time_ms)
+
+        return state_changed
 
     def _prune_hotkeys_no_positions(self, hotkeys=None) -> bool:
         """
@@ -710,7 +721,7 @@ class ChallengePeriodManager(CacheController):
         for hotkey, state in self.miner_states.items():
             if hotkey not in hotkeys:
                 bucket = state.current_bucket
-                if bucket in [MinerBucket.ENTITY, MinerBucket.SUBACCOUNT_FUNDED]:
+                if bucket in [MinerBucket.ENTITY, MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.ELIMINATED]:
                     continue
                 hotkeys_prune.append(hotkey)
                 btlogging.warning(f"[CHALLENGE] {hotkey} pruned from {bucket.value}: no longer in metagraph")
