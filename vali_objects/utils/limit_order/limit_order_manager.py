@@ -954,6 +954,10 @@ class LimitOrderManager(CacheController):
         ask_ps_sorted = sorted(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
         max_bid_ps, min_ask_ps = bid_ps_sorted[0], ask_ps_sorted[0]
 
+        if max_bid_ps.price == 0 or min_ask_ps.price == 0:
+            bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} no bid/ask price")
+            return None
+
         # NOTE use aggressive limit order matching
         return (max_bid_ps, min_ask_ps)
 
