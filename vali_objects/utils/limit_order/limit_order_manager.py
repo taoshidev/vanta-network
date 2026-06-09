@@ -946,7 +946,7 @@ class LimitOrderManager(CacheController):
         end_ms = now_ms
         start_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS
         price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
-        if not price_sources or len(price_sources) < 2:
+        if not price_sources:
             bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources or [])} no ws price sources")
             return None
 
