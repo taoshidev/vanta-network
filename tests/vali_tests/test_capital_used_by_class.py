@@ -22,8 +22,8 @@ import unittest
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_config import (
-    MULTI_CLASS_CATEGORIES,
     TradePair,
     TradePairCategory,
     ValiConfig,
@@ -70,17 +70,17 @@ class TestMinerAccountMultiplier(unittest.TestCase):
     def test_multiplier_single_class_reads_by_asset_class_table(self):
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=TradePairCategory.CRYPTO,
+            asset_class=MinerAssetClass.CRYPTO,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
         # Tier defaults to 2 (funded, no collateral records → MIN_CAPITAL < 200K)
-        expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][TradePairCategory.CRYPTO]
+        expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][MinerAssetClass.CRYPTO]
         self.assertEqual(account.multiplier, expected)
 
     def test_multiplier_multi_class_reads_overall_cap_table(self):
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=TradePairCategory.HL_ALL,
+            asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
         self.assertEqual(account.multiplier, ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[2])
@@ -88,27 +88,16 @@ class TestMinerAccountMultiplier(unittest.TestCase):
     def test_multiplier_challenge_bucket_uses_tier_1(self):
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=TradePairCategory.HL_ALL,
+            asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_CHALLENGE,
         )
         self.assertEqual(account.multiplier, ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[1])
 
     def test_is_multi_class_true_only_for_multi_class_categories(self):
-        for cat in (
-            TradePairCategory.CRYPTO,
-            TradePairCategory.FOREX,
-            TradePairCategory.EQUITIES,
-            TradePairCategory.INDICES,
-            TradePairCategory.COMMODITIES,
-        ):
+        for cat in MinerAssetClass:
             with self.subTest(cat=cat):
                 account = MinerAccount(miner_hotkey="hk", asset_class=cat)
-                self.assertFalse(account.is_multi_class())
-
-        for cat in MULTI_CLASS_CATEGORIES:
-            with self.subTest(cat=cat):
-                account = MinerAccount(miner_hotkey="hk", asset_class=cat)
-                self.assertTrue(account.is_multi_class())
+                self.assertEqual(account.is_multi_class(), cat.is_multi_class)
 
     def test_is_multi_class_false_when_asset_class_none(self):
         account = MinerAccount(miner_hotkey="hk", asset_class=None)
@@ -118,7 +107,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
         """buying_power = balance × multiplier − capital_used for non-equities."""
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=TradePairCategory.HL_ALL,
+            asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
             capital_used=1_000.0,
         )

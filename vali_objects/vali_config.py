@@ -40,6 +40,9 @@ class RPCConnectionMode(int, Enum):
     RPC = 1     # Normal RPC mode - connect via network
 
 
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass  # noqa: E402,F401
+
+
 class TradePairCategory(str, Enum):
     CRYPTO = "crypto"
     FOREX = "forex"
@@ -47,13 +50,6 @@ class TradePairCategory(str, Enum):
     EQUITIES = "equities"
     COMMODITIES = "commodities"
     HL_ALL = "hl_all"            # Asset-selection token only, enables trading all categories for hyperliquid
-
-
-# Subaccount asset_class values that represent a multi-class subaccount (one that may hold
-# positions across more than one TradePairCategory). Multi-class subaccounts are subject to
-# per-class portfolio sub-caps plus a tighter overall cap; single-class subaccounts use a
-# single per-class cap.
-MULTI_CLASS_CATEGORIES = frozenset({TradePairCategory.HL_ALL})
 
 
 class TradePairSource(str, Enum):
@@ -515,12 +511,11 @@ class ValiConfig:
     # Challenge Period Configuration
     SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = 0.1  # Default fallback returns threshold
     SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD = {
-        TradePairCategory.CRYPTO: 0.1,      # 10% returns required to pass crypto evaluation
-        TradePairCategory.FOREX: 0.08,      # 8% returns required to pass forex evaluation
-        TradePairCategory.INDICES: 0.08,    # 8% returns required to pass indices evaluation
-        TradePairCategory.EQUITIES: 0.1,    # 10% returns required to pass equities evaluation
-        TradePairCategory.HL_ALL: 0.1,      # 10% returns required to pass hl all markets evaluation
-        TradePairCategory.COMMODITIES: 0.1, # 10% returns required to pass commodities evaluation
+        MinerAssetClass.CRYPTO: 0.1,      # 10% returns required to pass crypto evaluation
+        MinerAssetClass.FOREX: 0.08,      # 8% returns required to pass forex evaluation
+        MinerAssetClass.EQUITIES: 0.1,    # 10% returns required to pass equities evaluation
+        MinerAssetClass.HL_ALL: 0.1,      # 10% returns required to pass hl all markets evaluation
+        MinerAssetClass.COMMODITIES: 0.1, # 10% returns required to pass commodities evaluation
     }
     CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05    # Rule 1: 5% intraday drop from day-open equity eliminates
     CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: 5% drop from highest-ever EOD equity eliminates
@@ -608,14 +603,13 @@ class ValiConfig:
     # (GOLDUSDC, SILVERUSDC, etc.). HL commodity pairs use base 0.5 × tier on the order
     # path, so this column reports the same values to keep endpoint and order entry in sync.
     #
-    # The INDICES column reports HL index perp values (SP500USDC, XYZ100USDC, EWYUSDC use
-    # base 1.5 × tier). All SPOT indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) are blocked,
-    # so the endpoint never needs to report SPOT-era values here.
+    # Indices have no miner asset class (all index pairs are blocked); HL index perps are
+    # accessed via HL_ALL subaccounts and draw from that column.
     TIER_POSITIONAL_LEVERAGE = {
-        1: {TradePairCategory.HL_ALL: 0.5, TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.INDICES: 1.5,  TradePairCategory.COMMODITIES: 0.5},
-        2: {TradePairCategory.HL_ALL: 1.0, TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0,  TradePairCategory.COMMODITIES: 1.0},
-        3: {TradePairCategory.HL_ALL: 1.5, TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 4.5,  TradePairCategory.COMMODITIES: 1.5},
-        4: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 6.0,  TradePairCategory.COMMODITIES: 2.0},
+        1: {TradePairCategory.HL_ALL: 0.5, TradePairCategory.CRYPTO: 0.5,  TradePairCategory.FOREX: 2.5,  TradePairCategory.EQUITIES: 0.5, TradePairCategory.COMMODITIES: 0.5},
+        2: {TradePairCategory.HL_ALL: 1.0, TradePairCategory.CRYPTO: 1.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.COMMODITIES: 1.0},
+        3: {TradePairCategory.HL_ALL: 1.5, TradePairCategory.CRYPTO: 1.5,  TradePairCategory.FOREX: 7.5,  TradePairCategory.EQUITIES: 1.5, TradePairCategory.COMMODITIES: 1.5},
+        4: {TradePairCategory.HL_ALL: 2.0, TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.COMMODITIES: 2.0},
     }
 
     # Per-tier portfolio leverage caps. Split into two dicts because the underlying lookup is
@@ -623,7 +617,7 @@ class ValiConfig:
     #   *_BY_PAIR        : per-pair multiplier used when validating an incoming order in
     #                      market_order_manager. Keyed on (asset class, instrument type).
     #   *_BY_ASSET_CLASS : account-wide multiplier from the subaccount's own asset_class field
-    #                      (which can be HL_ALL). Keyed by single TradePairCategory.
+    #                      (which can be HL_ALL). Keyed by single MinerAssetClass.
     # XAUUSD/XAGUSD positions land in the FOREX subaccount asset_class bucket.
     # Equity portfolio cap stays 2x from Tier 3 onward in the SPOT column (Reg T overnight).
     TIER_PORTFOLIO_LEVERAGE_BY_PAIR = {
@@ -679,15 +673,15 @@ class ValiConfig:
 
     # Single-class subaccounts only — multi-class (HL_ALL) overall cap is in TIER_MULTI_CLASS_OVERALL_CAP,
     # and per-class sub-caps for multi-class subaccounts reuse the same per-class entries below.
-    TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
+    TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY = {
         1: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0,  TradePairCategory.COMMODITIES: 2.0},
         2: {TradePairCategory.CRYPTO: 2.0,  TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 6.0,  TradePairCategory.COMMODITIES: 2.0},
         3: {TradePairCategory.CRYPTO: 3.0,  TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 8.0,  TradePairCategory.COMMODITIES: 3.0},
         4: {TradePairCategory.CRYPTO: 4.0,  TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 4.0},
     }
 
-    # Overall portfolio cap multiplier for multi-class subaccounts (see MULTI_CLASS_CATEGORIES),
-    # applied on top of per-class sub-caps from TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS. Designed
+    # Overall portfolio cap multiplier for multi-class subaccounts (MinerAssetClass.is_multi_class),
+    # applied on top of per-class sub-caps from TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY. Designed
     # to be strictly tighter than the sum of per-class caps so a multi-class miner cannot stack
     # every class to its individual limit simultaneously, but loose enough that the overall cap
     # is never below the max per-class cap (otherwise a class would be unreachable for an
@@ -977,18 +971,12 @@ class TradePair(Enum):
     VT   = ["VT",   "VT",   0.00009, ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
 
     # indices (no longer allowed for trading as we moved to equities tickers instead)
-    SPX = ["SPX", "SPX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-           TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
-    DJI = ["DJI", "DJI", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-           TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
-    NDX = ["NDX", "NDX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-           TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
-    VIX = ["VIX", "VIX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-           TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
-    FTSE = ["FTSE", "FTSE", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-            TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
-    GDAXI = ["GDAXI", "GDAXI", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE,
-             TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
+    SPX = ["SPX", "SPX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE, TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
+    DJI = ["DJI", "DJI", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE, TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
+    NDX = ["NDX", "NDX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE, TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
+    VIX = ["VIX", "VIX", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE, TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
+    FTSE = ["FTSE", "FTSE", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE, TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
+    GDAXI = ["GDAXI", "GDAXI", 0.00009, ValiConfig.INDICES_MIN_LEVERAGE, ValiConfig.INDICES_MAX_LEVERAGE, TradePairCategory.INDICES, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
 
     # Hyperliquid Trade Pairs (USDC-quoted, src=HYPERLIQUID)
     # Crypto perp futures

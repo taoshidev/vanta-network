@@ -26,14 +26,14 @@ ACCOUNT_SIZE = 50_000.0  # Tier 2 (<$200K)
 
 # Expected limits — Tier 2 (SUBACCOUNT_FUNDED, account_size < $200K), crypto
 TIER2_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[2][TradePairCategory.CRYPTO]   # 1.0x
-TIER2_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][TradePairCategory.CRYPTO]   # 2.0x
+TIER2_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.CRYPTO]   # 2.0x
 
 EXPECTED_MAX_POSITION = ACCOUNT_SIZE * TIER2_POSITIONAL   # 50_000
 EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER2_PORTFOLIO   # 100_000
 
 # Expected limits — Tier 1 (SUBACCOUNT_CHALLENGE), crypto
 TIER1_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[1][TradePairCategory.CRYPTO]   # 0.5x
-TIER1_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][TradePairCategory.CRYPTO]   # 1.0x
+TIER1_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[1][TradePairCategory.CRYPTO]   # 1.0x
 
 EXPECTED_CHALLENGE_MAX_POSITION = ACCOUNT_SIZE * TIER1_POSITIONAL  # 25_000
 EXPECTED_CHALLENGE_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER1_PORTFOLIO   # 50_000
@@ -260,7 +260,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         self.assertEqual(data['max_portfolio_usd'], expected_overall)
 
     def test_hl_all_per_class_values_match_table(self):
-        """Each per-class entry matches TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS for the right tier."""
+        """Each per-class entry matches TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY for the right tier."""
         from vali_objects.vali_config import TradePairCategory, ValiConfig
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             asset_class="hl_all",
@@ -278,7 +278,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
             ('indices',    TradePairCategory.INDICES),
             ('commodities', TradePairCategory.COMMODITIES),
         ):
-            expected = ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][cat]
+            expected = ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][cat]
             self.assertEqual(breakdown[cat_str], expected, f"per-class mismatch for {cat_str}")
 
     def test_hl_all_challenge_period_uses_tier_1(self):
@@ -323,7 +323,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        expected = ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][TradePairCategory.COMMODITIES]
+        expected = ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.COMMODITIES]
         self.assertEqual(data['max_portfolio_usd'], expected)
 
     def test_commodities_max_position_matches_hl_commodity_pair_base(self):

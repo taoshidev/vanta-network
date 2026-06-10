@@ -20,7 +20,8 @@ import bittensor as bt
 from typing import Optional, Dict, List, Any
 
 import template.protocol
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
+from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
@@ -296,7 +297,7 @@ class MinerAccountServer(RPCServerBase):
         self._manager.rebuild_account_state_from_positions(hotkey, position_objects, bucket, max_return)
 
     def update_asset_selection(
-        self, hotkey: str, asset_selection: TradePairCategory
+        self, hotkey: str, asset_selection: MinerAssetClass
     ) -> bool:
         """
         Returns:

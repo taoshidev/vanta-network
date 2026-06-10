@@ -24,6 +24,7 @@ from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig, TradePairCategory
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 
 
 class MinerAccountClient(RPCClientBase):
@@ -320,7 +321,7 @@ class MinerAccountClient(RPCClientBase):
         self._server.rebuild_account_state_from_positions(hotkey, positions, bucket_value, max_return)
 
     def update_asset_selection(
-        self, hotkey: str, asset_selection: TradePairCategory
+        self, hotkey: str, asset_selection: MinerAssetClass
     ) -> bool:
         """
         Returns:

@@ -19,7 +19,8 @@ from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.scoring import Scoring
@@ -194,8 +195,8 @@ class ChallengePeriodManager(CacheController):
         self.miner_states: dict[str, MinerBucketState] = self._read_states_from_disk()
 
         # Cached scores for MinerStatisticsManager
-        self._cached_asset_softmaxed_scores: dict[TradePairCategory, dict[str, float]] = {}
-        self._cached_asset_competitiveness: dict[TradePairCategory, float] = {}
+        self._cached_asset_softmaxed_scores: dict[MinerAssetClass, dict[str, float]] = {}
+        self._cached_asset_competitiveness: dict[MinerAssetClass, float] = {}
 
         btlogging.info("[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
 
@@ -269,7 +270,7 @@ class ChallengePeriodManager(CacheController):
             if _asset is None:
                 btlogging.warning(f"[CHALLENGE] {hotkey} no asset selection, skipping evaluation")
                 continue
-            asset_class = TradePairCategory(_asset)
+            asset_class = MinerAssetClass(_asset)
 
             if self._check_demotion(state):
                 demotions.append(hotkey)
@@ -540,7 +541,7 @@ class ChallengePeriodManager(CacheController):
         ledgers: dict[str,PerfLedger],
         positions: dict[str,list[Position]],
         accounts: dict[str,dict],
-        asset_selections: dict[str,TradePairCategory],
+        asset_selections: dict[str,MinerAssetClass],
         current_time_ms: int
     ):
         asset_classes = list(set(asset_selections.values()))

@@ -19,7 +19,8 @@ import bittensor as bt
 
 from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import MULTI_CLASS_CATEGORIES, TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
@@ -74,7 +75,7 @@ class MinerAccount:
     total_borrowed_amount: float = 0.0   # Total margin loans outstanding (equities only)
     total_fees_paid: float = 0.0         # Cumulative fees paid (transaction, funding, interest, ...)
     total_dividend_income: float = 0.0   # Net dividend income
-    asset_class: Optional[TradePairCategory] = None  # CRYPTO, FOREX, EQUITIES, COMMODITIES, HL_ALL
+    asset_class: Optional[MinerAssetClass] = None  # CRYPTO, FOREX, EQUITIES, COMMODITIES, HL_ALL
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
@@ -97,7 +98,7 @@ class MinerAccount:
     @property
     def buying_power(self) -> float:
         """Available buying power"""
-        if self.asset_class == TradePairCategory.EQUITIES:
+        if self.asset_class == MinerAssetClass.EQUITIES:
             # balance - cash used
             return (self.balance - (self.capital_used - self.total_borrowed_amount)) * self.multiplier
         else:
@@ -110,7 +111,7 @@ class MinerAccount:
         - Multi-class subaccounts (today only HL_ALL): returns TIER_MULTI_CLASS_OVERALL_CAP[tier],
           the cross-class overall cap. Per-class sub-caps are enforced separately at order entry
           via get_portfolio_caps; this property exposes only the overall ceiling.
-        - Single-class subaccounts: returns TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class].
+        - Single-class subaccounts: returns TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][asset_class].
         """
         if not self.asset_class:
             return 1
@@ -119,13 +120,13 @@ class MinerAccount:
         tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
         if self.is_multi_class():
             return ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
-        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
+        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier].get(self.asset_class, 1.0)
 
     def is_multi_class(self) -> bool:
         """True if this subaccount can hold positions across more than one TradePairCategory
         (e.g. HL_ALL). Multi-class subaccounts are subject to per-class portfolio sub-caps plus
         a tighter overall cap (see TIER_MULTI_CLASS_OVERALL_CAP)."""
-        return self.asset_class is not None and self.asset_class in MULTI_CLASS_CATEGORIES
+        return self.asset_class is not None and self.asset_class.is_multi_class
 
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""
@@ -425,7 +426,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     asset_class_str = asset_selection_dict.get(hotkey)
                     if asset_class_str:
                         try:
-                            asset_class = TradePairCategory(asset_class_str)
+                            asset_class = MinerAssetClass(asset_class_str)
                         except ValueError:
                             bt.logging.warning(f"Unknown asset_class '{asset_class_str}' for {hotkey}")
 
@@ -777,7 +778,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     f"Insufficient buying power. Need ${order_value_usd + fee_usd:.2f}, have ${account.buying_power:.2f}"
                 )
 
-            if account.asset_class == TradePairCategory.EQUITIES and borrowed_amount > 0:
+            if account.asset_class == MinerAssetClass.EQUITIES and borrowed_amount > 0:
                 account.total_borrowed_amount += borrowed_amount
 
             account.capital_used += order_value_usd
@@ -822,7 +823,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     0.0, account.capital_used_by_class.get(trade_pair_category, 0.0) - entry_value_usd
                 )
 
-            if account.asset_class == TradePairCategory.EQUITIES and loan_repaid > 0:
+            if account.asset_class == MinerAssetClass.EQUITIES and loan_repaid > 0:
                 # Clamp to actual borrowed amount and repay
                 loan_repaid = min(loan_repaid, account.total_borrowed_amount)
                 account.total_borrowed_amount -= loan_repaid
@@ -943,7 +944,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 f"balance=${account.balance:.2f}"
             )
 
-    def update_asset_selection(self, hotkey: str, asset_selection: TradePairCategory) -> bool:
+    def update_asset_selection(self, hotkey: str, asset_selection: MinerAssetClass) -> bool:
 
         with self._accounts_lock:
             account = self.get_or_create(hotkey)

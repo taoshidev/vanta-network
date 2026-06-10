@@ -29,7 +29,8 @@ from typing import Dict
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
-from vali_objects.vali_config import TradePairCategory, TradePairSource, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePairSource, ValiConfig, RPCConnectionMode
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 import template.protocol
 
 
@@ -138,16 +139,16 @@ class AssetSelectionServer(RPCServerBase):
             "total_selections": len(self._manager.asset_selections)
         }
 
-    def get_asset_selections_rpc(self) -> Dict[str, TradePairCategory]:
+    def get_asset_selections_rpc(self) -> Dict[str, MinerAssetClass]:
         """
         Get the asset_selections dict (RPC method).
 
         Returns:
-            Dict[str, TradePairCategory]: Dictionary mapping hotkey to TradePairCategory enum
+            Dict[str, MinerAssetClass]: Dictionary mapping hotkey to MinerAssetClass enum
         """
         return self._manager.get_asset_selections()
 
-    def get_asset_selection_rpc(self, hotkey: str) -> TradePairCategory | None:
+    def get_asset_selection_rpc(self, hotkey: str) -> MinerAssetClass | None:
         return self._manager.get_asset_selection(hotkey)
 
     def get_all_miner_selections_rpc(self) -> Dict[str, str]:
@@ -297,7 +298,7 @@ class AssetSelectionServer(RPCServerBase):
     # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 
-    def get_asset_selections(self) -> Dict[str, TradePairCategory]:
+    def get_asset_selections(self) -> Dict[str, MinerAssetClass]:
         """Get asset selections dict (forward-compatible alias)."""
         return self.get_asset_selections_rpc()
 
@@ -326,6 +327,6 @@ class AssetSelectionServer(RPCServerBase):
         return self.receive_asset_selection_update_rpc(asset_selection_data)
 
     @property
-    def asset_selections(self) -> Dict[str, TradePairCategory]:
+    def asset_selections(self) -> Dict[str, MinerAssetClass]:
         """Direct access to asset_selections for backward compatibility."""
         return self._manager.asset_selections

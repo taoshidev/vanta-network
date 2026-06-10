@@ -525,7 +525,7 @@ class Validator(ValidatorBase):
                        f"https://github.com/taoshidev/vanta-cli")
                 synapse.error_message = msg
 
-            elif not self.asset_selection_client.validate_order_asset_class_local_cache(selected_asset, tp) and order_type != OrderType.FLAT:
+            elif not selected_asset.allows_trade_pair(tp) and order_type != OrderType.FLAT:
                 asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
                 bt.logging.info(f"[FAIL_EARLY_DEBUG] validate_order_asset_class_local_cache took {asset_validate_ms:.2f}ms")
 
