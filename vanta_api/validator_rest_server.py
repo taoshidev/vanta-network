@@ -713,8 +713,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # function the order path enforces (get_tier_positional_leverage). Tier 1 == challenge.
         subaccount_tiers = (1, 2, 3, 4)
 
+        # These lot sizes are not used in any network calculation; they're included in
+        # this API response purely for UI convenience.
+        contract_lot_size = {
+            'GOLDUSDC': 100, 'SILVERUSDC': 5_000, 'PLATINUMUSDC': 100,
+            'COPPERUSDC': 100, 'WTIOILUSDC': 100, 'NATGASUSDC': 1_000,
+        }
+
         def build_entry(tp):
-            return {
+            entry = {
                 'trade_pair_id': tp.trade_pair_id,
                 'hl_coin': tp.hl_coin,
                 'trade_pair': tp.trade_pair,
@@ -726,6 +733,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     str(tier): get_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
                 },
             }
+            if tp.trade_pair_id in contract_lot_size:
+                entry['lot_size'] = contract_lot_size[tp.trade_pair_id]
+            return entry
 
         try:
             unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
