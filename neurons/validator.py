@@ -497,7 +497,7 @@ class Validator(ValidatorBase):
 
         order_uuid = synapse.miner_order_uuid
         tp = Order.parse_trade_pair_from_signal(signal)
-        order_type = OrderType.from_string(signal.get("order_type", "FLAT"))
+        order_type = OrderType.from_string(signal.get("order_type") or "FLAT")
         if order_uuid and self.uuid_tracker.exists(order_uuid):
             # Parse execution type to check if this is a cancel operation
             execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper()) if signal else ExecutionType.MARKET
