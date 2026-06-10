@@ -794,7 +794,6 @@ class ValiConfig:
     UNSUPPORTED_TRADE_PAIRS = None  # Will be set after TradePair definition
 
     MAX_UNFILLED_LIMIT_ORDERS = 100
-    LIMIT_ORDER_CHECK_REFRESH_MS = 2 * 1000 # 2 seconds
     LIMIT_ORDER_FILL_INTERVAL_MS = 10 * 1000 # 10 seconds
     LIMIT_ORDER_PRICE_BUFFER_MS = 30 * 1000
 

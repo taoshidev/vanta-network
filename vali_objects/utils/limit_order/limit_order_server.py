@@ -95,7 +95,7 @@ class LimitOrderServer(RPCServerBase):
             slack_notifier=slack_notifier,
             start_server=start_server,
             start_daemon=False,  # We'll start daemon after full initialization
-            daemon_interval_s=ValiConfig.LIMIT_ORDER_CHECK_REFRESH_MS / 1000.0,  # 10 seconds
+            daemon_interval_s=0.01,
             hang_timeout_s=120.0
         )
 
