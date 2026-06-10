@@ -30,7 +30,7 @@ from vali_objects.statistics.miner_statistics_client import MinerStatisticsClien
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.utils.leverage_utils import get_leverage_tier
+from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
 from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
@@ -709,6 +709,24 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         deprecated: close/reduce only (legacy dynamic HL pairs)
         disabled:   neither open nor close permitted (blocked or unsupported)
         """
+        # Per-pair, per-tier positional leverage (multipliers, not USD), resolved by the same
+        # function the order path enforces (get_tier_positional_leverage). Tier 1 == challenge.
+        subaccount_tiers = (1, 2, 3, 4)
+
+        def build_entry(tp):
+            return {
+                'trade_pair_id': tp.trade_pair_id,
+                'hl_coin': tp.hl_coin,
+                'trade_pair': tp.trade_pair,
+                'trade_pair_category': tp.trade_pair_category.value,
+                'trade_pair_source': tp.src.value,
+                'min_leverage': tp.min_leverage,
+                'max_leverage': tp.max_leverage,
+                'subaccount_positional_leverage_by_tier': {
+                    str(tier): get_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
+                },
+            }
+
         try:
             unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
             allowed = []
@@ -716,14 +734,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             disabled = []
 
             for trade_pair in TradePair:
-                entry = {
-                    'trade_pair_id': trade_pair.trade_pair_id,
-                    'hl_coin': trade_pair.hl_coin,
-                    'trade_pair': trade_pair.trade_pair,
-                    'trade_pair_category': trade_pair.trade_pair_category.value,
-                    'trade_pair_source': trade_pair.src.value,
-                    'max_leverage': trade_pair.max_leverage,
-                }
+                entry = build_entry(trade_pair)
                 if trade_pair.is_blocked or trade_pair in unsupported_trade_pairs:
                     disabled.append(entry)
                 else:
@@ -733,14 +744,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             for dtp in HL_DYNAMIC_REGISTRY.values():
                 if dtp.trade_pair_id in allowed_ids:
                     continue
-                deprecated.append({
-                    'trade_pair_id': dtp.trade_pair_id,
-                    'hl_coin': dtp.hl_coin,
-                    'trade_pair': dtp.trade_pair,
-                    'trade_pair_category': dtp.trade_pair_category.value,
-                    'trade_pair_source': dtp.src.value,
-                    'max_leverage': dtp.max_leverage,
-                })
+                deprecated.append(build_entry(dtp))
 
             return jsonify({
                 'allowed': allowed,
