@@ -177,8 +177,13 @@ class MarketOrderManager():
         step_start = TimeUtil.now_in_millis()
 
         best_price_source = price_sources[0]
-        # Use fill_price if provided (for limit/bracket orders), otherwise use market price
-        price = fill_price if fill_price else best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
+        # Use fill_price only for non-market fills (limit/bracket) where it comes from
+        # the validator's limit engine. Market orders must never trust a signal-supplied
+        # price always use the fetched market price.
+        if execution_type == ExecutionType.MARKET or not fill_price:
+            price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
+        else:
+            price = fill_price
 
         if existing_position.account_size <= 0:
             bt.logging.warning(
@@ -672,13 +677,15 @@ class MarketOrderManager():
                 else:
                     new_src = OrderSource.ORGANIC
 
-                # Calculate price and USD conversions
-                # Use fill_price if provided, otherwise use market price
+                # Calculate price and USD conversions.
+                # Only limit/bracket fills carry a validator-derived fill_price. Sanitize
+                # fill_price here since it flows downstream into the stored order.price.
                 best_price_source = price_sources[0]
                 if execution_type == ExecutionType.MARKET or not fill_price:
                     fill_price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
                 else:
                     fill_price = fill_price
+                    
                 usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, fill_price, signal_order_type, existing_position)
 
                 if signal_order_type == OrderType.FLAT or (signal.get("quantity") and abs(existing_position.net_quantity + signal["quantity"]) < 1e-9):
