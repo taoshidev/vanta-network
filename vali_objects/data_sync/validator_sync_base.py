@@ -173,6 +173,12 @@ class ValidatorSyncBase():
                 bt.logging.info(f"Syncing {len(miner_account_sizes_data)} miner account size records from auto sync")
                 self._miner_account_client.sync_miner_account_sizes_data(miner_account_sizes_data)
 
+        # Sync frozen perf ledgers if available
+        frozen_perf_ledgers_data = candidate_data.get('frozen_perf_ledgers', {})
+        if frozen_perf_ledgers_data and not shadow_mode:
+            bt.logging.info(f"Syncing {len(frozen_perf_ledgers_data)} frozen perf ledger records from auto sync")
+            self._perf_ledger_client.sync_frozen_ledgers(frozen_perf_ledgers_data)
+
         eliminated_hotkeys = set([e['hotkey'] for e in eliminations])
         # For a healthy validator, the existing positions will always be a superset of the candidate positions
         for hotkey, positions in candidate_hk_to_positions.items():

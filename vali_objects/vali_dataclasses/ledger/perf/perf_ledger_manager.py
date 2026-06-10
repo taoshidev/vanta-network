@@ -386,6 +386,12 @@ class PerfLedgerManager(CacheController):
         if os.path.exists(json_gz_path):
             os.remove(json_gz_path)
 
+    def sync_frozen_ledgers(self, frozen_ledgers_data: dict):
+        file_path = ValiBkpUtils.get_frozen_perf_ledgers_path(self.running_unit_tests)
+        ValiBkpUtils.write_compressed_json(file_path, frozen_ledgers_data)
+        self._frozen_ledgers = self.get_frozen_ledgers(from_disk=True)
+        bt.logging.info(f"Synced {len(self._frozen_ledgers)} frozen perf ledgers from auto sync")
+
     @staticmethod
     def clear_perf_ledgers_from_disk_autosync(hotkeys:list):
         compressed_json_path = ValiBkpUtils.get_perf_ledgers_path(running_unit_tests=False)
