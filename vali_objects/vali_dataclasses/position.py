@@ -440,7 +440,7 @@ class Position(BaseModel):
 
         self._update_position(live_price_fetcher)
 
-    def calculate_pnl(self, current_price, live_price_fetcher, t_ms=None, order=None):
+    def calculate_pnl(self, current_price, live_price_fetcher, t_ms=None, order=None, quote_usd_conversion=None):
         if self.initial_entry_price == 0 or self.average_entry_price is None:
             return 1
 
@@ -461,7 +461,8 @@ class Position(BaseModel):
             self.unrealized_pnl = unrealized_pnl_quote * order.quote_usd_rate
         else:
             unrealized_pnl_quote = (current_price - self.average_entry_price) * (self.net_quantity * self.trade_pair.lot_size)
-            quote_usd_conversion = self.orders[-1].quote_usd_rate # live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)  # TODO: calculate conversion rate at current time instead of last order time
+            if not quote_usd_conversion:
+                quote_usd_conversion = self.orders[-1].quote_usd_rate
             self.unrealized_pnl = unrealized_pnl_quote * quote_usd_conversion
 
         if self.cumulative_entry_value == 0:
@@ -519,10 +520,10 @@ class Position(BaseModel):
         flat_order.usd_base_rate = price_fetcher_client.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
         return flat_order
 
-    def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None):
+    def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None, quote_usd_conversion=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
-        self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order)
+        self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order, quote_usd_conversion=quote_usd_conversion)
         self.return_at_close = self.current_return * (total_fees if total_fees is not None else 1.0)
 
         if self.current_return < 0:
