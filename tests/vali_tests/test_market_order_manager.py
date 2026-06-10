@@ -1073,3 +1073,90 @@ class TestMarketOrderManager(TestBase):
             last_order = position.orders[-1]
             self.assertEqual(last_order.order_type, OrderType.FLAT)
             self.assertEqual(last_order.src, OrderSource.FLAT_ALL_CLOSE)
+
+    def _reset_state_for_injection_case(self):
+
+        self.orchestrator.clear_all_test_data()
+        self.market_order_manager.last_order_time_cache.clear()
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
+
+    def test_market_order_ignores_injected_entry_price(self):
+
+        now_ms = TimeUtil.now_in_millis()
+        market_price = 50000.0
+        injected_price = 45000.0  
+
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
+        signal["price"] = injected_price  
+        price_sources = [self.create_test_price_source(market_price, start_ms=now_ms)]
+
+        err_msg, position, created_order = self.market_order_manager._process_market_order(
+            miner_order_uuid="vanta_uuid",
+            miner_repo_version="1.0.0",
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            now_ms=now_ms,
+            signal=signal,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            price_sources=price_sources,
+        )
+
+        self.assertIsNone(err_msg)
+        self.assertIsNotNone(created_order)
+
+        self.assertEqual(created_order.price, market_price)
+        self.assertNotEqual(created_order.price, injected_price)
+        # bid/ask come from the real market source.
+        self.assertEqual(created_order.bid, price_sources[0].bid)
+        self.assertEqual(created_order.ask, price_sources[0].ask)
+
+    def test_market_order_ignores_injected_price_all_magnitudes(self):
+
+        market_price = 50000.0
+        injected_prices = [49500.0, 45000.0, 25000.0, 500.0, 0.01]
+
+        for i, injected_price in enumerate(injected_prices):
+            self._reset_state_for_injection_case()
+            now_ms = TimeUtil.now_in_millis()
+            signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
+            signal["price"] = injected_price
+            price_sources = [self.create_test_price_source(market_price, start_ms=now_ms)]
+
+            err_msg, position, created_order = self.market_order_manager._process_market_order(
+                miner_order_uuid=f"vanta_sweep_{i}",
+                miner_repo_version="1.0.0",
+                trade_pair=self.DEFAULT_TRADE_PAIR,
+                now_ms=now_ms,
+                signal=signal,
+                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+                price_sources=price_sources,
+            )
+
+            self.assertIsNone(err_msg, f"order unexpectedly rejected for injected price {injected_price}")
+            self.assertEqual(
+                created_order.price, market_price,
+                f"injected price {injected_price} leaked into the fill price",
+            )
+
+    def test_market_order_usd_conversion_ignores_injected_price(self):
+        
+        now_ms = TimeUtil.now_in_millis()
+        market_price = 50000.0
+        injected_price = 25000.0
+
+        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
+        signal["price"] = injected_price
+        price_sources = [self.create_test_price_source(market_price, start_ms=now_ms)]
+
+        _, _, created_order = self.market_order_manager._process_market_order(
+            miner_order_uuid="vanta_market_test_usd",
+            miner_repo_version="1.0.0",
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            now_ms=now_ms,
+            signal=signal,
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            price_sources=price_sources,
+        )
+
+        
+        self.assertAlmostEqual(created_order.usd_base_rate, 1.0 / market_price, places=12)
+        self.assertNotAlmostEqual(created_order.usd_base_rate, 1.0 / injected_price, places=12)
