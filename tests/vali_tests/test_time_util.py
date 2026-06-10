@@ -18,7 +18,6 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 
-
 class TestTimeUtil(TestBase):
     """
     Time utility tests using ServerOrchestrator singleton pattern.
@@ -119,8 +118,6 @@ class TestTimeUtil(TestBase):
             )
             position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
 
-            self.assertEqual(position.max_leverage_seen(), 1.0)
-            self.assertEqual(position.get_cumulative_leverage(), 2.0)
             n_intervals, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_crypto(
                 o1.processed_ms, o2.processed_ms
             )
@@ -213,13 +210,9 @@ class TestTimeUtil(TestBase):
                 orders=[o1, o2]
             )
             position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
-            self.assertEqual(position.max_leverage_seen(), 1.0)
-            self.assertEqual(position.get_cumulative_leverage(), 2.0)
             n_intervals, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_forex_indices(
                 o1.processed_ms, o2.processed_ms
             )
-            carry_fee, next_update_time_ms = position.crypto_carry_fee(o2.processed_ms)
-            assert next_update_time_ms > o2.processed_ms, f"next_update_time_ms: {next_update_time_ms}, o2.processed_ms: {o2.processed_ms}"
             delta = time_until_next_interval_ms
             if i != 0:
                 self.assertEqual(delta + 1, prev_delta, f"delta: {delta}, prev_delta: {prev_delta}")
@@ -244,7 +237,6 @@ class TestTimeUtil(TestBase):
             delta = time_until_next_interval_ms
             self.assertEqual(n_intervals, 1, f"n_intervals: {n_intervals}")
             self.assertEqual(delta, MS_IN_8_HOURS, f"delta: {delta}")
-
 
 if __name__ == '__main__':
     import unittest

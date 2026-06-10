@@ -108,11 +108,10 @@ class PositionFilter:
             trade_pair=position.trade_pair,
             orders=filtered_orders,
             position_type=position.position_type,
-            is_closed_position=position.is_closed_position and position.close_ms and position.close_ms <= cutoff_date_ms,
+            is_closed_position=bool(position.is_closed_position and position.close_ms and position.close_ms <= cutoff_date_ms),
             current_return=position.current_return,
             return_at_close=position.return_at_close,
             net_leverage=position.net_leverage,
             average_entry_price=position.average_entry_price,
-            max_leverage_seen=position.max_leverage_seen
         )
         return filtered_position
