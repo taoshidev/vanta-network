@@ -7,6 +7,7 @@ from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_
 from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, DynamicTradePair, ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils import leverage_utils
@@ -63,6 +64,7 @@ class Position(BaseModel):
     is_hl: bool = False  # True for Hyperliquid entity miner positions
     last_stock_split_date: Optional[str] = None  # Only set for equities
     dividend_history: List[DividendHistoryEntry] = Field(default_factory=list)  # Audit log of dividend events
+    last_price_source: Optional[PriceSource] = None
     unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')
@@ -435,6 +437,9 @@ class Position(BaseModel):
         self.validate_order_size(order)
         self.orders.append(order)
 
+        if order.price_sources:
+            self.last_price_source = order.price_sources[0]
+
         if transaction_fee:
             self.record_fee_event("transaction", transaction_fee, order.processed_ms)
 
@@ -520,11 +525,14 @@ class Position(BaseModel):
         flat_order.usd_base_rate = price_fetcher_client.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
         return flat_order
 
-    def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None, quote_usd_conversion=None):
+    def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None, quote_usd_conversion=None, price_source=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
         self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order, quote_usd_conversion=quote_usd_conversion)
         self.return_at_close = self.current_return * (total_fees if total_fees is not None else 1.0)
+
+        if price_source is not None:
+            self.last_price_source = price_source
 
         if self.current_return < 0:
             raise ValueError(f"current return must be positive {self.current_return}")
