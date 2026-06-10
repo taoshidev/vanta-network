@@ -497,6 +497,7 @@ class Validator(ValidatorBase):
 
         order_uuid = synapse.miner_order_uuid
         tp = Order.parse_trade_pair_from_signal(signal)
+        order_type = OrderType.from_string(signal.get("order_type", "FLAT"))
         if order_uuid and self.uuid_tracker.exists(order_uuid):
             # Parse execution type to check if this is a cancel operation
             execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper()) if signal else ExecutionType.MARKET
@@ -524,7 +525,7 @@ class Validator(ValidatorBase):
                        f"https://github.com/taoshidev/vanta-cli")
                 synapse.error_message = msg
 
-            elif not self.asset_selection_client.validate_order_asset_class_local_cache(selected_asset, tp):
+            elif not self.asset_selection_client.validate_order_asset_class_local_cache(selected_asset, tp) and order_type != OrderType.FLAT:
                 asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
                 bt.logging.info(f"[FAIL_EARLY_DEBUG] validate_order_asset_class_local_cache took {asset_validate_ms:.2f}ms")
 
@@ -537,7 +538,6 @@ class Validator(ValidatorBase):
             else:
                 is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
                 execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())
-                order_type = OrderType.from_string(signal["order_type"])
                 if execution_type in [ExecutionType.MARKET, ExecutionType.FLAT_ALL] and not is_market_open:
                     synapse.error_message = f"Market for trade pair [{tp.trade_pair_id}] is closed. Please try again later."
                     synapse.should_retry = False
