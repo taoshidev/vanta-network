@@ -656,10 +656,10 @@ class ValiConfig:
         4: {TradePairCategory.CRYPTO: 4.0, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 4.0},
     }
     TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
-        1: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 5.0,  MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 6.0,  MinerAssetClass.ALL_MARKETS: 6.0},
-        2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.5, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 12.0},
-        3: {MinerAssetClass.CRYPTO: 3.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 18.0, MinerAssetClass.ALL_MARKETS: 18.0},
-        4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 24.0, MinerAssetClass.ALL_MARKETS: 24.0},
+        1: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 5.0,  MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 4.0,  MinerAssetClass.ALL_MARKETS: 6.0},
+        2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.5, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 7.0, MinerAssetClass.ALL_MARKETS: 12.0},
+        3: {MinerAssetClass.CRYPTO: 3.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 18.0},
+        4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
     }
 
     # Collateral limits
