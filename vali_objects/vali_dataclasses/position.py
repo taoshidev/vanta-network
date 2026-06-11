@@ -677,10 +677,9 @@ class Position(BaseModel):
                 raise ValueError(
                     f"{self.trade_pair.trade_pair_id}: position size {proposed_shares:.4f} shares is below minimum {ValiConfig.EQUITIES_MIN_POSITION_SIZE_SHARES} shares")
         else:  # for other asset classes
-            min_position_leverage, _ = leverage_utils.get_position_leverage_bounds(self.trade_pair)
-            if abs(proposed_leverage) < min_position_leverage:
+            if abs(proposed_value) > 0 and abs(proposed_value) < ValiConfig.DEFAULT_MIN_POSITION_SIZE_USD:
                 raise ValueError(
-                    f"{self.trade_pair.trade_pair_id}: position leverage {abs(proposed_leverage):.4f}x is below minimum {min_position_leverage}x")
+                    f"{self.trade_pair.trade_pair_id}: position size ${abs(proposed_value):.2f} is below minimum ${ValiConfig.DEFAULT_MIN_POSITION_SIZE_USD:.2f}")
 
         return clamped
 
