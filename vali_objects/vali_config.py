@@ -381,6 +381,7 @@ class ValiConfig:
     FOREX_SMALL_ACCOUNT_THRESHOLD = 10_000.0       # USD; subaccounts at or below this use sub-nano lot minimum
     CRYPTO_MIN_POSITION_SIZE_USD = 10.0  # $10 USD
     EQUITIES_MIN_POSITION_SIZE_SHARES = 0.01 # 0.01 shares
+    DEFAULT_MIN_POSITION_SIZE_USD = 10.0
 
     # Minimum order size in quantity (different from minimum position size ex. crypto)
     CRYPTO_MIN_ORDER_SIZE = 0.00001
