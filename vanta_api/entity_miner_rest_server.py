@@ -977,6 +977,9 @@ class EntityMinerRestServer(MinerRestServer):
                 if "asset_class" not in request_data:
                     return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
                 asset_class = request_data["asset_class"]
+                # Map hl_all to all markets for non-hyperliquid TODO remove after migration
+                if asset_class == "hl_all":
+                    asset_class = "all_markets"
 
             admin = request_data.get("admin")
 

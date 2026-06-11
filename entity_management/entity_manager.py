@@ -428,6 +428,10 @@ class EntityManager(ValidatorBroadcastBase):
         current_balance = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
         required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
 
+        # Map hl_all to all markets for non-hyperliquid TODO remove after migration
+        if asset_class == "hl_all" and not hl_address:
+            asset_class = "all_markets"
+
         # Use per-entity lock: only operates on single entity
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
