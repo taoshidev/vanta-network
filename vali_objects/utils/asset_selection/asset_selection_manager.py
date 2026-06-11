@@ -176,18 +176,6 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
     # ==================== Query Methods ====================
 
-    def is_valid_asset_class(self, asset_class: str) -> bool:
-        """
-        Validate if the provided asset class is valid.
-
-        Args:
-            asset_class: The asset class string to validate
-
-        Returns:
-            True if valid, False otherwise
-        """
-        return MinerAssetClass.is_valid(asset_class)
-
     def get_asset_selections(self) -> Dict[str, MinerAssetClass]:
         """
         Get the asset_selections dict (copy).
@@ -248,7 +236,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         """
         try:
             # Validate asset class (read-only, safe outside lock)
-            if not self.is_valid_asset_class(asset_selection):
+            if not MinerAssetClass.is_valid(asset_selection):
                 valid_classes = [c.value for c in MinerAssetClass]
                 return {
                     'successfully_processed': False,

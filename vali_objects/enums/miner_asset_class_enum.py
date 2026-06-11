@@ -28,7 +28,7 @@ class MinerAssetClass(str, Enum):
             return False
         return asset_class.lower() in {c.value for c in MinerAssetClass}
 
-    def allows_trade_pair(self, trade_pair: "TradePair") -> bool:
+    def can_trade(self, trade_pair: "TradePair") -> bool:
         """
         Check if `trade_pair` is allowed for this miner asset class.
 

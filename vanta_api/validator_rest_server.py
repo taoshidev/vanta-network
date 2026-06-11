@@ -1165,7 +1165,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not asset_selection or not isinstance(asset_selection, str):
                 return jsonify({'error': 'Missing or invalid required field: asset_selection (string)'}), 400
 
-            if not self._asset_selection_client.is_valid_asset_class(asset_selection):
+            if not MinerAssetClass.is_valid(asset_selection):
                 return jsonify({'error': f'Invalid asset class: {asset_selection}'}), 400
 
             # Accept a single hotkey or a list of hotkeys (also accept singular miner_hotkey)

@@ -160,18 +160,6 @@ class AssetSelectionServer(RPCServerBase):
         """
         return self._manager.get_all_miner_selections()
 
-    def is_valid_asset_class_rpc(self, asset_class: str) -> bool:
-        """
-        Validate if the provided asset class is valid (RPC method).
-
-        Args:
-            asset_class: The asset class string to validate
-
-        Returns:
-            True if valid, False otherwise
-        """
-        return self._manager.is_valid_asset_class(asset_class)
-
     def process_asset_selection_request_rpc(
         self,
         asset_selection: str,
@@ -305,10 +293,6 @@ class AssetSelectionServer(RPCServerBase):
     def get_all_miner_selections(self) -> Dict[str, str]:
         """Get all miner selections (forward-compatible alias)."""
         return self.get_all_miner_selections_rpc()
-
-    def is_valid_asset_class(self, asset_class: str) -> bool:
-        """Validate asset class (forward-compatible alias)."""
-        return self.is_valid_asset_class_rpc(asset_class)
 
     def process_asset_selection_request(self, asset_selection: str, miner: str, overwrite: bool = False) -> Dict[str, str]:
         """Process asset selection request (forward-compatible alias)."""
