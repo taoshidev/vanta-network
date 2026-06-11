@@ -2163,7 +2163,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Public endpoint — no authentication required.
         Returns trading limits for a Hyperliquid subaccount: account size,
-        max position per pair, max portfolio value, and challenge period status.
+        leverage tier, asset class, per-class caps, overall portfolio cap,
+        and challenge period status.
+
+        DEPRECATED: max_position_per_pair_usd is a class-level stand-in that
+        misreports pairs whose subaccount_tier_base_leverage diverges from the
+        canonical base (e.g. GOLDUSDC at 1.0 vs 0.5). Clients should resolve
+        per-pair caps from /trade-pairs instead:
+        subaccount_positional_leverage_by_tier[tier] × account_size, using the
+        `tier` field returned here.
 
         Example:
         curl http://localhost:48888/hl-traders/0xabcd1234.../limits
@@ -2195,6 +2203,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'status': 'success',
             'hl_address': hl_address,
             'account_size': account_size,
+            'tier': tier,
+            'asset_class': asset_class.value,
             'max_position_per_pair_usd': max_position_per_pair_usd,
             'in_challenge_period': in_challenge,
             'timestamp': TimeUtil.now_in_millis(),
