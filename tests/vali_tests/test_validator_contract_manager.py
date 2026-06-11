@@ -12,7 +12,7 @@ import time
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.miner_account.miner_account_manager import CollateralRecord
+from vali_objects.miner_account.miner_account import CollateralRecord
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 

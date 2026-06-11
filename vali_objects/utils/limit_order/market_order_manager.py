@@ -272,20 +272,19 @@ class MarketOrderManager():
         bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
 
         account = self._miner_account_client.get_or_create(miner_hotkey)
-        buying_power = account['buying_power']
-        capital_used = account['capital_used']
-        total_borrowed_usd = account['total_borrowed_amount']
+        buying_power = account.buying_power
+        capital_used = account.capital_used
+        total_borrowed_usd = account.total_borrowed_amount
 
-        # Get balance and leverage bounds for USD-based validation TODO use account object
         if not balance:
-            balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
+            balance = account.balance or 0.0
 
         trade_pair_category = trade_pair.trade_pair_category
         leverage_key = (trade_pair_category, trade_pair.instrument_type)
         miner_bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
         _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
         if miner_bucket in _subaccount_buckets:
-            tier = get_leverage_tier(miner_bucket, account['account_size'])
+            tier = get_leverage_tier(miner_bucket, account.account_size)
             max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
             account_multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_PAIR[tier].get(leverage_key, 1.0)
         else:

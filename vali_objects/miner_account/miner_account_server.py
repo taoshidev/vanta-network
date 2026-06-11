@@ -24,7 +24,8 @@ from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectio
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
+from vali_objects.miner_account.miner_account import MinerAccount
+from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 
 
 class MinerAccountServer(RPCServerBase):
@@ -210,17 +211,13 @@ class MinerAccountServer(RPCServerBase):
 
     # ==================== MinerAccount Cache Methods ====================
 
-    def get_or_create(self, hotkey: str) -> dict:
-        """Get existing account or create from CollateralRecord. Returns dict representation."""
-        account = self._manager.get_or_create(hotkey)
-        return account.to_dict()
+    def get_or_create(self, hotkey: str) -> MinerAccount:
+        """Get existing account or create from CollateralRecord."""
+        return self._manager.get_or_create(hotkey)
 
-    def get_account(self, hotkey: str) -> Optional[dict]:
-        """Get account if it exists, without creating. Returns dict representation."""
-        account = self._manager.get_account(hotkey)
-        if account is None:
-            return None
-        return account.to_dict()
+    def get_account(self, hotkey: str) -> Optional[MinerAccount]:
+        """Get account if it exists, without creating."""
+        return self._manager.get_account(hotkey)
 
     def get_accounts(self, hotkeys: list) -> Dict[str, dict]:
         """Get accounts for multiple hotkeys. Returns dict of hotkey -> account dict."""

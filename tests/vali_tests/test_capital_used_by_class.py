@@ -21,7 +21,8 @@ state, properties, and the (de)serialization boundary.
 import unittest
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
+from vali_objects.miner_account.miner_account import MinerAccount
+from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_config import (
     TradePair,

@@ -1403,9 +1403,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             preview = data.get('preview', True)
 
             # Snapshot original account
-            original_account = self._miner_account_client.get_account(hotkey)
-            if original_account is None:
+            original_account_obj = self._miner_account_client.get_account(hotkey)
+            if original_account_obj is None:
                 return jsonify({'error': f'No account found for hotkey {hotkey}'}), 404
+            original_account = original_account_obj.to_dict()
 
             # Fetch positions
             positions = self._position_client.get_positions_for_one_hotkey(hotkey)
@@ -1456,7 +1457,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             else:
                 # Actual rebuild - persists to disk, preserving bucket and max_return
                 self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
-                rebuilt_account = self._miner_account_client.get_account(hotkey)
+                rebuilt_account_obj = self._miner_account_client.get_account(hotkey)
+                rebuilt_account = rebuilt_account_obj.to_dict() if rebuilt_account_obj else None
 
             return jsonify({
                 'status': 'success',

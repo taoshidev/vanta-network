@@ -16,7 +16,7 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.miner_account.miner_account_manager import MinerAccount, CollateralRecord
+from vali_objects.miner_account.miner_account import MinerAccount, CollateralRecord
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 

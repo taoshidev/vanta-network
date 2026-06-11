@@ -1262,7 +1262,8 @@ class EntityManager(ValidatorBroadcastBase):
 
         account_size_data = None
         try:
-            account_size_data = self._miner_account_client.get_account(synthetic_hotkey)
+            account = self._miner_account_client.get_account(synthetic_hotkey)
+            account_size_data = account.to_dict() if account else None
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
 

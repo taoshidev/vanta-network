@@ -1699,10 +1699,8 @@ class PositionManager:
 
         # Rebuild account state from remaining positions
         remaining = self.get_positions_for_one_hotkey(hotkey)
-        original_account = self._miner_account_client.get_account(hotkey) if self._miner_account_client else {}
-        max_return = (original_account or {}).get('max_return', 1)
         if self._miner_account_client:
-            self._miner_account_client.rebuild_account_state_from_positions(hotkey, remaining, max_return=max_return)
+            self._miner_account_client.rebuild_account_state_from_positions(hotkey, remaining)
             log.append("Rebuilt account state")
 
         # Wipe perf ledger
