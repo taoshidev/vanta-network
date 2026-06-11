@@ -108,25 +108,16 @@ class MinerAccount:
     def multiplier(self) -> float:
         """Subaccount-wide portfolio cap multiplier used by `buying_power`.
 
-        - Multi-class subaccounts (today only HL_ALL): returns TIER_MULTI_CLASS_OVERALL_CAP[tier],
-          the cross-class overall cap. Per-class sub-caps are enforced separately at order entry
-          via get_portfolio_caps; this property exposes only the overall ceiling.
-        - Single-class subaccounts: returns TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][asset_class].
+        Returns TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
+        subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling; per-class
+        sub-caps are enforced separately at order entry via get_portfolio_caps.
         """
         if not self.asset_class:
             return 1
 
         from vali_objects.utils.leverage_utils import get_leverage_tier
         tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
-        if self.is_multi_class():
-            return ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
-        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier].get(self.asset_class, 1.0)
-
-    def is_multi_class(self) -> bool:
-        """True if this subaccount can hold positions across more than one TradePairCategory
-        (e.g. HL_ALL). Multi-class subaccounts are subject to per-class portfolio sub-caps plus
-        a tighter overall cap (see TIER_MULTI_CLASS_OVERALL_CAP)."""
-        return self.asset_class is not None and self.asset_class.is_multi_class
+        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""

@@ -19,16 +19,7 @@ class MinerAssetClass(str, Enum):
     EQUITIES = "equities"
     COMMODITIES = "commodities"
     HL_ALL = "hl_all"
-
-    @property
-    def is_multi_class(self) -> bool:
-        """
-        True if this asset class represents a multi-class subaccount (one that may hold
-        positions across more than one TradePairCategory). Multi-class subaccounts are
-        subject to per-class portfolio sub-caps plus a tighter overall cap; single-class
-        subaccounts use a single per-class cap.
-        """
-        return self == MinerAssetClass.HL_ALL
+    ALL_MARKETS = "all_markets"
 
     @staticmethod
     def is_valid(asset_class: str) -> bool:
@@ -50,7 +41,7 @@ class MinerAssetClass(str, Enum):
         category = trade_pair.trade_pair_category
         src = trade_pair.src
 
-        if self == MinerAssetClass.HL_ALL:
+        if self in (MinerAssetClass.HL_ALL, MinerAssetClass.ALL_MARKETS):
             excluded_forex = {TradePair.XAUUSD, TradePair.XAGUSD}
             is_supported_forex = category == TradePairCategory.FOREX and trade_pair not in excluded_forex
             return src == TradePairSource.HYPERLIQUID or is_supported_forex

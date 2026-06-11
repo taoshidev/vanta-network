@@ -4,7 +4,7 @@ Unit tests for per-asset-class capital tracking on MinerAccount
 
 Covers:
   * MinerAccount.capital_used_by_class default and reset semantics.
-  * MinerAccount.multiplier / buying_power / is_multi_class branches for
+  * MinerAccount.multiplier / buying_power branches for
     single-class vs multi-class (HL_ALL).
   * MinerAccountManager.compute_account_state_from_positions populates the
     per-class breakdown.
@@ -58,7 +58,7 @@ class TestCapitalUsedByClassDefault(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# multiplier / buying_power / is_multi_class
+# multiplier / buying_power
 # ---------------------------------------------------------------------------
 
 class TestMinerAccountMultiplier(unittest.TestCase):
@@ -83,7 +83,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
-        self.assertEqual(account.multiplier, ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[2])
+        self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
 
     def test_multiplier_challenge_bucket_uses_tier_1(self):
         account = MinerAccount(
@@ -91,17 +91,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_CHALLENGE,
         )
-        self.assertEqual(account.multiplier, ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[1])
-
-    def test_is_multi_class_true_only_for_multi_class_categories(self):
-        for cat in MinerAssetClass:
-            with self.subTest(cat=cat):
-                account = MinerAccount(miner_hotkey="hk", asset_class=cat)
-                self.assertEqual(account.is_multi_class(), cat.is_multi_class)
-
-    def test_is_multi_class_false_when_asset_class_none(self):
-        account = MinerAccount(miner_hotkey="hk", asset_class=None)
-        self.assertFalse(account.is_multi_class())
+        self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL])
 
     def test_buying_power_multi_class_uses_overall_cap(self):
         """buying_power = balance × multiplier − capital_used for non-equities."""
@@ -112,7 +102,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             capital_used=1_000.0,
         )
         balance = account.balance
-        expected = balance * ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[2] - 1_000.0
+        expected = balance * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL] - 1_000.0
         self.assertAlmostEqual(account.buying_power, expected)
 
 

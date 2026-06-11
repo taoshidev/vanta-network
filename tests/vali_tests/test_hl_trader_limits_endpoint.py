@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 from flask import Flask
 from vali_objects.vali_config import ValiConfig, TradePairCategory
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vanta_api.validator_rest_server import ValidatorRestServer
 
 
 # ==================== Test constants ====================
@@ -25,14 +26,14 @@ VALID_HL_ADDRESS_2 = "0x" + "1234567890abcdef" * 2 + "12345678"
 ACCOUNT_SIZE = 50_000.0  # Tier 2 (<$200K)
 
 # Expected limits — Tier 2 (SUBACCOUNT_FUNDED, account_size < $200K), crypto
-TIER2_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[2][TradePairCategory.CRYPTO]   # 1.0x
+TIER2_POSITIONAL = ValidatorRestServer._ENDPOINT_TIER_POSITIONAL_LEVERAGE[2][TradePairCategory.CRYPTO]   # 1.0x
 TIER2_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.CRYPTO]   # 2.0x
 
 EXPECTED_MAX_POSITION = ACCOUNT_SIZE * TIER2_POSITIONAL   # 50_000
 EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER2_PORTFOLIO   # 100_000
 
 # Expected limits — Tier 1 (SUBACCOUNT_CHALLENGE), crypto
-TIER1_POSITIONAL = ValiConfig.TIER_POSITIONAL_LEVERAGE[1][TradePairCategory.CRYPTO]   # 0.5x
+TIER1_POSITIONAL = ValidatorRestServer._ENDPOINT_TIER_POSITIONAL_LEVERAGE[1][TradePairCategory.CRYPTO]   # 0.5x
 TIER1_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[1][TradePairCategory.CRYPTO]   # 1.0x
 
 EXPECTED_CHALLENGE_MAX_POSITION = ACCOUNT_SIZE * TIER1_POSITIONAL  # 25_000
@@ -245,9 +246,10 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
             {'crypto', 'forex', 'equities', 'indices', 'commodities'},
         )
 
-    def test_hl_all_overall_cap_from_multi_class_table(self):
-        """HL_ALL max_portfolio_usd sources from TIER_MULTI_CLASS_OVERALL_CAP, not the per-class table."""
+    def test_hl_all_overall_cap_from_asset_class_table(self):
+        """HL_ALL max_portfolio_usd sources from the HL_ALL entry in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS."""
         from vali_objects.vali_config import ValiConfig
+        from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             asset_class="hl_all",
             challenge_bucket=MinerBucket.SUBACCOUNT_FUNDED.value,
@@ -256,7 +258,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        expected_overall = ACCOUNT_SIZE * ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[2]
+        expected_overall = ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL]
         self.assertEqual(data['max_portfolio_usd'], expected_overall)
 
     def test_hl_all_per_class_values_match_table(self):
@@ -282,8 +284,9 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
             self.assertEqual(breakdown[cat_str], expected, f"per-class mismatch for {cat_str}")
 
     def test_hl_all_challenge_period_uses_tier_1(self):
-        """HL_ALL during challenge period uses TIER_MULTI_CLASS_OVERALL_CAP[1]."""
+        """HL_ALL during challenge period uses tier-1 entry in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS."""
         from vali_objects.vali_config import ValiConfig
+        from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             asset_class="hl_all",
             challenge_bucket=MinerBucket.SUBACCOUNT_CHALLENGE.value,
@@ -295,7 +298,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         self.assertTrue(data['in_challenge_period'])
         self.assertEqual(
             data['max_portfolio_usd'],
-            ACCOUNT_SIZE * ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[1],
+            ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL],
         )
 
     def test_single_class_response_has_no_per_class_breakdown(self):

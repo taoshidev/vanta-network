@@ -7,6 +7,7 @@ import time
 import uuid
 import threading
 
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
@@ -303,12 +304,10 @@ class MarketOrderManager():
         effective_buying_power = buying_power
         if miner_bucket in _subaccount_buckets:
             asset_class_str = account.get('asset_class')
-            subaccount_asset_class = None
-            if asset_class_str:
-                try:
-                    subaccount_asset_class = TradePairCategory(asset_class_str)
-                except ValueError:
-                    subaccount_asset_class = None
+            if not asset_class_str:
+                raise SignalException(f"Asset class must be selected for {miner_hotkey}")
+
+            subaccount_asset_class = MinerAssetClass(asset_class_str)
             per_class_cap, overall_cap = get_portfolio_caps(
                 subaccount_asset_class, miner_bucket, account['account_size'], trade_pair_category
             )
