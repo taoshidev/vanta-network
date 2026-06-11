@@ -180,6 +180,39 @@ class TestPriceSlippageModel(TestBase):
                                                                     self.forex_order_sell_small)
         assert small_slippage_sell == slippage_sell
 
+    def test_forex_slippage_v2_tiered_by_group(self):
+        """
+        V2 forex slippage is tiered by liquidity group:
+          G1 (USD majors, incl. USDJPY): 0.5 bps, doubling to 1 bps during the 5-6 pm EST rollover.
+          All other forex pairs: 1 bps, 2 bps during rollover.
+        """
+        import datetime
+        from zoneinfo import ZoneInfo
+        eastern = ZoneInfo("America/New_York")
+
+        def ms_at_et_hour(hour):
+            # Fixed date after the V2 cutoff (Oct 2025), at the given Eastern-time hour.
+            return int(datetime.datetime(2026, 3, 16, hour, 30, tzinfo=eastern).timestamp() * 1000)
+
+        normal_ms = ms_at_et_hour(10)    # 10:30 ET - outside the rollover window
+        rollover_ms = ms_at_et_hour(17)  # 17:30 ET - inside the 5-6 pm rollover window
+
+        def forex_slippage(trade_pair, processed_ms):
+            order = Order(price=100, processed_ms=processed_ms, order_uuid=self.DEFAULT_ORDER_UUID,
+                          trade_pair=trade_pair, order_type=OrderType.LONG,
+                          leverage=1, value=self.DEFAULT_ACCOUNT_SIZE)
+            return PriceSlippageModel.calculate_slippage(self.default_bid, self.default_ask, order)
+
+        # G1 USD majors (USDJPY now moved into G1): 0.5 bps -> 1 bps at rollover
+        for g1_pair in (TradePair.USDJPY, TradePair.EURUSD, TradePair.USDCAD):
+            self.assertAlmostEqual(forex_slippage(g1_pair, normal_ms), 0.00005, places=12)
+            self.assertAlmostEqual(forex_slippage(g1_pair, rollover_ms), 0.0001, places=12)
+
+        # Other forex (crosses): 1 bps -> 2 bps at rollover
+        for other_pair in (TradePair.EURJPY, TradePair.GBPNZD):
+            self.assertAlmostEqual(forex_slippage(other_pair, normal_ms), 0.0001, places=12)
+            self.assertAlmostEqual(forex_slippage(other_pair, rollover_ms), 0.0002, places=12)
+
     def test_crypto_slippage(self):
         """
         test buy and sell order slippage

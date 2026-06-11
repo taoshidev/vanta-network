@@ -895,7 +895,7 @@ class TradePair(Enum):
     GBPUSD = ["GBPUSD", "GBP/USD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
     USDCAD = ["USDCAD", "USD/CAD", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
     USDCHF = ["USDCHF", "USD/CHF", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
-    USDJPY = ["USDJPY", "USD/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX, ForexSubcategory.G2, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
+    USDJPY = ["USDJPY", "USD/JPY", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX, ForexSubcategory.G1, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
     USDMXN = ["USDMXN", "USD/MXN", 0.00007, ValiConfig.FOREX_MIN_LEVERAGE, ValiConfig.FOREX_MAX_LEVERAGE, TradePairCategory.FOREX, ForexSubcategory.G5, InstrumentType.SPOT, SubaccountTierBaseLeverage(2.5)]
 
 
@@ -1025,7 +1025,7 @@ class TradePair(Enum):
     # Commodity perp futures (synthetic, track commodity prices — not physical delivery)
     WTIOILUSDC   = ["WTIOILUSDC",   "WTIOIL/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:CL",       InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
     BRENTOILUSDC = ["BRENTOILUSDC", "BRENTOIL/USDC", 0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:BRENTOIL", InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
-    GOLDUSDC     = ["GOLDUSDC",     "GOLD/USDC",     0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:GOLD",     InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
+    GOLDUSDC     = ["GOLDUSDC",     "GOLD/USDC",     0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:GOLD",     InstrumentType.PERP, SubaccountTierBaseLeverage(1.0)]
     SILVERUSDC   = ["SILVERUSDC",   "SILVER/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:SILVER",   InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
     COPPERUSDC   = ["COPPERUSDC",   "COPPER/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:COPPER",   InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
     NATGASUSDC   = ["NATGASUSDC",   "NATGAS/USDC",   0.001, ValiConfig.HS_MIN_LEVERAGE, ValiConfig.HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:NATGAS",   InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]

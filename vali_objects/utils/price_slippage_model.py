@@ -16,7 +16,7 @@ from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, ValiConfig
+from vali_objects.vali_config import ForexSubcategory, NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 
 SLIPPAGE_V2_TIME_MS = 1759431540000
@@ -174,18 +174,20 @@ class PriceSlippageModel:
     @classmethod
     def calc_slippage_forex(cls, bid:float, ask:float, order:Order) -> float:
         """
-        V2: 2 bps slippage daily from 5-6 pm EST, and 1 bps slippage otherwise
+        V2: per-side slippage by liquidity tier. G1 (USD majors, incl. USDJPY): 0.5 bps,
+            doubling to 1 bps during the 5-6 pm EST rollover. All other forex: 1 bps, 2 bps at rollover.
 
         V1: Using the direct BB+ model as a stand-in for forex
         slippage percentage = 0.433 * spread/mid_price + 0.335 * sqrt(annualized_volatility**2 / 3 / 250) * sqrt(volume / (0.3 * estimated daily volume))
         """
         if order.processed_ms > SLIPPAGE_V2_TIME_MS:
+            # G1 is the most liquid tier -> half the slippage of other forex pairs.
+            base = 0.00005 if order.trade_pair.subcategory == ForexSubcategory.G1 else 0.0001
             order_datetime = TimeUtil.millis_to_datetime(order.processed_ms).astimezone(cls.eastern_tz)
             hour = order_datetime.hour
-            if 17 <= hour < 18:    # Daily 5-6 pm EST. Higher slippage during market open/closing hours
-                return 0.0002       # 2 bps
-            else:
-                return 0.0001       # 1 bps
+            if 17 <= hour < 18:    # Daily 5-6 pm EST rollover: liquidity gap, slippage doubles.
+                return base * 2
+            return base
 
         order_date = TimeUtil.millis_to_short_date_str(order.processed_ms)
 
