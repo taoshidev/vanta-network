@@ -65,6 +65,7 @@ class Position(BaseModel):
     last_stock_split_date: Optional[str] = None  # Only set for equities
     dividend_history: List[DividendHistoryEntry] = Field(default_factory=list)  # Audit log of dividend events
     last_price_source: Optional[PriceSource] = None
+    last_quote_usd_conversion: Optional[float] = None
     unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')
@@ -531,8 +532,11 @@ class Position(BaseModel):
         self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order, quote_usd_conversion=quote_usd_conversion)
         self.return_at_close = self.current_return * (total_fees if total_fees is not None else 1.0)
 
-        if price_source is not None:
+        if price_source:
             self.last_price_source = price_source
+
+        if quote_usd_conversion:
+            self.last_quote_usd_conversion = quote_usd_conversion
 
         if self.current_return < 0:
             raise ValueError(f"current return must be positive {self.current_return}")
