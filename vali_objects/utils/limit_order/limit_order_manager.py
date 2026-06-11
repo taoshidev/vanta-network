@@ -754,6 +754,9 @@ class LimitOrderManager(CacheController):
             self._last_print_time_ms = now_ms
 
         for trade_pair, hotkey_dict in list(self._limit_orders.items()):
+            if trade_pair.is_blocked or not hotkey_dict:
+                continue
+
             # Check if market is open
             if not self.live_price_fetcher.is_market_open(trade_pair, now_ms):
                 if self.running_unit_tests:
@@ -1491,7 +1494,7 @@ class LimitOrderManager(CacheController):
         total_orders_read = 0
         total_bracket_orders = 0
 
-        order_uuid_to_delete = {"ebd1cadc-ea41-4b06-91c0-8d1e47999b9d"}
+        order_uuid_to_delete = {}
 
         bt.logging.info(f"[LIMIT ORDER DISK] Reading limit orders from disk for {len(hotkeys)} hotkeys...")
 
