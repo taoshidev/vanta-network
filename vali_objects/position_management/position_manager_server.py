@@ -252,7 +252,6 @@ class PositionManagerServer(RPCServerBase):
         hotkey: str,
         close_time_ms: int,
         order_source: OrderSource,
-        live_price_fetcher=None
     ) -> int:
         """
         RPC wrapper for close_all_positions.
@@ -261,7 +260,6 @@ class PositionManagerServer(RPCServerBase):
             hotkey: Hotkey whose positions should be closed
             close_time_ms: Timestamp for closing positions
             order_source: OrderSource enum value (as int)
-            live_price_fetcher: Optional price fetcher
 
         Returns:
             int: Number of positions closed
@@ -270,7 +268,6 @@ class PositionManagerServer(RPCServerBase):
             hotkey=hotkey,
             close_time_ms=close_time_ms,
             order_source=order_source,
-            live_price_fetcher=live_price_fetcher
         )
 
     # ==================== Pre-run Setup RPC Methods ====================

@@ -5,6 +5,7 @@ from collections import defaultdict
 
 from time_util.time_util import TimeUtil
 from vali_objects.enums.misc import PositionSyncResult
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position_management.position_utils.position_splitter import PositionSplitter
 from vali_objects.vali_dataclasses.position import Position
@@ -436,11 +437,9 @@ class ValidatorSyncBase():
         for position_to_close in positions_to_close:
             self.global_stats['n_positions_closed_duplicate_opens_for_trade_pair'] += 1
 
-            # Add synthetic FLAT order to properly close the position
+            # Close position
             close_time_ms = position_to_close.orders[-1].processed_ms + 1
-            flat_order = Position.generate_fake_flat_order(position_to_close, close_time_ms, self._live_price_client)
-            position_to_close.orders.append(flat_order)
-            position_to_close.close_out_position(close_time_ms)
+            position_to_close.force_close_position(order_src=OrderSource.ORGANIC, close_ms=close_time_ms)
             # Save the closed position back to disk
             self._position_manager_client.save_miner_position(position_to_close, delete_open_position_if_exists=False)
 

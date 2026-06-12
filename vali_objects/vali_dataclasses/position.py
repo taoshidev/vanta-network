@@ -486,50 +486,6 @@ class Position(BaseModel):
         net_return = 1 + gain
         return net_return
 
-    @staticmethod
-    def generate_fake_flat_order(position, elimination_time_ms, price_fetcher_client, extra_price_source=None, src=None):
-        fake_flat_order_time = elimination_time_ms
-        price_source = price_fetcher_client.get_close_at_date(
-            trade_pair=position.trade_pair,
-            timestamp_ms=elimination_time_ms,
-            verbose=False
-        )
-
-        if price_source:
-            # Parse the appropriate price
-            price = price_source.parse_appropriate_price(
-                now_ms=elimination_time_ms,
-                is_forex=position.trade_pair.is_forex,
-                order_type=OrderType.FLAT,
-                position=position
-            )
-            # Use provided src or default to PRICE_FILLED_ELIMINATION_FLAT
-            if src is None:
-                src = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
-        else:
-            bt.logging.warning(f'Unexpectedly unable to fetch price for trade pair {position.trade_pair.trade_pair_id}'
-                               f' at time {TimeUtil.millis_to_formatted_date_str(elimination_time_ms)} during fake flat order'
-                               f'creation. Setting price to 0. and src to OrderSource.ELIMINATION_FLAT')
-            price = 0
-            # Use provided src or default to ELIMINATION_FLAT
-            if src is None:
-                src = OrderSource.ELIMINATION_FLAT
-
-
-        flat_order = Order(price=price,
-                           processed_ms=fake_flat_order_time,
-                           order_uuid=position.position_uuid[::-1],  # deterministic across validators. Won't mess with p2p sync
-                           trade_pair=position.trade_pair,
-                           order_type=OrderType.FLAT,
-                           leverage=-position.net_leverage,
-                           value=-position.net_value,
-                           quantity=-position.net_quantity,
-                           src=src,
-                           price_sources=[x for x in (price_source, extra_price_source) if x is not None])
-        flat_order.quote_usd_rate = price_fetcher_client.get_quote_usd_conversion(flat_order, position)
-        flat_order.usd_base_rate = price_fetcher_client.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
-        return flat_order
-
     def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None, quote_usd_conversion=None, price_source=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
@@ -610,7 +566,7 @@ class Position(BaseModel):
             self.position_type = order.order_type if order.order_type != OrderType.FLAT else OrderType.LONG
             self.close_out_position(order.processed_ms)
 
-    def close_position(self, order_src: OrderSource, price_source: PriceSource | None = None, close_ms: int | None = None):
+    def force_close_position(self, order_src: OrderSource, price_source: PriceSource | None = None, close_ms: int | None = None):
         if not price_source:
             price_source = self.last_price_source
 

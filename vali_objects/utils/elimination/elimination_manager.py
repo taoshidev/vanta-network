@@ -440,7 +440,7 @@ class EliminationManager(CacheController):
             if position.is_closed_position:
                 return
 
-            position.close_position(OrderSource.ELIMINATION_FLAT, close_ms=position_close_ms)
+            position.force_close_position(OrderSource.ELIMINATION_FLAT, close_ms=position_close_ms)
 
             # Epoch-based validation
             if iteration_epoch is not None:
