@@ -818,18 +818,8 @@ class PositionManager:
         closed_count = 0
         for position in open_positions:
             try:
-                # Generate FLAT order using existing pattern
-                flat_order = Position.generate_fake_flat_order(
-                    position=position,
-                    elimination_time_ms=close_time_ms,
-                    price_fetcher_client=price_fetcher,
-                    src=order_source
-                )
-
-                # Add order to position (automatically marks as closed)
-                position.add_order(flat_order, price_fetcher)
-
                 # Save updated position
+                position.close_position(order_source)
                 self.save_miner_position(position)
 
                 bt.logging.info(f"Closed open {position.trade_pair.trade_pair_id} position {position.position_uuid} for {hotkey}")

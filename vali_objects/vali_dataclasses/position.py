@@ -64,8 +64,12 @@ class Position(BaseModel):
     is_hl: bool = False  # True for Hyperliquid entity miner positions
     last_stock_split_date: Optional[str] = None  # Only set for equities
     dividend_history: List[DividendHistoryEntry] = Field(default_factory=list)  # Audit log of dividend events
-    last_price_source: Optional[PriceSource] = None
-    last_quote_usd_conversion: Optional[float] = None
+
+    # Only used to close orders that are already open - can default to none to keep strongly typed..?
+    last_price_source: PriceSource = Field(default_factory=PriceSource)
+    last_quote_usd_conversion: float = 1.0
+
+    # Only used for UI to associate bracket orders
     unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')
@@ -605,6 +609,25 @@ class Position(BaseModel):
             )
             self.position_type = order.order_type if order.order_type != OrderType.FLAT else OrderType.LONG
             self.close_out_position(order.processed_ms)
+
+    def close_position(self, order_src: OrderSource, price_source: PriceSource | None = None, close_ms: int | None = None):
+        if not price_source:
+            price_source = self.last_price_source
+
+        if not close_ms:
+            close_ms = TimeUtil.now_in_millis()
+
+        fill_price = price_source.parse_appropriate_price(close_ms, self.trade_pair.is_forex, OrderType.FLAT, self)
+        flat_order = Order(
+            order_type=OrderType.FLAT,
+            price=fill_price,
+            quote_usd_rate=self.last_quote_usd_conversion,
+            src=order_src,
+            price_sources=[price_source],
+            processed_ms=close_ms,
+            order_uuid=self.position_uuid+f"-close-{order_src}"
+        )
+        self.add_order(flat_order)
 
     def close_out_position(self, close_ms):
         self.position_type = OrderType.FLAT
