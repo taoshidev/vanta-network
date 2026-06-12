@@ -1610,7 +1610,7 @@ class PerfLedgerManager(CacheController):
         n_hotkeys = len(hotkey_to_positions)
         for hotkey_i, (hotkey, positions) in enumerate(hotkey_to_positions.items()):
             try:
-                bt.logging.info(f"Building perf ledger for {hotkey} ({hotkey_i + 1}/{n_hotkeys})")
+                # bt.logging.info(f"Building perf ledger for {hotkey} ({hotkey_i + 1}/{n_hotkeys})")
                 account_size = hotkey_to_account_size.get(hotkey) if hotkey_to_account_size else None
                 self.update_one_perf_ledger_bundle(hotkey_i, n_hotkeys, hotkey, positions, now_ms, existing_perf_ledgers,
                                                    account_size=account_size)
