@@ -51,6 +51,43 @@ A long position is a bet that the trade pair will increase, while a short positi
 14. There is a 5-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
 15. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
 
+## Eliminations
+
+Miners progress through buckets (Challenge → Main Competition, with Probation and Plagiarism review buckets). Each bucket has its own promotion, demotion, and elimination rules. A miner can be eliminated for any of the reasons below.
+
+### Drawdown Eliminations
+
+Two drawdown rules are enforced continuously against each miner's equity:
+
+- **Intraday drawdown** — current equity cannot drop below the bucket's intraday threshold relative to the day's opening equity.
+- **End-of-day (EOD) trailing drawdown** — last EOD equity cannot drop below the bucket's EOD threshold relative to the highest-ever EOD equity.
+
+Challenge-period miners are eliminated at 5% intraday or 5% EOD. Miners in main competition are eliminated at 5% intraday or 8% EOD. Breaching either threshold results in immediate elimination.
+
+### Challenge Period Eliminations
+
+New miners enter a Challenge Period and must reach the promotion threshold within 90 days (see Basic Rules #2). Miners that fail to promote before the window expires are eliminated.
+
+### Probation Eliminations
+
+Miners in the main competition that fall below the top 25 in their asset class are moved to Probation. They have 60 days to return to main competition by outperforming the bottom-of-pack miner; otherwise they are eliminated.
+
+### Plagiarism Eliminations
+
+Orders are continuously analyzed for similarity against other miners. Suspected copy-trading moves a miner into a Plagiarism review bucket; failure to recover before the review window expires results in elimination.
+
+### Inactivity Eliminations
+
+Miners in any active bucket (Challenge, Main Competition, Probation, or subaccount buckets) that submit no orders within the inactivity window are eliminated as inactive.
+
+### Deregistration and Zombie Eliminations
+
+Hotkeys removed from the metagraph are tracked as deregistered. Hotkeys that linger in network state without being present in the metagraph are flagged as zombies and eliminated to keep state consistent.
+
+### Post-Elimination
+
+After elimination, miners are not immediately deregistered from the network. They undergo a waiting period — determined by registration timelines and the network's immunity policy — before official deregistration. Upon official deregistration, the miner forfeits registration fees paid. See Basic Rules #15 for the hotkey blacklisting policy that applies after elimination or deregistration.
+
 ## Asset Class Selection
 Each miner selects a single asset class to compete in (crypto, forex, or equities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
 
