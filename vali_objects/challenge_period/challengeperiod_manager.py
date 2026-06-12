@@ -8,6 +8,7 @@ ChallengePeriodServer wraps this and exposes methods via RPC.
 
 This follows the same pattern as EliminationManager.
 """
+import time
 from dataclasses import asdict, dataclass, field
 
 from bittensor.utils.btlogging import logging as btlogging
@@ -19,7 +20,8 @@ from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.scoring import Scoring
@@ -194,8 +196,8 @@ class ChallengePeriodManager(CacheController):
         self.miner_states: dict[str, MinerBucketState] = self._read_states_from_disk()
 
         # Cached scores for MinerStatisticsManager
-        self._cached_asset_softmaxed_scores: dict[TradePairCategory, dict[str, float]] = {}
-        self._cached_asset_competitiveness: dict[TradePairCategory, float] = {}
+        self._cached_asset_softmaxed_scores: dict[MinerAssetClass, dict[str, float]] = {}
+        self._cached_asset_competitiveness: dict[MinerAssetClass, float] = {}
 
         btlogging.info("[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
 
@@ -207,37 +209,79 @@ class ChallengePeriodManager(CacheController):
 
         btlogging.info(f"[CHALLENGE] Starting challenge period loop {current_time_ms} iteration_epoch={iteration_epoch}")
 
-        asset_selections = self._asset_selection_client.get_asset_selections()
-        filtered_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
-            hotkeys=self._position_client.get_all_hotkeys()
-        )
+        timings: dict[str, float] = {}
+        _overall_start = time.perf_counter()
 
+        _t0 = time.perf_counter()
+        asset_selections = self._asset_selection_client.get_asset_selections()
+        timings["get_asset_selections"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
+        all_hotkeys = self._position_client.get_all_hotkeys()
+        timings["get_all_hotkeys"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
+        filtered_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
+            hotkeys=all_hotkeys
+        )
+        timings["filtered_positions_for_scoring"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         hotkeys_elimination_sync = list(self._elimination_client.get_eliminated_hotkeys())
+        timings["get_eliminated_hotkeys"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         hotkeys_plagiarism_sync = list(self._plagiarism_client.get_plagiarism_miners())
+        timings["get_plagiarism_miners"] = time.perf_counter() - _t0
 
         state_changed = False
+        _t0 = time.perf_counter()
         state_changed |= self._sync_positions(
             hotkeys=list(filtered_positions.keys()),
             eliminated_hotkeys=hotkeys_elimination_sync,
             hk_to_first_order_time_ms=hk_to_first_order_time,
             default_time=current_time_ms
         )
+        timings["_sync_positions"] = time.perf_counter() - _t0
 
+        _t0 = time.perf_counter()
         state_changed |= self.sync_plagiarism_miners(hotkeys_plagiarism_sync, current_time_ms)
+        timings["sync_plagiarism_miners"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         state_changed |= self.sync_elimination_miners(hotkeys_elimination_sync)
+        timings["sync_elimination_miners"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         state_changed |= self._prune_hotkeys_no_positions()
+        timings["_prune_hotkeys_no_positions"] = time.perf_counter() - _t0
 
         self._current_iteration_epoch = iteration_epoch
 
         evaluation_hotkeys = [hotkey for hotkey, state in self.miner_states.items() if state.current_bucket.is_active]
         rank_hotkeys = [hotkey for hotkey, state in self.miner_states.items() if state.current_bucket.is_rank_based]
 
+        _t0 = time.perf_counter()
         accounts = self._miner_account_client.get_accounts(evaluation_hotkeys)
-        ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
-        positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
-        self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
-        self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
+        timings["get_accounts"] = time.perf_counter() - _t0
 
+        _t0 = time.perf_counter()
+        ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
+        timings["filtered_ledger_for_scoring"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
+        positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
+        timings["get_positions_for_hotkeys"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
+        self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
+        timings["_refresh_drawdown_cache"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
+        self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
+        timings["_refresh_rank_cache"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         eliminations = {}
         promotions, demotions = [], []
         for hotkey, state in self.miner_states.items():
@@ -269,7 +313,7 @@ class ChallengePeriodManager(CacheController):
             if _asset is None:
                 btlogging.warning(f"[CHALLENGE] {hotkey} no asset selection, skipping evaluation")
                 continue
-            asset_class = TradePairCategory(_asset)
+            asset_class = MinerAssetClass(_asset)
 
             if self._check_demotion(state):
                 demotions.append(hotkey)
@@ -280,19 +324,43 @@ class ChallengePeriodManager(CacheController):
                 promotions.append(hotkey)
                 continue
 
+        timings["evaluation_loop"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         state_changed |= self.eliminate_hotkeys(eliminations, current_time_ms)
+        timings["eliminate_hotkeys"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         state_changed |= self.demote_hotkeys(demotions, current_time_ms)
+        timings["demote_hotkeys"] = time.perf_counter() - _t0
+
+        _t0 = time.perf_counter()
         state_changed |= self.promote_hotkeys(promotions, current_time_ms)
+        timings["promote_hotkeys"] = time.perf_counter() - _t0
 
         if state_changed:
+            _t0 = time.perf_counter()
             self._sync_buckets_to_accounts()
+            timings["_sync_buckets_to_accounts"] = time.perf_counter() - _t0
+
+            _t0 = time.perf_counter()
             self._save_to_disk()
+            timings["_save_to_disk"] = time.perf_counter() - _t0
 
         counts = {}
         for state in self.miner_states.values():
             counts[state.current_bucket] = counts.get(state.current_bucket, 0) + 1
         snapshot = " | ".join(f"{b.value}={n}" for b, n in sorted(counts.items(), key=lambda x: x[0].value))
         btlogging.success(f"[CHALLENGE] snapshot: {snapshot} (total={len(self.miner_states)})")
+
+        total_elapsed = time.perf_counter() - _overall_start
+        timing_lines = "\n".join(
+            f"  {name:40s} {dur*1000:>10.1f} ms"
+            for name, dur in sorted(timings.items(), key=lambda x: -x[1])
+        )
+        btlogging.info(
+            f"[CHALLENGE] refresh perf timings (total={total_elapsed*1000:.1f} ms):\n{timing_lines}"
+        )
 
         return self._to_slack_message(promotions)
 
@@ -540,7 +608,7 @@ class ChallengePeriodManager(CacheController):
         ledgers: dict[str,PerfLedger],
         positions: dict[str,list[Position]],
         accounts: dict[str,dict],
-        asset_selections: dict[str,TradePairCategory],
+        asset_selections: dict[str,MinerAssetClass],
         current_time_ms: int
     ):
         asset_classes = list(set(asset_selections.values()))
@@ -621,7 +689,7 @@ class ChallengePeriodManager(CacheController):
         new_eliminations = [hk for hk in elimination_miners if hk in self.miner_states]
         if new_eliminations:
             btlogging.warning(f"[CHALLENGE] syncing {len(new_eliminations)} eliminated miners: {new_eliminations}")
-        return self.remove_miners(elimination_miners)
+        return self.remove_miners(new_eliminations)
 
     def _prune_hotkeys_no_positions(self, hotkeys=None) -> bool:
         """

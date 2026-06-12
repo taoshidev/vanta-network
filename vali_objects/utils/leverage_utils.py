@@ -1,7 +1,8 @@
 from typing import Optional
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.vali_config import InstrumentType, MULTI_CLASS_CATEGORIES, TradePair, TradePairCategory, ValiConfig  # noqa: E402
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.vali_config import InstrumentType, TradePair, TradePairCategory, ValiConfig  # noqa: E402
 
 
 # Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will
@@ -39,14 +40,14 @@ def get_leverage_tier(miner_bucket, account_size: float) -> int:
 
 
 def get_portfolio_caps(
-    subaccount_asset_class: Optional[TradePairCategory],
+    subaccount_asset_class: MinerAssetClass,
     miner_bucket: MinerBucket,
     account_size: float,
     trade_pair_category: TradePairCategory,
 ) -> tuple[float, float]:
     """Return (per_class_cap_multiplier, overall_cap_multiplier) for subaccount portfolio caps.
 
-    For multi-class subaccounts (see MULTI_CLASS_CATEGORIES, today only HL_ALL), the two
+    For multi-class subaccounts (HL_ALL, ALL_MARKETS), the two
     values differ:
       - per_class_cap_multiplier limits exposure within `trade_pair_category`
       - overall_cap_multiplier limits total subaccount exposure across all classes; this
@@ -60,15 +61,8 @@ def get_portfolio_caps(
     where the account is materialized as an RPC dict, not the live MinerAccount.
     """
     tier = get_leverage_tier(miner_bucket, account_size)
-
-    if subaccount_asset_class is not None and subaccount_asset_class in MULTI_CLASS_CATEGORIES:
-        per_class_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(trade_pair_category, 1.0)
-        overall_cap = ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
-    else:
-        single_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
-        per_class_cap = single_cap
-        overall_cap = single_cap
-
+    per_class_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier].get(trade_pair_category, 1.0)
+    overall_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
     return per_class_cap, overall_cap
 
 

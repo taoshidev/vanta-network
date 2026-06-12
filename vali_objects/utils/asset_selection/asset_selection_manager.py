@@ -16,7 +16,8 @@ from typing import Dict
 import bittensor as bt
 
 import template.protocol
-from vali_objects.vali_config import TradePairCategory, TradePairSource, RPCConnectionMode
+from vali_objects.vali_config import TradePairSource, RPCConnectionMode
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
@@ -67,8 +68,8 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
 
         # SOURCE OF TRUTH: Normal Python dict
-        # Structure: miner_hotkey -> TradePairCategory
-        self.asset_selections: Dict[str, TradePairCategory] = {}
+        # Structure: miner_hotkey -> MinerAssetClass
+        self.asset_selections: Dict[str, MinerAssetClass] = {}
 
         self.ASSET_SELECTIONS_FILE = ValiBkpUtils.get_asset_selections_file_location(
             running_unit_tests=running_unit_tests
@@ -136,15 +137,15 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         }
 
     @staticmethod
-    def _parse_asset_selections_dict(json_dict: Dict) -> Dict[str, TradePairCategory]:
+    def _parse_asset_selections_dict(json_dict: Dict) -> Dict[str, MinerAssetClass]:
         """Parse disk format back to in-memory format."""
         parsed_selections = {}
 
         for hotkey, asset_class_str in json_dict.items():
             try:
                 if asset_class_str:
-                    # Convert string back to TradePairCategory enum
-                    asset_class = TradePairCategory(asset_class_str)
+                    # Convert string back to MinerAssetClass enum
+                    asset_class = MinerAssetClass(asset_class_str)
                     parsed_selections[hotkey] = asset_class
             except ValueError as e:
                 bt.logging.warning(f"[ASSET_MGR] Invalid asset selection for miner {hotkey}: {e}")
@@ -152,13 +153,13 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
         return parsed_selections
 
-    def broadcast_asset_selection_to_validators(self, hotkey: str, asset_selection: TradePairCategory):
+    def broadcast_asset_selection_to_validators(self, hotkey: str, asset_selection: MinerAssetClass):
         """
         Broadcast AssetSelection synapse to other validators using shared broadcast base.
 
         Args:
             hotkey: The miner's hotkey
-            asset_selection: The TradePairCategory enum value
+            asset_selection: The MinerAssetClass enum value
         """
         def create_synapse():
             asset_selection_data = {
@@ -175,31 +176,19 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
     # ==================== Query Methods ====================
 
-    def is_valid_asset_class(self, asset_class: str) -> bool:
-        """
-        Validate if the provided asset class is valid.
-
-        Args:
-            asset_class: The asset class string to validate
-
-        Returns:
-            True if valid, False otherwise
-        """
-        return asset_class.lower() in {c.value for c in TradePairCategory}
-
-    def get_asset_selections(self) -> Dict[str, TradePairCategory]:
+    def get_asset_selections(self) -> Dict[str, MinerAssetClass]:
         """
         Get the asset_selections dict (copy).
 
         Returns:
-            Dict[str, TradePairCategory]: Dictionary mapping hotkey to TradePairCategory enum
+            Dict[str, MinerAssetClass]: Dictionary mapping hotkey to MinerAssetClass enum
         """
         # FIX: Protect dict copy with lock to prevent torn reads
         # Without lock, could see partial state if dict modified during copy
         with self._asset_selection_lock:
             return dict(self.asset_selections)
 
-    def get_asset_selection(self, hotkey: str) -> TradePairCategory | None:
+    def get_asset_selection(self, hotkey: str) -> MinerAssetClass | None:
         with self._asset_selection_lock:
             return self.asset_selections.get(hotkey)
 
@@ -218,7 +207,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 selections_copy = dict(self.asset_selections)
 
             # Lock not needed here - working with local copy
-            # Convert TradePairCategory objects to their string values
+            # Convert MinerAssetClass objects to their string values
             return {
                 hotkey: asset_class.value if hasattr(asset_class, 'value') else str(asset_class)
                 for hotkey, asset_class in selections_copy.items()
@@ -247,15 +236,15 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         """
         try:
             # Validate asset class (read-only, safe outside lock)
-            if not self.is_valid_asset_class(asset_selection):
-                valid_classes = [c.value for c in TradePairCategory]
+            if not MinerAssetClass.is_valid(asset_selection):
+                valid_classes = [c.value for c in MinerAssetClass]
                 return {
                     'successfully_processed': False,
                     'error_message': f'Invalid asset class. Valid options are: {", ".join(valid_classes)}'
                 }
 
-            # Convert string to TradePairCategory
-            asset_class = TradePairCategory(asset_selection.lower())
+            # Convert string to MinerAssetClass
+            asset_class = MinerAssetClass(asset_selection.lower())
 
             # FIX: Move check inside lock for atomic check-then-set
             # This prevents race where multiple threads could all pass the check before any sets the value
@@ -397,12 +386,12 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                     bt.logging.warning(f"[ASSET_MGR] Invalid asset selection data received: {asset_selection_data}")
                     return False
 
-                # Parse the asset selection string to TradePairCategory
+                # Parse the asset selection string to MinerAssetClass
                 try:
                     if isinstance(asset_selection, str):
-                        asset_class = TradePairCategory(asset_selection.lower())
+                        asset_class = MinerAssetClass(asset_selection.lower())
                     else:
-                        # Already a TradePairCategory
+                        # Already a MinerAssetClass
                         asset_class = asset_selection
                 except ValueError as e:
                     bt.logging.warning(f"[ASSET_MGR] Invalid asset class value: {asset_selection}: {e}")
@@ -438,7 +427,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             bt.logging.error(traceback.format_exc())
             return False
 
-    def _recalculate_miner_cash_balance(self, hotkey: str, asset_selection: TradePairCategory) -> None:
+    def _recalculate_miner_cash_balance(self, hotkey: str, asset_selection: MinerAssetClass) -> None:
         """
         Recalculate miner's cash balance after asset selection.
 
@@ -447,7 +436,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
         Args:
             hotkey: Miner's hotkey
-            asset_selection: The TradePairCategory the miner selected
+            asset_selection: The MinerAssetClass the miner selected
         """
         try:
             success = self._miner_account_client.update_asset_selection(

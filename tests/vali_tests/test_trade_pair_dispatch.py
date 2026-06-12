@@ -25,8 +25,8 @@ from vali_objects.utils.leverage_utils import (
     get_portfolio_caps,
     get_tier_positional_leverage,
 )
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_config import (
-    MULTI_CLASS_CATEGORIES,
     DynamicTradePair,
     InstrumentType,
     SubaccountTierBaseLeverage,
@@ -73,10 +73,6 @@ class TestConfigCompleteness(unittest.TestCase):
                 else:
                     self.assertEqual(tp.instrument_type, InstrumentType.SPOT)
 
-    def test_multi_class_categories_is_frozenset_of_hl_all_only(self):
-        self.assertIsInstance(MULTI_CLASS_CATEGORIES, frozenset)
-        self.assertEqual(MULTI_CLASS_CATEGORIES, frozenset({TradePairCategory.HL_ALL}))
-
     def test_subaccount_challenge_returns_threshold_has_commodities(self):
         self.assertIn(
             TradePairCategory.COMMODITIES,
@@ -90,24 +86,25 @@ class TestConfigCompleteness(unittest.TestCase):
                     with self.subTest(tier=tier, cat=cat, it=it):
                         self.assertIn((cat, it), ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_PAIR[tier])
 
-    def test_tier_portfolio_leverage_by_asset_class_has_no_hl_all(self):
+    def test_tier_portfolio_leverage_by_category_has_no_hl_all(self):
         for tier in self.ALL_TIERS:
             with self.subTest(tier=tier):
                 self.assertNotIn(
                     TradePairCategory.HL_ALL,
-                    ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier],
+                    ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier],
                 )
 
-    def test_tier_portfolio_leverage_by_asset_class_full_matrix(self):
+    def test_tier_portfolio_leverage_by_category_full_matrix(self):
         for tier in self.ALL_TIERS:
             for cat in self.ALL_REAL_CATEGORIES:
                 with self.subTest(tier=tier, cat=cat):
-                    self.assertIn(cat, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier])
+                    self.assertIn(cat, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier])
 
-    def test_tier_multi_class_overall_cap_has_all_tiers(self):
+    def test_tier_portfolio_leverage_by_asset_class_has_multi_class_entries(self):
         for tier in self.ALL_TIERS:
-            self.assertIn(tier, ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP)
-            self.assertGreater(ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier], 0)
+            for ac in (MinerAssetClass.HL_ALL, MinerAssetClass.ALL_MARKETS):
+                self.assertIn(ac, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier])
+                self.assertGreater(ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][ac], 0)
 
     def test_portfolio_leverage_cap_full_matrix(self):
         for cat in self.ALL_REAL_CATEGORIES:
@@ -201,19 +198,19 @@ class TestGetPortfolioCaps(unittest.TestCase):
 
     def test_single_class_returns_same_value_twice(self):
         per_class, overall = get_portfolio_caps(
-            TradePairCategory.CRYPTO, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
+            MinerAssetClass.CRYPTO, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
         )
         self.assertEqual(per_class, overall)
         self.assertEqual(
             per_class,
-            ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][TradePairCategory.CRYPTO],
+            ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.CRYPTO],
         )
 
     def test_multi_class_overall_from_dedicated_table(self):
         _, overall = get_portfolio_caps(
-            TradePairCategory.HL_ALL, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
+            MinerAssetClass.HL_ALL, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
         )
-        self.assertEqual(overall, ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[2])
+        self.assertEqual(overall, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
 
     def test_multi_class_per_class_keyed_on_order_category(self):
         for cat in (
@@ -225,29 +222,30 @@ class TestGetPortfolioCaps(unittest.TestCase):
         ):
             with self.subTest(cat=cat):
                 per_class, _ = get_portfolio_caps(
-                    TradePairCategory.HL_ALL, self.BUCKET, self.ACCT, cat,
+                    MinerAssetClass.HL_ALL, self.BUCKET, self.ACCT, cat,
                 )
-                expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][cat]
+                expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][cat]
                 self.assertEqual(per_class, expected)
 
     def test_none_subaccount_class_uses_defensive_default(self):
         per_class, overall = get_portfolio_caps(
             None, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
         )
-        # asset_class=None goes to single-class branch with .get(None, 1.0) = 1.0
-        self.assertEqual(per_class, 1.0)
-        self.assertEqual(overall, 1.0)
+        # asset_class=None goes to single-class branch keyed on trade_pair_category.
+        expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.CRYPTO]
+        self.assertEqual(per_class, expected)
+        self.assertEqual(overall, expected)
 
     def test_challenge_bucket_uses_tier_1(self):
         per_class, _ = get_portfolio_caps(
-            TradePairCategory.CRYPTO,
+            MinerAssetClass.CRYPTO,
             MinerBucket.SUBACCOUNT_CHALLENGE,
             self.ACCT,
             TradePairCategory.CRYPTO,
         )
         self.assertEqual(
             per_class,
-            ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][TradePairCategory.CRYPTO],
+            ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[1][TradePairCategory.CRYPTO],
         )
 
 

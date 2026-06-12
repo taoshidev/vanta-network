@@ -36,7 +36,8 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import MULTI_CLASS_CATEGORIES, ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -1164,7 +1165,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not asset_selection or not isinstance(asset_selection, str):
                 return jsonify({'error': 'Missing or invalid required field: asset_selection (string)'}), 400
 
-            if not self._asset_selection_client.is_valid_asset_class(asset_selection):
+            if not MinerAssetClass.is_valid(asset_selection):
                 return jsonify({'error': f'Invalid asset class: {asset_selection}'}), 400
 
             # Accept a single hotkey or a list of hotkeys (also accept singular miner_hotkey)
@@ -1425,8 +1426,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 rebuilt_account['balance'] = account_size + computed['total_realized_pnl'] - computed['total_fees_paid']
 
                 # Recompute buying_power using the same multiplier logic MinerAccount.multiplier
-                # applies (asset_class-keyed via TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS, with
-                # multi-class subaccounts going through TIER_MULTI_CLASS_OVERALL_CAP). This keeps
+                # applies (asset_class-keyed via TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS, whose
+                # HL_ALL/ALL_MARKETS entries hold the multi-class overall ceiling). This keeps
                 # the preview number equal to what MinerAccount.buying_power would report on the
                 # actual rebuilt state — no SPOT/PERP or per-pair-table assumption. EQUITIES
                 # accounts follow the margin-loan-adjusted formula in MinerAccount.buying_power.
@@ -1435,12 +1436,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 bucket = MinerBucket(bucket_str) if bucket_str else None
                 if asset_class_str:
                     try:
-                        asset_class = TradePairCategory(asset_class_str)
+                        asset_class = MinerAssetClass(asset_class_str)
                         tier = get_leverage_tier(bucket, account_size)
-                        if asset_class in MULTI_CLASS_CATEGORIES:
-                            multiplier = ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
-                        else:
-                            multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
+                        multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
                     except ValueError:
                         asset_class = None
                         multiplier = 1.0
@@ -2148,11 +2146,32 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         return jsonify(response)
 
 
+    # Per-category positional leverage stand-in for the /hl-traders limits endpoint.
+    # The endpoint only knows a subaccount's asset class, not a specific pair, so it
+    # cannot use the per-pair source of truth (leverage_utils.get_tier_positional_leverage,
+    # which is pair.subaccount_tier_base_leverage × tier). This table mirrors that result
+    # for one canonical pair per class. Keep in sync with the order-entry path; once
+    # per-pair bases diverge inside a class, switch this endpoint to per-pair reporting.
+    _ENDPOINT_TIER_POSITIONAL_LEVERAGE = {
+        1: {MinerAssetClass.HL_ALL: 0.5},
+        2: {MinerAssetClass.HL_ALL: 1.0},
+        3: {MinerAssetClass.HL_ALL: 1.5},
+        4: {MinerAssetClass.HL_ALL: 2.0},
+    }
+
     def get_hl_trader_limits(self, hl_address: str):
         """
         Public endpoint — no authentication required.
         Returns trading limits for a Hyperliquid subaccount: account size,
-        max position per pair, max portfolio value, and challenge period status.
+        leverage tier, asset class, per-class caps, overall portfolio cap,
+        and challenge period status.
+
+        DEPRECATED: max_position_per_pair_usd is a class-level stand-in that
+        misreports pairs whose subaccount_tier_base_leverage diverges from the
+        canonical base (e.g. GOLDUSDC at 1.0 vs 0.5). Clients should resolve
+        per-pair caps from /trade-pairs instead:
+        subaccount_positional_leverage_by_tier[tier] × account_size, using the
+        `tier` field returned here.
 
         Example:
         curl http://localhost:48888/hl-traders/0xabcd1234.../limits
@@ -2170,50 +2189,38 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'error', 'message': 'HL address not found'}), 404
 
         account_size = limits_data['account_size']
-        asset_class = limits_data['asset_class']
         challenge_bucket = limits_data['challenge_bucket']
 
-        try:
-            category = TradePairCategory(asset_class)
-        except ValueError:
-            category = TradePairCategory.CRYPTO
-
+        asset_class = MinerAssetClass.HL_ALL
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
         tier = get_leverage_tier(_bucket, account_size)
-        # TIER_POSITIONAL_LEVERAGE is a per-category stand-in for the per-pair limit the order
-        # path actually enforces (pair.subaccount_tier_base_leverage × tier). It only stays
-        # accurate while every pair in a category shares one base. TODO: once per-pair bases
-        # diverge within a category, switch this to a per-pair lookup (or report a dict /
-        # canonical pair), otherwise max_position_per_pair_usd will misreport for some pairs.
-        max_position_per_pair_usd = account_size * ValiConfig.TIER_POSITIONAL_LEVERAGE[tier][category]
+
+        ###### DEPRECATED TIER POSITIONAL LEVERAGE
+        max_position_per_pair_usd = account_size * self._ENDPOINT_TIER_POSITIONAL_LEVERAGE[tier][asset_class]
 
         response_payload = {
             'status': 'success',
             'hl_address': hl_address,
             'account_size': account_size,
+            'tier': tier,
+            'asset_class': asset_class.value,
             'max_position_per_pair_usd': max_position_per_pair_usd,
             'in_challenge_period': in_challenge,
             'timestamp': TimeUtil.now_in_millis(),
         }
 
-        if category in MULTI_CLASS_CATEGORIES:
-            # Multi-class subaccount (today only HL_ALL): expose the cross-class overall cap
-            # plus a per-asset-class breakdown. The overall cap is strictly tighter than the
-            # sum of per-class caps, so traders cannot max out every class simultaneously.
-            response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[tier]
-            response_payload['max_asset_class_usd'] = {
-                c.value: account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][c]
-                for c in (
-                    TradePairCategory.CRYPTO,
-                    TradePairCategory.FOREX,
-                    TradePairCategory.EQUITIES,
-                    TradePairCategory.INDICES,
-                    TradePairCategory.COMMODITIES,
-                )
-            }
-        else:
-            response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][category]
+        response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
+        response_payload['max_asset_class_usd'] = {
+            c.value: account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
+            for c in (
+                TradePairCategory.CRYPTO,
+                TradePairCategory.FOREX,
+                TradePairCategory.EQUITIES,
+                TradePairCategory.COMMODITIES,
+                TradePairCategory.INDICES,
+            )
+        }
 
         response_body = json.dumps(response_payload, cls=CustomEncoder)
         return Response(response_body, content_type='application/json'), 200

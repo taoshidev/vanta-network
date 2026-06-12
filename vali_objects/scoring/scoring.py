@@ -20,7 +20,7 @@ from vali_objects.position_management.position_utils import PositionFiltering
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.utils.metrics import Metrics
 from vali_objects.position_management.position_utils import PositionPenalties
-from vali_objects.vali_config import TradePairCategory
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from entity_management.entity_utils import is_synthetic_hotkey
 import bittensor as bt
 
@@ -80,7 +80,7 @@ class Scoring:
     def compute_results_checkpoint(
             ledger_dict: dict[str, PerfLedger],
             full_positions: dict[str, list[Position]],
-            asset_class_min_days: dict[TradePairCategory, int],
+            asset_class_min_days: dict[MinerAssetClass, int],
             evaluation_time_ms: int = None,
             verbose=True,
             weighting=False,
@@ -145,11 +145,11 @@ class Scoring:
     def score_miner_asset_classes(
             ledger_dict: dict[str, PerfLedger],
             positions: dict[str, list[Position]],
-            asset_class_min_days: dict[TradePairCategory, int],
+            asset_class_min_days: dict[MinerAssetClass, int],
             evaluation_time_ms: int | None = None,
             weighting=False,
             all_miner_account_sizes: dict[str, float] | None =None
-    ) -> tuple[dict[TradePairCategory, float], dict[TradePairCategory, dict[str, float]]]:
+    ) -> tuple[dict[MinerAssetClass, float], dict[MinerAssetClass, dict[str, float]]]:
         """
         returns:
         asset_competitiveness: dictionary with asset classes as keys and their competitiveness as values.
@@ -190,12 +190,12 @@ class Scoring:
     def score_miners(
             ledger_dict: dict[str, PerfLedger],
             positions: dict[str, list[Position]],
-            asset_class_min_days: dict[TradePairCategory, int],
+            asset_class_min_days: dict[MinerAssetClass, int],
             evaluation_time_ms: int = None,
             weighting: bool = False,
             scoring_config: dict[str, dict[str, float]] = None,
             all_miner_account_sizes: dict[str, float] = None
-    ) -> dict[TradePairCategory, dict]:
+    ) -> dict[MinerAssetClass, dict]:
         """
         Scores the miners based on their ledger and positions.
         Args:
@@ -206,7 +206,7 @@ class Scoring:
             weighting:
 
         Returns:
-            dict[TradePairCategory, dict]: A dictionary where keys are asset classes and values are dictionaries containing scores and penalties.
+            dict[MinerAssetClass, dict]: A dictionary where keys are asset classes and values are dictionaries containing scores and penalties.
 
         """
         if ledger_dict is None or len(ledger_dict) == 0:
@@ -278,7 +278,7 @@ class Scoring:
         return miner_asset_benefit
 
     @staticmethod
-    def combine_scores(scoring_dict: dict[TradePairCategory, dict[str, dict]]) -> dict[TradePairCategory, dict[str, float]]:
+    def combine_scores(scoring_dict: dict[MinerAssetClass, dict[str, dict]]) -> dict[MinerAssetClass, dict[str, float]]:
         """
         Combines scores and penalties for each of the asset classes into a single score for each asset class.
         Args:
@@ -395,7 +395,7 @@ class Scoring:
         return aggregate_return
 
     @staticmethod
-    def class_aggregation(asset_miner_scores: dict[TradePairCategory, dict[str, float]]) -> dict[str, float]:
+    def class_aggregation(asset_miner_scores: dict[MinerAssetClass, dict[str, float]]) -> dict[str, float]:
         """
         Aggregates the scores of miners across different asset classes.
 
@@ -416,8 +416,8 @@ class Scoring:
 
     @staticmethod
     def softmax_by_asset(
-            asset_miner_scores: dict[TradePairCategory, dict[str, float]]
-    ) -> dict[TradePairCategory, dict[str, float]]:
+            asset_miner_scores: dict[MinerAssetClass, dict[str, float]]
+    ) -> dict[MinerAssetClass, dict[str, float]]:
         """
         Applies softmax to the scores of miners within each asset class.
 
@@ -437,13 +437,13 @@ class Scoring:
     #TODO Remove this since scoring will change
     @staticmethod
     def asset_class_score_aggregation(
-            miner_asset_scores: dict[TradePairCategory, dict[str, float]]
+            miner_asset_scores: dict[MinerAssetClass, dict[str, float]]
     ) -> list[tuple[str, float]]:
         """
         Aggregates the softmax scores of miners across different asset classes using emission weights.
 
         Args:
-            miner_asset_scores (dict[TradePairCategory, dict[str, float]]): A dictionary where keys are asset classes
+            miner_asset_scores (dict[MinerAssetClass, dict[str, float]]): A dictionary where keys are asset classes
                 and values are dictionaries of miner scores.
 
         Returns:

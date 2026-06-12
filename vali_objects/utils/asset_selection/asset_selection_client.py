@@ -12,17 +12,14 @@ Usage:
     # Connect to server (uses ValiConfig.RPC_ASSETSELECTION_PORT by default)
     client = AssetSelectionClient()
 
-    # Check if asset class is valid
-    if client.is_valid_asset_class("forex"):
-        print("Valid asset class")
-
     # Get all selections
     selections = client.get_all_miner_selections()
 """
 from typing import Dict, Optional
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 import template.protocol
 
 
@@ -69,16 +66,16 @@ class AssetSelectionClient(RPCClientBase):
 
     # ==================== Query Methods ====================
 
-    def get_asset_selections(self) -> Dict[str, TradePairCategory]:
+    def get_asset_selections(self) -> Dict[str, MinerAssetClass]:
         """
         Get all asset selections.
 
         Returns:
-            Dict mapping hotkey to TradePairCategory
+            Dict mapping hotkey to MinerAssetClass
         """
         return self._server.get_asset_selections_rpc()
 
-    def get_asset_selection(self, hotkey) -> TradePairCategory | None:
+    def get_asset_selection(self, hotkey) -> MinerAssetClass | None:
         return self._server.get_asset_selection_rpc(hotkey)
 
     def get_all_miner_selections(self) -> Dict[str, str]:
@@ -89,18 +86,6 @@ class AssetSelectionClient(RPCClientBase):
             Dict mapping hotkey to asset class string
         """
         return self._server.get_all_miner_selections_rpc()
-
-    def is_valid_asset_class(self, asset_class: str) -> bool:
-        """
-        Validate if the provided asset class is valid.
-
-        Args:
-            asset_class: The asset class string to validate
-
-        Returns:
-            True if valid, False otherwise
-        """
-        return self._server.is_valid_asset_class_rpc(asset_class)
 
     # ==================== Mutation Methods ====================
 
@@ -207,18 +192,18 @@ class AssetSelectionClient(RPCClientBase):
     # ==================== Backward Compatibility Properties ====================
 
     @property
-    def asset_selections(self) -> Dict[str, TradePairCategory]:
+    def asset_selections(self) -> Dict[str, MinerAssetClass]:
         """
         Get asset selections dict (backward compatibility).
 
         Returns:
-            Dict mapping hotkey to TradePairCategory
+            Dict mapping hotkey to MinerAssetClass
         """
         return self._server.get_asset_selections_rpc()
 
     # ==================== Local Cache Support ====================
 
-    def populate_cache(self) -> Dict[str, TradePairCategory]:
+    def populate_cache(self) -> Dict[str, MinerAssetClass]:
         """
         Populate the local cache with asset selection data from the server.
 
@@ -226,7 +211,7 @@ class AssetSelectionClient(RPCClientBase):
         local_cache_refresh_period_ms is configured.
 
         Returns:
-            Dict mapping hotkey to TradePairCategory
+            Dict mapping hotkey to MinerAssetClass
         """
         return self._server.get_asset_selections_rpc()
 
@@ -243,7 +228,7 @@ class AssetSelectionClient(RPCClientBase):
         with self._local_cache_lock:
             self._local_cache = new_cache
 
-    def get_selection_local_cache(self, hotkey: str) -> Optional[TradePairCategory]:
+    def get_selection_local_cache(self, hotkey: str) -> Optional[MinerAssetClass]:
         """
         Get asset selection for a hotkey from the local cache.
 
@@ -254,40 +239,8 @@ class AssetSelectionClient(RPCClientBase):
             hotkey: The miner's hotkey
 
         Returns:
-            TradePairCategory if found, None otherwise
+            MinerAssetClass if found, None otherwise
         """
         with self._local_cache_lock:
             return self._local_cache.get(hotkey)
 
-    def validate_order_asset_class_local_cache(
-        self,
-        asset_class: TradePairCategory,
-        trade_pair: TradePair,
-    ) -> bool:
-        """
-        Check if a trade pair is allowed for a specific asset class.
-
-        Args:
-            asset_class: The selected asset class category
-            trade_pair: The TradePair object to validate
-
-        Returns:
-            True if the trade pair can be traded under this asset class, False otherwise
-
-        Notes:
-            - HL_ALL allows Hyperliquid pairs plus forex (except XAUUSD/XAGUSD)
-            - COMMODITIES requires Hyperliquid source and commodity category
-            - Other classes require Vanta source and matching category
-        """
-        category = trade_pair.trade_pair_category
-        src = trade_pair.src
-
-        if asset_class == TradePairCategory.HL_ALL:
-            EXCLUDED_FOREX_PAIRS = {TradePair.XAUUSD, TradePair.XAGUSD}
-            is_supported_forex = category == TradePairCategory.FOREX and trade_pair not in EXCLUDED_FOREX_PAIRS
-            return src == TradePairSource.HYPERLIQUID or is_supported_forex
-
-        if asset_class == TradePairCategory.COMMODITIES:
-            return src == TradePairSource.HYPERLIQUID and category == TradePairCategory.COMMODITIES
-
-        return src == TradePairSource.VANTA and asset_class == category

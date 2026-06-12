@@ -4,7 +4,7 @@ Unit tests for per-asset-class capital tracking on MinerAccount
 
 Covers:
   * MinerAccount.capital_used_by_class default and reset semantics.
-  * MinerAccount.multiplier / buying_power / is_multi_class branches for
+  * MinerAccount.multiplier / buying_power branches for
     single-class vs multi-class (HL_ALL).
   * MinerAccountManager.compute_account_state_from_positions populates the
     per-class breakdown.
@@ -22,8 +22,8 @@ import unittest
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_config import (
-    MULTI_CLASS_CATEGORIES,
     TradePair,
     TradePairCategory,
     ValiConfig,
@@ -58,7 +58,7 @@ class TestCapitalUsedByClassDefault(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# multiplier / buying_power / is_multi_class
+# multiplier / buying_power
 # ---------------------------------------------------------------------------
 
 class TestMinerAccountMultiplier(unittest.TestCase):
@@ -70,60 +70,39 @@ class TestMinerAccountMultiplier(unittest.TestCase):
     def test_multiplier_single_class_reads_by_asset_class_table(self):
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=TradePairCategory.CRYPTO,
+            asset_class=MinerAssetClass.CRYPTO,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
         # Tier defaults to 2 (funded, no collateral records → MIN_CAPITAL < 200K)
-        expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][TradePairCategory.CRYPTO]
+        expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][MinerAssetClass.CRYPTO]
         self.assertEqual(account.multiplier, expected)
 
     def test_multiplier_multi_class_reads_overall_cap_table(self):
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=TradePairCategory.HL_ALL,
+            asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
-        self.assertEqual(account.multiplier, ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[2])
+        self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
 
     def test_multiplier_challenge_bucket_uses_tier_1(self):
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=TradePairCategory.HL_ALL,
+            asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_CHALLENGE,
         )
-        self.assertEqual(account.multiplier, ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[1])
-
-    def test_is_multi_class_true_only_for_multi_class_categories(self):
-        for cat in (
-            TradePairCategory.CRYPTO,
-            TradePairCategory.FOREX,
-            TradePairCategory.EQUITIES,
-            TradePairCategory.INDICES,
-            TradePairCategory.COMMODITIES,
-        ):
-            with self.subTest(cat=cat):
-                account = MinerAccount(miner_hotkey="hk", asset_class=cat)
-                self.assertFalse(account.is_multi_class())
-
-        for cat in MULTI_CLASS_CATEGORIES:
-            with self.subTest(cat=cat):
-                account = MinerAccount(miner_hotkey="hk", asset_class=cat)
-                self.assertTrue(account.is_multi_class())
-
-    def test_is_multi_class_false_when_asset_class_none(self):
-        account = MinerAccount(miner_hotkey="hk", asset_class=None)
-        self.assertFalse(account.is_multi_class())
+        self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL])
 
     def test_buying_power_multi_class_uses_overall_cap(self):
         """buying_power = balance × multiplier − capital_used for non-equities."""
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=TradePairCategory.HL_ALL,
+            asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
             capital_used=1_000.0,
         )
         balance = account.balance
-        expected = balance * ValiConfig.TIER_MULTI_CLASS_OVERALL_CAP[2] - 1_000.0
+        expected = balance * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL] - 1_000.0
         self.assertAlmostEqual(account.buying_power, expected)
 
 

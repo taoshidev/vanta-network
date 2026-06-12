@@ -6,7 +6,8 @@ from typing import Optional
 import numpy as np
 import copy
 from datetime import datetime, timezone, timedelta, date
-from vali_objects.vali_config import TradePairCategory, ValiConfig
+from vali_objects.vali_config import ValiConfig
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from time_util.time_util import ForexHolidayCalendar
 import bittensor as bt
@@ -593,8 +594,8 @@ class LedgerUtils:
     @staticmethod
     def calculate_dynamic_minimum_days_for_asset_classes(
         ledger_dict: dict[str, PerfLedger],
-        asset_classes: list[TradePairCategory]
-    ) -> dict[TradePairCategory, int]:
+        asset_classes: list[MinerAssetClass]
+    ) -> dict[MinerAssetClass, int]:
         """
         Calculates the dynamic minimum participation days for specific asset classes.
         Returns the number of days that the Nth longest participating miner has (where N is
@@ -605,7 +606,7 @@ class LedgerUtils:
 
         Args:
             ledger_dict: Dictionary mapping hotkeys to their portfolio PerfLedger
-            asset_classes: List of asset classes (TradePairCategory) to calculate dynamic minimum days for
+            asset_classes: List of asset classes (MinerAssetClass) to calculate dynamic minimum days for
 
         Returns:
             dict: Dictionary mapping asset class to min days requirement (between 7-60 days)

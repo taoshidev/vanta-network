@@ -977,6 +977,9 @@ class EntityMinerRestServer(MinerRestServer):
                 if "asset_class" not in request_data:
                     return jsonify({'status': 'error', 'message': 'Missing required field: asset_class'}), 400
                 asset_class = request_data["asset_class"]
+                # Map hl_all to all markets for non-hyperliquid TODO remove after migration
+                if asset_class == "hl_all":
+                    asset_class = "all_markets"
 
             admin = request_data.get("admin")
 
@@ -988,10 +991,10 @@ class EntityMinerRestServer(MinerRestServer):
             if admin is not None and not isinstance(admin, bool):
                 return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
 
-            if asset_class not in ["crypto", "forex", "equities", "commodities", "hl_all"]:
+            if asset_class not in ["crypto", "forex", "equities", "commodities", "hl_all", "all_markets"]:
                 return jsonify({
                     'status': 'error',
-                    'message': f"Invalid asset_class: {asset_class}. Must be 'crypto', 'forex', 'equities', 'commodities', or 'hl_all'"
+                    'message': f"Invalid asset_class: {asset_class}. Must be one of crypto, forex, equities, commodities, hl_all, all_markets"
                 }), 400
 
             if account_size <= 0:

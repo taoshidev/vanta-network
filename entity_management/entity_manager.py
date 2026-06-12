@@ -37,6 +37,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from datetime import datetime, timezone
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from shared_objects.cache_controller import CacheController
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
@@ -427,6 +428,10 @@ class EntityManager(ValidatorBroadcastBase):
 
         current_balance = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
         required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
+
+        # Map hl_all to all markets for non-hyperliquid TODO remove after migration
+        if asset_class == "hl_all" and not hl_address:
+            asset_class = "all_markets"
 
         # Use per-entity lock: only operates on single entity
         entity_lock = self._get_entity_lock(entity_hotkey)
@@ -1467,7 +1472,7 @@ class EntityManager(ValidatorBroadcastBase):
                 # Calculate challenge progress
                 asset_class = (subaccount.asset_class or '').lower()
                 target_return = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD.get(
-                    TradePairCategory(asset_class) if asset_class else None,
+                    MinerAssetClass(asset_class) if MinerAssetClass.is_valid(asset_class) else None,
                     ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT
                 )
 
