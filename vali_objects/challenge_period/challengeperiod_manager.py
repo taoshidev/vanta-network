@@ -689,7 +689,7 @@ class ChallengePeriodManager(CacheController):
         new_eliminations = [hk for hk in elimination_miners if hk in self.miner_states]
         if new_eliminations:
             btlogging.warning(f"[CHALLENGE] syncing {len(new_eliminations)} eliminated miners: {new_eliminations}")
-        return self.remove_miners(elimination_miners)
+        return self.remove_miners(new_eliminations)
 
     def _prune_hotkeys_no_positions(self, hotkeys=None) -> bool:
         """
