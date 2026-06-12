@@ -1289,7 +1289,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if 'display_name' in settings:
                 self._miner_account_client.set_display_name(hotkey, settings['display_name'])
 
-            return jsonify({'message': 'Profile updated successfully'})
+            return jsonify({'successfully_processed': True, 'message': 'Profile updated successfully'})
 
         except Exception as e:
             bt.logging.error(f"Error processing profile update: {e}")
