@@ -710,6 +710,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.miner_bucket = bucket
             self._save_accounts_to_disk()
 
+    def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket]) -> None:
+        """Bulk update miner buckets across multiple accounts. Saves to disk once."""
+        if not hotkey_to_bucket:
+            return
+        with self._accounts_lock:
+            for hotkey, bucket in hotkey_to_bucket.items():
+                account = self.get_or_create(hotkey)
+                account.miner_bucket = bucket
+            self._save_accounts_to_disk()
+
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
         with self._accounts_lock:

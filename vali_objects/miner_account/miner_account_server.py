@@ -239,6 +239,10 @@ class MinerAccountServer(RPCServerBase):
         bucket = MinerBucket(bucket_value) if bucket_value else None
         self._manager.set_miner_bucket(hotkey, bucket)
 
+    def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket]) -> None:
+        """Bulk set miner buckets across multiple accounts."""
+        self._manager.set_miner_buckets(hotkey_to_bucket)
+
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
         return self._manager.get_hl_address(hotkey)
