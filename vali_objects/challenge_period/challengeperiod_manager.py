@@ -108,7 +108,7 @@ class MinerBucketState:
 
     @property
     def is_eliminated(self):
-        return self.bucket == MinerBucket.ELIMINATED
+        return self.current_bucket == MinerBucket.ELIMINATED
 
     @property
     def current_bucket(self):
