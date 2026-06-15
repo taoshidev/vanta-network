@@ -49,6 +49,9 @@ class MinerAssetClass(str, Enum):
         if self == MinerAssetClass.COMMODITIES:
             return src == TradePairSource.HYPERLIQUID and category == TradePairCategory.COMMODITIES
 
+        if self == MinerAssetClass.CRYPTO:
+            return category == TradePairCategory.CRYPTO
+
         return src == TradePairSource.VANTA and self.value == category.value
 
 
