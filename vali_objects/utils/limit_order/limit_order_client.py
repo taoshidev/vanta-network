@@ -65,7 +65,7 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.process_limit_order_rpc(miner_hotkey, order, is_edit)
 
-    def cancel_limit_order(self, miner_hotkey: str, trade_pair_id: str,
+    def cancel_limit_order(self, miner_hotkey: str, trade_pair_id: str | None,
                           order_uuid: str, now_ms: int, execution_type=None) -> dict:
         """
         Cancel limit order(s) via RPC.
