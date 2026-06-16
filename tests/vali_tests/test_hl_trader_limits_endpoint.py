@@ -333,7 +333,10 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         cases = (
             (MinerBucket.SUBACCOUNT_CHALLENGE.value, 50_000.0, 1),
             (MinerBucket.SUBACCOUNT_FUNDED.value, 50_000.0, 2),
+            (MinerBucket.SUBACCOUNT_FUNDED.value, 199_999.0, 2),
+            (MinerBucket.SUBACCOUNT_FUNDED.value, 200_000.0, 3),   # boundary: >= is tier 3
             (MinerBucket.SUBACCOUNT_FUNDED.value, 250_000.0, 3),
+            (MinerBucket.SUBACCOUNT_FUNDED.value, 1_000_000.0, 4), # boundary: >= is tier 4
             (MinerBucket.SUBACCOUNT_FUNDED.value, 2_000_000.0, 4),
         )
         for bucket, size, expected_tier in cases:
