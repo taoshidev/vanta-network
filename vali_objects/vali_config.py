@@ -1103,6 +1103,11 @@ class TradePair(Enum):
         return self.trade_pair_id in ValiConfig.BLOCKED_TRADE_PAIR_IDS
 
     @property
+    def is_flat_only(self) -> bool:
+        """Check if this trade pair only allows flat orders"""
+        return self.trade_pair_id in ValiConfig.FLAT_ONLY_TRADE_PAIR_IDS
+
+    @property
     def lot_size(self):
         trade_pair_lot_size_override = {
             'XAUUSD': 100,

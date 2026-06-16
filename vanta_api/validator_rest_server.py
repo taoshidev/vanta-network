@@ -759,6 +759,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     disabled.append(entry)
                 elif miner_asset_class is not None and not miner_asset_class.can_trade(trade_pair):
                     disabled.append(entry)
+                elif trade_pair.is_flat_only:
+                    deprecated.append(entry)
                 else:
                     allowed.append(entry)
 
