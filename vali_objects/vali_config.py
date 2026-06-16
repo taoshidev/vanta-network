@@ -749,12 +749,12 @@ class ValiConfig:
     # 100% percent of collateral deposit is at risk of slashing based on drawdown
     DRAWDOWN_SLASH_PROPORTION = 1.0
 
-    FLAT_ONLY_TRADE_PAIR_IDS = {'XAGUSD', 'XAUUSD'}
+    FLAT_ONLY_TRADE_PAIR_IDS = {'PAXGUSDC', 'BRENTOILUSDC'} # {'XAGUSD', 'XAUUSD'}
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
         'USDMXN',
-        'PAXGUSDC',      # Gold; kept GOLDUSDC
-        'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
+        # 'PAXGUSDC',      # Gold; kept GOLDUSDC
+        # 'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
         'BCHUSD'         # No HL price
     }
 

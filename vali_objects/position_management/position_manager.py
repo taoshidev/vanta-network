@@ -506,7 +506,7 @@ class PositionManager:
     def get_dashboard(self, hotkey: str, positions_time_ms: int) -> dict | None:
         snapshot_time_ms = positions_time_ms
 
-        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True, archived_positions=True)
+        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
         if not positions:
             return None
 
@@ -1659,22 +1659,20 @@ class PositionManager:
             log.append(f"Archived positions deleted={n_archived_deleted}")
 
         # Restore subaccount entity status if erroneously eliminated/failed
-        if is_synthetic_hotkey(hotkey) and self._entity_client:
-            success, msg = self._entity_client.restore_subaccount(hotkey)
-            log.append(f"restore_subaccount: {msg}")
+        # if is_synthetic_hotkey(hotkey) and self._entity_client:
+        #     success, msg = self._entity_client.restore_subaccount(hotkey)
+        #     log.append(f"restore_subaccount: {msg}")
 
         # Remove from challenge period so next refresh re-adds to correct bucket
-        if self._challenge_period_client and self._challenge_period_client.has_miner(hotkey):
-            self._challenge_period_client.remove_miners(hotkey)
-            # self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
-            log.append(f"Removed challenge period entry for {hotkey}")
+        # if self._challenge_period_client and self._challenge_period_client.has_miner(hotkey):
+        #     self._challenge_period_client.remove_miners(hotkey)
+        #     # self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        #     log.append(f"Removed challenge period entry for {hotkey}")
 
         # Rebuild account state from remaining positions
-        remaining = self.get_positions_for_one_hotkey(hotkey)
-        original_account = self._miner_account_client.get_account(hotkey) if self._miner_account_client else {}
-        max_return = (original_account or {}).get('max_return', 1)
+        remaining_positions = self.get_positions_for_one_hotkey(hotkey)
         if self._miner_account_client:
-            self._miner_account_client.rebuild_account_state_from_positions(hotkey, remaining, max_return=max_return)
+            self._miner_account_client.rebuild_account_state_from_positions(hotkey, remaining_positions)
             log.append("Rebuilt account state")
 
         # Wipe perf ledger
