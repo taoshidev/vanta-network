@@ -2309,6 +2309,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         subaccount_positional_leverage_by_tier[tier] × account_size, using the
         `tier` field returned here.
 
+        Note: all USD figures here are multiplier × static account_size. The
+        order path applies the same multipliers to the live balance
+        (account_size + realized PnL − fees), so USD amounts drift apart once
+        the account has realized PnL; clients tracking live caps should
+        re-apply the multipliers to their own balance figure.
+
         Example:
         curl http://localhost:48888/hl-traders/0xabcd1234.../limits
         """
