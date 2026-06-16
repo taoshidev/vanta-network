@@ -324,7 +324,7 @@ class TestChallengePeriodManagerLogic(TestBase):
             mgr.set_miner_bucket("hk_elim", MinerBucket.CHALLENGE, now)
             mgr.set_miner_bucket("hk_safe", MinerBucket.MAINCOMP, now)
 
-            changed = mgr.sync_elimination_miners(["hk_elim"])
+            changed = mgr.sync_elimination_miners(["hk_elim"], now)
             self.assertTrue(changed)
             self.assertFalse(mgr.has_miner("hk_elim"))
             self.assertTrue(mgr.has_miner("hk_safe"))
@@ -334,7 +334,7 @@ class TestChallengePeriodManagerLogic(TestBase):
         mgr, stack = self._make_manager()
         with stack:
             mgr.set_miner_bucket("hk1", MinerBucket.CHALLENGE, now)
-            changed = mgr.sync_elimination_miners([])
+            changed = mgr.sync_elimination_miners([], now)
             self.assertFalse(changed)
             self.assertTrue(mgr.has_miner("hk1"))
 

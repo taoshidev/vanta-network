@@ -7,6 +7,7 @@ from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_
 from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, DynamicTradePair, ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils import leverage_utils
@@ -63,6 +64,12 @@ class Position(BaseModel):
     is_hl: bool = False  # True for Hyperliquid entity miner positions
     last_stock_split_date: Optional[str] = None  # Only set for equities
     dividend_history: List[DividendHistoryEntry] = Field(default_factory=list)  # Audit log of dividend events
+
+    # Only used to close orders that are already open - can default to none to keep strongly typed..?
+    last_price_source: PriceSource = Field(default_factory=PriceSource)
+    last_quote_usd_conversion: float = 1.0
+
+    # Only used for UI to associate bracket orders
     unfilled_orders: list = Field(default=[], exclude=True)
 
     @model_validator(mode='before')
@@ -435,12 +442,15 @@ class Position(BaseModel):
         self.validate_order_size(order)
         self.orders.append(order)
 
+        if order.price_sources:
+            self.last_price_source = order.price_sources[0]
+
         if transaction_fee:
             self.record_fee_event("transaction", transaction_fee, order.processed_ms)
 
         self._update_position(live_price_fetcher)
 
-    def calculate_pnl(self, current_price, live_price_fetcher, t_ms=None, order=None):
+    def calculate_pnl(self, current_price, live_price_fetcher, t_ms=None, order=None, quote_usd_conversion=None):
         if self.initial_entry_price == 0 or self.average_entry_price is None:
             return 1
 
@@ -461,7 +471,8 @@ class Position(BaseModel):
             self.unrealized_pnl = unrealized_pnl_quote * order.quote_usd_rate
         else:
             unrealized_pnl_quote = (current_price - self.average_entry_price) * (self.net_quantity * self.trade_pair.lot_size)
-            quote_usd_conversion = self.orders[-1].quote_usd_rate # live_price_fetcher.get_usd_conversion(self.trade_pair.quote, t_ms, self.orders[-1].order_type, self.position_type)  # TODO: calculate conversion rate at current time instead of last order time
+            if not quote_usd_conversion:
+                quote_usd_conversion = self.orders[-1].quote_usd_rate
             self.unrealized_pnl = unrealized_pnl_quote * quote_usd_conversion
 
         if self.cumulative_entry_value == 0:
@@ -475,55 +486,17 @@ class Position(BaseModel):
         net_return = 1 + gain
         return net_return
 
-    @staticmethod
-    def generate_fake_flat_order(position, elimination_time_ms, price_fetcher_client, extra_price_source=None, src=None):
-        fake_flat_order_time = elimination_time_ms
-        price_source = price_fetcher_client.get_close_at_date(
-            trade_pair=position.trade_pair,
-            timestamp_ms=elimination_time_ms,
-            verbose=False
-        )
-
-        if price_source:
-            # Parse the appropriate price
-            price = price_source.parse_appropriate_price(
-                now_ms=elimination_time_ms,
-                is_forex=position.trade_pair.is_forex,
-                order_type=OrderType.FLAT,
-                position=position
-            )
-            # Use provided src or default to PRICE_FILLED_ELIMINATION_FLAT
-            if src is None:
-                src = OrderSource.PRICE_FILLED_ELIMINATION_FLAT
-        else:
-            bt.logging.warning(f'Unexpectedly unable to fetch price for trade pair {position.trade_pair.trade_pair_id}'
-                               f' at time {TimeUtil.millis_to_formatted_date_str(elimination_time_ms)} during fake flat order'
-                               f'creation. Setting price to 0. and src to OrderSource.ELIMINATION_FLAT')
-            price = 0
-            # Use provided src or default to ELIMINATION_FLAT
-            if src is None:
-                src = OrderSource.ELIMINATION_FLAT
-
-
-        flat_order = Order(price=price,
-                           processed_ms=fake_flat_order_time,
-                           order_uuid=position.position_uuid[::-1],  # deterministic across validators. Won't mess with p2p sync
-                           trade_pair=position.trade_pair,
-                           order_type=OrderType.FLAT,
-                           leverage=-position.net_leverage,
-                           value=-position.net_value,
-                           quantity=-position.net_quantity,
-                           src=src,
-                           price_sources=[x for x in (price_source, extra_price_source) if x is not None])
-        flat_order.quote_usd_rate = price_fetcher_client.get_quote_usd_conversion(flat_order, position)
-        flat_order.usd_base_rate = price_fetcher_client.get_usd_base_conversion(position.trade_pair, fake_flat_order_time, price, OrderType.FLAT, position)
-        return flat_order
-
-    def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None):
+    def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None, quote_usd_conversion=None, price_source=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
-        self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order)
+        self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order, quote_usd_conversion=quote_usd_conversion)
         self.return_at_close = self.current_return * (total_fees if total_fees is not None else 1.0)
+
+        if price_source:
+            self.last_price_source = price_source
+
+        if quote_usd_conversion:
+            self.last_quote_usd_conversion = quote_usd_conversion
 
         if self.current_return < 0:
             raise ValueError(f"current return must be positive {self.current_return}")
@@ -592,6 +565,25 @@ class Position(BaseModel):
             )
             self.position_type = order.order_type if order.order_type != OrderType.FLAT else OrderType.LONG
             self.close_out_position(order.processed_ms)
+
+    def force_close_position(self, order_src: OrderSource, price_source: PriceSource | None = None, close_ms: int | None = None):
+        if not price_source:
+            price_source = self.last_price_source
+
+        if not close_ms:
+            close_ms = TimeUtil.now_in_millis()
+
+        fill_price = price_source.parse_appropriate_price(close_ms, self.trade_pair.is_forex, OrderType.FLAT, self)
+        flat_order = Order(
+            order_type=OrderType.FLAT,
+            price=fill_price,
+            quote_usd_rate=self.last_quote_usd_conversion,
+            src=order_src,
+            price_sources=[price_source],
+            processed_ms=close_ms,
+            order_uuid=self.position_uuid+f"-close-{order_src}"
+        )
+        self.add_order(flat_order)
 
     def close_out_position(self, close_ms):
         self.position_type = OrderType.FLAT

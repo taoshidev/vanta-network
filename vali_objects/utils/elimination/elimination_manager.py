@@ -440,18 +440,7 @@ class EliminationManager(CacheController):
             if position.is_closed_position:
                 return
 
-            fake_flat_order_time = position_close_ms
-            if position.orders and position.orders[-1].processed_ms > position_close_ms:
-                bt.logging.warning(
-                    f'Unexpectedly found a position with a processed_ms {position.orders[-1].processed_ms} '
-                    f'greater than the elimination time {position_close_ms}'
-                )
-                fake_flat_order_time = position.orders[-1].processed_ms + 1
-
-            flat_order = Position.generate_fake_flat_order(
-                    position, fake_flat_order_time, self.live_price_fetcher_client, src=OrderSource.ELIMINATION_FLAT)
-
-            position.add_order(flat_order, self.live_price_fetcher_client)
+            position.force_close_position(OrderSource.ELIMINATION_FLAT, close_ms=position_close_ms)
 
             # Epoch-based validation
             if iteration_epoch is not None:
@@ -469,7 +458,7 @@ class EliminationManager(CacheController):
 
             bt.logging.info(
                 f'Added flat order for miner {hotkey} that has been eliminated. '
-                f'Trade pair: {position.trade_pair.trade_pair_id}. flat order: {flat_order}. '
+                f'Trade pair: {position.trade_pair.trade_pair_id}. flat order: {position.orders[-1]}. '
                 f'position uuid {position.position_uuid}.'
             )
 
@@ -581,6 +570,15 @@ class EliminationManager(CacheController):
             # Assume succes (slashed on entity collateral daemon)
             # Also collateral slashed not relevant for subaccounts
             self._entity_collateral_client.try_slash_on_elimination(hotkey)
+
+        cancel_results = self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", elimination_time_ms)
+        if cancel_results:
+            bt.logging.info(f"Cancelled limit orders for eliminated miner [{hotkey}] {cancel_results}")
+
+        closed = self._position_client.close_all_positions(hotkey, elimination_time_ms, OrderSource.ELIMINATION_FLAT)
+        if closed:
+            positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+            self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
 
         elimination_row = EliminationRow(
                 hotkey=hotkey,
@@ -760,34 +758,8 @@ class EliminationManager(CacheController):
         """post-elimination cleanup: close open positions and delete unfilled limit orders"""
         now_ms = TimeUtil.now_in_millis()
 
-        with self.eliminations_lock:
-            eliminations_snapshot = list(self.eliminations.values())
-
-        write_to_disk = False
-        for elimination_data in eliminations_snapshot:
-            if not elimination_data.positions_closed:
-                hotkey = elimination_data.hotkey
-
-                cancel_result = self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", now_ms)
-                cancelled_count = cancel_result.get("num_cancelled", 0)
-                if cancelled_count:
-                    bt.logging.info(f"Cancelled {cancelled_count} pending limit orders for eliminated miner [{hotkey}]")
-
-                open_positions = self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
-                for p in open_positions:
-                    self._close_position(hotkey, p, elimination_data.elimination_initiated_time_ms, iteration_epoch=iteration_epoch)
-
-                all_positions = self._position_client.get_positions_for_one_hotkey(hotkey)
-                self._miner_account_client.rebuild_account_state_from_positions(hotkey, all_positions)
-
-                with self.eliminations_lock:
-                    self.eliminations[hotkey].positions_closed = True
-                    write_to_disk = True
-
+        for elimination_data in list(self.eliminations.values()):
             self._purge_expired_elimination(elimination_data, now_ms)
-
-        if write_to_disk:
-            self.save_eliminations()
 
     def _purge_expired_elimination(self, elimination_data, now_ms):
         """Delete position files and miner directory after the retention window expires.

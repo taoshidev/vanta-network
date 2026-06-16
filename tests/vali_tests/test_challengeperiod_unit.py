@@ -372,12 +372,13 @@ def test_refresh_eliminates_time_expired(manager):
     ):
         manager.refresh(current_time_ms=NOW_MS)
 
-    assert hk not in manager.miner_states
+    assert manager.miner_states[hk].current_bucket == MinerBucket.ELIMINATED
 
 
 def test_refresh_eliminates_intraday_drawdown(manager):
     hk = "hk_drawdown"
-    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - DAILY_MS)
+    after_activation_ms = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, after_activation_ms - DAILY_MS)
     manager.miner_states[hk].drawdown = DrawdownStats(
         intraday_drawdown_pct=INTRADAY_THRESHOLD_PCT + 1.0
     )
@@ -389,9 +390,9 @@ def test_refresh_eliminates_intraday_drawdown(manager):
         patch.object(manager, '_save_to_disk'),
         patch.object(manager, '_sync_buckets_to_accounts'),
     ):
-        manager.refresh(current_time_ms=NOW_MS)
+        manager.refresh(current_time_ms=after_activation_ms)
 
-    assert hk not in manager.miner_states
+    assert manager.miner_states[hk].current_bucket == MinerBucket.ELIMINATED
 
 
 def test_refresh_no_changes_skips_save(manager):

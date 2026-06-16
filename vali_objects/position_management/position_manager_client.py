@@ -471,7 +471,6 @@ class PositionManagerClient(RPCClientBase):
         hotkey: str,
         close_time_ms: int,
         order_source: "OrderSource",
-        live_price_fetcher=None
     ) -> int:
         """
         Close all open positions for a specific hotkey.
@@ -488,8 +487,7 @@ class PositionManagerClient(RPCClientBase):
         return self._server.close_all_positions_rpc(
             hotkey=hotkey,
             close_time_ms=close_time_ms,
-            order_source=order_source,  # Pass as int for RPC
-            live_price_fetcher=live_price_fetcher
+            order_source=order_source
         )
 
     # ==================== Pre-run Setup Methods ====================
