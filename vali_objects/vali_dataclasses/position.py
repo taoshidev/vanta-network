@@ -381,7 +381,7 @@ class Position(BaseModel):
     def _position_log(message):
         bt.logging.trace("Position Notification - " + message)
 
-    def rebuild_position_with_updated_orders(self, price_fetcher_client):
+    def rebuild_position_with_updated_orders(self, price_fetcher_client=None):
         self.current_return = 1.0
         self.close_ms = None
         self.return_at_close = 1.0
@@ -450,7 +450,7 @@ class Position(BaseModel):
 
         self._update_position(live_price_fetcher)
 
-    def calculate_pnl(self, current_price, live_price_fetcher, t_ms=None, order=None, quote_usd_conversion=None):
+    def calculate_pnl(self, current_price, live_price_fetcher=None, t_ms=None, order=None, quote_usd_conversion=None):
         if self.initial_entry_price == 0 or self.average_entry_price is None:
             return 1
 

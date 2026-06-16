@@ -41,7 +41,9 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.vali_dataclasses.order import Order
 from vanta_api.base_rest_server import BaseRestServer
 from vanta_api.nonce_manager import NonceManager
 
@@ -267,6 +269,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/miner-account/rebuild/<hotkey>", methods=["POST"])(self.rebuild_miner_account)
         self.app.route("/wipe/<hotkey>", methods=["POST"])(self.wipe_hotkey)
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["DELETE"])(self.delete_position)
+        self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -1551,6 +1554,96 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', 'archived': archive, **result})
         except Exception as e:
             bt.logging.error(f"Error deleting position {position_uuid} for hotkey {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def patch_position(self, hotkey: str, position_uuid: str):
+        """
+        Edit orders within a single position and rebuild the position state.
+        Requires admin access.
+
+        Example:
+        curl -X PATCH "http://localhost:48888/admin/<hotkey>/positions/<position_uuid>" \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"orders": [{"order_uuid": "...", "edits": {"price": 124.00}}]}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Patch position endpoint requires admin access'}), 403
+
+        if not request.is_json:
+            return jsonify({'error': 'Content-Type must be application/json'}), 400
+        data = request.get_json()
+        if not data or 'orders' not in data:
+            return jsonify({'error': 'Missing required field: orders'}), 400
+        order_edits = data['orders']
+        if not isinstance(order_edits, list) or not order_edits:
+            return jsonify({'error': 'orders must be a non-empty list'}), 400
+
+        try:
+            position = self._position_client.get_position(hotkey, position_uuid)
+            if position is None:
+                return jsonify({'error': f'Position {position_uuid} not found for hotkey {hotkey}'}), 404
+
+            patch_denylist = {'order_uuid', 'trade_pair', 'trade_pair_id'}
+            # Validate all edits before applying any
+            order_by_uuid = {o.order_uuid: o for o in position.orders}
+            for edit in order_edits:
+                if 'order_uuid' not in edit or 'edits' not in edit:
+                    return jsonify({'error': 'Each entry in orders must have order_uuid and edits'}), 400
+                denied = set(edit['edits']) & patch_denylist
+                if denied:
+                    return jsonify({'error': f'Cannot patch fields: {denied}'}), 422
+                if edit['order_uuid'] not in order_by_uuid:
+                    return jsonify({'error': f"Order {edit['order_uuid']} not found in position"}), 404
+
+            # Apply edits
+            for edit in order_edits:
+                order = order_by_uuid[edit['order_uuid']]
+                merged = {**order.to_python_dict(), **edit['edits'], 'src': OrderSource.CORRECTION}
+
+                # If price changed and either side of the pair is USD, zero both conversion
+                # rates so Pydantic recalculates the price-dependent one from the new price.
+                # For cross pairs neither rate is derived from the pair's own price, so keep
+                # the existing values from the original order.
+                if 'price' in edit['edits'] and (order.trade_pair.quote == 'USD' or order.trade_pair.base == 'USD'):
+                    merged['quote_usd_rate'] = 0.0
+                    merged['usd_base_rate'] = 0.0
+
+                new_order = Order.from_dict(merged)
+
+                # Recalculate value and leverage when price or quantity changes
+                if ('price' in edit['edits'] or 'quantity' in edit['edits']) and new_order.quantity is not None:
+                    portfolio_value = self._miner_account_client.get_miner_account_size(
+                        hotkey, timestamp_ms=new_order.processed_ms, use_account_floor=True
+                    )
+                    if portfolio_value:
+                        _, lev, val = MarketOrderManager.parse_order_size(
+                            {'quantity': new_order.quantity},
+                            new_order.usd_base_rate,
+                            new_order.trade_pair,
+                            portfolio_value,
+                            round_qty=False,
+                        )
+                        new_order.leverage = lev
+                        new_order.value = val
+
+                idx = next(i for i, o in enumerate(position.orders) if o.order_uuid == edit['order_uuid'])
+                position.orders[idx] = new_order
+
+            position.rebuild_position_with_updated_orders()
+            self._position_client.save_miner_position(position)
+
+            positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+            self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
+
+            return jsonify({'status': 'success', 'position_uuid': position_uuid, 'orders_patched': len(order_edits)})
+        except Exception as e:
+            bt.logging.error(f"Error patching position {position_uuid} for hotkey {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
