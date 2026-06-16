@@ -509,9 +509,9 @@ class Validator(ValidatorBase):
                 synapse.error_message = msg
 
         elif tp and tp.is_blocked:
-            msg = (f"Trade pair [{tp.trade_pair_id}] is no longer supported. "
-                   f"Please try again with a different trade pair.")
+            msg = (f"Trade pair [{tp.trade_pair_id}] is no longer supported.")
             synapse.error_message = msg
+            synapse.should_retry = False
 
         elif signal and tp and not synapse.error_message:
             # Fast local validation against the AssetSelectionClient's background-refreshed
@@ -524,6 +524,7 @@ class Validator(ValidatorBase):
                        f"Select an asset class using the Vanta CLI before placing orders: "
                        f"https://github.com/taoshidev/vanta-cli")
                 synapse.error_message = msg
+                synapse.should_retry = False
 
             elif not selected_asset.can_trade(tp) and order_type != OrderType.FLAT:
                 asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
@@ -534,6 +535,7 @@ class Validator(ValidatorBase):
                     f"You can only trade pairs within your selected asset class."
                 )
                 synapse.error_message = msg
+                synapse.should_retry = False
 
             else:
                 is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
@@ -554,6 +556,7 @@ class Validator(ValidatorBase):
                         msg = (f"Trade pair [{tp.trade_pair_id}] has been temporarily halted. "
                                f"Please try again with a different trade pair.")
                         synapse.error_message = msg
+                        synapse.should_retry = False
 
         synapse.successfully_processed = not bool(synapse.error_message)
         if synapse.error_message:
