@@ -67,15 +67,6 @@ class LivePriceFetcherClient(RPCClientBase):
             time_ms = TimeUtil.now_in_millis()
         return self._market_calendar.is_market_open(trade_pair, time_ms)
 
-    def get_unsupported_trade_pairs(self):
-        """
-        Return static tuple of unsupported trade pairs. Executes locally (no RPC).
-
-        Returns:
-            Tuple of TradePair constants that are unsupported
-        """
-        return ValiConfig.UNSUPPORTED_TRADE_PAIRS
-
     # ========== RPC proxy methods ==========
 
     def stop_all_threads(self):

@@ -136,7 +136,7 @@ class HyperliquidDataService(BaseDataService):
         # Build coin name -> TradePair mapping for static pairs.
         self._coin_to_trade_pair: dict[str, TradePair] = {}
         for tp in TradePair:
-            if tp.src == TradePairSource.HYPERLIQUID and tp not in self.UNSUPPORTED_TRADE_PAIRS:
+            if tp.src == TradePairSource.HYPERLIQUID and not tp.is_blocked:
                 self._coin_to_trade_pair[tp.hl_coin] = tp
 
         # Dual-resolution L2 orderbook cache per coin.
@@ -395,7 +395,7 @@ class HyperliquidDataService(BaseDataService):
             from data_generator.polygon_data_service import PolygonDataService
             return {tp: PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE for tp in trade_pairs}
 
-        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID and tp not in self.UNSUPPORTED_TRADE_PAIRS]
+        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID and not tp.is_blocked]
         if not hl_pairs:
             return {}
 

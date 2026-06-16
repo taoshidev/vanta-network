@@ -509,9 +509,9 @@ class Validator(ValidatorBase):
                 synapse.error_message = msg
 
         elif tp and tp.is_blocked:
-            msg = (f"Trade pair [{tp.trade_pair_id}] is no longer supported. "
-                   f"Please try again with a different trade pair.")
+            msg = (f"Trade pair [{tp.trade_pair_id}] is no longer supported.")
             synapse.error_message = msg
+            synapse.should_retry = False
 
         elif signal and tp and not synapse.error_message:
             # Fast local validation against the AssetSelectionClient's background-refreshed
@@ -524,6 +524,7 @@ class Validator(ValidatorBase):
                        f"Select an asset class using the Vanta CLI before placing orders: "
                        f"https://github.com/taoshidev/vanta-cli")
                 synapse.error_message = msg
+                synapse.should_retry = False
 
             elif not selected_asset.can_trade(tp) and order_type != OrderType.FLAT:
                 asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
@@ -534,6 +535,7 @@ class Validator(ValidatorBase):
                     f"You can only trade pairs within your selected asset class."
                 )
                 synapse.error_message = msg
+                synapse.should_retry = False
 
             else:
                 is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
@@ -544,16 +546,6 @@ class Validator(ValidatorBase):
                 elif tp.trade_pair_id in ValiConfig.FLAT_ONLY_TRADE_PAIR_IDS and order_type != OrderType.FLAT:
                     synapse.error_message = (f"Trade pair [{tp.trade_pair_id}] is being discontinued. Please close your position.")
                     synapse.should_retry = False
-                else:
-                    unsupported_check_start = time.perf_counter()
-                    unsupported_pairs = self.price_fetcher_client.get_unsupported_trade_pairs()
-                    unsupported_check_ms = (time.perf_counter() - unsupported_check_start) * 1000
-                    bt.logging.info(f"[FAIL_EARLY_DEBUG] get_unsupported_trade_pairs took {unsupported_check_ms:.2f}ms")
-
-                    if tp in unsupported_pairs:
-                        msg = (f"Trade pair [{tp.trade_pair_id}] has been temporarily halted. "
-                               f"Please try again with a different trade pair.")
-                        synapse.error_message = msg
 
         synapse.successfully_processed = not bool(synapse.error_message)
         if synapse.error_message:

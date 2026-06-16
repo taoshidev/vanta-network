@@ -749,7 +749,7 @@ class ValiConfig:
     # 100% percent of collateral deposit is at risk of slashing based on drawdown
     DRAWDOWN_SLASH_PROPORTION = 1.0
 
-    FLAT_ONLY_TRADE_PAIR_IDS = {}
+    FLAT_ONLY_TRADE_PAIR_IDS = {'XAGUSD', 'XAUUSD'}
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
         'USDMXN',
@@ -757,10 +757,6 @@ class ValiConfig:
         'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
         'BCHUSD'         # No HL price
     }
-
-    # Trade pairs that are permanently unsupported (no price data available)
-    # This constant is referenced by TradePair enum values after class definition
-    UNSUPPORTED_TRADE_PAIRS = None  # Will be set after TradePair definition
 
     MAX_UNFILLED_LIMIT_ORDERS = 100
     LIMIT_ORDER_FILL_INTERVAL_MS = 10 * 1000 # 10 seconds
@@ -1107,6 +1103,11 @@ class TradePair(Enum):
         return self.trade_pair_id in ValiConfig.BLOCKED_TRADE_PAIR_IDS
 
     @property
+    def is_flat_only(self) -> bool:
+        """Check if this trade pair only allows flat orders"""
+        return self.trade_pair_id in ValiConfig.FLAT_ONLY_TRADE_PAIR_IDS
+
+    @property
     def lot_size(self):
         trade_pair_lot_size_override = {
             'XAUUSD': 100,
@@ -1236,11 +1237,6 @@ NATIVE_CRYPTO_TO_HL_TRADE_PAIR: dict[TradePair, TradePair] = {
     TradePair.XMRUSD:  TradePair.XMRUSDC,
     TradePair.LTCUSD:  TradePair.LTCUSDC,
 }
-
-# Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
-# These are trade pairs that have no price data available (not just temporarily halted)
-ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
-                                      TradePair.FTSE, TradePair.GDAXI)
 
 # HL dynamic registry — populated at import time from disk, updated daily by hyperliquid_tracker.
 # HL_DYNAMIC_REGISTRY    : trade_pair_id → DynamicTradePair  (used by from_trade_pair_id)

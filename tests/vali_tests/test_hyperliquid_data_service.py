@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 
 from data_generator.hyperliquid_data_service import HyperliquidDataService, HYPERLIQUID_PROVIDER_NAME
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory
 
 
 class TestHyperliquidDataService(unittest.TestCase):
@@ -39,9 +39,9 @@ class TestHyperliquidDataService(unittest.TestCase):
         actual_coins = set(self.service._coin_to_trade_pair.keys())
         self.assertEqual(expected_coins, actual_coins)
 
-    def test_coin_mapping_excludes_unsupported(self):
-        for tp in ValiConfig.UNSUPPORTED_TRADE_PAIRS:
-            if tp.is_crypto:
+    def test_coin_mapping_excludes_blocked(self):
+        for tp in TradePair:
+            if tp.is_blocked and tp.is_crypto:
                 self.assertNotIn(tp.base, self.service._coin_to_trade_pair)
 
     def test_coin_mapping_values(self):
