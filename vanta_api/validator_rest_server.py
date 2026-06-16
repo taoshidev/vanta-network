@@ -266,6 +266,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Account management endpoints
         self.app.route("/miner-account/rebuild/<hotkey>", methods=["POST"])(self.rebuild_miner_account)
         self.app.route("/wipe/<hotkey>", methods=["POST"])(self.wipe_hotkey)
+        self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["DELETE"])(self.delete_position)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -1521,6 +1522,35 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', **result})
         except Exception as e:
             bt.logging.error(f"Error wiping hotkey {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def delete_position(self, hotkey: str, position_uuid: str):
+        """
+        Delete (or archive) a single position for a miner.
+        Requires admin access.
+
+        Example:
+        curl -X DELETE "http://localhost:48888/admin/<hotkey>/positions/<position_uuid>?archive=true" \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Delete position endpoint requires admin access'}), 403
+
+        archive_raw = request.args.get('archive', 'false')
+        archive = str(archive_raw).strip().lower() == 'true'
+
+        try:
+            if archive:
+                result = self._position_client.wipe_hotkey(hotkey, position_uuids_to_archive=[position_uuid])
+            else:
+                result = self._position_client.wipe_hotkey(hotkey, position_uuids_to_delete=[position_uuid])
+            return jsonify({'status': 'success', 'archived': archive, **result})
+        except Exception as e:
+            bt.logging.error(f"Error deleting position {position_uuid} for hotkey {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
