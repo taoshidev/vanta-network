@@ -10,7 +10,7 @@ from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, TradePairSource, ValiConfig
+from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, TradePairSource
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
@@ -129,19 +129,6 @@ class LivePriceFetcher:
         if time_ms is None:
             time_ms = TimeUtil.now_in_millis()
         return self.polygon_data_service.is_market_open(trade_pair, time_ms)
-
-    def get_unsupported_trade_pairs(self):
-        """
-        Return static tuple of unsupported trade pairs without RPC overhead.
-
-        These trade pairs are permanently unsupported (not temporarily halted),
-        so no need to fetch from polygon_data_service on every call.
-
-        Returns:
-            Tuple of TradePair constants that are unsupported
-        """
-        # Return ValiConfig constant
-        return ValiConfig.UNSUPPORTED_TRADE_PAIRS
 
     def get_currency_conversion(self, base: str, quote: str):
         return self.polygon_data_service.get_currency_conversion(base=base, quote=quote)
@@ -302,7 +289,7 @@ class LivePriceFetcher:
         return results
 
     def time_since_last_ws_ping_s(self, trade_pair: TradePair) -> float | None:
-        if trade_pair in self.polygon_data_service.UNSUPPORTED_TRADE_PAIRS:
+        if trade_pair.is_blocked:
             return None
         now_ms = TimeUtil.now_in_millis()
         t1 = self.polygon_data_service.get_websocket_lag_for_trade_pair_s(tp=trade_pair.trade_pair, now_ms=now_ms)

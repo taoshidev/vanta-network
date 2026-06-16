@@ -546,17 +546,6 @@ class Validator(ValidatorBase):
                 elif tp.trade_pair_id in ValiConfig.FLAT_ONLY_TRADE_PAIR_IDS and order_type != OrderType.FLAT:
                     synapse.error_message = (f"Trade pair [{tp.trade_pair_id}] is being discontinued. Please close your position.")
                     synapse.should_retry = False
-                else:
-                    unsupported_check_start = time.perf_counter()
-                    unsupported_pairs = self.price_fetcher_client.get_unsupported_trade_pairs()
-                    unsupported_check_ms = (time.perf_counter() - unsupported_check_start) * 1000
-                    bt.logging.info(f"[FAIL_EARLY_DEBUG] get_unsupported_trade_pairs took {unsupported_check_ms:.2f}ms")
-
-                    if tp in unsupported_pairs:
-                        msg = (f"Trade pair [{tp.trade_pair_id}] has been temporarily halted. "
-                               f"Please try again with a different trade pair.")
-                        synapse.error_message = msg
-                        synapse.should_retry = False
 
         synapse.successfully_processed = not bool(synapse.error_message)
         if synapse.error_message:

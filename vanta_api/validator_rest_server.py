@@ -749,14 +749,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return entry
 
         try:
-            unsupported_trade_pairs = set(ValiConfig.UNSUPPORTED_TRADE_PAIRS or ())
             allowed = []
             deprecated = []
             disabled = []
 
             for trade_pair in TradePair:
                 entry = build_entry(trade_pair)
-                if trade_pair.is_blocked or trade_pair in unsupported_trade_pairs:
+                if trade_pair.is_blocked:
                     disabled.append(entry)
                 elif miner_asset_class is not None and not miner_asset_class.can_trade(trade_pair):
                     disabled.append(entry)

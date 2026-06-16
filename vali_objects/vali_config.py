@@ -758,10 +758,6 @@ class ValiConfig:
         'BCHUSD'         # No HL price
     }
 
-    # Trade pairs that are permanently unsupported (no price data available)
-    # This constant is referenced by TradePair enum values after class definition
-    UNSUPPORTED_TRADE_PAIRS = None  # Will be set after TradePair definition
-
     MAX_UNFILLED_LIMIT_ORDERS = 100
     LIMIT_ORDER_FILL_INTERVAL_MS = 10 * 1000 # 10 seconds
     LIMIT_ORDER_PRICE_BUFFER_MS = 30 * 1000
@@ -1236,11 +1232,6 @@ NATIVE_CRYPTO_TO_HL_TRADE_PAIR: dict[TradePair, TradePair] = {
     TradePair.XMRUSD:  TradePair.XMRUSDC,
     TradePair.LTCUSD:  TradePair.LTCUSDC,
 }
-
-# Set UNSUPPORTED_TRADE_PAIRS now that TradePair enum is defined
-# These are trade pairs that have no price data available (not just temporarily halted)
-ValiConfig.UNSUPPORTED_TRADE_PAIRS = (TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX,
-                                      TradePair.FTSE, TradePair.GDAXI)
 
 # HL dynamic registry — populated at import time from disk, updated daily by hyperliquid_tracker.
 # HL_DYNAMIC_REGISTRY    : trade_pair_id → DynamicTradePair  (used by from_trade_pair_id)

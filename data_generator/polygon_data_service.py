@@ -793,7 +793,7 @@ class PolygonDataService(BaseDataService):
             return test_price
 
         # The caller made sure the market is closed.
-        if trade_pair in self.UNSUPPORTED_TRADE_PAIRS:
+        if trade_pair.is_blocked:
             return None
 
         if self.closed_market_prices[trade_pair] is not None:
