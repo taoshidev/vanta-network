@@ -768,9 +768,10 @@ class EliminationManager(CacheController):
             if not elimination_data.positions_closed:
                 hotkey = elimination_data.hotkey
 
-                deleted_limit_orders = self._limit_order_client.delete_all_limit_orders_for_hotkey(hotkey)
-                if deleted_limit_orders:
-                    bt.logging.info(f"Cancelled {deleted_limit_orders} pending limit orders for eliminated miner [{hotkey}]")
+                cancel_result = self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", now_ms)
+                cancelled_count = cancel_result.get("num_cancelled", 0)
+                if cancelled_count:
+                    bt.logging.info(f"Cancelled {cancelled_count} pending limit orders for eliminated miner [{hotkey}]")
 
                 open_positions = self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
                 for p in open_positions:
