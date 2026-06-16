@@ -686,7 +686,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Get filled orders from positions
             if 'filled' in status_filter and self.position_manager:
-                positions = self.position_manager.get_positions_for_one_hotkey(minerid, sort_positions=True, archived_positions=True)
+                positions = self.position_manager.get_positions_for_one_hotkey(minerid, sort_positions=True)
                 if positions:
                     for position in positions:
                         for order in position.orders:

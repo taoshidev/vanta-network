@@ -506,7 +506,7 @@ class PositionManager:
     def get_dashboard(self, hotkey: str, positions_time_ms: int) -> dict | None:
         snapshot_time_ms = positions_time_ms
 
-        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True, archived_positions=True)
+        positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
         if not positions:
             return None
 
