@@ -576,6 +576,10 @@ class Position(BaseModel):
         fill_price = price_source.parse_appropriate_price(close_ms, self.trade_pair.is_forex, OrderType.FLAT, self)
         flat_order = Order(
             order_type=OrderType.FLAT,
+            trade_pair=self.trade_pair,
+            quantity=-self.net_quantity,
+            leverage=-self.net_leverage,
+            value=-self.net_value,
             price=fill_price,
             quote_usd_rate=self.last_quote_usd_conversion,
             src=order_src,
