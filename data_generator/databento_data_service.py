@@ -118,8 +118,9 @@ class DatabentoDataService(BaseDataService):
             self.websocket_manager_thread = threading.Thread(target=self.websocket_manager, daemon=True)
             self.websocket_manager_thread.start()
 
-    # Symbols not present in Databento's corporate actions dataset
-    CORPORATE_ACTIONS_EXCLUDED_SYMBOLS = {"BRK.B"}
+    # Symbols genuinely absent from Databento's corporate-actions dataset (none today; dual-class
+    # like BRK.B resolve once de-dotted to the nasdaq_symbol form in get_corporate_actions).
+    CORPORATE_ACTIONS_EXCLUDED_SYMBOLS: set[str] = set()
 
     def _get_equity_symbols(self) -> list[str]:
         """Get all equity symbols from TradePair config."""
@@ -365,12 +366,16 @@ class DatabentoDataService(BaseDataService):
                     if start_date_str <= d < end_date_str}
 
         symbols = self._get_corporate_action_symbols()
+        # corp-actions dataset uses the no-separator nasdaq_symbol form (BRK.B -> BRKB); de-dot for
+        # the query, then map results back to the dotted trade_pair so downstream lookups match.
+        query_map = {s.replace(".", ""): s for s in symbols}
+        query_symbols = list(query_map)
         result: dict[str, CorporateActions] = {}
 
         # Fetch splits
         try:
             df_splits = self._ref_client.corporate_actions.get_range(
-                symbols=symbols,
+                symbols=query_symbols,
                 stype_in="nasdaq_symbol",
                 start=start_date_str,
                 end=end_date_str,
@@ -380,7 +385,7 @@ class DatabentoDataService(BaseDataService):
             )
             if df_splits is not None and not df_splits.empty:
                 for ex_date, row in df_splits.iterrows():
-                    symbol = row.get("symbol")
+                    symbol = query_map.get(row.get("symbol"), row.get("symbol"))
                     ratio_old = row.get("ratio_old")
                     ratio_new = row.get("ratio_new")
                     if symbol and ratio_old and ratio_new and ratio_old != 0:
@@ -394,7 +399,7 @@ class DatabentoDataService(BaseDataService):
         # Fetch dividends
         try:
             df_divs = self._ref_client.corporate_actions.get_range(
-                symbols=symbols,
+                symbols=query_symbols,
                 stype_in="nasdaq_symbol",
                 start=start_date_str,
                 end=end_date_str,
@@ -404,7 +409,7 @@ class DatabentoDataService(BaseDataService):
             )
             if df_divs is not None and not df_divs.empty:
                 for ex_date, row in df_divs.iterrows():
-                    symbol = row.get("symbol")
+                    symbol = query_map.get(row.get("symbol"), row.get("symbol"))
                     gross_dividend = row.get("gross_dividend", 0)
                     payment_date = row.get("payment_date", "")
                     if symbol and gross_dividend is not None and gross_dividend > 0:
