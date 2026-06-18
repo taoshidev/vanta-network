@@ -210,6 +210,19 @@ class EntityClient(RPCClientBase):
         """
         return self._server.restore_subaccount_rpc(synthetic_hotkey)
 
+    def update_subaccount_asset_selection(self, synthetic_hotkey: str, asset_class: str) -> Tuple[bool, str]:
+        """
+        Update asset class selection for a subaccount in both AssetSelectionManager and EntityManager.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+            asset_class: The new asset class string
+
+        Returns:
+            (success: bool, message: str)
+        """
+        return self._server.update_subaccount_asset_selection_rpc(synthetic_hotkey, asset_class)
+
     # ==================== Query Methods ====================
 
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
