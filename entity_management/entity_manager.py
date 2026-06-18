@@ -1517,6 +1517,8 @@ class EntityManager(ValidatorBroadcastBase):
                     MinerAssetClass(asset_class) if MinerAssetClass.is_valid(asset_class) else None,
                     ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT
                 )
+                if synthetic_hotkey == "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_87":   # remove once eliminated or promoted
+                    target_return = 0.08
 
                 current_return = None
                 progress = 0.0
