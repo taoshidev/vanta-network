@@ -260,7 +260,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/limit-orders/<minerid>", methods=["GET"])(self.get_limit_orders_unique)
         self.app.route("/orders/<minerid>", methods=["GET"])(self.get_orders_for_miner)
         self.app.route("/trade-pairs", methods=["GET"])(self.get_allowed_trade_pairs)
-        self.app.route("/trade-pairs/<asset_class>", methods=["GET"])(self.get_allowed_trade_pairs)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
         self.app.route("/asset-selection/update/", methods=["POST"])(self.update_asset_selection)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
@@ -709,18 +708,20 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(f"Error retrieving orders for {minerid}: {e}")
             return jsonify({'error': 'Error retrieving orders'}), 500
 
-    def get_allowed_trade_pairs(self, asset_class=None):
+    def get_allowed_trade_pairs(self):
         """Return trade pairs grouped into three categories. No API key required.
 
         allowed:    can open and close positions
         deprecated: close/reduce only (legacy dynamic HL pairs)
         disabled:   neither open nor close permitted (blocked or unsupported)
 
-        If `asset_class` is provided in the URL, the `allowed` list is further
-        filtered to pairs tradeable by that MinerAssetClass via
+        If `asset_class` is provided as a query parameter, the `allowed` list is
+        further filtered to pairs tradeable by that MinerAssetClass via
         MinerAssetClass.can_trade. Pairs filtered out are moved to `disabled`.
+        When omitted, all trade pairs are considered tradeable by asset class.
         """
         miner_asset_class = None
+        asset_class = request.args.get('asset_class')
         if asset_class is not None:
             if not MinerAssetClass.is_valid(asset_class):
                 return jsonify({'error': f'Invalid asset class: {asset_class}'}), 400
