@@ -41,7 +41,13 @@ class MinerAssetClass(str, Enum):
         category = trade_pair.trade_pair_category
         src = trade_pair.src
 
-        if self in (MinerAssetClass.HL_ALL, MinerAssetClass.ALL_MARKETS):
+        if trade_pair.is_blocked:
+            return False
+
+        if self == MinerAssetClass.HL_ALL:
+            return src == TradePairSource.HYPERLIQUID
+
+        if self == MinerAssetClass.ALL_MARKETS:
             excluded_forex = {TradePair.XAUUSD, TradePair.XAGUSD}
             is_supported_forex = category == TradePairCategory.FOREX and trade_pair not in excluded_forex
             return src == TradePairSource.HYPERLIQUID or is_supported_forex
