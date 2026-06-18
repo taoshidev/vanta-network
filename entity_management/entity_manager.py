@@ -1375,9 +1375,13 @@ class EntityManager(ValidatorBroadcastBase):
         with self._entities_lock:
             return dict(self.entities)
 
-    def get_hl_leaderboard_data(self) -> dict:
+    def get_hl_leaderboard_data(self, entity_hotkey: Optional[str] = None) -> dict:
         """
         Build leaderboard data for all HL subaccounts using batch queries.
+
+        Args:
+            entity_hotkey: Optional entity hotkey to filter subaccounts. If None,
+                returns data across all entities (backwards compatible).
 
         Returns a dict with:
         - summary: global metrics (totalTraders, fundedTraders, inChallenge, eliminated, totalVolume)
@@ -1389,7 +1393,12 @@ class EntityManager(ValidatorBroadcastBase):
         # 1. Collect all HL subaccounts (active + eliminated) from entities
         all_hl_subaccounts = []  # (hl_address, subaccount_info, synthetic_hotkey)
         with self._entities_lock:
-            for entity_data in self.entities.values():
+            if entity_hotkey is not None:
+                entity_data = self.entities.get(entity_hotkey)
+                entities_iter = [entity_data] if entity_data is not None else []
+            else:
+                entities_iter = self.entities.values()
+            for entity_data in entities_iter:
                 for subaccount in entity_data.subaccounts.values():
                     if subaccount.hl_address:
                         all_hl_subaccounts.append((

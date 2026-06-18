@@ -261,14 +261,18 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_all_entities_rpc()
 
-    def get_hl_leaderboard_data(self) -> dict:
+    def get_hl_leaderboard_data(self, entity_hotkey: Optional[str] = None) -> dict:
         """
         Get aggregated HL leaderboard data.
+
+        Args:
+            entity_hotkey: Optional entity hotkey filter. If None, returns data
+                across all entities (backwards compatible).
 
         Returns:
             Dict with summary, fundedTraders, challengeTraders, timestamp
         """
-        return self._server.get_hl_leaderboard_data_rpc()
+        return self._server.get_hl_leaderboard_data_rpc(entity_hotkey=entity_hotkey)
 
     def validate_hotkey_for_orders(self, hotkey: str) -> dict:
         """

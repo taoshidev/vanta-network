@@ -2375,12 +2375,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         Example:
         curl http://localhost:48888/hl-leaderboard
+        curl http://localhost:48888/hl-leaderboard?entity_hotkey=xxxx
         """
         if not self._entity_client:
             return jsonify({'error': 'Entity management not available'}), 503
 
+        entity_hotkey = request.args.get('entity_hotkey') or None
+
         try:
-            leaderboard = self._entity_client.get_hl_leaderboard_data()
+            leaderboard = self._entity_client.get_hl_leaderboard_data(entity_hotkey=entity_hotkey)
         except Exception as e:
             bt.logging.error(f"get_hl_leaderboard: failed: {e}")
             return jsonify({'status': 'error', 'message': 'Internal error'}), 500
