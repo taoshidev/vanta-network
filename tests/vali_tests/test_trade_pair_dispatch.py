@@ -26,14 +26,15 @@ from vali_objects.utils.leverage_utils import (
     get_tier_positional_leverage,
 )
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-from vali_objects.vali_config import (
+from vali_objects.trade_pair import (
     InstrumentType,
     SubaccountTierBaseLeverage,
     TradePair,
     TradePairCategory,
     TradePairSource,
-    ValiConfig,
 )
+from vali_objects.vali_config import ValiConfig
+
 
 
 # ---------------------------------------------------------------------------

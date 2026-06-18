@@ -19,10 +19,10 @@ from runnable.generate_equity_universe import (
     CONFIG_PATH,
 )
 from vali_objects.vali_config import (
-    TRADE_PAIR_ID_TO_TRADE_PAIR,
     InstrumentType,
     TradePairCategory,
 )
+from vali_objects.trade_pair import TRADE_PAIR_ID_TO_TRADE_PAIR
 
 
 class TestEquityUniverse(unittest.TestCase):
