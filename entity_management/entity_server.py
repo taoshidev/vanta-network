@@ -271,6 +271,10 @@ class EntityServer(RPCServerBase):
         """Restore an erroneously eliminated subaccount to active status."""
         return self._manager.restore_subaccount(synthetic_hotkey)
 
+    def update_subaccount_asset_selection_rpc(self, synthetic_hotkey: str, asset_class: str) -> Tuple[bool, str]:
+        """Update asset class selection for a subaccount in both AssetSelectionManager and EntityManager."""
+        return self._manager.update_subaccount_asset_selection(synthetic_hotkey, asset_class)
+
     # ==================== Query RPC Methods ====================
 
     def get_subaccount_status_rpc(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:

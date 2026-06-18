@@ -19,6 +19,7 @@ from bittensor_wallet import Keypair
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from entity_management.entity_utils import create_subaccount_dashboard
+from entity_management.entity_utils import is_synthetic_hotkey
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
@@ -1201,11 +1202,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Update each hotkey to the same new asset selection
             results = {}
             for hotkey in hotkeys:
-                results[hotkey] = self._asset_selection_client.process_asset_selection_request(
-                    asset_selection=asset_selection,
-                    miner=hotkey,
-                    overwrite=True
-                )
+                if is_synthetic_hotkey(hotkey):
+                    success, message = self._entity_client.update_subaccount_asset_selection(hotkey, asset_selection)
+                    results[hotkey] = {'successfully_processed': success, 'error_message': message if not success else None}
+                else:
+                    results[hotkey] = self._asset_selection_client.process_asset_selection_request(
+                        asset_selection=asset_selection,
+                        miner=hotkey,
+                        overwrite=True
+                    )
 
             total_updated = sum(1 for r in results.values() if r.get('successfully_processed'))
             bt.logging.info(

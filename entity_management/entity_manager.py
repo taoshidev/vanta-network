@@ -862,6 +862,48 @@ class EntityManager(ValidatorBroadcastBase):
         )
         return True, f"Subaccount {synthetic_hotkey} restored to active"
 
+    def update_subaccount_asset_selection(self, synthetic_hotkey: str, asset_class: str) -> Tuple[bool, str]:
+        """
+        Update the asset class selection for a subaccount.
+
+        Updates both AssetSelectionManager and the SubaccountInfo stored in EntityManager.
+
+        Args:
+            synthetic_hotkey: The synthetic hotkey ({entity_hotkey}_{subaccount_id})
+            asset_class: The new asset class string
+
+        Returns:
+            (success: bool, message: str)
+        """
+        if not is_synthetic_hotkey(synthetic_hotkey):
+            return False, f"{synthetic_hotkey} is not a synthetic hotkey"
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+
+        result = self._asset_selection_client.process_asset_selection_request(
+            asset_selection=asset_class,
+            miner=synthetic_hotkey,
+            overwrite=True
+        )
+        if not result.get('successfully_processed', False):
+            return False, f"Failed to update asset selection: {result.get('error_message', 'Unknown error')}"
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found"
+
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False, f"Subaccount {subaccount_id} not found for entity {entity_hotkey}"
+
+            subaccount.asset_class = asset_class
+            self._write_entities_from_memory_to_disk()
+
+        bt.logging.info(f"[ENTITY_MANAGER] Asset selection updated to '{asset_class}' for {synthetic_hotkey}")
+        return True, f"Asset selection updated to '{asset_class}' for {synthetic_hotkey}"
+
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
         """
         Get the status of a subaccount by synthetic hotkey.
