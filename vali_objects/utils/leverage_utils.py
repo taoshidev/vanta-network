@@ -2,7 +2,8 @@ from typing import Optional
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-from vali_objects.vali_config import InstrumentType, TradePair, TradePairCategory, ValiConfig  # noqa: E402
+from vali_objects.vali_config import ValiConfig
+from vali_objects.trade_pair import InstrumentType, TradePair, TradePairCategory
 
 
 # Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will

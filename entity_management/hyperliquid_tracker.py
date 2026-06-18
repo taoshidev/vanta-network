@@ -53,7 +53,8 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_TRADE_PAIR, TradePair, TradePairSource
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePair, TradePairSource
+from vali_objects.trade_pair import HL_COIN_TO_TRADE_PAIR
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 

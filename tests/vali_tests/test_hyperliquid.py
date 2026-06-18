@@ -19,7 +19,8 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 import os
-from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource, HL_COIN_TO_TRADE_PAIR
+from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource
+from vali_objects.trade_pair import HL_COIN_TO_TRADE_PAIR, HS_MAX_LEVERAGE
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from entity_management.hyperliquid_tracker import HyperliquidTracker
@@ -1130,7 +1131,7 @@ class TestHyperliquidTracker(TestBase):
 
         call_args = mock_order_processor.process_order.call_args
         signal = call_args.kwargs['signal']
-        self.assertAlmostEqual(signal['leverage'], ValiConfig.HS_MAX_LEVERAGE, places=4)
+        self.assertAlmostEqual(signal['leverage'], HS_MAX_LEVERAGE, places=4)
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_process_fill_signal_structure(self, mock_order_processor):
