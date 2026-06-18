@@ -280,6 +280,8 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[asset_class]
+            if hotkey == "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_87": # remove once eliminated or promoted
+                returns_threshold = 0.08
             if self._check_promotion(state, returns_threshold, current_time_ms):
                 promotions.append(hotkey)
                 continue
