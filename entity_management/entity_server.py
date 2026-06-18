@@ -315,14 +315,18 @@ class EntityServer(RPCServerBase):
         all_entities = self._manager.get_all_entities()
         return {hotkey: entity.model_dump() for hotkey, entity in all_entities.items()}
 
-    def get_hl_leaderboard_data_rpc(self) -> dict:
+    def get_hl_leaderboard_data_rpc(self, entity_hotkey: Optional[str] = None) -> dict:
         """
         Get aggregated HL leaderboard data (summary, funded traders, challenge traders).
+
+        Args:
+            entity_hotkey: Optional entity hotkey filter. If None, returns data
+                across all entities (backwards compatible).
 
         Returns:
             Dict with summary, fundedTraders, challengeTraders, timestamp
         """
-        return self._manager.get_hl_leaderboard_data()
+        return self._manager.get_hl_leaderboard_data(entity_hotkey=entity_hotkey)
 
     def validate_hotkey_for_orders_rpc(self, hotkey: str) -> dict:
         """
