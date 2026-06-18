@@ -4,7 +4,7 @@ from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, DynamicTradePair, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import PriceSource
@@ -44,7 +44,7 @@ class Position(BaseModel):
     miner_hotkey: str
     position_uuid: str
     open_ms: int
-    trade_pair: TradePairLike
+    trade_pair: TradePair
     orders: List[Order] = Field(default_factory=list)
     current_return: float = 1.0             # Excludes fees
     close_ms: Optional[int] = None
@@ -249,20 +249,10 @@ class Position(BaseModel):
         if isinstance(tp, list):
             d['trade_pair'] = tp[:5]
         else:
-            # Pydantic v2 serializes TradePairLike as a dict in Union contexts;
+            # Pydantic v2 serializes TradePair as a dict in Union contexts;
             # reconstruct the 5-element list from the live object instead
             tp_obj = self.trade_pair
-            if isinstance(tp_obj, TradePair):
-                d['trade_pair'] = tp_obj.value[:5]
-            else:
-                # DynamicTradePair (HL-only pair not in the static enum)
-                d['trade_pair'] = [
-                    tp_obj.trade_pair_id,
-                    tp_obj.trade_pair,
-                    tp_obj.fees,
-                    tp_obj.min_leverage,
-                    tp_obj.max_leverage,
-                ]
+            d['trade_pair'] = tp_obj.value[:5]
         return d
 
     def to_dict(self):

@@ -174,8 +174,8 @@ class HyperliquidDataService(BaseDataService):
         """Parse an l2Book WebSocket message.
 
         Returns (coin, tp, bids, asks, timestamp_ms) or None.
-        tp is a TradePair for static coins, a DynamicTradePair for dynamic coins,
-        or None (and the whole result is None) for completely unknown coins.
+        tp is a TradePair for known static coins, or None (whole result is None)
+        for unknown coins.
         """
         data = json.loads(msg)
         if data.get("channel") != "l2Book":
@@ -185,9 +185,6 @@ class HyperliquidDataService(BaseDataService):
         if not coin:
             return None
         tp = self._coin_to_trade_pair.get(coin)
-        if tp is None:
-            from vali_objects.vali_config import HL_COIN_TO_DYNAMIC_TRADE_PAIR
-            tp = HL_COIN_TO_DYNAMIC_TRADE_PAIR.get(coin)
         if tp is None:
             return None
         levels = book_data.get("levels", [])
@@ -261,14 +258,10 @@ class HyperliquidDataService(BaseDataService):
             )
 
     def _fetch_all_mids(self) -> dict[str, float]:
-        """Fetch mid prices for all coins across all dexes via the REST API.
+        """Fetch mid prices for all coins via the REST API (default dex only).
 
-        Fetches the default crypto dex first, then merges in each non-default dex
-        (identified by the colon-prefixed hl_coin names in HL_DYNAMIC_REGISTRY).
-        Returns {coin: mid_price} with prefixed keys for non-default dex coins (e.g. "xyz:TSLA").
+        Returns {coin: mid_price}.
         """
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
-
         result: dict[str, float] = {}
 
         # Default dex
@@ -282,24 +275,6 @@ class HyperliquidDataService(BaseDataService):
             result.update({coin: float(price) for coin, price in resp.json().items()})
         except Exception as e:
             bt.logging.error(f"Hyperliquid REST allMids (default dex) failed: {type(e).__name__}: {e}")
-
-        # Non-default dexes — derive names from prefixed hl_coin entries in the registry
-        non_default_dexes = {
-            dtp.hl_coin.split(":")[0]
-            for dtp in HL_DYNAMIC_REGISTRY.values()
-            if ":" in dtp.hl_coin
-        }
-        for dex in non_default_dexes:
-            try:
-                resp = requests.post(
-                    ValiConfig.hl_info_url(),
-                    json={"type": "allMids", "dex": dex},
-                    timeout=REST_TIMEOUT_S,
-                )
-                resp.raise_for_status()
-                result.update({coin: float(price) for coin, price in resp.json().items()})
-            except Exception as e:
-                bt.logging.error(f"Hyperliquid REST allMids (dex={dex}) failed: {type(e).__name__}: {e}")
 
         return result
 
@@ -597,22 +572,15 @@ class HyperliquidDataService(BaseDataService):
     def _get_subscription_coins(self) -> set[str]:
         """Return the filtered set of HL coins to subscribe to for l2Book streams.
 
-        Builds the configured coin set from (in priority order):
-          1. Static TradePair crypto members
-          2. Dynamic coins from HL_DYNAMIC_REGISTRY
-
-        Then intersects with allMids availability to avoid subscribing to unsupported
+        Builds the configured coin set from static TradePair crypto members, then
+        intersects with allMids availability to avoid subscribing to unsupported
         coins on testnet, which causes the HL server to close the WebSocket connection.
         Result is cached for _L2_COIN_CACHE_TTL_S seconds across reconnects.
         """
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
-
         configured_coins = set(self._coin_to_trade_pair.keys())
-        configured_coins.update(dtp.hl_coin for dtp in HL_DYNAMIC_REGISTRY.values())
 
         now = time.time()
         if self._l2_coin_cache is not None and (now - self._l2_coin_cache_ts) < _L2_COIN_CACHE_TTL_S:
-            # Re-expand cached coins with any new dynamic entries not yet in the cache.
             return self._l2_coin_cache | (configured_coins - self._l2_coin_cache)
 
         try:
@@ -624,24 +592,6 @@ class HyperliquidDataService(BaseDataService):
             mids = resp.json()
             if isinstance(mids, dict):
                 all_supported_keys = set(mids.keys())
-                # Also fetch non-default dex allMids so prefixed coins are not filtered out.
-                # Derive dexes from configured_coins (static + dynamic union) so all
-                # non-default dex pairs are covered regardless of HL_DYNAMIC_REGISTRY state.
-                non_default_dexes = {
-                    coin.split(":")[0]
-                    for coin in configured_coins
-                    if ":" in coin
-                }
-                for dex in non_default_dexes:
-                    try:
-                        r = requests.post(
-                            ValiConfig.hl_info_url(),
-                            json={"type": "allMids", "dex": dex},
-                            timeout=5,
-                        )
-                        all_supported_keys.update(r.json().keys())
-                    except Exception:
-                        pass
                 supported = configured_coins.intersection(all_supported_keys)
             else:
                 supported = configured_coins
