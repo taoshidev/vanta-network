@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Bulk-add Russell 1000 equity-spot TradePair members into vali_config.py.
+Bulk-add Russell 1000 equity-spot TradePair members into trade_pair.py.
 
-SOURCE OF TRUTH IS vali_config.py, NOT THE CSV
+SOURCE OF TRUTH IS trade_pair.py, NOT THE CSV
 ----------------------------------------------
-The validator runs off the TradePair enum in vali_config.py, so that file is the source of
+The validator runs off the TradePair enum in trade_pair.py, so that file is the source of
 truth for membership AND per-pair values. This generator is ADDITIVE-ONLY: it appends Russell
 tickers that are not already present, and it NEVER edits or deletes anything already in the
-file. So you may freely hand-add, hand-remove, or re-tune any member in vali_config.py and a
+file. So you may freely hand-add, hand-remove, or re-tune any member in trade_pair.py and a
 re-run will not clobber it. The CSV's only job is to let us bulk-add ~1000 tickers quickly.
 
   * Per-pair fees / SubaccountTierBaseLeverage are written as LITERALS (not shared constants)
-    so each pair can be tuned individually in vali_config.py.
+    so each pair can be tuned individually in trade_pair.py.
   * Re-running only inserts tickers missing from the file; existing members are left byte-for-byte.
   * To REMOVE a ticker: drop it from the CSV (so it won't be re-added) and, if it has positions,
     block it via BLOCKED_TRADE_PAIR_IDS — never hard-delete a member (trade_pair_id is an
@@ -41,7 +41,7 @@ import re
 import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(REPO_ROOT, "vali_objects", "vali_config.py")
+CONFIG_PATH = os.path.join(REPO_ROOT, "vali_objects", "trade_pair.py")
 CLEAN_CSV_PATH = os.path.join(REPO_ROOT, "runnable", "equity_universe", "russell1000.csv")
 
 # The generated tickers live in their own section so the generator knows where to append new ones.
@@ -114,7 +114,7 @@ def default_fees_base(config_text: str) -> tuple[str, str]:
     """Default (fees, base) for new tickers — read from an existing equity-spot member, never hardcoded."""
     m = re.search(
         r'=\s*\[\s*"[^"]*",\s*"[^"]*",\s*([0-9.eE+-]+),\s*'
-        r"ValiConfig\.EQUITIES_MIN_LEVERAGE,.*?TradePairCategory\.EQUITIES,\s*InstrumentType\.SPOT,\s*"
+        r"EQUITIES_MIN_LEVERAGE,.*?TradePairCategory\.EQUITIES,\s*InstrumentType\.SPOT,\s*"
         r"SubaccountTierBaseLeverage\(([0-9.eE+-]+)\)\]",
         _members_text_excluding_generated(config_text),
     )
@@ -158,7 +158,7 @@ def render_member_line(symbol: str, fees: str, base: str) -> str:
     display = symbol.replace("_", ".")  # dotted vendor/display symbol (BRK_B -> BRK.B)
     return (
         f'    {symbol} = ["{symbol}", "{display}", {fees}, '
-        f"ValiConfig.EQUITIES_MIN_LEVERAGE, ValiConfig.EQUITIES_MAX_LEVERAGE, "
+        f"EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, "
         f"TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage({base})]"
     )
 
@@ -179,7 +179,7 @@ def splice_into_config(config_text: str, kept_lines: list[str], new_lines: list[
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--raw", help="Path to raw IWB_holdings.csv; refreshes the committed universe CSV from it.")
-    ap.add_argument("--check", action="store_true", help="Report CSV tickers not yet in vali_config.py; exit 0.")
+    ap.add_argument("--check", action="store_true", help="Report CSV tickers not yet in trade_pair.py; exit 0.")
     args = ap.parse_args()
 
     config_text = open(CONFIG_PATH).read()
@@ -194,7 +194,7 @@ def main() -> int:
     to_add = tickers_to_add(clean_rows, present)
 
     if args.check:
-        print(f"{len(to_add)} CSV ticker(s) not yet in vali_config.py" + (f": {to_add[:20]}{' ...' if len(to_add) > 20 else ''}" if to_add else "."))
+        print(f"{len(to_add)} CSV ticker(s) not yet in trade_pair.py" + (f": {to_add[:20]}{' ...' if len(to_add) > 20 else ''}" if to_add else "."))
         return 0
 
     df, db = default_fees_base(config_text)

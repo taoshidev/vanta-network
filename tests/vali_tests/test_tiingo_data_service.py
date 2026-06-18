@@ -9,6 +9,7 @@ Focuses on edge cases and regression tests for price fetching logic.
 import unittest
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
+from vali_objects.trade_pair import BLOCKED_TRADE_PAIR_IDS
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from data_generator.tiingo_data_service import TiingoDataService
 
@@ -480,7 +481,7 @@ class TestTiingoDataService(unittest.TestCase):
         tradeable = self.tiingo_service.get_tradeable_pairs(include_blocked=False)
 
         # Verify blocked pairs are NOT in the result
-        blocked_pair_ids = ValiConfig.BLOCKED_TRADE_PAIR_IDS
+        blocked_pair_ids = BLOCKED_TRADE_PAIR_IDS
 
         tradeable_ids = {tp.trade_pair_id for tp in tradeable}
         blocked_in_tradeable = tradeable_ids & blocked_pair_ids

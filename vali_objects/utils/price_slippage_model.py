@@ -16,7 +16,8 @@ from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ForexSubcategory, NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, ValiConfig
+from vali_objects.vali_config import ValiConfig
+from vali_objects.trade_pair import TradePair, ForexSubcategory, NATIVE_CRYPTO_TO_HL_TRADE_PAIR
 from vali_objects.vali_dataclasses.order import Order
 
 SLIPPAGE_V2_TIME_MS = 1759431540000

@@ -31,7 +31,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
 from vali_objects.utils.elimination.elimination_source import EliminationSourceManager, EliminationSource
 from vali_objects.price_fetcher import LivePriceFetcherServer
-from vali_objects.vali_config import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
+from vali_objects.trade_pair import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.position_management.position_utils.position_filter import PositionFilter, FilterStats

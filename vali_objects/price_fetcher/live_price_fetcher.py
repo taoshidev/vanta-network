@@ -10,7 +10,7 @@ from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, TradePairSource
+from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, TradePairSource
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
