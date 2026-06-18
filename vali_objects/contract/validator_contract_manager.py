@@ -310,9 +310,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     del owner_private_key
                     del vault_password
 
-                msg = f"Deposit successful: {self.to_theta(deposited_balance.rao)} Theta deposited to miner: {miner_hotkey}"
+                deposited_theta = self.to_theta(deposited_balance.rao)
+                msg = f"Deposit successful: {deposited_theta} Theta deposited to miner: {miner_hotkey}"
                 bt.logging.info(msg)
                 self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+                self._entity_collateral_client.offset_collateral_cache(miner_hotkey, deposited_theta)
                 return {
                     "successfully_processed": True,
                     "error_message": ""
@@ -510,6 +512,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             msg = f"Withdrawal successful: {returned_theta} Theta withdrawn for {miner_hotkey}, returned to {miner_coldkey}"
             bt.logging.info(msg)
             self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+            self._entity_collateral_client.offset_collateral_cache(miner_hotkey, -returned_theta)
             return {
                 "successfully_processed": True,
                 "error_message": "",
