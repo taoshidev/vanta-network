@@ -16,7 +16,7 @@ from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMiss
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode, DynamicTradePair
+from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_source_enum import OrderSource

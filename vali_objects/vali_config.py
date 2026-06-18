@@ -1,11 +1,10 @@
 # developer: Taoshi
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import os
 import math
 from collections import defaultdict
 from enum import Enum
-from typing import NamedTuple, Union
+from typing import NamedTuple
 
 from meta import load_version
 
@@ -367,7 +366,7 @@ class ValiConfig:
     HS_HIGH_TIER_MAX_LEVERAGE = 5.0     # intended for forex/spx-tier (HL max lev 50x) pairs; dead code since forex pairs are excluded for now
     HS_MAX_LEVERAGE = 1.0               # HS max leverage for standard-tier instruments (funded accounts)
     HS_PORTFOLIO_MAX_LEVERAGE = 4.0     # HS portfolio-level leverage cap (funded accounts)
-    HS_MIN_LEVERAGE = 0.01              # HS minimum leverage for any DynamicTradePair position
+    HS_MIN_LEVERAGE = 0.01              # HS minimum leverage
 
     # Minimum position size
     FOREX_MIN_POSITION_SIZE_LOTS = 0.01            # micro lot — subaccounts above FOREX_SMALL_ACCOUNT_THRESHOLD
@@ -785,50 +784,6 @@ assert ValiConfig.INDICES_MIN_LEVERAGE >= ValiConfig.ORDER_MIN_LEVERAGE
 assert ValiConfig.INDICES_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE
 assert ValiConfig.EQUITIES_MIN_LEVERAGE >= ValiConfig.ORDER_MIN_LEVERAGE
 assert ValiConfig.EQUITIES_MAX_LEVERAGE <= ValiConfig.ORDER_MAX_LEVERAGE
-
-@dataclass
-class DynamicTradePair:
-    """HL-only dynamic trade pair. Never added to TRADE_PAIR_ID_TO_TRADE_PAIR."""
-    trade_pair_id: str          # e.g. "HYPEUSDC" or "xyz:TSLAUSDC"
-    trade_pair: str             # e.g. "HYPE/USDC" or "xyz:TSLA/USDC"
-    hl_coin: str                # original HL coin name e.g. "HYPE" or "xyz:TSLA" — used for API lookups
-    max_leverage: float
-    fees: float = 0.001
-    min_leverage: float = ValiConfig.HS_MIN_LEVERAGE
-    trade_pair_category: TradePairCategory = TradePairCategory.CRYPTO
-    is_crypto: bool = True
-    is_forex: bool = False
-    is_equities: bool = False
-    is_indices: bool = False
-    is_commodities: bool = False
-    is_blocked: bool = False
-    lot_size: int = 1
-    src: TradePairSource = TradePairSource.HYPERLIQUID
-    instrument_type: InstrumentType = InstrumentType.PERP
-    subaccount_tier_base_leverage: float = 0.5  # defensive default (DTP is deprecated)
-
-    def __hash__(self):
-        return hash(self.trade_pair_id)
-
-    @property
-    def subcategory(self): return CryptoSubcategory.ALTS
-
-    @property
-    def base(self): return self.trade_pair.split("/")[0]
-
-    @property
-    def quote(self): return self.trade_pair.split("/")[1]
-
-    def __json__(self):
-        return {
-            "trade_pair_id": self.trade_pair_id,
-            "trade_pair": self.trade_pair,
-            "fees": self.fees,
-            "min_leverage": self.min_leverage,
-            "max_leverage": self.max_leverage,
-            "trade_pair_category": self.trade_pair_category,
-        }
-
 
 class TradePair(Enum):
     # Vanta Native Trade Pairs
@@ -2163,17 +2118,15 @@ class TradePair(Enum):
     @staticmethod
     def from_trade_pair_id(trade_pair_id: str):
         """
-        Converts a trade_pair_id string into a TradePair or DynamicTradePair object.
+        Converts a trade_pair_id string into a TradePair object.
 
         Args:
             trade_pair_id (str): The ID of the trade pair to convert.
 
         Returns:
-            TradePair | DynamicTradePair | None: The corresponding trade pair object.
+            TradePair | None: The corresponding trade pair object.
         """
-        if trade_pair_id in TRADE_PAIR_ID_TO_TRADE_PAIR:
-            return TRADE_PAIR_ID_TO_TRADE_PAIR[trade_pair_id]
-        return HL_DYNAMIC_REGISTRY.get(trade_pair_id)
+        return TRADE_PAIR_ID_TO_TRADE_PAIR.get(trade_pair_id)
 
     def __json__(self):
         # Provide a dictionary representation for JSON serialization
@@ -2200,9 +2153,7 @@ class TradePair(Enum):
 
     @staticmethod
     def get_latest_trade_pair_from_trade_pair_id(trade_pair_id):
-        if trade_pair_id in TRADE_PAIR_ID_TO_TRADE_PAIR:
-            return TRADE_PAIR_ID_TO_TRADE_PAIR[trade_pair_id]
-        return HL_DYNAMIC_REGISTRY.get(trade_pair_id)
+        return TRADE_PAIR_ID_TO_TRADE_PAIR.get(trade_pair_id)
 
     @staticmethod
     def get_latest_tade_pair_from_trade_pair_str(trade_pair_str):
@@ -2234,41 +2185,3 @@ NATIVE_CRYPTO_TO_HL_TRADE_PAIR: dict[TradePair, TradePair] = {
     TradePair.XMRUSD:  TradePair.XMRUSDC,
     TradePair.LTCUSD:  TradePair.LTCUSDC,
 }
-
-# HL dynamic registry — populated at import time from disk, updated daily by hyperliquid_tracker.
-# HL_DYNAMIC_REGISTRY    : trade_pair_id → DynamicTradePair  (used by from_trade_pair_id)
-# HL_COIN_TO_DYNAMIC_TRADE_PAIR: hl_coin → DynamicTradePair  (used for coin-name lookups in fill/price processing)
-HL_DYNAMIC_REGISTRY: dict[str, DynamicTradePair] = {}
-HL_COIN_TO_DYNAMIC_TRADE_PAIR: dict[str, DynamicTradePair] = {}
-TradePairLike = Union[TradePair, DynamicTradePair]
-
-_HL_REGISTRY_PATH = os.path.join(ValiConfig.BASE_DIR, "validation", "hl_dynamic_registry.json")
-
-
-def load_hl_dynamic_registry() -> None:
-    """Populate HL_DYNAMIC_REGISTRY and HL_COIN_TO_DYNAMIC_TRADE_PAIR from disk. Safe to call repeatedly — merges, never prunes."""
-    import json as _json
-    if not os.path.exists(_HL_REGISTRY_PATH):
-        return
-    try:
-        with open(_HL_REGISTRY_PATH) as f:
-            data = _json.load(f)
-        for tid, d in data.items():
-            dtp = DynamicTradePair(
-                trade_pair_id=d["trade_pair_id"],
-                trade_pair=d["trade_pair"],
-                hl_coin=d["hl_coin"],
-                max_leverage=d["max_leverage"],
-                min_leverage=d.get("min_leverage", ValiConfig.HS_MIN_LEVERAGE),
-                fees=d.get("fees", 0.001),
-                trade_pair_category=TradePairCategory(d["trade_pair_category"]),
-            )
-            HL_DYNAMIC_REGISTRY[tid] = dtp
-            HL_COIN_TO_DYNAMIC_TRADE_PAIR[dtp.hl_coin] = dtp
-    except Exception as e:
-        import bittensor as bt
-        bt.logging.warning(f"[HL_REGISTRY] load failed: {e}")
-
-
-# Auto-load so every process that imports vali_config gets the registry populated.
-load_hl_dynamic_registry()

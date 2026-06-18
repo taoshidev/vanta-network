@@ -713,13 +713,11 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
 
     def _setup_valid_fill_path(self, tracker, synthetic="5Entity_0"):
         """Configure mocks so fill passes coin/hotkey resolution but hits fail-early checks."""
-        from vali_objects.vali_config import DynamicTradePair
+        from vali_objects.vali_config import TradePair
 
-        # Coin resolves to a valid trade pair via dynamic registry
+        # Coin resolves to a valid trade pair via static registry
         tracker._hl_universe = {
-            "BTC": DynamicTradePair(
-                trade_pair_id="BTCUSDC", trade_pair="BTC/USDC", hl_coin="BTC", max_leverage=0.5
-            )
+            "BTC": TradePair.BTCUSDC,
         }
         tracker._entity_client.get_synthetic_hotkey_for_hl_address.return_value = synthetic
         tracker._entity_client.get_subaccount_info_for_synthetic.return_value = {

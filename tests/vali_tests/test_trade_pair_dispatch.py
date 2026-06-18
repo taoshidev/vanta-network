@@ -13,9 +13,9 @@ Covers:
   * get_portfolio_caps — multi-class returns (per-class, overall); single-class
     returns the same value twice.
   * TradePair property accessors are position-independent (type-scan).
-  * DynamicTradePair defensive defaults.
 """
 
+import types
 import unittest
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -27,7 +27,6 @@ from vali_objects.utils.leverage_utils import (
 )
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_config import (
-    DynamicTradePair,
     InstrumentType,
     SubaccountTierBaseLeverage,
     TradePair,
@@ -171,13 +170,8 @@ class TestGetTierPositionalLeverage(unittest.TestCase):
         Confirms the guard is reachable, not dead code that happens to be a no-op only
         because today's placeholder base = 0.5 lands tier 4 at exactly 2.0.
         """
-        synthetic = DynamicTradePair(
-            trade_pair_id="SYNTH_EQ",
-            trade_pair="SYNTH",
-            hl_coin="SYNTH_EQ",
-            max_leverage=3.0,
+        synthetic = types.SimpleNamespace(
             trade_pair_category=TradePairCategory.EQUITIES,
-            src=TradePairSource.VANTA,
             instrument_type=InstrumentType.SPOT,
             subaccount_tier_base_leverage=1.0,  # tier 3 would give 3.0; Reg-T clips to 2.0
         )
@@ -285,36 +279,6 @@ class TestTradePairPropertyAccessors(unittest.TestCase):
     def test_hl_coin_property_still_works(self):
         # GOLDUSDC has hl_coin="xyz:GOLD"; BTCUSD has no hl_coin → falls back to base name
         self.assertEqual(TradePair.GOLDUSDC.hl_coin, "xyz:GOLD")
-
-
-# ---------------------------------------------------------------------------
-# DynamicTradePair defensive defaults
-# ---------------------------------------------------------------------------
-
-class TestDynamicTradePairDefaults(unittest.TestCase):
-
-    def test_defaults_for_legacy_construction(self):
-        """A DTP constructed with only the required fields gets safe defaults for
-        instrument_type and subaccount_tier_base_leverage."""
-        dtp = DynamicTradePair(
-            trade_pair_id="LEGACY",
-            trade_pair="L/EGACY",
-            hl_coin="LEGACY",
-            max_leverage=1.0,
-        )
-        self.assertEqual(dtp.instrument_type, InstrumentType.PERP)
-        self.assertEqual(dtp.subaccount_tier_base_leverage, 0.5)
-
-    def test_get_tier_positional_leverage_works_on_dtp_defaults(self):
-        """Helper consumes DTP without crashing on the default fields."""
-        dtp = DynamicTradePair(
-            trade_pair_id="LEGACY2",
-            trade_pair="L/EGACY2",
-            hl_coin="LEGACY2",
-            max_leverage=1.0,
-        )
-        # base=0.5 default, tier=3 -> 1.5
-        self.assertEqual(get_tier_positional_leverage(3, dtp), 1.5)
 
 
 if __name__ == "__main__":
