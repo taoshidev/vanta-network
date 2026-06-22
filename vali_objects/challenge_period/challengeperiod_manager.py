@@ -8,7 +8,7 @@ ChallengePeriodServer wraps this and exposes methods via RPC.
 
 This follows the same pattern as EliminationManager.
 """
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 from bittensor.utils.btlogging import logging as btlogging
 import threading
@@ -55,6 +55,13 @@ class DrawdownStats:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, d: dict | None) -> 'DrawdownStats':
+        if not d:
+            return cls()
+        valid_keys = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid_keys})
+
 
 @dataclass
 class MinerBucketState:
@@ -92,8 +99,26 @@ class MinerBucketState:
         return MinerBucket.UNKNOWN
 
     def to_json(self) -> list:
-        """Only sync or save bucket entries - drawdown/rank should not be synced."""
+        """Only sync bucket entries - drawdown/rank should not be synced across validators."""
         return [entry.to_dict() for entry in self.entries]
+
+    def to_checkpoint_dict(self) -> dict:
+        """Serialize full state (entries + drawdown + rank) for on-disk checkpoint."""
+        return {
+            "entries": [entry.to_dict() for entry in self.entries],
+            "drawdown": self.drawdown.to_dict(),
+            "rank": self.rank,
+        }
+
+    @classmethod
+    def from_checkpoint_dict(cls, hotkey: str, data: dict) -> 'MinerBucketState':
+        entries = [BucketEntry.from_dict(entry) for entry in data.get("entries", [])]
+        return cls(
+            hotkey=hotkey,
+            entries=entries,
+            drawdown=DrawdownStats.from_dict(data.get("drawdown")),
+            rank=data.get("rank"),
+        )
 
     def __str__(self) -> str:
         from datetime import datetime
@@ -834,7 +859,7 @@ class ChallengePeriodManager(CacheController):
         """Get challenge period data as a checkpoint dict for serialization."""
         json_dict = {}
         for hotkey, state in self.miner_states.items():
-            json_dict[hotkey] = state.to_json()
+            json_dict[hotkey] = state.to_checkpoint_dict()
         return json_dict
 
 
@@ -849,10 +874,11 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def parse_checkpoint_dict(json_dict) -> dict[str, MinerBucketState]:
-        """Parse checkpoint dict from disk. Handles 3 formats:
+        """Parse checkpoint dict from disk. Handles 4 formats:
         1. Legacy testing/success format: {"testing": {hk: time}, "success": {hk: time}}
-        2. Current dict format: {hk: {"bucket": ..., "bucket_start_time": ..., "previous_bucket": ..., ...}}
-        3. New list format: {hk: [{"bucket": ..., "bucket_start_time": ...}, ...]}
+        2. Legacy single-bucket dict: {hk: {"bucket": ..., "bucket_start_time": ..., "previous_bucket": ..., ...}}
+        3. Entries list format: {hk: [{"bucket": ..., "bucket_start_time": ...}, ...]}
+        4. Full MinerBucketState format: {hk: {"entries": [...], "drawdown": {...}, "rank": ...}}
         """
         formatted_dict = {}
 
@@ -867,13 +893,16 @@ class ChallengePeriodManager(CacheController):
         else:
             for hotkey, info in json_dict.items():
                 if isinstance(info, list):
-                    # New list format
+                    # Entries list format
                     formatted_dict[hotkey] = MinerBucketState(hotkey, [
                         BucketEntry.from_dict(entry) for entry in info
                     ])
+                elif isinstance(info, dict) and "entries" in info:
+                    # Full MinerBucketState checkpoint format
+                    formatted_dict[hotkey] = MinerBucketState.from_checkpoint_dict(hotkey, info)
                 elif isinstance(info, dict):
                     entries = []
-                    # Current dict format
+                    # Legacy single-bucket dict format
                     bucket = MinerBucket(info["bucket"]) if info.get("bucket") else None
                     bucket_start_time = info.get("bucket_start_time")
                     if bucket and bucket_start_time:
@@ -891,7 +920,7 @@ class ChallengePeriodManager(CacheController):
     def _save_to_disk(self):
         """Write challenge period data from memory to disk."""
         if self.is_backtesting:
-            btlogging.info("don't save challengeperiod disk")
+            btlogging.info("don't save checkpoint to disk")
             return
 
         # Epoch-based validation: check if sync occurred during our iteration
@@ -905,8 +934,8 @@ class ChallengePeriodManager(CacheController):
                 )
                 return
 
-        challengeperiod_data = self.to_checkpoint_dict()
-        ValiBkpUtils.write_file(self.CHALLENGE_FILE, challengeperiod_data)
+        checkpoint_data = self.to_checkpoint_dict()
+        ValiBkpUtils.write_file(self.CHALLENGE_FILE, checkpoint_data)
 
     def _to_slack_message(self, promotions: list[str]) -> str | None:
         if not promotions:
