@@ -413,56 +413,6 @@ class EliminationManager(CacheController):
         """Get the local eliminations lock (manager-side only)"""
         return self.eliminations_lock
 
-    def _close_position(
-        self,
-        hotkey: str,
-        position: Position,
-        position_close_ms: int | None,
-        iteration_epoch: int | None = None
-    ):
-        """Add flat orders for eliminated miner"""
-        if position.is_closed_position:
-            return False
-
-        if not position_close_ms:
-            position_close_ms = TimeUtil.now_in_millis()
-
-        with self._position_lock_client.get_lock(hotkey, position.trade_pair.trade_pair_id):
-            position_refreshed = self._position_client.get_miner_position_by_uuid(hotkey, position.position_uuid)
-            if position_refreshed is None:
-                bt.logging.warning(
-                    f"Unexpectedly could not find position with uuid {position.position_uuid} for hotkey {hotkey} "
-                    f"and trade pair {position.trade_pair.trade_pair_id}. Not add flat orders"
-                )
-                return
-
-            position = position_refreshed
-            if position.is_closed_position:
-                return
-
-            position.force_close_position(OrderSource.ELIMINATION_FLAT, close_ms=position_close_ms)
-
-            # Epoch-based validation
-            if iteration_epoch is not None:
-                current_epoch = self.sync_epoch
-                if current_epoch != iteration_epoch:
-                    bt.logging.warning(
-                        f"Sync occurred during EliminationManager iteration for {hotkey} {position.trade_pair.trade_pair_id} "
-                        f"(epoch {iteration_epoch} -> {current_epoch}). Skipping save to avoid data corruption"
-                    )
-                    return
-
-            self._position_client.save_miner_position(position, delete_open_position_if_exists=True)
-            if self.serve and self.websocket_notifier_client:
-                self.websocket_notifier_client.broadcast_position_update(position)
-
-            bt.logging.info(
-                f'Added flat order for miner {hotkey} that has been eliminated. '
-                f'Trade pair: {position.trade_pair.trade_pair_id}. flat order: {position.orders[-1]}. '
-                f'position uuid {position.position_uuid}.'
-            )
-
-
 
     def process_eliminations(self, iteration_epoch=None):
         """Main elimination processing loop"""
