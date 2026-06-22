@@ -824,11 +824,8 @@ class ChallengePeriodManager(CacheController):
         eod_threshold = state.eod_drawdown_threshold
         return {
             **state.drawdown.to_dict(),
-            # TODO remove fields someday...
             "intraday_drawdown_threshold": intraday_threshold,
             "eod_drawdown_threshold": eod_threshold,
-            "subaccount_challenge_intraday_drawdown_threshold": intraday_threshold,
-            "subaccount_challenge_eod_drawdown_threshold": eod_threshold,
         }
 
     # ==================== Disk I/O ====================
