@@ -719,6 +719,74 @@ class LimitOrderManager(CacheController):
             bt.logging.error(traceback.format_exc())
             raise
 
+    def restore_cancelled_limit_order(self, miner_hotkey: str, order_uuid: str) -> bool:
+        """
+        Restore a single cancelled limit order back to unfilled state.
+        Idempotent — returns True immediately if the order is already active.
+        """
+        # Already active?
+        for trade_pair, hotkey_dict in self._limit_orders.items():
+            if miner_hotkey in hotkey_dict:
+                for order in hotkey_dict[miner_hotkey]:
+                    if order.order_uuid == order_uuid:
+                        bt.logging.info(f"[RESTORE] Order {order_uuid} already active for {miner_hotkey}")
+                        return True
+
+        # Find in closed orders
+        target_order = None
+        for order in self._closed_orders.get(miner_hotkey, []):
+            if order.order_uuid == order_uuid and OrderSource.is_cancelled(order.src):
+                target_order = order
+                break
+
+        if not target_order:
+            bt.logging.warning(f"[RESTORE] Cancelled order {order_uuid} not found for {miner_hotkey}")
+            return False
+
+        trade_pair = target_order.trade_pair
+        trade_pair_id = trade_pair.trade_pair_id
+
+        with self.limit_order_locks.get_lock(miner_hotkey, trade_pair_id):
+            # Reverse src: CANCELLED → UNFILLED
+            if target_order.src == OrderSource.LIMIT_CANCELLED:
+                target_order.src = OrderSource.LIMIT_UNFILLED
+            elif target_order.src == OrderSource.BRACKET_CANCELLED:
+                target_order.src = OrderSource.BRACKET_UNFILLED
+            elif target_order.src == OrderSource.STOP_LIMIT_CANCELLED:
+                target_order.src = OrderSource.STOP_LIMIT_UNFILLED
+
+            # Remove from closed/ dir
+            closed_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, "closed", self.running_unit_tests)
+            closed_path = closed_dir + order_uuid
+            if os.path.exists(closed_path):
+                os.remove(closed_path)
+
+            # Write to unfilled/ dir
+            self._write_to_disk(miner_hotkey, target_order)
+
+            # Add to active orders
+            if trade_pair not in self._limit_orders:
+                self._limit_orders[trade_pair] = {}
+                self._last_fill_time[trade_pair] = {}
+            if miner_hotkey not in self._limit_orders[trade_pair]:
+                self._limit_orders[trade_pair][miner_hotkey] = []
+                self._last_fill_time[trade_pair][miner_hotkey] = 0
+            self._limit_orders[trade_pair][miner_hotkey].append(target_order)
+            self._limit_orders[trade_pair][miner_hotkey].sort(key=lambda o: o.processed_ms)
+
+            # Remove from closed orders memory
+            if miner_hotkey in self._closed_orders:
+                self._closed_orders[miner_hotkey] = [
+                    o for o in self._closed_orders[miner_hotkey] if o.order_uuid != order_uuid
+                ]
+
+            # Re-attach bracket orders to their parent positions
+            if target_order.execution_type == ExecutionType.BRACKET:
+                self._attach_order_to_position(miner_hotkey, target_order)
+
+        bt.logging.info(f"[RESTORE] Restored limit order {order_uuid} [{trade_pair_id}] for {miner_hotkey}")
+        return True
+
     # ============================================================================
     # Daemon Method (runs in separate process)
     # ============================================================================
