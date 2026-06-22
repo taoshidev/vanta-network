@@ -15,7 +15,7 @@ from tiingo import TiingoWebsocketClient
 
 from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.trade_pair import TradePair, TradePairCategory
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
