@@ -38,6 +38,43 @@ _ID_MAP: dict[str, TradePair] = {
 }
 
 
+def _log_open_position_collisions(running_unit_tests: bool) -> int:
+    """Log hotkeys with open positions in BOTH the native crypto pair and its HL USDC equivalent.
+
+    These will collide after migration (two open positions for the same hotkey/trade_pair),
+    which violates the one-open-position-per-pair invariant. Returns the collision count.
+    """
+    all_positions = MigrationUtils.load_all_positions(running_unit_tests=running_unit_tests)
+    collisions = 0
+
+    for hotkey, positions in all_positions.items():
+        # hotkey -> {trade_pair_id: [position_uuid, ...]} for OPEN positions only.
+        open_by_tp: dict[str, list[str]] = {}
+        for p in positions:
+            if not p.is_open_position:
+                continue
+            tp_id = p.trade_pair.trade_pair_id if hasattr(p.trade_pair, "trade_pair_id") else None
+            if tp_id is None:
+                continue
+            open_by_tp.setdefault(tp_id, []).append(p.position_uuid)
+
+        for old_tp_id, new_tp in _ID_MAP.items():
+            new_tp_id = new_tp.trade_pair_id
+            if old_tp_id in open_by_tp and new_tp_id in open_by_tp:
+                collisions += 1
+                print(
+                    f"[COLLISION] hotkey={hotkey} "
+                    f"{old_tp_id}={open_by_tp[old_tp_id]} "
+                    f"{new_tp_id}={open_by_tp[new_tp_id]}"
+                )
+
+    if collisions == 0:
+        print("[COLLISION] no open-position collisions detected.")
+    else:
+        print(f"[COLLISION] {collisions} (hotkey, trade_pair) open-position collisions detected.")
+    return collisions
+
+
 def _migrate_positions(dry_run: bool, running_unit_tests: bool) -> tuple[int, int]:
     """Returns (migrated, failed)."""
     all_positions = MigrationUtils.load_all_positions(running_unit_tests=running_unit_tests)
@@ -178,7 +215,10 @@ def _migrate(dry_run: bool = False, running_unit_tests: bool = False) -> bool:
     if dry_run:
         print("DRY RUN — no changes will be written to disk.")
 
-    print("Migrating positions...")
+    print("Scanning for open-position collisions (native vs HL pair)...")
+    _log_open_position_collisions(running_unit_tests)
+
+    print("\nMigrating positions...")
     pos_migrated, pos_failed = _migrate_positions(dry_run, running_unit_tests)
 
     print("\nMigrating limit orders...")
