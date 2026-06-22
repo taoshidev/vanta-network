@@ -80,15 +80,15 @@ class Order(Signal):
         if self.trade_pair is None:
             return self
 
-        base = self.trade_pair.base  # e.g. BTC in BTCUSD
-        quote = self.trade_pair.quote  # e.g. USD in BTCUSD
+        base = self.trade_pair.base  # e.g. BTC in BTCUSDC
+        quote = self.trade_pair.quote  # e.g. USDC in BTCUSDC
         price = self.price
 
         if price == 0:
             return self
 
         if self.quote_usd_rate == 0:
-            if quote == "USD":
+            if "USD" in quote:
                 self.quote_usd_rate = 1.0
             elif base == "USD":
                 self.quote_usd_rate = 1.0 / price
@@ -96,7 +96,7 @@ class Order(Signal):
         if self.usd_base_rate == 0:
             if base == "USD":
                 self.usd_base_rate = 1.0
-            elif quote == "USD":
+            elif "USD" in quote:
                 self.usd_base_rate = 1.0 / price
 
         return self
