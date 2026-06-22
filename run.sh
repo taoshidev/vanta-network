@@ -146,6 +146,45 @@ read_version_value() {
     jq -r $version "$version_location"
 }
 
+requirements_file="requirements.txt"
+requirements_hash_file=".requirements.txt.sha256"
+
+compute_requirements_hash() {
+    if [ ! -f "$requirements_file" ]; then
+        echo ""
+        return
+    fi
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$requirements_file" | awk '{print $1}'
+    else
+        shasum -a 256 "$requirements_file" | awk '{print $1}'
+    fi
+}
+
+pip_install_if_requirements_changed() {
+    local current_hash
+    current_hash=$(compute_requirements_hash)
+    local stored_hash=""
+    if [ -f "$requirements_hash_file" ]; then
+        stored_hash=$(cat "$requirements_hash_file")
+    fi
+
+    if [ -n "$current_hash" ] && [ "$current_hash" = "$stored_hash" ]; then
+        echo "requirements.txt unchanged (sha256: $current_hash). Skipping pip install -e ."
+        return 0
+    fi
+
+    echo "requirements.txt changed (or no prior hash). Running pip install -e ..."
+    if pip install -e .; then
+        if [ -n "$current_hash" ]; then
+            echo "$current_hash" > "$requirements_hash_file"
+        fi
+        return 0
+    else
+        return 1
+    fi
+}
+
 check_package_installed "jq"
 if [ "$?" -ne 1 ]; then
     echo "Missing 'jq'. Please install it first."
@@ -230,7 +269,7 @@ check_and_restart_pm2() {
 }
 
 # Initial call to start both processes before entering the update loop
-pip install -e .
+pip_install_if_requirements_changed
 # Fixed: Proper array passing
 check_and_restart_pm2 "$proc_name" "$script" args
 if [ "$start_generate" = true ]; then
@@ -294,7 +333,7 @@ while true; do
         echo "Updating due to version mismatch. Current: $current_version, Latest: $latest_version"
         if git pull origin "$branch"; then
             echo "New version published. Updating the local copy."
-            if pip install -e .; then
+            if pip_install_if_requirements_changed; then
                 echo "Package installation successful."
                 # Fixed: Proper array passing
                 check_and_restart_pm2 "$proc_name" "$script" args
