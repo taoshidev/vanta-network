@@ -38,41 +38,98 @@ _ID_MAP: dict[str, TradePair] = {
 }
 
 
-def _log_open_position_collisions(running_unit_tests: bool) -> int:
-    """Log hotkeys with open positions in BOTH the native crypto pair and its HL USDC equivalent.
+def _find_open_position_collisions(running_unit_tests: bool):
+    """Scan for hotkeys with open positions in BOTH the native crypto pair and its HL USDC equivalent.
 
-    These will collide after migration (two open positions for the same hotkey/trade_pair),
-    which violates the one-open-position-per-pair invariant. Returns the collision count.
+    Returns a list of (hotkey, native_position, hl_position) tuples and prints each collision.
+    These would violate the one-open-position-per-pair invariant after migration unless merged.
     """
     all_positions = MigrationUtils.load_all_positions(running_unit_tests=running_unit_tests)
-    collisions = 0
+    collisions = []
 
     for hotkey, positions in all_positions.items():
-        # hotkey -> {trade_pair_id: [position_uuid, ...]} for OPEN positions only.
-        open_by_tp: dict[str, list[str]] = {}
+        # hotkey -> {trade_pair_id: [Position, ...]} for OPEN positions only.
+        open_by_tp: dict[str, list] = {}
         for p in positions:
             if not p.is_open_position:
                 continue
             tp_id = p.trade_pair.trade_pair_id if hasattr(p.trade_pair, "trade_pair_id") else None
             if tp_id is None:
                 continue
-            open_by_tp.setdefault(tp_id, []).append(p.position_uuid)
+            open_by_tp.setdefault(tp_id, []).append(p)
 
         for old_tp_id, new_tp in _ID_MAP.items():
             new_tp_id = new_tp.trade_pair_id
             if old_tp_id in open_by_tp and new_tp_id in open_by_tp:
-                collisions += 1
-                print(
-                    f"[COLLISION] hotkey={hotkey} "
-                    f"{old_tp_id}={open_by_tp[old_tp_id]} "
-                    f"{new_tp_id}={open_by_tp[new_tp_id]}"
-                )
+                for native_pos in open_by_tp[old_tp_id]:
+                    for hl_pos in open_by_tp[new_tp_id]:
+                        collisions.append((hotkey, native_pos, hl_pos))
+                        print(
+                            f"[COLLISION] hotkey={hotkey} "
+                            f"{old_tp_id}={native_pos.position_uuid} "
+                            f"{new_tp_id}={hl_pos.position_uuid}"
+                        )
 
-    if collisions == 0:
+    if not collisions:
         print("[COLLISION] no open-position collisions detected.")
     else:
-        print(f"[COLLISION] {collisions} (hotkey, trade_pair) open-position collisions detected.")
+        print(f"[COLLISION] {len(collisions)} collision(s) detected.")
     return collisions
+
+
+def _resolve_collisions(collisions, dry_run: bool, running_unit_tests: bool) -> tuple[int, int]:
+    """Merge each native-crypto open position into its colliding HL USDC open position.
+
+    Strategy: move all orders from the native position onto the HL position (re-tagged to the
+    HL trade_pair), sort by processed_ms, rebuild, and save the merged HL position. Delete the
+    native position's on-disk file. Returns (resolved, failed).
+    """
+    resolved = 0
+    failed = 0
+
+    for hotkey, native_pos, hl_pos in collisions:
+        try:
+            new_tp = hl_pos.trade_pair
+            native_tp_id = native_pos.trade_pair.trade_pair_id
+
+            print(
+                f"[MERGE] hotkey={hotkey[:8]}... "
+                f"{native_tp_id}/{native_pos.position_uuid} ({len(native_pos.orders)} orders) "
+                f"-> {new_tp.trade_pair_id}/{hl_pos.position_uuid} ({len(hl_pos.orders)} orders)"
+            )
+
+            if dry_run:
+                resolved += 1
+                continue
+
+            for order in native_pos.orders:
+                order.trade_pair = new_tp
+                hl_pos.orders.append(order)
+
+            hl_pos.orders.sort(key=lambda o: o.processed_ms)
+            hl_pos.rebuild_position_with_updated_orders(price_fetcher_client=None)
+
+            MigrationUtils.save_position(hl_pos, running_unit_tests=running_unit_tests)
+
+            # Delete the now-merged native position file.
+            native_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
+                hotkey, native_tp_id, order_status=OrderStatus.OPEN,
+                running_unit_tests=running_unit_tests,
+            )
+            native_path = os.path.join(native_dir, native_pos.position_uuid)
+            if os.path.exists(native_path):
+                os.remove(native_path)
+
+            resolved += 1
+        except Exception as e:
+            failed += 1
+            bt.logging.error(
+                f"Failed to merge collision for hotkey={hotkey} "
+                f"native={native_pos.position_uuid} hl={hl_pos.position_uuid}: {e}\n"
+                f"{traceback.format_exc()}"
+            )
+
+    return resolved, failed
 
 
 def _migrate_positions(dry_run: bool, running_unit_tests: bool) -> tuple[int, int]:
@@ -216,7 +273,10 @@ def _migrate(dry_run: bool = False, running_unit_tests: bool = False) -> bool:
         print("DRY RUN — no changes will be written to disk.")
 
     print("Scanning for open-position collisions (native vs HL pair)...")
-    _log_open_position_collisions(running_unit_tests)
+    collisions = _find_open_position_collisions(running_unit_tests)
+
+    print("\nResolving open-position collisions...")
+    col_resolved, col_failed = _resolve_collisions(collisions, dry_run, running_unit_tests)
 
     print("\nMigrating positions...")
     pos_migrated, pos_failed = _migrate_positions(dry_run, running_unit_tests)
@@ -229,10 +289,11 @@ def _migrate(dry_run: bool = False, running_unit_tests: bool = False) -> bool:
 
     suffix = " (dry run — nothing written)" if dry_run else ""
     print(
-        f"\nDone. positions: migrated={pos_migrated}, failed={pos_failed} | "
+        f"\nDone. collisions: resolved={col_resolved}, failed={col_failed} | "
+        f"positions: migrated={pos_migrated}, failed={pos_failed} | "
         f"limit_orders: migrated={lo_migrated}, failed={lo_failed}{suffix}"
     )
-    return (pos_failed + lo_failed) == 0
+    return (col_failed + pos_failed + lo_failed) == 0
 
 
 def main() -> bool:
