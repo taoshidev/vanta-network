@@ -17,6 +17,7 @@ from datetime import datetime
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -210,6 +211,7 @@ class ChallengePeriodManager(CacheController):
 
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._position_client = PositionManagerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        self._limit_order_client = LimitOrderClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._elimination_client = EliminationClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._plagiarism_client = PlagiarismClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
@@ -483,6 +485,8 @@ class ChallengePeriodManager(CacheController):
                 self._miner_account_client.reset_account_fields(hotkey, target_bucket)
                 # Archive all positions (disk move + memory removal)
                 self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
+                # Cancel all pending limit orders
+                self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
                 # Wipe perf ledgers so funded-period performance is tracked from scratch
                 self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
                 # Delete debt ledger to match new perf ledger checkpoints
