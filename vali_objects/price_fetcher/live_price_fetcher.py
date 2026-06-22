@@ -191,13 +191,13 @@ class LivePriceFetcher:
         if trade_pair.src == TradePairSource.HYPERLIQUID:
             return hl_sources
 
-        # Use databento for equities data
+        databento_sources = []
         if self.databento_data_service and trade_pair.is_equities:
-            return self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
+            databento_sources = self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
 
         poly_sources = self.polygon_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         t_sources = self.tiingo_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        return poly_sources + t_sources + hl_sources
+        return poly_sources + t_sources + hl_sources + databento_sources
 
     def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
         """
@@ -246,7 +246,10 @@ class LivePriceFetcher:
             if mapped_tp.src == TradePairSource.HYPERLIQUID:
                 events = [websocket_prices_hyperliquid.get(mapped_tp)]
             elif mapped_tp.is_equities:
-                events = [websocket_prices_databento.get(tp)]
+                events = [
+                    websocket_prices_databento.get(tp),
+                    websocket_prices_polygon.get(tp)
+                ]
             else:
                 events = [
                     websocket_prices_polygon.get(tp),
