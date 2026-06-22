@@ -575,7 +575,7 @@ class EliminationManager(CacheController):
         if cancel_results:
             bt.logging.info(f"Cancelled limit orders for eliminated miner [{hotkey}] {cancel_results}")
 
-        closed = self._position_client.close_all_positions(hotkey, elimination_time_ms, OrderSource.ELIMINATION_FLAT)
+        closed = self._position_client.close_all_positions(hotkey, elimination_time_ms, OrderSource.PRICE_FILLED_ELIMINATION_FLAT)
         if closed:
             positions = self._position_client.get_positions_for_one_hotkey(hotkey)
             self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
