@@ -36,7 +36,7 @@ from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePairSource
+from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePairSource, NATIVE_CRYPTO_TO_HL_TRADE_PAIR
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
@@ -497,6 +497,13 @@ class Validator(ValidatorBase):
 
         order_uuid = synapse.miner_order_uuid
         tp = Order.parse_trade_pair_from_signal(signal)
+        if tp is not None and tp in NATIVE_CRYPTO_TO_HL_TRADE_PAIR:
+            hl_tp = NATIVE_CRYPTO_TO_HL_TRADE_PAIR[tp]
+            bt.logging.info(
+                f"Remapping native crypto trade pair {tp.trade_pair_id} -> {hl_tp.trade_pair_id}"
+            )
+            tp = hl_tp
+            signal["trade_pair"] = [hl_tp.trade_pair_id, hl_tp.trade_pair]
         order_type = OrderType.from_string(signal.get("order_type") or "FLAT")
         if order_uuid and self.uuid_tracker.exists(order_uuid):
             # Parse execution type to check if this is a cancel operation
