@@ -33,8 +33,9 @@ from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 
-TARGET_MS = 1781293718000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1782176400000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -112,6 +113,7 @@ class PositionManager:
             running_unit_tests=self.running_unit_tests
         )
         self._hl_funding_client = HLFundingRateClient(connection_mode=RPCConnectionMode.RPC, connect_immediately=False)
+        self._limit_order_client = LimitOrderClient(connection_mode=RPCConnectionMode.RPC)
 
         # Load positions from disk on startup
         self._load_positions_from_disk()
@@ -876,7 +878,8 @@ class PositionManager:
         position_uuids_to_delete = []
         position_uuids_to_archive = []
         wipe_positions = False
-        reopen_force_closed_orders = False
+        reopen_force_closed_orders = True
+        limit_orders_to_restore = {}
         miners_to_wipe_perf_ledger = []
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
@@ -904,11 +907,19 @@ class PositionManager:
             #             self.save_miner_position(position, validate=False)
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
-            # All miners that wanted their challenge period restarted
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_1985"]
-            position_uuids_to_delete = ["8d25e795-2ce0-44cd-ae06-2d28293bf2ab"]
+            # Erroneously eliminated subaccount — restore positions, limit orders, and bucket.
+            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2244"]
+            position_uuids_to_delete = []
             position_uuids_to_archive = []
             miners_to_promote = []
+            limit_orders_to_restore = {
+                "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2244": [
+                    "f47bb6c4-3fd3-48ef-a0df-9146ca61c872-bracket-0",
+                    "fa4d1ccd-85fd-49ea-a373-20fd6347dfb3",
+                    "2b6a3d8a-21c3-45cf-a0d7-d69e2cd6fe0a-bracket-0",
+                    "b0a12531-43fd-49f1-8065-e2d0f211ca54-bracket-0",
+                ],
+            }
 
             for p in positions_to_snap:
                 try:
@@ -975,24 +986,29 @@ class PositionManager:
                         if any((o.src in (1, 3, 12)) for o in pos.orders):
                             pos.orders = [o for o in pos.orders if (o.src not in (1, 3, 12))]
                             pos.rebuild_position_with_updated_orders(self._live_price_client)
+                            # Delete stale closed-dir copy before re-saving as open
+                            self.delete_position(pos.miner_hotkey, pos.position_uuid)
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
 
-                # # # Restore subaccount status for erroneously eliminated synthetic hotkeys
-                # if is_synthetic_hotkey(miner_hotkey) and self._entity_client:
-                #     success, msg = self._entity_client.restore_subaccount(miner_hotkey)
-                #     print(f"Restored subaccount {miner_hotkey}: {msg}")
-                #
-                # # Remove from challenge period so the next refresh re-adds them to the
-                # # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
-                # if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
-                #     self._challenge_period_client.remove_miners(miner_hotkey)
-                #     self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
-                #     print(f'Removed challenge period status for {miner_hotkey}')
+                for _order_uuid in limit_orders_to_restore.get(miner_hotkey, []):
+                    result = self._limit_order_client.restore_cancelled_limit_order(miner_hotkey, _order_uuid)
+                    print(f"Restored limit order {_order_uuid}: {result}")
+
+                # # Restore subaccount status for erroneously eliminated synthetic hotkeys
+                if is_synthetic_hotkey(miner_hotkey) and self._entity_client:
+                    success, msg = self._entity_client.restore_subaccount(miner_hotkey)
+                    print(f"Restored subaccount {miner_hotkey}: {msg}")
+
+                # Remove from challenge period so the next refresh re-adds them to the
+                # correct bucket (SUBACCOUNT_CHALLENGE for synthetic, CHALLENGE for regular)
+                if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
+                    self._challenge_period_client.remove_miners(miner_hotkey)
+                    print(f'Removed challenge period status for {miner_hotkey}')
 
                 # Rebuild account state from current positions after corrections
                 current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
-                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions, miner_bucket=MinerBucket.SUBACCOUNT_FUNDED)
+                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions, miner_bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
 
         bt.logging.warning(
             f"Applied {n_corrections} order corrections out of {n_attempts} attempts. unique positions corrected: {len(unique_corrections)}")
