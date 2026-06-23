@@ -706,6 +706,10 @@ class ServerOrchestrator:
             **kwargs
         }
 
+        # Increase server process spawn timeout for tests (slow CI)
+        if mode in (ServerMode.TESTING, ServerMode.BACKTESTING):
+            spawn_kwargs['ready_timeout'] = 120.0
+
         # Inject context-specific parameters if context is available
         context = getattr(self, '_context', None)
         if context:
@@ -1094,7 +1098,9 @@ class ServerOrchestrator:
             safe_clear('miner_account', clear_miner_account)
 
         # Clear entity data (entities and subaccounts)
-        self.get_client('entity').clear_all_entities()
+        entity_client = get_client_safe('entity')
+        if entity_client:
+            safe_clear('entity', lambda: entity_client.clear_all_entities())
 
         bt.logging.debug("All test data cleared")
 

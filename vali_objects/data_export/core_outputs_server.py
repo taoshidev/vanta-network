@@ -75,6 +75,13 @@ class CoreOutputsServer(RPCServerBase):
         self.running_unit_tests = running_unit_tests
         self._last_upload_hour = -1
 
+        self._manager = CoreOutputsManager(
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode
+        )
+
+        bt.logging.info(f"[COREOUTPUTS_SERVER] CoreOutputsManager initialized")
+
         # Initialize RPCServerBase (handles RPC server lifecycle, daemon, watchdog)
         super().__init__(
             service_name=ValiConfig.RPC_COREOUTPUTS_SERVICE_NAME,
@@ -87,14 +94,6 @@ class CoreOutputsServer(RPCServerBase):
             connection_mode=connection_mode,
             daemon_stagger_s=30,
         )
-
-        # Create the actual CoreOutputsManager (contains all business logic)
-        self._manager = CoreOutputsManager(
-            running_unit_tests=running_unit_tests,
-            connection_mode=connection_mode
-        )
-
-        bt.logging.info(f"[COREOUTPUTS_SERVER] CoreOutputsManager initialized")
 
         # Start daemon if requested (deferred until all initialization complete)
         if start_daemon:
@@ -162,6 +161,14 @@ class CoreOutputsServer(RPCServerBase):
     def contract_manager(self):
         """Get contract client (via manager - forward compatibility)."""
         return self._manager.contract_manager
+
+    # ==================== Health Check ====================
+
+    def get_health_check_details(self) -> dict:
+        """Return CoreOutputs-specific health check fields."""
+        return {
+            "cache_status": "active" if self._daemon_started else "empty"
+        }
 
     # ==================== RPC Methods (exposed to clients) ====================
 

@@ -62,6 +62,11 @@ class MDDCheckerServer(RPCServerBase):
             start_daemon: Whether to start daemon immediately
             connection_mode: RPCConnectionMode.LOCAL for tests, RPCConnectionMode.RPC for production
         """
+        self._checker = MDDChecker(
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode
+        )
+
         # Initialize RPCServerBase (handles RPC server and daemon lifecycle)
         RPCServerBase.__init__(
             self,
@@ -73,12 +78,6 @@ class MDDCheckerServer(RPCServerBase):
             start_daemon=False,  # Defer until initialization complete
             daemon_interval_s=ValiConfig.MDD_CHECK_REFRESH_TIME_MS / 1000.0,  # Convert ms to seconds
             hang_timeout_s=120.0  # MDD check can take a while
-        )
-
-        # Create the MDDChecker instance that contains all business logic
-        self._checker = MDDChecker(
-            running_unit_tests=running_unit_tests,
-            connection_mode=connection_mode
         )
 
         # Start daemon if requested (deferred until all initialization complete)

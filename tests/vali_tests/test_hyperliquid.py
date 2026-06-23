@@ -85,8 +85,8 @@ class TestHyperliquidSubaccounts(TestBase):
         self.assertTrue(success, f"HL subaccount creation failed: {message}")
         self.assertIsNotNone(subaccount_info)
         self.assertEqual(subaccount_info['subaccount_id'], 0)
-        # Asset class should be auto-set to "crypto" for HL subaccounts
-        self.assertEqual(subaccount_info['asset_class'], 'crypto')
+        # Asset class defaults to "hl_all" for HL subaccounts
+        self.assertEqual(subaccount_info['asset_class'], 'hl_all')
 
     def test_create_hl_subaccount_invalid_address_format(self):
         """Test HL subaccount creation fails with invalid address formats."""
@@ -815,6 +815,7 @@ class TestHyperliquidTracker(TestBase):
         }
         self.price_fetcher_client.is_market_open.return_value = True
         self.price_fetcher_client.simulate_avg_fill_price.return_value = None
+        self.price_fetcher_client.get_latest_price.return_value = (50000.0,)
 
         # Populate _hl_universe with common test coins so _process_fill coin lookup succeeds.
         self.tracker._hl_universe = {
@@ -829,6 +830,10 @@ class TestHyperliquidTracker(TestBase):
         })
         self.tracker._position_client = MagicMock()
         self.tracker._position_client.get_open_position_for_trade_pair.return_value = None
+
+        # Mock miner account client for Vanta balance queries.
+        self.tracker._miner_account_client = MagicMock()
+        self.tracker._miner_account_client.get_balance.return_value = float(account_size)
 
         # OrderProcessor mock
         mock_result = MagicMock()
@@ -1008,30 +1013,39 @@ class TestHyperliquidTracker(TestBase):
         self.tracker._process_fill(VALID_HL_ADDRESS, fill)
         self.assertEqual(self.tracker._fills_processed, 0)
 
-    def test_process_fill_market_closed(self):
-        """Test that fills are skipped when market is closed."""
+    @patch('entity_management.hyperliquid_tracker.OrderProcessor')
+    def test_process_fill_market_closed(self, mock_order_processor):
+        """Test that fills proceed regardless of is_market_open (check removed from tracker)."""
         mock_result = self._setup_successful_fill_mocks()
+        mock_result.should_track_uuid = False
+        mock_order_processor.process_order.return_value = mock_result
         self.price_fetcher_client.is_market_open.return_value = False
 
         fill = self._make_fill()
         self.tracker._process_fill(VALID_HL_ADDRESS, fill)
-        self.assertEqual(self.tracker._fills_processed, 0)
+        self.assertEqual(self.tracker._fills_processed, 1)
 
-    def test_process_fill_zero_size(self):
-        """Test that fills with zero size are skipped."""
+    @patch('entity_management.hyperliquid_tracker.OrderProcessor')
+    def test_process_fill_zero_size(self, mock_order_processor):
+        """Test that fills with zero size still process (size comes from account state, not fill)."""
         mock_result = self._setup_successful_fill_mocks()
+        mock_result.should_track_uuid = False
+        mock_order_processor.process_order.return_value = mock_result
 
         fill = self._make_fill(sz="0")
         self.tracker._process_fill(VALID_HL_ADDRESS, fill)
-        self.assertEqual(self.tracker._fills_processed, 0)
+        self.assertEqual(self.tracker._fills_processed, 1)
 
-    def test_process_fill_zero_price(self):
-        """Test that fills with zero price are skipped."""
+    @patch('entity_management.hyperliquid_tracker.OrderProcessor')
+    def test_process_fill_zero_price(self, mock_order_processor):
+        """Test that fills with zero fill price still process (price fetched from price service)."""
         mock_result = self._setup_successful_fill_mocks()
+        mock_result.should_track_uuid = False
+        mock_order_processor.process_order.return_value = mock_result
 
         fill = self._make_fill(px="0")
         self.tracker._process_fill(VALID_HL_ADDRESS, fill)
-        self.assertEqual(self.tracker._fills_processed, 0)
+        self.assertEqual(self.tracker._fills_processed, 1)
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_process_fill_buy_side_maps_to_long(self, mock_order_processor):
@@ -1064,23 +1078,27 @@ class TestHyperliquidTracker(TestBase):
         signal = call_args.kwargs['signal']
         self.assertEqual(signal['order_type'], 'SHORT')
 
-    def test_process_fill_unknown_side(self):
-        """Test that fills with unknown side are skipped."""
+    @patch('entity_management.hyperliquid_tracker.OrderProcessor')
+    def test_process_fill_unknown_side(self, mock_order_processor):
+        """Test that fills with unknown side still process (direction comes from account state)."""
         mock_result = self._setup_successful_fill_mocks()
+        mock_result.should_track_uuid = False
+        mock_order_processor.process_order.return_value = mock_result
 
         fill = self._make_fill(side="X")
         self.tracker._process_fill(VALID_HL_ADDRESS, fill)
-        self.assertEqual(self.tracker._fills_processed, 0)
+        self.assertEqual(self.tracker._fills_processed, 1)
 
     # ==================== Leverage Calculation ====================
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_leverage_calculation_basic(self, mock_order_processor):
-        """Test leverage reflects account state weight (target - current position delta)."""
+        """Test order quantity reflects account state weight delta (target=0.5, current=0, price=50000)."""
         account_size = 100_000
         mock_result = self._setup_successful_fill_mocks(account_size=account_size)
         mock_order_processor.process_order.return_value = mock_result
-        # Account state: BTC weight=0.5 => target=0.5, current=0 => delta=0.5 => leverage=0.5
+        # Account state: BTC weight=0.5 => target=0.5, current=0 => delta=0.5
+        # quantity = delta * balance / (lot_size * price) = 0.5 * 100000 / (1 * 50000) = 1.0
         self.tracker._fetch_hl_account_state = MagicMock(return_value={
             "total_portfolio_value": account_size,
             "positions": {"BTC": {"weight": 0.5}},
@@ -1091,7 +1109,7 @@ class TestHyperliquidTracker(TestBase):
 
         call_args = mock_order_processor.process_order.call_args
         signal = call_args.kwargs['signal']
-        self.assertAlmostEqual(signal['leverage'], 0.5, places=4)
+        self.assertAlmostEqual(signal['quantity'], 1.0, places=4)
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_leverage_clamped_to_min(self, mock_order_processor):
@@ -1104,6 +1122,11 @@ class TestHyperliquidTracker(TestBase):
             "total_portfolio_value": account_size,
             "positions": {"BTC": {"weight": 0.001}},
         })
+        # Simulate an existing open position so the FLAT order is generated.
+        mock_position = MagicMock()
+        mock_position.is_closed_position = False
+        mock_position.net_quantity = 0.1
+        self.tracker._position_client.get_open_position_for_trade_pair.return_value = mock_position
 
         fill = self._make_fill(sz="0.001", px="50.0")
         self.tracker._process_fill(VALID_HL_ADDRESS, fill)
@@ -1115,11 +1138,12 @@ class TestHyperliquidTracker(TestBase):
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_leverage_clamped_to_max(self, mock_order_processor):
-        """Test account weight above HS_MAX_LEVERAGE is clamped to HS_MAX_LEVERAGE."""
+        """Test account weight above HS_MAX_LEVERAGE is clamped; quantity reflects clamped weight."""
         account_size = 10_000
         mock_result = self._setup_successful_fill_mocks(account_size=account_size)
         mock_order_processor.process_order.return_value = mock_result
         # Weight 5.0 > max_leverage=1.0 (HS_MAX_LEVERAGE) => clamped to 1.0
+        # quantity = 1.0 * 10000 / (1 * 50000) = 0.2
         self.tracker._fetch_hl_account_state = MagicMock(return_value={
             "total_portfolio_value": account_size,
             "positions": {"BTC": {"weight": 5.0}},
@@ -1130,12 +1154,14 @@ class TestHyperliquidTracker(TestBase):
 
         call_args = mock_order_processor.process_order.call_args
         signal = call_args.kwargs['signal']
-        self.assertAlmostEqual(signal['leverage'], ValiConfig.HS_MAX_LEVERAGE, places=4)
+        expected_quantity = ValiConfig.HS_MAX_LEVERAGE * account_size / (1 * 50000.0)
+        self.assertAlmostEqual(signal['quantity'], expected_quantity, places=4)
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_process_fill_signal_structure(self, mock_order_processor):
         """Test the full signal structure passed to OrderProcessor."""
-        mock_result = self._setup_successful_fill_mocks(account_size=100_000)
+        account_size = 100_000
+        mock_result = self._setup_successful_fill_mocks(account_size=account_size)
         mock_order_processor.process_order.return_value = mock_result
 
         fill = self._make_fill(coin="ETH", side="B", sz="2.0", px="3000.0")
@@ -1145,10 +1171,11 @@ class TestHyperliquidTracker(TestBase):
         signal = call_args.kwargs['signal']
 
         self.assertEqual(signal['order_type'], 'LONG')
-        self.assertEqual(signal['trade_pair'], {'trade_pair_id': 'ETHUSDC'})
+        self.assertEqual(signal['trade_pair'], 'ETHUSDC')
         self.assertEqual(signal['execution_type'], 'MARKET')
-        # leverage = (2.0 * 3000.0) / 100000 = 0.06
-        self.assertAlmostEqual(signal['leverage'], 0.06, places=4)
+        # quantity = weight * balance / (lot_size * price) = 0.06 * 100000 / (1 * 50000) = 0.12
+        expected_quantity = 0.06 * account_size / (1 * 50000.0)
+        self.assertAlmostEqual(signal['quantity'], expected_quantity, places=4)
 
         # Verify miner_hotkey
         self.assertEqual(call_args.kwargs['miner_hotkey'], 'entity_alpha_0')

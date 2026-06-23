@@ -126,6 +126,22 @@ class BaseDataService(ABC):
         return self.market_calendar.is_market_open(trade_pair, time_ms)
 
     @ErrorUtils.require_test_mode
+    def set_test_price_source(self, trade_pair, price_source: PriceSource) -> None:
+        """
+        Test-only method to inject a price source for a trade pair into the websocket event tracker.
+        Only works when running_unit_tests=True for safety.
+        """
+        symbol = trade_pair.trade_pair
+        if symbol not in self.trade_pair_to_recent_events:
+            self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
+        self.trade_pair_to_recent_events[symbol].clear_and_add_event(
+            price_source,
+            is_forex_quote=False,
+            tp_debug_str=None,
+            running_unit_tests=True
+        )
+
+    @ErrorUtils.require_test_mode
     def set_test_market_open(self, is_open: bool) -> None:
         """
         Test-only method to override market open status.

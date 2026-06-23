@@ -75,6 +75,14 @@ class MinerStatisticsServer(RPCServerBase):
         """
         self.running_unit_tests = running_unit_tests
 
+        self._manager = MinerStatisticsManager(
+            metrics=metrics,
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode
+        )
+
+        bt.logging.info(f"[MINERSTATS_SERVER] MinerStatisticsManager initialized")
+
         # Initialize RPCServerBase (handles RPC server lifecycle, daemon, watchdog)
         super().__init__(
             service_name=ValiConfig.RPC_MINERSTATS_SERVICE_NAME,
@@ -87,15 +95,6 @@ class MinerStatisticsServer(RPCServerBase):
             connection_mode=connection_mode,
             daemon_stagger_s=60
         )
-
-        # Create the actual MinerStatisticsManager (contains all business logic)
-        self._manager = MinerStatisticsManager(
-            metrics=metrics,
-            running_unit_tests=running_unit_tests,
-            connection_mode=connection_mode
-        )
-
-        bt.logging.info(f"[MINERSTATS_SERVER] MinerStatisticsManager initialized")
 
         # Start daemon if requested (deferred until all initialization complete)
         if start_daemon:

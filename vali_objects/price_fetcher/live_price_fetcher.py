@@ -73,13 +73,19 @@ class LivePriceFetcher:
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """
         Test-only method to inject price sources for specific trade pairs.
-        Delegates to PolygonDataService.
+        Routes to Hyperliquid data service for HL-mapped crypto pairs, otherwise Polygon.
         """
-        self.polygon_data_service.set_test_price_source(trade_pair, price_source)
+        mapped_tp = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(trade_pair)
+        if mapped_tp is not None:
+            self.hyperliquid_data_service.set_test_price_source(mapped_tp, price_source)
+        else:
+            self.polygon_data_service.set_test_price_source(trade_pair, price_source)
 
     def clear_test_price_sources(self) -> None:
-        """Clear all test price sources. Delegates to PolygonDataService."""
+        """Clear all test price sources from all data services."""
         self.polygon_data_service.clear_test_price_sources()
+        for tracker in self.hyperliquid_data_service.trade_pair_to_recent_events.values():
+            tracker.clear_all_events(running_unit_tests=True)
 
     def set_test_market_open(self, is_open: bool) -> None:
         """
