@@ -231,8 +231,8 @@ class LimitOrderManager(CacheController):
             )
 
         # Use position quantity if not specified
-        if open_position and order.leverage is None and order.value is None and order.quantity is None:
-            order.quantity = open_position.net_quantity
+        if open_position and order.leverage is None and order.value is None and order.quantity is None and order.bracket_pct is None:
+            order.bracket_pct = 1.0
 
     def _validate_limit_order(self, order):
         """
@@ -1202,18 +1202,19 @@ class LimitOrderManager(CacheController):
             order_dict = Order.to_python_dict(order)
             order_dict['price'] = fill_price
 
-            # Reverse order direction when exeucting BRACKET orders
+            # Reverse order direction when exeucting BRACKET orders.
+            # bracket_pct (if set) is resolved against net_quantity inside
+            # market_order_manager under the position lock — leverage/value/quantity stay None here.
             if order.execution_type == ExecutionType.BRACKET:
-                # Get the closing order type (opposite direction)
                 closing_order_type = OrderType.opposite_order_type(order.order_type)
-                if closing_order_type:
-                    order_dict['order_type'] = closing_order_type.name
-                    sign = 1 if closing_order_type == OrderType.LONG else -1
-                    order_dict['leverage'] = sign * abs(order.leverage) if order.leverage else None
-                    order_dict['value'] = sign * abs(order.value) if order.value else None
-                    order_dict['quantity'] = sign * abs(order.quantity) if order.quantity else None
-                else:
+                if not closing_order_type:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
+
+                sign = 1 if closing_order_type == OrderType.LONG else -1
+                order_dict['leverage'] = sign * abs(order.leverage) if order.leverage else None
+                order_dict['value'] = sign * abs(order.value) if order.value else None
+                order_dict['quantity'] = sign * abs(order.quantity) if order.quantity else None
+                order_dict['order_type'] = closing_order_type.name
 
             err_msg, updated_position, created_order = self.market_order_manager._process_market_order(
                 order.order_uuid,
