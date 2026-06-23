@@ -170,6 +170,10 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.delete_all_limit_orders_for_hotkey_rpc(miner_hotkey)
 
+    def restore_cancelled_limit_order(self, miner_hotkey: str, order_uuid: str) -> bool:
+        """Restore a cancelled limit order back to unfilled state via RPC."""
+        return self._server.restore_cancelled_limit_order_rpc(miner_hotkey, order_uuid)
+
     def sync_limit_orders(self, sync_data: dict) -> None:
         """
         Sync limit orders from external source via RPC.
