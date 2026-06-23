@@ -412,6 +412,10 @@ class EliminationServer(RPCServerBase):
         """Get the local eliminations lock (server-side only)"""
         return self._manager.get_eliminations_lock()
 
+    def delete_eliminations_rpc(self, deleted_hotkeys):
+        """Delete multiple eliminations"""
+        self._manager.delete_eliminations(deleted_hotkeys)
+
     def delete_eliminations(self, deleted_hotkeys):
         """Delete multiple eliminations"""
         self._manager.delete_eliminations(deleted_hotkeys)
