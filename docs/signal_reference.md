@@ -21,9 +21,10 @@ Complete reference for all order signal types supported by Vanta Network.
 | `take_profit` | float | Take profit price |
 | `trailing_stop` | object | Dynamic trailing stop — `{"trailing_percent": 0.02}` or `{"trailing_value": 500}` |
 | `bracket_orders` | array | List of bracket order entries (see below) |
+| `bracket_pct` | float | Fraction of the open position to close on BRACKET trigger — `[0, 1]`. BRACKET only; mutually exclusive with size fields. |
 | `order_uuid` | string | Client-provided UUID (auto-generated if omitted) |
 
-**Size fields:** Exactly one of `leverage`, `value`, or `quantity` must be specified (except BRACKET and FLAT orders).
+**Size fields:** Exactly one of `leverage`, `value`, or `quantity` must be specified (except BRACKET and FLAT orders). BRACKET orders additionally accept `bracket_pct` as an alternative size specifier.
 
 ---
 
@@ -129,7 +130,7 @@ Use `bracket_orders` for multiple independent bracket entries or when specifying
 }
 ```
 
-Each bracket entry requires at least one of `stop_loss`, `take_profit`, `trailing_percent`, or `trailing_value`. If no size is specified in a bracket entry, it will inherit the filled quantity of the parent order.
+Each bracket entry requires at least one of `stop_loss`, `take_profit`, `trailing_percent`, or `trailing_value`. Size is optional — use `leverage`, `value`, `quantity`, or `bracket_pct` (fraction of live position at trigger time). If no size is specified, `bracket_pct` defaults to `1.0` (full close).
 
 ---
 
@@ -268,7 +269,7 @@ Sets a stop loss / take profit on an **existing open position**. Requires an ope
 
 **Required:** `trade_pair_id`, at least one of `stop_loss`, `take_profit`, `trailing_stop`
 
-Size is optional — omit to inherit from the position.
+Size is optional — omit to close the entire position when triggered (equivalent to `bracket_pct: 1.0`).
 
 ```json
 {
@@ -278,6 +279,33 @@ Size is optional — omit to inherit from the position.
   "take_profit": 110000.0
 }
 ```
+
+#### With `bracket_pct` (partial close)
+
+Use `bracket_pct` to close a fraction of the **live position size** at trigger time. The percentage is resolved against `net_quantity` under the position lock at fill time, not at submission time.
+
+```json
+{
+  "execution_type": "BRACKET",
+  "trade_pair_id": "BTCUSD",
+  "bracket_pct": 0.5,
+  "stop_loss": 90000.0
+}
+```
+
+```json
+{
+  "execution_type": "BRACKET",
+  "trade_pair_id": "BTCUSD",
+  "bracket_pct": 1.0,
+  "take_profit": 110000.0
+}
+```
+
+Rules:
+- `bracket_pct` must be between `0` and `1` inclusive.
+- Mutually exclusive with `leverage`, `value`, and `quantity`.
+- When no size field is provided, `bracket_pct` defaults to `1.0` (full position close).
 
 #### With explicit size
 
@@ -308,8 +336,8 @@ Size is optional — omit to inherit from the position.
   "execution_type": "BRACKET",
   "trade_pair_id": "BTCUSD",
   "bracket_orders": [
-    {"stop_loss": 90000.0, "value": 500.0},
-    {"take_profit": 110000.0, "value": 500.0}
+    {"stop_loss": 90000.0, "bracket_pct": 0.5},
+    {"take_profit": 110000.0, "bracket_pct": 0.5}
   ]
 }
 ```
@@ -429,8 +457,9 @@ Each entry in `bracket_orders` supports:
 | `leverage` | Close size as leverage |
 | `value` | Close size in USD |
 | `quantity` | Close size in base units |
+| `bracket_pct` | Fraction of the live position to close `[0, 1]`. Mutually exclusive with size fields. |
 
-At least one price field (`stop_loss`, `take_profit`, `trailing_percent`, or `trailing_value`) is required. If no size is specified, it will inherit the filled quantity of the parent order.
+At least one price field (`stop_loss`, `take_profit`, `trailing_percent`, or `trailing_value`) is required. If no size is specified, `bracket_pct` defaults to `1.0` (closes the full position).
 
 ---
 
