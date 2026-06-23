@@ -846,7 +846,7 @@ class ChallengePeriodManager(CacheController):
         Returns None if the hotkey has not been evaluated yet.
         """
         state = self.miner_states.get(synthetic_hotkey)
-        if not state:
+        if not state or state.is_eliminated:
             return None
 
         intraday_threshold = state.intraday_drawdown_threshold
