@@ -245,23 +245,6 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.set_last_fill_time_rpc(trade_pair_id, hotkey, fill_time)
 
-    def evaluate_limit_trigger_price(self, order_type, position, price_source, limit_price: float):
-        """
-        Test limit trigger price evaluation via RPC.
-
-        Args:
-            order_type: OrderType enum
-            position: Position object or None
-            price_source: PriceSource object
-            limit_price: Limit price to check
-
-        Returns:
-            Trigger price if triggered, None otherwise
-        """
-        return self._server.evaluate_limit_trigger_price_rpc(
-            order_type, position, price_source, limit_price
-        )
-
     def fill_limit_order_with_price_source(self, miner_hotkey: str, order,
                                           price_source, fill_price: float,
                                           enforce_market_cooldown: bool = False):
@@ -324,18 +307,3 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.create_sltp_order_rpc(miner_hotkey, parent_order)
 
-    def evaluate_bracket_trigger_price(self, order, position, price_source):
-        """
-        Test bracket order trigger price evaluation via RPC.
-
-        Args:
-            order: Bracket order object
-            position: Position object or None
-            price_source: PriceSource object
-
-        Returns:
-            Trigger price if triggered, None otherwise
-        """
-        return self._server.evaluate_bracket_trigger_price_rpc(
-            order, position, price_source
-        )
