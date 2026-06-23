@@ -217,6 +217,9 @@ class Order(Signal):
         if self.quantity is not None:
             results["q"] = self.quantity
 
+        if self.bracket_pct is not None:
+            results["bpct"] = self.bracket_pct
+
         if self.price:
             results["pr"] = self.price
 
@@ -255,6 +258,8 @@ class Order(Signal):
                     sub_bracket_orders["v"] = val
                 if qty := sub_order.get("quantity"):
                     sub_bracket_orders["q"] = qty
+                if bpct := sub_order.get("bracket_pct"):
+                    sub_bracket_orders["bpct"] = bpct
 
                 tsl_compact = {}
                 if 'trailing_percent' in sub_order:
