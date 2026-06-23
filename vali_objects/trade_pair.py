@@ -33,19 +33,12 @@ BLOCKED_TRADE_PAIR_IDS = {
     # 'PAXGUSDC',      # Gold; kept GOLDUSDC
     # 'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
     'TONUSDC',  # Delisted from Hyperliquid
-    'BTCUSD',
-    'ETHUSD',
-    'SOLUSD',
-    'XRPUSD',
-    'DOGEUSD',
-    'ADAUSD',
-    'TAOUSD',
-    'HYPEUSD',
-    'ZECUSD',
-    'BCHUSD',
-    'LINKUSD',
-    'XMRUSD',
-    'LTCUSD',
+    
+    # All vanta native crypto pairs deprecated for corresponding USDC pairs
+    'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD',
+    'DOGEUS', 'ADAUSD', 'TAOUSD', 'HYPEUS',
+    'ZECUSD', 'BCHUSD', 'LINKUS', 'XMRUSD',
+    'LTCUSD'
 }
 
 
