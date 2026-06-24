@@ -1359,9 +1359,11 @@ class LimitOrderManager(CacheController):
             leverage = float(bracket['leverage']) if bracket.get('leverage') is not None else None
             value = float(bracket['value']) if bracket.get('value') is not None else None
             quantity = float(bracket['quantity']) if bracket.get('quantity') is not None else None
+            bracket_pct = float(bracket['bracket_pct']) if bracket.get('bracket_pct') is not None else None
+
             # If no size specified, inherit from parent order
-            if leverage is None and value is None and quantity is None:
-                quantity = parent_order.quantity
+            if leverage is None and value is None and quantity is None and bracket_pct is None:
+                bracket_pct = 1.0
 
             bracket_uuid = f"{parent_order.order_uuid}-bracket-{i}"
 
@@ -1379,6 +1381,7 @@ class LimitOrderManager(CacheController):
                 'leverage': leverage,
                 'value': value,
                 'quantity': quantity,
+                'bracket_pct': bracket_pct,
                 'trailing_percent': trailing_percent,
                 'trailing_value': trailing_value,
                 'best_price': fill_price if has_trailing else None,
@@ -1410,6 +1413,7 @@ class LimitOrderManager(CacheController):
                         leverage=bracket_data['leverage'],
                         value=bracket_data['value'],
                         quantity=bracket_data['quantity'],
+                        bracket_pct=bracket_data['bracket_pct'],
                         execution_type=ExecutionType.BRACKET,
                         limit_price=None,
                         stop_loss=bracket_data['stop_loss'],
