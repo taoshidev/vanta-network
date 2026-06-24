@@ -848,6 +848,9 @@ class LimitOrderManager(CacheController):
 
             # Iterate through all hotkeys for this trade pair
             for miner_hotkey, orders in list(hotkey_dict.items()):
+                if not orders:
+                    continue
+
                 last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
                 time_since_last_fill = now_ms - last_fill_time
                 fill_allowed = time_since_last_fill >= ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS
