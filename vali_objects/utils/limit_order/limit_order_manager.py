@@ -1117,7 +1117,7 @@ class LimitOrderManager(CacheController):
                 trigger_ps, trigger_price = evaluate_order_trigger(order, position, price_sources)
 
                 last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
-                if trigger_ps and (trigger_ps.start_ms < order.processed_ms or trigger_ps.start_ms < last_fill_time):
+                if trigger_ps and trigger_price and (trigger_ps.start_ms < order.processed_ms or trigger_ps.start_ms < last_fill_time):
                     bt.logging.info(
                         f"[LIMIT_ORDER] Skipping stale fill for {miner_hotkey} "
                         f"{trade_pair.trade_pair_id} {order.order_uuid}: "
