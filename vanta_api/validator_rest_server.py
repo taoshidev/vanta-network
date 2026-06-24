@@ -1123,10 +1123,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not owns_hotkey:
                 return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
 
+            # Allow overwriting an existing selection only when switching into commodities
+            allow_overwrite = (
+                isinstance(data['asset_selection'], str)
+                and data['asset_selection'].lower() == MinerAssetClass.COMMODITIES.value
+            )
+
             # Process the asset selection using verified data
             result = self._asset_selection_client.process_asset_selection_request(
                 asset_selection=data['asset_selection'],
-                miner=data['miner_hotkey']
+                miner=data['miner_hotkey'],
+                overwrite=allow_overwrite
             )
 
             # Return response
