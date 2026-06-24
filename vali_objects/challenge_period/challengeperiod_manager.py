@@ -8,7 +8,7 @@ ChallengePeriodServer wraps this and exposes methods via RPC.
 
 This follows the same pattern as EliminationManager.
 """
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 from bittensor.utils.btlogging import logging as btlogging
 import threading
@@ -17,6 +17,7 @@ from datetime import datetime
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -55,6 +56,13 @@ class DrawdownStats:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, d: dict | None) -> 'DrawdownStats':
+        if not d:
+            return cls()
+        valid_keys = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid_keys})
+
 
 @dataclass
 class MinerBucketState:
@@ -92,8 +100,26 @@ class MinerBucketState:
         return MinerBucket.UNKNOWN
 
     def to_json(self) -> list:
-        """Only sync or save bucket entries - drawdown/rank should not be synced."""
+        """Only sync bucket entries - drawdown/rank should not be synced across validators."""
         return [entry.to_dict() for entry in self.entries]
+
+    def to_checkpoint_dict(self) -> dict:
+        """Serialize full state (entries + drawdown + rank) for on-disk checkpoint."""
+        return {
+            "entries": [entry.to_dict() for entry in self.entries],
+            "drawdown": self.drawdown.to_dict(),
+            "rank": self.rank,
+        }
+
+    @classmethod
+    def from_checkpoint_dict(cls, hotkey: str, data: dict) -> 'MinerBucketState':
+        entries = [BucketEntry.from_dict(entry) for entry in data.get("entries", [])]
+        return cls(
+            hotkey=hotkey,
+            entries=entries,
+            drawdown=DrawdownStats.from_dict(data.get("drawdown")),
+            rank=data.get("rank"),
+        )
 
     def __str__(self) -> str:
         from datetime import datetime
@@ -161,7 +187,7 @@ class ChallengePeriodManager(CacheController):
     - Server delegates all RPC methods to manager methods
     - Manager creates its own clients internally (forward compatibility)
     """
-    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-06-08 00:00:00")
+    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-07-08 00:00:00")
 
     def __init__(
         self,
@@ -185,6 +211,7 @@ class ChallengePeriodManager(CacheController):
 
         self._perf_ledger_client = PerfLedgerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._position_client = PositionManagerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        self._limit_order_client = LimitOrderClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._elimination_client = EliminationClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._plagiarism_client = PlagiarismClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
@@ -458,6 +485,8 @@ class ChallengePeriodManager(CacheController):
                 self._miner_account_client.reset_account_fields(hotkey, target_bucket)
                 # Archive all positions (disk move + memory removal)
                 self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
+                # Cancel all pending limit orders
+                self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
                 # Wipe perf ledgers so funded-period performance is tracked from scratch
                 self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
                 # Delete debt ledger to match new perf ledger checkpoints
@@ -817,18 +846,15 @@ class ChallengePeriodManager(CacheController):
         Returns None if the hotkey has not been evaluated yet.
         """
         state = self.miner_states.get(synthetic_hotkey)
-        if not state:
+        if not state or state.is_eliminated:
             return None
 
         intraday_threshold = state.intraday_drawdown_threshold
         eod_threshold = state.eod_drawdown_threshold
         return {
             **state.drawdown.to_dict(),
-            # TODO remove fields someday...
             "intraday_drawdown_threshold": intraday_threshold,
             "eod_drawdown_threshold": eod_threshold,
-            "subaccount_challenge_intraday_drawdown_threshold": intraday_threshold,
-            "subaccount_challenge_eod_drawdown_threshold": eod_threshold,
         }
 
     # ==================== Disk I/O ====================
@@ -837,7 +863,7 @@ class ChallengePeriodManager(CacheController):
         """Get challenge period data as a checkpoint dict for serialization."""
         json_dict = {}
         for hotkey, state in self.miner_states.items():
-            json_dict[hotkey] = state.to_json()
+            json_dict[hotkey] = state.to_checkpoint_dict()
         return json_dict
 
 
@@ -852,10 +878,11 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def parse_checkpoint_dict(json_dict) -> dict[str, MinerBucketState]:
-        """Parse checkpoint dict from disk. Handles 3 formats:
+        """Parse checkpoint dict from disk. Handles 4 formats:
         1. Legacy testing/success format: {"testing": {hk: time}, "success": {hk: time}}
-        2. Current dict format: {hk: {"bucket": ..., "bucket_start_time": ..., "previous_bucket": ..., ...}}
-        3. New list format: {hk: [{"bucket": ..., "bucket_start_time": ...}, ...]}
+        2. Legacy single-bucket dict: {hk: {"bucket": ..., "bucket_start_time": ..., "previous_bucket": ..., ...}}
+        3. Entries list format: {hk: [{"bucket": ..., "bucket_start_time": ...}, ...]}
+        4. Full MinerBucketState format: {hk: {"entries": [...], "drawdown": {...}, "rank": ...}}
         """
         formatted_dict = {}
 
@@ -870,13 +897,16 @@ class ChallengePeriodManager(CacheController):
         else:
             for hotkey, info in json_dict.items():
                 if isinstance(info, list):
-                    # New list format
+                    # Entries list format
                     formatted_dict[hotkey] = MinerBucketState(hotkey, [
                         BucketEntry.from_dict(entry) for entry in info
                     ])
+                elif isinstance(info, dict) and "entries" in info:
+                    # Full MinerBucketState checkpoint format
+                    formatted_dict[hotkey] = MinerBucketState.from_checkpoint_dict(hotkey, info)
                 elif isinstance(info, dict):
                     entries = []
-                    # Current dict format
+                    # Legacy single-bucket dict format
                     bucket = MinerBucket(info["bucket"]) if info.get("bucket") else None
                     bucket_start_time = info.get("bucket_start_time")
                     if bucket and bucket_start_time:
@@ -894,7 +924,7 @@ class ChallengePeriodManager(CacheController):
     def _save_to_disk(self):
         """Write challenge period data from memory to disk."""
         if self.is_backtesting:
-            btlogging.info("don't save challengeperiod disk")
+            btlogging.info("don't save checkpoint to disk")
             return
 
         # Epoch-based validation: check if sync occurred during our iteration
@@ -908,8 +938,8 @@ class ChallengePeriodManager(CacheController):
                 )
                 return
 
-        challengeperiod_data = self.to_checkpoint_dict()
-        ValiBkpUtils.write_file(self.CHALLENGE_FILE, challengeperiod_data)
+        checkpoint_data = self.to_checkpoint_dict()
+        ValiBkpUtils.write_file(self.CHALLENGE_FILE, checkpoint_data)
 
     def _to_slack_message(self, promotions: list[str]) -> str | None:
         if not promotions:

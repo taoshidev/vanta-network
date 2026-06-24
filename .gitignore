@@ -49,6 +49,7 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+.requirements.txt.sha256
 
 # Unit test / coverage reports
 htmlcov/

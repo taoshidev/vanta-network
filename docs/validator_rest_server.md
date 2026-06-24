@@ -1149,8 +1149,8 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
       "last_eod_equity": 1.050,
       "intraday_drawdown_pct": 1.24,
       "eod_drawdown_pct": 1.41,
-      "subaccount_challenge_intraday_drawdown_threshold": 0.05,
-      "subaccount_challenge_eod_drawdown_threshold": 0.05
+      "intraday_drawdown_threshold": 0.05,
+      "eod_drawdown_threshold": 0.05
     },
     "ledger": {
       "hotkey": "5GhDr3xy...abc_0",
@@ -1584,8 +1584,8 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "last_eod_equity": 1.050,
       "intraday_drawdown_pct": 1.24,
       "eod_drawdown_pct": 1.41,
-      "subaccount_challenge_intraday_drawdown_threshold": 0.05,
-      "subaccount_challenge_eod_drawdown_threshold": 0.05
+      "intraday_drawdown_threshold": 0.05,
+      "eod_drawdown_threshold": 0.05
     },
     // elimination is only included if the subaccount is eliminated
     "elimination": {
@@ -1741,8 +1741,8 @@ Only present after the first challenge period evaluation cycle (~60s after start
 - `last_eod_equity`: Most recent midnight checkpoint equity. Defaults to `1.0` if no midnight checkpoints exist yet.
 - `intraday_drawdown_pct`: Percentage drop from `daily_open_equity` to `current_equity`. Positive = drawdown, negative = gain since open.
 - `eod_drawdown_pct`: Percentage drop from `eod_hwm` to `last_eod_equity`. `0.0` if no midnight checkpoints exist.
-- `subaccount_challenge_intraday_drawdown_threshold`: Elimination threshold for Rule 1 (e.g. `0.05` = 5%).
-- `subaccount_challenge_eod_drawdown_threshold`: Elimination threshold for Rule 2 (e.g. `0.05` = 5%).
+- `intraday_drawdown_threshold`: Elimination threshold for Rule 1 (e.g. `0.05` = 5%).
+- `eod_drawdown_threshold`: Elimination threshold for Rule 2 (e.g. `0.05` = 5%).
 
 **Elimination:**
 
