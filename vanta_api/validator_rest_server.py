@@ -712,7 +712,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """Return trade pairs grouped into three categories. No API key required.
 
         allowed:    can open and close positions
-        deprecated: close/reduce only (legacy dynamic HL pairs)
         disabled:   neither open nor close permitted (blocked or unsupported)
 
         If `asset_class` is provided as a query parameter, the `allowed` list is
@@ -756,32 +755,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         try:
             allowed = []
-            deprecated = []
             disabled = []
-
             for trade_pair in TradePair:
                 entry = build_entry(trade_pair)
-                if trade_pair.is_blocked:
-                    disabled.append(entry)
-                elif miner_asset_class is not None and not miner_asset_class.can_trade(trade_pair):
-                    disabled.append(entry)
-                elif trade_pair.is_flat_only:
-                    deprecated.append(entry)
-                else:
+                if miner_asset_class is not None and miner_asset_class.can_trade(trade_pair):
                     allowed.append(entry)
-
-            allowed_ids = {entry['trade_pair_id'] for entry in allowed}
-            for dtp in HL_DYNAMIC_REGISTRY.values():
-                if dtp.trade_pair_id in allowed_ids:
-                    continue
-                deprecated.append(build_entry(dtp))
+                else:
+                    disabled.append(entry)
 
             return jsonify({
                 'allowed': allowed,
-                'deprecated': deprecated,
                 'disabled': disabled,
                 'total_allowed': len(allowed),
-                'total_deprecated': len(deprecated),
                 'total_disabled': len(disabled),
                 'timestamp': TimeUtil.now_in_millis(),
             })
