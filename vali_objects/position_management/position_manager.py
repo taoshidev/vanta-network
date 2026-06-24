@@ -35,7 +35,7 @@ from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 
-TARGET_MS = 1782176400000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1782338400000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -878,7 +878,7 @@ class PositionManager:
         position_uuids_to_delete = []
         position_uuids_to_archive = []
         wipe_positions = False
-        reopen_force_closed_orders = True
+        reopen_force_closed_orders = False
         limit_orders_to_restore = {}
         miners_to_wipe_perf_ledger = []
 
@@ -908,18 +908,15 @@ class PositionManager:
             # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # Erroneously eliminated subaccount — restore positions, limit orders, and bucket.
-            miners_to_wipe = ["5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2244"]
+            miners_to_wipe = [
+                "5GE7yeZ4w5mx4e8cgZ9iSdnP9bfyGfKbN3mKhwPsg9KNx6ep",  # MAINCOMP, FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
+                "5GYP9zsvnNZU8gao2kPujRqseiuCAVWBSn8XGzodC25aPR4U",  # MAINCOMP, FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
+                "5HJvjpkSococST69VZS3u4zCT9rsCjuBANcgHiQhR3PJRBK7",  # CHALLENGE, FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
+            ]
             position_uuids_to_delete = []
             position_uuids_to_archive = []
             miners_to_promote = []
-            limit_orders_to_restore = {
-                "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_2244": [
-                    "f47bb6c4-3fd3-48ef-a0df-9146ca61c872-bracket-0",
-                    "fa4d1ccd-85fd-49ea-a373-20fd6347dfb3",
-                    "2b6a3d8a-21c3-45cf-a0d7-d69e2cd6fe0a-bracket-0",
-                    "b0a12531-43fd-49f1-8065-e2d0f211ca54-bracket-0",
-                ],
-            }
+            limit_orders_to_restore = {}
 
             for p in positions_to_snap:
                 try:
