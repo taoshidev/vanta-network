@@ -755,7 +755,21 @@ class ValiConfig:
         'USDMXN',
         # 'PAXGUSDC',      # Gold; kept GOLDUSDC
         # 'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
-        'BCHUSD'         # No HL price
+        'BTCUSD',
+        'ETHUSD',
+        'SOLUSD',
+        'XRPUSD',
+        'DOGEUSD',
+        'ADAUSD',
+        'TAOUSD',
+        'HYPEUSD',
+        'ZECUSD',
+        'BCHUSD',
+        'LINKUSD',
+        'XMRUSD',
+        'LTCUSD',
+
+
     }
 
     MAX_UNFILLED_LIMIT_ORDERS = 100

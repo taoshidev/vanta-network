@@ -758,10 +758,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             disabled = []
             for trade_pair in TradePair:
                 entry = build_entry(trade_pair)
-                if miner_asset_class is not None and miner_asset_class.can_trade(trade_pair):
-                    allowed.append(entry)
-                else:
+                if trade_pair.is_blocked:
                     disabled.append(entry)
+                elif miner_asset_class is not None and not miner_asset_class.can_trade(trade_pair):
+                    disabled.append(entry)
+                else:
+                    allowed.append(entry)
 
             return jsonify({
                 'allowed': allowed,
