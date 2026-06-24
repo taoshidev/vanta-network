@@ -1115,6 +1115,14 @@ class LimitOrderManager(CacheController):
 
                 last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
                 if trigger_ps and (trigger_ps.start_ms < order.processed_ms or trigger_ps.start_ms < last_fill_time):
+                    bt.logging.info(
+                        f"[LIMIT_ORDER] Skipping stale fill for {miner_hotkey} "
+                        f"{trade_pair.trade_pair_id} {order.order_uuid}: "
+                        f"trigger_ps.start_ms={trigger_ps.start_ms} "
+                        f"order.processed_ms={order.processed_ms} "
+                        f"last_fill_time={last_fill_time} "
+                        f"now_ms={now_ms}"
+                    )
                     return False
 
             # Fill OUTSIDE the lock to avoid deadlock with _close_limit_order

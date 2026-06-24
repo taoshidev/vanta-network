@@ -44,10 +44,8 @@ def evaluate_order_trigger(order, position, sources):
     elif order.execution_type == ExecutionType.BRACKET:
         if not position:
             return None, None
-        # Bracket evaluation picks the right extremum per (side, leg) inside.
-        # trigger_ps is reported as the same single-extremum used for trailing updates.
-        trigger_ps = sources.max_bid_ps if position.position_type == OrderType.LONG else sources.min_ask_ps
-        trigger_price = evaluate_bracket_trigger_price(order, position, sources)
+        # Bracket evaluator returns the actual ps for the leg that fired.
+        trigger_ps, trigger_price = evaluate_bracket_trigger_price(order, position, sources)
 
     elif order.execution_type == ExecutionType.STOP_LIMIT:
         # GTE triggers on upside breakout: min_ask is higher of the two and more favorable.
@@ -84,10 +82,8 @@ def evaluate_stop_limit_trigger_price(order, ps):
     mid_price = (bid_price + ask_price) / 2
 
     if order.stop_condition == StopCondition.GTE and mid_price >= order.stop_price:
-        bt.logging.info(f"Stop-limit triggered (GTE): mid={mid_price} >= stop_price={order.stop_price}")
         return order.stop_price
     if order.stop_condition == StopCondition.LTE and mid_price <= order.stop_price:
-        bt.logging.info(f"Stop-limit triggered (LTE): mid={mid_price} <= stop_price={order.stop_price}")
         return order.stop_price
     return None
 
@@ -113,20 +109,24 @@ def _compute_trailing_sl(order, position_type):
 
 def evaluate_bracket_trigger_price(order, position, sources):
     """
-    Return trigger price if SL/TP boundary is hit, else None.
+    Return (trigger_ps, trigger_price) if SL/TP boundary is hit, else (None, None).
+
+    The returned trigger_ps is the actual extremum that crossed the boundary
+    (not just the favorable side), so callers can correctly gate on its
+    start_ms for staleness.
 
     Callers must invoke update_trailing_best_price() beforehand for trailing-stop
     orders; this function reads order.price but does not mutate it.
     """
     if not position:
-        return None
+        return None, None
 
     if order.processed_ms < position.open_ms:
         bt.logging.info(
             f"[BRACKET CANCELLED] Bracket {order.order_uuid} (processed_ms={order.processed_ms}) "
             f"predates current position (open_ms={position.open_ms}), skipping trigger as orphan"
         )
-        return None
+        return None, None
 
     position_type = position.position_type
     order.order_type = position_type
@@ -144,23 +144,23 @@ def evaluate_bracket_trigger_price(order, position, sources):
             effective_sl = min(effective_sl, trailing_sl)
 
     if position_type == OrderType.LONG:
-        min_bid = sources.min_bid_ps.bid if sources.min_bid_ps.bid > 0 else sources.min_bid_ps.open
-        max_bid = sources.max_bid_ps.bid if sources.max_bid_ps.bid > 0 else sources.max_bid_ps.open
+        min_bid_ps = sources.min_bid_ps
+        max_bid_ps = sources.max_bid_ps
+        min_bid = min_bid_ps.bid if min_bid_ps.bid > 0 else min_bid_ps.open
+        max_bid = max_bid_ps.bid if max_bid_ps.bid > 0 else max_bid_ps.open
         if effective_sl is not None and min_bid <= effective_sl:
-            bt.logging.info(f"Bracket order stop loss triggered: min_bid={min_bid} <= SL={effective_sl}")
-            return effective_sl
+            return min_bid_ps, effective_sl
         if order.take_profit is not None and max_bid >= order.take_profit:
-            bt.logging.info(f"Bracket order take profit triggered: max_bid={max_bid} >= TP={order.take_profit}")
-            return order.take_profit
+            return max_bid_ps, order.take_profit
 
     elif position_type == OrderType.SHORT:
-        max_ask = sources.max_ask_ps.ask if sources.max_ask_ps.ask > 0 else sources.max_ask_ps.open
-        min_ask = sources.min_ask_ps.ask if sources.min_ask_ps.ask > 0 else sources.min_ask_ps.open
+        min_ask_ps = sources.min_ask_ps
+        max_ask_ps = sources.max_ask_ps
+        max_ask = max_ask_ps.ask if max_ask_ps.ask > 0 else max_ask_ps.open
+        min_ask = min_ask_ps.ask if min_ask_ps.ask > 0 else min_ask_ps.open
         if effective_sl is not None and max_ask >= effective_sl:
-            bt.logging.info(f"Bracket order stop loss triggered: max_ask={max_ask} >= SL={effective_sl}")
-            return effective_sl
+            return max_ask_ps, effective_sl
         if order.take_profit is not None and min_ask <= order.take_profit:
-            bt.logging.info(f"Bracket order take profit triggered: min_ask={min_ask} <= TP={order.take_profit}")
-            return order.take_profit
+            return min_ask_ps, order.take_profit
 
-    return None
+    return None, None
