@@ -13,6 +13,20 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from types import SimpleNamespace
+from vali_objects.utils.limit_order.order_trigger import (
+    LimitPriceSources,
+    evaluate_bracket_trigger_price,
+    evaluate_limit_trigger_price,
+    single_source,
+)
+
+
+def _eval_limit(order_type, price_source, limit_price):
+    return evaluate_limit_trigger_price(
+        SimpleNamespace(order_type=order_type, limit_price=limit_price),
+        price_source,
+    )
 
 
 class TestLimitOrders(TestBase):
@@ -453,32 +467,17 @@ class TestLimitOrders(TestBase):
         price_source = self.create_test_price_source(50000.0, bid=49900.0, ask=50100.0)
 
         # ask=50100 > limit=50000 -> no trigger
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.LONG,
-            None,
-            price_source,
-            50000.0
-        )
+        trigger = _eval_limit(OrderType.LONG, price_source, 50000.0)
         self.assertIsNone(trigger)
 
         # ask=50000 = limit=50000 -> trigger at ask
         price_source.ask = 50000.0
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.LONG,
-            None,
-            price_source,
-            50000.0
-        )
+        trigger = _eval_limit(OrderType.LONG, price_source, 50000.0)
         self.assertEqual(trigger, 50000.0)
 
         # ask=49900 < limit=50000 -> trigger at limit_price
         price_source.ask = 49900.0
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.LONG,
-            None,
-            price_source,
-            50000.0
-        )
+        trigger = _eval_limit(OrderType.LONG, price_source, 50000.0)
         self.assertEqual(trigger, 50000.0)
 
     def test_evaluate_trigger_price_short_order(self):
@@ -487,32 +486,17 @@ class TestLimitOrders(TestBase):
         price_source = self.create_test_price_source(50000.0, bid=49900.0, ask=50100.0)
 
         # bid=49900 < limit=50000 -> no trigger
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.SHORT,
-            None,
-            price_source,
-            50000.0
-        )
+        trigger = _eval_limit(OrderType.SHORT, price_source, 50000.0)
         self.assertIsNone(trigger)
 
         # bid=50000 = limit=50000 -> trigger at bid
         price_source.bid = 50000.0
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.SHORT,
-            None,
-            price_source,
-            50000.0
-        )
+        trigger = _eval_limit(OrderType.SHORT, price_source, 50000.0)
         self.assertEqual(trigger, 50000.0)
 
         # bid=50100 > limit=50000 -> trigger at limit_price
         price_source.bid = 50100.0
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.SHORT,
-            None,
-            price_source,
-            50000.0
-        )
+        trigger = _eval_limit(OrderType.SHORT, price_source, 50000.0)
         self.assertEqual(trigger, 50000.0)
 
     def test_evaluate_trigger_price_fallback_to_open(self):
@@ -520,12 +504,7 @@ class TestLimitOrders(TestBase):
         price_source = self.create_test_price_source(50000.0, bid=0, ask=0)
 
         # LONG uses ask (0) -> falls back to open=50000
-        trigger = self.limit_order_client.evaluate_limit_trigger_price(
-            OrderType.LONG,
-            None,
-            price_source,
-            50100.0
-        )
+        trigger = _eval_limit(OrderType.LONG, price_source, 50100.0)
         self.assertEqual(trigger, 50100.0)  # Returns limit_price when triggered (open <= limit)
 
     # ============================================================================
@@ -996,11 +975,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        trigger_price = self.limit_order_client.evaluate_bracket_trigger_price(
-            bracket_order,
-            position,
-            price_source
-        )
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
 
         self.assertIsNotNone(trigger_price)
         self.assertEqual(trigger_price, 48000.0)  # Returns the stop_loss price
@@ -1047,11 +1022,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        trigger_price = self.limit_order_client.evaluate_bracket_trigger_price(
-            bracket_order,
-            position,
-            price_source
-        )
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
 
         self.assertIsNotNone(trigger_price)
         self.assertEqual(trigger_price, 52000.0)  # Returns the take_profit price
@@ -1098,11 +1069,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        trigger_price = self.limit_order_client.evaluate_bracket_trigger_price(
-            bracket_order,
-            position,
-            price_source
-        )
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
 
         self.assertIsNotNone(trigger_price)
         self.assertEqual(trigger_price, 52000.0)  # Returns the stop_loss price
@@ -1149,11 +1116,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        trigger_price = self.limit_order_client.evaluate_bracket_trigger_price(
-            bracket_order,
-            position,
-            price_source
-        )
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
 
         self.assertIsNotNone(trigger_price)
         self.assertEqual(trigger_price, 48000.0)  # Returns the take_profit price
@@ -1202,13 +1165,86 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        trigger_price = self.limit_order_client.evaluate_bracket_trigger_price(
-            bracket_order,
-            position,
-            price_source
-        )
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
 
         self.assertIsNone(trigger_price)
+
+    # ============================================================================
+    # Bracket TPSL extrema rules (call evaluate_bracket_trigger_price directly):
+    #   LONG  SL: min_bid <= SL    LONG  TP: max_bid >= TP
+    #   SHORT SL: max_ask >= SL    SHORT TP: min_ask <= TP
+    # ============================================================================
+
+    def _ot_make_ps(self, bid, ask):
+        return PriceSource(
+            source="test", timespan_ms=1000,
+            open=(bid + ask) / 2, close=(bid + ask) / 2,
+            high=max(bid, ask), low=min(bid, ask),
+            bid=bid, ask=ask,
+            start_ms=TimeUtil.now_in_millis(),
+            websocket=False, lag_ms=0,
+        )
+
+    def _ot_make_sources(self, bids, asks):
+        bid_sorted = sorted([self._ot_make_ps(b, b + 100) for b in bids], key=lambda p: p.bid)
+        ask_sorted = sorted([self._ot_make_ps(a - 100, a) for a in asks], key=lambda p: p.ask)
+        return LimitPriceSources(
+            min_bid_ps=bid_sorted[0], max_bid_ps=bid_sorted[-1],
+            min_ask_ps=ask_sorted[0], max_ask_ps=ask_sorted[-1],
+        )
+
+    def _ot_bracket_order(self, order_type, stop_loss, take_profit):
+        return Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test-bracket",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=order_type,
+            leverage=1.0 if order_type == OrderType.LONG else -1.0,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            src=OrderSource.BRACKET_UNFILLED,
+        )
+
+    def _ot_position(self, position_type):
+        return Position(
+            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+            position_uuid=self.DEFAULT_POSITION_UUID,
+            open_ms=self.DEFAULT_OPEN_MS,
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            orders=[],
+            position_type=position_type,
+            current_return=0.0,
+        )
+
+    def test_bracket_long_sl_uses_min_bid(self):
+        order = self._ot_bracket_order(OrderType.LONG, stop_loss=48000.0, take_profit=52000.0)
+        sources = self._ot_make_sources(bids=[49000.0, 47500.0], asks=[49100.0, 47600.0])
+        trigger_ps, trigger = evaluate_bracket_trigger_price(order, self._ot_position(OrderType.LONG), sources)
+        self.assertEqual(trigger, 48000.0)
+        self.assertIs(trigger_ps, sources.min_bid_ps)
+
+    def test_bracket_long_tp_uses_max_bid(self):
+        order = self._ot_bracket_order(OrderType.LONG, stop_loss=48000.0, take_profit=52000.0)
+        sources = self._ot_make_sources(bids=[51000.0, 52000.0], asks=[51100.0, 52100.0])
+        trigger_ps, trigger = evaluate_bracket_trigger_price(order, self._ot_position(OrderType.LONG), sources)
+        self.assertEqual(trigger, 52000.0)
+        self.assertIs(trigger_ps, sources.max_bid_ps)
+
+    def test_bracket_short_sl_uses_max_ask(self):
+        order = self._ot_bracket_order(OrderType.SHORT, stop_loss=52000.0, take_profit=48000.0)
+        sources = self._ot_make_sources(bids=[50900.0, 51900.0], asks=[51000.0, 52000.0])
+        trigger_ps, trigger = evaluate_bracket_trigger_price(order, self._ot_position(OrderType.SHORT), sources)
+        self.assertEqual(trigger, 52000.0)
+        self.assertIs(trigger_ps, sources.max_ask_ps)
+
+    def test_bracket_short_tp_uses_min_ask(self):
+        order = self._ot_bracket_order(OrderType.SHORT, stop_loss=52000.0, take_profit=48000.0)
+        sources = self._ot_make_sources(bids=[47900.0, 48900.0], asks=[48000.0, 49000.0])
+        trigger_ps, trigger = evaluate_bracket_trigger_price(order, self._ot_position(OrderType.SHORT), sources)
+        self.assertEqual(trigger, 48000.0)
+        self.assertIs(trigger_ps, sources.min_ask_ps)
 
     # ============================================================================
     # Test Design Behavior: Fill Interval Enforcement

@@ -322,24 +322,6 @@ class LimitOrderServer(RPCServerBase):
             self._manager._last_fill_time[trade_pair] = {}
         self._manager._last_fill_time[trade_pair][hotkey] = fill_time
 
-    def evaluate_limit_trigger_price_rpc(self, order_type, position, price_source, limit_price):
-        """
-        RPC method to test limit trigger price evaluation.
-
-        Args:
-            order_type: OrderType enum (auto-pickled)
-            position: Position object or None (auto-pickled)
-            price_source: PriceSource object (auto-pickled)
-            limit_price: Limit price to check
-
-        Returns:
-            Trigger price if triggered, None otherwise
-        """
-        if not self.running_unit_tests:
-            raise Exception('evaluate_limit_trigger_price_rpc can only be called in unit test mode')
-
-        return self._manager._evaluate_limit_trigger_price(order_type, position, price_source, limit_price)
-
     def fill_limit_order_with_price_source_rpc(self, miner_hotkey, order, price_source, fill_price, enforce_market_cooldown=False):
         """
         RPC method to test filling a limit order with a specific price source.
@@ -404,24 +386,7 @@ class LimitOrderServer(RPCServerBase):
         """
         return self._manager.create_sltp_order(miner_hotkey, parent_order)
 
-    def evaluate_bracket_trigger_price_rpc(self, order, position, price_source):
-        """
-        RPC method to test bracket order trigger price evaluation.
-
-        Args:
-            order: Bracket order object (auto-pickled)
-            position: Position object or None (auto-pickled)
-            price_source: PriceSource object (auto-pickled)
-
-        Returns:
-            Trigger price if triggered, None otherwise
-        """
-        if not self.running_unit_tests:
-            raise Exception('evaluate_bracket_trigger_price_rpc can only be called in unit test mode')
-
-        return self._manager._evaluate_bracket_trigger_price(order, position, price_source)
-
-    # ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
+# ==================== Forward-Compatible Aliases (without _rpc suffix) ====================
     # These allow direct use of the server in tests without RPC
 
     def process_limit_order(self, miner_hotkey, order, is_edit=False):

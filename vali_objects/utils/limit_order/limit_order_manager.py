@@ -10,6 +10,11 @@ from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from shared_objects.locks.position_lock import PositionLocks
+from vali_objects.utils.limit_order.order_trigger import (
+    LimitPriceSources,
+    evaluate_order_trigger,
+    single_source as _single_source,
+)
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
@@ -391,7 +396,7 @@ class LimitOrderManager(CacheController):
                 price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
                 if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
                     _ps = price_sources[0]
-                    _, trigger_price = self._evaluate_order_trigger(order, open_position, _ps, _ps)
+                    _, trigger_price = evaluate_order_trigger(order, open_position, _single_source(_ps))
                     should_fill_immediately = trigger_price is not None
 
         # Fill outside the lock to avoid reentrant lock issue
@@ -843,12 +848,18 @@ class LimitOrderManager(CacheController):
 
             # Iterate through all hotkeys for this trade pair
             for miner_hotkey, orders in list(hotkey_dict.items()):
+                if not orders:
+                    continue
+
                 last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
                 time_since_last_fill = now_ms - last_fill_time
+                fill_allowed = time_since_last_fill >= ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS
 
-                if time_since_last_fill < ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS:
-                    bt.logging.info(f"Skipping {trade_pair.trade_pair_id} for {miner_hotkey}: {time_since_last_fill}ms since last fill")
-                    continue
+                if not fill_allowed:
+                    bt.logging.info(
+                        f"Fill interval not elapsed for {trade_pair.trade_pair_id}/{miner_hotkey}: "
+                        f"{time_since_last_fill}ms since last fill (trailing best_price still updates)"
+                    )
 
                 for order in list(orders):
                     # Check regular limit orders, SL/TP Bracket orders, and stop-limit orders
@@ -872,8 +883,19 @@ class LimitOrderManager(CacheController):
                             self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                             continue
 
-                    # Capture best_price before attempt so we can detect trailing stop updates
-                    prev_best_price = order.price if order.trailing_stop is not None else None
+                        # Trailing best_price tracking runs regardless of fill interval so the
+                        # high-water/low-water mark stays accurate between fill attempts.
+                        if order.trailing_stop is not None:
+                            prev_best_price = order.price
+                            self._update_trailing_best_price(order, position.position_type, price_sources)
+                            if (order.price != prev_best_price
+                                    and now_ms - self._last_trailing_disk_write_ms.get(order.order_uuid, 0) >= 60_000):
+                                self._write_to_disk(miner_hotkey, order)
+                                self._attach_order_to_position(miner_hotkey, order)
+                                self._last_trailing_disk_write_ms[order.order_uuid] = now_ms
+
+                    if not fill_allowed:
+                        continue
 
                     if self._attempt_fill_limit_order(miner_hotkey, order, price_sources, now_ms):
                         total_filled += 1
@@ -881,16 +903,6 @@ class LimitOrderManager(CacheController):
                         # Only one order per trade pair per hotkey can fill within the interval.
                         # This prevents rapid sequential fills and enforces rate limiting.
                         break
-
-                    # Persist trailing stop best_price changes to disk and position (crash recovery)
-                    # Rate limited per order to once per minute to avoid excessive disk I/O
-                    if (prev_best_price is not None
-                            and order.src == OrderSource.BRACKET_UNFILLED
-                            and order.price != prev_best_price
-                            and now_ms - self._last_trailing_disk_write_ms.get(order.order_uuid, 0) >= 60_000):
-                        self._write_to_disk(miner_hotkey, order)
-                        self._attach_order_to_position(miner_hotkey, order)
-                        self._last_trailing_disk_write_ms[order.order_uuid] = now_ms
 
         if total_filled > 0:
             bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
@@ -1023,14 +1035,17 @@ class LimitOrderManager(CacheController):
 
         bid_ps_sorted = sorted(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)
         ask_ps_sorted = sorted(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
-        max_bid_ps, min_ask_ps = bid_ps_sorted[0], ask_ps_sorted[0]
+        max_bid_ps, min_bid_ps = bid_ps_sorted[0], bid_ps_sorted[-1]
+        min_ask_ps, max_ask_ps = ask_ps_sorted[0], ask_ps_sorted[-1]
 
         if max_bid_ps.bid == 0 or min_ask_ps.ask == 0:
             bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} no bid/ask price")
             return None
 
-        # NOTE use aggressive limit order matching
-        return (max_bid_ps, min_ask_ps)
+        return LimitPriceSources(
+            min_bid_ps=min_bid_ps, max_bid_ps=max_bid_ps,
+            min_ask_ps=min_ask_ps, max_ask_ps=max_ask_ps,
+        )
 
         # unique_sources = len({ps.source for ps in price_sources})
         # if unique_sources > 1:
@@ -1051,6 +1066,34 @@ class LimitOrderManager(CacheController):
         # return (bid_ps, ask_ps)
 
 
+    def _update_trailing_best_price(self, order, position_type, sources):
+        """
+        Mutate order.price with the new trailing-stop best price.
+
+        LONG tracks the highest bid (max_bid_ps), SHORT tracks the lowest ask (min_ask_ps).
+        No-op if the order has no trailing_stop set.
+        """
+        if order.trailing_stop is None:
+            return
+
+        if position_type == OrderType.LONG:
+            trailing_ps = sources.max_bid_ps
+            observed = trailing_ps.bid if trailing_ps.bid > 0 else trailing_ps.open
+            new_best = max(order.price, observed) if order.price > 0 else observed
+        elif position_type == OrderType.SHORT:
+            trailing_ps = sources.min_ask_ps
+            observed = trailing_ps.ask if trailing_ps.ask > 0 else trailing_ps.open
+            new_best = min(order.price, observed) if order.price > 0 else observed
+        else:
+            return
+
+        if new_best != order.price:
+            bt.logging.info(
+                f"[TRAILING] [{order.order_uuid}] {position_type.name} best_price updated: "
+                f"{order.price:.6f} -> {new_best:.6f} (observed={observed:.6f})"
+            )
+            order.price = new_best
+
     def _attempt_fill_limit_order(self, miner_hotkey, order, price_sources, now_ms):
         """
         Attempt to fill a limit order. Returns True if filled, False otherwise.
@@ -1070,12 +1113,19 @@ class LimitOrderManager(CacheController):
                     return False
 
                 # Check if limit price triggered
-                bid_ps, ask_ps = price_sources
                 position = self._get_open_position(miner_hotkey, order)
-                trigger_ps, trigger_price = self._evaluate_order_trigger(order, position, ask_ps, bid_ps)
+                trigger_ps, trigger_price = evaluate_order_trigger(order, position, price_sources)
 
                 last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
                 if trigger_ps and (trigger_ps.start_ms < order.processed_ms or trigger_ps.start_ms < last_fill_time):
+                    bt.logging.info(
+                        f"[LIMIT_ORDER] Skipping stale fill for {miner_hotkey} "
+                        f"{trade_pair.trade_pair_id} {order.order_uuid}: "
+                        f"trigger_ps.start_ms={trigger_ps.start_ms} "
+                        f"order.processed_ms={order.processed_ms} "
+                        f"last_fill_time={last_fill_time} "
+                        f"now_ms={now_ms}"
+                    )
                     return False
 
             # Fill OUTSIDE the lock to avoid deadlock with _close_limit_order
@@ -1392,165 +1442,6 @@ class LimitOrderManager(CacheController):
         """Get open position for hotkey and trade pair."""
         trade_pair_id = order.trade_pair.trade_pair_id
         return self.position_manager.get_open_position_for_trade_pair(hotkey, trade_pair_id)
-
-    def _evaluate_order_trigger(self, order, position, ask_ps, bid_ps):
-        trigger_ps, trigger_price = None, None
-        if order.execution_type == ExecutionType.LIMIT:
-            # LONG buys at ask, SHORT sells at bid
-            trigger_ps = ask_ps if order.order_type == OrderType.LONG else bid_ps
-            trigger_price = self._evaluate_limit_trigger_price(order, trigger_ps)
-
-        elif order.execution_type == ExecutionType.BRACKET:
-            if not position:
-                return None, None
-            # Closing LONG sells at bid, closing SHORT buys at ask
-            trigger_ps = bid_ps if position.position_type == OrderType.LONG else ask_ps
-            trigger_price = self._evaluate_bracket_trigger_price(order, position, trigger_ps)
-
-        elif order.execution_type == ExecutionType.STOP_LIMIT:
-            # GTE triggers on upside breakout: use ask (higher, more favorable)
-            # LTE triggers on downside breakout: use bid (lower, more favorable)
-            trigger_ps = ask_ps if order.stop_condition == StopCondition.GTE else bid_ps
-            trigger_price = self._evaluate_stop_limit_trigger_price(order, trigger_ps)
-
-        if trigger_price:
-            bt.logging.info(f"{order.execution_type} triggered: {order.trade_pair.trade_pair_id} {order.order_uuid} trigger_price={trigger_price} price_source={trigger_ps}")
-
-        return trigger_ps, trigger_price
-
-
-    def _evaluate_limit_trigger_price(self, order, ps):
-        """Check if limit price is triggered. Returns the limit_price if triggered, None otherwise."""
-        bid_price = ps.bid if ps.bid > 0 else ps.open
-        ask_price = ps.ask if ps.ask > 0 else ps.open
-
-        order_type = order.order_type
-        limit_price = order.limit_price
-
-        if order_type == OrderType.LONG:
-            return limit_price if ask_price <= limit_price else None
-        elif order_type == OrderType.SHORT:
-            return limit_price if bid_price >= limit_price else None
-        else:
-            return None
-
-    def _evaluate_stop_limit_trigger_price(self, order, ps):
-        """
-        Evaluate trigger price for stop-limit orders.
-        Uses mid price (avg of bid/ask) and stop_condition to determine trigger direction.
-
-        Returns stop_price if triggered, None otherwise.
-        """
-        bid_price = ps.bid if ps.bid > 0 else ps.open
-        ask_price = ps.ask if ps.ask > 0 else ps.open
-        mid_price = (bid_price + ask_price) / 2
-
-        if order.stop_condition == StopCondition.GTE:
-            if mid_price >= order.stop_price:
-                bt.logging.info(f"Stop-limit triggered (GTE): mid={mid_price} >= stop_price={order.stop_price}")
-                return order.stop_price
-        elif order.stop_condition == StopCondition.LTE:
-            if mid_price <= order.stop_price:
-                bt.logging.info(f"Stop-limit triggered (LTE): mid={mid_price} <= stop_price={order.stop_price}")
-                return order.stop_price
-
-        return None
-
-    def _evaluate_bracket_trigger_price(self, order, position, ps):
-        """
-        Evaluate trigger price for bracket orders (SLTP combined).
-        Checks both stop_loss and take_profit boundaries.
-        Also handles trailing stop logic: updates best price and computes dynamic SL.
-        Returns trigger price when either boundary is hit.
-
-        The bracket order has the SAME type as the parent order.
-
-        Trigger logic based on order type:
-        - LONG order: SL triggers when price < SL, TP triggers when price > TP
-        - SHORT order: SL triggers when price > SL, TP triggers when price < TP
-        """
-        if not position:
-            return None
-
-        if order.processed_ms < position.open_ms:
-            bt.logging.info(
-                f"[BRACKET CANCELLED] Bracket {order.order_uuid} (processed_ms={order.processed_ms}) "
-                f"predates current position (open_ms={position.open_ms}), skipping trigger as orphan"
-            )
-            return None
-
-        bid_price = ps.bid if ps.bid > 0 else ps.open
-        ask_price = ps.ask if ps.ask > 0 else ps.open
-
-        position_type = position.position_type
-        order.order_type = position_type
-
-        # Trailing stop: update best price and compute trailing SL
-        trailing_sl = None
-        if order.trailing_stop is not None:
-            trailing_percent = order.trailing_stop.get('trailing_percent')
-            trailing_value = order.trailing_stop.get('trailing_value')
-
-            if position_type == OrderType.LONG:
-                new_best = max(order.price, bid_price) if order.price > 0 else bid_price
-                if new_best != order.price:
-                    bt.logging.info(
-                        f"[TRAILING] [{order.order_uuid}] LONG best_price updated: "
-                        f"{order.price:.6f} -> {new_best:.6f} (bid={bid_price:.6f})"
-                    )
-                    order.price = new_best
-                if trailing_percent is not None:
-                    trailing_sl = order.price * (1 - float(trailing_percent))
-                else:
-                    trailing_sl = order.price - float(trailing_value)
-
-            elif position_type == OrderType.SHORT:
-                new_best = min(order.price, ask_price) if order.price > 0 else ask_price
-                if new_best != order.price:
-                    bt.logging.info(
-                        f"[TRAILING] [{order.order_uuid}] SHORT best_price updated: "
-                        f"{order.price:.6f} -> {new_best:.6f} (ask={ask_price:.6f})"
-                    )
-                    order.price = new_best
-                if trailing_percent is not None:
-                    trailing_sl = order.price * (1 + float(trailing_percent))
-                else:
-                    trailing_sl = order.price + float(trailing_value)
-
-        # Compute effective stop loss: use the more protective value
-        # LONG: higher SL is more protective, SHORT: lower SL is more protective
-        effective_sl = order.stop_loss
-        if trailing_sl is not None:
-            if effective_sl is None:
-                effective_sl = trailing_sl
-            elif position_type == OrderType.LONG:
-                effective_sl = max(effective_sl, trailing_sl)
-            elif position_type == OrderType.SHORT:
-                effective_sl = min(effective_sl, trailing_sl)
-
-        # For LONG positions:
-        # - Stop loss: triggers when market price < SL (use bid for selling)
-        # - Take profit: triggers when market price > TP (use bid for selling)
-        if position_type == OrderType.LONG:
-            if effective_sl is not None and bid_price < effective_sl:
-                bt.logging.info(f"Bracket order stop loss triggered: bid={bid_price} < SL={effective_sl}")
-                return effective_sl
-            if order.take_profit is not None and bid_price > order.take_profit:
-                bt.logging.info(f"Bracket order take profit triggered: bid={bid_price} > TP={order.take_profit}")
-                return order.take_profit
-
-        # For SHORT positions:
-        # - Stop loss: triggers when market price > SL (use ask for buying)
-        # - Take profit: triggers when market price < TP (use ask for buying)
-        elif position_type == OrderType.SHORT:
-            if effective_sl is not None and ask_price > effective_sl:
-                bt.logging.info(f"Bracket order stop loss triggered: ask={ask_price} > SL={effective_sl}")
-                return effective_sl
-            if order.take_profit is not None and ask_price < order.take_profit:
-                bt.logging.info(f"Bracket order take profit triggered: ask={ask_price} < TP={order.take_profit}")
-                return order.take_profit
-
-        return None
 
     def _read_limit_orders_from_disk(self, hotkeys=None):
         """Read limit orders from disk and populate internal structure."""
