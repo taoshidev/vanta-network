@@ -574,6 +574,14 @@ class Position(BaseModel):
             close_ms = TimeUtil.now_in_millis()
 
         fill_price = price_source.parse_appropriate_price(close_ms, self.trade_pair.is_forex, OrderType.FLAT, self)
+        if fill_price is None:
+            bt.logging.warning(
+                f"force_close_position: no valid price in last_price_source for "
+                f"{self.position_uuid} ({self.trade_pair.trade_pair_id}) — "
+                f"falling back to price=0 with ELIMINATION_FLAT"
+            )
+            fill_price = 0.0
+            order_src = OrderSource.ELIMINATION_FLAT
         flat_order = Order(
             order_type=OrderType.FLAT,
             trade_pair=self.trade_pair,
