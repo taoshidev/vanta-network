@@ -180,11 +180,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         if now_ms > TARGET_MS:
             return
 
-        miners_to_reinstate = {
-            "5GYP9zsvnNZU8gao2kPujRqseiuCAVWBSn8XGzodC25aPR4U": 306.790581937,
-            "5GE7yeZ4w5mx4e8cgZ9iSdnP9bfyGfKbN3mKhwPsg9KNx6ep": 4.57e-07,
-            "5HJvjpkSococST69VZS3u4zCT9rsCjuBANcgHiQhR3PJRBK7": 299.975043585
-        }
+        miners_to_reinstate = {}
         for miner, amount in miners_to_reinstate.items():
             self.force_deposit(amount, miner)
 

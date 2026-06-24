@@ -909,9 +909,8 @@ class PositionManager:
 
             # Erroneously eliminated subaccount — restore positions, limit orders, and bucket.
             miners_to_wipe = [
-                "5GE7yeZ4w5mx4e8cgZ9iSdnP9bfyGfKbN3mKhwPsg9KNx6ep",  # MAINCOMP, FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
-                "5GYP9zsvnNZU8gao2kPujRqseiuCAVWBSn8XGzodC25aPR4U",  # MAINCOMP, FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
-                "5HJvjpkSococST69VZS3u4zCT9rsCjuBANcgHiQhR3PJRBK7",  # CHALLENGE, FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
+                # "5GE7yeZ4w5mx4e8cgZ9iSdnP9bfyGfKbN3mKhwPsg9KNx6ep",  # MAINCOMP, FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
+                # "5GYP9zsvnNZU8gao2kPujRqseiuCAVWBSn8XGzodC25aPR4U",  # MAINCOMP, FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
             ]
             position_uuids_to_delete = []
             position_uuids_to_archive = []
