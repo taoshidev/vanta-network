@@ -146,20 +146,22 @@ class EntityCollateralManager(CacheController):
         with self._cache_lock:
             return self._collateral_cache.get(entity_hotkey)
 
-    def decrement_collateral_cache(self, entity_hotkey: str, theta: float) -> None:
+    def offset_collateral_cache(self, entity_hotkey: str, theta: float) -> None:
         """
-        Decrement the cached collateral balance for an entity.
+        Adjust the cached collateral balance for an entity by a signed amount.
 
-        Called immediately on subaccount creation to reserve the registration fee
-        in the cache before the daemon slashes it on-chain, preventing double-spend.
+        Positive theta increments (e.g. refunding a previously reserved amount).
+        Negative theta decrements (e.g. reserving a registration fee on subaccount
+        creation before the daemon slashes it on-chain, preventing double-spend).
+        The resulting balance is clamped at 0.
 
         Args:
             entity_hotkey: The entity's hotkey.
-            theta: Amount to decrement in theta.
+            theta: Signed amount in theta. Positive increments; negative decrements.
         """
         with self._cache_lock:
             if entity_hotkey in self._collateral_cache:
-                self._collateral_cache[entity_hotkey] = max(0.0, self._collateral_cache[entity_hotkey] - theta)
+                self._collateral_cache[entity_hotkey] = max(0.0, self._collateral_cache[entity_hotkey] + theta)
 
     def _load_cache_from_disk(self) -> Dict[str, float]:
         """
@@ -444,7 +446,7 @@ class EntityCollateralManager(CacheController):
 
         # Decrement cache outside slash lock as an optimistic reservation until
         # refresh_collateral_cache resets it from the on-chain value.
-        self.decrement_collateral_cache(entity_hotkey, realized_loss / ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
+        self.offset_collateral_cache(entity_hotkey, -realized_loss / ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
 
         self._save_slash_tracking_to_disk()
         return slash_usd
@@ -579,7 +581,7 @@ class EntityCollateralManager(CacheController):
                 # need to offset cache until on-chain value is read in next daemon cycle
                 # Doesn't matter if slashing succeeded or failed
                 if theta_slash > 0:
-                    self.decrement_collateral_cache(entity_hotkey, theta_slash)
+                    self.offset_collateral_cache(entity_hotkey, -theta_slash)
 
             except Exception as e:
                 bt.logging.warning(f"[ENTITY_COLLATERAL] slash_pending_fees: failed to process entity {entity_hotkey}: {e}")

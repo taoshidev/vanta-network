@@ -176,18 +176,19 @@ class EntityCollateralClient(RPCClientBase):
         """
         return self._server.get_cached_collateral_rpc(entity_hotkey)
 
-    def decrement_collateral_cache(self, entity_hotkey: str, theta: float) -> None:
+    def offset_collateral_cache(self, entity_hotkey: str, theta: float) -> None:
         """
-        Decrement the cached collateral balance for an entity.
+        Adjust the cached collateral balance for an entity by a signed amount.
 
-        Call immediately on subaccount creation to reserve the registration fee
-        before the daemon slashes it on-chain.
+        Positive theta increments. Negative theta decrements
+        (e.g. reserving a registration fee on subaccount creation before the
+        daemon slashes it on-chain). Result is clamped at 0.
 
         Args:
             entity_hotkey: The entity's hotkey.
-            theta: Amount to decrement in theta.
+            theta: Signed amount in theta. Positive increments; negative decrements.
         """
-        return self._server.decrement_collateral_cache_rpc(entity_hotkey, theta)
+        return self._server.offset_collateral_cache_rpc(entity_hotkey, theta)
 
     def compute_entity_required_collateral(self, entity_hotkey: str) -> float:
         """

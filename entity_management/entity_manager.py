@@ -479,7 +479,7 @@ class EntityManager(ValidatorBroadcastBase):
 
                 # Decrement collateral cache immediately to prevent double-spend before daemon slashes on-chain
                 if required_theta > 0:
-                    self._entity_collateral_client.decrement_collateral_cache(entity_hotkey, required_theta)
+                    self._entity_collateral_client.offset_collateral_cache(entity_hotkey, -required_theta)
 
                 # Generate monotonic ID
                 subaccount_id = entity_data.next_subaccount_id
