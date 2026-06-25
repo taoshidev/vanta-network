@@ -35,7 +35,7 @@ from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 
-TARGET_MS = 1782338400000 + (1000 * 60 * 60 * 6)  # + 6 hours
+TARGET_MS = 1782417600000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
 class PositionManager:
@@ -880,6 +880,7 @@ class PositionManager:
         wipe_positions = False
         reopen_force_closed_orders = False
         limit_orders_to_restore = {}
+        maincomp_start_times = {}
         miners_to_wipe_perf_ledger = []
 
         current_eliminations = self._elimination_client.get_eliminations_from_memory() if self._elimination_client else []
@@ -909,13 +910,17 @@ class PositionManager:
 
             # Erroneously eliminated subaccount — restore positions, limit orders, and bucket.
             miners_to_wipe = [
-                # "5GE7yeZ4w5mx4e8cgZ9iSdnP9bfyGfKbN3mKhwPsg9KNx6ep",  # MAINCOMP, FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
-                # "5GYP9zsvnNZU8gao2kPujRqseiuCAVWBSn8XGzodC25aPR4U",  # MAINCOMP, FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
+                "5GE7yeZ4w5mx4e8cgZ9iSdnP9bfyGfKbN3mKhwPsg9KNx6ep",  # MAINCOMP, FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
+                "5GYP9zsvnNZU8gao2kPujRqseiuCAVWBSn8XGzodC25aPR4U",  # MAINCOMP, FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
             ]
             position_uuids_to_delete = []
             position_uuids_to_archive = []
             miners_to_promote = []
             limit_orders_to_restore = {}
+            maincomp_start_times = {
+                "5GE7yeZ4w5mx4e8cgZ9iSdnP9bfyGfKbN3mKhwPsg9KNx6ep": 1767658708175,
+                "5GYP9zsvnNZU8gao2kPujRqseiuCAVWBSn8XGzodC25aPR4U": 1766276210003,
+            }
 
             for p in positions_to_snap:
                 try:
@@ -1001,6 +1006,10 @@ class PositionManager:
                 if self._challenge_period_client and self._challenge_period_client.has_miner(miner_hotkey):
                     self._challenge_period_client.remove_miners(miner_hotkey)
                     print(f'Removed challenge period status for {miner_hotkey}')
+
+                    start_ms = maincomp_start_times[miner_hotkey]
+                    self._challenge_period_client.set_miner_bucket(miner_hotkey, MinerBucket.MAINCOMP, start_ms)
+                    print(f'Reinstated {miner_hotkey} to MAINCOMP (start_ms={start_ms})')
 
                 # Rebuild account state from current positions after corrections
                 current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
