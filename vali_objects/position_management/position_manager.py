@@ -1013,7 +1013,7 @@ class PositionManager:
 
                 # Rebuild account state from current positions after corrections
                 current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
-                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions, miner_bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions)
 
         bt.logging.warning(
             f"Applied {n_corrections} order corrections out of {n_attempts} attempts. unique positions corrected: {len(unique_corrections)}")
