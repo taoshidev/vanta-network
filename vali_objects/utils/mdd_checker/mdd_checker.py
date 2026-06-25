@@ -217,18 +217,12 @@ class MDDChecker(CacheController):
                 except Exception as e:
                     bt.logging.error(f"Failed to rebuild account state for {hotkey}...: {e}")
 
-        # Update max_return (HWM) on MinerAccount for all miners
-        accounts = self._miner_account_client.get_accounts(list(hotkey_to_positions.keys()))
-        hotkey_to_return = {}
-        for hotkey, account in accounts.items():
-            account_size = account.get('account_size', 0)
-            if account_size <= 0:
-                continue
-            balance = account.get('balance', 0)
-            unrealized_pnl = self._position_client.get_unrealized_pnl(hotkey)
-            hotkey_to_return[hotkey] = (balance + unrealized_pnl) / account_size
-        if hotkey_to_return:
-            self._miner_account_client.update_max_returns(hotkey_to_return)
+        # Update unrealized PNL on MinerAccount for all miners
+        hotkey_to_unrealized_pnl = {}
+        for hotkey in hotkey_to_positions.keys():
+            hotkey_to_unrealized_pnl[hotkey] = self._position_client.get_unrealized_pnl(hotkey)
+        if hotkey_to_unrealized_pnl:
+            self._miner_account_client.update_unrealized_pnl(hotkey_to_unrealized_pnl)
 
         # Log aggregate timing statistics
         if self.position_refresh_count > 0:

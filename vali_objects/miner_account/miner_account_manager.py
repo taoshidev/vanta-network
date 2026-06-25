@@ -80,6 +80,7 @@ class MinerAccount:
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
     max_return: float = 1.0  # High water mark for portfolio return
+    unrealized_pnl: float = 0.0  # Current unrealized PNL from open positions
     # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
     # (HL_ALL) for per-class portfolio cap enforcement. Empty for older checkpoints;
     # lazy-backfilled on next rebuild_account_state_from_positions call.
@@ -94,6 +95,11 @@ class MinerAccount:
     def balance(self) -> float:
         """Current balance = account_size + total_realized_pnl + total_dividend_income - total_fees_paid."""
         return self.get_account_size() + self.total_realized_pnl + self.total_dividend_income - self.total_fees_paid
+
+    @property
+    def equity(self) -> float:
+        """Current equity = balance + unrealized_pnl"""
+        return self.balance + self.unrealized_pnl
 
     @property
     def buying_power(self) -> float:
@@ -159,6 +165,7 @@ class MinerAccount:
         self.total_dividend_income = 0
         self.miner_bucket = None
         self.max_return = 1.0
+        self.unrealized_pnl = 0.0
         self.capital_used_by_class = {}
 
 
@@ -186,6 +193,8 @@ class MinerAccount:
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
             'hl_address': self.hl_address,
             'max_return': self.max_return,
+            'unrealized_pnl': self.unrealized_pnl,
+            'equity': self.equity,
             # JSON keys must be str; convert TradePairCategory enum to its .value
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
         }
@@ -204,7 +213,9 @@ class MinerAccount:
             'total_borrowed_amount': self.total_borrowed_amount,
             'total_fees_paid': self.total_fees_paid,
             'buying_power': self.buying_power,
-            'max_return': self.max_return
+            'max_return': self.max_return,
+            'unrealized_pnl': self.unrealized_pnl,
+            'equity': self.equity,
         }
 
 
@@ -689,19 +700,18 @@ class MinerAccountManager(ValidatorBroadcastBase):
             return None
         return account.to_dashboard()
 
-    def update_max_returns(self, hotkey_to_return: Dict[str, float]) -> None:
-        """Batch update HWM for multiple hotkeys. Saves to disk once at the end."""
+    def update_unrealized_pnl(self, hotkey_to_unrealized_pnl: Dict[str, float]) -> None:
+        """Batch update unrealized PNL for multiple hotkeys and advance max_return HWM."""
         with self._accounts_lock:
-            write_to_disk = False
-            for hotkey, current_return in hotkey_to_return.items():
+            for hotkey, unrealized_pnl in hotkey_to_unrealized_pnl.items():
                 account = self.accounts.get(hotkey)
-                if account and current_return > account.max_return:
-                    account.max_return = current_return
-                    write_to_disk = True
+                if account is None:
+                    continue
 
-            if write_to_disk:
-                self._save_accounts_to_disk()
+                account.unrealized_pnl = unrealized_pnl
+                account.max_return = max(account.max_return, account.equity)
 
+            self._save_accounts_to_disk()
 
     def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
         """Set the miner bucket on an account. Called by ChallengePeriodManager via RPC."""
