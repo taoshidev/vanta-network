@@ -755,6 +755,7 @@ class ValiConfig:
         'USDMXN',
         # 'PAXGUSDC',      # Gold; kept GOLDUSDC
         # 'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
+        'TONUSDC',  # Delisted from Hyperliquid
         'BTCUSD',
         'ETHUSD',
         'SOLUSD',
