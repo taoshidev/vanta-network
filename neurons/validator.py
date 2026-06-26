@@ -36,7 +36,8 @@ from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePairSource, NATIVE_CRYPTO_TO_HL_TRADE_PAIR
+from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePairSource
+from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor

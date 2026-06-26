@@ -28,7 +28,7 @@ import bittensor as bt
 from runnable.migration_utils import MigrationUtils
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
+from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
 from vali_objects.vali_dataclasses.order import Order
 
 
