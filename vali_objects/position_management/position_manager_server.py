@@ -243,10 +243,6 @@ class PositionManagerServer(RPCServerBase):
         """Filter positions for scoring - delegates to manager."""
         return self._manager.filtered_positions_for_scoring(hotkeys, include_development_positions)
 
-    def close_open_orders_for_suspended_trade_pairs_rpc(self, live_price_fetcher=None) -> int:
-        """Close positions for suspended trade pairs - delegates to manager."""
-        return self._manager.close_open_orders_for_suspended_trade_pairs(live_price_fetcher)
-
     def close_all_positions_rpc(
         self,
         hotkey: str,
