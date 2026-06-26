@@ -140,11 +140,6 @@ class PositionManagerServer(RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error in carry fee daemon iteration: {traceback.format_exc()}")
 
-        FORCE_CLOSE_DEPRECATED_PAIRS_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-06-27 00:00:00")
-        if now * 1000 >= FORCE_CLOSE_DEPRECATED_PAIRS_ACTIVATION_MS:
-            suspended_trade_pairs = [TradePair.XAUUSD, TradePair.XAGUSD, TradePair.BRENTOILUSDC, TradePair.PAXGUSDC]
-            self._manager.force_close_deprecated_trade_pair_positions(suspended_trade_pairs)
-
         # Align next daemon iteration to UTC hour boundary
         now = time.time()
         next_hour_s = (int(now) // 3600 + 1) * 3600
