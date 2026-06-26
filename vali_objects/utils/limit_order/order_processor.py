@@ -389,6 +389,7 @@ class OrderProcessor:
 
         # Parse size fields using common method
         leverage, value, quantity = OrderProcessor.parse_size(signal)
+        bracket_pct = signal.get('bracket_pct')
 
         # Validate that at least one of SL, TP, or trailing_stop is set
         if stop_loss is None and take_profit is None and trailing_stop is None:
@@ -414,8 +415,9 @@ class OrderProcessor:
             price=0.0,
             order_type=OrderType.FLAT,  # Placeholder - will be overridden by manager
             leverage=leverage,
-            quantity=quantity,
             value=value,
+            quantity=quantity,
+            bracket_pct=bracket_pct,
             execution_type=ExecutionType.BRACKET,
             limit_price=None,  # Not used for bracket orders
             stop_loss=stop_loss,
@@ -550,6 +552,7 @@ class OrderProcessor:
                     "leverage": bracket.get("leverage"),
                     "value": bracket.get("value"),
                     "quantity": bracket.get("quantity"),
+                    "bracket_pct": bracket.get("bracket_pct"),
                 }
 
                 order = OrderProcessor.process_bracket_order(

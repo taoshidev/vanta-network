@@ -185,6 +185,7 @@ class MinerRestServer(BaseRestServer):
                 leverage=float(signal_data['leverage']) if 'leverage' in signal_data else None,
                 value=float(signal_data['value']) if 'value' in signal_data else None,
                 quantity=float(signal_data['quantity']) if 'quantity' in signal_data else None,
+                bracket_pct=float(signal_data['bracket_pct']) if 'bracket_pct' in signal_data else None,
                 execution_type=ExecutionType.from_string(signal_data.get('execution_type', 'MARKET').upper()),
                 limit_price=float(signal_data['limit_price']) if 'limit_price' in signal_data else None,
                 stop_loss=float(signal_data['stop_loss']) if 'stop_loss' in signal_data else None,
