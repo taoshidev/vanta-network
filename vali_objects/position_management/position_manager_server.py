@@ -27,10 +27,10 @@ import traceback
 from typing import List, Dict, Optional
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from time_util.time_util import MS_IN_24_HOURS, S_IN_24_HOURS, timeme
+from time_util.time_util import MS_IN_24_HOURS, S_IN_24_HOURS, TimeUtil, timeme
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
 
 
 class PositionManagerServer(RPCServerBase):
@@ -242,10 +242,6 @@ class PositionManagerServer(RPCServerBase):
     ) -> tuple:
         """Filter positions for scoring - delegates to manager."""
         return self._manager.filtered_positions_for_scoring(hotkeys, include_development_positions)
-
-    def close_open_orders_for_suspended_trade_pairs_rpc(self, live_price_fetcher=None) -> int:
-        """Close positions for suspended trade pairs - delegates to manager."""
-        return self._manager.close_open_orders_for_suspended_trade_pairs(live_price_fetcher)
 
     def close_all_positions_rpc(
         self,

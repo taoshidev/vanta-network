@@ -707,76 +707,46 @@ class PositionManager:
 
         return filtered_positions, hk_to_first_order_time
 
-    def close_open_orders_for_suspended_trade_pairs(self, live_price_fetcher=None) -> int:
+    def force_close_deprecated_trade_pair_positions(self, trade_pairs: list[TradePair]) -> int:
         """
-        Close all open positions for suspended trade pairs (SPX, DJI, NDX, VIX).
-
-        Args:
-            live_price_fetcher: Optional price fetcher to use. If None, uses internal client.
-                               Pass a mock price fetcher for testing.
+        Force-close all open positions for suspended trade pairs using the last known price.
 
         Returns:
             Number of positions closed
         """
-        tps_to_eliminate = [TradePair.SPX, TradePair.DJI, TradePair.NDX, TradePair.VIX]
-        if not tps_to_eliminate:
-            return 0
-
-        # Use provided price fetcher or internal client
-        price_fetcher = live_price_fetcher or self._live_price_client
-        if not price_fetcher:
-            bt.logging.warning("No price fetcher available for close_open_orders_for_suspended_trade_pairs")
-            return 0
-
-        # Get all positions
         all_positions = self.get_positions_for_all_miners(sort_positions=True)
 
-        # Get eliminations
-        eliminations = []
-        if self._elimination_client:
-            eliminations = self._elimination_client.get_eliminations_from_memory() or []
-        eliminated_hotkeys = set(x['hotkey'] for x in eliminations)
-        bt.logging.info(f"Found {len(eliminations)} eliminations on disk.")
-
         n_positions_closed = 0
+        affected_hotkeys = set()
         for hotkey, positions in all_positions.items():
-            if hotkey in eliminated_hotkeys:
-                continue
-            # Closing all open positions for the specified trade pair
             for position in positions:
-                if position.is_closed_position:
+                if position.is_closed_position or position.trade_pair not in trade_pairs:
                     continue
-                if position.trade_pair in tps_to_eliminate:
-                    price_sources = price_fetcher.get_sorted_price_sources_for_trade_pair(
-                        position.trade_pair, TARGET_MS
-                    )
-                    if not price_sources:
-                        bt.logging.warning(
-                            f"No price sources for {position.trade_pair.trade_pair_id}, skipping"
-                        )
-                        continue
 
-                    live_price = price_sources[0].parse_appropriate_price(
-                        TARGET_MS, position.trade_pair.is_forex, OrderType.FLAT, position
-                    )
-                    flat_order = Order(
-                        price=live_price,
-                        price_sources=price_sources,
-                        processed_ms=TARGET_MS,
-                        order_uuid=position.position_uuid[::-1],
-                        trade_pair=position.trade_pair,
-                        order_type=OrderType.FLAT,
-                        leverage=0,
-                        src=OrderSource.DEPRECATION_FLAT
-                    )
-
-                    position.add_order(flat_order, price_fetcher)
+                try:
+                    position.force_close_position(order_src=OrderSource.DEPRECATION_FLAT)
                     self.save_miner_position(position, delete_open_position_if_exists=True, validate=False)
                     n_positions_closed += 1
+                    affected_hotkeys.add(hotkey)
                     bt.logging.info(
-                        f"Closed deprecated trade pair position {position.position_uuid} "
+                        f"Force-closed deprecated trade pair position {position.position_uuid} "
                         f"for {hotkey} ({position.trade_pair.trade_pair_id})"
                     )
+                except Exception as e:
+                    bt.logging.error(
+                        f"Failed to force-close position {position.position_uuid} for {hotkey}: {e}"
+                    )
+                    bt.logging.error(traceback.format_exc())
+
+        if affected_hotkeys and self._miner_account_client:
+            for hotkey in affected_hotkeys:
+                try:
+                    current_positions = self.get_positions_for_one_hotkey(hotkey)
+                    self._miner_account_client.rebuild_account_state_from_positions(hotkey, current_positions)
+                    bt.logging.info(f"Rebuilt account state for {hotkey} after deprecated trade pair force-close")
+                except Exception as e:
+                    bt.logging.error(f"Failed to rebuild account state for {hotkey}: {e}")
+                    bt.logging.error(traceback.format_exc())
 
         return n_positions_closed
 
@@ -850,6 +820,10 @@ class PositionManager:
             except Exception as e:
                 bt.logging.error(f"Error wiping perf ledgers: {e}")
                 traceback.print_exc()
+
+        suspended_trade_pairs = [TradePair.XAUUSD, TradePair.XAGUSD, TradePair.BRENTOILUSDC, TradePair.PAXGUSDC]
+        self.force_close_deprecated_trade_pair_positions(suspended_trade_pairs)
+
 
     @timeme
     def _apply_order_corrections(self) -> List[str]:

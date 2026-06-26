@@ -453,19 +453,6 @@ class PositionManagerClient(RPCClientBase):
 
     # ==================== Maintenance Methods ====================
 
-    def close_open_orders_for_suspended_trade_pairs(self, live_price_fetcher=None) -> int:
-        """
-        Close all open positions for suspended trade pairs (SPX, DJI, NDX, VIX).
-
-        Args:
-            live_price_fetcher: Optional price fetcher to use. If None, uses server's internal client.
-                               Pass a mock price fetcher for testing.
-
-        Returns:
-            Number of positions closed
-        """
-        return self._server.close_open_orders_for_suspended_trade_pairs_rpc(live_price_fetcher)
-
     def close_all_positions(
         self,
         hotkey: str,
