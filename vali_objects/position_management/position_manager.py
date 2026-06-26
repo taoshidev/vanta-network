@@ -717,6 +717,7 @@ class PositionManager:
         all_positions = self.get_positions_for_all_miners(sort_positions=True)
 
         n_positions_closed = 0
+        affected_hotkeys = set()
         for hotkey, positions in all_positions.items():
             for position in positions:
                 if position.is_closed_position or position.trade_pair not in trade_pairs:
@@ -726,6 +727,7 @@ class PositionManager:
                     position.force_close_position(order_src=OrderSource.DEPRECATION_FLAT)
                     self.save_miner_position(position, delete_open_position_if_exists=True, validate=False)
                     n_positions_closed += 1
+                    affected_hotkeys.add(hotkey)
                     bt.logging.info(
                         f"Force-closed deprecated trade pair position {position.position_uuid} "
                         f"for {hotkey} ({position.trade_pair.trade_pair_id})"
@@ -734,6 +736,16 @@ class PositionManager:
                     bt.logging.error(
                         f"Failed to force-close position {position.position_uuid} for {hotkey}: {e}"
                     )
+                    bt.logging.error(traceback.format_exc())
+
+        if affected_hotkeys and self._miner_account_client:
+            for hotkey in affected_hotkeys:
+                try:
+                    current_positions = self.get_positions_for_one_hotkey(hotkey)
+                    self._miner_account_client.rebuild_account_state_from_positions(hotkey, current_positions)
+                    bt.logging.info(f"Rebuilt account state for {hotkey} after deprecated trade pair force-close")
+                except Exception as e:
+                    bt.logging.error(f"Failed to rebuild account state for {hotkey}: {e}")
                     bt.logging.error(traceback.format_exc())
 
         return n_positions_closed
