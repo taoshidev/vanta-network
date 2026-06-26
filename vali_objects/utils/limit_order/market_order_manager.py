@@ -687,6 +687,16 @@ class MarketOrderManager():
                     
                 usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, fill_price, signal_order_type, existing_position)
 
+                # Resolve bracket_pct (BRACKET only) to a signed quantity against the live position.
+                # Done under the position lock so net_quantity can't shift mid-fill.
+                bracket_pct = signal.get("bracket_pct")
+                if bracket_pct is not None and execution_type == ExecutionType.BRACKET:
+                    pct_val = float(bracket_pct)
+                    signal["leverage"] = None
+                    signal["value"] = None
+                    signal["quantity"] = -pct_val * existing_position.net_quantity
+                    signal["bracket_pct"] = None
+
                 if signal_order_type == OrderType.FLAT or (signal.get("quantity") and abs(existing_position.net_quantity + signal["quantity"]) < 1e-9):
                     signal["leverage"] = None
                     signal["value"] = None

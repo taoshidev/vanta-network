@@ -14,6 +14,7 @@ class Signal(BaseModel):
     leverage: Optional[float] = None    # Multiplier of account size
     value: Optional[float] = None       # USD notional value
     quantity: Optional[float] = None    # Base currency, number of lots/coins/shares/etc.
+    bracket_pct: Optional[float] = None  # fraction of the open position to close on BRACKET orders [0, 1]
     execution_type: ExecutionType = ExecutionType.MARKET
     limit_price: Optional[float] = None
     stop_loss: Optional[float] = None
@@ -146,6 +147,17 @@ class Signal(BaseModel):
 
         if execution_type != ExecutionType.BRACKET and len(filled) != 1:
             raise ValueError(f"Exactly one of {fields} must be provided, got {filled}")
+
+        bracket_pct = values.get('bracket_pct')
+        if execution_type != ExecutionType.BRACKET and bracket_pct is not None:
+            raise ValueError("bracket_pct is only supported for BRACKET orders")
+
+        if len(filled) == 1 and bracket_pct is not None:
+            raise ValueError(f"bracket_pct cannot be combined with size fields {filled} on BRACKET orders")
+
+        if execution_type == ExecutionType.BRACKET and bracket_pct is not None:
+            if not (0 <= float(bracket_pct) <= 1):
+                raise ValueError(f"bracket_pct must be between 0 and 1 (inclusive), got {bracket_pct}")
 
         return values
 

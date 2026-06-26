@@ -409,6 +409,97 @@ class TestLimitOrderIntegration(TestBase):
         self.assertEqual(bracket_fill.order_type, OrderType.SHORT)
         self.assertEqual(bracket_fill.src, OrderSource.BRACKET_FILLED)
 
+    def test_bracket_pct_full_close(self):
+        """
+        INTEGRATION TEST: BRACKET order with bracket_pct=1.0 closes the entire position.
+
+        Verifies that bracket_pct is resolved against live net_quantity inside
+        market_order_manager (under the position lock) and that bracket_pct=1.0 produces
+        a FLAT close, irrespective of the bracket order carrying no leverage/value/quantity
+        at submission time.
+        """
+        position = self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        original_net_quantity = position.net_quantity
+        self.assertNotEqual(original_net_quantity, 0)
+
+        bracket_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="bracket_pct_full",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=49000.0,
+            src=OrderSource.BRACKET_UNFILLED,
+        )
+        # _validate_bracket_order defaults bracket_pct=1.0 when no size field is provided.
+
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, self.create_price_source(50000.0))
+        self.set_market_open(is_open=True)
+        self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, bracket_order)
+
+        self.limit_order_client.set_last_fill_time(
+            self.DEFAULT_TRADE_PAIR.trade_pair_id, self.DEFAULT_MINER_HOTKEY, 0
+        )
+
+        # Drop price below SL to trigger the bracket fill.
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, self.create_price_source(48000.0, bid=48000.0, ask=48000.0))
+        self.limit_order_client.check_and_fill_limit_orders(call_id=900)
+
+        # Position should be closed.
+        open_pos = self.position_client.get_open_position_for_trade_pair(
+            self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id
+        )
+        self.assertIsNone(open_pos, "bracket_pct=1.0 bracket fill should close the position")
+
+        # The closing order should exactly offset net_quantity.
+        all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
+        closed = [p for p in all_positions if p.is_closed_position]
+        self.assertEqual(len(closed), 1)
+        closing_order = closed[0].orders[-1]
+        self.assertAlmostEqual(closing_order.quantity, -original_net_quantity, places=6)
+
+    def test_bracket_pct_partial_close(self):
+        """
+        INTEGRATION TEST: BRACKET order with bracket_pct=0.5 closes half of the position.
+
+        Verifies that fractional bracket_pct is resolved against live net_quantity (not at
+        submission time) and that the resulting close is in the opposite direction.
+        """
+        position = self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        original_net_quantity = position.net_quantity
+        self.assertGreater(original_net_quantity, 0)
+
+        bracket_order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="bracket_pct_half",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,
+            execution_type=ExecutionType.BRACKET,
+            stop_loss=49000.0,
+            bracket_pct=0.5,
+            src=OrderSource.BRACKET_UNFILLED,
+        )
+
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, self.create_price_source(50000.0))
+        self.set_market_open(is_open=True)
+        self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, bracket_order)
+
+        self.limit_order_client.set_last_fill_time(
+            self.DEFAULT_TRADE_PAIR.trade_pair_id, self.DEFAULT_MINER_HOTKEY, 0
+        )
+
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, self.create_price_source(48000.0, bid=48000.0, ask=48000.0))
+        self.limit_order_client.check_and_fill_limit_orders(call_id=901)
+
+        # Position should still be open with ~50% of original quantity.
+        open_pos = self.position_client.get_open_position_for_trade_pair(
+            self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id
+        )
+        self.assertIsNotNone(open_pos, "bracket_pct=0.5 should leave the position open")
+        self.assertAlmostEqual(open_pos.net_quantity, 0.5 * original_net_quantity, places=6)
+
     def test_position_closed_when_no_position_exists(self):
         """
         INTEGRATION TEST: Bracket order should be cancelled if position no longer exists.
