@@ -749,7 +749,7 @@ class ValiConfig:
     # 100% percent of collateral deposit is at risk of slashing based on drawdown
     DRAWDOWN_SLASH_PROPORTION = 1.0
 
-    FLAT_ONLY_TRADE_PAIR_IDS = {'PAXGUSDC', 'BRENTOILUSDC', 'XAGUSD', 'XAUUSD'}
+    FLAT_ONLY_TRADE_PAIR_IDS = {}
     BLOCKED_TRADE_PAIR_IDS = {
         'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
         'USDMXN',
@@ -769,8 +769,8 @@ class ValiConfig:
         'LINKUSD',
         'XMRUSD',
         'LTCUSD',
-
-
+        'PAXGUSDC', 'BRENTOILUSDC',
+        'XAGUSD', 'XAUUSD'
     }
 
     MAX_UNFILLED_LIMIT_ORDERS = 100
