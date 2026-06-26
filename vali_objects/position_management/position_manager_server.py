@@ -27,10 +27,10 @@ import traceback
 from typing import List, Dict, Optional
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from time_util.time_util import MS_IN_24_HOURS, S_IN_24_HOURS, timeme
+from time_util.time_util import MS_IN_24_HOURS, S_IN_24_HOURS, TimeUtil, timeme
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
 
 
 class PositionManagerServer(RPCServerBase):
@@ -139,6 +139,11 @@ class PositionManagerServer(RPCServerBase):
             self._manager.refresh_position_fees()
         except Exception as e:
             bt.logging.error(f"Error in carry fee daemon iteration: {traceback.format_exc()}")
+
+        FORCE_CLOSE_DEPRECATED_PAIRS_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-06-27 00:00:00")
+        if now * 1000 >= FORCE_CLOSE_DEPRECATED_PAIRS_ACTIVATION_MS:
+            suspended_trade_pairs = [TradePair.XAUUSD, TradePair.XAGUSD, TradePair.BRENTOILUSDC, TradePair.PAXGUSDC]
+            self._manager.force_close_deprecated_trade_pair_positions(suspended_trade_pairs)
 
         # Align next daemon iteration to UTC hour boundary
         now = time.time()
