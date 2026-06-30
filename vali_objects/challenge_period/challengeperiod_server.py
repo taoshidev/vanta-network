@@ -160,6 +160,9 @@ class ChallengePeriodServer(RPCServerBase):
     def sync_challenge_period_data_rpc(self, miner_states_data: dict) -> None:
         return self._manager.sync_challenge_period_data(miner_states_data)
 
+    def revert_elimination_rpc(self, hotkey: str) -> bool:
+        return self._manager.revert_elimination(hotkey)
+
     def clear_test_state_rpc(self) -> None:
         """Clear all miner states for test isolation."""
         assert self.running_unit_tests, "clear_test_state_rpc should only be called in unit tests"

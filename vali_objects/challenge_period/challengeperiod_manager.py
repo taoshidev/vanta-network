@@ -37,6 +37,7 @@ from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
+from entity_management.entity_client import EntityClient
 
 @dataclass
 class DrawdownStats:
@@ -218,6 +219,7 @@ class ChallengePeriodManager(CacheController):
         self._common_data_client = CommonDataClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._debt_ledger_client = DebtLedgerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
 
         self.CHALLENGE_FILE = ValiBkpUtils.get_challengeperiod_file_location(running_unit_tests=running_unit_tests)
         self._current_iteration_epoch = None
@@ -498,6 +500,21 @@ class ChallengePeriodManager(CacheController):
                 state_changed |= self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
 
         return state_changed
+
+    def revert_elimination(self, hotkey: str) -> bool:
+        miner_state = self.miner_states.get(hotkey)
+        if not miner_state:
+            return False
+
+        with self._buckets_lock:
+            popped_bucket = miner_state.pop_bucket_entry(MinerBucket.ELIMINATED)
+            if not popped_bucket:
+                return False
+
+        self._reset_drawdown_stats_cache(hotkey)
+        self._sync_buckets_to_accounts(hotkeys=[hotkey])
+        self._save_to_disk()
+        return True
 
     # ==================== Drawdown/Rank Refresh methods ====================
 

@@ -270,6 +270,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/wipe/<hotkey>", methods=["POST"])(self.wipe_hotkey)
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["DELETE"])(self.delete_position)
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
+        self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -2116,6 +2117,55 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             bt.logging.error(f"Error eliminating subaccount: {e}")
             return jsonify({'error': 'Internal server error eliminating subaccount'}), 500
+
+    def revert_elimination(self, hotkey: str):
+        """
+        Revert an elimination for a hotkey (regular or synthetic). Updates:
+          - Challenge period manager: pops the ELIMINATED bucket entry (restoring prior bucket),
+            resets drawdown cache, syncs MinerAccount, saves to disk
+          - Elimination manager: removes the elimination record
+          - Debt ledger: deleted
+
+        Query params:
+          reopen_positions: if "true", strips force-close orders and reopens positions
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/revert-elimination/<hotkey>?reopen_positions=true" \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Revert elimination endpoint requires tier 500 access'}), 403
+
+        reopen_raw = request.args.get('reopen_positions', 'false')
+        reopen_force_closed = str(reopen_raw).strip().lower() == 'true'
+
+        try:
+            success = self._elimination_client.remove_elimination(hotkey)
+            if not success:
+                return jsonify({'error': f'No elimination entry found for hotkey {hotkey}'}), 404
+
+            if is_synthetic_hotkey(hotkey):
+                self._entity_client.restore_subaccount(hotkey)
+
+            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+            self._debt_ledger_client.delete_debt_ledger(hotkey)
+
+            if reopen_force_closed:
+                self._position_client.wipe_hotkey(hotkey, reopen_force_closed_orders=True)
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'reopen_force_closed_positions': reopen_force_closed,
+            }), 200
+
+        except Exception as e:
+            bt.logging.error(f"Error reverting elimination for {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def get_subaccount_dashboard(self, synthetic_hotkey):
         """

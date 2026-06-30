@@ -1594,8 +1594,8 @@ class PositionManager:
     def wipe_hotkey(
         self,
         hotkey: str,
-        position_uuids_to_delete: list = None,
-        position_uuids_to_archive: list = None,
+        position_uuids_to_delete: list[str] | None = None,
+        position_uuids_to_archive: list[str] | None = None,
         wipe_positions: bool = False,
         reopen_force_closed_orders: bool = False,
     ) -> dict:
@@ -1612,8 +1612,8 @@ class PositionManager:
         Returns:
             dict summarising every action taken.
         """
-        position_uuids_to_delete = set(position_uuids_to_delete or [])
-        position_uuids_to_archive = set(position_uuids_to_archive or [])
+        uuids_to_delete = set(position_uuids_to_delete or [])
+        uuids_to_archive = set(position_uuids_to_archive or [])
         log = []
 
         # Remove any active elimination for this hotkey
@@ -1635,10 +1635,10 @@ class PositionManager:
             if wipe_positions:
                 self.delete_position(pos.miner_hotkey, pos.position_uuid)
                 n_deleted += 1
-            elif pos.position_uuid in position_uuids_to_delete:
+            elif pos.position_uuid in uuids_to_delete:
                 self.delete_position(pos.miner_hotkey, pos.position_uuid)
                 n_deleted += 1
-            elif pos.position_uuid in position_uuids_to_archive:
+            elif pos.position_uuid in uuids_to_archive:
                 self.archive_positions_for_hotkey(pos.miner_hotkey, [pos])
                 n_archived += 1
             elif reopen_force_closed_orders:
@@ -1653,32 +1653,11 @@ class PositionManager:
             n_archived_deleted = self.delete_archived_positions_for_hotkey(hotkey)
             log.append(f"Archived positions deleted={n_archived_deleted}")
 
-        # Restore subaccount entity status if erroneously eliminated/failed
-        # if is_synthetic_hotkey(hotkey) and self._entity_client:
-        #     success, msg = self._entity_client.restore_subaccount(hotkey)
-        #     log.append(f"restore_subaccount: {msg}")
-
-        # Remove from challenge period so next refresh re-adds to correct bucket
-        # if self._challenge_period_client and self._challenge_period_client.has_miner(hotkey):
-        #     self._challenge_period_client.remove_miners(hotkey)
-        #     # self._challenge_period_client._write_challengeperiod_from_memory_to_disk()
-        #     log.append(f"Removed challenge period entry for {hotkey}")
-
         # Rebuild account state from remaining positions
         remaining_positions = self.get_positions_for_one_hotkey(hotkey)
         if self._miner_account_client:
             self._miner_account_client.rebuild_account_state_from_positions(hotkey, remaining_positions)
             log.append("Rebuilt account state")
-
-        # Wipe perf ledger
-        if self._perf_ledger_client:
-            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
-            log.append("Wiped perf ledger")
-
-        # # Wipe debt ledger
-        # if self._debt_ledger_client:
-        #     self._debt_ledger_client.delete_debt_ledger(hotkey)
-        #     log.append("Deleted debt ledger")
 
         bt.logging.info(f"wipe_hotkey({hotkey}): {'; '.join(log)}")
         return {'hotkey': hotkey, 'actions': log}

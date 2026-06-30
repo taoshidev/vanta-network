@@ -95,6 +95,10 @@ class ChallengePeriodClient(RPCClientBase):
         """Remove a miner from active_miners."""
         return self._server.remove_miners_rpc(hotkeys)
 
+    def revert_elimination(self, hotkey: str) -> bool:
+        """Remove the ELIMINATED bucket entry, clear the elimination record, and persist to disk."""
+        return self._server.revert_elimination_rpc(hotkey)
+
     def get_testing_miners(self) -> dict[str, int]:
         """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""
         return self._server.get_miners_rpc([MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE])
