@@ -709,7 +709,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     continue
 
                 account.unrealized_pnl = unrealized_pnl
-                account.max_return = max(account.max_return, account.equity)
+
+                current_return = account.equity / account.get_account_size()
+                account.max_return = max(account.max_return, current_return)
 
             self._save_accounts_to_disk()
 
