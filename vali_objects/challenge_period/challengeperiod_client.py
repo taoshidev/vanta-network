@@ -87,6 +87,18 @@ class ChallengePeriodClient(RPCClientBase):
     def get_dashboard(self, hotkey) -> dict | None:
         return self._server.get_dashboard_rpc(hotkey)
 
+    def pop_bucket_entry(self, hotkey: str, top_bucket: MinerBucket) -> bool:
+        """Pop the top bucket entry if it matches top_bucket. Returns True if popped."""
+        return self._server.pop_bucket_entry_rpc(hotkey, top_bucket)
+
+    def reset_drawdown_cache(self, hotkey: str) -> None:
+        """Reset drawdown stats to neutral defaults so stale values can't trigger elimination."""
+        return self._server.reset_drawdown_cache_rpc(hotkey)
+
+    def save_to_disk(self) -> None:
+        """Persist in-memory challenge period state to disk."""
+        return self._server.save_to_disk_rpc()
+
     def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int) -> bool:
         """Set or update a miner's bucket information."""
         return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms)

@@ -748,6 +748,14 @@ class ChallengePeriodManager(CacheController):
             return
         btlogging.info(f"[CP_MANAGER] Synced {len(hotkey_to_bucket)} miner buckets to MinerAccount")
 
+    def pop_bucket_entry(self, hotkey: str, top_bucket: MinerBucket) -> bool:
+        """Pop the top bucket entry if it matches top_bucket. Returns True if popped."""
+        with self._buckets_lock:
+            state = self.miner_states.get(hotkey)
+            if state is None:
+                return False
+            return state.pop_bucket_entry(top_bucket) is not None
+
     def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int, *, replace_top=False) -> bool:
         """
         Set or update a miner's bucket information, replace_top to override most recent entry

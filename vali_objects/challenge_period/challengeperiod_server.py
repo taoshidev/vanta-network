@@ -121,6 +121,15 @@ class ChallengePeriodServer(RPCServerBase):
     def get_health_check_details(self) -> dict:
         return {"active_miners_count": len(self._manager.miner_states)}
 
+    def pop_bucket_entry_rpc(self, hotkey: str, top_bucket: MinerBucket) -> bool:
+        return self._manager.pop_bucket_entry(hotkey, top_bucket)
+
+    def reset_drawdown_cache_rpc(self, hotkey: str) -> None:
+        self._manager._reset_drawdown_stats_cache(hotkey)
+
+    def save_to_disk_rpc(self) -> None:
+        self._manager._save_to_disk()
+
     def set_miner_bucket_rpc(self, hotkey: str, bucket: MinerBucket, start_time_ms: int) -> bool:
         return self._manager.set_miner_bucket(hotkey, bucket, start_time_ms)
 
