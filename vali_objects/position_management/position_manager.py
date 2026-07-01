@@ -477,7 +477,7 @@ class PositionManager:
         Delete a specific position with O(1) deletion.
         Also removes from open positions index if it was open.
         Handles Disk deletion too.
-        Lock should be aquired by caller
+        Lock should be acquired by caller
         """
         positions_dict = self.hotkey_to_positions.get(hotkey, {})
         # O(1) direct deletion from dict
@@ -1020,13 +1020,15 @@ class PositionManager:
             result[hotkey] = positions
         return result
 
-    def save_miner_position(self, position: Position, delete_open_position_if_exists=True, validate=True) -> None:
+    def save_miner_position(self, position: Position, delete_open_position_if_exists=True,
+                             delete_closed_position_if_exists=True, validate=True) -> None:
         """
         Save a position with full memory and disk cleanup.
 
         Args:
             position: The position to save
             delete_open_position_if_exists: If True and position is closed, delete any existing open position for the same trade pair
+            delete_closed_position_if_exists: If True and position is open, delete any stale closed-dir copy of this same position (e.g. after reopening a force-closed position)
             validate: If True, perform validation checks (expensive disk reads). Should be True for external calls, False for internal operations.
         """
         # 1. Handle deletion of existing open position if needed
@@ -1034,6 +1036,18 @@ class PositionManager:
             open_pos = self.get_open_position_for_trade_pair(position.miner_hotkey, position.trade_pair.trade_pair_id)
             if open_pos and open_pos.position_uuid == position.position_uuid:
                 self.delete_position(open_pos.miner_hotkey, open_pos.position_uuid)
+
+        # 1b. Handle deletion of a stale closed-dir copy if this position was reopened
+        if position.is_open_position and delete_closed_position_if_exists and not self.is_backtesting:
+            closed_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
+                position.miner_hotkey,
+                position.trade_pair.trade_pair_id,
+                order_status=OrderStatus.CLOSED,
+                running_unit_tests=self.running_unit_tests
+            )
+            closed_file_path = closed_dir + position.position_uuid
+            if os.path.exists(closed_file_path):
+                self.delete_position(position.miner_hotkey, position.position_uuid)
 
         # 2. Validate if needed (only for open positions)
         if position.is_open_position and validate and not self.is_backtesting:
