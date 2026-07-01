@@ -818,7 +818,10 @@ class EliminationManager(CacheController):
     def remove_elimination(self, hotkey: str) -> bool:
         """Remove elimination. Returns True if removed, False if not found."""
         if hotkey in self.eliminations:
-            del self.eliminations[hotkey]
+            with self.eliminations_lock:
+                del self.eliminations[hotkey]
+            self._challenge_period_client.revert_elimination(hotkey)
+            self.save_eliminations()
             return True
         return False
 
