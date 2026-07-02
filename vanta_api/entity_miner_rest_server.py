@@ -388,7 +388,8 @@ class EntityMinerRestServer(MinerRestServer):
         self.app.route("/api/hl/<hl_address>/stream", methods=["GET"])(self.stream_endpoint)
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
-        print(f"[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
+        self.app.route("/api/profile", methods=["POST"])(self.update_profile_endpoint)
+        print(f"[ENTITY-GW-INIT] 9 endpoints registered (3 inherited + 6 entity-specific)")
 
     # ==================== HL Address Mapping ====================
 
@@ -1181,6 +1182,99 @@ class EntityMinerRestServer(MinerRestServer):
                     f"Error: {str(e)}",
                     level="error"
                 )
+            return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
+
+    def update_profile_endpoint(self):
+        """
+        POST /api/profile - Update profile settings for a subaccount via validator.
+
+        Request body (JSON):
+        {
+            "settings": {           // Required; at least one supported setting
+                "display_name": str // Optional (max 48 chars)
+            },
+            "subaccount_id": int,   // Required
+        }
+        """
+        import requests as http_requests
+
+        # 1. Validate API key
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        # 2. Parse and validate request body
+        try:
+            request_data = request.get_json()
+            if not request_data:
+                return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
+
+            for field in ('settings', 'subaccount_id'):
+                if field not in request_data:
+                    return jsonify({'status': 'error', 'message': f'Missing required field: {field}'}), 400
+
+            settings = request_data['settings']
+            if not isinstance(settings, dict) or not settings:
+                return jsonify({'status': 'error', 'message': 'settings must be a non-empty object'}), 400
+
+            subaccount_id = request_data['subaccount_id']
+            if not isinstance(subaccount_id, int):
+                return jsonify({'status': 'error', 'message': 'subaccount_id must be an integer'}), 400
+
+            if 'display_name' in settings and len(settings['display_name']) > 48:
+                return jsonify({'status': 'error', 'message': 'display_name must be 48 characters or fewer'}), 400
+
+        except Exception as e:
+            bt.logging.error(f"Error processing profile update request: {e}")
+            return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
+
+        # 3. Check wallet is configured
+        if not self._coldkey or not self._hotkey or not self._validator_url:
+            return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
+
+        # 4. Sign message
+        try:
+            message_dict = {
+                "settings": settings,
+                "miner_coldkey": self._coldkey.ss58_address,
+                "miner_hotkey": self._hotkey.ss58_address,
+            }
+            message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
+            signature = self._coldkey.sign(message).hex()
+        except Exception as e:
+            bt.logging.error(f"Error signing profile update message: {e}")
+            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
+
+        # 5. Send request to validator
+        try:
+            payload = {
+                "settings": settings,
+                "subaccount_id": subaccount_id,
+                "miner_coldkey": self._coldkey.ss58_address,
+                "miner_hotkey": self._hotkey.ss58_address,
+                "signature": signature,
+            }
+
+            resp = http_requests.post(
+                f"{self._validator_url}/profile",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=60
+            )
+
+            try:
+                response_data = resp.json()
+            except json.JSONDecodeError:
+                return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
+
+            if resp.status_code == 200:
+                return jsonify(response_data), 200
+            else:
+                error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
+                return jsonify({'status': 'error', 'message': error_message}), resp.status_code
+
+        except Exception as e:
+            bt.logging.error(f"Error sending profile update payload: {e}")
             return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
 
     def health_endpoint(self):

@@ -250,6 +250,10 @@ class MinerAccountClient(RPCClientBase):
         """Set the HL address on an account."""
         self._server.set_hl_address(hotkey, hl_address)
 
+    def set_display_name(self, hotkey: str, display_name: Optional[str]) -> None:
+        """Set the display name on an account."""
+        self._server.set_display_name(hotkey, display_name)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._server.get_all_hotkeys()

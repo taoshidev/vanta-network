@@ -251,6 +251,10 @@ class MinerAccountServer(RPCServerBase):
         """Set the HL address on an account."""
         self._manager.set_hl_address(hotkey, hl_address)
 
+    def set_display_name(self, hotkey: str, display_name: Optional[str]) -> None:
+        """Set the display name on an account."""
+        self._manager.set_display_name(hotkey, display_name)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._manager.get_all_hotkeys()
