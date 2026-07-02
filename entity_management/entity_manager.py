@@ -1030,7 +1030,6 @@ class EntityManager(ValidatorBroadcastBase):
         # Translate UUID to hotkey
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
-            bt.logging.error(f"calculate_subaccount_payout: no synthetic hotkey ")
             return None
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
@@ -1046,30 +1045,28 @@ class EntityManager(ValidatorBroadcastBase):
             bt.logging.error(f"calculate_subaccount_payout: no subaccount data")
             return None
 
+        EMPTY_RESPONSE = {
+            'hotkey': synthetic_hotkey,
+            'total_checkpoints': 0,
+            'checkpoints': {},
+            'weekly_settlements': [],
+            'payout': 0,
+        }
+
         # Get debt ledger for this hotkey
         try:
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
             if not debt_ledger:
-                bt.logging.error(f"calculate_subaccount_payout: no debt ledger")
-                return None
+                return EMPTY_RESPONSE
 
             _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
             if not _perf_ledger:
-                bt.logging.error(f"calculate_subaccount_payout: no perf ledger")
-                return None
+                return EMPTY_RESPONSE
 
             perf_ledger = _perf_ledger.get(synthetic_hotkey)
             if not perf_ledger:
-                bt.logging.error(f"calculate_subaccount_payout: no hotkey indexed perf ledger")
-                return None
+                return EMPTY_RESPONSE
 
-            EMPTY_RESPONSE = {
-                'hotkey': synthetic_hotkey,
-                'total_checkpoints': 0,
-                'checkpoints': {},
-                'weekly_settlements': [],
-                'payout': 0,
-            }
             miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
             if miner_bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
                 return EMPTY_RESPONSE
