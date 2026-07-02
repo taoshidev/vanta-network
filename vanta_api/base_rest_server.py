@@ -28,6 +28,7 @@ from setproctitle import setproctitle
 from multiprocessing import current_process
 
 from vanta_api.api_key_refresh import APIKeyMixin
+from vanta_api.audit_logger import AuditLogger
 
 
 class APIMetricsTracker:
@@ -349,6 +350,9 @@ class BaseRestServer(APIKeyMixin, ABC):
         from flask_compress import Compress
         Compress(self.app)
 
+        # Audit logger for tier-500 admin endpoints
+        self.audit_logger = AuditLogger()
+
         print(f"[REST-INIT] Step 6/9: Setting up metrics tracking...")
         # Setup metrics tracking
         self._setup_metrics(metrics_interval_minutes)
@@ -487,6 +491,11 @@ class BaseRestServer(APIKeyMixin, ABC):
     # METRICS TRACKING
     # ============================================================================
 
+    _ADMIN_AUDIT_ROUTES = {
+        "/admin/<hotkey>/positions/<position_uuid>",
+        "/admin/revert-elimination/<hotkey>",
+    }
+
     def _setup_metrics(self, metrics_interval_minutes):
         """Set up API metrics tracking."""
         # Initialize the metrics tracker as instance variable
@@ -515,6 +524,33 @@ class BaseRestServer(APIKeyMixin, ABC):
 
             # Track the request using the instance metrics tracker
             self.metrics.track_request(api_key, url, duration, response.status_code)
+
+            if url in self._ADMIN_AUDIT_ROUTES:
+                try:
+                    user_id = self.metrics._get_user_id_from_api_key(api_key)
+                    body = None
+                    try:
+                        body = request.get_json(silent=True)
+                    except Exception:
+                        pass
+                    client_ip = (
+                        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                        or request.remote_addr
+                    )
+                    self.audit_logger.log({
+                        "user_id": user_id,
+                        "api_key_prefix": api_key[:8] if api_key else None,
+                        "method": request.method,
+                        "path": request.path,
+                        "query_params": dict(request.args),
+                        "request_body": body,
+                        "response_status": response.status_code,
+                        "duration_ms": round(duration * 1000, 2),
+                        "client_ip": client_ip,
+                        "success": response.status_code < 400,
+                    })
+                except Exception:
+                    pass
 
             return response
 
