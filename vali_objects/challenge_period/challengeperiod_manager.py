@@ -43,7 +43,7 @@ from entity_management.entity_client import EntityClient
 class DrawdownStats:
     current_equity: float = 1.0
     current_balance: float = 1.0
-    daily_open_equity: float = 1.0
+    daily_open_equity: float | None = 1.0
     eod_hwm: float = 1.0
     last_eod_equity: float = 1.0
     intraday_drawdown_pct: float = 0.0
@@ -128,7 +128,7 @@ class MinerBucketState:
         dd = self.drawdown
         return (
             f"{self.hotkey} {self.current_bucket.value} {start} rank={self.rank} "
-            f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={dd.daily_open_equity:.4f} | "
+            f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={f'{dd.daily_open_equity:.4f}' if dd.daily_open_equity is not None else 'None'} | "
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
             f"eod_hwm={dd.eod_hwm:.4f}"
         )
@@ -540,7 +540,7 @@ class ChallengePeriodManager(CacheController):
         return equity_ret, balance_ret
 
     @staticmethod
-    def _parse_eod_checkpoints(ledger: PerfLedger, now_ms: int) -> tuple[float, float, float, int | None]:
+    def _parse_eod_checkpoints(ledger: PerfLedger, now_ms: int) -> tuple[float, float | None, float, int | None]:
         """
         Parse midnight checkpoints from a ledger.
         Returns (last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms).
@@ -550,7 +550,7 @@ class ChallengePeriodManager(CacheController):
         last_eod_checked_ms = midnight_cps[-1].last_update_ms if midnight_cps else None
         today_midnight_ms = (now_ms // 86400000) * 86400000
         today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
-        daily_open_equity = today_open_cp.equity_ret if today_open_cp else last_eod
+        daily_open_equity = today_open_cp.equity_ret if today_open_cp else (None if last_eod else 1.0)
         eod_hwm = max(max(cp.equity_ret for cp in midnight_cps), 1.0) if midnight_cps else 1.0
         return last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms
 
@@ -576,7 +576,7 @@ class ChallengePeriodManager(CacheController):
 
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
             last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
-            intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0
+            intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0 if daily_open_equity else 0.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
 
             # Cache stats before rule checks so dashboard reflects what triggered elimination
