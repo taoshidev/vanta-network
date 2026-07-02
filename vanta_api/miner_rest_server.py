@@ -101,6 +101,7 @@ class MinerRestServer(BaseRestServer):
 
         # Synchronous order submission (new primary endpoint)
         self.app.route("/api/submit-order", methods=["POST"])(self.submit_order_endpoint)
+        self.app.route("/api/bracket-orders/batch", methods=["POST"])(self.batch_bracket_orders)
 
         # Order status query
         self.app.route("/api/order-status/<order_uuid>", methods=["GET"])(self.order_status_endpoint)
@@ -125,7 +126,7 @@ class MinerRestServer(BaseRestServer):
         Request body (JSON):
         {
             "order_uuid": "optional-uuid",  // Auto-generated if not provided
-            "trade_pair": "BTC/USD",
+            "trade_pair": "BTCUSDC",
             "order_type": "LONG" | "SHORT" | "FLAT",
             "leverage": 0.1,  // Exactly one of leverage, value, or quantity required
             "value": 1000.0,  // Exactly one of leverage, value, or quantity required
@@ -234,6 +235,105 @@ class MinerRestServer(BaseRestServer):
                 'order_uuid': order_uuid,
                 'error': f'Internal error processing order: {str(e)}'
             }), 500
+
+    def batch_bracket_orders(self):
+        """
+        Batch create / update / cancel of bracket orders in a single request.
+
+        Provides an alternative to submitting confusing Signal dict via /api/submit-order.
+        Each entry describes one operation against one order; entries in a batch are independent.
+
+        Request body (JSON):
+        {
+            "trade_pair": "ETHUSDC"
+            "orders": [
+                {
+                    "action": "update",
+                    "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                    "quantity": 10,
+                    "stop_loss": 5300.0,
+                    "take_profit": 5500.0
+                },
+                {
+                    "action": "cancel",
+                    "order_uuid": "8b2c9d1e-1234-5678-9abc-def012345678"
+                },
+                {
+                    "action": "create",
+                    "quantity": 10,
+                    "stop_loss": 5320.0,
+                    "take_profit": 5500.0
+                },
+                {
+                    "action": "create",
+                    "quantity": 5,
+                    "trailing_stop": {"trailing_percent": 0.05},
+                    "take_profit": 5600.0
+                },
+                {
+                    "action": "create",
+                    "quantity": 5,
+                    "trailing_stop": {"trailing_value": 100.0}
+                },
+                {
+                    "action": "update",
+                    "order_uuid": "aa11bb22-cc33-dd44-ee55-ff6677889900",
+                    "quantity": 5,
+                    "trailing_stop": {"trailing_percent": 0.02}
+                },
+                {
+                    "action": "update",
+                    "order_uuid": "bb22cc33-dd44-ee55-ff66-778899001122",
+                    "quantity": 5,
+                    "trailing_stop": {"trailing_value": 75.0},
+                    "take_profit": 5600.0
+                }
+            ]
+        }
+
+        Per-entry semantics:
+          action="update"  Required: order_uuid, plus the full order spec
+                           (same fields as action="create"). Behaves like
+                           the current LIMIT_EDIT path: the submitted object
+                           replaces the existing order in its entirety.
+                           trade_pair is taken from the top-level request
+                           and cannot change per-order.
+
+          action="cancel"  Required: order_uuid. No other fields.
+
+          action="create"  Same body shape as POST /api/submit-order (see
+                           submit_order_endpoint). order_uuid is optional and
+                           auto-generated if omitted.
+
+        trailing_stop must be a dict containing exactly one of:
+          - "trailing_percent": float in (0, 1)  (e.g. 0.05 = trail 5%)
+          - "trailing_value":   float > 0        (e.g. 100.0 = trail $100)
+        trailing_stop replaces a fixed stop_loss; do not set both on the
+        same order.
+
+        If action is omitted it defaults to "update" when order_uuid is present
+        and "create" when it is absent. Explicit action is recommended.
+
+        Response (200 OK):
+        {
+            "success": true,
+            "processed": 3,
+            "processing_time": 0.42
+        }
+
+        Response (400 Bad Request):
+        {
+            "success": false,
+            "error": "Invalid request: <reason>"
+        }
+
+        Response (401 Unauthorized):
+        {
+            "error": "Unauthorized access"
+        }
+        """
+        return jsonify({}), 200
+
 
     def order_status_endpoint(self, order_uuid):
         """

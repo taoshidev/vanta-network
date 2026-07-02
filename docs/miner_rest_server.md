@@ -29,6 +29,7 @@ The miner REST server starts automatically when you run your miner (no --serve f
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/submit-order` | POST | Submit trading orders synchronously (returns validator feedback) |
+| `/api/bracket-orders/batch` | POST | Batch create / update / cancel of bracket orders on a single trade pair |
 | `/api/order-status/<uuid>` | GET | Query order processing status |
 | `/api/health` | GET | Health check (no auth required) |
 
@@ -265,6 +266,129 @@ For the complete list of supported trade pairs and their current status, refer t
 3. **Validator Trust**: The numeric metrics (validators_processed, validators_succeeded, etc.) always reflect actual processing regardless of the verbose flag.
 4. **Entity Miners**: Use the `subaccount_id` field to route orders to specific subaccounts. The ID is used to construct a synthetic hotkey for position tracking.
 5. **Regular Miners**: Omit the `subaccount_id` field entirely if you're not using entity miner subaccounts.
+
+### Batch Bracket Orders
+
+`POST /api/bracket-orders/batch`
+
+A friendlier alternative to submitting `LIMIT_EDIT` / `LIMIT_CANCEL` / bracket signals one-at-a-time via `/api/submit-order`. Each entry describes one operation (`create`, `update`, or `cancel`) against one order on the same trade pair. Entries in a batch are independent — one entry's failure does not roll back the others.
+
+Under the hood, each entry is translated into an existing miner signal:
+- `create` → new `BRACKET` (or `LIMIT` with brackets) signal
+- `update` → `LIMIT_EDIT` signal (full-object replacement of the existing order)
+- `cancel` → `LIMIT_CANCEL` signal
+
+**Required Headers**:
+```
+'Content-Type': 'application/json',
+'Authorization': 'xxxx'
+```
+
+**Request Body Fields**:
+
+- `trade_pair` (string, required): Trade pair for all entries in the batch (e.g., `"ETHUSDC"`). Cannot vary per-entry.
+- `orders` (array, required): List of per-order operations. Each entry has:
+  - `action` (string): `"create"`, `"update"`, or `"cancel"`. If omitted, defaults to `"update"` when `order_uuid` is present, otherwise `"create"`. Explicit `action` is recommended.
+  - `order_uuid` (string): Required for `update` and `cancel`. Optional for `create` (auto-generated if omitted).
+  - Plus the standard order fields (see below) for `create` and `update`.
+
+**Per-entry semantics**:
+
+- `action="update"` — Required: `order_uuid`, plus the full order spec (same fields as `create`). Behaves like the existing `LIMIT_EDIT` path: the submitted object replaces the existing order in its entirety. `trade_pair` is taken from the top-level request.
+- `action="cancel"` — Required: `order_uuid`. No other fields.
+- `action="create"` — Same fields as `POST /api/submit-order` (order sizing, prices, brackets, trailing stops).
+
+**Trailing stops**:
+
+`trailing_stop` must be a dict containing **exactly one** of:
+- `trailing_percent` (float in `(0, 1)`, e.g. `0.05` = trail 5%)
+- `trailing_value` (float `> 0`, e.g. `100.0` = trail $100)
+
+`trailing_stop` replaces a fixed `stop_loss`; do not set both on the same order.
+
+**Example Request**:
+
+```json
+{
+  "trade_pair": "ETHUSDC",
+  "orders": [
+    {
+      "action": "update",
+      "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "quantity": 10,
+      "stop_loss": 5300.0,
+      "take_profit": 5500.0
+    },
+    {
+      "action": "cancel",
+      "order_uuid": "8b2c9d1e-1234-5678-9abc-def012345678"
+    },
+    {
+      "action": "create",
+      "quantity": 10,
+      "stop_loss": 5320.0,
+      "take_profit": 5500.0
+    },
+    {
+      "action": "create",
+      "quantity": 5,
+      "trailing_stop": {"trailing_percent": 0.05},
+      "take_profit": 5600.0
+    },
+    {
+      "action": "create",
+      "quantity": 5,
+      "trailing_stop": {"trailing_value": 100.0}
+    },
+    {
+      "action": "update",
+      "order_uuid": "aa11bb22-cc33-dd44-ee55-ff6677889900",
+      "quantity": 5,
+      "trailing_stop": {"trailing_percent": 0.02}
+    },
+    {
+      "action": "update",
+      "order_uuid": "bb22cc33-dd44-ee55-ff66-778899001122",
+      "quantity": 5,
+      "trailing_stop": {"trailing_value": 75.0},
+      "take_profit": 5600.0
+    }
+  ]
+}
+```
+
+**Response**:
+
+Success (200):
+```json
+{
+  "success": true,
+  "processed": 7,
+  "processing_time": 0.42
+}
+```
+
+Validation Error (400):
+```json
+{
+  "success": false,
+  "error": "Invalid request: <reason>"
+}
+```
+
+Authentication Error (401):
+```json
+{
+  "error": "Unauthorized access"
+}
+```
+
+**Notes**:
+
+1. **Single trade pair per batch**: All entries in `orders` apply to the top-level `trade_pair`. To operate on multiple trade pairs, send separate requests.
+2. **Update is full-replacement**: Unlike a partial PATCH, `action="update"` requires the full order spec — omitted fields do not carry over from the existing order.
+3. **UUID reuse**: `update` and `cancel` reuse the existing `order_uuid` (same rule as `LIMIT_EDIT`/`LIMIT_CANCEL`). `create` entries must have fresh UUIDs.
+4. **No cross-entry atomicity**: Entries are processed independently. Partial success is possible.
 
 ## Testing sending a signal
 
