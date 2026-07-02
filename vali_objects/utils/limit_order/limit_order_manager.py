@@ -1030,7 +1030,7 @@ class LimitOrderManager(CacheController):
         start_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS
         price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
         if not price_sources:
-            bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources or [])} no ws price sources")
+            # bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources or [])} no ws price sources")
             return None
 
         bid_ps_sorted = sorted(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)
@@ -1039,7 +1039,7 @@ class LimitOrderManager(CacheController):
         min_ask_ps, max_ask_ps = ask_ps_sorted[0], ask_ps_sorted[-1]
 
         if max_bid_ps.bid == 0 or min_ask_ps.ask == 0:
-            bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} no bid/ask price")
+            # bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} no bid/ask price")
             return None
 
         return LimitPriceSources(
