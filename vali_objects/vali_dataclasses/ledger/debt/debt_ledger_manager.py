@@ -579,10 +579,13 @@ class DebtLedgerManager():
 
                 # CRITICAL FIX: Get THIS MINER'S checkpoint at the current timestamp,
                 # not the reference checkpoint (which would use the same PnL for all miners)
-                miner_perf_checkpoint = portfolio_ledger.get_checkpoint_at_time(
-                    perf_checkpoint.last_update_ms,
-                    target_cp_duration_ms
-                )
+                try:
+                    miner_perf_checkpoint = portfolio_ledger.get_checkpoint_at_time(
+                        perf_checkpoint.last_update_ms,
+                        target_cp_duration_ms
+                    )
+                except ValueError as e:
+                    raise ValueError(f"[hotkey={hotkey}] {e}") from e
 
                 if not miner_perf_checkpoint:
                     continue  # This hotkey doesn't have a perf checkpoint at this timestamp
@@ -883,7 +886,10 @@ class DebtLedgerManager():
                     checkpoints_at_time = []
                     agg_realized_pnl = 0.0
                     for synthetic_hotkey, ledger in subaccount_ledgers:
-                        checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
+                        try:
+                            checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
+                        except ValueError as e:
+                            raise ValueError(f"[hotkey={synthetic_hotkey}] {e}") from e
                         if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
                             checkpoints_at_time.append(checkpoint)
 
