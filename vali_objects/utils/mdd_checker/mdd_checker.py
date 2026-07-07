@@ -29,7 +29,7 @@ from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
 
@@ -304,7 +304,7 @@ class MDDChecker(CacheController):
             order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position)
             order.bid = winning_event.bid
             order.ask = winning_event.ask
-            order.slippage = PriceSlippageModel.calculate_slippage(winning_event.bid, winning_event.ask, order)
+            # order.slippage = PriceSlippageModel.calculate_slippage(winning_event.bid, winning_event.ask, order)
             order.price_sources = new_price_sources
             return True
 
