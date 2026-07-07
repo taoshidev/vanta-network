@@ -158,8 +158,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self._limit_order_client = LimitOrderClient(connection_mode=connection_mode)
         self._contract_client = ContractClient(connection_mode=connection_mode)
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
-        self._core_outputs_client = CoreOutputsClient(connection_mode=connection_mode)
-        self._statistics_client = MinerStatisticsClient(connection_mode=connection_mode)
+        # connect_immediately=False: CoreOutputsClient defaults to eager-connect with 60 retries,
+        # which makes REST construction CRASH if core is not yet up (fine in-core where state servers
+        # start first, but fatal for the standalone/extracted app where startup order isn't guaranteed).
+        # Lazy-connect matches the other 10 lazy-by-default clients (MinerStatisticsClient below needs
+        # the same override — it is the only other eager one): boot immediately, connect on first use,
+        # tolerate core being slow/absent. Readiness is surfaced by the entrypoint's watchdog + Slack alert.
+        self._core_outputs_client = CoreOutputsClient(connection_mode=connection_mode, connect_immediately=False)
+        # connect_immediately=False: like CoreOutputsClient above, MinerStatisticsClient defaults to
+        # eager-connect with 60 retries — a second construction-time block/crash if core isn't up.
+        # Lazy for the standalone/extracted app; connects on first use.
+        self._statistics_client = MinerStatisticsClient(connection_mode=connection_mode, connect_immediately=False)
         self._entity_client = EntityClient(
             connection_mode=connection_mode,
             running_unit_tests=running_unit_tests

@@ -4,6 +4,7 @@ ShutdownCoordinator - Cross-process shutdown flag using shared memory.
 No RPC. No refresher thread. Processes can poll whenever they want.
 """
 
+import os
 import struct
 import time
 from multiprocessing import shared_memory
@@ -13,7 +14,21 @@ from time_util.time_util import TimeUtil
 
 
 class ShutdownCoordinator:
-    _SHM_NAME = "global_shutdown_flag"
+    # The shutdown flag is a host-global shared-memory segment shared by every process
+    # that attaches to the same name. That is intentional WITHIN one process tree (the
+    # validator core + the state servers it spawns must shut down together), but it is
+    # WRONG across independently-deployed PM2 apps:
+    #   - FORWARD coupling (affects vanta-rest AND vanta-ws): their RPCServerBase
+    #     background loops call _is_shutdown(), which reads this global flag first — so a
+    #     vanta-core shutdown would make the standalone servers tear their threads down.
+    #   - REVERSE coupling (affects vanta-rest): ValidatorRestServer.shutdown() ->
+    #     RPCServerBase.shutdown() -> signal_shutdown() flips the shared flag, so a routine
+    #     vanta-rest restart would signal shutdown to vanta-core. (WS's async shutdown()
+    #     does not call signal_shutdown, so WS lacks this reverse path — but still needs
+    #     isolation for the forward case.)
+    # Each standalone app therefore sets VANTA_SHUTDOWN_SHM_NAME to its own namespace so
+    # its shutdown lifecycle is isolated from core's. Core leaves it unset (default).
+    _SHM_NAME = os.environ.get("VANTA_SHUTDOWN_SHM_NAME", "global_shutdown_flag")
     _SHM_SIZE = 8
 
     _initialized = False
