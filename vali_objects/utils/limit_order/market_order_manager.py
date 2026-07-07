@@ -136,7 +136,7 @@ class MarketOrderManager():
                 force_close_order_time = now_ms - 1 # 2 orders for the same trade pair cannot have the same timestamp
                 force_close_order_uuid = existing_open_pos.position_uuid[::-1] # uuid will stay the same across validators
                 self._add_order_to_existing_position(existing_open_pos, trade_pair, OrderType.FLAT,
-                                                     0.0, 0.0, 0.0, force_close_order_time, miner_hotkey,
+                                                     -existing_open_pos.net_quantity, 0.0, 0.0, force_close_order_time, miner_hotkey,
                                                      price_sources, force_close_order_uuid, miner_repo_version,
                                                      OrderSource.MAX_ORDERS_PER_POSITION_CLOSE,
                                                      existing_open_pos.account_size)
