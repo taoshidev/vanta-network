@@ -16,6 +16,9 @@ Usage:
     from vali_objects.miner_account.miner_account_client import MinerAccountClient
     client = MinerAccountClient()
 """
+import time
+from datetime import datetime, timezone, timedelta
+
 import bittensor as bt
 from typing import Optional, Dict, List, Any
 
@@ -76,10 +79,11 @@ class MinerAccountServer(RPCServerBase):
 
         # Store is_mothership status (set by contract manager later)
         self._is_mothership = False
+        self._snapshot_first_iteration = True
 
-        # Daemon configuration
-        daemon_interval_s = 3600
-        hang_timeout_s = daemon_interval_s * 2
+        # Daemon configuration: align first run to next UTC midnight
+        daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
+        hang_timeout_s = 86400 * 2  # 2 days
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -97,14 +101,22 @@ class MinerAccountServer(RPCServerBase):
 
     # ==================== RPCServerBase Abstract Methods ====================
 
+    @staticmethod
+    def _seconds_until_next_utc_midnight() -> float:
+        now = datetime.now(tz=timezone.utc)
+        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return (next_midnight - now).total_seconds()
+
     def run_daemon_iteration(self) -> None:
-        pass
+        if self._snapshot_first_iteration:
+            self._snapshot_first_iteration = False
+            bt.logging.info("MinerAccount daily open snapshot skipped on first iteration")
+        else:
+            self._manager.take_daily_open_snapshots()
+        self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
+        bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
 
     # ==================== Setup Methods ====================
-
-    def set_collateral_balance_getter(self, getter):
-        """Set the collateral balance getter."""
-        self._manager.set_collateral_balance_getter(getter)
 
     def set_is_mothership(self, is_mothership: bool):
         """Set whether this validator is the mothership."""
@@ -226,6 +238,13 @@ class MinerAccountServer(RPCServerBase):
         """Get accounts for multiple hotkeys. Returns dict of hotkey -> account dict."""
         accounts = self._manager.get_accounts(hotkeys)
         return {hk: account.to_dict() for hk, account in accounts.items()}
+
+    def get_daily_open_snapshot(self, hotkey: str) -> Optional[dict]:
+        """Return the most recent daily open snapshot for a miner, or None if not yet recorded."""
+        account = self._manager.get_account(hotkey)
+        if account is None or account.daily_open_snapshot is None:
+            return None
+        return account.daily_open_snapshot.to_dict()
 
     def get_dashboard_rpc(self, hotkey: str) -> dict | None:
         return self._manager.get_dashboard(hotkey)
