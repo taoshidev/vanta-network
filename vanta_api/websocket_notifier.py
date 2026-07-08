@@ -61,9 +61,8 @@ class WebSocketNotifierClient(RPCClientBase):
             connect_immediately=connect_immediately,
             connection_mode=connection_mode
         )
-        # Guards the disconnect+reconnect sequence in _call_with_reconnect(). The notifier is
-        # shared across threads (HyperliquidTracker, MarketOrderManager, EntityManager) — without
-        # this, two threads hitting a dead proxy simultaneously would race the rebuild.
+        # Shared across threads (HyperliquidTracker, MarketOrderManager, EntityManager); serialize
+        # the disconnect+reconnect so concurrent failers don't race the rebuild.
         self._reconnect_lock = threading.Lock()
 
     # ==================== Reconnect-on-failure (see runnable/spike_rpc_reconnect.py) ====================
@@ -72,51 +71,34 @@ class WebSocketNotifierClient(RPCClientBase):
         """
         Invoke an RPC method; on failure, rebuild the connection ONCE and retry.
 
-        Why this exists (empirically verified 2026-07-07 by the spike): after the WebSocket
-        server process restarts, a long-lived client's proxy is PERMANENTLY dead — the proxy
-        holds a server-assigned object token that died with the old server process, so neither
-        the same thread (EOFError) nor a fresh thread (RemoteError/KeyError) recovers. The ONLY
-        recovery is disconnect() + connect(), which rebuilds the manager and fetches a fresh
-        proxy. Without this, every broadcast after a WS-only restart is silently dropped until
-        the CORE restarts — defeating the REST/WS process split.
 
-        The reconnect is BOUNDED (a single quick connect attempt, not the default 5x1s retry):
-        callers sit on the HL order path, so a WS outage must fail fast (broadcast dropped,
-        same as before) rather than inject seconds of latency. The moment WS is back, the next
-        call's reconnect succeeds and broadcasts RESUME.
-
-        Raises on final failure — callers keep their existing swallow-and-log semantics.
+        Reconnect is bounded to one quick attempt (not the default 5x1s): callers are on the HL
+        order path, so a WS outage must fail fast rather than add latency. The next call after WS
+        returns reconnects and broadcasts RESUME. Raises on final failure (callers swallow+log).
         """
         if self.connection_mode == RPCConnectionMode.LOCAL:
-            # Direct in-process server (tests): no transport to heal; call as-is.
             return getattr(self._server, method_name)(*args, **kwargs)
 
-        # Own ALL connects on this path so every attempt is bounded to 1 quick try. If we let
-        # the lazy `_server` property connect, a not-connected client (e.g. after a failed
-        # reconnect below) would use the class defaults (5 x 1s) and inject ~5s of latency into
-        # every broadcast while WS is down.
+        # Own every connect on this path so each is bounded to one quick try. Falling through to
+        # the lazy `_server` property instead would use the class-default 5x1s retry and add ~5s
+        # per broadcast whenever the client is left disconnected (e.g. after a failed reconnect).
         if self._proxy is None or not self._connected:
             with self._reconnect_lock:
-                self.connect(max_retries=1, retry_delay=0.25)  # raises fast if WS is down
+                self.connect(max_retries=1, retry_delay=0.25)
 
         try:
             return getattr(self._server, method_name)(*args, **kwargs)
         except Exception as first_error:
             with self._reconnect_lock:
-                # Another thread may have already rebuilt the connection while we waited on
-                # the lock — connect() below early-returns in that case, which is fine.
                 try:
                     self.disconnect()
                 except Exception:
-                    pass  # stale-state cleanup is best-effort
-                # disconnect() removed us from the client registry (used by disconnect_all()
-                # test cleanup); restore registration so this long-lived client stays tracked.
+                    pass
+                # disconnect() de-registers us; re-register so this long-lived client stays tracked.
                 self._instance_id = RPCClientBase._register_instance(self)
-                # Single quick attempt: connection-refused returns immediately when WS is down.
                 self.connect(max_retries=1, retry_delay=0.25)
-                # Retry INSIDE the lock: broadcasts are millisecond queue-puts server-side, and
-                # this prevents a concurrent failer from tearing down the proxy we just rebuilt
-                # before we use it (which would punt us onto the slow default-connect path).
+                # Retry inside the lock so a concurrent failer can't tear down the proxy we just
+                # rebuilt before we use it (which would punt us onto the slow default-connect path).
                 result = getattr(self._server, method_name)(*args, **kwargs)
             logger.info(
                 f"WebSocketNotifierClient: reconnected to WS notifier and resumed after: {first_error}"

@@ -11,12 +11,9 @@ Usage (PM2 runs, roughly):
 
 import os
 
-# ---------------------------------------------------------------------------
-# Isolate this app's shutdown lifecycle from vanta-core. ShutdownCoordinator binds
-# its shared-memory segment name at import time from this env var, so it MUST be set
-# before the imports below (which transitively import the coordinator). setdefault
-# lets run.sh override it via the PM2 environment if it prefers.
-# ---------------------------------------------------------------------------
+# Isolate this app's shutdown lifecycle from vanta-core. ShutdownCoordinator binds its segment
+# name at import time, so this MUST be set before the imports below (which transitively import it).
+# setdefault lets run.sh override via the PM2 environment. See shutdown_coordinator.py for why.
 os.environ.setdefault("VANTA_SHUTDOWN_SHM_NAME", "vanta_rest_shutdown")
 
 import argparse  # noqa: E402
@@ -71,8 +68,7 @@ def main() -> int:
     ShutdownCoordinator.initialize(reset_on_attach=True)
 
     if not os.path.exists(api_keys_file):
-        # Do NOT fabricate test keys here (the test __main__ does that). A standalone
-        # prod server with no real keys file is a misconfiguration worth surfacing loudly.
+        # Unlike the test __main__, a prod server does NOT fabricate keys — surface the misconfig.
         bt.logging.warning(f"[vanta-rest] API keys file not found at {api_keys_file} — "
                             f"the server will start but reject authenticated requests until it exists.")
 
@@ -88,10 +84,9 @@ def main() -> int:
     server = None
     stop = threading.Event()
 
-    # Make BOTH stop signals interrupt promptly, INCLUDING during a slow construction (e.g. while
-    # RPC clients retry-connect to a not-yet-up core). SIGINT already raises KeyboardInterrupt by
-    # default, which breaks the blocking retry sleeps — do NOT swallow it into an Event, or the
-    # process becomes unkillable mid-startup. Convert SIGTERM (PM2's stop signal) to the same path.
+    # Keep SIGINT default: it raises KeyboardInterrupt, which breaks the blocking retry sleeps
+    # during a slow startup — swallowing it into an Event makes the process unkillable
+    # mid-construction. Route SIGTERM (PM2's stop signal) to the same path.
     def _sigterm_to_keyboard_interrupt(signum, _frame):
         bt.logging.info(f"[vanta-rest] Received signal {signum} — interrupting for graceful shutdown.")
         raise KeyboardInterrupt()
@@ -99,9 +94,8 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
 
     try:
-        # Constructing the server starts BOTH the Flask HTTP server (daemon thread, via
-        # BaseRestServer.__init__ -> start_flask_server) AND the RPC health server thread.
-        # We therefore must NOT call server.run() again (it would re-bind the HTTP port).
+        # The constructor starts Flask (daemon thread) + the RPC health server, so do NOT call
+        # server.run() afterward — it would re-bind the HTTP port.
         server = ValidatorRestServer(
             api_keys_file=api_keys_file,
             refresh_interval=args.refresh_interval,
@@ -110,15 +104,12 @@ def main() -> int:
             flask_host=args.host,
             flask_port=port,
             is_mainnet=is_mainnet,
-            # Flows through **kwargs to RPCServerBase (health/hang alerts), matching the
-            # slack_notifier injection the in-validator spawn_process path used.
-            slack_notifier=slack_notifier,
+            slack_notifier=slack_notifier,  # flows via **kwargs to RPCServerBase health/hang alerts
         )
         bt.logging.success(f"[vanta-rest] REST server up on {args.host}:{port}. Blocking until signal.")
 
-        # Readiness watchdog: alert via Slack if we don't become healthy (front door bound +
-        # core state tier reachable) within the grace window, and again on recovery. The server
-        # tolerates core being slow/absent (lazy clients); this makes a stuck spin-up observable.
+        # Alert via Slack if we never become healthy (front door bound + core reachable) within
+        # the grace window — makes a stuck spin-up observable despite the lazy-client tolerance.
         start_readiness_watchdog(
             app_name="vanta-rest",
             slack_notifier=slack_notifier,
@@ -128,10 +119,9 @@ def main() -> int:
             stop_event=stop,
         )
 
-        # Block the main thread until interrupted (Ctrl-C / SIGTERM -> KeyboardInterrupt) or our
-        # own namespace signals shutdown. NOTE: nothing sets `stop` while this loop runs — signals
-        # arrive as KeyboardInterrupt (caught below); `stop` exists solely as the readiness
-        # watchdog's kill switch (set in `finally`). stop.wait() is just an interruptible sleep.
+        # Block until interrupted or our own namespace signals shutdown. Nothing sets `stop` here —
+        # signals arrive as KeyboardInterrupt (caught below); `stop` is only the watchdog's kill
+        # switch (set in finally). stop.wait() is just an interruptible sleep.
         while not ShutdownCoordinator.is_shutdown():
             stop.wait(1.0)
         return 0
@@ -153,8 +143,8 @@ def main() -> int:
                 server.shutdown()  # isolated namespace — safe, does not touch core
             except Exception as e:
                 bt.logging.warning(f"[vanta-rest] error during shutdown: {e}")
-        # Unlink our OWN shutdown-coordinator segment so it doesn't leak (the resource_tracker
-        # "leaked shared_memory objects" warning). Safe: this app owns its namespace.
+        # Unlink our OWN coordinator segment so it doesn't leak (resource_tracker warning);
+        # safe because this app owns its namespace.
         ShutdownCoordinator.cleanup()
 
 

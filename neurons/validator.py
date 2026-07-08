@@ -270,13 +270,10 @@ class Validator(ValidatorBase):
         self.order_rate_limiter = RateLimiter()
         self.position_inspector_rate_limiter = RateLimiter(max_requests_per_window=1, rate_limit_window_duration_seconds=60 * 4)
 
-        # Start API services (if enabled).
-        # Spawning is gated on config.spawn_api IN ADDITION to config.serve: when the REST/WS
-        # servers run as their own PM2 apps (vanta-rest / vanta-ws, launched by run.sh with
-        # --no-spawn-api on the core), the core must NOT also spawn them — both copies would
-        # bind 48888/8765/50014/50022. config.serve itself must stay ON in that setup: it also
-        # gates the position-update broadcasts (market_order_manager.py) that feed the extracted
-        # WS server. spawn_api defaults to True, so behavior is unchanged without the new flag.
+        # spawn_api gates only in-core spawning; config.serve stays on because it also gates the
+        # position-update broadcasts (market_order_manager.py) that feed the extracted WS server.
+        # Under run.sh's split (--no-spawn-api), REST/WS run as their own PM2 apps — spawning here
+        # too would double-bind 48888/8765/50014/50022. Defaults to spawning (backward-safe).
         if self.config.serve and getattr(self.config, 'spawn_api', True):
             # Create API Manager with configuration options
             self.api_manager = ValidatorAPIManager(

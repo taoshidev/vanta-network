@@ -3,8 +3,7 @@
 # Initialize variables
 script="neurons/validator.py"
 generate_script="runnable/generate_request_outputs.py"
-# Standalone API apps (REST/WS split): run as their own PM2 apps so an API-only deploy
-# does not restart the validator core (axon + HL tracker keep processing orders).
+# Standalone API apps (REST/WS split): own PM2 apps so an API-only deploy doesn't restart core.
 rest_script="vanta_api/run_rest_server.py"
 ws_script="vanta_api/run_ws_server.py"
 autoRunLoc=$(readlink -f "$0")
@@ -231,16 +230,9 @@ while [[ $# -gt 0 ]]; do
   fi
 done
 
-# ---------------------------------------------------------------------------
-# REST/WS split (only when --serve is requested):
-#  - The core is told NOT to spawn REST/WS itself (--no-spawn-api) — otherwise the
-#    core-spawned copies and the standalone apps would both bind 48888/8765/50014/50022.
-#  - vanta-rest / vanta-ws run as separate PM2 apps with their own lifecycles.
-#  - --netuid and --slack-webhook-url are passed through to the API apps (netuid drives
-#    is_mainnet in the REST server; webhook feeds their readiness/crash alerts).
-# Validators that do not pass --serve get exactly today's behavior: one vanta app, no
-# API processes, no extra flag.
-# ---------------------------------------------------------------------------
+# REST/WS split, only when --serve is set. Core gets --no-spawn-api (else its spawned copies and
+# the standalone apps double-bind 48888/8765/50014/50022); --netuid/--slack-webhook-url are
+# forwarded to the API apps (netuid drives is_mainnet in REST). No --serve = today's behavior.
 netuid_value=""
 slack_webhook_value=""
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -285,12 +277,9 @@ fi
 
 current_version=$(read_version_value)
 
-# Function to check and restart pm2 processes
-# Args: proc_name, script_path, args_array_name, [kill_timeout_ms]
-# kill_timeout_ms (optional): how long PM2 waits after its stop signal before SIGKILL.
-# The API apps (vanta-rest / vanta-ws) get a longer timeout so their graceful shutdown
-# (close websocket clients, cancel tasks, unlink shared memory) can finish; PM2's
-# default is only 1.6s.
+# check_and_restart_pm2 proc_name script_path args_array_name [kill_timeout_ms]
+# kill_timeout_ms: PM2's default is only 1.6s before it SIGKILLs — too short for the API apps'
+# graceful shutdown (close WS clients, cancel tasks, unlink shared memory), so they pass 10s.
 check_and_restart_pm2() {
     local proc_name=$1
     local script_path=$2
@@ -313,9 +302,8 @@ check_and_restart_pm2() {
 
     echo "Running $script_path with the following pm2 config:"
 
-    # NOTE: an empty args array must produce [], not [''] — printf with zero args still
-    # emits one empty '%s', and PM2 would pass a literal empty-string argument that
-    # argparse rejects (crash loop).
+    # An empty args array must render [] not [''] — printf with zero args still emits one empty
+    # '%s', which PM2 would pass as a literal empty-string arg that argparse rejects (crash loop).
     if [ ${#proc_args_ref[@]} -eq 0 ]; then
         joined_args=""
     else
@@ -344,10 +332,8 @@ check_and_restart_pm2() {
     pm2 start $proc_name.app.config.js
 }
 
-# Initial call to start all processes before entering the update loop.
-# Order: core first (owns the state-tier RPC servers), then the API apps. Strict ordering
-# is a nicety, not a correctness gate — the API apps lazy-connect and tolerate core being
-# slow/absent (they alert via their readiness watchdog if core never becomes reachable).
+# Start core first (owns the state-tier RPC servers), then the API apps. Ordering is a nicety,
+# not a gate — the API apps lazy-connect and tolerate core being absent (readiness watchdog alerts).
 pip_install_if_requirements_changed
 # Fixed: Proper array passing
 check_and_restart_pm2 "$proc_name" "$script" args
@@ -418,12 +404,9 @@ while true; do
             echo "New version published. Updating the local copy."
             if pip_install_if_requirements_changed; then
                 echo "Package installation successful."
-                # Per-app restart policy (fail-safe default): a version bump restarts ALL
-                # apps together. Narrowing to only the changed app (via git diff path->app
-                # mapping) is a future optimization — any shared-module change (vali_config,
-                # order/position models, RPC serialization) requires restarting core+rest+ws
-                # together anyway, else RPC version skew causes deserialization errors.
-                # Fixed: Proper array passing
+                # Fail-safe: a version bump restarts ALL apps. Narrowing to the changed app is a
+                # future optimization — any shared-module change (vali_config, order/position
+                # models, RPC serialization) needs core+rest+ws restarted together to avoid skew.
                 check_and_restart_pm2 "$proc_name" "$script" args
                 if [ "$serve_enabled" = true ]; then
                     check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
