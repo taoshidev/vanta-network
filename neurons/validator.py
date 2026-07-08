@@ -270,8 +270,14 @@ class Validator(ValidatorBase):
         self.order_rate_limiter = RateLimiter()
         self.position_inspector_rate_limiter = RateLimiter(max_requests_per_window=1, rate_limit_window_duration_seconds=60 * 4)
 
-        # Start API services (if enabled)
-        if self.config.serve:
+        # Start API services (if enabled).
+        # Spawning is gated on config.spawn_api IN ADDITION to config.serve: when the REST/WS
+        # servers run as their own PM2 apps (vanta-rest / vanta-ws, launched by run.sh with
+        # --no-spawn-api on the core), the core must NOT also spawn them — both copies would
+        # bind 48888/8765/50014/50022. config.serve itself must stay ON in that setup: it also
+        # gates the position-update broadcasts (market_order_manager.py) that feed the extracted
+        # WS server. spawn_api defaults to True, so behavior is unchanged without the new flag.
+        if self.config.serve and getattr(self.config, 'spawn_api', True):
             # Create API Manager with configuration options
             self.api_manager = ValidatorAPIManager(
                 slack_webhook_url=getattr(self.config, 'slack_webhook_url', None),
@@ -294,7 +300,11 @@ class Validator(ValidatorBase):
                 f"WebSocket: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_ws_port', 8765)}")
         else:
             self.api_thread = None
-            logger.info("API services not enabled - skipping")
+            if self.config.serve:
+                logger.info("API services not spawned by core (--no-spawn-api): "
+                            "REST/WS run as separate PM2 apps (vanta-rest / vanta-ws)")
+            else:
+                logger.info("API services not enabled - skipping")
 
         logger.info("[INIT] All initialization steps completed successfully!")
 

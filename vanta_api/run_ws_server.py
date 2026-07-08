@@ -52,6 +52,9 @@ from vanta_api.websocket_server import WebSocketServer  # noqa: E402
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the standalone Validator WebSocket server (vanta-ws).")
+    parser.add_argument("--netuid", type=int, default=None,
+                        help="Accepted for CLI symmetry with run_rest_server.py; the WS server has no "
+                             "mainnet-specific behavior, so this is informational only.")
     parser.add_argument("--api-keys-file", type=str, default=None,
                         help="Path to the API keys JSON file. Default: ValiBkpUtils.get_api_keys_file_path().")
     parser.add_argument("--host", type=str, default="0.0.0.0",
