@@ -384,6 +384,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket_str = last_record.get("miner_bucket")
                     hl_address = last_record.get("hl_address")
                     max_return = last_record.get("max_return", 1.0)
+                    unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
                 else:
                     total_realized_pnl = None
@@ -394,6 +395,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket_str = None
                     hl_address = None
                     max_return = 1.0
+                    unrealized_pnl = 0.0
                     capital_used_by_class_raw = {}
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
@@ -452,6 +454,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket=miner_bucket,
                     hl_address=hl_address,
                     max_return=max_return,
+                    unrealized_pnl=unrealized_pnl,
                     capital_used_by_class=capital_used_by_class,
                 )
 
