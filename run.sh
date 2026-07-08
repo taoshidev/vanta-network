@@ -3,14 +3,23 @@
 # Initialize variables
 script="neurons/validator.py"
 generate_script="runnable/generate_request_outputs.py"
+# Standalone API apps (REST/WS split): run as their own PM2 apps so an API-only deploy
+# does not restart the validator core (axon + HL tracker keep processing orders).
+rest_script="vanta_api/run_rest_server.py"
+ws_script="vanta_api/run_ws_server.py"
 autoRunLoc=$(readlink -f "$0")
 proc_name="vanta"
 generate_proc_name="generate"
+rest_proc_name="vanta-rest"
+ws_proc_name="vanta-ws"
 args=()
 generate_args=() # Assuming no specific arguments to the generate script
+rest_args=()
+ws_args=()
 version_location="meta/meta.json"
 version=".subnet_version"
 start_generate=false
+serve_enabled=false
 
 old_args=$@
 
@@ -222,17 +231,71 @@ while [[ $# -gt 0 ]]; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# REST/WS split (only when --serve is requested):
+#  - The core is told NOT to spawn REST/WS itself (--no-spawn-api) — otherwise the
+#    core-spawned copies and the standalone apps would both bind 48888/8765/50014/50022.
+#  - vanta-rest / vanta-ws run as separate PM2 apps with their own lifecycles.
+#  - --netuid and --slack-webhook-url are passed through to the API apps (netuid drives
+#    is_mainnet in the REST server; webhook feeds their readiness/crash alerts).
+# Validators that do not pass --serve get exactly today's behavior: one vanta app, no
+# API processes, no extra flag.
+# ---------------------------------------------------------------------------
+netuid_value=""
+slack_webhook_value=""
+for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+        --serve)
+            serve_enabled=true
+            ;;
+        --netuid)
+            netuid_value="${args[$((i + 1))]}"
+            ;;
+        --netuid=*)
+            netuid_value="${args[$i]#*=}"
+            ;;
+        --slack-webhook-url)
+            slack_webhook_value="${args[$((i + 1))]}"
+            ;;
+        --slack-webhook-url=*)
+            slack_webhook_value="${args[$i]#*=}"
+            ;;
+    esac
+done
+
+if [ "$serve_enabled" = true ]; then
+    args+=("--no-spawn-api")
+
+    if [ -n "$netuid_value" ]; then
+        rest_args+=("--netuid" "$netuid_value")
+    fi
+    if [ -n "$slack_webhook_value" ]; then
+        rest_args+=("--slack-webhook-url" "$slack_webhook_value")
+        ws_args+=("--slack-webhook-url" "$slack_webhook_value")
+    fi
+fi
+
 branch=$(git branch --show-current)
 echo "Watching branch: $branch"
-echo "PM2 process names: $proc_name"
+if [ "$serve_enabled" = true ]; then
+    echo "PM2 process names: $proc_name, $rest_proc_name, $ws_proc_name"
+else
+    echo "PM2 process names: $proc_name"
+fi
 
 current_version=$(read_version_value)
 
 # Function to check and restart pm2 processes
+# Args: proc_name, script_path, args_array_name, [kill_timeout_ms]
+# kill_timeout_ms (optional): how long PM2 waits after its stop signal before SIGKILL.
+# The API apps (vanta-rest / vanta-ws) get a longer timeout so their graceful shutdown
+# (close websocket clients, cancel tasks, unlink shared memory) can finish; PM2's
+# default is only 1.6s.
 check_and_restart_pm2() {
     local proc_name=$1
     local script_path=$2
     local -n proc_args_ref=$3
+    local kill_timeout_ms=${4:-}
 
     # Check for current process name
     if pm2 status | grep -q $proc_name; then
@@ -250,8 +313,21 @@ check_and_restart_pm2() {
 
     echo "Running $script_path with the following pm2 config:"
 
-    joined_args=$(printf "'%s'," "${proc_args_ref[@]}")
-    joined_args=${joined_args%,}
+    # NOTE: an empty args array must produce [], not [''] — printf with zero args still
+    # emits one empty '%s', and PM2 would pass a literal empty-string argument that
+    # argparse rejects (crash loop).
+    if [ ${#proc_args_ref[@]} -eq 0 ]; then
+        joined_args=""
+    else
+        joined_args=$(printf "'%s'," "${proc_args_ref[@]}")
+        joined_args=${joined_args%,}
+    fi
+
+    local kill_timeout_line=""
+    if [ -n "$kill_timeout_ms" ]; then
+        kill_timeout_line="
+        kill_timeout: $kill_timeout_ms,"
+    fi
 
     echo "module.exports = {
       apps : [{
@@ -259,7 +335,7 @@ check_and_restart_pm2() {
         script : '$script_path',
         interpreter: 'python3',
         min_uptime: '5m',
-        max_restarts: '5',
+        max_restarts: '5',$kill_timeout_line
         args: [$joined_args]
       }]
     }" > $proc_name.app.config.js
@@ -268,10 +344,17 @@ check_and_restart_pm2() {
     pm2 start $proc_name.app.config.js
 }
 
-# Initial call to start both processes before entering the update loop
+# Initial call to start all processes before entering the update loop.
+# Order: core first (owns the state-tier RPC servers), then the API apps. Strict ordering
+# is a nicety, not a correctness gate — the API apps lazy-connect and tolerate core being
+# slow/absent (they alert via their readiness watchdog if core never becomes reachable).
 pip_install_if_requirements_changed
 # Fixed: Proper array passing
 check_and_restart_pm2 "$proc_name" "$script" args
+if [ "$serve_enabled" = true ]; then
+    check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
+    check_and_restart_pm2 "$ws_proc_name" "$ws_script" ws_args 10000
+fi
 if [ "$start_generate" = true ]; then
     check_and_restart_pm2 "$generate_proc_name" "$generate_script" generate_args
 fi
@@ -335,8 +418,17 @@ while true; do
             echo "New version published. Updating the local copy."
             if pip_install_if_requirements_changed; then
                 echo "Package installation successful."
+                # Per-app restart policy (fail-safe default): a version bump restarts ALL
+                # apps together. Narrowing to only the changed app (via git diff path->app
+                # mapping) is a future optimization — any shared-module change (vali_config,
+                # order/position models, RPC serialization) requires restarting core+rest+ws
+                # together anyway, else RPC version skew causes deserialization errors.
                 # Fixed: Proper array passing
                 check_and_restart_pm2 "$proc_name" "$script" args
+                if [ "$serve_enabled" = true ]; then
+                    check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
+                    check_and_restart_pm2 "$ws_proc_name" "$ws_script" ws_args 10000
+                fi
                 if [ "$start_generate" = true ]; then
                     check_and_restart_pm2 "$generate_proc_name" "$generate_script" generate_args
                 fi

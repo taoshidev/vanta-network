@@ -103,6 +103,15 @@ class ValidatorBase:
         # API Server related arguments
         parser.add_argument("--serve", action='store_true',
                             help="Start the API server for REST and WebSocket endpoints")
+        # --no-spawn-api: stop the validator core from spawning the REST/WS servers as child
+        # processes, so they can run as their own PM2 apps (vanta-rest / vanta-ws) with
+        # independent deploy lifecycles. Defaults to SPAWNING (spawn_api=True) so a code update
+        # under an old run.sh keeps today's behavior; the split run.sh passes --no-spawn-api.
+        # NOTE: gates ONLY spawning. --serve stays on in core — it also gates the position-update
+        # broadcasts that feed the (extracted) WS server (market_order_manager.py).
+        parser.add_argument("--no-spawn-api", action='store_false', dest='spawn_api', default=True,
+                            help="Do not spawn the REST/WebSocket servers from the validator core "
+                                 "(they run as separate PM2 apps). Requires run.sh to launch them.")
         parser.add_argument("--api-host", type=str, default="127.0.0.1",
                             help="Host address for the API server")
         parser.add_argument("--api-rest-port", type=int, default=48888,
