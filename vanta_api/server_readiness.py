@@ -1,23 +1,18 @@
 """
 Readiness watchdog for the standalone API apps (vanta-rest / vanta-ws).
 
-Both standalone servers are designed to be TOLERANT of core being slow or absent at
-startup: they boot, bind their front door, and connect to core's state servers lazily
-(retrying per use) rather than crashing. That tolerance is good, but it can mask a
-genuinely stuck server — one that came up but can never reach core. This watchdog makes
-the tolerance OBSERVABLE: it alerts (via the existing SlackNotifier) if the app fails to
-become healthy within a grace window, and again when it recovers.
+The standalone servers tolerate core being slow/absent at startup (they boot, bind their front
+door, and lazy-connect to core's state servers rather than crash). That tolerance can mask a
+server that came up but can never reach core; this watchdog makes it observable — alerting via
+SlackNotifier if the app fails to become healthy within a grace window, and again on recovery.
 
 Design notes:
-  - "Healthy" = the app's own front door is bound AND core's state tier is reachable. We
-    use a cheap bounded TCP probe (no RPC handshake, no 60s client-retry block) so the
-    watchdog loop stays fast even while core is down.
-  - Core-liveness is proxied by PositionManager (:50002), the central state server both
-    apps depend on. This means "core reachable", not "every downstream server up" — the
-    right altitude for a spin-up alert (probing every dependency would flap).
-  - Edge-triggered: at most one alert per unhealthy episode and one on recovery, so a
-    normal startup race does not spam. SlackNotifier's own 300s cooldown is a backstop;
-    the transition alerts pass bypass_cooldown=True so they are never silently dropped.
+  - "Healthy" = own front door bound AND core state tier reachable, checked via a cheap bounded
+    TCP probe (no RPC handshake / 60s client-retry block) so the loop stays fast while core is down.
+  - Core-liveness is proxied by PositionManager (:50002), the central state server both apps depend
+    on — "core reachable", not "every downstream up" (probing every dependency would flap).
+  - Edge-triggered: one alert per unhealthy episode + one on recovery. Transition alerts pass
+    bypass_cooldown=True so SlackNotifier's 300s cooldown can't silently drop them.
   - Never crashes the app; it only observes and alerts.
 """
 

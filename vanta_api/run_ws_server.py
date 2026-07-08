@@ -5,9 +5,7 @@ Production entrypoint for the standalone Validator WebSocket server (PM2 app: va
 This is the REAL prod entrypoint — NOT the test `__main__` at the bottom of
 websocket_server.py (which defaults send_test_positions=True and writes fake API keys).
 
-The WS server is OUTBOUND-ONLY (dashboard / fill-confirmation / live-price fan-out to
-vanta-ui). It ingests no orders. Running it as its own PM2 app means a WS deploy no
-longer restarts the validator core.
+Running it as its own PM2 app means a WS deploy no longer restarts the validator core.
 
 Startup shape differs from REST (intentionally):
   - The WS constructor starts ONLY the notifier RPC server (:50014). The actual
@@ -111,10 +109,9 @@ def main() -> int:
             websocket_host=args.host,
             websocket_port=port,
         )
-        # Readiness watchdog (daemon): alert via Slack if we don't become healthy (websocket
-        # front door bound + core state tier reachable) within the grace window, and on recovery.
-        # Started before run() blocks; the front door binds inside run(), so the grace window
-        # covers that. No stop_event: the daemon thread exits with the process.
+        # Alert via Slack if we never become healthy (front door bound + core reachable) within the
+        # grace window. Started before run() blocks; the front door binds inside run(), so the grace
+        # window covers that. No stop_event — the daemon thread exits with the process.
         start_readiness_watchdog(
             app_name="vanta-ws",
             slack_notifier=slack_notifier,
