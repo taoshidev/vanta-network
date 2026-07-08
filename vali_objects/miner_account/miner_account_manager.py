@@ -33,6 +33,43 @@ from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 # ==================== Data Classes ====================
 
 
+@dataclass
+class DailyOpenSnapshot:
+    """Account state captured at 00:00:00 UTC for a single miner."""
+    day_open_ms: int           # Unix ms for 00:00:00 UTC of this day
+    account_size: float
+    balance: float
+    equity: float
+    bucket: Optional[str]      # MinerBucket.value or None
+
+    @property
+    def equity_return(self) -> float:
+        """equity / account_size — return relative to deposited capital."""
+        if not self.account_size:
+            return 1.0
+        return self.equity / self.account_size
+
+    def to_dict(self) -> dict:
+        return {
+            'day_open_ms': self.day_open_ms,
+            'account_size': self.account_size,
+            'balance': self.balance,
+            'equity': self.equity,
+            'equity_return': self.equity_return,
+            'bucket': self.bucket,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> 'DailyOpenSnapshot':
+        return DailyOpenSnapshot(
+            day_open_ms=d['day_open_ms'],
+            account_size=d['account_size'],
+            balance=d['balance'],
+            equity=d['equity'],
+            bucket=d.get('bucket'),
+        )
+
+
 class CollateralRecord:
     """Record of a collateral/account size update at a specific timestamp."""
 
@@ -85,6 +122,7 @@ class MinerAccount:
     # (HL_ALL) for per-class portfolio cap enforcement. Empty for older checkpoints;
     # lazy-backfilled on next rebuild_account_state_from_positions call.
     capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
+    daily_open_snapshot: Optional[DailyOpenSnapshot] = None
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -197,6 +235,7 @@ class MinerAccount:
             'equity': self.equity,
             # JSON keys must be str; convert TradePairCategory enum to its .value
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
+            'daily_open_snapshot': self.daily_open_snapshot.to_dict() if self.daily_open_snapshot else None,
         }
 
         if include_collateral_records:
@@ -384,7 +423,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket_str = last_record.get("miner_bucket")
                     hl_address = last_record.get("hl_address")
                     max_return = last_record.get("max_return", 1.0)
+                    unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
+                    daily_open_snapshot_raw = last_record.get("daily_open_snapshot")
                 else:
                     total_realized_pnl = None
                     capital_used = None
@@ -394,7 +435,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket_str = None
                     hl_address = None
                     max_return = 1.0
+                    unrealized_pnl = 0.0
                     capital_used_by_class_raw = {}
+                    daily_open_snapshot_raw = None
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
                 # Missing field (older checkpoint) → empty dict; will be lazy-backfilled by
@@ -440,6 +483,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     except ValueError:
                         bt.logging.warning(f"Unknown miner_bucket '{miner_bucket_str}' for {hotkey}")
 
+                daily_open_snapshot = None
+                if daily_open_snapshot_raw:
+                    try:
+                        daily_open_snapshot = DailyOpenSnapshot.from_dict(daily_open_snapshot_raw)
+                    except Exception:
+                        pass
+
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
@@ -452,7 +502,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     miner_bucket=miner_bucket,
                     hl_address=hl_address,
                     max_return=max_return,
+                    unrealized_pnl=unrealized_pnl,
                     capital_used_by_class=capital_used_by_class,
+                    daily_open_snapshot=daily_open_snapshot,
                 )
 
             except Exception as e:
@@ -870,6 +922,36 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account = self.get_or_create(hotkey)
                 account.total_dividend_income += credit_usd
             self._save_accounts_to_disk()
+
+    # ==================== Daily Open Snapshot ====================
+
+    def take_daily_open_snapshots(self) -> int:
+        """Snapshot account state for all non-eliminated miners at the current UTC day open.
+
+        Skips accounts with MinerBucket.ELIMINATED. Persists snapshots to disk via the
+        normal accounts save path. Returns the number of snapshots recorded.
+        """
+        now_ms = TimeUtil.now_in_millis()
+        dt = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+        day_open_ms = int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+        count = 0
+        with self._accounts_lock:
+            for account in self.accounts.values():
+                if account.miner_bucket == MinerBucket.ELIMINATED:
+                    continue
+                account.daily_open_snapshot = DailyOpenSnapshot(
+                    day_open_ms=day_open_ms,
+                    account_size=account.get_account_size(),
+                    balance=account.balance,
+                    equity=account.equity,
+                    bucket=account.miner_bucket.value if account.miner_bucket else None,
+                )
+                count += 1
+            self._save_accounts_to_disk()
+
+        bt.logging.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms}")
+        return count
 
     # ==================== Asset Selection / Withdrawal Methods ====================
 

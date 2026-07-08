@@ -591,6 +591,22 @@ class ChallengePeriodManager(CacheController):
                 last_eod_checked_ms=last_eod_checked_ms,
             )
 
+            # TODO: remove debug logging below
+            account = accounts.get(hotkey, {})
+            if account.get('miner_bucket') == MinerBucket.SUBACCOUNT_FUNDED.value:
+                snapshot = account.get('daily_open_snapshot')
+                snapshot_equity_return = snapshot.get('equity_return') if snapshot else None
+                account_size = account.get('account_size')
+                account_equity = account.get('equity')
+                account_equity_return = account_equity / account_size if account_size else None
+                btlogging.info(
+                    f"[EQUITY DEBUG] {hotkey} "
+                    f"ledger_daily_open_equity={daily_open_equity} "
+                    f"snapshot_equity_return={snapshot_equity_return} | "
+                    f"position_current_equity={current_equity} "
+                    f"account_equity_return={account_equity_return} "
+                )
+
     def _refresh_rank_cache(
         self,
         hotkeys: list[str],
