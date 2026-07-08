@@ -1892,7 +1892,7 @@ class PerfLedgerManager(CacheController):
         for hk, t in self.perf_ledger_hks_to_invalidate.items():
             if hk not in self.hks_attempting_invalidations:
                 bt.logging.warning(f"perf ledger invalidated for hk {hk} during update dat {self.perf_ledger_hks_to_invalidate[hk]}. Removing from perf ledgers.")
-                del perf_ledgers_copy[hk]
+                perf_ledgers_copy.pop(hk, None)
 
         if not self.is_backtesting:
             self.save_perf_ledgers_to_disk(perf_ledgers_copy, raw_json=raw_json)

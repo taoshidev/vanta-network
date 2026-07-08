@@ -207,9 +207,14 @@ class PerfLedgerServer(RPCServerBase):
         self._manager.save_perf_ledgers(perf_ledgers_new)
 
         # Also update in-memory state
+        now_ms = TimeUtil.now_in_millis()
         for hotkey in miners_to_wipe:
             if hotkey in self._manager.hotkey_to_perf_bundle:
                 del self._manager.hotkey_to_perf_bundle[hotkey]
+            # Guard against a concurrent update() cycle that captured a stale snapshot
+            # including this hotkey's ledger before the wipe. save_perf_ledgers() checks
+            # perf_ledger_hks_to_invalidate and will drop any wiped hotkey before persisting.
+            self._manager.perf_ledger_hks_to_invalidate[hotkey] = now_ms
 
     def get_hotkey_to_perf_bundle_rpc(self) -> dict:
         """Get the in-memory hotkey to perf bundle dict via RPC."""
