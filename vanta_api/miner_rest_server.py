@@ -109,7 +109,7 @@ class MinerRestServer(BaseRestServer):
         # Health check
         self.app.route("/api/health", methods=["GET"])(self.health_endpoint)
 
-        print(f"[MINER-REST-INIT] 3 miner endpoints registered")
+        print(f"[MINER-REST-INIT] Miner endpoints registered")
 
     # ============================================================================
     # ENDPOINT HANDLERS
@@ -238,30 +238,19 @@ class MinerRestServer(BaseRestServer):
 
     def batch_bracket_orders(self):
         """
-        Batch create / update / cancel of bracket orders in a single request.
+        Batch create / update / cancel of active bracket orders in a single request.
 
-        Provides an alternative to submitting confusing Signal dict via /api/submit-order.
-        Each entry describes one operation against one order; entries in a batch are independent.
+        Each entry in "orders" targets one bracket order. Entries are independent —
+        a failure on one does not block others.
 
         Request body (JSON):
         {
-            "trade_pair": "ETHUSDC"
+            "trade_pair": "ETHUSDC",
             "orders": [
-                {
-                    "action": "update",
-                    "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-                    "quantity": 10,
-                    "stop_loss": 5300.0,
-                    "take_profit": 5500.0
-                },
-                {
-                    "action": "cancel",
-                    "order_uuid": "8b2c9d1e-1234-5678-9abc-def012345678"
-                },
                 {
                     "action": "create",
                     "quantity": 10,
-                    "stop_loss": 5320.0,
+                    "stop_loss": 5300.0,
                     "take_profit": 5500.0
                 },
                 {
@@ -271,54 +260,37 @@ class MinerRestServer(BaseRestServer):
                     "take_profit": 5600.0
                 },
                 {
-                    "action": "create",
-                    "quantity": 5,
-                    "trailing_stop": {"trailing_value": 100.0}
+                    "action": "update",
+                    "order_uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+                    "quantity": 10,
+                    "stop_loss": 5320.0,
+                    "take_profit": 5500.0
                 },
                 {
-                    "action": "update",
-                    "order_uuid": "aa11bb22-cc33-dd44-ee55-ff6677889900",
-                    "quantity": 5,
-                    "trailing_stop": {"trailing_percent": 0.02}
-                },
-                {
-                    "action": "update",
-                    "order_uuid": "bb22cc33-dd44-ee55-ff66-778899001122",
-                    "quantity": 5,
-                    "trailing_stop": {"trailing_value": 75.0},
-                    "take_profit": 5600.0
+                    "action": "cancel",
+                    "order_uuid": "8b2c9d1e-1234-5678-9abc-def012345678"
                 }
             ]
         }
 
         Per-entry semantics:
-          action="update"  Required: order_uuid, plus the full order spec
-                           (same fields as action="create"). Behaves like
-                           the current LIMIT_EDIT path: the submitted object
-                           replaces the existing order in its entirety.
-                           trade_pair is taken from the top-level request
-                           and cannot change per-order.
-
-          action="cancel"  Required: order_uuid. No other fields.
-
-          action="create"  Same body shape as POST /api/submit-order (see
-                           submit_order_endpoint). order_uuid is optional and
-                           auto-generated if omitted.
-
-        trailing_stop must be a dict containing exactly one of:
-          - "trailing_percent": float in (0, 1)  (e.g. 0.05 = trail 5%)
-          - "trailing_value":   float > 0        (e.g. 100.0 = trail $100)
-        trailing_stop replaces a fixed stop_loss; do not set both on the
-        same order.
+          action="create"  order_uuid is optional and auto-generated if omitted.
+          action="update"  order_uuid required. Replaces the existing bracket order.
+          action="cancel"  order_uuid required. No other fields needed.
 
         If action is omitted it defaults to "update" when order_uuid is present
         and "create" when it is absent. Explicit action is recommended.
+
+        trailing_stop must be a dict with exactly one of:
+          - "trailing_percent": float in (0, 1)
+          - "trailing_value":   float > 0
+        trailing_stop is mutually exclusive with stop_loss.
 
         Response (200 OK):
         {
             "success": true,
             "processed": 3,
-            "processing_time": 0.42
+            "processing_time": 0.42,
         }
 
         Response (400 Bad Request):
@@ -332,7 +304,97 @@ class MinerRestServer(BaseRestServer):
             "error": "Unauthorized access"
         }
         """
-        return jsonify({}), 200
+        # 1. Validate API key
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        # 2. Parse request body
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'success': False, 'error': 'Invalid request: missing JSON body'}), 400
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Invalid request: {str(e)}'}), 400
+
+        trade_pair = data.get('trade_pair')
+        if not trade_pair:
+            return jsonify({'success': False, 'error': 'Invalid request: missing trade_pair'}), 400
+
+        orders = data.get('orders')
+        if not orders or not isinstance(orders, list):
+            return jsonify({'success': False, 'error': 'Invalid request: orders must be a non-empty list'}), 400
+
+        # 3. Translate orders[] → bracket_orders[] for the LIMIT_EDIT signal
+        bracket_orders = []
+        for entry in orders:
+            order_uuid = entry.get('order_uuid')
+            action = entry.get('action') or ('update' if order_uuid else 'create')
+
+            if action == 'cancel':
+                if not order_uuid:
+                    return jsonify({'success': False, 'error': 'cancel requires order_uuid'}), 400
+                # No SL/TP/trailing fields → downstream treats as cancel
+                bracket_orders.append({'order_uuid': order_uuid})
+
+            elif action in ('create', 'update'):
+                if action == 'update' and not order_uuid:
+                    return jsonify({'success': False, 'error': 'update requires order_uuid'}), 400
+
+                if action == 'create' and not order_uuid:
+                    order_uuid = str(uuid.uuid4())
+
+                # Flatten trailing_stop dict into top-level keys as expected by process_limit_edit
+                trailing_stop = entry.get('trailing_stop') or {}
+                raw = {
+                    'order_uuid': order_uuid,
+                    'stop_loss': entry.get('stop_loss'),
+                    'take_profit': entry.get('take_profit'),
+                    'trailing_percent': trailing_stop.get('trailing_percent'),
+                    'trailing_value': trailing_stop.get('trailing_value'),
+                    'leverage': entry.get('leverage'),
+                    'value': entry.get('value'),
+                    'quantity': entry.get('quantity'),
+                    'bracket_pct': entry.get('bracket_pct'),
+                }
+                bracket_entry = {k: v for k, v in raw.items() if v is not None}
+                bracket_orders.append(bracket_entry)
+
+            else:
+                return jsonify({'success': False, 'error': f'invalid action "{action}"'}), 400
+
+        # 4. Build Signal
+        try:
+            signal = Signal(
+                trade_pair=trade_pair,
+                order_type=OrderType.FLAT,
+                execution_type=ExecutionType.LIMIT_EDIT,
+                bracket_orders=bracket_orders,
+            )
+        except ValueError as e:
+            return jsonify({'success': False, 'error': f'Invalid signal data: {str(e)}'}), 400
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Signal validation error: {str(e)}'}), 400
+
+        # 5. Send via order placer (fresh UUID — not targeting a specific limit order)
+        try:
+            batch_uuid = str(uuid.uuid4())
+            bt.logging.info(f"Processing bracket batch {batch_uuid} ({len(orders)} orders)")
+            result = self.order_placer.process_a_signal_for_rest(
+                order_uuid=batch_uuid,
+                signal=signal,
+                subaccount_id=data.get('subaccount_id'),
+            )
+            status_code = 200 if result.get('success') else 400
+            return jsonify({
+                'success': result.get('success'),
+                'processed': len(orders),
+                'processing_time': result.get('processing_time', 0),
+                'error_message': result.get('error_message', ''),
+            }), status_code
+        except Exception as e:
+            bt.logging.error(f"Error processing bracket batch: {e}")
+            return jsonify({'success': False, 'error': f'Internal error: {str(e)}'}), 500
 
 
     def order_status_endpoint(self, order_uuid):
