@@ -448,13 +448,15 @@ class MarketOrderManager():
         quantity = signal.get("quantity")
 
         fields_set = [x is not None for x in (leverage, value, quantity)]
-        if sum(fields_set) != 1:
+        if sum(fields_set) == 0:
             raise ValueError("Exactly one of 'leverage', 'value', or 'quantity' must be set")
 
-        if leverage is not None:
-            quantity = (leverage * portfolio_value * usd_base_conversion) / trade_pair.lot_size
-        elif value is not None:
-            quantity = (value * usd_base_conversion) / trade_pair.lot_size
+        # Priority: quantity > value > leverage. Ignore lower-priority fields if multiple are set.
+        if quantity is None:
+            if value is not None:
+                quantity = (value * usd_base_conversion) / trade_pair.lot_size
+            else:
+                quantity = (leverage * portfolio_value * usd_base_conversion) / trade_pair.lot_size
 
         if round_qty:
             if trade_pair.is_forex:

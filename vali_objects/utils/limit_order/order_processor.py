@@ -391,6 +391,10 @@ class OrderProcessor:
         leverage, value, quantity = OrderProcessor.parse_size(signal)
         bracket_pct = signal.get('bracket_pct')
 
+        # If no size specified, default to closing the full position (matches create_sltp_order default)
+        if leverage is None and value is None and quantity is None and bracket_pct is None:
+            bracket_pct = 1.0
+
         # Validate that at least one of SL, TP, or trailing_stop is set
         if stop_loss is None and take_profit is None and trailing_stop is None:
             raise SignalException("Bracket order must specify at least one of stop_loss, take_profit, or trailing_stop")
@@ -469,6 +473,14 @@ class OrderProcessor:
         existing_order_dict = limit_order_client.get_limit_order_by_uuid(miner_hotkey, order_uuid)
 
         # 2. If order found, process single order edit
+        if existing_order_dict:
+            # If the top-level order_uuid also appears in a bracket_orders entry, the miner is
+            # using the bulk bracket update format — route there so sizing comes from the bracket
+            # entry alone rather than bleeding through from the top-level signal fields.
+            bracket_orders_list = signal.get("bracket_orders") or []
+            if any(b.get("order_uuid") == order_uuid for b in bracket_orders_list):
+                existing_order_dict = None  # fall through to bulk bracket update path below
+
         if existing_order_dict:
             existing_order = Order.from_dict(existing_order_dict)
 
