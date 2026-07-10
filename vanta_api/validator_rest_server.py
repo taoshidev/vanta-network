@@ -273,6 +273,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
         self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
+        self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -1528,6 +1529,37 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', **result})
         except Exception as e:
             bt.logging.error(f"Error wiping hotkey {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def reset_hotkey(self, hotkey: str):
+        """
+        Admin reset of a miner: deletes all positions, wipes perf/debt ledgers, and removes
+        any active elimination.
+        Requires tier 500 access.
+
+        Example:
+        curl -X POST http://localhost:48888/admin/reset/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Reset hotkey endpoint requires tier 500 access'}), 403
+
+        try:
+            result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
+            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+            self._debt_ledger_client.delete_debt_ledger(hotkey)
+            self._elimination_client.remove_elimination(hotkey)
+
+            if is_synthetic_hotkey(hotkey) and self._entity_client:
+                self._entity_client.restore_subaccount(hotkey)
+
+            return jsonify({'status': 'success', **result})
+        except Exception as e:
+            bt.logging.error(f"Error resetting hotkey {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
