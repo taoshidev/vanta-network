@@ -5,6 +5,8 @@ import os
 import threading
 from datetime import datetime, timezone
 
+from vali_objects.vali_config import ValiConfig
+
 
 class AuditLogger:
     """
@@ -12,7 +14,7 @@ class AuditLogger:
     Thread-safe; auto-creates the output directory on first use.
     """
 
-    DEFAULT_PATH = "vanta_api/audit_log.jsonl"
+    DEFAULT_PATH = os.path.join(ValiConfig.BASE_DIR, "vanta_api", "audit_log.jsonl")
 
     def __init__(self, path: str = DEFAULT_PATH):
         self._path = path
