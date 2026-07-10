@@ -19,7 +19,7 @@ from bittensor_wallet import Keypair
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from entity_management.entity_utils import create_subaccount_dashboard
-from entity_management.entity_utils import is_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
@@ -42,6 +42,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
@@ -271,6 +272,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["DELETE"])(self.delete_position)
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
         self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
+        self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -2164,6 +2166,60 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"Error reverting elimination for {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def eliminate_hotkey(self, hotkey: str):
+        """
+        Manually eliminate a hotkey. Appends an elimination row and, for subaccounts,
+        updates the entity client.
+
+        Optional JSON body:
+          reason: EliminationReason value string (default: "DEREGISTERED")
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/eliminate/<hotkey>" \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"reason": "DEREGISTERED"}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Eliminate hotkey endpoint requires tier 500 access'}), 403
+
+        try:
+            data = request.get_json(silent=True) or {}
+            reason_str = data.get('reason', EliminationReason.DEREGISTERED.value)
+            try:
+                reason = EliminationReason(reason_str)
+            except ValueError:
+                valid = [r.value for r in EliminationReason]
+                return jsonify({'error': f'Invalid reason. Must be one of: {valid}'}), 400
+
+            self._elimination_client.append_elimination_row(hotkey, reason)
+
+            if is_synthetic_hotkey(hotkey):
+                if not self._entity_client:
+                    return jsonify({'error': 'Entity management not available'}), 503
+                entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)
+                success, message = self._entity_client.eliminate_subaccount(
+                    entity_hotkey=entity_hotkey,
+                    subaccount_id=subaccount_id,
+                    reason=reason_str,
+                )
+                if not success:
+                    bt.logging.warning(f"Entity client eliminate_subaccount failed for {hotkey}: {message}")
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'reason': reason.value,
+            }), 200
+
+        except Exception as e:
+            bt.logging.error(f"Error eliminating hotkey {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
