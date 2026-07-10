@@ -274,6 +274,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
+        self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -1560,6 +1561,57 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', **result})
         except Exception as e:
             bt.logging.error(f"Error resetting hotkey {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def force_deposit(self, hotkey: str):
+        """
+        Force a collateral deposit for a miner without a stake transfer.
+        Used to reinstate miners wrongfully slashed.
+        Requires tier 500 access.
+
+        Required JSON body:
+          amount: float (theta tokens)
+
+        Example:
+        curl -X POST http://localhost:48888/admin/force-deposit/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"amount": 100.0}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Force deposit endpoint requires tier 500 access'}), 403
+
+        try:
+            data = request.get_json(silent=True) or {}
+            amount = data.get('amount')
+            if amount is None:
+                return jsonify({'error': 'Missing required field: amount'}), 400
+            try:
+                amount = float(amount)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'amount must be a number'}), 400
+
+            self._contract_client.force_deposit(amount, hotkey)
+            collateral_balance = self._contract_client.get_miner_collateral_balance(hotkey)
+            if collateral_balance is None:
+                return jsonify({'error': f'Could not retrieve collateral balance for {hotkey} after force deposit'}), 500
+            account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
+            self._miner_account_client.set_miner_account_size(hotkey, collateral_balance, account_size=account_size)
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'amount': amount,
+                'collateral_balance': collateral_balance,
+                'account_size': account_size,
+            }), 200
+
+        except Exception as e:
+            bt.logging.error(f"Error force depositing for {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
