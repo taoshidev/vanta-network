@@ -81,6 +81,10 @@ class ContractClient(RPCClientBase):
         """Query withdrawal request (preview only - no execution)."""
         return self._server.query_withdrawal_request_rpc(amount, miner_hotkey)
 
+    def force_deposit(self, amount: float, miner_hotkey: str) -> None:
+        """Update contract deposit without a stake transfer."""
+        return self._server.force_deposit_rpc(amount, miner_hotkey)
+
     # ==================== Verification Methods ====================
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:

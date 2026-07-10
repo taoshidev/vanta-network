@@ -938,8 +938,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
         count = 0
         with self._accounts_lock:
             for account in self.accounts.values():
-                if account.miner_bucket == MinerBucket.ELIMINATED:
-                    continue
                 account.daily_open_snapshot = DailyOpenSnapshot(
                     day_open_ms=day_open_ms,
                     account_size=account.get_account_size(),
@@ -950,7 +948,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 count += 1
             self._save_accounts_to_disk()
 
-        bt.logging.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms}")
+        elapsed_ms = TimeUtil.now_in_millis() - now_ms
+        bt.logging.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms} in {elapsed_ms}ms")
         return count
 
     # ==================== Asset Selection / Withdrawal Methods ====================

@@ -19,7 +19,7 @@ from bittensor_wallet import Keypair
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from entity_management.entity_utils import create_subaccount_dashboard
-from entity_management.entity_utils import is_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
@@ -42,6 +42,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
@@ -271,6 +272,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["DELETE"])(self.delete_position)
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
         self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
+        self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
+        self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
+        self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -1529,6 +1533,88 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
+    def reset_hotkey(self, hotkey: str):
+        """
+        Admin reset of a miner: deletes all positions, wipes perf/debt ledgers, and removes
+        any active elimination.
+        Requires tier 500 access.
+
+        Example:
+        curl -X POST http://localhost:48888/admin/reset/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Reset hotkey endpoint requires tier 500 access'}), 403
+
+        try:
+            result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
+            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
+            self._debt_ledger_client.delete_debt_ledger(hotkey)
+            self._elimination_client.remove_elimination(hotkey)
+
+            if is_synthetic_hotkey(hotkey) and self._entity_client:
+                self._entity_client.restore_subaccount(hotkey)
+
+            return jsonify({'status': 'success', **result})
+        except Exception as e:
+            bt.logging.error(f"Error resetting hotkey {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def force_deposit(self, hotkey: str):
+        """
+        Force a collateral deposit for a miner without a stake transfer.
+        Used to reinstate miners wrongfully slashed.
+        Requires tier 500 access.
+
+        Required JSON body:
+          amount: float (theta tokens)
+
+        Example:
+        curl -X POST http://localhost:48888/admin/force-deposit/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"amount": 100.0}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Force deposit endpoint requires tier 500 access'}), 403
+
+        try:
+            data = request.get_json(silent=True) or {}
+            amount = data.get('amount')
+            if amount is None:
+                return jsonify({'error': 'Missing required field: amount'}), 400
+            try:
+                amount = float(amount)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'amount must be a number'}), 400
+
+            self._contract_client.force_deposit(amount, hotkey)
+            collateral_balance = self._contract_client.get_miner_collateral_balance(hotkey)
+            if collateral_balance is None:
+                return jsonify({'error': f'Could not retrieve collateral balance for {hotkey} after force deposit'}), 500
+            account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
+            self._miner_account_client.set_miner_account_size(hotkey, collateral_balance, account_size=account_size)
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'amount': amount,
+                'collateral_balance': collateral_balance,
+                'account_size': account_size,
+            }), 200
+
+        except Exception as e:
+            bt.logging.error(f"Error force depositing for {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
     def delete_position(self, hotkey: str, position_uuid: str):
         """
         Delete (or archive) a single position for a miner.
@@ -2150,7 +2236,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if is_synthetic_hotkey(hotkey):
                 self._entity_client.restore_subaccount(hotkey)
 
-            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
 
             if reopen_force_closed:
@@ -2164,6 +2250,60 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"Error reverting elimination for {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def eliminate_hotkey(self, hotkey: str):
+        """
+        Manually eliminate a hotkey. Appends an elimination row and, for subaccounts,
+        updates the entity client.
+
+        Optional JSON body:
+          reason: EliminationReason value string (default: "DEREGISTERED")
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/eliminate/<hotkey>" \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"reason": "DEREGISTERED"}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Eliminate hotkey endpoint requires tier 500 access'}), 403
+
+        try:
+            data = request.get_json(silent=True) or {}
+            reason_str = data.get('reason', EliminationReason.DEREGISTERED.value)
+            try:
+                reason = EliminationReason(reason_str)
+            except ValueError:
+                valid = [r.value for r in EliminationReason]
+                return jsonify({'error': f'Invalid reason. Must be one of: {valid}'}), 400
+
+            if is_synthetic_hotkey(hotkey):
+                entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)
+                if not entity_hotkey or not subaccount_id:
+                    return jsonify({'error': f'Invalid synthetic hotkey: {hotkey}'}), 400
+                success, message = self._entity_client.eliminate_subaccount(
+                    entity_hotkey=entity_hotkey,
+                    subaccount_id=subaccount_id,
+                    reason=reason_str,
+                )
+                if not success:
+                    bt.logging.warning(f"Entity client eliminate_subaccount failed for {hotkey}: {message}")
+
+            self._elimination_client.append_elimination_row(hotkey, reason)
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'reason': reason.value,
+            }), 200
+
+        except Exception as e:
+            bt.logging.error(f"Error eliminating hotkey {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 

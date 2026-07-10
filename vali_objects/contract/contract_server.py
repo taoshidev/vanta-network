@@ -142,6 +142,10 @@ class ContractServer(RPCServerBase):
         """Verify that a coldkey owns a specific hotkey using subtensor."""
         return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
 
+    def force_deposit_rpc(self, amount: float, miner_hotkey: str) -> None:
+        """Update contract deposit without a stake transfer."""
+        return self._manager.force_deposit(amount, miner_hotkey)
+
     def set_test_collateral_balance_rpc(self, miner_hotkey: str, balance_rao: int) -> None:
         """Inject test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
         return self._manager.set_test_collateral_balance(miner_hotkey, balance_rao)
@@ -183,6 +187,9 @@ class ContractServer(RPCServerBase):
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
         return self._manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
+
+    def force_deposit(self, amount: float, miner_hotkey: str) -> None:
+        return self._manager.force_deposit(amount, miner_hotkey)
 
     def set_test_collateral_balance(self, miner_hotkey: str, balance_rao: int) -> None:
         """Inject test collateral balance (forward-compatible alias)."""

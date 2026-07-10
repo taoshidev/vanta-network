@@ -182,7 +182,7 @@ class PerfLedgerServer(RPCServerBase):
         # Accept PerfLedger objects directly - BaseManager's pickle handles serialization
         self._manager.save_perf_ledgers(perf_ledgers)
 
-    def wipe_miners_perf_ledgers_rpc(self, miners_to_wipe: List[str]) -> None:
+    def wipe_miners_perf_ledgers_rpc(self, miners_to_wipe: List[str], wipe_frozen: bool = False) -> None:
         """
         Wipe performance ledgers for specified miners.
 
@@ -215,6 +215,9 @@ class PerfLedgerServer(RPCServerBase):
             # including this hotkey's ledger before the wipe. save_perf_ledgers() checks
             # perf_ledger_hks_to_invalidate and will drop any wiped hotkey before persisting.
             self._manager.perf_ledger_hks_to_invalidate[hotkey] = now_ms
+
+        if wipe_frozen:
+            self._manager.remove_hotkeys_from_frozen_ledgers(miners_to_wipe)
 
     def get_hotkey_to_perf_bundle_rpc(self) -> dict:
         """Get the in-memory hotkey to perf bundle dict via RPC."""
