@@ -1034,39 +1034,35 @@ class EntityManager(ValidatorBroadcastBase):
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
         if not entity_hotkey or not subaccount_id:
-            bt.logging.error(f"calculate_subaccount_payout: no entity hotkey ord subaccount_id {entity_hotkey} {subaccount_id}")
             return None
         entity_data = self.get_entity_data(entity_hotkey)
         if not entity_data:
-            bt.logging.error(f"calculate_subaccount_payout: no entity data")
             return None
         subaccount = entity_data.subaccounts.get(subaccount_id)
         if not subaccount:
-            bt.logging.error(f"calculate_subaccount_payout: no subaccount data")
             return None
-
-        EMPTY_RESPONSE = {
-            'hotkey': synthetic_hotkey,
-            'total_checkpoints': 0,
-            'checkpoints': {},
-            'weekly_settlements': [],
-            'payout': 0,
-        }
 
         # Get debt ledger for this hotkey
         try:
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
             if not debt_ledger:
-                return EMPTY_RESPONSE
+                return None
 
             _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
             if not _perf_ledger:
-                return EMPTY_RESPONSE
+                return None
 
             perf_ledger = _perf_ledger.get(synthetic_hotkey)
             if not perf_ledger:
-                return EMPTY_RESPONSE
+                return None
 
+            EMPTY_RESPONSE = {
+                'hotkey': synthetic_hotkey,
+                'total_checkpoints': 0,
+                'checkpoints': {},
+                'weekly_settlements': [],
+                'payout': 0,
+            }
             miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
             if miner_bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
                 return EMPTY_RESPONSE
