@@ -2282,12 +2282,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 valid = [r.value for r in EliminationReason]
                 return jsonify({'error': f'Invalid reason. Must be one of: {valid}'}), 400
 
-            self._elimination_client.append_elimination_row(hotkey, reason)
-
             if is_synthetic_hotkey(hotkey):
-                if not self._entity_client:
-                    return jsonify({'error': 'Entity management not available'}), 503
                 entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)
+                if not entity_hotkey or not subaccount_id:
+                    return jsonify({'error': f'Invalid synthetic hotkey: {hotkey}'}), 400
                 success, message = self._entity_client.eliminate_subaccount(
                     entity_hotkey=entity_hotkey,
                     subaccount_id=subaccount_id,
@@ -2295,6 +2293,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 )
                 if not success:
                     bt.logging.warning(f"Entity client eliminate_subaccount failed for {hotkey}: {message}")
+
+            self._elimination_client.append_elimination_row(hotkey, reason)
 
             return jsonify({
                 'status': 'success',
