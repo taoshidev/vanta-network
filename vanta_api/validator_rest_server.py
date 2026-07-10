@@ -1550,7 +1550,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         try:
             result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
-            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
             self._elimination_client.remove_elimination(hotkey)
 
@@ -2184,7 +2184,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if is_synthetic_hotkey(hotkey):
                 self._entity_client.restore_subaccount(hotkey)
 
-            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+            self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
 
             if reopen_force_closed:

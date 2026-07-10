@@ -111,14 +111,15 @@ class PerfLedgerClient(RPCClientBase):
         """
         self._server.save_perf_ledgers_rpc(perf_ledgers)
 
-    def wipe_miners_perf_ledgers(self, miners_to_wipe: List[str]) -> None:
+    def wipe_miners_perf_ledgers(self, miners_to_wipe: List[str], wipe_frozen: bool = False) -> None:
         """
         Wipe performance ledgers for specified miners.
 
         Args:
             miners_to_wipe: List of miner hotkeys to wipe
+            wipe_frozen: If True, also remove the hotkeys from frozen ledgers
         """
-        self._server.wipe_miners_perf_ledgers_rpc(miners_to_wipe)
+        self._server.wipe_miners_perf_ledgers_rpc(miners_to_wipe, wipe_frozen=wipe_frozen)
 
     def get_hotkey_to_perf_bundle(self) -> dict:
         """Get the in-memory hotkey to perf bundle dict."""

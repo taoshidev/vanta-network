@@ -1819,6 +1819,14 @@ class PerfLedgerManager(CacheController):
 
         ValiBkpUtils.write_compressed_json(file_path, serializable_ledgers)
 
+    def remove_hotkeys_from_frozen_ledgers(self, hotkeys: list[str]) -> None:
+        removed = [hk for hk in hotkeys if hk in self._frozen_ledgers]
+        for hk in removed:
+            del self._frozen_ledgers[hk]
+        if removed:
+            self.save_frozen_ledgers_to_disk()
+            bt.logging.info(f"[PERF_LEDGER] Removed {len(removed)} hotkeys from frozen ledgers: {removed}")
+
     def save_frozen_ledgers_to_disk(self, frozen_ledgers: dict[str, PerfLedger] = None):
         if frozen_ledgers is None:
             frozen_ledgers = self._frozen_ledgers
