@@ -491,10 +491,6 @@ class BaseRestServer(APIKeyMixin, ABC):
     # METRICS TRACKING
     # ============================================================================
 
-    _ADMIN_AUDIT_ROUTES = {
-        "/admin/<hotkey>/positions/<position_uuid>",
-        "/admin/revert-elimination/<hotkey>",
-    }
 
     def _setup_metrics(self, metrics_interval_minutes):
         """Set up API metrics tracking."""
@@ -525,7 +521,7 @@ class BaseRestServer(APIKeyMixin, ABC):
             # Track the request using the instance metrics tracker
             self.metrics.track_request(api_key, url, duration, response.status_code)
 
-            if url in self._ADMIN_AUDIT_ROUTES:
+            if url.startswith('/admin'):
                 try:
                     user_id = self.metrics._get_user_id_from_api_key(api_key)
                     body = None
