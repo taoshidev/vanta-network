@@ -1029,9 +1029,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             hotkey_filter = request.args.get('hotkey')
             most_recent_only = request.args.get('most_recent', 'false').lower() == 'true'
 
-            # Get all collateral data using the proper serialization method
-            # Pass most_recent_only directly to avoid double iteration
-            data = self._miner_account_client.accounts_dict(most_recent_only=most_recent_only)
+            data = self._miner_account_client.to_checkpoint_dict()
 
             # Apply hotkey filter if requested
             if hotkey_filter and hotkey_filter in data:

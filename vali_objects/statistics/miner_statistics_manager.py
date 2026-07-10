@@ -531,7 +531,7 @@ class MinerStatisticsManager:
             now_ms = TimeUtil.now_in_millis()
 
         account_sizes = []
-        account_size_object = self._miner_account_client.accounts_dict()
+        account_size_object = self._miner_account_client.to_checkpoint_dict()
 
         # Calculate raw PnL for each miner
         for hotkey, _ in filtered_ledger.items():
@@ -550,18 +550,17 @@ class MinerStatisticsManager:
         # Build result dictionary
         result = {}
         for hotkey in account_sizes_dict:
-            account_records = account_size_object.get(hotkey, [])
-            # cash_balance and total_borrowed_amount are stored on the last record
-            last_record = account_records[-1] if account_records else {}
+            account_data = account_size_object.get(hotkey, {})
+            collateral_records = account_data.pop("collateral_records", [])
 
             result[hotkey] = {
                 "account_size_statistics": {
                     "value": account_sizes_dict.get(hotkey),
                     "rank": account_size_ranks.get(hotkey),
                     "percentile": account_size_percentiles.get(hotkey),
-                    "account_sizes": account_records,
-                    "cash_balance": last_record.get("buying_power"),
-                    **last_record
+                    "account_sizes": collateral_records,
+                    "cash_balance": account_data.get("buying_power"),
+                    **account_data
                 }
             }
 

@@ -16,7 +16,7 @@ from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMiss
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode, DynamicTradePair
+from vali_objects.vali_config import TradePairCategory, TradePairSource, ValiConfig, TradePair, RPCConnectionMode, DynamicTradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_source_enum import OrderSource
@@ -1189,7 +1189,7 @@ class PositionManager:
             for _, position in positions_dict.items():
                 if position.is_closed_position and position.close_ms < recent_cutoff_ms:
                     continue
-                if position.trade_pair.is_equities:
+                if position.trade_pair.is_equities and position.trade_pair.src == TradePairSource.VANTA:
                     fee = position.refresh_equities_fee_usd(time_ms)
                 else:
                     hl_fr = self._get_hl_funding_rates(position, time_ms)

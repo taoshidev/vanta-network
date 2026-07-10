@@ -133,34 +133,18 @@ class MigrationUtils:
 
     @staticmethod
     def load_miner_accounts(running_unit_tests: bool = False):
-        """Load validation/miner_account_sizes.json as typed MinerAccount objects.
-
-        Uses MinerAccountManager._parse_accounts_dict so the asset_class field
-        comes from asset_selections.json (the source of truth) — matches the
-        validator boot path. Returns {} if the on-disk file is missing.
-        """
+        """Load validation/miner_account_sizes.json as typed MinerAccount objects."""
         from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 
         path = ValiBkpUtils.get_miner_account_sizes_file_location(running_unit_tests=running_unit_tests)
         raw = MigrationUtils._load_json(path)
-        raw.pop("_cost_per_theta", None)  # legacy top-level key; never written back
-        selections = MigrationUtils.load_asset_selections(running_unit_tests=running_unit_tests)
-        return MinerAccountManager._parse_accounts_dict(raw, selections)
+        raw.pop("_cost_per_theta", None)
+        return MinerAccountManager.parse_checkpoint_dict(raw)
 
     @staticmethod
     def save_miner_accounts(accounts, running_unit_tests: bool = False) -> None:
-        """Persist Dict[hotkey, MinerAccount] back to miner_account_sizes.json.
-
-        Mirrors MinerAccountManager.accounts_dict serialization: each hotkey's
-        value is a list of CollateralRecord dicts followed by the account
-        summary dict from MinerAccount.to_dict.
-        """
-        data: dict = {}
-        for hotkey, account in accounts.items():
-            records_list = [vars(record).copy() for record in account.collateral_records]
-            records_list.append(account.to_dict(include_collateral_records=False))
-            data[hotkey] = records_list
-
+        """Persist Dict[hotkey, MinerAccount] back to miner_account_sizes.json."""
+        data = {hotkey: account.to_dict() for hotkey, account in accounts.items()}
         path = ValiBkpUtils.get_miner_account_sizes_file_location(running_unit_tests=running_unit_tests)
         ValiBkpUtils.write_file(path, data)
 

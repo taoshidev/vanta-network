@@ -4,7 +4,7 @@ from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, DynamicTradePair, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairLike, DynamicTradePair, TradePairSource, ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import PriceSource
@@ -154,7 +154,7 @@ class Position(BaseModel):
           - LONG positions: margin interest (6.6% annual / 365) on borrowed (margin loan) amount.
         Returns total fee charged.
         """
-        if self.is_closed_position or not self.trade_pair.is_equities:
+        if self.is_closed_position or not self.trade_pair.is_equities or not self.trade_pair.src == TradePairSource.VANTA:
             return 0.0
 
         most_recent_midnight_ms = (current_time_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS

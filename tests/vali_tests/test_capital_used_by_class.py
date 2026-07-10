@@ -53,7 +53,10 @@ class TestCapitalUsedByClassDefault(unittest.TestCase):
             miner_hotkey="hk",
             capital_used_by_class={TradePairCategory.CRYPTO: 100.0, TradePairCategory.FOREX: 50.0},
         )
-        account.reset_account_fields()
+        account = MinerAccount(
+            miner_hotkey=account.miner_hotkey,
+            collateral_records=account.collateral_records,
+        )
         self.assertEqual(account.capital_used_by_class, {})
 
 
@@ -187,16 +190,12 @@ class TestSerializationRoundTrip(unittest.TestCase):
         self.assertEqual(d['capital_used_by_class'], {"crypto": 100.0, "forex": 50.0})
 
     def test_loader_rehydrates_string_keys_to_enum(self):
-        # Simulate the on-disk dict format: {hotkey: [last_record_dict]}
-        disk_data = {
-            "hk": [{
-                "account_size": 50_000,
-                "update_time_ms": 0,
-                "capital_used": 150.0,
-                "capital_used_by_class": {"crypto": 100.0, "forex": 50.0},
-            }]
-        }
-        parsed = MinerAccountManager._parse_accounts_dict(disk_data)
+        account = MinerAccount(
+            miner_hotkey="hk",
+            capital_used=150.0,
+            capital_used_by_class={"crypto": 100.0, "forex": 50.0},
+        )
+        parsed = MinerAccountManager.parse_checkpoint_dict({"hk": account.to_checkpoint_dict()})
         self.assertIn("hk", parsed)
         cubc = parsed["hk"].capital_used_by_class
         self.assertEqual(cubc[TradePairCategory.CRYPTO], 100.0)
@@ -211,84 +210,11 @@ class TestSerializationRoundTrip(unittest.TestCase):
                 TradePairCategory.COMMODITIES: 50.0,
             },
         )
-        serialized = original.to_dict()
-        # Mimic the on-disk format: list of records, last record carries account state
-        disk_data = {"hk": [{
-            "account_size": 50_000,
-            "update_time_ms": 0,
-            **serialized,
-        }]}
-        parsed = MinerAccountManager._parse_accounts_dict(disk_data)
+        parsed = MinerAccountManager.parse_checkpoint_dict({"hk": original.to_checkpoint_dict()})
         self.assertEqual(
             parsed["hk"].capital_used_by_class,
             original.capital_used_by_class,
         )
-
-
-# ---------------------------------------------------------------------------
-# Backward compat
-# ---------------------------------------------------------------------------
-
-class TestBackwardCompat(unittest.TestCase):
-
-    def test_old_checkpoint_missing_field_loads_empty_dict(self):
-        """Pre-redesign checkpoint has no capital_used_by_class key — defaults to empty."""
-        disk_data = {
-            "hk": [{
-                "account_size": 50_000,
-                "update_time_ms": 0,
-                "capital_used": 150.0,
-                # NO capital_used_by_class field
-            }]
-        }
-        parsed = MinerAccountManager._parse_accounts_dict(disk_data)
-        self.assertEqual(parsed["hk"].capital_used_by_class, {})
-
-    def test_old_checkpoint_null_field_loads_empty_dict(self):
-        """A null/None value for the field (not just missing) also defaults to empty."""
-        disk_data = {
-            "hk": [{
-                "account_size": 50_000,
-                "update_time_ms": 0,
-                "capital_used": 0.0,
-                "capital_used_by_class": None,
-            }]
-        }
-        parsed = MinerAccountManager._parse_accounts_dict(disk_data)
-        self.assertEqual(parsed["hk"].capital_used_by_class, {})
-
-    def test_unknown_asset_class_string_is_skipped(self):
-        """Forward compat: an unknown asset_class string in the dict is skipped (not crashed on)."""
-        disk_data = {
-            "hk": [{
-                "account_size": 50_000,
-                "update_time_ms": 0,
-                "capital_used": 100.0,
-                "capital_used_by_class": {
-                    "crypto": 100.0,
-                    "future_unknown_class": 999.0,
-                },
-            }]
-        }
-        parsed = MinerAccountManager._parse_accounts_dict(disk_data)
-        cubc = parsed["hk"].capital_used_by_class
-        self.assertIn(TradePairCategory.CRYPTO, cubc)
-        self.assertEqual(cubc[TradePairCategory.CRYPTO], 100.0)
-        # Unknown key dropped silently (with a warning log, not an exception)
-        self.assertEqual(len(cubc), 1)
-
-    def test_floats_in_string_form_are_coerced(self):
-        """Defensive: amounts may arrive as strings if some serializer along the way string-ified them."""
-        disk_data = {
-            "hk": [{
-                "account_size": 50_000,
-                "update_time_ms": 0,
-                "capital_used": 100.0,
-                "capital_used_by_class": {"crypto": "100.0"},
-            }]
-        }
-        parsed = MinerAccountManager._parse_accounts_dict(disk_data)
-        self.assertEqual(parsed["hk"].capital_used_by_class[TradePairCategory.CRYPTO], 100.0)
 
 
 if __name__ == "__main__":

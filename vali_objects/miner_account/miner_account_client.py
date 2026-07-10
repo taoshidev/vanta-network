@@ -153,9 +153,8 @@ class MinerAccountClient(RPCClientBase):
         """Return a dict of all miner account sizes at a timestamp_ms."""
         return self._server.get_all_miner_account_sizes(timestamp_ms)
 
-    def accounts_dict(self, most_recent_only: bool = False) -> Dict[str, List[Dict[str, Any]]]:
-        """Convert miner account sizes to checkpoint format for backup/sync."""
-        return self._server.accounts_dict(most_recent_only)
+    def to_checkpoint_dict(self) -> Dict[str, Any]:
+        return self._server.to_checkpoint_dict()
 
     def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, List[Dict[str, Any]]]) -> None:
         """Sync miner account sizes data from external source (backup/sync)."""

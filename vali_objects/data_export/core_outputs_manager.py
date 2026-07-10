@@ -424,7 +424,7 @@ class CoreOutputsManager:
         # Get miner account sizes from miner account client
         miner_account_sizes_dict = {}
         if self._miner_account_client:
-            miner_account_sizes_dict = self._miner_account_client.accounts_dict()
+            miner_account_sizes_dict = self._miner_account_client.to_checkpoint_dict()
 
         # Handle legacy parameter
         if write_and_upload_production_files:

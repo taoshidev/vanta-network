@@ -267,8 +267,7 @@ class ChallengePeriodManager(CacheController):
 
         accounts = self._miner_account_client.get_accounts(evaluation_hotkeys)
         ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
-        positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
-        self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
+        self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, current_time_ms)
         self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
 
         eliminations = {}
@@ -519,20 +518,21 @@ class ChallengePeriodManager(CacheController):
     # ==================== Drawdown/Rank Refresh methods ====================
 
     @staticmethod
-    def _compute_portfolio_return(account: dict | None, positions: list[Position] | None) -> tuple[float | None, float | None]:
+    def _compute_portfolio_return(account: dict | None) -> tuple[float | None, float | None]:
         """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
         Returns None if account or position data is unavailable.
         """
-        if account is None or not positions:
+        if account is None:
             return None, None
 
         account_size = account.get('account_size', 0)
         if account_size <= 0:
             return None, None
 
-        balance = account.get('balance', 0)
-        unrealized_pnl = sum(pos.unrealized_pnl for pos in positions if pos.is_open_position)
-        equity = balance + unrealized_pnl
+        balance = account.get('balance')
+        equity = account.get('equity')
+        if not balance or not equity:
+            return None, None
 
         equity_ret = equity / account_size
         balance_ret = balance / account_size
@@ -559,12 +559,12 @@ class ChallengePeriodManager(CacheController):
         hotkeys: list[str],
         accounts: dict[str, dict],
         ledgers: dict[str, PerfLedger],
-        positions: dict[str, list[Position]],
         current_time_ms: int
     ) -> None:
         for hotkey in hotkeys:
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
-            current_equity, current_balance = self._compute_portfolio_return(accounts.get(hotkey), positions.get(hotkey))
+            account = accounts.get(hotkey)
+            current_equity, current_balance = self._compute_portfolio_return(account)
             if current_equity is None or current_balance is None:
                 btlogging.warning(f"[CHALLENGE] {hotkey} invalid account or has no positions, skipping evaluation")
                 continue

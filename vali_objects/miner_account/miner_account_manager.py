@@ -11,251 +11,23 @@ This manager is the source of truth for miner account state including:
 This module contains ALL account size functionality, previously split across
 ValidatorContractManager. The contract manager now delegates to this module.
 """
+from __future__ import annotations
+
+from datetime import datetime
 import threading
-from dataclasses import dataclass, field
-from datetime import timezone, datetime, timedelta
-from typing import Dict, Optional, List, Any
+from typing import Any
 import bittensor as bt
 
-from entity_management.entity_utils import is_synthetic_hotkey
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from time_util.time_util import TimeUtil
+from vali_objects.miner_account.miner_account import DailyOpenSnapshot, CollateralRecord, MinerAccount
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
-from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
-
-
-# ==================== Data Classes ====================
-
-
-@dataclass
-class DailyOpenSnapshot:
-    """Account state captured at 00:00:00 UTC for a single miner."""
-    day_open_ms: int           # Unix ms for 00:00:00 UTC of this day
-    account_size: float
-    balance: float
-    equity: float
-    bucket: Optional[str]      # MinerBucket.value or None
-
-    @property
-    def equity_return(self) -> float:
-        """equity / account_size — return relative to deposited capital."""
-        if not self.account_size:
-            return 1.0
-        return self.equity / self.account_size
-
-    def to_dict(self) -> dict:
-        return {
-            'day_open_ms': self.day_open_ms,
-            'account_size': self.account_size,
-            'balance': self.balance,
-            'equity': self.equity,
-            'equity_return': self.equity_return,
-            'bucket': self.bucket,
-        }
-
-    @staticmethod
-    def from_dict(d: dict) -> 'DailyOpenSnapshot':
-        return DailyOpenSnapshot(
-            day_open_ms=d['day_open_ms'],
-            account_size=d['account_size'],
-            balance=d['balance'],
-            equity=d['equity'],
-            bucket=d.get('bucket'),
-        )
-
-
-class CollateralRecord:
-    """Record of a collateral/account size update at a specific timestamp."""
-
-    def __init__(self, account_size: float, account_size_theta: float, update_time_ms: int, is_first_record: bool = False):
-        self.account_size = account_size
-        self.account_size_theta = account_size_theta
-        self.update_time_ms = update_time_ms
-        self.valid_date_timestamp = CollateralRecord.valid_from_ms(update_time_ms, is_first_record)
-
-    @staticmethod
-    def valid_from_ms(update_time_ms: int, is_first_record: bool = False) -> int:
-        """Returns timestamp of start of next day (00:00:00 UTC) when this record is valid"""
-        dt = datetime.fromtimestamp(update_time_ms / 1000, tz=timezone.utc)
-        start_of_day = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        if is_first_record:
-            # First record: valid immediately from start of current day
-            return int(start_of_day.timestamp() * 1000)
-        else:
-            # Subsequent records: valid from start of next day
-            start_of_next_day = start_of_day + timedelta(days=1)
-            return int(start_of_next_day.timestamp() * 1000)
-
-    @property
-    def valid_date_str(self) -> str:
-        """Returns YYYY-MM-DD format for easy reading"""
-        return TimeUtil.millis_to_short_date_str(self.valid_date_timestamp)
-
-    def __repr__(self):
-        """String representation"""
-        return str(vars(self))
-
-
-
-@dataclass
-class MinerAccount:
-    """Per-miner account state. Unified source of truth for account data."""
-    miner_hotkey: str
-    total_realized_pnl: float = 0.0     # Cumulative realized PNL from closed trades
-    capital_used: float = 0.0            # Total leveraged USD value of open positions
-    total_borrowed_amount: float = 0.0   # Total margin loans outstanding (equities only)
-    total_fees_paid: float = 0.0         # Cumulative fees paid (transaction, funding, interest, ...)
-    total_dividend_income: float = 0.0   # Net dividend income
-    asset_class: Optional[MinerAssetClass] = None  # CRYPTO, FOREX, EQUITIES, COMMODITIES, HL_ALL
-    collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
-    miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
-    hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
-    max_return: float = 1.0  # High water mark for portfolio return
-    unrealized_pnl: float = 0.0  # Current unrealized PNL from open positions
-    # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
-    # (HL_ALL) for per-class portfolio cap enforcement. Empty for older checkpoints;
-    # lazy-backfilled on next rebuild_account_state_from_positions call.
-    capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
-    daily_open_snapshot: Optional[DailyOpenSnapshot] = None
-
-    def __post_init__(self):
-        """Initialize collateral_records to empty list if None."""
-        if self.collateral_records is None:
-            self.collateral_records = []
-
-    @property
-    def balance(self) -> float:
-        """Current balance = account_size + total_realized_pnl + total_dividend_income - total_fees_paid."""
-        return self.get_account_size() + self.total_realized_pnl + self.total_dividend_income - self.total_fees_paid
-
-    @property
-    def equity(self) -> float:
-        """Current equity = balance + unrealized_pnl"""
-        return self.balance + self.unrealized_pnl
-
-    @property
-    def buying_power(self) -> float:
-        """Available buying power"""
-        if self.asset_class == MinerAssetClass.EQUITIES:
-            # balance - cash used
-            return (self.balance - (self.capital_used - self.total_borrowed_amount)) * self.multiplier
-        else:
-            return self.balance * self.multiplier - self.capital_used
-
-    @property
-    def multiplier(self) -> float:
-        """Subaccount-wide portfolio cap multiplier used by `buying_power`.
-
-        Returns TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
-        subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling; per-class
-        sub-caps are enforced separately at order entry via get_portfolio_caps.
-        """
-        if not self.asset_class:
-            return 1
-
-        from vali_objects.utils.leverage_utils import get_leverage_tier
-        tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
-        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
-
-    def add_collateral_record(self, record: 'CollateralRecord'):
-        """Add a new collateral record. Account size flows through balance property."""
-        self.collateral_records.append(record)
-
-    def get_account_size(self, timestamp_ms: Optional[int] = None) -> float:
-        """Get account size at a given timestamp. Returns MIN_CAPITAL if no collateral records."""
-        if not self.collateral_records:
-            return ValiConfig.MIN_CAPITAL
-
-        if is_synthetic_hotkey(self.miner_hotkey):
-            return self.collateral_records[-1].account_size
-
-        if timestamp_ms is None:
-            theta = min(self.collateral_records[-1].account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
-            return max(theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
-
-        # Get start of the requested day
-        start_of_day_ms = int(
-            datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
-            .replace(hour=0, minute=0, second=0, microsecond=0)
-            .timestamp() * 1000
-        )
-
-        # Iterate in reversed order, return first record valid for or before the requested day
-        for record in reversed(self.collateral_records):
-            if record.valid_date_timestamp <= start_of_day_ms:
-                theta = min(record.account_size_theta, ValiConfig.MAX_COLLATERAL_BALANCE_THETA)
-                return max(theta * ValiConfig.COST_PER_THETA, ValiConfig.MIN_CAPITAL)
-
-        # No valid record for the timestamp, return MIN_CAPITAL
-        return ValiConfig.MIN_CAPITAL
-
-    def reset_account_fields(self):
-        self.total_realized_pnl = 0
-        self.capital_used = 0
-        self.total_borrowed_amount = 0
-        self.total_fees_paid = 0
-        self.total_dividend_income = 0
-        self.miner_bucket = None
-        self.max_return = 1.0
-        self.unrealized_pnl = 0.0
-        self.capital_used_by_class = {}
-
-
-    def to_dict(self, include_collateral_records: bool = False) -> dict:
-        """
-        Convert MinerAccount to dictionary representation.
-
-        Args:
-            include_collateral_records: If True, include full collateral records history
-
-        Returns:
-            dict with account data
-        """
-        result = {
-            'miner_hotkey': self.miner_hotkey,
-            'account_size': self.get_account_size(),
-            'total_realized_pnl': self.total_realized_pnl,
-            'capital_used': self.capital_used,
-            'balance': self.balance,
-            'buying_power': self.buying_power,
-            'asset_class': self.asset_class.value if self.asset_class else None,
-            'total_borrowed_amount': self.total_borrowed_amount,
-            'total_fees_paid': self.total_fees_paid,
-            'total_dividend_income': self.total_dividend_income,
-            'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
-            'hl_address': self.hl_address,
-            'max_return': self.max_return,
-            'unrealized_pnl': self.unrealized_pnl,
-            'equity': self.equity,
-            # JSON keys must be str; convert TradePairCategory enum to its .value
-            'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
-            'daily_open_snapshot': self.daily_open_snapshot.to_dict() if self.daily_open_snapshot else None,
-        }
-
-        if include_collateral_records:
-            result['collateral_records'] = [vars(record) for record in self.collateral_records]
-
-        return result
-
-    def to_dashboard(self) -> dict:
-        return {
-            'account_size': self.get_account_size(),
-            'total_realized_pnl': self.total_realized_pnl,
-            'capital_used': self.capital_used,
-            'balance': self.balance,
-            'total_borrowed_amount': self.total_borrowed_amount,
-            'total_fees_paid': self.total_fees_paid,
-            'buying_power': self.buying_power,
-            'max_return': self.max_return,
-            'unrealized_pnl': self.unrealized_pnl,
-            'equity': self.equity,
-        }
 
 
 # ==================== Manager Implementation ====================
@@ -289,7 +61,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         Args:
             running_unit_tests: Whether running in test mode
             collateral_balance_getter: Callable to get collateral balance for a hotkey.
-                                       Signature: (hotkey: str) -> Optional[float]
+                                       Signature: (hotkey: str) -> float | None
                                        Returns balance in theta tokens, or None.
             connection_mode: RPC or LOCAL mode for asset selection client
             config: Bittensor config (for ValidatorBroadcastBase)
@@ -307,7 +79,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self.connection_mode = connection_mode
 
         # Unified MinerAccount storage - single source of truth
-        self.accounts: Dict[str, MinerAccount] = {}
+        self.accounts: dict[str, MinerAccount] = {}
 
         # Locking strategy - EAGER initialization (not lazy!)
         # RLock allows same thread to acquire lock multiple times (needed for nested calls)
@@ -325,14 +97,24 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self.MINER_ACCOUNTS_FILE = ValiBkpUtils.get_miner_account_sizes_file_location(
             running_unit_tests=running_unit_tests
         )
-        self.ASSET_SELECTIONS_FILE = ValiBkpUtils.get_asset_selections_file_location(
-            running_unit_tests=running_unit_tests
-        )
-
         # Load from disk
         self._load_accounts_from_disk()
 
     # ==================== Disk Persistence ====================
+
+    def to_checkpoint_dict(self) -> dict[str, Any]:
+        with self._accounts_lock:
+            return {hotkey: account.to_dict(include_computed=False) for hotkey, account in self.accounts.items()}
+
+    @staticmethod
+    def parse_checkpoint_dict(data: dict[str, Any]) -> dict[str, MinerAccount]:
+        parsed = {}
+        for hotkey, entry in data.items():
+            try:
+                parsed[hotkey] = MinerAccount.from_dict(entry)
+            except Exception as e:
+                bt.logging.warning(f"Failed to parse account for {hotkey}: {e}")
+        return parsed
 
     def _load_accounts_from_disk(self):
         """Load miner accounts from disk during initialization - protected by locks"""
@@ -340,8 +122,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             with self._disk_lock:
                 accounts_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNTS_FILE)
                 accounts_data.pop("_cost_per_theta", None)  # ignore legacy field
-                asset_selection_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
-                parsed_accounts = self._parse_accounts_dict(accounts_data, asset_selection_data)
+                parsed_accounts = self.parse_checkpoint_dict(accounts_data)
 
             with self._accounts_lock:
                 self.accounts.clear()
@@ -359,160 +140,11 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Save miner accounts to disk - protected by _disk_lock to prevent concurrent writes"""
         with self._disk_lock:
             try:
-                data_dict = self.accounts_dict()
-                ValiBkpUtils.write_file(self.MINER_ACCOUNTS_FILE, data_dict)
+                ValiBkpUtils.write_file(self.MINER_ACCOUNTS_FILE, self.to_checkpoint_dict())
             except Exception as e:
                 bt.logging.error(f"Failed to save miner accounts to disk: {e}")
 
-    def accounts_dict(self, most_recent_only: bool = False) -> Dict[str, Any]:
-        """Convert miner accounts to checkpoint format for backup/sync
-
-        Args:
-            most_recent_only: If True, only return the most recent collateral record for each miner
-
-        Returns:
-            Dictionary with hotkeys as keys and list of collateral records as values.
-            Account-level fields are added to the last record in the list.
-            If no collateral records exist, a single record with only account-level fields is saved.
-        """
-        with self._accounts_lock:
-            json_dict = {}
-            for hotkey, account in self.accounts.items():
-                # Build list of collateral records
-                if most_recent_only and account.collateral_records:
-                    records = [account.collateral_records[-1]]
-                else:
-                    records = account.collateral_records
-
-                records_list = [vars(record).copy() for record in records]
-                records_list.append(account.to_dict(include_collateral_records=False))
-
-                json_dict[hotkey] = records_list
-            return json_dict
-
-    @staticmethod
-    def _parse_accounts_dict(data_dict: Dict[str, Any], asset_selection_dict: Optional[Dict[str, str]] = None) -> Dict[str, MinerAccount]:
-        """Parse miner accounts from disk format back to MinerAccount objects.
-
-        Format: {"hotkey": [list of CollateralRecord dicts]}
-        Account-level fields (cash_balance, asset_class, total_borrowed_amount, total_fees_paid)
-        are stored on the last record in the list.
-
-        Args:
-            data_dict: Dict of hotkey -> list of collateral record dicts
-            asset_selection_dict: Optional dict of hotkey -> asset class string (for initial sync)
-        """
-        parsed_accounts = {}
-
-        for hotkey, account_data in data_dict.items():
-            try:
-                if not isinstance(account_data, list):
-                    continue
-
-                records_list = account_data
-                collateral_records = []
-
-                # Extract account-level fields from the last record in the list
-                if records_list and isinstance(records_list[-1], dict):
-                    last_record = records_list[-1]
-                    total_realized_pnl = last_record.get("total_realized_pnl")
-                    capital_used = last_record.get("capital_used")
-                    total_borrowed = last_record.get("total_borrowed_amount", 0.0)
-                    total_fees_paid = last_record.get("total_fees_paid", 0.0)
-                    total_dividend_income = last_record.get("total_dividend_income", 0.0)
-                    miner_bucket_str = last_record.get("miner_bucket")
-                    hl_address = last_record.get("hl_address")
-                    max_return = last_record.get("max_return", 1.0)
-                    unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
-                    capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
-                    daily_open_snapshot_raw = last_record.get("daily_open_snapshot")
-                else:
-                    total_realized_pnl = None
-                    capital_used = None
-                    total_borrowed = 0.0
-                    total_fees_paid = 0.0
-                    total_dividend_income = 0.0
-                    miner_bucket_str = None
-                    hl_address = None
-                    max_return = 1.0
-                    unrealized_pnl = 0.0
-                    capital_used_by_class_raw = {}
-                    daily_open_snapshot_raw = None
-
-                # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
-                # Missing field (older checkpoint) → empty dict; will be lazy-backfilled by
-                # the next rebuild_account_state_from_positions call.
-                capital_used_by_class: Dict[TradePairCategory, float] = {}
-                for cat_str, amount in (capital_used_by_class_raw or {}).items():
-                    try:
-                        capital_used_by_class[TradePairCategory(cat_str)] = float(amount)
-                    except ValueError:
-                        bt.logging.warning(f"Unknown asset_class '{cat_str}' in capital_used_by_class for {hotkey}; skipping")
-
-                # Parse collateral records
-                for record_data in records_list:
-                    if isinstance(record_data, dict) and "account_size" in record_data and "update_time_ms" in record_data:
-                        record = CollateralRecord(
-                            record_data["account_size"],
-                            record_data.get("account_size_theta", 0),
-                            record_data["update_time_ms"]
-                        )
-                        collateral_records.append(record)
-
-                # Get account_size from collateral records, or fall back to cash_balance, or MIN_CAPITAL
-                if collateral_records:
-                    account_size = collateral_records[-1].account_size
-                else:
-                    account_size = ValiConfig.MIN_CAPITAL
-
-                # Get asset_class from asset_selections file (source of truth during migration)
-                asset_class = None
-                if asset_selection_dict:
-                    asset_class_str = asset_selection_dict.get(hotkey)
-                    if asset_class_str:
-                        try:
-                            asset_class = MinerAssetClass(asset_class_str)
-                        except ValueError:
-                            bt.logging.warning(f"Unknown asset_class '{asset_class_str}' for {hotkey}")
-
-                # Parse miner_bucket from disk (None for legacy data, filled on first CP refresh)
-                miner_bucket = None
-                if miner_bucket_str:
-                    try:
-                        miner_bucket = MinerBucket(miner_bucket_str)
-                    except ValueError:
-                        bt.logging.warning(f"Unknown miner_bucket '{miner_bucket_str}' for {hotkey}")
-
-                daily_open_snapshot = None
-                if daily_open_snapshot_raw:
-                    try:
-                        daily_open_snapshot = DailyOpenSnapshot.from_dict(daily_open_snapshot_raw)
-                    except Exception:
-                        pass
-
-                parsed_accounts[hotkey] = MinerAccount(
-                    miner_hotkey=hotkey,
-                    total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
-                    capital_used=capital_used if capital_used is not None else 0.0,
-                    total_borrowed_amount=total_borrowed,
-                    total_fees_paid=total_fees_paid,
-                    total_dividend_income=total_dividend_income,
-                    asset_class=asset_class,
-                    collateral_records=collateral_records,
-                    miner_bucket=miner_bucket,
-                    hl_address=hl_address,
-                    max_return=max_return,
-                    unrealized_pnl=unrealized_pnl,
-                    capital_used_by_class=capital_used_by_class,
-                    daily_open_snapshot=daily_open_snapshot,
-                )
-
-            except Exception as e:
-                bt.logging.warning(f"Failed to parse account for {hotkey}: {e}")
-
-        return parsed_accounts
-
-    def sync_miner_account_sizes_data(self, account_sizes_data: Dict[str, Any]):
+    def sync_miner_account_sizes_data(self, account_sizes_data: dict[str, Any]):
         """
         Sync miner account sizes data from external source (backup/sync).
         If empty dict is passed, clears all accounts (useful for tests).
@@ -526,8 +158,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     self._save_accounts_to_disk()
                     return
 
-                asset_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
-                parsed_accounts = self._parse_accounts_dict(account_sizes_data, asset_data)
+                parsed_accounts = self.parse_checkpoint_dict(account_sizes_data)
                 self.accounts.clear()
                 self.accounts.update(parsed_accounts)
 
@@ -538,7 +169,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     # ==================== Account Size Methods ====================
 
-    def set_miner_account_size(self, hotkey: str, collateral_balance_theta: float, timestamp_ms: Optional[int] = None, account_size: float = None) -> Optional[CollateralRecord]:
+    def set_miner_account_size(self, hotkey: str, collateral_balance_theta: float, timestamp_ms: int | None = None, account_size: float = None) -> CollateralRecord | None:
         """
         Set the account size for a miner. Saves to memory and disk.
         Records are kept in chronological order.
@@ -567,9 +198,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
             if account_size is None:
                 account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance_theta) * ValiConfig.COST_PER_THETA
 
-            # Check if this is the first record for this miner
             is_first_record = hotkey not in self.accounts or not self.accounts[hotkey].collateral_records
-            collateral_record = CollateralRecord(account_size, collateral_balance_theta, timestamp_ms, is_first_record)
+            collateral_record = CollateralRecord(account_size, collateral_balance_theta, timestamp_ms)
 
             # Get or create account
             account = self.get_or_create(hotkey)
@@ -585,6 +215,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             # Add the new record and update account size
             account.add_collateral_record(collateral_record)
 
+            if is_first_record:
+                account.daily_open_snapshot = DailyOpenSnapshot.from_account_size(account_size, timestamp_ms)
+
             # Save to disk
             self._save_accounts_to_disk()
 
@@ -595,14 +228,17 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     def reset_account_fields(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         with self._accounts_lock:
-            account = self.accounts.get(hotkey)
-            if not account:
+            old = self.accounts.get(hotkey)
+            if not old:
                 return False
 
-            account.reset_account_fields()
-            if miner_bucket:
-                account.miner_bucket = miner_bucket
-
+            self.accounts[hotkey] = MinerAccount(
+                miner_hotkey=hotkey,
+                asset_class=old.asset_class,
+                hl_address=old.hl_address,
+                miner_bucket=miner_bucket or old.miner_bucket,
+                collateral_records=old.collateral_records,
+            )
             self._save_accounts_to_disk()
 
         return True
@@ -630,7 +266,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 bt.logging.debug(f"No account size to delete for {hotkey}")
                 return True  # Return True - idempotent behavior
 
-    def get_miner_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
+    def get_miner_account_size(self, hotkey: str, timestamp_ms: int | None = None, most_recent: bool = False,
                                use_account_floor: bool = False) -> float | None:
         """
         Get the account size for a miner at a given timestamp.
@@ -657,7 +293,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             # Get account size at timestamp (returns MIN_CAPITAL if no applicable records)
             return account.get_account_size(timestamp_ms)
 
-    def get_all_miner_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict[str, float]:
+    def get_all_miner_account_sizes(self, timestamp_ms: int | None = None) -> dict[str, float]:
         """
         Return a dict of all miner account sizes. If timestamp_ms is None, returns most recent sizes.
         """
@@ -698,7 +334,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
                 # Create a CollateralRecord object
                 is_first_record = hotkey not in self.accounts or not self.accounts[hotkey].collateral_records
-                collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms, is_first_record)
+                collateral_record = CollateralRecord(account_size, account_size_theta, update_time_ms)
 
                 # Get or create account
                 account = self.get_or_create(hotkey)
@@ -737,11 +373,11 @@ class MinerAccountManager(ValidatorBroadcastBase):
             )
         return self.accounts[hotkey]
 
-    def get_account(self, hotkey: str) -> Optional[MinerAccount]:
+    def get_account(self, hotkey: str) -> MinerAccount | None:
         """Get account if it exists, without creating."""
         return self.accounts.get(hotkey)
 
-    def get_accounts(self, hotkeys: List[str]) -> Dict[str, MinerAccount]:
+    def get_accounts(self, hotkeys: list[str]) -> dict[str, MinerAccount]:
         """Get accounts for multiple hotkeys. Returns dict of hotkey -> MinerAccount for existing accounts."""
         with self._accounts_lock:
             return {hk: self.accounts[hk] for hk in hotkeys if hk in self.accounts}
@@ -752,7 +388,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             return None
         return account.to_dashboard()
 
-    def update_unrealized_pnl(self, hotkey_to_unrealized_pnl: Dict[str, float]) -> None:
+    def update_unrealized_pnl(self, hotkey_to_unrealized_pnl: dict[str, float]) -> None:
         """Batch update unrealized PNL for multiple hotkeys and advance max_return HWM."""
         with self._accounts_lock:
             for hotkey, unrealized_pnl in hotkey_to_unrealized_pnl.items():
@@ -767,14 +403,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             self._save_accounts_to_disk()
 
-    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
+    def set_miner_bucket(self, hotkey: str, bucket: MinerBucket | None) -> None:
         """Set the miner bucket on an account. Called by ChallengePeriodManager via RPC."""
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
             account.miner_bucket = bucket
             self._save_accounts_to_disk()
 
-    def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket]) -> None:
+    def set_miner_buckets(self, hotkey_to_bucket: dict[str, MinerBucket]) -> None:
         """Bulk update miner buckets across multiple accounts. Saves to disk once."""
         if not hotkey_to_bucket:
             return
@@ -784,13 +420,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account.miner_bucket = bucket
             self._save_accounts_to_disk()
 
-    def get_hl_address(self, hotkey: str) -> Optional[str]:
+    def get_hl_address(self, hotkey: str) -> str | None:
         """Return the HL address for an account, or None if not an HS subaccount."""
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
             return account.hl_address if account else None
 
-    def set_hl_address(self, hotkey: str, hl_address: Optional[str]) -> None:
+    def set_hl_address(self, hotkey: str, hl_address: str | None) -> None:
         """Set the HL address on an account. Called by EntityManager when an HL subaccount is created/synced."""
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
@@ -817,7 +453,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0, trade_pair_category: TradePairCategory | None = None) -> None:
         """
         Process buy order. Check buying_power and track capital_used.
 
@@ -860,7 +496,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: TradePairCategory | None = None) -> None:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -907,7 +543,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             return 0.0
         return account.total_borrowed_amount
 
-    def process_fees(self, hotkey_to_fee: Dict[str, float]) -> None:
+    def process_fees(self, hotkey_to_fee: dict[str, float]) -> None:
         """Batch update total_fees_paid for multiple hotkeys. Saves to disk once at the end."""
         with self._accounts_lock:
             for hotkey, fee_usd in hotkey_to_fee.items():
@@ -915,7 +551,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account.total_fees_paid += fee_usd
             self._save_accounts_to_disk()
 
-    def process_dividend_income(self, hotkey_to_credit: Dict[str, float]) -> None:
+    def process_dividend_income(self, hotkey_to_credit: dict[str, float]) -> None:
         """Batch update total_dividend_income for multiple hotkeys. Saves to disk once."""
         with self._accounts_lock:
             for hotkey, credit_usd in hotkey_to_credit.items():
@@ -943,7 +579,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
-                    bucket=account.miner_bucket.value if account.miner_bucket else None,
                 )
                 count += 1
             self._save_accounts_to_disk()
@@ -971,7 +606,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         total_fees_paid = 0.0
         capital_used = 0.0
         total_borrowed_amount = 0.0
-        capital_used_by_class: Dict[TradePairCategory, float] = {}
+        capital_used_by_class: dict[TradePairCategory, float] = {}
 
         for position in positions:
             total_realized_pnl += position.realized_pnl
@@ -995,9 +630,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
     def rebuild_account_state_from_positions(
         self,
         hotkey: str,
-        positions: List['Position'],
-        miner_bucket: Optional[MinerBucket] = None,
-        max_return: Optional[float] = None,
+        positions: list[Position],
+        miner_bucket: MinerBucket | None = None,
+        max_return: float | None = None,
     ) -> None:
         """
         Rebuild a miner's account state (capital_used, total_realized_pnl, total_fees_paid)
@@ -1012,22 +647,22 @@ class MinerAccountManager(ValidatorBroadcastBase):
         computed = self.compute_account_state_from_positions(positions)
 
         with self._accounts_lock:
-            account = self.get_or_create(hotkey)
+            old = self.get_or_create(hotkey)
 
-            if miner_bucket is None:
-                miner_bucket = account.miner_bucket
-
-            if max_return is None:
-                max_return = account.max_return
-
-            account.reset_account_fields()
-            account.miner_bucket = miner_bucket
-            account.max_return = max_return
-            account.total_realized_pnl = computed['total_realized_pnl']
-            account.total_fees_paid = computed['total_fees_paid']
-            account.capital_used = computed['capital_used']
-            account.total_borrowed_amount = computed['total_borrowed_amount']
-            account.capital_used_by_class = computed['capital_used_by_class']
+            self.accounts[hotkey] = MinerAccount(
+                miner_hotkey=hotkey,
+                asset_class=old.asset_class,
+                hl_address=old.hl_address,
+                miner_bucket=miner_bucket if miner_bucket is not None else old.miner_bucket,
+                collateral_records=old.collateral_records,
+                max_return=max_return if max_return is not None else old.max_return,
+                total_realized_pnl=computed['total_realized_pnl'],
+                total_fees_paid=computed['total_fees_paid'],
+                capital_used=computed['capital_used'],
+                total_borrowed_amount=computed['total_borrowed_amount'],
+                capital_used_by_class=computed['capital_used_by_class'],
+            )
+            account = self.accounts[hotkey]
 
             self._save_accounts_to_disk()
 

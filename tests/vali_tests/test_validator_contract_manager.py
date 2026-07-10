@@ -136,11 +136,9 @@ class TestValidatorContractManager(TestBase):
         account_size = self.miner_account_client.get_miner_account_size(self.MINER_1, current_time)
         self.assertIsNotNone(account_size)
 
-        # Test the disk persistence by checking via accounts_dict
-        # accounts_dict returns [collateral_records..., account_summary_dict]
-        account_sizes_dict = self.miner_account_client.accounts_dict()
+        account_sizes_dict = self.miner_account_client.to_checkpoint_dict()
         self.assertIn(self.MINER_1, account_sizes_dict)
-        self.assertEqual(len(account_sizes_dict[self.MINER_1]), 2)  # 1 collateral record + 1 account summary
+        self.assertEqual(len(account_sizes_dict[self.MINER_1]['collateral_records']), 1)
 
     def test_multiple_account_size_records(self):
         """Test that multiple records are stored and sorted correctly"""
@@ -156,14 +154,9 @@ class TestValidatorContractManager(TestBase):
         collateral_theta_3 = 3_000_000 / 10**9  # 0.003 theta
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_3, base_time + 2000)
 
-        # Verify records are stored
-        # accounts_dict returns [collateral_records..., account_summary_dict]
-        account_sizes_dict = self.miner_account_client.accounts_dict()
-        records = account_sizes_dict[self.MINER_1]
-        self.assertEqual(len(records), 4)  # 3 collateral records + 1 account summary
-
-        # Verify collateral records are sorted by update_time_ms (exclude account summary at end)
-        collateral_records = records[:-1]
+        account_sizes_dict = self.miner_account_client.to_checkpoint_dict()
+        collateral_records = account_sizes_dict[self.MINER_1]['collateral_records']
+        self.assertEqual(len(collateral_records), 3)
         for i in range(1, len(collateral_records)):
             self.assertGreaterEqual(collateral_records[i]['update_time_ms'], collateral_records[i-1]['update_time_ms'])
 
@@ -178,11 +171,9 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, base_time + 1000)
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta, base_time + 2000)
 
-        # Verify only one record is stored (duplicates are skipped)
-        # accounts_dict returns [collateral_records..., account_summary_dict]
-        account_sizes_dict = self.miner_account_client.accounts_dict()
-        records = account_sizes_dict[self.MINER_1]
-        self.assertEqual(len(records), 2)  # 1 collateral record + 1 account summary
+        account_sizes_dict = self.miner_account_client.to_checkpoint_dict()
+        collateral_records = account_sizes_dict[self.MINER_1]['collateral_records']
+        self.assertEqual(len(collateral_records), 1)
 
     def test_sync_miner_account_sizes_data(self):
         """Test syncing miner account sizes from external data"""
@@ -193,7 +184,7 @@ class TestValidatorContractManager(TestBase):
                     "account_size": 15000.0,
                     "account_size_theta": 1000.0,
                     "update_time_ms": int(time.time() * 1000) - 1000,
-                    "valid_date_timestamp": CollateralRecord.valid_from_ms(int(time.time() * 1000) - 1000)
+                    "valid_date_timestamp": CollateralRecord(15000.0, 1000.0, int(time.time() * 1000) - 1000).valid_date_timestamp
                 }
             ],
             self.MINER_2: [
@@ -201,7 +192,7 @@ class TestValidatorContractManager(TestBase):
                     "account_size": 25000.0,
                     "account_size_theta": 2000.0,
                     "update_time_ms": int(time.time() * 1000),
-                    "valid_date_timestamp": CollateralRecord.valid_from_ms(int(time.time() * 1000))
+                    "valid_date_timestamp": CollateralRecord(25000.0, 2000.0, int(time.time() * 1000)).valid_date_timestamp
                 }
             ]
         }
@@ -210,52 +201,33 @@ class TestValidatorContractManager(TestBase):
         self.miner_account_client.sync_miner_account_sizes_data(test_data)
 
         # Verify data was synced correctly
-        account_sizes_dict = self.miner_account_client.accounts_dict()
-        self.assertIn(self.MINER_1, account_sizes_dict)
-        self.assertIn(self.MINER_2, account_sizes_dict)
-
-        # Check the records
-        # accounts_dict returns [collateral_records..., account_summary_dict]
-        miner1_records = account_sizes_dict[self.MINER_1]
-        miner2_records = account_sizes_dict[self.MINER_2]
-
-        self.assertEqual(len(miner1_records), 2)  # 1 collateral record + 1 account summary
-        self.assertEqual(len(miner2_records), 2)  # 1 collateral record + 1 account summary
-        self.assertEqual(miner1_records[0]['account_size'], 15000.0)
-        self.assertEqual(miner2_records[0]['account_size'], 25000.0)
+        checkpoint = self.miner_account_client.to_checkpoint_dict()
+        self.assertIn(self.MINER_1, checkpoint)
+        self.assertIn(self.MINER_2, checkpoint)
+        self.assertEqual(checkpoint[self.MINER_1]['collateral_records'][0]['account_size'], 15000.0)
+        self.assertEqual(checkpoint[self.MINER_2]['collateral_records'][0]['account_size'], 25000.0)
 
     def test_to_checkpoint_dict(self):
-        """Test converting account sizes to checkpoint dictionary format"""
         current_time = int(time.time() * 1000)
-
-        # Set account sizes via MinerAccountClient
-        collateral_theta_1 = 1000000 / 10**9  # 0.001 theta
-        collateral_theta_2 = 500000 / 10**9   # 0.0005 theta
+        collateral_theta_1 = 1000000 / 10**9
+        collateral_theta_2 = 500000 / 10**9
         self.miner_account_client.set_miner_account_size(self.MINER_1, collateral_theta_1, current_time)
         self.miner_account_client.set_miner_account_size(self.MINER_2, collateral_theta_2, current_time)
 
-        # Get checkpoint dict
-        checkpoint_dict = self.miner_account_client.accounts_dict()
+        checkpoint_dict = self.miner_account_client.to_checkpoint_dict()
 
-        # Verify structure
         self.assertIsInstance(checkpoint_dict, dict)
         self.assertIn(self.MINER_1, checkpoint_dict)
         self.assertIn(self.MINER_2, checkpoint_dict)
 
-        # Verify record structure
-        # accounts_dict returns [collateral_records..., account_summary_dict]
-        # Only collateral records have update_time_ms, account summary (last item) doesn't
-        for hotkey, records in checkpoint_dict.items():
-            self.assertIsInstance(records, list)
-            # Check collateral records (all but last)
-            for record in records[:-1]:
+        for hotkey, data in checkpoint_dict.items():
+            self.assertIsInstance(data, dict)
+            self.assertIn('miner_hotkey', data)
+            self.assertIn('collateral_records', data)
+            for record in data['collateral_records']:
                 self.assertIn('account_size', record)
                 self.assertIn('update_time_ms', record)
                 self.assertIn('valid_date_timestamp', record)
-            # Check account summary (last record)
-            account_summary = records[-1]
-            self.assertIn('account_size', account_summary)
-            self.assertIn('miner_hotkey', account_summary)
 
     def test_collateral_balance_retrieval(self):
         """Test getting collateral balance for miners"""
