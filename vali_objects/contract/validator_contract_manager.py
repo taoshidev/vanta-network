@@ -362,6 +362,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             bt.logging.info(f"Force deposit successful: {amount} Theta deposited for {miner_hotkey}")
         except Exception as e:
             bt.logging.error(f"Force deposit execution failed: {str(e)}")
+            raise
 
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """
