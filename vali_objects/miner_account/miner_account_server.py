@@ -107,14 +107,17 @@ class MinerAccountServer(RPCServerBase):
         next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         return (next_midnight - now).total_seconds()
 
-    def run_daemon_iteration(self) -> None:
+    def run_daemon_iteration(self) -> str | None:
         if self._snapshot_first_iteration:
             self._snapshot_first_iteration = False
             bt.logging.info("MinerAccount daily open snapshot skipped on first iteration")
-        else:
-            self._manager.take_daily_open_snapshots()
+            self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
+            bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
+            return None
+        count = self._manager.take_daily_open_snapshots()
         self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
         bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
+        return f"MinerAccount daemon iteration complete. Snapshots taken: {count}. Next snapshot in {self.daemon_interval_s:.0f}s."
 
     # ==================== Setup Methods ====================
 
