@@ -4,7 +4,7 @@ import functools
 import re
 import time
 from datetime import datetime, timedelta, timezone, date
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from functools import lru_cache
 from zoneinfo import ZoneInfo  # Make sure to use Python 3.9 or later
 
@@ -433,6 +433,13 @@ class TimeUtil:
     @staticmethod
     def ms_at_start_of_day(dt: datetime) -> int:
         return int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+    @staticmethod
+    def get_start_of_day_ms(timestamp_ms: Optional[int] = None) -> int:
+        """Return Unix ms for 00:00:00 UTC of the given timestamp, or of now if None."""
+        ms = timestamp_ms if timestamp_ms is not None else TimeUtil.now_in_millis()
+        dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+        return TimeUtil.ms_at_start_of_day(dt)
 
     @staticmethod
     def ms_at_start_of_week(time: int) -> int:
