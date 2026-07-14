@@ -188,7 +188,7 @@ class ChallengePeriodManager(CacheController):
     - Server delegates all RPC methods to manager methods
     - Manager creates its own clients internally (forward compatibility)
     """
-    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-07-15 00:00:00")
+    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-07-22 00:00:00")
 
     def __init__(
         self,
@@ -576,6 +576,14 @@ class ChallengePeriodManager(CacheController):
 
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
             last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
+
+            # Use daily open snapshot from miner account for intraday drawdown baseline; fall back to ledger
+            today_midnight_ms = TimeUtil.get_start_of_day_ms(now_ms)
+            snapshot = accounts.get(hotkey, {}).get('daily_open_snapshot')
+            if snapshot and snapshot.get('day_open_ms') == today_midnight_ms:
+                last_eod = snapshot['equity_return']
+                daily_open_equity = snapshot['equity_return']
+
             intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0 if daily_open_equity else 0.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
 
@@ -590,22 +598,6 @@ class ChallengePeriodManager(CacheController):
                 last_eod_equity=last_eod,
                 last_eod_checked_ms=last_eod_checked_ms,
             )
-
-            # TODO: remove debug logging below
-            account = accounts.get(hotkey, {})
-            if account.get('miner_bucket') == MinerBucket.SUBACCOUNT_FUNDED.value:
-                snapshot = account.get('daily_open_snapshot')
-                snapshot_equity_return = snapshot.get('equity_return') if snapshot else None
-                account_size = account.get('account_size')
-                account_equity = account.get('equity')
-                account_equity_return = account_equity / account_size if account_size else None
-                btlogging.info(
-                    f"[EQUITY DEBUG] {hotkey} "
-                    f"ledger_daily_open_equity={daily_open_equity} "
-                    f"snapshot_equity_return={snapshot_equity_return} | "
-                    f"position_current_equity={current_equity} "
-                    f"account_equity_return={account_equity_return} "
-                )
 
     def _refresh_rank_cache(
         self,

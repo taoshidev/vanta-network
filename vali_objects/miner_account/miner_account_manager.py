@@ -205,6 +205,7 @@ class MinerAccount:
         self.max_return = 1.0
         self.unrealized_pnl = 0.0
         self.capital_used_by_class = {}
+        self.daily_open_snapshot = None
 
 
     def to_dict(self, include_collateral_records: bool = False) -> dict:
@@ -581,9 +582,17 @@ class MinerAccountManager(ValidatorBroadcastBase):
                         last_record.account_size_theta == collateral_record.account_size_theta):
                     bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
                     return collateral_record
-
             # Add the new record and update account size
             account.add_collateral_record(collateral_record)
+
+            if is_first_record:
+                account.daily_open_snapshot = DailyOpenSnapshot(
+                    day_open_ms=TimeUtil.get_start_of_day_ms(timestamp_ms),
+                    account_size=account.get_account_size(),
+                    balance=account.balance,
+                    equity=account.equity,
+                    bucket=account.miner_bucket.value if account.miner_bucket else None,
+                )
 
             # Save to disk
             self._save_accounts_to_disk()
@@ -602,6 +611,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.reset_account_fields()
             if miner_bucket:
                 account.miner_bucket = miner_bucket
+
+            account.daily_open_snapshot = DailyOpenSnapshot(
+                day_open_ms=TimeUtil.get_start_of_day_ms(),
+                account_size=account.get_account_size(),
+                balance=account.balance,
+                equity=account.equity,
+                bucket=account.miner_bucket.value if account.miner_bucket else None,
+            )
 
             self._save_accounts_to_disk()
 
@@ -932,8 +949,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         normal accounts save path. Returns the number of snapshots recorded.
         """
         now_ms = TimeUtil.now_in_millis()
-        dt = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
-        day_open_ms = int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+        day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
 
         count = 0
         with self._accounts_lock:
