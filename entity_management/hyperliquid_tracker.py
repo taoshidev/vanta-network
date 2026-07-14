@@ -333,6 +333,7 @@ class HyperliquidTracker:
         rate_limiter: Optional[RateLimiter] = None,
         ws_notifier_client: Optional[WebSocketNotifierClient] = None,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        order_processor=None,
     ):
         self._entity_client = entity_client
         self._elimination_client = elimination_client
@@ -343,6 +344,15 @@ class HyperliquidTracker:
         self._uuid_tracker = uuid_tracker
         self._rate_limiter = rate_limiter or RateLimiter()
         self._ws_notifier_client = ws_notifier_client
+
+        # Use provided OrderProcessor or create one backed by the same market_order_manager
+        if order_processor is not None:
+            self._order_processor = order_processor
+        else:
+            self._order_processor = OrderProcessor(
+                market_order_manager_client=market_order_manager,
+                connection_mode=connection_mode,
+            )
 
         # Position client for querying current Vanta positions (weight delta calculation)
         self._position_client = PositionManagerClient(
@@ -1541,14 +1551,13 @@ class HyperliquidTracker:
 
         # === Process order ===
         try:
-            result = OrderProcessor.process_order(
+            result = self._order_processor.process_order(
                 signal=signal,
                 miner_order_uuid=miner_order_uuid,
                 now_ms=now_ms,
                 miner_hotkey=synthetic_hotkey,
                 miner_repo_version="hl_tracker",
                 limit_order_client=self._limit_order_client,
-                market_order_manager=self._market_order_manager,
             )
 
             # Track UUID
@@ -1635,14 +1644,13 @@ class HyperliquidTracker:
         flat_uuid = str(uuid.uuid4())
 
         try:
-            flat_result = OrderProcessor.process_order(
+            flat_result = self._order_processor.process_order(
                 signal=flat_signal,
                 miner_order_uuid=flat_uuid,
                 now_ms=now_ms,
                 miner_hotkey=synthetic_hotkey,
                 miner_repo_version="hl_tracker",
                 limit_order_client=self._limit_order_client,
-                market_order_manager=self._market_order_manager,
             )
             if flat_result.should_track_uuid:
                 self._uuid_tracker.add(flat_uuid)

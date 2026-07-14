@@ -105,7 +105,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.running_unit_tests = running_unit_tests
         self.is_mainnet = is_mainnet
         self.nonce_manager = NonceManager()
-        self.market_order_manager = MarketOrderManager(serve=False)
+        self.order_processor = OrderProcessor()
         self.data_path = ValiConfig.BASE_DIR
 
         # Store connection_mode for use in _initialize_clients
@@ -1365,14 +1365,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             miner_repo_version = "development"
 
             # Use unified OrderProcessor dispatcher (replaces lines 1466-1553)
-            result = OrderProcessor.process_order(
+            result = self.order_processor.process_order(
                 signal=signal,
                 miner_order_uuid=data.get('order_uuid'),
                 now_ms=now_ms,
                 miner_hotkey=DEVELOPMENT_HOTKEY,
                 miner_repo_version=miner_repo_version,
                 limit_order_client=self._limit_order_client,
-                market_order_manager=self.market_order_manager
             )
 
             # Consistent response format across all order types

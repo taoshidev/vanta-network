@@ -327,6 +327,14 @@ class ServerOrchestrator:
             required_in_validator=True,
             spawn_kwargs={'start_daemon': False}
         ),
+        'market_order_manager': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            required_in_miner=False,
+            required_in_validator=True,
+            spawn_kwargs={'start_daemon': False}
+        ),
     }
 
     @classmethod
@@ -424,6 +432,8 @@ class ServerOrchestrator:
         from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
         from vali_objects.hl_funding.hl_funding_rate_server import HLFundingRateServer
         from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
+        from vali_objects.utils.limit_order.market_order_manager_server import MarketOrderManagerServer
+        from vali_objects.utils.limit_order.market_order_manager_client import MarketOrderManagerClient
 
         # Update registry with classes
         self.SERVERS['common_data'].server_class = CommonDataServer
@@ -491,6 +501,9 @@ class ServerOrchestrator:
 
         self.SERVERS['hl_funding'].server_class = HLFundingRateServer
         self.SERVERS['hl_funding'].client_class = HLFundingRateClient
+
+        self.SERVERS['market_order_manager'].server_class = MarketOrderManagerServer
+        self.SERVERS['market_order_manager'].client_class = MarketOrderManagerClient
 
         self._classes_loaded = True
 
@@ -735,6 +748,9 @@ class ServerOrchestrator:
                 if context.validator_hotkey:
                     spawn_kwargs['validator_hotkey'] = context.validator_hotkey
                 spawn_kwargs['is_mainnet'] = context.is_mainnet
+
+            elif server_name == 'market_order_manager':
+                spawn_kwargs['serve'] = getattr(context.config, 'serve', True) if context.config else True
 
             elif server_name in ('contract', 'asset_selection', 'entity', 'miner_account'):
                 if context.config:

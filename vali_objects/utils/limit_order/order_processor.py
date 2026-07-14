@@ -17,6 +17,7 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.vali_config import RPCConnectionMode
 
 
 @dataclass(frozen=True)  # Immutable for thread safety
@@ -62,11 +63,26 @@ class OrderProcessor:
     """
     Processes orders by routing them to the appropriate manager based on execution type.
 
-    This class encapsulates the common logic for:
-    - Parsing signals and trade pairs
-    - Creating Order objects for LIMIT orders
-    - Routing to limit_order_manager or market_order_manager
+    Stateful: owns a MarketOrderManagerClient so callers do not need to supply
+    a market_order_manager instance.  A market_order_manager may still be passed
+    explicitly to individual methods for backward compatibility (e.g. tests using
+    Mock objects).
     """
+
+    def __init__(
+        self,
+        market_order_manager_client=None,
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        running_unit_tests: bool = False,
+    ):
+        if market_order_manager_client is not None:
+            self._market_order_manager = market_order_manager_client
+        else:
+            from vali_objects.utils.limit_order.market_order_manager_client import MarketOrderManagerClient
+            self._market_order_manager = MarketOrderManagerClient(
+                connection_mode=connection_mode,
+                running_unit_tests=running_unit_tests,
+            )
 
     @staticmethod
     def parse_size(signal: dict) -> tuple:
@@ -436,9 +452,9 @@ class OrderProcessor:
         bt.logging.info(f"[ORDER_PROCESSOR] Processed BRACKET order{'(EDIT)' if is_edit else ''}: {order.order_uuid} for {miner_hotkey}")
         return order
 
-    @staticmethod
-    def process_flat_all_order(order_uuid: str, now_ms: int, miner_hotkey: str, miner_repo_version: str, market_order_manager):
-        return market_order_manager.process_flat_all_order(order_uuid, miner_repo_version, miner_hotkey, now_ms)
+    def process_flat_all_order(self, order_uuid: str, now_ms: int, miner_hotkey: str, miner_repo_version: str, market_order_manager=None):
+        manager = market_order_manager if market_order_manager is not None else self._market_order_manager
+        return manager.process_flat_all_order(order_uuid, miner_repo_version, miner_hotkey, now_ms)
 
     @staticmethod
     def process_limit_edit(signal: dict, order_uuid: str, now_ms: int,
@@ -588,10 +604,9 @@ class OrderProcessor:
 
         raise SignalException(f"Cannot edit order {order_uuid}: order not found")
 
-    @staticmethod
-    def process_market_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
+    def process_market_order(self, signal: dict, trade_pair, order_uuid: str, now_ms: int,
                             miner_hotkey: str, miner_repo_version: str,
-                            market_order_manager) -> tuple:
+                            market_order_manager=None) -> tuple:
         """
         Process a MARKET order by calling market_order_manager.
 
@@ -613,22 +628,22 @@ class OrderProcessor:
         Raises:
             SignalException: If processing fails with validation error
         """
-        # Use direct method for consistent interface across validator and REST API
-        err_msg, updated_position, created_order = market_order_manager._process_market_order(
+        manager = market_order_manager if market_order_manager is not None else self._market_order_manager
+        err_msg, updated_position, created_order = manager._process_market_order(
             order_uuid, miner_repo_version, trade_pair,
             now_ms, signal, miner_hotkey, price_sources=None
         )
         return err_msg, updated_position, created_order
 
-    @staticmethod
     def process_order(
+        self,
         signal: dict,
         miner_order_uuid: str,
         now_ms: int,
         miner_hotkey: str,
         miner_repo_version: str,
         limit_order_client,
-        market_order_manager
+        market_order_manager=None,
     ) -> OrderProcessingResult:
         """
         Unified order processing dispatcher that routes to the appropriate handler.
@@ -719,7 +734,7 @@ class OrderProcessor:
             )
 
         elif execution_type == ExecutionType.FLAT_ALL:
-            result = OrderProcessor.process_flat_all_order(
+            result = self.process_flat_all_order(
                 order_uuid, now_ms, miner_hotkey,
                 miner_repo_version, market_order_manager
             )
@@ -736,7 +751,7 @@ class OrderProcessor:
             )
 
         else:  # ExecutionType.MARKET
-            err_msg, updated_position, created_order = OrderProcessor.process_market_order(
+            err_msg, updated_position, created_order = self.process_market_order(
                 signal, trade_pair, order_uuid, now_ms,
                 miner_hotkey, miner_repo_version,
                 market_order_manager

@@ -266,6 +266,9 @@ class ValiConfig:
     RPC_ENTITY_COLLATERAL_PORT = 50026
     RPC_ENTITY_COLLATERAL_SERVICE_NAME = "EntityCollateralServer"
 
+    RPC_MARKETORDERMANAGER_PORT = 50027
+    RPC_MARKETORDERMANAGER_SERVICE_NAME = "MarketOrderManagerServer"
+
     # Entity collateral cache refresh interval (seconds)
     ENTITY_COLLATERAL_CACHE_REFRESH_S = 30 * 60
 

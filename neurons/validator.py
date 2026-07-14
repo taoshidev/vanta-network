@@ -27,7 +27,7 @@ from template.protocol import SendSignal
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.data_sync.auto_sync import PositionSyncer
 from vali_objects.data_sync.order_sync_state import OrderSyncState
-from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
@@ -39,7 +39,6 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, TradePairCategory, TradePairSource, NATIVE_CRYPTO_TO_HL_TRADE_PAIR, DynamicTradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from runnable.run_migrations import main as run_migrations
 
@@ -227,8 +226,9 @@ class Validator(ValidatorBase):
             is_mothership=self.is_mothership
         )
 
-        # MarketOrderManager creates its own ContractClient internally (forward compatibility)
-        self.market_order_manager = MarketOrderManager(self.config.serve, slack_notifier=self.slack_notifier)
+        # OrderProcessor owns a MarketOrderManagerClient; no need to create a local MarketOrderManager
+        self.order_processor = OrderProcessor()
+        self.market_order_manager_client = self.order_processor._market_order_manager
 
         # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
@@ -242,11 +242,12 @@ class Validator(ValidatorBase):
             elimination_client=self.elimination_client,
             price_fetcher_client=self.price_fetcher_client,
             asset_selection_client=self.asset_selection_client,
-            market_order_manager=self.market_order_manager,
+            market_order_manager=self.market_order_manager_client,
             limit_order_client=self.limit_order_client,
             uuid_tracker=self.uuid_tracker,
             rate_limiter=RateLimiter(),
             ws_notifier_client=hl_ws_notifier,
+            order_processor=self.order_processor,
         )
         self.hl_tracker.start()
 
@@ -653,14 +654,13 @@ class Validator(ValidatorBase):
                 bt.logging.info(f"[TIMING] Parse operations took {parse_ms}ms")
 
                 # Use unified OrderProcessor dispatcher (replaces lines 602-661)
-                result = OrderProcessor.process_order(
+                result = self.order_processor.process_order(
                     signal=signal,
                     miner_order_uuid=miner_order_uuid,
                     now_ms=now_ms,
                     miner_hotkey=miner_hotkey,
                     miner_repo_version=miner_repo_version,
                     limit_order_client=self.limit_order_client,
-                    market_order_manager=self.market_order_manager
                 )
 
                 # Set synapse response (centralized - single line instead of 4)
