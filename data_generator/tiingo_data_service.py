@@ -188,7 +188,11 @@ class TiingoDataService(BaseDataService):
         self.disable_ws = disable_ws
         self.running_unit_tests = running_unit_tests
 
-        super().__init__(provider_name=TIINGO_PROVIDER_NAME, running_unit_tests=running_unit_tests)
+        super().__init__(
+            provider_name=TIINGO_PROVIDER_NAME,
+            running_unit_tests=running_unit_tests,
+            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX}
+        )
 
         self.MARKET_STATUS = None
 
