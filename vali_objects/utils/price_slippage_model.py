@@ -17,7 +17,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
-from vali_objects.trade_pair import TradePair, ForexSubcategory, NATIVE_CRYPTO_TO_HL_TRADE_PAIR
+from vali_objects.trade_pair import TradePair, ForexSubcategory, NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePairSource
 from vali_objects.vali_dataclasses.order import Order
 
 SLIPPAGE_V2_TIME_MS = 1759431540000
@@ -77,6 +77,11 @@ class PriceSlippageModel:
         size = abs(order.value)
         if size <= 1000:
             return 0  # assume 0 slippage when order size is under 1k
+
+        if trade_pair.src == TradePairSource.HYPERLIQUID:
+            hl_slippage = cls._simulate_slippage_hl(order)
+            return hl_slippage or 0
+
         if cls.is_backtesting:
             cls.refresh_features_daily(order.processed_ms, write_to_disk=False)
 
