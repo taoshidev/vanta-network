@@ -1000,6 +1000,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account = self.get_or_create(hotkey)
             account.reset_account_fields()
             account.total_realized_pnl = computed.total_realized_pnl
+            account.unrealized_pnl = computed.unrealized_pnl
             account.total_fees_paid = computed.total_fees_paid
             account.capital_used = computed.capital_used
             account.total_borrowed_amount = computed.total_borrowed_amount

@@ -1441,7 +1441,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 account_size = original_account.get('account_size', ValiConfig.MIN_CAPITAL)
                 computed.collateral_records = [CollateralRecord(
                     account_size=account_size,
-                    account_size_theta=0,
+                    account_size_theta=account_size / ValiConfig.COST_PER_THETA,
                     update_time_ms=0,
                     is_first_record=True,
                 )]
