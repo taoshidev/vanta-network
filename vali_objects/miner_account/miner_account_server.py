@@ -309,18 +309,11 @@ class MinerAccountServer(RPCServerBase):
         """Get total borrowed amount for a miner."""
         return self._manager.get_total_borrowed_amount(hotkey)
 
-    def rebuild_account_state_from_positions(
-        self,
-        hotkey: str,
-        positions: list,
-        miner_bucket: Optional[str] = None,
-        max_return: Optional[float] = None,
-    ) -> None:
+    def rebuild_account_state_from_positions(self, hotkey: str, positions: list) -> None:
         """Rebuild a miner's account state from a list of Position dicts."""
         from vali_objects.vali_dataclasses.position import Position
         position_objects = [Position(**p) if isinstance(p, dict) else p for p in positions]
-        bucket = MinerBucket(miner_bucket) if miner_bucket else None
-        self._manager.rebuild_account_state_from_positions(hotkey, position_objects, bucket, max_return)
+        self._manager.rebuild_account_state_from_positions(hotkey, position_objects)
 
     def update_asset_selection(
         self, hotkey: str, asset_selection: MinerAssetClass

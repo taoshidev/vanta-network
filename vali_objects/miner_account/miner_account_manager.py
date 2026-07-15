@@ -201,12 +201,8 @@ class MinerAccount:
         self.total_borrowed_amount = 0
         self.total_fees_paid = 0
         self.total_dividend_income = 0
-        self.miner_bucket = None
-        self.max_return = 1.0
         self.unrealized_pnl = 0.0
         self.capital_used_by_class = {}
-        self.daily_open_snapshot = None
-
 
     def to_dict(self, include_collateral_records: bool = False) -> dict:
         """
@@ -607,11 +603,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account = self.accounts.get(hotkey)
             if not account:
                 return False
-
             account.reset_account_fields()
             if miner_bucket:
                 account.miner_bucket = miner_bucket
-
             account.daily_open_snapshot = DailyOpenSnapshot(
                 day_open_ms=TimeUtil.get_start_of_day_ms(),
                 account_size=account.get_account_size(),
@@ -619,9 +613,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 equity=account.equity,
                 bucket=account.miner_bucket.value if account.miner_bucket else None,
             )
-
             self._save_accounts_to_disk()
-
         return True
 
 
@@ -975,84 +967,52 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self._asset_selection_client = client
 
     @staticmethod
-    def compute_account_state_from_positions(positions: list) -> dict:
-        """
-        Compute account state fields from a list of positions.
+    def compute_account_state_from_positions(positions: list, hotkey: str = "") -> 'MinerAccount':
+        """Compute position-derived account state from a list of positions.
 
-        Returns:
-            dict with total_realized_pnl, total_fees_paid, capital_used, total_borrowed_amount,
-            and capital_used_by_class (per-asset-class breakdown of capital_used).
+        Returns a MinerAccount populated with realized PnL, fees, capital used,
+        borrowed amount, and per-class capital breakdown. All other fields are
+        left at their defaults (collateral_records, asset_class, etc. are not set).
         """
-        total_realized_pnl = 0.0
-        total_fees_paid = 0.0
-        capital_used = 0.0
-        total_borrowed_amount = 0.0
-        capital_used_by_class: Dict[TradePairCategory, float] = {}
-
+        account = MinerAccount(miner_hotkey=hotkey)
         for position in positions:
-            total_realized_pnl += position.realized_pnl
-            total_fees_paid += position.total_fees
-
+            account.total_realized_pnl += position.realized_pnl
+            account.unrealized_pnl += position.unrealized_pnl
+            account.total_fees_paid += position.total_fees
             if not position.is_closed_position:
                 position_value = abs(position.net_value)
-                capital_used += position_value
-                total_borrowed_amount += position.margin_loan
+                account.capital_used += position_value
+                account.total_borrowed_amount += position.margin_loan
                 category = position.trade_pair.trade_pair_category
-                capital_used_by_class[category] = capital_used_by_class.get(category, 0.0) + position_value
+                account.capital_used_by_class[category] = account.capital_used_by_class.get(category, 0.0) + position_value
+        return account
 
-        return {
-            'total_realized_pnl': total_realized_pnl,
-            'total_fees_paid': total_fees_paid,
-            'capital_used': capital_used,
-            'total_borrowed_amount': total_borrowed_amount,
-            'capital_used_by_class': capital_used_by_class,
-        }
+    def rebuild_account_state_from_positions(self, hotkey: str, positions: List['Position']) -> None:
+        """Rebuild a miner's account state from their current positions.
 
-    def rebuild_account_state_from_positions(
-        self,
-        hotkey: str,
-        positions: List['Position'],
-        miner_bucket: Optional[MinerBucket] = None,
-        max_return: Optional[float] = None,
-    ) -> None:
+        Resets all position-derived fields then recomputes them from positions.
+        Preserves all non-computed fields (collateral_records, asset_class, hl_address,
+        daily_open_snapshot, miner_bucket, max_return).
         """
-        Rebuild a miner's account state (capital_used, total_realized_pnl, total_fees_paid)
-        from a list of positions. Preserves collateral_records and asset_class.
-
-        Args:
-            hotkey: Miner's hotkey
-            positions: All positions (open and closed) for this miner
-            miner_bucket: Miner bucket to restore after reset
-            max_return: Max return (high water mark) to restore after reset. If None, preserves existing value.
-        """
-        computed = self.compute_account_state_from_positions(positions)
+        computed = self.compute_account_state_from_positions(positions, hotkey=hotkey)
 
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
-
-            if miner_bucket is None:
-                miner_bucket = account.miner_bucket
-
-            if max_return is None:
-                max_return = account.max_return
-
             account.reset_account_fields()
-            account.miner_bucket = miner_bucket
-            account.max_return = max_return
-            account.total_realized_pnl = computed['total_realized_pnl']
-            account.total_fees_paid = computed['total_fees_paid']
-            account.capital_used = computed['capital_used']
-            account.total_borrowed_amount = computed['total_borrowed_amount']
-            account.capital_used_by_class = computed['capital_used_by_class']
-
+            account.total_realized_pnl = computed.total_realized_pnl
+            account.unrealized_pnl = computed.unrealized_pnl
+            account.total_fees_paid = computed.total_fees_paid
+            account.capital_used = computed.capital_used
+            account.total_borrowed_amount = computed.total_borrowed_amount
+            account.capital_used_by_class = computed.capital_used_by_class
             self._save_accounts_to_disk()
 
-            bt.logging.info(
-                f"[REBUILD {hotkey}] capital_used=${account.capital_used:.2f}, "
-                f"realized_pnl=${account.total_realized_pnl:.2f}, "
-                f"fees_paid=${account.total_fees_paid:.2f}, "
-                f"balance=${account.balance:.2f}"
-            )
+        bt.logging.info(
+            f"[REBUILD {hotkey}] capital_used=${account.capital_used:.2f}, "
+            f"realized_pnl=${account.total_realized_pnl:.2f}, "
+            f"fees_paid=${account.total_fees_paid:.2f}, "
+            f"balance=${account.balance:.2f}"
+        )
 
     def update_asset_selection(self, hotkey: str, asset_selection: MinerAssetClass) -> bool:
 

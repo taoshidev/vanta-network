@@ -131,9 +131,9 @@ class TestComputeAccountStateFromPositions(unittest.TestCase):
             self._position(TradePair.XAUUSD, 30.0),  # FOREX-categorized
         ]
         computed = MinerAccountManager.compute_account_state_from_positions(positions)
-        self.assertEqual(computed['capital_used_by_class'][TradePairCategory.CRYPTO], 150.0)
+        self.assertEqual(computed.capital_used_by_class[TradePairCategory.CRYPTO], 150.0)
         self.assertEqual(
-            computed['capital_used_by_class'][TradePairCategory.FOREX],
+            computed.capital_used_by_class[TradePairCategory.FOREX],
             230.0,  # EURUSD 200 + XAUUSD 30 (XAU is FOREX in this PR)
         )
 
@@ -143,7 +143,7 @@ class TestComputeAccountStateFromPositions(unittest.TestCase):
             self._position(TradePair.ETHUSD, 200.0, closed=True),
         ]
         computed = MinerAccountManager.compute_account_state_from_positions(positions)
-        self.assertEqual(computed['capital_used_by_class'][TradePairCategory.CRYPTO], 100.0)
+        self.assertEqual(computed.capital_used_by_class[TradePairCategory.CRYPTO], 100.0)
 
     def test_sum_per_class_equals_capital_used(self):
         positions = [
@@ -153,20 +153,20 @@ class TestComputeAccountStateFromPositions(unittest.TestCase):
         ]
         computed = MinerAccountManager.compute_account_state_from_positions(positions)
         self.assertEqual(
-            sum(computed['capital_used_by_class'].values()),
-            computed['capital_used'],
+            sum(computed.capital_used_by_class.values()),
+            computed.capital_used,
         )
 
     def test_negative_net_value_uses_absolute(self):
         """Short positions have negative net_value; per-class tracks abs(value), like capital_used."""
         positions = [self._position(TradePair.BTCUSD, -100.0)]
         computed = MinerAccountManager.compute_account_state_from_positions(positions)
-        self.assertEqual(computed['capital_used_by_class'][TradePairCategory.CRYPTO], 100.0)
-        self.assertEqual(computed['capital_used'], 100.0)
+        self.assertEqual(computed.capital_used_by_class[TradePairCategory.CRYPTO], 100.0)
+        self.assertEqual(computed.capital_used, 100.0)
 
     def test_empty_positions_yield_empty_per_class(self):
         computed = MinerAccountManager.compute_account_state_from_positions([])
-        self.assertEqual(computed['capital_used_by_class'], {})
+        self.assertEqual(computed.capital_used_by_class, {})
 
 
 # ---------------------------------------------------------------------------
