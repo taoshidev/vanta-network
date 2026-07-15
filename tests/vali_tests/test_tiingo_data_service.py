@@ -495,7 +495,7 @@ class TestTiingoDataService(unittest.TestCase):
         self.assertGreater(len(tradeable), 0, "Should have some tradeable pairs")
 
         # Verify specific non-blocked pairs ARE included
-        self.assertIn(TradePair.BTCUSD, tradeable, "BTC/USD should be tradeable")
+        self.assertIn(TradePair.BTCUSDC, tradeable, "BTC/USDC should be tradeable")
         self.assertIn(TradePair.EURUSD, tradeable, "EUR/USD should be tradeable")
 
     def test_get_tradeable_pairs_include_blocked_true(self):
@@ -569,8 +569,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         # Verify specific crypto pairs are included
         crypto_ids = {tp.trade_pair_id for tp in crypto_pairs}
-        self.assertIn('BTCUSD', crypto_ids, "BTC/USD should be included")
-        self.assertIn('ETHUSD', crypto_ids, "ETH/USD should be included")
+        self.assertIn('BTCUSDC', crypto_ids, "BTC/USDC should be included")
+        self.assertIn('ETHUSDC', crypto_ids, "ETH/USDC should be included")
 
     def test_get_tradeable_pairs_excludes_unsupported(self):
         """Test that get_tradeable_pairs always excludes unsupported pairs."""

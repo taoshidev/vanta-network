@@ -410,7 +410,7 @@ class TestPolygonDataService(unittest.TestCase):
         self.assertGreater(len(tradeable), 0, "Should have some tradeable pairs")
 
         # Verify specific non-blocked pairs ARE included
-        self.assertIn(TradePair.BTCUSD, tradeable, "BTC/USD should be tradeable")
+        self.assertIn(TradePair.BTCUSDC, tradeable, "BTC/USDC should be tradeable")
         self.assertIn(TradePair.EURUSD, tradeable, "EUR/USD should be tradeable")
 
     def test_get_tradeable_pairs_include_blocked_true(self):

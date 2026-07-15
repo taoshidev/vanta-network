@@ -28,7 +28,6 @@ from vali_objects.enums.misc import OrderStatus
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import (
     TRADE_PAIR_ID_TO_TRADE_PAIR,
-    DynamicTradePair,
     TradePair,
 )
 from vali_objects.vali_dataclasses.order import Order

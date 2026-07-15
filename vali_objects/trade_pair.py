@@ -37,8 +37,8 @@ BLOCKED_TRADE_PAIR_IDS = {
     
     # All vanta native crypto pairs deprecated for corresponding USDC pairs
     'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD',
-    'DOGEUS', 'ADAUSD', 'TAOUSD', 'HYPEUS',
-    'ZECUSD', 'BCHUSD', 'LINKUS', 'XMRUSD',
+    'DOGEUSD', 'ADAUSD', 'TAOUSD', 'HYPEUSD',
+    'ZECUSD', 'BCHUSD', 'LINKUSD', 'XMRUSD',
     'LTCUSD'
 }
 

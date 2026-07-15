@@ -133,10 +133,10 @@ The system uses a distributed RPC architecture for inter-process communication:
 5. Performance calculation using debt-based scoring system
 
 ### Supported Assets
-- **Crypto**: BTC/USD, ETH/USD, SOL/USD, XRP/USD, DOGE/USD, ADA/USD (6 pairs)
+- **Crypto**: BTC/USDC, ETH/USDC, SOL/USDC, XRP/USDC, DOGE/USDC, ADA/USDC, etc. (Hyperliquid USDC pairs; native USD-denominated equivalents are blocked in favor of these)
 - **Forex**: 32 major currency pairs (EUR/USD, GBP/USD, USD/JPY, etc.)
   - Grouped into G1-G5 subcategories by liquidity/volume
-- **Equities**: 7 major stocks (NVDA, AAPL, TSLA, AMZN, MSFT, GOOG, META) - currently blocked
+- **Equities**: Russell 1000 single stocks plus HL-matched additions (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD) - enabled via Polygon/Databento
 - **Indices**: 6 global indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) - currently blocked
 - **Commodities**: XAU/USD, XAG/USD - currently blocked
 
