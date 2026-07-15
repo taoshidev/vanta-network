@@ -112,18 +112,7 @@ class MinerAccountClient(RPCClientBase):
         return self._server.delete_miner_account_size(hotkey)
 
     def reset_account_fields(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
-        """
-        Reset account fields for a miner.
-
-        Resets: total_realized_pnl, capital_used, total_borrowed_amount,
-        and total_fees_paid to zero.
-
-        Args:
-            hotkey: Miner's hotkey (SS58 address)
-
-        Returns:
-            bool: True if successful, False if account doesn't exist
-        """
+        """Reset all position-derived computed state for a miner."""
         return self._server.reset_account_fields(hotkey, miner_bucket)
 
     def get_miner_account_size(
@@ -302,27 +291,9 @@ class MinerAccountClient(RPCClientBase):
         """Get total borrowed amount for a miner."""
         return self._server.get_total_borrowed_amount(hotkey)
 
-    def rebuild_account_state_from_positions(
-        self,
-        hotkey: str,
-        positions: list,
-        miner_bucket: Optional[MinerBucket] = None,
-        max_return: Optional[float] = None,
-    ) -> None:
-        """
-        Rebuild a miner's account state from a list of positions.
-
-        Resets capital_used, total_realized_pnl, total_fees_paid, and total_borrowed_amount,
-        then recomputes them from the provided positions.
-
-        Args:
-            hotkey: Miner's hotkey
-            positions: List of Position objects or dicts for this miner
-            miner_bucket: Miner bucket to restore after reset
-            max_return: Max return (high water mark) to restore after reset. If None, preserves existing value.
-        """
-        bucket_value = miner_bucket.value if miner_bucket else None
-        self._server.rebuild_account_state_from_positions(hotkey, positions, bucket_value, max_return)
+    def rebuild_account_state_from_positions(self, hotkey: str, positions: list) -> None:
+        """Sync a miner's account state from their current positions."""
+        self._server.rebuild_account_state_from_positions(hotkey, positions)
 
     def update_asset_selection(
         self, hotkey: str, asset_selection: MinerAssetClass

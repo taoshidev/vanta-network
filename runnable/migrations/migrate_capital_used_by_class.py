@@ -85,7 +85,7 @@ def main(dry_run: bool = False, running_unit_tests: bool = False) -> bool:
 
             positions = all_positions.get(hotkey, [])
             computed = MinerAccountManager.compute_account_state_from_positions(positions)
-            per_class_enum = computed["capital_used_by_class"]
+            per_class_enum = computed.capital_used_by_class
             # JSON keys must be strings. cat.value is the string form of the enum.
             per_class_str = {cat.value: amt for cat, amt in per_class_enum.items()}
 
