@@ -2,8 +2,10 @@ from typing import Optional
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.vali_config import ValiConfig
 from vali_objects.trade_pair import InstrumentType, TradePair, TradePairCategory
+from vali_objects.vali_dataclasses.position import Position
 
 
 # Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will
@@ -65,6 +67,44 @@ def get_portfolio_caps(
     per_class_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier].get(trade_pair_category, 1.0)
     overall_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
     return per_class_cap, overall_cap
+
+def get_max_order_size(
+    account: MinerAccount,
+    position: Position,
+) -> float:
+    """Return the max USD value that can be added to this position (always non-negative).
+
+    Three-dimensional cap:
+      1. Per-pair positional leverage cap × balance
+      2. Per-asset-class portfolio cap (subaccounts only)
+      3. Overall portfolio cap (subaccounts only)
+
+    Returns the remaining room after subtracting current exposure:
+      max(0, min(position_cap, effective_buying_power) - abs(position.net_value))
+    """
+    trade_pair = position.trade_pair
+    _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
+    if account.miner_bucket in _subaccount_buckets:
+        tier = get_leverage_tier(account.miner_bucket, account.account_size)
+        max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
+    else:
+        max_position_leverage = trade_pair.max_leverage
+    max_position_value = account.balance * max_position_leverage
+
+    effective_buying_power = account.buying_power
+    if account.miner_bucket in _subaccount_buckets:
+        if not account.asset_class:
+            raise ValueError("asset_class must be selected for trading")
+        per_class_cap, overall_cap = get_portfolio_caps(
+            account.asset_class, account.miner_bucket, account.account_size, trade_pair.trade_pair_category
+        )
+        per_class_used = account.capital_used_by_class.get(trade_pair.trade_pair_category, 0.0)
+        per_class_room = account.balance * per_class_cap - per_class_used
+        overall_room = account.balance * overall_cap - account.capital_used
+        effective_buying_power = min(account.buying_power, per_class_room, overall_room)
+
+    combined = min(max_position_value, effective_buying_power)
+    return max(0.0, combined - abs(position.net_value))
 
 
 def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:

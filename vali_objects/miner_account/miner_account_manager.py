@@ -163,6 +163,10 @@ class MinerAccount:
         tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
         return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
+    @property
+    def account_size(self) -> float:
+        return self.get_account_size()
+
     def add_collateral_record(self, record: 'CollateralRecord'):
         """Add a new collateral record. Account size flows through balance property."""
         self.collateral_records.append(record)

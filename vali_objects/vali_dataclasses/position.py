@@ -1,24 +1,18 @@
 import json
-import logging
 from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
-from time_util.time_util import TimeUtil, MS_IN_1_HOUR, MS_IN_8_HOURS, MS_IN_24_HOURS
-from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
+from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
+from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource, DAILY_STOCK_BORROW_RATE, DAILY_MARGIN_INTEREST_RATE
+from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.utils import leverage_utils
 import bittensor as bt
 import re
 import math
-
-# TODO update with ledger updates
-CRYPTO_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - 0.1095) / (365.0*3.0))  # 10.95% per year for 1x leverage. Each interval is 8 hrs
-FOREX_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .03) / 365.0)  # 3% per year for 1x leverage. Each interval is 24 hrs
-INDICES_CARRY_FEE_PER_INTERVAL = math.exp(math.log(1 - .0525) / 365.0)  # 5.25% per year for 1x leverage. Each interval is 24 hrs
 
 
 class Position(BaseModel):
@@ -45,6 +39,7 @@ class Position(BaseModel):
     position_uuid: str
     open_ms: int
     trade_pair: TradePair
+    position_type: OrderType
     orders: List[Order] = Field(default_factory=list)
     current_return: float = 1.0             # Excludes fees
     close_ms: Optional[int] = None
@@ -57,7 +52,6 @@ class Position(BaseModel):
     account_size: float = 0.0               # USD
     realized_pnl: float = 0.0               # USD
     unrealized_pnl: float = 0.0             # USD
-    position_type: Optional[OrderType] = None
     # TODO: Replace this with a property that checks if close_ms is None
     is_closed_position: bool = False
     fee_history: List[Dict] = Field(default_factory=list) # [{"fee_type": "carry", "amount": 123, "time_ms": 123}]
@@ -129,11 +123,11 @@ class Position(BaseModel):
         if self.trade_pair.is_crypto:
             interval_ms = MS_IN_8_HOURS
             intervals = (current_time_ms - last_accrual_ms) // interval_ms
-            rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.CRYPTO]
+            rate = self.trade_pair.carry_fee_rate_per_interval
         elif self.trade_pair.is_forex:
             interval_ms = MS_IN_24_HOURS
             intervals = (current_time_ms - last_accrual_ms) // interval_ms
-            rate = ValiConfig.CARRY_FEE_RATE_PER_INTERVAL[TradePairCategory.FOREX]
+            rate = self.trade_pair.carry_fee_rate_per_interval
         else:
             return 0.0
 
@@ -166,7 +160,7 @@ class Position(BaseModel):
                 last_borrow_accrual_ms = self._last_fee_time_ms("borrow")
                 intervals = (most_recent_midnight_ms - last_borrow_accrual_ms) // MS_IN_24_HOURS
                 if intervals > 0:
-                    borrow_fee = short_position_value * ValiConfig.DAILY_STOCK_BORROW_RATE * intervals
+                    borrow_fee = short_position_value * DAILY_STOCK_BORROW_RATE * intervals
                     if borrow_fee > 0:
                         self.record_fee_event("borrow", borrow_fee, most_recent_midnight_ms)
                         total_fee += borrow_fee
@@ -177,7 +171,7 @@ class Position(BaseModel):
                 last_interest_accrual_ms = self._last_fee_time_ms("interest")
                 intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
                 if intervals > 0:
-                    interest_fee = borrowed * ValiConfig.DAILY_INTEREST_RATE * intervals
+                    interest_fee = borrowed * DAILY_MARGIN_INTEREST_RATE * intervals
                     if interest_fee > 0:
                         self.record_fee_event("interest", interest_fee, most_recent_midnight_ms)
                         total_fee += interest_fee
@@ -410,35 +404,38 @@ class Position(BaseModel):
         ]
         bt.logging.debug(f"position order details: " f"close_ms [{order_info}] ")
 
-    def add_order(self, order: Order, live_price_fetcher=None, transaction_fee: float = 0):
-        """
-        Add an order to a position, and adjust its size to stay within
-        the trade pair max and portfolio max.
-
-        Args:
-            order: The order to add
-            live_price_fetcher: Price fetcher for position updates
-            net_portfolio_leverage: Deprecated, no longer used
-            skip_validation: If True, skip order size validation
-            balance: Miner's balance for USD-based validation. If None, uses account_size.
-            max_position_leverage: Max leverage for trade pair. If None, uses trade pair max.
-        """
+    def add_order(self, order: Order, live_price_fetcher=None):
         if self.is_closed_position:
             raise ValueError("Miner attempted to add order to a closed/liquidated position. Ignoring.")
         if order.trade_pair != self.trade_pair:
             raise ValueError(
                 f"Order trade pair [{order.trade_pair}] does not match position trade pair [{self.trade_pair}]")
 
-        self.validate_order_size(order)
+        self.validate_min_position_size(order)
         self.orders.append(order)
 
         if order.price_sources:
             self.last_price_source = order.price_sources[0]
 
+        is_reducing = order.order_type != self.position_type or self.is_closed_position
+        self._update_position()
+
+        transaction_fee_rate = self.trade_pair.transaction_fee_rate
+        transaction_fee, loan_repaid = 0.0, 0.0
+        if is_reducing:
+            entry_value = abs(order.quantity) * self.trade_pair.lot_size * self.average_entry_price * order.quote_usd_rate
+            exit_value = entry_value + order.realized_pnl
+            transaction_fee = exit_value * transaction_fee_rate
+            if self.trade_pair.is_equities and self.trade_pair.src == TradePairSource.VANTA:
+                loan_repaid = min(self.margin_loan, exit_value)
+                order.margin_loan = -loan_repaid
+        else:
+            transaction_fee = abs(order.value) * transaction_fee_rate
+
         if transaction_fee:
             self.record_fee_event("transaction", transaction_fee, order.processed_ms)
 
-        self._update_position(live_price_fetcher)
+        return order.realized_pnl, transaction_fee, loan_repaid
 
     def calculate_pnl(self, current_price, live_price_fetcher=None, t_ms=None, order=None, quote_usd_conversion=None):
         if self.initial_entry_price == 0 or self.average_entry_price is None:
@@ -563,7 +560,7 @@ class Position(BaseModel):
         if not close_ms:
             close_ms = TimeUtil.now_in_millis()
 
-        fill_price = price_source.parse_appropriate_price(close_ms, self.trade_pair.is_forex, OrderType.FLAT, self)
+        fill_price = price_source.parse_appropriate_price(close_ms, self.trade_pair.is_forex, OrderType.FLAT, self.position_type)
         if fill_price is None:
             bt.logging.warning(
                 f"force_close_position: no valid price in last_price_source for "
@@ -597,62 +594,14 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.close_ms = None
 
-    def validate_order_size(self, order: Order, max_position_value: Optional[float] = None) -> bool:
-        """
-        returns True if clamped due to max position value
-        """
+    def validate_min_position_size(self, order: Order) -> None:
+        """Raise ValueError if the resulting position would be below the per-asset-class minimum size."""
         if order.order_type == OrderType.FLAT:
-            return False
-
-        # Validate order min leverage
-        min_order_lev, max_order_lev = leverage_utils.get_order_leverage_bounds()
-        if abs(order.leverage) > max_order_lev:
-            raise ValueError(
-                f"{self.trade_pair.trade_pair_id}: order leverage {abs(order.leverage):.5f} exceeds maximum {max_order_lev}")
-        is_opening_or_increasing = self.position_type is None or order.order_type == self.position_type
-        if is_opening_or_increasing and abs(order.leverage) < min_order_lev:
-            raise ValueError(
-                f"{self.trade_pair.trade_pair_id}: order leverage {abs(order.leverage):.5f} below minimum {min_order_lev}")
-
-        if self.is_closed_position:
-            raise ValueError(f"{self.trade_pair.trade_pair_id}: cannot validate {order.order_type} order on already-closed position (closed at {self.close_ms})")
-
+            return
         position_sign = 1 if self.position_type == OrderType.LONG else -1
-        proposed_leverage = self.net_leverage + (order.leverage or 0)
         proposed_quantity = self.net_quantity + (order.quantity or 0)
         proposed_value = self.net_value + position_sign * self.unrealized_pnl + (order.value or 0)
 
-        bt.logging.info(f"[POSITION VALIDATION] unrealized pnl: {self.unrealized_pnl}")
-        bt.logging.info(f"[POSITION VALIDATION] proposed quantity: {proposed_quantity}, proposed_value: {proposed_value}")
-
-        # Flatten order
-        flatten = False
-        if self.position_type == OrderType.LONG:
-            flatten = proposed_quantity <= 1e-6 or proposed_value <= 1.0
-        elif self.position_type == OrderType.SHORT:
-            flatten = proposed_quantity >= -1e-6 or proposed_value >= -1.0
-
-        if flatten:
-            order.order_type = OrderType.FLAT
-            order.leverage = -self.net_leverage
-            order.quantity = -self.net_quantity
-            order.value = -self.net_value
-            return False
-
-        # If order increases position size, validate max position size
-        clamped = False
-        if order.order_type == self.position_type and max_position_value is not None:
-            if abs(self.net_value + self.unrealized_pnl) >= max_position_value:
-                raise ValueError(f"Position at max ${abs(self.net_value):.2f} (limit: ${max_position_value:.2f})")
-
-            max_order_value = max_position_value - abs(self.net_value)
-            if abs(order.value) > max_order_value:
-                order.value = position_sign * max_order_value
-                order.quantity = (order.value * order.usd_base_rate) / order.trade_pair.lot_size
-                proposed_quantity = self.net_quantity + order.quantity
-                clamped = True
-
-        # Validate against min position size
         if self.trade_pair.is_forex:
             proposed_lots = abs(proposed_quantity)
             min_lots = (ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS_SUB_NANO
@@ -670,12 +619,10 @@ class Position(BaseModel):
             if proposed_shares > 0 and proposed_shares < ValiConfig.EQUITIES_MIN_POSITION_SIZE_SHARES:
                 raise ValueError(
                     f"{self.trade_pair.trade_pair_id}: position size {proposed_shares:.4f} shares is below minimum {ValiConfig.EQUITIES_MIN_POSITION_SIZE_SHARES} shares")
-        else:  # for other asset classes
+        else:
             if abs(proposed_value) > 0 and abs(proposed_value) < ValiConfig.DEFAULT_MIN_POSITION_SIZE_USD:
                 raise ValueError(
                     f"{self.trade_pair.trade_pair_id}: position size ${abs(proposed_value):.2f} is below minimum ${ValiConfig.DEFAULT_MIN_POSITION_SIZE_USD:.2f}")
-
-        return clamped
 
     def apply_stock_split(self, stock_split_ratio: float, execution_date: str) -> bool:
         """
