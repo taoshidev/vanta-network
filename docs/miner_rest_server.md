@@ -56,8 +56,8 @@ This endpoint receives trading signals from external systems and processes them 
   - `"BRACKET"`: Limit order with attached stop-loss and/or take-profit orders
   - `"LIMIT_CANCEL"`: Cancel an existing limit order
 - `trade_pair` (string or object): The trading pair for the order. Can be either:
-  - Trade pair ID string (e.g., `"BTCUSD"`, `"ETHUSD"`, `"EURUSD"`)
-  - Trade pair object with `trade_pair_id` field (e.g., `{"trade_pair_id": "BTCUSD"}`)
+  - Trade pair ID string (e.g., `"BTCUSDC"`, `"ETHUSDC"`, `"EURUSD"`)
+  - Trade pair object with `trade_pair_id` field (e.g., `{"trade_pair_id": "BTCUSDC"}`)
 - `order_type` (string): The direction of the order. Must be one of:
   - `"LONG"`: Open or increase a long position
   - `"SHORT"`: Open or increase a short position
@@ -94,7 +94,7 @@ You must provide **exactly one** of the following fields to specify the order si
 ```json
 {
   "execution_type": "MARKET",
-  "trade_pair": "BTCUSD",
+  "trade_pair": "BTCUSDC",
   "order_type": "LONG",
   "leverage": 0.1
 }
@@ -104,7 +104,7 @@ You must provide **exactly one** of the following fields to specify the order si
 ```json
 {
   "execution_type": "BRACKET",
-  "trade_pair": "ETHUSD",
+  "trade_pair": "ETHUSDC",
   "order_type": "SHORT",
   "leverage": 0.2,
   "limit_price": 3500.00,
@@ -129,7 +129,7 @@ You must provide **exactly one** of the following fields to specify the order si
 ```json
 {
   "execution_type": "MARKET",
-  "trade_pair": "BTCUSD",
+  "trade_pair": "BTCUSDC",
   "order_type": "LONG",
   "value": 10000
 }
@@ -139,7 +139,7 @@ You must provide **exactly one** of the following fields to specify the order si
 ```json
 {
   "execution_type": "LIMIT_CANCEL",
-  "trade_pair": "BTCUSD",
+  "trade_pair": "BTCUSDC",
   "order_type": "FLAT",
   "order_uuid": "550e8400-e29b-41d4-a716-446655440000"
 }
@@ -149,7 +149,7 @@ You must provide **exactly one** of the following fields to specify the order si
 ```json
 {
   "execution_type": "MARKET",
-  "trade_pair": "BTCUSD",
+  "trade_pair": "BTCUSDC",
   "order_type": "LONG",
   "leverage": 0.1,
   "subaccount_id": 0
@@ -168,7 +168,7 @@ Success (200) - verbose=false (default):
   "high_trust_total": 5,
   "high_trust_succeeded": 5,
   "all_high_trust_succeeded": true,
-  "created_orders": "{'trade_pair': 'BTCUSD', 'order_type': 'LONG', ...}",
+  "created_orders": "{'trade_pair': 'BTCUSDC', 'order_type': 'LONG', ...}",
   "error_messages": null,
   "processing_time": 23.456,
   "message": "Order successfully processed by Taoshi validator"
@@ -186,8 +186,8 @@ Success (200) - verbose=true:
   "high_trust_succeeded": 5,
   "all_high_trust_succeeded": true,
   "created_orders": {
-    "5FeNwZ...UZmo": "{'trade_pair': 'BTCUSD', 'order_type': 'LONG', ...}",
-    "5GTNzN...bHLN": "{'trade_pair': 'BTCUSD', 'order_type': 'LONG', ...}",
+    "5FeNwZ...UZmo": "{'trade_pair': 'BTCUSDC', 'order_type': 'LONG', ...}",
+    "5GTNzN...bHLN": "{'trade_pair': 'BTCUSDC', 'order_type': 'LONG', ...}",
     "...": "..."
   },
   "error_messages": {},
@@ -214,7 +214,7 @@ Processing Error (400):
   "high_trust_total": 5,
   "high_trust_succeeded": 2,
   "all_high_trust_succeeded": false,
-  "created_orders": "{'trade_pair': 'BTCUSD', ...}",
+  "created_orders": "{'trade_pair': 'BTCUSDC', ...}",
   "error_messages": ["Validator error message"],
   "processing_time": 25.123,
   "message": "Order failed on Taoshi validator"
@@ -253,10 +253,12 @@ Internal Error (500):
 
 **Supported Trade Pairs**:
 
-- **Crypto**: BTCUSD, ETHUSD, SOLUSD, XRPUSD, DOGEUSD, ADAUSD
+- **Crypto**: BTCUSDC, ETHUSDC, SOLUSDC, XRPUSDC, DOGEUSDC, ADAUSDC (USDC denominated)
 - **Forex**: EURUSD, GBPUSD, AUDUSD, USDCAD, USDCHF, NZDUSD, and other major currency pairs
+- **Equities**: Russell 1000 single stocks plus additional HL-matched names (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD)
+- **Commodities**: GOLDUSDC, SILVERUSDC, COPPERUSDC, NATGASUSDC, PLATINUMUSDC, WTIOILUSDC, BRENTOILUSDC
 
-For the complete list of supported trade pairs and their current status, refer to `vali_objects/vali_config.py`.
+For the complete list of supported trade pairs and their current status, refer to `vali_objects/trade_pair.py`.
 
 **Notes**:
 
