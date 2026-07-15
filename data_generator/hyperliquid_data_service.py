@@ -95,32 +95,40 @@ class _HyperliquidWebsocketClient:
         self._should_close = True
 
 
-class _DualL2BookClient:
-    """Manages two concurrent L2 book WebSocket connections at different resolutions.
+class _MultiResolutionL2BookClient:
+    """Manages one concurrent L2 book WebSocket connection per resolution in the cascade.
 
-    Full precision (no nSigFigs) provides native tick-size pricing for accurate mid and slippage.
-    Coarse (nSigFigs=2) provides wider depth for large orders that exhaust the full-precision book.
-    Messages are routed to the service's resolution-specific handlers.
+    Full precision (no nSigFigs) provides native tick-size pricing for accurate mid and
+    near-spread slippage, and is the only resolution that feeds the validator price feed.
+    Each successively coarser resolution (ValiConfig.HL_L2_SIG_FIGS_CASCADE[1:]) provides
+    wider depth for large orders that exhaust the finer levels. Messages are routed to the
+    service's resolution-specific handlers.
     """
 
     def __init__(self, service, category):
-        self._full = _HyperliquidWebsocketClient(service, category, n_sig_figs=None)
-        self._coarse = _HyperliquidWebsocketClient(service, category, n_sig_figs=ValiConfig.HL_L2_COARSE_SIG_FIGS)
         self._svc = service
+        cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
+        self._full = _HyperliquidWebsocketClient(service, category, n_sig_figs=cascade[0])
+        self._coarse_sig_figs = cascade[1:]
+        self._coarse_clients = [
+            _HyperliquidWebsocketClient(service, category, n_sig_figs=sig_figs)
+            for sig_figs in self._coarse_sig_figs
+        ]
 
     async def connect(self, handle_msg):
-        """Run both WebSocket connections concurrently."""
-        await asyncio.gather(
-            self._full.connect(self._svc.handle_msg_full),
-            self._coarse.connect(self._svc.handle_msg_coarse),
-        )
+        """Run one WebSocket connection per cascade resolution concurrently."""
+        coros = [self._full.connect(self._svc.handle_msg_full)]
+        for client, sig_figs in zip(self._coarse_clients, self._coarse_sig_figs):
+            coros.append(client.connect(lambda msg, sf=sig_figs: self._svc.handle_msg_coarse(sf, msg)))
+        await asyncio.gather(*coros)
 
     async def close(self):
-        await asyncio.gather(self._full.close(), self._coarse.close())
+        await asyncio.gather(self._full.close(), *[c.close() for c in self._coarse_clients])
 
     def unsubscribe_all(self):
         self._full.unsubscribe_all()
-        self._coarse.unsubscribe_all()
+        for c in self._coarse_clients:
+            c.unsubscribe_all()
 
 
 class HyperliquidDataService(BaseDataService):
@@ -139,12 +147,16 @@ class HyperliquidDataService(BaseDataService):
             if tp.src == TradePairSource.HYPERLIQUID and not tp.is_blocked:
                 self._coin_to_trade_pair[tp.hl_coin] = tp
 
-        # Dual-resolution L2 orderbook cache per coin.
+        # Multi-resolution L2 orderbook cache per coin, per ValiConfig.HL_L2_SIG_FIGS_CASCADE.
         # Full precision (no nSigFigs): native tick-size pricing for accurate mid and near-spread slippage.
-        # Coarse (nSigFigs=2): wider depth for large orders that exhaust the full-precision book.
-        # Key: coin name (e.g. "BTC"), Value: {"bids": [...], "asks": [...], "time": timestamp_ms}
+        # Each coarser resolution (5, 4, 3, 2 sig figs): wider depth for large orders that exhaust
+        # the finer resolutions.
+        # Value shape: {"bids": [...], "asks": [...], "time": timestamp_ms}
         self._orderbooks_full: dict[str, dict] = {}
-        self._orderbooks_coarse: dict[str, dict] = {}
+        # Keyed by sig_figs, then coin name (e.g. "BTC").
+        self._orderbooks_coarse_by_sigfigs: dict[int, dict[str, dict]] = {
+            sig_figs: {} for sig_figs in ValiConfig.HL_L2_SIG_FIGS_CASCADE[1:]
+        }
 
         # Cache for subscription coin list (filtered by allMids availability).
         # Persists across reconnects to avoid repeated REST calls on reconnect storms.
@@ -162,7 +174,7 @@ class HyperliquidDataService(BaseDataService):
     def _create_websocket_client(self, tpc):
         if tpc != TradePairCategory.CRYPTO:
             return
-        client = _DualL2BookClient(self, tpc)
+        client = _MultiResolutionL2BookClient(self, tpc)
         self.WEBSOCKET_OBJECTS[tpc] = client
         bt.logging.info(f"Created {self.provider_name} dual-resolution websocket client for {tpc}")
 
@@ -242,18 +254,20 @@ class HyperliquidDataService(BaseDataService):
                 f"with error: {e}, type: {type(e).__name__}, traceback: {limited_traceback}"
             )
 
-    async def handle_msg_coarse(self, msg):
-        """Handle nSigFigs=2 l2Book messages: update coarse orderbook cache for deep slippage walks."""
+    async def handle_msg_coarse(self, sig_figs: int, msg):
+        """Handle a coarse-resolution l2Book message: update that resolution's orderbook cache."""
         try:
             parsed = self._parse_l2_book_msg(msg)
             if parsed is None:
                 return
             coin, _tp, bids, asks, timestamp_ms = parsed
-            self._orderbooks_coarse[coin] = {"bids": bids, "asks": asks, "time": timestamp_ms}
+            self._orderbooks_coarse_by_sigfigs.setdefault(sig_figs, {})[coin] = {
+                "bids": bids, "asks": asks, "time": timestamp_ms
+            }
         except Exception as e:
             limited_traceback = traceback.format_exc()[-1000:]
             bt.logging.error(
-                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} coarse websocket message "
+                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} coarse (nSigFigs={sig_figs}) websocket message "
                 f"with error: {e}, type: {type(e).__name__}, traceback: {limited_traceback}"
             )
 
@@ -433,29 +447,37 @@ class HyperliquidDataService(BaseDataService):
 
         return results
 
-    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
-        """Simulate slippage using a dual-resolution two-phase orderbook walk.
+    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool,
+                           order_uuid: str = None) -> float | None:
+        """Simulate slippage using an N-phase orderbook walk across the full sig-figs cascade.
 
         Phase 1 walks the full-precision book (nSigFigs=None) for accurate near-spread
-        pricing. Phase 2 continues with coarse levels (nSigFigs=2) priced beyond the
-        last full level if the order exhausts the full-precision book. Falls back to coarse-only
-        if the full-precision book is not yet populated.
+        pricing. Each subsequent phase continues with the next-coarser resolution in
+        ValiConfig.HL_L2_SIG_FIGS_CASCADE, using only levels priced beyond the last level
+        consumed so far, for orders that exhaust the finer resolutions. Falls back to the
+        coarsest available resolution if finer ones are not yet populated.
 
         Args:
             trade_pair: The trade pair to calculate slippage for.
             size_usd: The order size in USD.
             is_buy: True for LONG orders (fill against asks),
                     False for SHORT orders (fill against bids).
+            order_uuid: Optional order identifier, included in the audit log line when
+                        slippage exceeds ValiConfig.HL_SLIPPAGE_AUDIT_LOG_THRESHOLD.
 
         Returns:
             Slippage as a fraction (e.g. 0.001 for 0.1%), or None if no
             orderbook data is available.
         """
         coin = trade_pair.hl_coin
+        cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
         full_book = self._orderbooks_full.get(coin, {})
-        coarse_book = self._orderbooks_coarse.get(coin, {})
+        books = [full_book] + [
+            self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
+            for sig_figs in cascade[1:]
+        ]
 
-        primary = full_book or coarse_book
+        primary = next((b for b in books if b), {})
         if not primary:
             return None
 
@@ -469,46 +491,53 @@ class HyperliquidDataService(BaseDataService):
             return None
 
         side = "asks" if is_buy else "bids"
-        full_levels = full_book.get(side, [])
-        coarse_levels = coarse_book.get(side, [])
-
-        # Phase 1: walk full-grained levels
-        if full_levels:
-            fills, remaining = simulate_fill(full_levels, size_usd, "usd")
-        else:
-            fills, remaining = [], size_usd
-
-        # Phase 2: continue with coarse levels beyond full book's price coverage
-        if remaining > 0 and coarse_levels:
-            if full_levels:
-                last_full_px = float(full_levels[-1]["px"])
-                if is_buy:
-                    deeper = [l for l in coarse_levels if float(l["px"]) > last_full_px]
-                else:
-                    deeper = [l for l in coarse_levels if float(l["px"]) < last_full_px]
-            else:
-                deeper = coarse_levels
-            coarse_fills, _ = simulate_fill(deeper, remaining, "usd")
-            fills.extend(coarse_fills)
+        fills = []
+        remaining = size_usd
+        last_px = None
+        for sig_figs, book in zip(cascade, books):
+            if remaining <= 0:
+                break
+            levels = book.get(side, [])
+            if not levels:
+                continue
+            if last_px is not None:
+                levels = [l for l in levels if (float(l["px"]) > last_px if is_buy else float(l["px"]) < last_px)]
+                if not levels:
+                    continue
+            phase_fills, remaining = simulate_fill(levels, remaining, "usd")
+            fills.extend((sig_figs,) + f for f in phase_fills)
+            last_px = float(levels[-1]["px"])
 
         if not fills:
             return None
 
-        total_coins = sum(f[1] for f in fills)
-        total_usd = sum(f[2] for f in fills)
+        total_coins = sum(f[2] for f in fills)
+        total_usd = sum(f[3] for f in fills)
         if total_coins <= 0:
             return None
 
         avg_price = total_usd / total_coins
-        slippage_pct = (avg_price - mid) / mid if is_buy else (mid - avg_price) / mid
-        return max(0.0, slippage_pct)
+        slippage_pct = max(0.0, (avg_price - mid) / mid if is_buy else (mid - avg_price) / mid)
+
+        if slippage_pct > ValiConfig.HL_SLIPPAGE_AUDIT_LOG_THRESHOLD:
+            fills_desc = [
+                {"sig_figs": sig_figs, "price": px, "filled_coins": coins, "filled_usd": usd}
+                for sig_figs, px, coins, usd in fills
+            ]
+            bt.logging.warning(
+                f"[SLIPPAGE_AUDIT] order_uuid={order_uuid} {trade_pair.trade_pair_id} "
+                f"size_usd={size_usd:.2f} is_buy={is_buy} mid={mid} avg_price={avg_price} "
+                f"slippage_pct={slippage_pct:.6f} fills={fills_desc}"
+            )
+
+        return slippage_pct
 
     def simulate_avg_fill_price(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> float | None:
         """Simulate the average fill price for a market order using the L2 orderbook.
 
-        Uses the same dual-resolution two-phase orderbook walk as simulate_slippage,
-        but returns the raw avg fill price instead of a slippage fraction. This is used
-        for HL taker fills where we want to record the actual execution price directly.
+        Uses the same N-phase sig-figs cascade walk as simulate_slippage, but returns the
+        raw avg fill price instead of a slippage fraction. This is used for HL taker fills
+        where we want to record the actual execution price directly.
 
         Args:
             trade_pair: The trade pair to simulate.
@@ -520,10 +549,14 @@ class HyperliquidDataService(BaseDataService):
             Average fill price in quote currency, or None if no orderbook data is available.
         """
         coin = trade_pair.hl_coin
+        cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
         full_book = self._orderbooks_full.get(coin, {})
-        coarse_book = self._orderbooks_coarse.get(coin, {})
+        books = [full_book] + [
+            self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
+            for sig_figs in cascade[1:]
+        ]
 
-        primary = full_book or coarse_book
+        primary = next((b for b in books if b), {})
         if not primary:
             return None
 
@@ -537,27 +570,22 @@ class HyperliquidDataService(BaseDataService):
             return None
 
         side = "asks" if is_buy else "bids"
-        full_levels = full_book.get(side, [])
-        coarse_levels = coarse_book.get(side, [])
-
-        # Phase 1: walk full-grained levels
-        if full_levels:
-            fills, remaining = simulate_fill(full_levels, size_usd, "usd")
-        else:
-            fills, remaining = [], size_usd
-
-        # Phase 2: continue with coarse levels beyond full book's price coverage
-        if remaining > 0 and coarse_levels:
-            if full_levels:
-                last_full_px = float(full_levels[-1]["px"])
-                if is_buy:
-                    deeper = [l for l in coarse_levels if float(l["px"]) > last_full_px]
-                else:
-                    deeper = [l for l in coarse_levels if float(l["px"]) < last_full_px]
-            else:
-                deeper = coarse_levels
-            coarse_fills, _ = simulate_fill(deeper, remaining, "usd")
-            fills.extend(coarse_fills)
+        fills = []
+        remaining = size_usd
+        last_px = None
+        for book in books:
+            if remaining <= 0:
+                break
+            levels = book.get(side, [])
+            if not levels:
+                continue
+            if last_px is not None:
+                levels = [l for l in levels if (float(l["px"]) > last_px if is_buy else float(l["px"]) < last_px)]
+                if not levels:
+                    continue
+            phase_fills, remaining = simulate_fill(levels, remaining, "usd")
+            fills.extend(phase_fills)
+            last_px = float(levels[-1]["px"])
 
         if not fills:
             return None

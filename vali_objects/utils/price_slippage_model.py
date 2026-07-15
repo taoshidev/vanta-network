@@ -127,7 +127,8 @@ class PriceSlippageModel:
         try:
             is_buy = order.leverage > 0  # Longs fill against asks, shorts against bids
             size_usd = abs(order.value)
-            return cls.live_price_fetcher.simulate_slippage(order.trade_pair, size_usd, is_buy)
+            return cls.live_price_fetcher.simulate_slippage(order.trade_pair, size_usd, is_buy,
+                                                              order_uuid=order.order_uuid)
         except Exception as e:
             bt.logging.warning(f"[SLIPPAGE] HL simulate_slippage failed for {order.trade_pair.trade_pair_id}: {e}")
             return None

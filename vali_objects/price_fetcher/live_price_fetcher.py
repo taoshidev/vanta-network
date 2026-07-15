@@ -56,12 +56,13 @@ class LivePriceFetcher:
             self.databento_data_service.stop_threads()
         self.hyperliquid_data_service.stop_threads()
 
-    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> Optional[float]:
+    def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool,
+                           order_uuid: str = None) -> Optional[float]:
         """Simulate slippage by walking the Hyperliquid L2 orderbook.
 
         Returns slippage as a fraction (e.g. 0.001 for 0.1%), or None if unavailable.
         """
-        return self.hyperliquid_data_service.simulate_slippage(trade_pair, size_usd, is_buy)
+        return self.hyperliquid_data_service.simulate_slippage(trade_pair, size_usd, is_buy, order_uuid=order_uuid)
 
     def simulate_avg_fill_price(self, trade_pair: TradePair, size_usd: float, is_buy: bool) -> Optional[float]:
         """Simulate avg fill price by walking the Hyperliquid L2 orderbook.

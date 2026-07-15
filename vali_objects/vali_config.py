@@ -625,9 +625,16 @@ class ValiConfig:
 
     # L2 orderbook precision: nSigFigs controls price aggregation granularity.
     # HL returns max 20 levels per side regardless of nSigFigs.
-    # Coarse (2) = deep coverage but loses granular price distribution.
-    # We subscribe at coarse and full resolution on separate shards and combine them.
-    HL_L2_COARSE_SIG_FIGS = 2
+    # None (full precision, native ticks) is finest; 2 sig figs is coarsest/deepest
+    # coverage but loses granular price distribution. We subscribe to every resolution
+    # in the cascade on its own WS connection and walk them finest-to-coarsest, only
+    # extending into the next coarser book once the finer one is exhausted.
+    HL_L2_SIG_FIGS_CASCADE = [None, 5, 4, 3, 2]
+
+    # Slippage audit logging: log the L2 levels walked whenever simulated Hyperliquid
+    # slippage exceeds this fraction, so anomalously high slippage can be
+    # reconstructed/verified after the fact.
+    HL_SLIPPAGE_AUDIT_LOG_THRESHOLD = 0.008
 
     # HL Funding Rate Service
     HL_FUNDING_DAEMON_INTERVAL_S = 300
