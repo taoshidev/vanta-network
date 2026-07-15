@@ -1722,6 +1722,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 position.orders[idx] = new_order
 
             position.rebuild_position_with_updated_orders()
+
+            if position.is_open_position and position.last_price_source:
+                now_ms = TimeUtil.now_in_millis()
+                realtime_price = position.last_price_source.parse_appropriate_price(
+                    now_ms, position.trade_pair.is_forex, position.position_type, position
+                )
+                if realtime_price:
+                    position.set_returns(
+                        realtime_price,
+                        quote_usd_conversion=position.last_quote_usd_conversion,
+                        price_source=position.last_price_source,
+                    )
+
             self._position_client.save_miner_position(position)
 
             positions = self._position_client.get_positions_for_one_hotkey(hotkey)
