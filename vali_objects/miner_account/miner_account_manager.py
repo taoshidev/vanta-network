@@ -977,6 +977,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         account = MinerAccount(miner_hotkey=hotkey)
         for position in positions:
             account.total_realized_pnl += position.realized_pnl
+            account.unrealized_pnl += position.unrealized_pnl
             account.total_fees_paid += position.total_fees
             if not position.is_closed_position:
                 position_value = abs(position.net_value)
