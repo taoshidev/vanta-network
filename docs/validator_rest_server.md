@@ -204,77 +204,85 @@ Returns all the hotkeys as seen in the metagraph from the validator's perspectiv
 
 `GET /trade-pairs`
 
-Returns all trade pairs grouped into three categories. Use this endpoint to discover which `trade_pair_id` values are valid for placing orders and what leverage constraints apply per pair.
+Returns all trade pairs grouped into two categories. Use this endpoint to discover which `trade_pair_id` values are valid for placing orders and what leverage constraints apply per pair. Dynamic/legacy HyperLiquid trade pairs no longer exist — the trade pair set is fully static (see `vali_objects/trade_pair.py`).
 
 **Authentication:** None required. Public endpoint.
+
+**Query parameters:**
+- `asset_class` (optional): A `MinerAssetClass` value (`crypto`, `forex`, `equities`, `commodities`, `hl_all`, `all_markets`). When provided, `allowed` is further filtered to pairs tradeable by that asset class (via `MinerAssetClass.can_trade`); pairs filtered out are moved to `disabled` instead. Omit to treat all trade pairs as tradeable regardless of asset class. Returns `400` if the value isn't a valid asset class.
 
 **Response:**
 ```json
 {
   "allowed": [
     {
-      "trade_pair_id": "BTCUSD",
-      "trade_pair": "BTC/USD",
-      "trade_pair_category": "crypto",
-      "trade_pair_source": "vanta",
-      "max_leverage": 0.5
-    },
-    {
       "trade_pair_id": "BTCUSDC",
+      "hl_coin": "BTC",
       "trade_pair": "BTC/USDC",
       "trade_pair_category": "crypto",
       "trade_pair_source": "hyperliquid",
-      "max_leverage": 0.5
+      "min_leverage": 0.01,
+      "max_leverage": 1.0,
+      "subaccount_positional_leverage_by_tier": {"1": 0.5, "2": 1.0, "3": 1.5, "4": 2.0}
     },
     {
       "trade_pair_id": "EURUSD",
+      "hl_coin": null,
       "trade_pair": "EUR/USD",
       "trade_pair_category": "forex",
       "trade_pair_source": "vanta",
-      "max_leverage": 5
-    }
-  ],
-  "deprecated": [
-    {
-      "trade_pair_id": "HYPEUSDC",
-      "trade_pair": "HYPE/USDC",
-      "trade_pair_category": "crypto",
-      "trade_pair_source": "hyperliquid",
-      "max_leverage": 0.5
+      "min_leverage": 0.1,
+      "max_leverage": 5,
+      "subaccount_positional_leverage_by_tier": {"1": 1.25, "2": 2.5, "3": 3.75, "4": 5.0}
     }
   ],
   "disabled": [
     {
+      "trade_pair_id": "BTCUSD",
+      "hl_coin": null,
+      "trade_pair": "BTC/USD",
+      "trade_pair_category": "crypto",
+      "trade_pair_source": "vanta",
+      "min_leverage": 0.001,
+      "max_leverage": 0.5,
+      "subaccount_positional_leverage_by_tier": {"1": 0.25, "2": 0.5, "3": 0.75, "4": 1.0}
+    },
+    {
       "trade_pair_id": "SPX",
+      "hl_coin": null,
       "trade_pair": "SPX/USD",
       "trade_pair_category": "indices",
       "trade_pair_source": "vanta",
-      "max_leverage": 5
+      "min_leverage": 0.1,
+      "max_leverage": 5,
+      "subaccount_positional_leverage_by_tier": {"1": 1.25, "2": 2.5, "3": 3.75, "4": 5.0}
     }
   ],
-  "total_allowed": 98,
-  "total_deprecated": 3,
-  "total_disabled": 7,
+  "total_allowed": 1100,
+  "total_disabled": 24,
   "timestamp": 1749234567890
 }
 ```
 
 **Response fields:**
-- `allowed`: Trade pairs that can open and close positions. Includes all active Vanta pairs and hardcoded HyperLiquid pairs.
-- `deprecated`: Legacy dynamic HyperLiquid pairs — **close and reduce only**, new positions cannot be opened.
-- `disabled`: Trade pairs that are fully blocked or have no price data — neither opening nor closing is permitted.
+- `allowed`: Trade pairs that can open and close positions. Includes all active Vanta pairs and hardcoded HyperLiquid pairs (and, when `asset_class` is given, only those tradeable by that asset class).
+- `disabled`: Trade pairs that are fully blocked (`is_blocked`) or excluded by the `asset_class` filter — neither opening nor closing is permitted.
 - `timestamp`: Response timestamp in milliseconds
 
 **Per-pair fields:**
-- `trade_pair_id`: Identifier to use in order requests (e.g., `"BTCUSD"`)
-- `trade_pair`: Display format (e.g., `"BTC/USD"`)
+- `trade_pair_id`: Identifier to use in order requests (e.g., `"BTCUSDC"`)
+- `hl_coin`: Underlying Hyperliquid coin symbol for HL-sourced pairs, `null` otherwise
+- `trade_pair`: Display format (e.g., `"BTC/USDC"`)
 - `trade_pair_category`: Asset class (`crypto`, `forex`, `equities`, `indices`, `commodities`)
 - `trade_pair_source`: Data source — `"vanta"` for standard pairs, `"hyperliquid"` for HL-sourced pairs
-- `max_leverage`: Maximum allowed leverage for this pair
+- `min_leverage` / `max_leverage`: Leverage bounds for this pair
+- `subaccount_positional_leverage_by_tier`: Per-tier (1–4) positional leverage multiplier for the subaccount order path
+- `lot_size`: Present only for a handful of Hyperliquid commodity pairs (e.g. `GOLDUSDC`); UI convenience field, not used in any network calculation
 
 **Example:**
 ```bash
 curl http://localhost:48888/trade-pairs
+curl "http://localhost:48888/trade-pairs?asset_class=crypto"
 ```
 
 **Error responses:**
@@ -519,7 +527,7 @@ Retrieve a miner's current collateral balance.
 
 The asset class selection endpoint allows miners to permanently select their asset class. This selection cannot be undone.
 
-Valid asset classes: `crypto`, `forex`, `equities`, `hl_all`.
+Valid asset classes: `crypto`, `forex`, `equities`, `commodities`, `hl_all`, `all_markets`.
 
 Miners selecting `hl_all` can trade any HyperLiquid-sourced pair (`trade_pair_source: "hyperliquid"`). All other selections are restricted to Vanta-sourced pairs of the matching category.
 
@@ -917,7 +925,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
   "entity_hotkey": "5GhDr3xy...abc",
   "entity_coldkey": "5FxY...",
   "account_size": 50000,
-  "asset_class": "crypto",
+  "asset_class": "hl_all",
   "hl_address": "0xabcd1234...ef56",
   "payout_address": "0xAbCd...1234",
   "signature": "0x...",
@@ -929,7 +937,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `entity_hotkey` (string, required): The entity's hotkey SS58 address
 - `entity_coldkey` (string, required): The entity's coldkey SS58 address
 - `account_size` (float, required): Account size in USD. Must be positive.
-- `asset_class` (string, required): `"crypto"`, `"forex"`, or `"equities"`. HL subaccounts always use `"crypto"`.
+- `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, or `"commodities"` for standard subaccounts. HL-linked subaccounts (with `hl_address`) use `"hl_all"`.
 - `signature` (string, required): Coldkey signature over the sorted-JSON of `{account_size, asset_class, entity_coldkey, entity_hotkey}` (plus `hl_address` and optionally `payout_address` for HL subaccounts).
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).

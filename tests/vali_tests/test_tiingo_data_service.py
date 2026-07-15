@@ -9,6 +9,7 @@ Focuses on edge cases and regression tests for price fetching logic.
 import unittest
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
+from vali_objects.trade_pair import BLOCKED_TRADE_PAIR_IDS
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from data_generator.tiingo_data_service import TiingoDataService
 
@@ -480,7 +481,7 @@ class TestTiingoDataService(unittest.TestCase):
         tradeable = self.tiingo_service.get_tradeable_pairs(include_blocked=False)
 
         # Verify blocked pairs are NOT in the result
-        blocked_pair_ids = ValiConfig.BLOCKED_TRADE_PAIR_IDS
+        blocked_pair_ids = BLOCKED_TRADE_PAIR_IDS
 
         tradeable_ids = {tp.trade_pair_id for tp in tradeable}
         blocked_in_tradeable = tradeable_ids & blocked_pair_ids
@@ -494,7 +495,7 @@ class TestTiingoDataService(unittest.TestCase):
         self.assertGreater(len(tradeable), 0, "Should have some tradeable pairs")
 
         # Verify specific non-blocked pairs ARE included
-        self.assertIn(TradePair.BTCUSD, tradeable, "BTC/USD should be tradeable")
+        self.assertIn(TradePair.BTCUSDC, tradeable, "BTC/USDC should be tradeable")
         self.assertIn(TradePair.EURUSD, tradeable, "EUR/USD should be tradeable")
 
     def test_get_tradeable_pairs_include_blocked_true(self):
@@ -568,8 +569,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         # Verify specific crypto pairs are included
         crypto_ids = {tp.trade_pair_id for tp in crypto_pairs}
-        self.assertIn('BTCUSD', crypto_ids, "BTC/USD should be included")
-        self.assertIn('ETHUSD', crypto_ids, "ETH/USD should be included")
+        self.assertIn('BTCUSDC', crypto_ids, "BTC/USDC should be included")
+        self.assertIn('ETHUSDC', crypto_ids, "ETH/USDC should be included")
 
     def test_get_tradeable_pairs_excludes_unsupported(self):
         """Test that get_tradeable_pairs always excludes unsupported pairs."""

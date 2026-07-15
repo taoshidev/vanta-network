@@ -195,3 +195,6 @@ miner_objects/miner_dashboard/*.tsbuildinfo
 
 #vim
 *.swp
+
+# Raw iShares Russell 1000 holdings export (input to runnable/generate_equity_universe.py; not committed)
+IWB_holdings.csv

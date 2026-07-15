@@ -17,7 +17,7 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.vali_config import TradePair, DynamicTradePair
+from vali_objects.vali_config import TradePair
 
 
 def orjson_encoder(obj):
@@ -39,7 +39,7 @@ def orjson_encoder(obj):
 
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
-        if isinstance(obj, (TradePair, DynamicTradePair, OrderType, ExecutionType, StopCondition)):
+        if isinstance(obj, (TradePair, OrderType, ExecutionType, StopCondition)):
             return obj.__json__()
         elif isinstance(obj, BaseModel):
             return obj.model_dump(mode="json")

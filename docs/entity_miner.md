@@ -11,11 +11,11 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 1. Entity hotkeys must be registered on the Bittensor network and have sufficient Theta collateral.
 2. An entity pays a one-time registration fee of **1,000 Theta**, which is permanently slashed on registration.
 3. Each subaccount requires collateral proportional to its account size (see [Collateral Requirements](#collateral-requirements)).
-4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, or `hl_all`) at creation. This **cannot be changed**. HyperLiquid-linked subaccounts always use `hl_all`.
+4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, `commodities`, or `hl_all`) at creation. This **cannot be changed**. HyperLiquid-linked subaccounts always use `hl_all`.
 5. New subaccounts enter a **challenge period** with stricter thresholds and reduced leverage (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
 7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours, rate limits, etc.
-8. A maximum of **5 entities** can be registered on the network at any time.
+8. A maximum of **10 entities** can be registered on the network at any time.
 9. Each entity supports multiple subaccounts.
 10. **CRITICAL**: Never reuse synthetic hotkeys from eliminated subaccounts. Eliminated synthetic hotkeys are permanently blacklisted.
 
@@ -167,22 +167,25 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
 
 **To pass the challenge period**, a subaccount must achieve:
 
-| Asset Class              | Minimum Return Required |
-|--------------------------|-------------------------|
-| Forex                    | ≥ 8%                    |
-| Crypto, Equities, HL All | ≥ 10%                   |
+| Asset Class                           | Minimum Return Required |
+|----------------------------------------|-------------------------|
+| Forex                                  | ≥ 8%                    |
+| Crypto, Equities, Commodities, HL All  | ≥ 10%                   |
 
 Passing is evaluated continuously — a subaccount is promoted immediately once `min(account balance, account equity)` meets the threshold. Assessment runs automatically via the validator's EntityServer daemon every 5 minutes.
 
 **Elimination during challenge:** A subaccount is eliminated if its intraday drawdown or drawdown from the end-of-day high-water mark reaches **5%**.
 
-**Leverage reduction:** During the challenge period, a subaccount's maximum portfolio leverage is as follows. These are 4x lower than the funded status limits to limit risk exposure.
+**Portfolio leverage limits:** A subaccount's maximum portfolio leverage (the sum of all open position leverages) is capped by tier. **Tier 1** applies to any subaccount in `SUBACCOUNT_CHALLENGE`, regardless of account size. Once promoted to `SUBACCOUNT_FUNDED`, the tier is instead determined by account size, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
 
-| Asset Class | Leverage Limit |
-|-------------|----------------|
-| Crypto      | 1.25x          |
-| Forex       | 5x             |
-| Equities    | 1x             |
+| Tier | Bucket                              | Crypto | Forex | Commodities | Equities | HL All | All Markets |
+|------|--------------------------------------|--------|-------|-------------|----------|--------|-------------|
+| 1    | SUBACCOUNT_CHALLENGE (any size)      | 2.0x   | 5.0x  | 2.0x        | 1.0x     | 4.0x   | 6.0x        |
+| 2    | SUBACCOUNT_FUNDED, <$200K            | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
+| 3    | SUBACCOUNT_FUNDED, $200K–$1M         | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
+| 4    | SUBACCOUNT_FUNDED, ≥$1M              | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
+
+`HL All` and `All Markets` apply to multi-class subaccounts (Hyperliquid-linked and standard subaccounts using those asset classes, respectively) as the overall cap across all asset classes; single-class subaccounts (crypto, forex, equities, commodities) use only their own column.
 
 ### After the Challenge Period
 
@@ -394,7 +397,7 @@ vanta entity create-subaccount \
   --wallet-name <wallet> \
   --wallet-hotkey <entity> \
   --account-size <usd_amount> \
-  --asset-class <crypto|forex|equities|hl_all>
+  --asset-class <crypto|forex|equities|commodities|hl_all>
 
 # Via Entity Miner Gateway (requires miner running)
 curl -X POST http://localhost:8088/api/create-subaccount \
@@ -424,7 +427,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 
 | Field | Type | Required | Description                                                                  |
 |---|---|---|------------------------------------------------------------------------------|
-| `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"hl_all"` |
+| `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
 
 ### 11. Submit Orders
@@ -437,7 +440,7 @@ curl -X POST http://localhost:8088/api/submit-order \
   -H "Authorization: your_api_key" \
   -d '{
     "execution_type": "MARKET",
-    "trade_pair": "BTCUSD",
+    "trade_pair": "BTCUSDC",
     "order_type": "LONG",
     "leverage": 0.1,
     "subaccount_id": 0

@@ -14,7 +14,7 @@ A long position is a bet that the trade pair will increase, while a short positi
 2. Your miner will start in the challenge period upon entry. Miners must demonstrate consistent performance within 90 days to pass the challenge period. During this period, they will receive a small amount of TAO that will help them avoid getting deregistered. The minimum requirements to pass the challenge period:
    - Have at least 61 full days of trading
    - Don't exceed a 5% intraday drawdown (measured from the day-open equity) or a 5% EOD drawdown (measured from the highest-ever end-of-day equity)
-   - Achieve cumulative returns above 10% (crypto/equities) or 8% (forex)
+   - Achieve cumulative returns above 10% (crypto/equities/commodities) or 8% (forex)
    - Score at or above the 25th miner in each asset class in main competition. The details may be found [here](https://docs.taoshi.io/tips/p21/).
 3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral.
 4. Miner's must select an asset category in order to submit trades. Miners will be restricted to only submitting trades in their chosen asset class.
@@ -31,11 +31,11 @@ A long position is a bet that the trade pair will increase, while a short positi
 
 7. Portfolio leverage (the sum of all open position leverages) is also capped by tier.
 
-   | Tier | Crypto | Forex  | Equities |
-   |------|--------|--------|----------|
-   | 2 (<$200K)    | 2.0x | 10.0x | 1.5x |
-   | 3 ($200K–$1M) | 3.0x | 15.0x | 2.0x |
-   | 4 (≥$1M)      | 4.0x | 20.0x | 2.0x |
+   | Tier | Crypto | Forex  | Commodities | Equities |
+   |------|--------|--------|-------------|----------|
+   | 2 (<$200K)    | 2.0x | 10.0x | 2.0x | 1.5x |
+   | 3 ($200K–$1M) | 3.0x | 15.0x | 3.0x | 2.0x |
+   | 4 (≥$1M)      | 4.0x | 20.0x | 4.0x | 2.0x |
 8. You can take profit on an open position using LONG and SHORT. Say you have an open LONG position with .5x
    leverage and you want to reduce it to a .25x leverage position to start taking profit on it. You would send in a SHORT signal
    of size .25x leverage to reduce the size of the position. LONG and SHORT signals can be thought of working in opposite
@@ -43,7 +43,7 @@ A long position is a bet that the trade pair will increase, while a short positi
 9. Miners that have passed the challenge period will be eliminated for exceeding a 5% intraday drawdown (measured from the day-open equity) or an 8% EOD drawdown (measured from the highest-ever end-of-day equity).
 10. Miners in main competition who fall below the top 25 in each asset class will be observed under a probation period.
    - Miners in probation have 60 days from time of demotion to be promoted back into main competition.
-   - Promotion requires cumulative returns above 10% (crypto/equities) or 8% (forex) and ranking back into the top 25.
+   - Promotion requires cumulative returns above 10% (crypto/equities/commodities) or 8% (forex) and ranking back into the top 25.
    - If they fail to do so within this window, they will be eliminated.
 11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
 12. A miner's order will be ignored if placing a trade outside of market hours.
@@ -52,27 +52,49 @@ A long position is a bet that the trade pair will increase, while a short positi
 15. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
 
 ## Asset Class Selection
-Each miner selects a single asset class to compete in (crypto, forex, or equities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
+Each miner selects a single asset class to compete in (crypto, forex, equities, or commodities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
 
 ## Available Trade Pairs
 
+Trade pairs, their leverage limits, and blocked/disabled status are defined in [`vali_objects/trade_pair.py`](../vali_objects/trade_pair.py) — refer to that file for the authoritative, up-to-date list.
+
 ### Crypto
 
-| Symbol  | Pair      |
-|---------|-----------|
-| BTCUSD  | BTC/USD   |
-| ETHUSD  | ETH/USD   |
-| SOLUSD  | SOL/USD   |
-| XRPUSD  | XRP/USD   |
-| DOGEUSD | DOGE/USD  |
-| ADAUSD  | ADA/USD   |
-| TAOUSD  | TAO/USD   |
-| HYPEUSD | HYPE/USD  |
-| ZECUSD  | ZEC/USD   |
-| BCHUSD  | BCH/USD   |
-| LINKUSD | LINK/USD  |
-| XMRUSD  | XMR/USD   |
-| LTCUSD  | LTC/USD   |
+Native USD-denominated pairs (e.g. BTC/USD) are blocked in favor of their Hyperliquid USDC-denominated equivalents:
+
+| Symbol    | Pair       |
+|-----------|------------|
+| BTCUSDC   | BTC/USDC   |
+| ETHUSDC   | ETH/USDC   |
+| SOLUSDC   | SOL/USDC   |
+| BNBUSDC   | BNB/USDC   |
+| XRPUSDC   | XRP/USDC   |
+| DOGEUSDC  | DOGE/USDC  |
+| ADAUSDC   | ADA/USDC   |
+| AVAXUSDC  | AVAX/USDC  |
+| LINKUSDC  | LINK/USDC  |
+| DOTUSDC   | DOT/USDC   |
+| TRXUSDC   | TRX/USDC   |
+| LTCUSDC   | LTC/USDC   |
+| TAOUSDC   | TAO/USDC   |
+| SUIUSDC   | SUI/USDC   |
+| ARBUSDC   | ARB/USDC   |
+| NEARUSDC  | NEAR/USDC  |
+| ALGOUSDC  | ALGO/USDC  |
+| ASTERUSDC | ASTER/USDC |
+| UNIUSDC   | UNI/USDC   |
+| AAVEUSDC  | AAVE/USDC  |
+| CRVUSDC   | CRV/USDC   |
+| HYPEUSDC  | HYPE/USDC  |
+| XMRUSDC   | XMR/USDC   |
+| ZECUSDC   | ZEC/USDC   |
+| ENAUSDC   | ENA/USDC   |
+| ZROUSDC   | ZRO/USDC   |
+| WLDUSDC   | WLD/USDC   |
+| PUMPUSDC  | PUMP/USDC  |
+| kPEPEUSDC | kPEPE/USDC |
+
+Note: BCH/USD is blocked with no Hyperliquid equivalent offered — Bitcoin Cash is not currently tradeable.
 
 ### Forex
 
@@ -109,12 +131,20 @@ Each miner selects a single asset class to compete in (crypto, forex, or equitie
 
 ### Commodities
 
-| Symbol | Pair             |
-|--------|------------------|
-| XAUUSD | XAU/USD (Gold)   |
-| XAGUSD | XAG/USD (Silver) |
+Native spot XAU/USD and XAG/USD are blocked in favor of their Hyperliquid USDC-denominated equivalents:
+
+| Symbol       | Pair              |
+|--------------|-------------------|
+| GOLDUSDC     | GOLD/USDC         |
+| SILVERUSDC   | SILVER/USDC       |
+| COPPERUSDC   | COPPER/USDC       |
+| NATGASUSDC   | NATGAS/USDC       |
+| PLATINUMUSDC | PLATINUM/USDC     |
+| WTIOILUSDC   | WTIOIL/USDC       |
 
 ### Equities
+
+Equities now include the Russell 1000 index constituents in addition to the curated stocks/ETFs below and a handful of additional single stocks matching Hyperliquid futures offered in the all-market challenge (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD) — over 1,000 tickers in total. The full, current list is generated by [`runnable/generate_equity_universe.py`](../runnable/generate_equity_universe.py) and defined in `vali_objects/trade_pair.py`; it's too large to enumerate here in full.
 
 **Stocks:**
 
@@ -196,15 +226,33 @@ Each miner selects a single asset class to compete in (crypto, forex, or equitie
 
 The following pairs are defined in the system but currently disabled:
 
-| Symbol  | Category | Reason                            |
-|---------|----------|-----------------------------------|
-| USDMXN  | Forex    | Exotic, larger spreads            |
-| SPX     | Indices  | Disabled indices                  |
-| DJI     | Indices  | Disabled indices                  |
-| NDX     | Indices  | Disabled indices                  |
-| VIX     | Indices  | Disabled indices                  |
-| FTSE    | Indices  | Disabled indices                  |
-| GDAXI   | Indices  | Disabled indices                  |
+| Symbol       | Category    | Reason                                            |
+|--------------|-------------|----------------------------------------------------|
+| BTCUSD       | Crypto      | Native pair deprecated for BTCUSDC                |
+| ETHUSD       | Crypto      | Native pair deprecated for ETHUSDC                |
+| SOLUSD       | Crypto      | Native pair deprecated for SOLUSDC                |
+| XRPUSD       | Crypto      | Native pair deprecated for XRPUSDC                |
+| DOGEUSD      | Crypto      | Native pair deprecated for DOGEUSDC               |
+| ADAUSD       | Crypto      | Native pair deprecated for ADAUSDC                |
+| TAOUSD       | Crypto      | Native pair deprecated for TAOUSDC                |
+| HYPEUSD      | Crypto      | Native pair deprecated for HYPEUSDC               |
+| ZECUSD       | Crypto      | Native pair deprecated for ZECUSDC                |
+| LINKUSD      | Crypto      | Native pair deprecated for LINKUSDC               |
+| XMRUSD       | Crypto      | Native pair deprecated for XMRUSDC                |
+| LTCUSD       | Crypto      | Native pair deprecated for LTCUSDC                |
+| BCHUSD       | Crypto      | Native pair deprecated; no HL equivalent offered  |
+| TONUSDC      | Crypto      | Delisted from Hyperliquid                         |
+| PAXGUSDC     | Crypto      | Gold; kept GOLDUSDC instead                       |
+| USDMXN       | Forex       | Exotic, larger spreads                            |
+| XAUUSD       | Forex       | Gold; replaced with GOLDUSDC                      |
+| XAGUSD       | Forex       | Silver; replaced with SILVERUSDC                  |
+| BRENTOILUSDC | Commodities | Oil; kept WTIOILUSDC instead                      |
+| SPX          | Indices     | Disabled indices                                  |
+| DJI          | Indices     | Disabled indices                                  |
+| NDX          | Indices     | Disabled indices                                  |
+| VIX          | Indices     | Disabled indices                                  |
+| FTSE         | Indices     | Disabled indices                                  |
+| GDAXI        | Indices     | Disabled indices                                  |
 
 ## Scoring Details
 
@@ -316,19 +364,25 @@ Spread fee is applied to crypto pairs only and is calculated as 0.1% multiplied 
 
 A carry fee is charged at each interval based on the current market value of the position. The fee is calculated as a percentage of the position's market value and deducted at each fee interval.
 
-| Market             | Fee Period | Fee Per Interval                    | Annual Rate |
-|--------------------| ---------- | ----------------------------------- | ----------- |
-| Forex, Commodities | 24h        | 0.008% × position market value      | 3%          |
-| Crypto             | 8h         | 0.03% × position market value       | 10.95%      |
-| Equities           | 24h        | 0.014% × position market value      | 5.25%       |
+| Market      | Fee Period | Fee Per Interval                | Annual Rate |
+|-------------|------------|-----------------------------------|-------------|
+| Forex       | 24h        | 0.008% × position market value  | 3%          |
+| Crypto      | 8h         | 0.01% × position market value   | 10.95%      |
+| Commodities | —          | None for standard positions      | 0%          |
+| Equities    | 24h        | See below                        | —           |
+
+Equities don't use the flat carry fee above — instead, at each UTC midnight: SHORT positions accrue a **3%/yr stock-borrow fee** on the position's market value, and LONG positions accrue **6.6%/yr margin interest** on the borrowed (margin loan) portion of the position only, not the full market value.
+
+Hyperliquid-linked entity positions (subaccounts mirroring a real Hyperliquid account) are charged actual, live Hyperliquid funding rates instead of the flat carry fee above, regardless of asset class.
 
 **Spread Fee (Transaction Fee):**
 
-| Market             | Spread Fee Rate      | Applied To           |
-|--------------------|----------------------| -------------------- |
-| Forex, Commodities | None                 | N/A                  |
-| Crypto             | 0.05% \* order value | Each order placed    |
-| Equities           | None                 | N/A                  |
+| Market      | Spread Fee Rate       | Applied To           |
+|-------------|-----------------------|----------------------|
+| Forex       | None                  | N/A                  |
+| Crypto      | 0.05% \* order value  | Each order placed    |
+| Commodities | 0.045% \* order value | Each order placed    |
+| Equities    | 0.05% \* order value  | Each order placed    |
 
 ### Leverage Limits
 
@@ -352,11 +406,11 @@ We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips
 
 **Portfolio leverage caps by tier:**
 
-| Tier | Crypto | Forex  | Equities | Indices |
-|------|--------|--------|----------|---------|
-| 2 (<$200K)    | 2.0x | 10.0x | 1.5x | 10.0x |
-| 3 ($200K–$1M) | 3.0x | 15.0x | 2.0x | 15.0x |
-| 4 (≥$1M)      | 4.0x | 20.0x | 2.0x | 20.0x |
+| Tier | Crypto | Forex  | Commodities | Equities | Indices |
+|------|--------|--------|-------------|----------|---------|
+| 2 (<$200K)    | 2.0x | 10.0x | 2.0x | 1.5x | 10.0x |
+| 3 ($200K–$1M) | 3.0x | 15.0x | 3.0x | 2.0x | 15.0x |
+| 4 (≥$1M)      | 4.0x | 20.0x | 4.0x | 2.0x | 20.0x |
 
 For example, a Tier 4 forex miner can open 20 positions at 1x leverage each, or 10 positions at 2x leverage each.
 

@@ -102,6 +102,9 @@ class EliminationServer(RPCServerBase):
         # At this point, self._manager and caches exist, so RPC calls won't fail
         # daemon_interval_s: 5 minutes (elimination checks are moderate frequency)
         # hang_timeout_s: 10 minutes (2x interval, prevents false alarms during startup)
+        daemon_interval_s = ValiConfig.ELIMINATION_CHECK_INTERVAL_MS // 1000
+        hang_timeout_s = daemon_interval_s * 2  # 2x daemon interval s
+
         RPCServerBase.__init__(
             self,
             service_name=ValiConfig.RPC_ELIMINATION_SERVICE_NAME,
@@ -109,8 +112,8 @@ class EliminationServer(RPCServerBase):
             slack_notifier=slack_notifier,
             start_server=start_server,
             start_daemon=False,  # We'll start daemon after full initialization
-            daemon_interval_s=ValiConfig.ELIMINATION_CHECK_INTERVAL_MS // 1000,  # 5 minutes (300s)
-            hang_timeout_s=600.0,  # 10 minutes (prevents false alarms during startup)
+            daemon_interval_s=daemon_interval_s,  # 2 minutes
+            hang_timeout_s=hang_timeout_s,  # 10 minutes (prevents false alarms during startup)
             connection_mode=connection_mode,
             daemon_stagger_s=60
         )

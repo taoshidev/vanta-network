@@ -94,7 +94,7 @@ Returns the ring-buffered order event history for a Hyperliquid address (max 100
     {
       "timestamp_ms": 1702345678901,
       "hl_address": "0xabcd1234...",
-      "trade_pair": "BTCUSD",
+      "trade_pair": "BTCUSDC",
       "order_type": "LONG",
       "status": "accepted",
       "error_message": "",
@@ -104,7 +104,7 @@ Returns the ring-buffered order event history for a Hyperliquid address (max 100
     {
       "timestamp_ms": 1702345699000,
       "hl_address": "0xabcd1234...",
-      "trade_pair": "ETHUSD",
+      "trade_pair": "ETHUSDC",
       "order_type": "SHORT",
       "status": "rejected",
       "error_message": "Insufficient buying power",
@@ -119,7 +119,7 @@ Returns the ring-buffered order event history for a Hyperliquid address (max 100
 **Event Fields:**
 - `timestamp_ms`: When the event was received
 - `hl_address`: The Hyperliquid wallet address
-- `trade_pair`: Trade pair identifier (e.g., `"BTCUSD"`)
+- `trade_pair`: Trade pair identifier (e.g., `"BTCUSDC"`)
 - `order_type`: `"LONG"`, `"SHORT"`, or `"FLAT"`
 - `status`: `"accepted"` or `"rejected"`
 - `error_message`: Error reason for rejected orders (empty string for accepted)
@@ -193,12 +193,12 @@ Authorization: Bearer <api_key>
 ```json
 {
   "asset_class": "crypto",
-  "account_size": 50000.0,
+  "account_size": 50000.0
 }
 ```
 
 **Parameters:**
-- `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, or `"hl_all"`
+- `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, or `"hl_all"`
 - `account_size` (float, required): Account size in USD. Must be positive.
 
 **Success Response (200):**
@@ -261,7 +261,7 @@ Authorization: Bearer <api_key>
 {
   "hl_address": "0xabcd1234...ef56",
   "account_size": 50000.0,
-  "payout_address": "0xAbCd...1234",
+  "payout_address": "0xAbCd...1234"
 }
 ```
 

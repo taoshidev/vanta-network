@@ -19,7 +19,8 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 import os
-from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource, DynamicTradePair
+from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource
+from vali_objects.trade_pair import HL_COIN_TO_TRADE_PAIR, HS_MAX_LEVERAGE
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from entity_management.hyperliquid_tracker import HyperliquidTracker
@@ -818,8 +819,8 @@ class TestHyperliquidTracker(TestBase):
 
         # Populate _hl_universe with common test coins so _process_fill coin lookup succeeds.
         self.tracker._hl_universe = {
-            "BTC": DynamicTradePair(trade_pair_id="BTCUSDC", trade_pair="BTC/USDC", hl_coin="BTC", max_leverage=ValiConfig.HS_MAX_LEVERAGE),
-            "ETH": DynamicTradePair(trade_pair_id="ETHUSDC", trade_pair="ETH/USDC", hl_coin="ETH", max_leverage=ValiConfig.HS_MAX_LEVERAGE),
+            "BTC": TradePair.BTCUSDC,
+            "ETH": TradePair.ETHUSDC,
         }
 
         # Mock account state fetch and current position lookup.
@@ -1130,7 +1131,7 @@ class TestHyperliquidTracker(TestBase):
 
         call_args = mock_order_processor.process_order.call_args
         signal = call_args.kwargs['signal']
-        self.assertAlmostEqual(signal['leverage'], ValiConfig.HS_MAX_LEVERAGE, places=4)
+        self.assertAlmostEqual(signal['leverage'], HS_MAX_LEVERAGE, places=4)
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
     def test_process_fill_signal_structure(self, mock_order_processor):
@@ -1306,29 +1307,16 @@ class TestHyperliquidTracker(TestBase):
             "positions": {},  # HL sees nothing
         })
 
-        fake_tp = MagicMock()
-        fake_tp.trade_pair_id = "BTCUSD"
         fake_pos = MagicMock()
         fake_pos.is_closed_position = False
-        fake_pos.trade_pair = fake_tp
+        fake_pos.trade_pair = TradePair.BTCUSDC
         self.tracker._position_client.get_positions_for_one_hotkey.return_value = [fake_pos]
 
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
-        previous_btc = HL_DYNAMIC_REGISTRY.get("BTCUSD")
-        HL_DYNAMIC_REGISTRY["BTCUSD"] = DynamicTradePair(
-            trade_pair_id="BTCUSD", trade_pair="BTC/USD", hl_coin="BTC", max_leverage=0.5
-        )
-        try:
-            with patch.object(self.tracker, '_process_fill') as mock_process:
-                self.tracker._reconcile_address_positions(VALID_HL_ADDRESS)
-                mock_process.assert_called_once()
-                args, _ = mock_process.call_args
-                self.assertEqual(args[1], {"coin": "BTC", "crossed": False})
-        finally:
-            if previous_btc is None:
-                HL_DYNAMIC_REGISTRY.pop("BTCUSD", None)
-            else:
-                HL_DYNAMIC_REGISTRY["BTCUSD"] = previous_btc
+        with patch.object(self.tracker, '_process_fill') as mock_process:
+            self.tracker._reconcile_address_positions(VALID_HL_ADDRESS)
+            mock_process.assert_called_once()
+            args, _ = mock_process.call_args
+            self.assertEqual(args[1], {"coin": "BTC", "crossed": False})
 
     def test_reconcile_ignores_pnl_only_weight_drift(self):
         """weight halved via portfolio_value drop, szi unchanged => no reconcile."""

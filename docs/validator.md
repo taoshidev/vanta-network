@@ -34,6 +34,7 @@ Your validator:
 - **Data Provider Subscriptions**:
   - [Tiingo API](https://www.tiingo.com/) with "Commercial" ($50/month) subscription
   - [Polygon API](https://polygon.io/) with both "Currencies Starter" ($49/month) and "Stocks Advanced" (199/month) subscriptions
+  - [Databento API](https://databento.com/) (optional) — supplementary equities price source. If `databento_apikey` is omitted from `secrets.json`, equities pricing falls back to Polygon alone.
 
 > **IMPORTANT**: After subscribing to Polygon, complete the KYC questionnaire to enable realtime US equities prices. Message a Taoshi team member ASAP if you need guidance with this step!
 
@@ -149,7 +150,8 @@ brew install jq  # or apt install jq for Linux
 ```json
 {
   "polygon_apikey": "YOUR_POLYGON_API_KEY",
-  "tiingo_apikey": "YOUR_TIINGO_API_KEY"
+  "tiingo_apikey": "YOUR_TIINGO_API_KEY",
+  "databento_apikey": "YOUR_DATABENTO_API_KEY"
 }
 ```
 

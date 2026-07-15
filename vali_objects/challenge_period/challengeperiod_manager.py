@@ -161,6 +161,18 @@ class MinerBucketState:
 
     @property
     def intraday_drawdown_threshold(self):
+        if self.current_bucket == MinerBucket.ELIMINATED:
+            if len(self.entries) >= 2:
+                prev_entry = self.entries[-2]
+                if prev_entry.bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                    challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
+                    prev_threshold_time_ms = challenge_entry.start_time_ms if challenge_entry else None
+                else:
+                    prev_threshold_time_ms = prev_entry.start_time_ms
+                return prev_entry.bucket.intraday_drawdown_threshold(prev_threshold_time_ms)
+            else:
+                # Dummy threshold value for eliminated accounts to not raise Error
+                return MinerBucket.SUBACCOUNT_CHALLENGE.intraday_drawdown_threshold()
         return self.current_bucket.intraday_drawdown_threshold(self._threshold_time_ms)
 
     @property
@@ -169,6 +181,18 @@ class MinerBucketState:
 
     @property
     def eod_drawdown_threshold(self):
+        if self.current_bucket == MinerBucket.ELIMINATED:
+            if len(self.entries) >= 2:
+                prev_entry = self.entries[-2]
+                if prev_entry.bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                    challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
+                    prev_threshold_time_ms = challenge_entry.start_time_ms if challenge_entry else None
+                else:
+                    prev_threshold_time_ms = prev_entry.start_time_ms
+                return prev_entry.bucket.eod_drawdown_threshold(prev_threshold_time_ms)
+            else:
+                # Dummy threshold value for eliminated accounts to not raise Error
+                return MinerBucket.SUBACCOUNT_CHALLENGE.eod_drawdown_threshold()
         return self.current_bucket.eod_drawdown_threshold(self._threshold_time_ms)
 
     @property
@@ -871,7 +895,7 @@ class ChallengePeriodManager(CacheController):
         Returns None if the hotkey has not been evaluated yet.
         """
         state = self.miner_states.get(synthetic_hotkey)
-        if not state or state.is_eliminated:
+        if not state:
             return None
 
         intraday_threshold = state.intraday_drawdown_threshold

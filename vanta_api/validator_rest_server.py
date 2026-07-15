@@ -37,7 +37,7 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair, HL_DYNAMIC_REGISTRY
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
@@ -2498,6 +2498,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         per-pair caps from /trade-pairs instead:
         subaccount_positional_leverage_by_tier[tier] × account_size, using the
         `tier` field returned here.
+
+        Note: all USD figures here are multiplier × static account_size. The
+        order path applies the same multipliers to the live balance
+        (account_size + realized PnL − fees), so USD amounts drift apart once
+        the account has realized PnL; clients tracking live caps should
+        re-apply the multipliers to their own balance figure.
 
         Example:
         curl http://localhost:48888/hl-traders/0xabcd1234.../limits

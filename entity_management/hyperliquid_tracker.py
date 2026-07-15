@@ -53,7 +53,8 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, HL_COIN_TO_DYNAMIC_TRADE_PAIR, HL_COIN_TO_TRADE_PAIR, DynamicTradePair, TradePair, TradePairSource
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePair, TradePairSource
+from vali_objects.trade_pair import HL_COIN_TO_TRADE_PAIR
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 
 
@@ -1229,16 +1230,11 @@ class HyperliquidTracker:
 
         # Include any Vanta-open coins the HL account no longer lists, so we can
         # drive them to FLAT if HL closed behind our back.
-        from vali_objects.vali_config import HL_DYNAMIC_REGISTRY
         trade_pair_to_coin = {
-            dtp.trade_pair_id: dtp.hl_coin
-            for dtp in list(HL_DYNAMIC_REGISTRY.values())
-        }
-        trade_pair_to_coin.update({
             tp.trade_pair_id: tp.hl_coin
             for tp in TradePair
             if tp.src == TradePairSource.HYPERLIQUID
-        })
+        }
         try:
             open_positions = self._position_client.get_positions_for_one_hotkey(
                 synthetic_hotkey, only_open_positions=True
@@ -1300,12 +1296,8 @@ class HyperliquidTracker:
         trade_pair = HL_COIN_TO_TRADE_PAIR.get(coin)
         below_threshold = False
         if trade_pair is None:
-            # Coin not in hardcoded set — check deprecated dynamic registry for close/reduce of existing positions
-            trade_pair = HL_COIN_TO_DYNAMIC_TRADE_PAIR.get(coin)
-            if trade_pair is None:
-                bt.logging.debug(f"[HL_TRACKER] Unknown coin: {coin}")
-                return
-            below_threshold = True
+            bt.logging.debug(f"[HL_TRACKER] Unknown coin: {coin}")
+            return
         trade_pair_id = trade_pair.trade_pair_id
 
         # Resolve synthetic hotkey

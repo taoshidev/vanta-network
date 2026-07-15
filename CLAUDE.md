@@ -133,10 +133,10 @@ The system uses a distributed RPC architecture for inter-process communication:
 5. Performance calculation using debt-based scoring system
 
 ### Supported Assets
-- **Crypto**: BTC/USD, ETH/USD, SOL/USD, XRP/USD, DOGE/USD, ADA/USD (6 pairs)
+- **Crypto**: BTC/USDC, ETH/USDC, SOL/USDC, XRP/USDC, DOGE/USDC, ADA/USDC, etc. (Hyperliquid USDC pairs; native USD-denominated equivalents are blocked in favor of these)
 - **Forex**: 32 major currency pairs (EUR/USD, GBP/USD, USD/JPY, etc.)
   - Grouped into G1-G5 subcategories by liquidity/volume
-- **Equities**: 7 major stocks (NVDA, AAPL, TSLA, AMZN, MSFT, GOOG, META) - currently blocked
+- **Equities**: Russell 1000 single stocks plus HL-matched additions (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD) - enabled via Polygon/Databento
 - **Indices**: 6 global indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) - currently blocked
 - **Commodities**: XAU/USD, XAG/USD - currently blocked
 
@@ -151,8 +151,8 @@ The system uses a distributed RPC architecture for inter-process communication:
   - 5% daily drawdown limit (MAX_DAILY_DRAWDOWN = 0.95)
   - Risk-adjusted performance penalties based on Sharpe, Sortino, Calmar, Omega ratios
 - **Fees**:
-  - Carry fees: 10.95% annually (crypto), 3% annually (forex)
-  - Spread fees: 0.1% × leverage (crypto only)
+  - Carry fees: 10.95% annually (crypto), 3% annually (forex); equities instead pay a 3% annual stock-borrow fee (short) or 6.6% annual margin interest on the borrowed amount (long); commodities carry no fee for standard positions. Hyperliquid-linked entity positions pay live Hyperliquid funding rates instead of the flat carry fee, regardless of asset class.
+  - Spread fees: 0.05% × order value (crypto, equities), 0.045% × order value (commodities); none for forex
   - Slippage costs: Higher for high leverage and low liquidity assets
 - **Leverage Limits**:
   - Crypto: 0.01 to 0.5x
@@ -231,6 +231,7 @@ client.set_direct_server(server_instance)
 - **Financial APIs**:
   - Polygon API Client 1.15.3 ($248/month)
   - Tiingo 0.15.6 ($50/month)
+  - Databento 0.69.0 (optional, supplementary equities price source)
 - **ML Stack**: scikit-learn 1.5.0, scipy 1.13.0, pandas 2.2.2
 - **Web Services**:
   - Flask 3.0.3 + Waitress 2.1.2 for REST API

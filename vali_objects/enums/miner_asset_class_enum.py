@@ -1,9 +1,5 @@
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from vali_objects.vali_config import TradePair
-
+from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource
 
 class MinerAssetClass(str, Enum):
     """
@@ -28,7 +24,7 @@ class MinerAssetClass(str, Enum):
             return False
         return asset_class.lower() in {c.value for c in MinerAssetClass}
 
-    def can_trade(self, trade_pair: "TradePair") -> bool:
+    def can_trade(self, trade_pair: TradePair) -> bool:
         """
         Check if `trade_pair` is allowed for this miner asset class.
 
@@ -36,7 +32,6 @@ class MinerAssetClass(str, Enum):
         - COMMODITIES requires Hyperliquid source and commodity category
         - Other classes require Vanta source and matching category
         """
-        from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
 
         category = trade_pair.trade_pair_category
         src = trade_pair.src
@@ -59,5 +54,3 @@ class MinerAssetClass(str, Enum):
             return src == TradePairSource.HYPERLIQUID  and category == TradePairCategory.CRYPTO
 
         return src == TradePairSource.VANTA and self.value == category.value
-
-

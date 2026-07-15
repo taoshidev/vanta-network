@@ -26,7 +26,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher import LivePriceFetcherServer
 from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
-from vali_objects.vali_config import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
+from vali_objects.trade_pair import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.vali_utils import ValiUtils
 
