@@ -301,7 +301,7 @@ class MDDChecker(CacheController):
                 any_changes = True
 
         if any_changes:
-            order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position)
+            order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position.position_type)
             order.bid = winning_event.bid
             order.ask = winning_event.ask
             # order.slippage = PriceSlippageModel.calculate_slippage(winning_event.bid, winning_event.ask, order)
@@ -416,11 +416,15 @@ class MDDChecker(CacheController):
             temp = tp_to_price_sources_for_realtime_price.get(trade_pair, [])
             price_source = temp[0] if temp else None
             realtime_price = price_source.parse_appropriate_price(
-                now_ms, trade_pair.is_forex, position.position_type, position
+                now_ms, trade_pair.is_forex, position.position_type, position.position_type
             ) if price_source else None
             ret_changed = False
 
-            quote_usd_conversion = self._live_price_client.get_quote_usd_conversion(position.orders[0], position)
+            first_order = position.orders[0]
+            quote_usd_conversion = self._live_price_client.get_quote_usd_conversion(
+                first_order.trade_pair, first_order.processed_ms, first_order.price,
+                first_order.order_type, position.position_type
+            )
 
             if position.is_open_position and realtime_price is not None:
                 orig_return = position.return_at_close

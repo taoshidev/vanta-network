@@ -35,6 +35,7 @@ from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.miner_account.miner_account_manager import MinerAccount
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
 from entity_management.entity_client import EntityClient
@@ -543,27 +544,6 @@ class ChallengePeriodManager(CacheController):
     # ==================== Drawdown/Rank Refresh methods ====================
 
     @staticmethod
-    def _compute_portfolio_return(account: dict | None, positions: list[Position] | None) -> tuple[float | None, float | None]:
-        """Compute current portfolio return as (balance + unrealized_pnl) / account_size.
-        Returns None if account or position data is unavailable.
-        """
-        if account is None or not positions:
-            return None, None
-
-        account_size = account.get('account_size', 0)
-        if account_size <= 0:
-            return None, None
-
-        balance = account.get('balance', 0)
-        unrealized_pnl = sum(pos.unrealized_pnl for pos in positions if pos.is_open_position)
-        equity = balance + unrealized_pnl
-
-        equity_ret = equity / account_size
-        balance_ret = balance / account_size
-
-        return equity_ret, balance_ret
-
-    @staticmethod
     def _parse_eod_checkpoints(ledger: PerfLedger, now_ms: int) -> tuple[float, float | None, float, int | None]:
         """
         Parse midnight checkpoints from a ledger.
@@ -581,14 +561,20 @@ class ChallengePeriodManager(CacheController):
     def _refresh_drawdown_cache(
         self,
         hotkeys: list[str],
-        accounts: dict[str, dict],
+        accounts: dict[str, MinerAccount],
         ledgers: dict[str, PerfLedger],
         positions: dict[str, list[Position]],
         current_time_ms: int
     ) -> None:
         for hotkey in hotkeys:
             # Compute portfolio return: (balance + unrealized_pnl) / account_size
-            current_equity, current_balance = self._compute_portfolio_return(accounts.get(hotkey), positions.get(hotkey))
+            account = accounts.get(hotkey)
+            if not account or account.account_size <= 0:
+                btlogging.warning(f"[CHALLENGE] {hotkey} has invalid account, skipping evaluation")
+                continue
+
+            current_equity = account.equity / account.account_size
+            current_balance = account.balance / account.account_size
             if current_equity is None or current_balance is None:
                 btlogging.warning(f"[CHALLENGE] {hotkey} invalid account or has no positions, skipping evaluation")
                 continue
@@ -603,10 +589,10 @@ class ChallengePeriodManager(CacheController):
 
             # Use daily open snapshot from miner account for intraday drawdown baseline; fall back to ledger
             today_midnight_ms = TimeUtil.get_start_of_day_ms(now_ms)
-            snapshot = accounts.get(hotkey, {}).get('daily_open_snapshot')
-            if snapshot and snapshot.get('day_open_ms') == today_midnight_ms:
-                last_eod = snapshot['equity_return']
-                daily_open_equity = snapshot['equity_return']
+            snapshot = account.daily_open_snapshot
+            if snapshot and snapshot.day_open_ms == today_midnight_ms:
+                last_eod = snapshot.equity_return
+                daily_open_equity = snapshot.equity_return
 
             intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0 if daily_open_equity else 0.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
@@ -628,7 +614,7 @@ class ChallengePeriodManager(CacheController):
         hotkeys: list[str],
         ledgers: dict[str,PerfLedger],
         positions: dict[str,list[Position]],
-        accounts: dict[str,dict],
+        accounts: dict[str, MinerAccount],
         asset_selections: dict[str,MinerAssetClass],
         current_time_ms: int
     ):
@@ -637,7 +623,7 @@ class ChallengePeriodManager(CacheController):
 
         rank_ledgers = {hk: ledger for hk, ledger in ledgers.items() if hk in hotkeys}
         rank_positions = {hk: pos for hk, pos in positions.items() if hk in hotkeys}
-        account_sizes = {hk: account["account_size"] for hk, account in accounts.items() if hk in hotkeys}
+        account_sizes = {hk: account.account_size for hk, account in accounts.items() if hk in hotkeys}
 
         # Score all rank-eligible miners (including those without minimum days) for accurate threshold
         asset_competitiveness, asset_softmaxed_scores = Scoring.score_miner_asset_classes(

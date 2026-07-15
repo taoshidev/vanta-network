@@ -451,47 +451,47 @@ class LivePriceFetcher:
         """
         return price_source
 
-    def get_quote_usd_conversion(self, order, position):
+    def get_quote_usd_conversion(self, trade_pair, time_ms, price, order_type, position_type):
         """
         Return the conversion rate between an order's quote currency and USD
         """
-        if order.price == 0:
+        if price == 0:
             return 0.0
 
-        if not (order.trade_pair.is_forex and order.trade_pair.quote != "USD"):
+        if not (trade_pair.is_forex and trade_pair.quote != "USD"):
             return 1.0
 
-        if order.trade_pair.base == "USD":
-            return 1.0 / order.price
+        if trade_pair.base == "USD":
+            return 1.0 / price
 
         # A/B cross pair: need to convert quote currency B to USD
         # Try B/USD first (more common)
         b_usd = True
-        conversion_trade_pair = TradePair.from_trade_pair_id(f"{order.trade_pair.quote}USD")
+        conversion_trade_pair = TradePair.from_trade_pair_id(f"{trade_pair.quote}USD")
         if conversion_trade_pair is None:
             # fall back to USD/B format
             b_usd = False
-            conversion_trade_pair = TradePair.from_trade_pair_id(f"USD{order.trade_pair.quote}")
+            conversion_trade_pair = TradePair.from_trade_pair_id(f"USD{trade_pair.quote}")
 
         price_sources = self.get_sorted_price_sources_for_trade_pair(
             trade_pair=conversion_trade_pair,
-            time_ms=order.processed_ms
+            time_ms=time_ms
         )
         if price_sources and len(price_sources) > 0:
             best_price_source = price_sources[0]
             usd_conversion = best_price_source.parse_appropriate_price(
-                now_ms=order.processed_ms,
-                is_forex=True,          # from_currency is USD for crypto and equities
-                order_type=order.order_type,
-                position=position
+                now_ms=time_ms,
+                is_forex=True,
+                order_type=order_type,
+                position_type=position_type if position_type else order_type
             )
             return usd_conversion if b_usd else 1.0 / usd_conversion
 
-        bt.logging.error(f"Unable to fetch quote currency {order.trade_pair.quote} to USD conversion at time {order.processed_ms}. No price sources available (websocket or REST).")
+        bt.logging.error(f"Unable to fetch quote currency {trade_pair.quote} to USD conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
         # TODO: raise Exception(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}.")
 
-    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position):
+    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position_type):
         """
         Return the conversion rate between USD and an order's base currency
         """
@@ -521,9 +521,9 @@ class LivePriceFetcher:
             best_price_source = price_sources[0]
             usd_conversion = best_price_source.parse_appropriate_price(
                 now_ms=time_ms,
-                is_forex=True,          # from_currency is USD for crypto and equities
+                is_forex=True,
                 order_type=order_type,
-                position=position
+                position_type=position_type if position_type else order_type
             )
             return usd_conversion if usd_a else 1.0 / usd_conversion
 

@@ -1298,7 +1298,8 @@ class EntityManager(ValidatorBroadcastBase):
 
         account_size_data = None
         try:
-            account_size_data = self._miner_account_client.get_account(synthetic_hotkey)
+            account_obj = self._miner_account_client.get_account(synthetic_hotkey)
+            account_size_data = account_obj.to_dict() if account_obj else None
         except Exception as e:
             bt.logging.error(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
 
@@ -1466,7 +1467,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             bucket_str, bucket_start_time = bucket_info
             stats = batch_stats.get(synthetic_hotkey) or {}
-            account = batch_accounts.get(synthetic_hotkey) or {}
+            account = batch_accounts.get(synthetic_hotkey)
 
             # Extract common fields
             engagement = stats.get('engagement') or {}
@@ -1488,8 +1489,8 @@ class EntityManager(ValidatorBroadcastBase):
                     break
 
             account_size = subaccount.account_size
-            balance = account.get('balance', account_size) if isinstance(account, dict) else account_size
-            total_realized_pnl = account.get('total_realized_pnl', 0.0) if isinstance(account, dict) else 0.0
+            balance = account.balance if account else account_size
+            total_realized_pnl = account.total_realized_pnl if account else 0.0
 
             total_volume += trader_volume
 
@@ -1533,7 +1534,7 @@ class EntityManager(ValidatorBroadcastBase):
                     if target_pct > 0:
                         progress = round(min(max((returns_pct / target_pct) * 100.0, 0.0), 100.0), 1)
 
-                    max_return = account.get('max_return', current_return) if isinstance(account, dict) else current_return
+                    max_return = account.max_return if account else current_return
                     if isinstance(max_return, (int, float)) and max_return > 0:
                         drawdown_percent = round(max((1.0 - (current_return / max_return)) * 100.0, 0.0), 1)
 

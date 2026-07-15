@@ -1192,6 +1192,7 @@ class LimitOrderManager(CacheController):
 
     def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, enforce_market_cooldown=False):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
+        from vali_objects.utils.limit_order.order_utils import OrderSize
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
         error_msg = None
@@ -1199,44 +1200,36 @@ class LimitOrderManager(CacheController):
         new_src = OrderSource.get_fill(order.src)
 
         try:
-            order_dict = Order.to_python_dict(order)
-            order_dict['price'] = fill_price
-
-            # Reverse order direction when exeucting BRACKET orders.
-            # bracket_pct (if set) is resolved against net_quantity inside
-            # market_order_manager under the position lock — leverage/value/quantity stay None here.
             if order.execution_type == ExecutionType.BRACKET:
-                closing_order_type = OrderType.opposite_order_type(order.order_type)
-                if not closing_order_type:
+                order_type = OrderType.opposite_order_type(order.order_type)
+                if not order_type:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
+                sign = 1 if order_type == OrderType.LONG else -1
+                order_size = OrderSize(
+                    leverage=sign * abs(order.leverage) if order.leverage else None,
+                    value=sign * abs(order.value) if order.value else None,
+                    quantity=sign * abs(order.quantity) if order.quantity else None,
+                    bracket_pct=order.bracket_pct,
+                )
+            else:
+                order_type = order.order_type
+                order_size = OrderSize.from_dict(Order.to_python_dict(order))
 
-                sign = 1 if closing_order_type == OrderType.LONG else -1
-                order_dict['leverage'] = sign * abs(order.leverage) if order.leverage else None
-                order_dict['value'] = sign * abs(order.value) if order.value else None
-                order_dict['quantity'] = sign * abs(order.quantity) if order.quantity else None
-                order_dict['order_type'] = closing_order_type.name
-
-            err_msg, updated_position, created_order = self.market_order_manager._process_market_order(
-                order.order_uuid,
-                "limit_order",
-                trade_pair,
-                fill_time,
-                order_dict,
-                miner_hotkey,
-                [price_source],
-                enforce_market_cooldown
+            result = self.market_order_manager.execute_order(
+                miner_hotkey, order.order_uuid, trade_pair,
+                order.execution_type, order_type, order_size,
+                fill_price=fill_price,
+                price_sources=[price_source],
+                order_src=new_src,
+                now_ms=fill_time,
+                enforce_cooldown=enforce_market_cooldown,
             )
 
-            # Issue 2: Check if err_msg is set - treat as failure
-            if err_msg:
-                raise ValueError(err_msg)
+            if not result:
+                raise ValueError("No position returned from order fill")
 
-            # Issue 5: updated_position being None is an error case, not fallback
-            if not updated_position:
-                raise ValueError("No position returned from market order processing")
+            filled_order, updated_position = result
 
-            # Issue 4: Copy values TO original order object rather than reassigning variable
-            filled_order = updated_position.orders[-1]
             order.leverage = filled_order.leverage
             order.value = filled_order.value
             order.quantity = filled_order.quantity

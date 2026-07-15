@@ -14,6 +14,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -425,9 +426,8 @@ class TestMarketOrderManager(TestBase):
         initial_order_count = len(position.orders)
 
         # Calculate order size from leverage
-        signal = {"leverage": 0.3}
-        quantity, leverage, value = self.market_order_manager.parse_order_size(
-            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        quantity, leverage, value = convert_order_sizes(
+            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
 
         self.market_order_manager._add_order_to_existing_position(
@@ -465,9 +465,8 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, bid=49990.0, ask=50010.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 0.3}
-        quantity, leverage, value = self.market_order_manager.parse_order_size(
-            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        quantity, leverage, value = convert_order_sizes(
+            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
 
         print(f"{quantity}, {leverage}, {value}")
@@ -529,9 +528,8 @@ class TestMarketOrderManager(TestBase):
         self.assertNotIn(cache_key, self.market_order_manager.last_order_time_cache)
 
         # Calculate order size from leverage
-        signal = {"leverage": 0.3}
-        quantity, leverage, value = self.market_order_manager.parse_order_size(
-            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        quantity, leverage, value = convert_order_sizes(
+            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
 
         self.market_order_manager._add_order_to_existing_position(
@@ -561,9 +559,8 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 0.3}
-        quantity, leverage, value = self.market_order_manager.parse_order_size(
-            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        quantity, leverage, value = convert_order_sizes(
+            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
 
         self.market_order_manager._add_order_to_existing_position(
@@ -595,9 +592,8 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 0.3}
-        quantity, leverage, value = self.market_order_manager.parse_order_size(
-            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        quantity, leverage, value = convert_order_sizes(
+            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
 
         self.market_order_manager._add_order_to_existing_position(
@@ -986,9 +982,8 @@ class TestMarketOrderManager(TestBase):
         price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
 
         # Calculate order size from leverage
-        signal = {"leverage": 0.3}
-        quantity, leverage, value = self.market_order_manager.parse_order_size(
-            signal, 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
+        quantity, leverage, value = convert_order_sizes(
+            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
         )
 
         self.market_order_manager._add_order_to_existing_position(
@@ -1012,15 +1007,13 @@ class TestMarketOrderManager(TestBase):
         self.assertIn(expected_key, self.market_order_manager.last_order_time_cache)
 
     # ============================================================================
-    # Test: process_flat_all_order
+    # Test: close_positions
     # ============================================================================
 
-    def test_process_flat_all_order_closes_multiple_positions(self):
-        """Test FLAT_ALL closes all open positions for a miner"""
+    def test_close_positions_closes_multiple_positions(self):
+        """Test close_positions with close_all=True closes all open positions for a miner"""
         now_ms = TimeUtil.now_in_millis()
 
-        # Create multiple positions for the miner
-        # Use low leverage to avoid hitting portfolio max
         trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD]
 
         for i, trade_pair in enumerate(trade_pairs):
@@ -1042,7 +1035,6 @@ class TestMarketOrderManager(TestBase):
             self.assertIsNotNone(position)
             self.assertFalse(position.is_closed_position)
 
-        # Verify all positions are open
         open_positions_before = self.position_client.get_positions_for_hotkeys(
             [self.DEFAULT_MINER_HOTKEY],
             only_open_positions=True
@@ -1050,26 +1042,17 @@ class TestMarketOrderManager(TestBase):
 
         self.assertEqual(len(open_positions_before), 3)
 
-        # Close all positions with FLAT_ALL
         close_time_ms = now_ms + 10000
-        result = self.market_order_manager.process_flat_all_order(
-            order_uuid="ALL",
-            miner_repo_version="1.0.0",
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
+        self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY,
+            close_all=True,
             now_ms=close_time_ms
         )
 
-        # Verify result
-        self.assertEqual(result["positions_closed"], 3)
-        self.assertEqual(result["positions_failed"], 0)
-        self.assertEqual(len(result["failed_trade_pairs"]), 0)
-
-        # Verify all positions are now closed
         all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
 
         for position in all_positions:
             self.assertTrue(position.is_closed_position)
-            # Verify the last order is FLAT with correct source
             last_order = position.orders[-1]
             self.assertEqual(last_order.order_type, OrderType.FLAT)
             self.assertEqual(last_order.src, OrderSource.FLAT_ALL_CLOSE)

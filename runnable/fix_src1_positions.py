@@ -155,7 +155,7 @@ class PositionFixer:
                     now_ms=order.processed_ms,
                     is_forex=position.trade_pair.is_forex,
                     order_type=order.order_type,
-                    position=position_copy
+                    position_type=position_copy.position_type
                 )
 
 

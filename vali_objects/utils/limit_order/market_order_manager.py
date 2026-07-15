@@ -2,12 +2,13 @@
 
 Modularize the logic that was originally in validator.py. No IPC communication here.
 """
-import math
 import time
-import uuid
 import threading
 
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.miner_account.miner_account_manager import MinerAccount
+from vali_objects.trade_pair import TradePairSource
+from vali_objects.vali_dataclasses.price_source import PriceSource
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
@@ -17,61 +18,35 @@ import bittensor as bt
 
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.price_slippage_model import PriceSlippageModel
-from vali_objects.vali_config import ValiConfig, TradePair, TradePairCategory, RPCConnectionMode
-from vali_objects.utils.leverage_utils import get_leverage_tier, get_portfolio_caps, get_tier_positional_leverage
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from vali_objects.trade_pair import TradePair
+from vali_objects.utils.leverage_utils import get_max_order_size
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
-from vali_objects.enums.miner_bucket_enum import MinerBucket
-from entity_management.entity_client import EntityClient
-from entity_management.entity_utils import is_synthetic_hotkey
+from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
+from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+from vali_objects.position_management.position_manager_client import PositionManagerClient
+from shared_objects.locks.position_lock_client import PositionLockClient
 
 
 class MarketOrderManager():
+
     def __init__(self, serve:bool, slack_notifier=None, running_unit_tests=False, connection_mode=RPCConnectionMode.RPC):
         self.serve = serve
         self.running_unit_tests = running_unit_tests
 
-        # Use LOCAL mode for WebSocketNotifier in tests (server not started in test mode)
         ws_connection_mode = RPCConnectionMode.LOCAL if running_unit_tests else connection_mode
+
         self.websocket_notifier = WebSocketNotifierClient(connection_mode=ws_connection_mode, connect_immediately=False)
-        # Create own ContractClient (forward compatibility - no parameter passing)
-        from vali_objects.contract.contract_client import ContractClient
-        self._contract_client = ContractClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
-        # Create own MinerAccountClient (source of truth for account sizes)
-        from vali_objects.miner_account.miner_account_client import MinerAccountClient
-        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
-
-        # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
-        from vali_objects.price_fetcher import LivePriceFetcherClient
-        self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
-
-        # Create EntityClient for subaccount dashboard broadcasts
-        self._entity_client = EntityClient(connection_mode=connection_mode, connect_immediately=False)
-
-        # Create EntityCollateralClient for cross-margin gating and slashing
-        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
-        self._entity_collateral_client = EntityCollateralClient(connection_mode=connection_mode, connect_immediately=False)
-
-        # Create own PositionManagerClient (forward compatibility - no parameter passing)
-        from vali_objects.position_management.position_manager_client import PositionManagerClient
-        self._position_client = PositionManagerClient(
-            port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=False,
-            connection_mode=connection_mode
-        )
-
-        from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
-        self._challenge_period_client = ChallengePeriodClient(
-            connection_mode=connection_mode,
-            running_unit_tests=running_unit_tests
-        )
-
-        # Create own PositionLockClient (forward compatibility - no parameter passing)
-        from shared_objects.locks.position_lock_client import PositionLockClient
+        self._miner_account_client = MinerAccountClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        self._live_price_client = LivePriceFetcherClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        self._entity_collateral_client = EntityCollateralClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests, connect_immediately=False)
+        self._position_client = PositionManagerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
 
-        # PriceSlippageModel creates its own LivePriceFetcherClient internally
         self.price_slippage_model = PriceSlippageModel(running_unit_tests=running_unit_tests)
 
         # Cache to track last order time for each (miner_hotkey, trade_pair) combination
@@ -95,324 +70,282 @@ class MarketOrderManager():
             self.slippage_refresher = None
             self.slippage_refresher_thread = None
 
-    @property
-    def live_price_fetcher(self):
-        """Get live price fetcher client."""
-        return self._live_price_client
+    def execute_order(
+        self,
+        hotkey: str,
+        order_uuid: str,
+        trade_pair: TradePair,
+        execution_type: ExecutionType,
+        order_type: OrderType,
+        order_size: OrderSize,
+        *,
+        fill_price: float | None = None,
+        price_sources: list[PriceSource] | None = None,
+        slippage: float | None = None,
+        order_src: OrderSource = OrderSource.ORGANIC,
+        is_hl: bool = False,
+        is_hl_taker: bool | None = None,
+        now_ms: int | None = None,
+        enforce_cooldown: bool = True,
+    ) -> tuple[Order, Position] | None:
+        now_ms = now_ms or TimeUtil.now_in_millis()
+        if enforce_cooldown:
+            err = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, hotkey)
+            if err:
+                raise SignalException(err)
 
-    @property
-    def position_manager(self):
-        """Get position manager client."""
-        return self._position_client
+        with self._position_lock_client.get_lock(hotkey, trade_pair.trade_pair_id):
 
-    @property
-    def contract_manager(self):
-        """Get contract client (forward compatibility - created internally)."""
-        return self._contract_client
+            miner_account = self._miner_account_client.get_or_create(hotkey)
+            position = self._position_client.get_open_position_for_trade_pair(hotkey, trade_pair.trade_pair_id)
+            position_type = position.position_type if position else order_type
 
-    def clear_order_cooldown_cache(self):
-        """Clear the order cooldown cache. Used for testing."""
-        if not self.running_unit_tests:
-            raise Exception('clear_order_cooldown_cache can only be called in unit test mode')
-        self.last_order_time_cache.clear()
-        bt.logging.debug("Cleared market order cooldown cache")
+            if fill_price is None or not price_sources:
+                price_sources = self._live_price_client.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
+                if not price_sources:
+                    raise SignalException(f"Order Rejected: no live prices being found for {trade_pair.trade_pair_id}. Please try again.")
 
-    def _get_or_create_open_position_from_new_order(self, trade_pair: TradePair, order_type: OrderType, order_time_ms: int,
-                                        miner_hotkey: str, miner_order_uuid: str, now_ms:int, price_sources, miner_repo_version, account_size):
+                if fill_price is None:
+                    fill_price = price_sources[0].parse_appropriate_price(now_ms, trade_pair.is_forex, order_type, position_type)
 
-        # Check if there's an existing open position for this specific trade pair (server-side filtered)
-        existing_open_pos = self._position_client.get_open_position_for_trade_pair(
-            miner_hotkey,
-            trade_pair.trade_pair_id
-        )
-        if existing_open_pos:
-            # If the position has too many orders, we need to close it out to make room.
-            if len(existing_open_pos.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
+            usd_base_rate = self._live_price_client.get_usd_base_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
+            quote_usd_rate = self._live_price_client.get_quote_usd_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
+
+            if position is not None and len(position.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
                 bt.logging.info(
-                    f"Miner [{miner_hotkey}] hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
-                    f"Automatically closing position for {trade_pair.trade_pair_id} "
-                    f"with {len(existing_open_pos.orders)} orders to make room for new position."
+                    f"Miner [{hotkey}] hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
+                    f"Auto-closing {trade_pair.trade_pair_id} with {len(position.orders)} orders."
                 )
-                force_close_order_time = now_ms - 1 # 2 orders for the same trade pair cannot have the same timestamp
-                force_close_order_uuid = existing_open_pos.position_uuid[::-1] # uuid will stay the same across validators
-                self._add_order_to_existing_position(existing_open_pos, trade_pair, OrderType.FLAT,
-                                                     -existing_open_pos.net_quantity, 0.0, 0.0, force_close_order_time, miner_hotkey,
-                                                     price_sources, force_close_order_uuid, miner_repo_version,
-                                                     OrderSource.MAX_ORDERS_PER_POSITION_CLOSE,
-                                                     existing_open_pos.account_size)
-                time.sleep(0.1)  # Put 100ms between two consecutive websocket writes for the same trade pair and hotkey. We need the new order to be seen after the FLAT.
-            else:
-                # If the position is closed, raise an exception. This can happen if the miner is eliminated in the main
-                # loop thread.
-                if existing_open_pos.is_closed_position:
-                    raise SignalException(
-                        f"miner [{miner_hotkey}] sent signal for "
-                        f"closed position [{trade_pair}]")
-                bt.logging.debug("adding to existing position")
-                # Return existing open position (nominal path)
-                return existing_open_pos
+                flat_uuid = position.position_uuid[::-1]
+                self._apply_order(
+                    position, miner_account,
+                    ExecutionType.MARKET, OrderType.FLAT, OrderSize(quantity=-position.net_quantity),
+                    flat_uuid, now_ms - 1, price_sources,
+                    OrderSource.MAX_ORDERS_PER_POSITION_CLOSE,
+                    fill_price, usd_base_rate, quote_usd_rate,
+                    slippage=0,
+                )
+                position = None
 
+            if not position:
+                if order_type == OrderType.FLAT:
+                    return None
+                position = Position(
+                    miner_hotkey=hotkey,
+                    position_uuid=order_uuid,
+                    open_ms=now_ms,
+                    trade_pair=trade_pair,
+                    position_type=order_type,
+                    account_size=miner_account.account_size,
+                    is_hl=is_hl,
+                )
 
-        # if the order is FLAT ignore (noop)
-        if order_type == OrderType.FLAT:
-            open_position = None
-        else:
-            # if a position doesn't exist, then make a new one
-            open_position = Position(
-                miner_hotkey=miner_hotkey,
-                position_uuid=miner_order_uuid if miner_order_uuid else str(uuid.uuid4()),
-                open_ms=order_time_ms,
-                trade_pair=trade_pair,
-                position_type=order_type,
-                account_size=account_size
+            order = self._apply_order(
+                position, miner_account,
+                execution_type, order_type, order_size,
+                order_uuid, now_ms, price_sources, order_src,
+                fill_price, usd_base_rate, quote_usd_rate,
+                slippage, is_hl_taker
             )
-        return open_position
+            return order, position
 
-    def _add_order_to_existing_position(self, existing_position: Position, trade_pair: TradePair, signal_order_type: OrderType,
-                                        quantity: float, leverage: float, value: float, order_time_ms: int, miner_hotkey: str,
-                                        price_sources, miner_order_uuid: str, miner_repo_version: str, src:OrderSource,
-                                        balance=None, usd_base_price=None, execution_type=ExecutionType.MARKET,
-                                        fill_price=None, limit_price=None, stop_loss=None, take_profit=None, bracket_orders=None,
-                                        hl_slippage=None, is_hl_taker=None, trailing_stop=None) -> Order:
-        # Must be locked by caller
-        step_start = TimeUtil.now_in_millis()
-
+    def _apply_order(
+        self,
+        position: Position,
+        miner_account: MinerAccount,
+        execution_type: ExecutionType,
+        order_type: OrderType,
+        order_size: OrderSize,
+        order_uuid: str,
+        now_ms: int,
+        price_sources: list[PriceSource],
+        order_src: OrderSource,
+        fill_price: float,
+        usd_base_rate: float,
+        quote_usd_rate: float,
+        slippage: float | None = None,
+        is_hl_taker: bool | None = None,
+    ) -> Order:
+        """Build and execute an order. Caller must hold the position lock."""
+        trade_pair = position.trade_pair
+        hotkey = position.miner_hotkey
+        balance = miner_account.balance
         best_price_source = price_sources[0]
-        # Use fill_price only for non-market fills (limit/bracket) where it comes from
-        # the validator's limit engine. Market orders must never trust a signal-supplied
-        # price always use the fetched market price.
-        if execution_type == ExecutionType.MARKET or not fill_price:
-            price = best_price_source.parse_appropriate_price(order_time_ms, trade_pair.is_forex, signal_order_type, existing_position)
+
+        quantity, leverage, value, bracket_pct = order_size
+        if bracket_pct:
+            quantity = -position.net_quantity * bracket_pct
+        if order_type == OrderType.FLAT or quantity == -position.net_quantity:
+            order_type = OrderType.FLAT
+            sizing = OrderSize(quantity=-position.net_quantity)
         else:
-            price = fill_price
+            sizing = OrderSize(quantity=quantity, leverage=leverage, value=value)
 
-        if existing_position.account_size <= 0:
-            bt.logging.warning(
-                f"Invalid account_size {existing_position.account_size} for position {existing_position.position_uuid}. "
-                f"Using MIN_CAPITAL as fallback."
+        use_nano_increment = miner_account.account_size <= ValiConfig.FOREX_SMALL_ACCOUNT_THRESHOLD
+        quantity, leverage, value = convert_order_sizes(
+            sizing, usd_base_rate, trade_pair, balance,
+            round_qty=(order_type != OrderType.FLAT),
+            use_nano_increment=use_nano_increment,
+        )
+
+        if self._is_effective_close(position, order_type, quantity, value):
+            order_type = OrderType.FLAT
+            quantity, leverage, value = -position.net_quantity, -position.net_leverage, -position.net_value
+
+        is_buy = order_type == position.position_type
+        if is_buy:
+            max_order_value = get_max_order_size(miner_account, position)
+            if max_order_value <= 0:
+                raise SignalException(f"No buying power remaining for {trade_pair.trade_pair_id}")
+            sign = -1 if order_type == OrderType.SHORT else 1
+            # TODO max_order_value excludes transaction fees; a full-buying-power order will slightly overdraft after fee
+            value = sign * min(abs(value), max_order_value)
+            quantity, leverage, value = convert_order_sizes(
+                OrderSize(value=value), usd_base_rate, trade_pair, balance,
+                round_qty=True,
+                use_nano_increment=use_nano_increment,
             )
-            existing_position.account_size = ValiConfig.MIN_CAPITAL
 
-        # Calculate USD conversions
-        step_start = TimeUtil.now_in_millis()
-        if usd_base_price is None:
-            usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, order_time_ms, price, signal_order_type, existing_position)
-            usd_conversion_ms = TimeUtil.now_in_millis() - step_start
-            bt.logging.info(f"[ADD_ORDER_DETAIL] USD conversion calculation took {usd_conversion_ms}ms")
+        if abs(value) < 1e-9 or abs(quantity) < 1e-9:
+            raise SignalException("Error processing order: 0 order size after clamping")
 
-        # Create order (margin_loan will be set after validation)
         order = Order(
             trade_pair=trade_pair,
-            order_type=signal_order_type,
+            order_type=order_type,
             quantity=quantity,
             value=value,
             leverage=leverage,
-            price=price,
-            processed_ms=order_time_ms,
-            order_uuid=miner_order_uuid,
+            price=fill_price,
+            processed_ms=now_ms,
+            order_uuid=order_uuid,
             price_sources=price_sources,
-            bid=best_price_source.bid,
-            ask=best_price_source.ask,
-            src=src,
-            limit_price=limit_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
+            bid=best_price_source.bid or 0,
+            ask=best_price_source.ask or 0,
+            src=order_src,
             execution_type=execution_type,
-            usd_base_rate=usd_base_price,
-            bracket_orders=bracket_orders,
-            trailing_stop=trailing_stop
+            usd_base_rate=usd_base_rate,
+            quote_usd_rate=quote_usd_rate,
+            is_hl_taker=is_hl_taker,
         )
-        bt.logging.info(f"[ORDER DETAIL] Using price source {price_sources}")
 
-        # Override bid/ask with Databento quote for equities slippage calculation
-        # if trade_pair.is_equities:
-        #     db_bid, db_ask, _ = self._live_price_client.get_quote(trade_pair, order_time_ms)
-        #     bt.logging.info(f"RECEIVED BID {db_bid} ASK {db_ask}")
-        #     if db_bid and db_ask and db_bid > 0 and db_ask > 0:
-        #         order.bid = db_bid
-        #         order.ask = db_ask
-
-        order_creation_ms = TimeUtil.now_in_millis() - step_start
-        order.quote_usd_rate = self.live_price_fetcher.get_quote_usd_conversion(order, existing_position)
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Order object creation took {order_creation_ms}ms")
-
-        # Refresh features - this may make expensive API calls on new day
-        step_start = TimeUtil.now_in_millis()
         features_available = self.price_slippage_model.refresh_features_daily(
-            time_ms=order_time_ms,
-            allow_blocking=False  # Don't block order filling!
+            time_ms=now_ms, allow_blocking=False
         )
-        refresh_features_ms = TimeUtil.now_in_millis() - step_start
-
         if not features_available:
-            bt.logging.error(
-                f"[ADD_ORDER_DETAIL] ⚠️  Features not available for slippage calculation! "
-                f"This will affect slippage accuracy."
-            )
+            bt.logging.error("[_apply_order] Features not available for slippage calculation.")
 
-        if refresh_features_ms > 100:
-            bt.logging.warning(
-                f"[ADD_ORDER_DETAIL] ⚠️  refresh_features_daily took {refresh_features_ms}ms "
-                f"(BLOCKING ORDER FILL)"
-            )
-        else:
-            bt.logging.info(f"[ADD_ORDER_DETAIL] refresh_features_daily took {refresh_features_ms}ms")
+        # Respect explicit 0 slippage
+        if slippage is None:
+            slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
+        order.slippage = slippage
 
-        step_start = TimeUtil.now_in_millis()
-        if hl_slippage is not None:
-            # Use pre-computed L2 orderbook slippage (from HL entity miner signals)
-            order.slippage = hl_slippage
-        else:
-            # PriceSlippageModel handles HL orderbook simulation for crypto internally,
-            # falling back to the existing model when orderbook data is unavailable
-            order.slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
-        if is_hl_taker is not None:
-            order.is_hl_taker = is_hl_taker
-        slippage_calc_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Slippage calculation took {slippage_calc_ms}ms")
+        if not order.value or not order.quantity:
+            raise SignalException(f"{hotkey} {order_uuid} Order value and quantity must be set before applying order. value={order.value}, quantity={order.quantity}")
 
-        account = self._miner_account_client.get_or_create(miner_hotkey)
-        buying_power = account['buying_power']
-        capital_used = account['capital_used']
-        total_borrowed_usd = account['total_borrowed_amount']
-
-        # Get balance and leverage bounds for USD-based validation TODO use account object
-        if not balance:
-            balance = self._miner_account_client.get_balance(miner_hotkey) or 0.0
-
-        trade_pair_category = trade_pair.trade_pair_category
-        leverage_key = (trade_pair_category, trade_pair.instrument_type)
-        miner_bucket = self._challenge_period_client.get_miner_bucket(miner_hotkey)
-        _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
-        if miner_bucket in _subaccount_buckets:
-            tier = get_leverage_tier(miner_bucket, account['account_size'])
-            max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
-            account_multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_PAIR[tier].get(leverage_key, 1.0)
-        else:
-            max_position_leverage = trade_pair.max_leverage
-            account_multiplier = ValiConfig.PORTFOLIO_LEVERAGE_CAP.get(leverage_key, 1.0)
-        max_position_value = max_position_leverage * balance
-
-        # Multi-class portfolio cap dispatch: tighten buying_power for subaccounts that span
-        # multiple asset classes (today only HL_ALL). Single-class subaccounts retain the existing
-        # single-cap behavior — get_portfolio_caps returns equal per_class/overall multipliers
-        # so the min() collapses back to the existing buying_power. The per-class room shields
-        # one class from being eaten by another; the overall room is a strictly tighter ceiling
-        # across all classes. Old checkpoints with empty capital_used_by_class are safe: the
-        # per_class_used falls back to 0, so per_class_room ≥ buying_power and the min() is a no-op
-        # until lazy backfill populates the dict.
-        effective_buying_power = buying_power
-        if miner_bucket in _subaccount_buckets:
-            asset_class_str = account.get('asset_class')
-            if not asset_class_str:
-                raise SignalException(f"Asset class must be selected for {miner_hotkey}")
-
-            subaccount_asset_class = MinerAssetClass(asset_class_str)
-            per_class_cap, overall_cap = get_portfolio_caps(
-                subaccount_asset_class, miner_bucket, account['account_size'], trade_pair_category
-            )
-            capital_used_by_class_raw = account.get('capital_used_by_class') or {}
-            per_class_used = capital_used_by_class_raw.get(trade_pair_category.value, 0.0)
-            per_class_room = balance * per_class_cap - per_class_used
-            overall_room = balance * overall_cap - capital_used
-            effective_buying_power = min(buying_power, per_class_room, overall_room)
-
-        # Validate order before processing cash balance (raises ValueError if invalid)
-        # Note: validate_order_size may clamp order.value/quantity/leverage in place
-        bt.logging.info(f"[ORDER DETAIL] pre-validation quantity: {order.quantity}, value: {order.value}")
-        existing_position.set_returns(order.price)
-        order_resized = existing_position.validate_order_size(order, max_position_value)
-
-        # Calculate transaction fee AFTER clamping based on final order value
-        transaction_fee_rate = ValiConfig.TRANSACTION_FEE_RATE.get(trade_pair_category, 0)
-
-        if order.order_type == existing_position.position_type:
-            if effective_buying_power <= 0:
-                raise SignalException(f"Order Rejected: Insufficient buying power (available: ${effective_buying_power:.2f})")
-
-            if abs(order.value) * (1 + transaction_fee_rate * account_multiplier) >= effective_buying_power:
-                sign = (-1 if order.order_type == OrderType.SHORT else 1)
-                order.value = effective_buying_power / (1 + transaction_fee_rate * account_multiplier) * sign
-                order_resized = True
-
-        if order_resized:
-            order_sizes = self.parse_order_size({"value": order.value}, usd_base_price, trade_pair, balance, use_floor=True)
-            order.quantity, order.leverage, order.value = order_sizes
-            bt.logging.info(f"[ADD_ORDER_DETAIL] order resized to ${order.value} (max position: {max_position_value}, max_cash: {effective_buying_power}")
-
-        if abs(order.value) < 1e-9 or abs(order.quantity) < 1e-9:
-            raise SignalException(
-                f"Order rejected: 0 order size due to max position value ${max_position_value} or max buying power ${effective_buying_power}"
-            )
-
-        # Entity cross-margin gating for subaccounts
-        if order.order_type == existing_position.position_type:
-            allowed, reason = self._entity_collateral_client.try_gate_position_open(miner_hotkey, order.value)
-            if not allowed:
-                raise SignalException(
-                    f"Entity cross-margin check failed for subaccount [{miner_hotkey}]: {reason}"
-                )
-
-        # Process cash balance after validation passes
-        if order.order_type == existing_position.position_type:
-            # Buy: pay value plus transaction fee (raises SignalException if invalid)
-            transaction_fee = abs(order.value) * transaction_fee_rate
-
-            # Equities: use margin if order value cannot be covered by cash
-            if trade_pair.is_equities and abs(order.value) > balance - (capital_used - total_borrowed_usd):
+        if is_buy and trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA and miner_account.asset_class == MinerAssetClass.EQUITIES:
+            cash_available = balance - (miner_account.capital_used - miner_account.total_borrowed_amount)
+            if abs(order.value) > cash_available:
                 order.margin_loan = abs(order.value) * 0.5
 
-            self._miner_account_client.process_order_buy(miner_hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair_category)
+        position.set_returns(order.price)
+        realized_pnl, transaction_fee, loan_repaid = position.add_order(order)
+
+        if is_buy:
+            # TODO entity cross-margin gate (try_gate_position_open) is not enforced here; subaccount gating relies on get_max_order_size caps
+            self._miner_account_client.process_order_buy(
+                hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category
+            )
         else:
-            # Sell: free capital_used and compound realized PNL to equity
-            entry_value = abs(order.quantity) * trade_pair.lot_size * existing_position.average_entry_price * order.quote_usd_rate
+            entry_value = abs(order.quantity) * trade_pair.lot_size * position.average_entry_price * order.quote_usd_rate
+            self._miner_account_client.process_order_sell(
+                hotkey, entry_value, realized_pnl, loan_repaid, transaction_fee, trade_pair.trade_pair_category
+            )
+            self._entity_collateral_client.try_slash_on_position_close(hotkey, realized_pnl)
 
-            if existing_position.position_type == OrderType.SHORT:
-                exit_price = order.price * (1 + order.slippage)
-                order_realized_pnl = (existing_position.average_entry_price - exit_price) * abs(order.quantity) * trade_pair.lot_size * order.quote_usd_rate
-            else:
-                exit_price = order.price * (1 - order.slippage)
-                order_realized_pnl = (exit_price - existing_position.average_entry_price) * abs(order.quantity) * trade_pair.lot_size * order.quote_usd_rate
+        self._position_client.save_miner_position(position)
 
-            exit_value = entry_value + order_realized_pnl
-
-            # Calculate fee based on exit value (entry value +/- realized PNL)
-            transaction_fee = exit_value * transaction_fee_rate
-
-            loan_repaid = min(existing_position.margin_loan, exit_value)
-            self._miner_account_client.process_order_sell(miner_hotkey, entry_value, order_realized_pnl, loan_repaid, transaction_fee, trade_pair_category)
-
-            # Store loan repayment as negative margin_loan so position.margin_loan sums correctly
-            order.margin_loan = -loan_repaid
-
-            # Slash entity collateral on realized loss for subaccounts
-            self._entity_collateral_client.try_slash_on_position_close(miner_hotkey, order_realized_pnl)
-
-        step_start = TimeUtil.now_in_millis()
-        existing_position.add_order(order, transaction_fee=transaction_fee)
-        add_order_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Position.add_order() took {add_order_ms}ms")
-
-        step_start = TimeUtil.now_in_millis()
-        self.position_manager.save_miner_position(existing_position)
-        save_position_ms = TimeUtil.now_in_millis() - step_start
-        bt.logging.info(f"[ADD_ORDER_DETAIL] Save position to disk took {save_position_ms}ms")
-
-        # Update cooldown cache after successful order processing
-        self.last_order_time_cache[(miner_hotkey, trade_pair.trade_pair_id)] = order_time_ms
-        # NOTE: UUID tracking happens in validator process, not here
+        self.last_order_time_cache[(hotkey, trade_pair.trade_pair_id)] = now_ms
 
         if self.serve:
-            # Broadcast position update via RPC to WebSocket clients
-            # Skip websocket messages for development hotkey
-            self.websocket_notifier.broadcast_position_update(
-                existing_position, miner_repo_version=miner_repo_version
-            )
+            self.websocket_notifier.broadcast_position_update(position)
 
         return order
 
+    def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
+        bt.logging.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")
 
-    def enforce_order_cooldown(self, trade_pair_id, now_ms, miner_hotkey) -> str:
+        open_positions = self._position_client.get_positions_for_hotkeys([hotkey], only_open_positions=True).get(hotkey)
+
+        if not open_positions:
+            bt.logging.warning(f"No open positions found for miner [{hotkey}]")
+            return
+
+        if close_all:
+            positions_to_close = open_positions
+        else:
+            target_uuids = set(position_uuids or [])
+            positions_to_close = [p for p in open_positions if p.position_uuid in target_uuids]
+            if not positions_to_close:
+                bt.logging.info(f"No matching positions found for UUIDs {position_uuids} for miner [{hotkey}]")
+                return
+
+        total_positions = len(positions_to_close)
+        cnt_closed = 0
+
+        bt.logging.info(f"Found {total_positions} positions to close for miner [{hotkey}]")
+
+        for i, position in enumerate(positions_to_close):
+            trade_pair = position.trade_pair
+            position_close_uuid = f"{position.position_uuid}_flat_all"
+
+            try:
+                self.execute_order(
+                    hotkey=hotkey,
+                    order_uuid=position_close_uuid,
+                    trade_pair=trade_pair,
+                    execution_type=ExecutionType.MARKET,
+                    order_type=OrderType.FLAT,
+                    order_size=OrderSize(),
+                    now_ms=now_ms,
+                    enforce_cooldown=False,
+                )
+                cnt_closed += 1
+                bt.logging.info(
+                    f"[FLAT_ALL] Closed position {i+1}/{total_positions} "
+                    f"[{trade_pair.trade_pair_id}] for miner [{hotkey}]"
+                )
+
+                if i < total_positions - 1:
+                    time.sleep(0.05)
+
+            except Exception as e:
+                bt.logging.error(
+                    f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
+                    f"[{trade_pair.trade_pair_id}] for miner [{hotkey}]: {str(e)}"
+                )
+                continue
+
+        bt.logging.info(
+            f"[FLAT_ALL] Completed for miner [{hotkey}]: "
+            f"{cnt_closed}/{total_positions} positions closed"
+        )
+
+    @staticmethod
+    def _is_effective_close(position: Position, order_type: OrderType, order_quantity: float, order_value: float) -> bool:
+        if order_type == OrderType.FLAT:
+            return True
+        if position.position_type is None or position.position_type == order_type:
+            return False
+        proposed_quantity = position.net_quantity + order_quantity
+        position_sign = 1 if position.position_type == OrderType.LONG else -1
+        proposed_value = position.net_value + position_sign * position.unrealized_pnl + order_value
+        if position.position_type == OrderType.LONG:
+            return proposed_quantity <= 1e-6 or proposed_value <= 1.0
+        if position.position_type == OrderType.SHORT:
+            return proposed_quantity >= -1e-6 or proposed_value >= -1.0
+        return False
+
+    def enforce_order_cooldown(self, trade_pair_id, now_ms, miner_hotkey) -> str | None:
         """
         Enforce cooldown between orders for the same trade pair using an efficient cache.
         This method must be called within the position lock to prevent race conditions.
@@ -438,300 +371,10 @@ class MarketOrderManager():
 
         return msg
 
-    @staticmethod
-    def parse_order_size(signal, usd_base_conversion, trade_pair, portfolio_value, round_qty=True, use_floor=False):
-        """
-        parses an order signal and calculates leverage, value, and quantity
-        """
-        leverage = signal.get("leverage")
-        value = signal.get("value")
-        quantity = signal.get("quantity")
-
-        fields_set = [x is not None for x in (leverage, value, quantity)]
-        if sum(fields_set) == 0:
-            raise ValueError("Exactly one of 'leverage', 'value', or 'quantity' must be set")
-
-        # Priority: quantity > value > leverage. Ignore lower-priority fields if multiple are set.
-        if quantity is None:
-            if value is not None:
-                quantity = (value * usd_base_conversion) / trade_pair.lot_size
-            else:
-                quantity = (leverage * portfolio_value * usd_base_conversion) / trade_pair.lot_size
-
-        if round_qty:
-            if trade_pair.is_forex:
-                increment = (ValiConfig.FOREX_MIN_ORDER_SIZE_SUB_NANO
-                             if portfolio_value <= ValiConfig.FOREX_SMALL_ACCOUNT_THRESHOLD
-                             else ValiConfig.FOREX_MIN_ORDER_SIZE)
-            elif trade_pair.is_crypto:
-                increment = ValiConfig.CRYPTO_MIN_ORDER_SIZE
-            elif trade_pair.is_equities:
-                increment = ValiConfig.EQUITIES_MIN_ORDER_SIZE
-            elif trade_pair.is_commodities:
-                increment = ValiConfig.COMMODITIES_MIN_ORDER_SIZE
-            else:
-                increment = ValiConfig.CRYPTO_MIN_ORDER_SIZE # Default to low qty
-            quantity = math.trunc(quantity / increment) * increment if use_floor else round(quantity / increment) * increment
-
-        value = quantity * trade_pair.lot_size / usd_base_conversion
-        leverage = value / portfolio_value
-
-        return quantity, leverage, value
-
-    def process_flat_all_order(self, order_uuid, miner_repo_version, miner_hotkey, now_ms):
-        bt.logging.info(f"Processing FLAT_ALL order for miner [{miner_hotkey}]")
-
-        # Determine which positions to close:
-        # - "ALL" keyword -> close all positions
-        # - Comma-separated position UUIDs -> close only matching positions
-        close_all = order_uuid and order_uuid.strip().upper() == "ALL"
-
-        # Get all open positions for this miner
-        open_positions = self._position_client.get_positions_for_hotkeys([miner_hotkey], only_open_positions=True).get(miner_hotkey)
-
-        if not open_positions:
-            bt.logging.warning(f"No open positions found for miner [{miner_hotkey}]")
-            return {
-                "positions_closed": 0,
-                "positions_failed": 0,
-                "failed_trade_pairs": []
-            }
-
-        if close_all:
-            positions_to_close = open_positions
-        else:
-            # Parse comma-separated position UUIDs
-            order_uuids = [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
-            target_uuids = set(order_uuids)
-            positions_to_close = [p for p in open_positions if p.position_uuid in target_uuids]
-            if not positions_to_close:
-                bt.logging.info(f"No matching positions found for UUIDs {order_uuids} for miner [{miner_hotkey}]")
-                return {
-                    "positions_closed": 0,
-                    "positions_failed": 0,
-                    "failed_trade_pairs": []
-                }
-
-        total_positions = len(positions_to_close)
-        cnt_positions_closed = 0
-        cnt_positions_failed = 0
-        failed_trade_pairs = []
-
-        bt.logging.info(f"Found {total_positions} positions to close for miner [{miner_hotkey}] (close_all={close_all})")
-
-        for i, position in enumerate(positions_to_close):
-            trade_pair = position.trade_pair
-            position_close_uuid = f"{position.position_uuid}_flat_all"
-            signal = {"order_type": "FLAT"}
-
-            try:
-                err_msg, _, _ = self._process_market_order(
-                    position_close_uuid, miner_repo_version, trade_pair,
-                    now_ms, signal, miner_hotkey,
-                    None, enforce_market_cooldown=False
-                )
-
-                if err_msg:
-                    bt.logging.error(
-                        f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
-                        f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]: {err_msg}"
-                    )
-                    cnt_positions_failed += 1
-                    failed_trade_pairs.append(trade_pair.trade_pair_id)
-                else:
-                    cnt_positions_closed += 1
-                    bt.logging.info(
-                        f"[FLAT_ALL] Closed position {i+1}/{total_positions} "
-                        f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]"
-                    )
-
-                if i < total_positions - 1:
-                    time.sleep(0.05)
-
-            except Exception as e:
-                bt.logging.error(
-                    f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
-                    f"[{trade_pair.trade_pair_id}] for miner [{miner_hotkey}]: {str(e)}"
-                )
-                cnt_positions_failed += 1
-                failed_trade_pairs.append(trade_pair.trade_pair_id)
-                continue
-
-        bt.logging.info(
-            f"[FLAT_ALL] Completed for miner [{miner_hotkey}]: "
-            f"{cnt_positions_closed}/{total_positions} positions closed, "
-            f"{cnt_positions_failed} failed"
-        )
-
-        return {
-            "positions_closed": cnt_positions_closed,
-            "positions_failed": cnt_positions_failed,
-            "failed_trade_pairs": failed_trade_pairs
-        }
-
-    def process_market_order(self, synapse, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources=None):
-
-        err_message, existing_position, created_order = self._process_market_order(miner_order_uuid, miner_repo_version, trade_pair,
-                                                                    now_ms, signal, miner_hotkey, price_sources)
-        if err_message:
-            synapse.successfully_processed = False
-            synapse.error_message = err_message
-        if existing_position:
-            synapse.order_json = existing_position.orders[-1].__str__()
-
-        return created_order
-
-    def _process_market_order(self, miner_order_uuid, miner_repo_version, trade_pair, now_ms, signal, miner_hotkey, price_sources, enforce_market_cooldown=True):
-        # TIMING: Price fetching
-        if price_sources is None:
-            price_fetch_start = TimeUtil.now_in_millis()
-            price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
-            price_fetch_ms = TimeUtil.now_in_millis() - price_fetch_start
-            bt.logging.info(f"[TIMING] Price fetching took {price_fetch_ms}ms")
-
-        if not price_sources:
-            raise SignalException(
-                    f"Order Rejected: no live prices being found for {trade_pair.trade_pair_id}. Please try again.")
-
-        # TIMING: Extract signal data
-        extract_start = TimeUtil.now_in_millis()
-        signal_order_type = OrderType.from_string(signal["order_type"])
-        execution_type = ExecutionType.from_string(signal.get("execution_type"))
-        bracket_orders = signal.get("bracket_orders")
-        trailing_stop = signal.get("trailing_stop")
-        extract_ms = TimeUtil.now_in_millis() - extract_start
-        bt.logging.info(f"[TIMING] Extract signal data took {extract_ms}ms")
-
-        # Multiple threads can run receive_signal at once. Don't allow two threads to trample each other.
-        debug_lock_key = f"{miner_hotkey}.../{trade_pair.trade_pair_id}"
-
-        # TIMING: Time from start to lock request
-        time_to_lock_request = TimeUtil.now_in_millis() - now_ms
-        bt.logging.info(f"[TIMING] Time from receive_signal start to lock request: {time_to_lock_request}ms")
-
-        lock_request_time = TimeUtil.now_in_millis()
-        bt.logging.info(f"[LOCK] Requesting position lock for {debug_lock_key}")
-        err_msg = None
-        existing_position = None
-        with (self._position_lock_client.get_lock(miner_hotkey, trade_pair.trade_pair_id)):
-            lock_acquired_time = TimeUtil.now_in_millis()
-            lock_wait_ms = lock_acquired_time - lock_request_time
-            bt.logging.info(f"[LOCK] Acquired lock for {debug_lock_key} after {lock_wait_ms}ms wait")
-
-            # TIMING: Cooldown check
-            if enforce_market_cooldown:
-                cooldown_start = TimeUtil.now_in_millis()
-                err_msg = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, miner_hotkey)
-                cooldown_ms = TimeUtil.now_in_millis() - cooldown_start
-                bt.logging.info(f"[LOCK_WORK] Cooldown check took {cooldown_ms}ms")
-
-            if err_msg:
-                bt.logging.error(err_msg)
-                return err_msg, existing_position, None
-
-            # TIMING: Get account size
-            account_size_start = TimeUtil.now_in_millis()
-            account_size = self._miner_account_client.get_miner_account_size(miner_hotkey, use_account_floor=True)
-            account_size_ms = TimeUtil.now_in_millis() - account_size_start
-            bt.logging.info(f"[LOCK_WORK] Get account size took {account_size_ms}ms")
-
-            account_balance = self._miner_account_client.get_balance(miner_hotkey)
-            if self.running_unit_tests:
-                account_balance = ValiConfig.MIN_CAPITAL
-
-            # TIMING: Get or create position
-            get_position_start = TimeUtil.now_in_millis()
-            existing_position = self._get_or_create_open_position_from_new_order(trade_pair, signal_order_type,
-                                                                                 now_ms, miner_hotkey, miner_order_uuid,
-                                                                                 now_ms, price_sources,
-                                                                                 miner_repo_version, account_size)
-            get_position_ms = TimeUtil.now_in_millis() - get_position_start
-            bt.logging.info(f"[LOCK_WORK] Get/create position took {get_position_ms}ms")
-
-            # TIMING: Add order to position
-            created_order = None
-            if existing_position:
-                # Set is_hl flag on new positions from HL tracker
-                if not existing_position.orders and signal.get("is_hl"):
-                    existing_position.is_hl = True
-
-                add_order_start = TimeUtil.now_in_millis()
-                limit_price = signal.get("limit_price")
-                stop_loss = signal.get("stop_loss")
-                take_profit = signal.get("take_profit")
-                fill_price = signal.get("price")
-
-                if existing_position.orders:
-                    position_last_order = existing_position.orders[-1].processed_ms
-                    if now_ms < position_last_order:
-                        raise SignalException(f"Proposed order timestamp < position's last order ({now_ms} < {position_last_order})")
-
-                # If we enforce market cooldown, we treat as market order regardless of execution type
-                if signal.get("is_hl"):
-                    new_src = OrderSource.HYPERLIQUID
-                elif enforce_market_cooldown:
-                    new_src = OrderSource.ORGANIC
-                elif execution_type == ExecutionType.LIMIT:
-                    new_src = OrderSource.LIMIT_FILLED
-                elif execution_type == ExecutionType.BRACKET:
-                    new_src = OrderSource.BRACKET_FILLED
-                else:
-                    new_src = OrderSource.ORGANIC
-
-                # Calculate price and USD conversions.
-                # Only limit/bracket fills carry a validator-derived fill_price. Sanitize
-                # fill_price here since it flows downstream into the stored order.price.
-                best_price_source = price_sources[0]
-                if execution_type == ExecutionType.MARKET or not fill_price:
-                    fill_price = best_price_source.parse_appropriate_price(now_ms, trade_pair.is_forex, signal_order_type, existing_position)
-                else:
-                    fill_price = fill_price
-                    
-                usd_base_price = self.live_price_fetcher.get_usd_base_conversion(trade_pair, now_ms, fill_price, signal_order_type, existing_position)
-
-                # Resolve bracket_pct (BRACKET only) to a signed quantity against the live position.
-                # Done under the position lock so net_quantity can't shift mid-fill.
-                bracket_pct = signal.get("bracket_pct")
-                if bracket_pct is not None and execution_type == ExecutionType.BRACKET:
-                    pct_val = float(bracket_pct)
-                    signal["leverage"] = None
-                    signal["value"] = None
-                    signal["quantity"] = -pct_val * existing_position.net_quantity
-                    signal["bracket_pct"] = None
-
-                if signal_order_type == OrderType.FLAT or (signal.get("quantity") and abs(existing_position.net_quantity + signal["quantity"]) < 1e-9):
-                    signal["leverage"] = None
-                    signal["value"] = None
-                    signal["quantity"] = -existing_position.net_quantity
-                    signal_order_type = OrderType.FLAT
-
-                # Parse order size (supports leverage, value, or quantity)
-                quantity, leverage, value = self.parse_order_size(
-                    signal, usd_base_price, trade_pair, account_balance,
-                    round_qty=signal_order_type != OrderType.FLAT # if the position is closing, don't round - use exact position qty
-                )
-
-                created_order = self._add_order_to_existing_position(existing_position, trade_pair, signal_order_type,
-                                                     quantity, leverage, value, now_ms, miner_hotkey,
-                                                     price_sources, miner_order_uuid, miner_repo_version,
-                                                     new_src, account_balance, usd_base_price, execution_type,
-                                                     fill_price, limit_price, stop_loss, take_profit, bracket_orders,
-                                                     hl_slippage=signal.get("hl_slippage"),
-                                                     is_hl_taker=signal.get("is_hl_taker"),
-                                                     trailing_stop=trailing_stop)
-                add_order_ms = TimeUtil.now_in_millis() - add_order_start
-                bt.logging.info(f"[LOCK_WORK] Add order to position took {add_order_ms}ms")
-            else:
-                # Happens if a FLAT is sent when no position exists
-                pass
-
-        lock_released_time = TimeUtil.now_in_millis()
-        lock_hold_ms = lock_released_time - lock_acquired_time
-        bt.logging.info(
-            f"[LOCK] Released lock for {debug_lock_key} after holding for {lock_hold_ms}ms (wait={lock_wait_ms}ms, total={lock_released_time - lock_request_time}ms)")
-
-        # TIMING: Time from lock release to try block end
-        time_after_lock = TimeUtil.now_in_millis() - lock_released_time
-        bt.logging.info(f"[TIMING] Time from lock release to try block end: {time_after_lock}ms")
-        return err_msg, existing_position, created_order
+    def clear_order_cooldown_cache(self):
+        """Clear the order cooldown cache. Used for testing."""
+        if not self.running_unit_tests:
+            raise Exception('clear_order_cooldown_cache can only be called in unit test mode')
+        self.last_order_time_cache.clear()
+        bt.logging.debug("Cleared market order cooldown cache")
 

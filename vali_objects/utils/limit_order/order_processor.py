@@ -17,6 +17,8 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.utils.limit_order.order_utils import OrderSize
+from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 
 
 @dataclass(frozen=True)  # Immutable for thread safety
@@ -437,8 +439,15 @@ class OrderProcessor:
         return order
 
     @staticmethod
-    def process_flat_all_order(order_uuid: str, now_ms: int, miner_hotkey: str, miner_repo_version: str, market_order_manager):
-        return market_order_manager.process_flat_all_order(order_uuid, miner_repo_version, miner_hotkey, now_ms)
+    def close_positions(order_uuid: str, now_ms: int, miner_hotkey: str, market_order_manager: MarketOrderManager):
+        close_all = bool(order_uuid and order_uuid.strip().upper() == "ALL")
+        position_uuids = None if close_all else [uuid.strip() for uuid in order_uuid.split(',')] if order_uuid else []
+        market_order_manager.close_positions(
+            hotkey=miner_hotkey,
+            position_uuids=position_uuids,
+            close_all=close_all,
+            now_ms=now_ms,
+        )
 
     @staticmethod
     def process_limit_edit(signal: dict, order_uuid: str, now_ms: int,
@@ -591,34 +600,21 @@ class OrderProcessor:
     @staticmethod
     def process_market_order(signal: dict, trade_pair, order_uuid: str, now_ms: int,
                             miner_hotkey: str, miner_repo_version: str,
-                            market_order_manager) -> tuple:
-        """
-        Process a MARKET order by calling market_order_manager.
+                            market_order_manager: MarketOrderManager) -> tuple:
+        order_type = OrderType.from_string(signal["order_type"])
+        order_size = OrderSize.from_dict(signal)
+        is_hl = bool(signal.get("is_hl"))
 
-        Args:
-            signal: Signal dictionary with market order details
-            trade_pair: Parsed TradePair object
-            order_uuid: Order UUID
-            now_ms: Current timestamp in milliseconds
-            miner_hotkey: Miner's hotkey
-            miner_repo_version: Version of miner repo
-            market_order_manager: Manager to process the market order
-
-        Returns:
-            Tuple of (error_message, updated_position, created_order):
-                - error_message: Empty string if success, error string if failed
-                - updated_position: Position object if successful, None otherwise
-                - created_order: Order object if successful, None otherwise
-
-        Raises:
-            SignalException: If processing fails with validation error
-        """
-        # Use direct method for consistent interface across validator and REST API
-        err_msg, updated_position, created_order = market_order_manager._process_market_order(
-            order_uuid, miner_repo_version, trade_pair,
-            now_ms, signal, miner_hotkey, price_sources=None
+        result = market_order_manager.execute_order(
+            miner_hotkey, order_uuid, trade_pair, ExecutionType.MARKET, order_type, order_size,
+            is_hl=is_hl,
+            now_ms=now_ms,
+            enforce_cooldown=True,
         )
-        return err_msg, updated_position, created_order
+        if result is None:
+            return None, None, None
+        created_order, updated_position = result
+        return None, updated_position, created_order
 
     @staticmethod
     def process_order(
@@ -628,7 +624,7 @@ class OrderProcessor:
         miner_hotkey: str,
         miner_repo_version: str,
         limit_order_client,
-        market_order_manager
+        market_order_manager: MarketOrderManager,
     ) -> OrderProcessingResult:
         """
         Unified order processing dispatcher that routes to the appropriate handler.
@@ -719,9 +715,9 @@ class OrderProcessor:
             )
 
         elif execution_type == ExecutionType.FLAT_ALL:
-            result = OrderProcessor.process_flat_all_order(
+            OrderProcessor.close_positions(
                 order_uuid, now_ms, miner_hotkey,
-                miner_repo_version, market_order_manager
+                market_order_manager
             )
 
             try:
@@ -731,7 +727,6 @@ class OrderProcessor:
 
             return OrderProcessingResult(
                 execution_type=ExecutionType.FLAT_ALL,
-                result_dict=result,
                 should_track_uuid=True
             )
 

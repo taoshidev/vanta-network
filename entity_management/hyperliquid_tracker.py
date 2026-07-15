@@ -46,7 +46,10 @@ except ImportError:
 from entity_management.entity_client import EntityClient
 from shared_objects.rate_limiter import RateLimiter
 from time_util.time_util import TimeUtil
+from vali_objects.enums.execution_type_enum import ExecutionType
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.utils.limit_order.order_utils import OrderSize
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
@@ -1668,18 +1671,6 @@ class HyperliquidTracker:
         if new_fill_price is None:
             new_fill_price = raw_fill_price
 
-        new_signal = {
-            "order_type": new_order_type,
-            "trade_pair": trade_pair_id,
-            "execution_type": "MARKET",
-            "is_hl": True,
-            "is_hl_taker": is_taker,
-            "hl_slippage": 0.0,
-            "quantity": new_quantity,
-        }
-        if new_fill_price:
-            new_signal["price"] = new_fill_price
-
         new_uuid = str(uuid.uuid4())
         new_now_ms = TimeUtil.now_in_millis()
 
@@ -1690,15 +1681,21 @@ class HyperliquidTracker:
         )
 
         try:
-            err_msg, updated_pos, created_order = (
-                self._market_order_manager._process_market_order(
-                    new_uuid, "hl_tracker", trade_pair,
-                    new_now_ms, new_signal, synthetic_hotkey,
-                    price_sources=None, enforce_market_cooldown=False,
-                )
+            self._market_order_manager.execute_order(
+                synthetic_hotkey,
+                new_uuid,
+                trade_pair,
+                ExecutionType.MARKET,
+                OrderType.from_string(new_order_type),
+                OrderSize(quantity=new_quantity),
+                fill_price=new_fill_price or None,
+                slippage=0.0,
+                order_src=OrderSource.HYPERLIQUID,
+                is_hl=True,
+                is_hl_taker=is_taker,
+                now_ms=new_now_ms,
+                enforce_cooldown=False,
             )
-            if err_msg:
-                raise SignalException(err_msg)
 
             self._uuid_tracker.add(new_uuid)
             self._fills_processed += 1
