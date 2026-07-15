@@ -276,7 +276,11 @@ class LivePriceFetcher:
                     rest_prices_hyperliquid.get(mapped_tp),
                 ]
             elif mapped_tp.is_equities:
-                events = [websocket_prices_databento.get(tp)]
+                events = [
+                    websocket_prices_databento.get(tp),
+                    websocket_prices_polygon.get(tp),
+                    rest_prices_polygon.get(tp),
+                ]
             else:
                 events = [
                     websocket_prices_polygon.get(tp),

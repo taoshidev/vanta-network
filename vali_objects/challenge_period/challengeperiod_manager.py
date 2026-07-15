@@ -164,7 +164,12 @@ class MinerBucketState:
         if self.current_bucket == MinerBucket.ELIMINATED:
             if len(self.entries) >= 2:
                 prev_entry = self.entries[-2]
-                return prev_entry.bucket.intraday_drawdown_threshold(prev_entry.start_time_ms)
+                if prev_entry.bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                    challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
+                    prev_threshold_time_ms = challenge_entry.start_time_ms if challenge_entry else None
+                else:
+                    prev_threshold_time_ms = prev_entry.start_time_ms
+                return prev_entry.bucket.intraday_drawdown_threshold(prev_threshold_time_ms)
             else:
                 # Dummy threshold value for eliminated accounts to not raise Error
                 return MinerBucket.SUBACCOUNT_CHALLENGE.intraday_drawdown_threshold()
@@ -179,7 +184,12 @@ class MinerBucketState:
         if self.current_bucket == MinerBucket.ELIMINATED:
             if len(self.entries) >= 2:
                 prev_entry = self.entries[-2]
-                return prev_entry.bucket.eod_drawdown_threshold(prev_entry.start_time_ms)
+                if prev_entry.bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                    challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
+                    prev_threshold_time_ms = challenge_entry.start_time_ms if challenge_entry else None
+                else:
+                    prev_threshold_time_ms = prev_entry.start_time_ms
+                return prev_entry.bucket.eod_drawdown_threshold(prev_threshold_time_ms)
             else:
                 # Dummy threshold value for eliminated accounts to not raise Error
                 return MinerBucket.SUBACCOUNT_CHALLENGE.eod_drawdown_threshold()
