@@ -33,7 +33,7 @@ from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
 from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
-from vali_objects.miner_account.miner_account_manager import MinerAccountManager
+from vali_objects.miner_account.miner_account_manager import MinerAccountManager, CollateralRecord
 from vali_objects.utils.limit_order.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -1437,44 +1437,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 positions = [p for p in positions if p.open_ms >= open_ms_after]
 
             if preview:
-                computed = MinerAccountManager.compute_account_state_from_positions(positions)
-
-                # Mirror reset_account_fields behavior
-                rebuilt_account = dict(original_account)
-                rebuilt_account.update(computed)
-
-                # Recompute balance = account_size + total_realized_pnl - total_fees_paid
+                computed = MinerAccountManager.compute_account_state_from_positions(positions, hotkey)
                 account_size = original_account.get('account_size', ValiConfig.MIN_CAPITAL)
-                rebuilt_account['balance'] = account_size + computed['total_realized_pnl'] - computed['total_fees_paid']
-
-                # Recompute buying_power using the same multiplier logic MinerAccount.multiplier
-                # applies (asset_class-keyed via TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS, whose
-                # HL_ALL/ALL_MARKETS entries hold the multi-class overall ceiling). This keeps
-                # the preview number equal to what MinerAccount.buying_power would report on the
-                # actual rebuilt state — no SPOT/PERP or per-pair-table assumption. EQUITIES
-                # accounts follow the margin-loan-adjusted formula in MinerAccount.buying_power.
-                asset_class_str = original_account.get('asset_class')
-                bucket_str = original_account.get('miner_bucket')
-                bucket = MinerBucket(bucket_str) if bucket_str else None
-                if asset_class_str:
-                    try:
-                        asset_class = MinerAssetClass(asset_class_str)
-                        tier = get_leverage_tier(bucket, account_size)
-                        multiplier = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(asset_class, 1.0)
-                    except ValueError:
-                        asset_class = None
-                        multiplier = 1.0
-                else:
-                    asset_class = None
-                    multiplier = 1.0
-
-                if asset_class == TradePairCategory.EQUITIES:
-                    rebuilt_account['buying_power'] = (
-                        rebuilt_account['balance']
-                        - (computed['capital_used'] - computed['total_borrowed_amount'])
-                    ) * multiplier
-                else:
-                    rebuilt_account['buying_power'] = rebuilt_account['balance'] * multiplier - computed['capital_used']
+                computed.collateral_records = [CollateralRecord(
+                    account_size=account_size,
+                    account_size_theta=0,
+                    update_time_ms=0,
+                    is_first_record=True,
+                )]
+                computed.asset_class = MinerAssetClass(original_account['asset_class']) if original_account.get('asset_class') else None
+                computed.miner_bucket = MinerBucket(original_account['miner_bucket']) if original_account.get('miner_bucket') else None
+                computed.hl_address = original_account.get('hl_address')
+                rebuilt_account = computed.to_dict()
             else:
                 # Actual rebuild - persists to disk, preserving bucket and max_return
                 self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
