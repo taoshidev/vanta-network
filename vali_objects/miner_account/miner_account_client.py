@@ -22,6 +22,7 @@ from typing import Optional, Dict, List, Any
 import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig, TradePairCategory
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
@@ -171,38 +172,15 @@ class MinerAccountClient(RPCClientBase):
 
     # ==================== MinerAccount Cache Methods ====================
 
-    def get_or_create(self, hotkey: str) -> dict:
-        """
-        Get existing account or create from CollateralRecord.
-
-        Returns dict with:
-            - miner_hotkey: str
-            - account_size: float
-            - total_realized_pnl: float
-            - capital_used: float
-            - balance: float
-            - buying_power: float
-            - total_borrowed_amount: float
-        """
+    def get_or_create(self, hotkey: str) -> MinerAccount:
+        """Get existing account or create from CollateralRecord."""
         return self._server.get_or_create(hotkey)
 
-    def get_account(self, hotkey: str) -> Optional[dict]:
-        """
-        Get account if it exists, without creating.
-
-        Returns dict with:
-            - miner_hotkey: str
-            - account_size: float
-            - total_realized_pnl: float
-            - capital_used: float
-            - balance: float
-            - buying_power: float
-            - total_borrowed_amount: float
-        Or None if account doesn't exist.
-        """
+    def get_account(self, hotkey: str) -> Optional[MinerAccount]:
+        """Get account if it exists, without creating. Returns None if not found."""
         return self._server.get_account(hotkey)
 
-    def get_accounts(self, hotkeys: list) -> Dict[str, dict]:
+    def get_accounts(self, hotkeys: list) -> Dict[str, MinerAccount]:
         """
         Get accounts for multiple hotkeys in a single RPC call.
 
@@ -210,7 +188,7 @@ class MinerAccountClient(RPCClientBase):
             hotkeys: List of miner hotkeys to look up
 
         Returns:
-            Dict of hotkey -> account dict for existing accounts.
+            Dict of hotkey -> MinerAccount for existing accounts.
             Hotkeys without accounts are omitted from the result.
         """
         return self._server.get_accounts(hotkeys)

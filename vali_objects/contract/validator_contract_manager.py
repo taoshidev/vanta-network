@@ -437,10 +437,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     ledger = perf_ledger[miner_hotkey]
                     max_return = max(max(cp.equity_ret for cp in ledger.cps), 1.0) if ledger.cps else 1.0
                 elif account:
-                    max_return = account.get("max_return", 1.0)
+                    max_return = account.max_return
 
                 if account:
-                    current_return = account["balance"] / account["account_size"]
+                    current_return = account.balance / account.account_size
                     drawdown = 1.0 - current_return / max_return
 
                 # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA

@@ -225,22 +225,17 @@ class MinerAccountServer(RPCServerBase):
 
     # ==================== MinerAccount Cache Methods ====================
 
-    def get_or_create(self, hotkey: str) -> dict:
-        """Get existing account or create from CollateralRecord. Returns dict representation."""
-        account = self._manager.get_or_create(hotkey)
-        return account.to_dict()
+    def get_or_create(self, hotkey: str) -> MinerAccount:
+        """Get existing account or create from CollateralRecord."""
+        return self._manager.get_or_create(hotkey)
 
-    def get_account(self, hotkey: str) -> Optional[dict]:
-        """Get account if it exists, without creating. Returns dict representation."""
-        account = self._manager.get_account(hotkey)
-        if account is None:
-            return None
-        return account.to_dict()
+    def get_account(self, hotkey: str) -> Optional[MinerAccount]:
+        """Get account if it exists, without creating. Returns None if not found."""
+        return self._manager.get_account(hotkey)
 
-    def get_accounts(self, hotkeys: list) -> Dict[str, dict]:
-        """Get accounts for multiple hotkeys. Returns dict of hotkey -> account dict."""
-        accounts = self._manager.get_accounts(hotkeys)
-        return {hk: account.to_dict() for hk, account in accounts.items()}
+    def get_accounts(self, hotkeys: list) -> Dict[str, MinerAccount]:
+        """Get accounts for multiple hotkeys. Returns dict of hotkey -> MinerAccount."""
+        return self._manager.get_accounts(hotkeys)
 
     def get_daily_open_snapshot(self, hotkey: str) -> Optional[dict]:
         """Return the most recent daily open snapshot for a miner, or None if not yet recorded."""

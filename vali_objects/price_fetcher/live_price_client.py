@@ -73,8 +73,8 @@ class LivePriceFetcherClient(RPCClientBase):
         """Stop all data service threads on the server."""
         return self._server.stop_all_threads()
 
-    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position):
-        return self._server.get_usd_base_conversion(trade_pair, time_ms, price, order_type, position)
+    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position_type) -> float:
+        return self._server.get_usd_base_conversion(trade_pair, time_ms, price, order_type, position_type)
 
     def health_check(self) -> dict:
         """Health check - returns server status."""
@@ -120,9 +120,9 @@ class LivePriceFetcherClient(RPCClientBase):
         """Get bid/ask quote for a trade pair."""
         return self._server.get_quote(trade_pair, processed_ms)
 
-    def get_quote_usd_conversion(self, order, position):
+    def get_quote_usd_conversion(self, trade_pair, time_ms, price, order_type, position_type) -> float:
         """Get the conversion rate between an order's quote currency and USD."""
-        return self._server.get_quote_usd_conversion(order, position)
+        return self._server.get_quote_usd_conversion(trade_pair, time_ms, price, order_type, position_type)
 
     def get_corporate_actions(self, start_date_str: str, end_date_str: str | None = None) -> dict:
         return self._server.get_corporate_actions(start_date_str, end_date_str)
