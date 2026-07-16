@@ -136,7 +136,7 @@ The system uses a distributed RPC architecture for inter-process communication:
 - **Crypto**: BTC/USDC, ETH/USDC, SOL/USDC, XRP/USDC, DOGE/USDC, ADA/USDC, etc. (Hyperliquid USDC pairs; native USD-denominated equivalents are blocked in favor of these)
 - **Forex**: 32 major currency pairs (EUR/USD, GBP/USD, USD/JPY, etc.)
   - Grouped into G1-G5 subcategories by liquidity/volume
-- **Equities**: Russell 1000 single stocks plus HL-matched additions (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD) - enabled via Polygon/Databento
+- **Equities**: Russell 1000 single stocks plus HL-matched additions (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD, SPCX) - enabled via Polygon/Databento
 - **Indices**: 6 global indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) - currently blocked
 - **Commodities**: XAU/USD, XAG/USD - currently blocked
 
