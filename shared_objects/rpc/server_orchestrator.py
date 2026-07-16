@@ -275,6 +275,12 @@ class ServerOrchestrator:
             required_in_testing=True,
             spawn_kwargs={'start_daemon': False}  # Daemon started later via orchestrator
         ),
+        'market_order': ServerConfig(
+            server_class=None,
+            client_class=None,
+            required_in_testing=True,
+            spawn_kwargs={'start_daemon': False}
+        ),
         'mdd_checker': ServerConfig(
             server_class=None,
             client_class=None,
@@ -402,6 +408,8 @@ class ServerOrchestrator:
         from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
         from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
         from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
+        from vali_objects.utils.market_order.market_order_server import MarketOrderServer
+        from vali_objects.utils.market_order.market_order_client import MarketOrderClient
         from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
         from vali_objects.price_fetcher.live_price_server import LivePriceFetcherServer
@@ -458,6 +466,9 @@ class ServerOrchestrator:
 
         self.SERVERS['limit_order'].server_class = LimitOrderServer
         self.SERVERS['limit_order'].client_class = LimitOrderClient
+
+        self.SERVERS['market_order'].server_class = MarketOrderServer
+        self.SERVERS['market_order'].client_class = MarketOrderClient
 
         self.SERVERS['asset_selection'].server_class = AssetSelectionServer
         self.SERVERS['asset_selection'].client_class = AssetSelectionClient
@@ -740,7 +751,7 @@ class ServerOrchestrator:
                 if context.config:
                     spawn_kwargs['config'] = context.config
 
-            elif server_name == 'elimination':
+            elif server_name in ('elimination', 'market_order'):
                 if context.config and hasattr(context.config, 'serve'):
                     spawn_kwargs['serve'] = context.config.serve
 
@@ -1063,6 +1074,11 @@ class ServerOrchestrator:
         limit_order_client = get_client_safe('limit_order')
         if limit_order_client:
             safe_clear('limit_order', lambda: limit_order_client.clear_limit_orders())
+
+        # Clear market order cooldown cache
+        market_order_client = get_client_safe('market_order')
+        if market_order_client:
+            safe_clear('market_order', lambda: market_order_client.clear_order_cooldown_cache())
 
         # Clear asset selection data
         asset_selection_client = get_client_safe('asset_selection')

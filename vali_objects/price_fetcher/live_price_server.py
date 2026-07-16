@@ -231,6 +231,10 @@ class LivePriceFetcherServer(RPCServerBase):
         """Test-only RPC method to clear all test candle data."""
         return self._fetcher.clear_test_candle_data()
 
+    def calculate_slippage(self, bid: float, ask: float, order) -> float:
+        """Delegate to fetcher."""
+        return self._fetcher.calculate_slippage(bid, ask, order)
+
     def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool, order_uuid: str = None):
         """Delegate to fetcher."""
         return self._fetcher.simulate_slippage(trade_pair, size_usd, is_buy, order_uuid=order_uuid)

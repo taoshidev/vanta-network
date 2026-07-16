@@ -321,33 +321,25 @@ class _MockPriceFetcherClient:
         return True
 
 
-class _MockUUIDTracker:
-    def __init__(self):
-        self.tracked: Set[str] = set()
-
-    def add(self, order_uuid: str):
-        self.tracked.add(order_uuid)
-
-
 def _patch_tracker_dependencies(secrets: dict):
     """
     Patch secrets + OrderProcessor for standalone script execution.
     Returns a restore() callable.
     """
-    from vali_objects.utils.limit_order.order_processor import OrderProcessor
+    from vali_objects.utils.order_processor import OrderProcessor
     from vali_objects.utils.vali_utils import ValiUtils
 
     orig_get_secrets = ValiUtils.get_secrets
-    orig_process_order = OrderProcessor.process_order
+    orig_process_order = OrderProcessor.process_vanta_signal
 
     ValiUtils.get_secrets = staticmethod(lambda: secrets)
-    OrderProcessor.process_order = staticmethod(
+    OrderProcessor.process_vanta_signal = staticmethod(
         lambda **kwargs: SimpleNamespace(should_track_uuid=False)
     )
 
     def restore():
         ValiUtils.get_secrets = orig_get_secrets
-        OrderProcessor.process_order = orig_process_order
+        OrderProcessor.process_vanta_signal = orig_process_order
 
     return restore
 
@@ -432,16 +424,21 @@ async def run_test(
     print(f"\n{C_BOLD}[TRACKER]{C_RESET} Starting HyperliquidTracker for {watch_seconds}s... (Ctrl+C to stop early)\n")
 
     from entity_management.hyperliquid_tracker import HyperliquidTracker
+    from vali_objects.utils.order_processor import OrderProcessor
+
+    entity_client = _MockEntityClient(wallets)
+    order_processor = OrderProcessor(
+        limit_order_client=None,
+        market_order_client=None,
+        elimination_client=_MockEliminationClient(),
+        entity_client=entity_client,
+    )
 
     restore_patches = _patch_tracker_dependencies(secrets)
     tracker = HyperliquidTracker(
-        entity_client=_MockEntityClient(wallets),
-        elimination_client=_MockEliminationClient(),
+        entity_client=entity_client,
         price_fetcher_client=_MockPriceFetcherClient(),
-        asset_selection_client=None,
-        market_order_manager=None,
-        limit_order_client=None,
-        uuid_tracker=_MockUUIDTracker(),
+        order_processor=order_processor,
     )
 
     start_time = time.time()

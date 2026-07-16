@@ -48,10 +48,8 @@ class LimitOrderManager(CacheController):
     def __init__(self, running_unit_tests=False, serve=True, connection_mode: RPCConnectionMode=RPCConnectionMode.RPC):
         super().__init__(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
-        # Create own MarketOrderManager (forward compatibility - no parameter passing)
-        from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
-        self._market_order_manager = MarketOrderManager(
-            serve=serve,
+        from vali_objects.utils.market_order.market_order_client import MarketOrderClient
+        self._market_order_client = MarketOrderClient(
             running_unit_tests=running_unit_tests,
             connection_mode=connection_mode
         )
@@ -62,13 +60,8 @@ class LimitOrderManager(CacheController):
 
         # Create own RPC clients (forward compatibility - no parameter passing)
         from vali_objects.position_management.position_manager_client import PositionManagerClient
-        from vali_objects.utils.elimination.elimination_client import EliminationClient
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=False,
-            connection_mode=connection_mode
-        )
-        self._elimination_client = EliminationClient(
             connect_immediately=False,
             connection_mode=connection_mode
         )
@@ -119,14 +112,8 @@ class LimitOrderManager(CacheController):
         return self._position_client
 
     @property
-    def elimination_manager(self):
-        """Get elimination manager client."""
-        return self._elimination_client
-
-    @property
-    def market_order_manager(self):
-        """Get market order manager."""
-        return self._market_order_manager
+    def market_order_client(self):
+        return self._market_order_client
 
     # ==================== Public API Methods ====================
     def health_check_rpc(self) -> dict:
@@ -409,7 +396,7 @@ class LimitOrderManager(CacheController):
                     if o.order_uuid == order_uuid:
                         orders_list.pop(i)
                         break
-            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, enforce_market_cooldown=True)
+            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, is_market_order=True)
             if fill_error:
                 raise SignalException(fill_error)
             bt.logging.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
@@ -1190,15 +1177,15 @@ class LimitOrderManager(CacheController):
                 f"[STOP_LIMIT] Failed to create child limit order from {order.order_uuid}: {e}"
             )
 
-    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, enforce_market_cooldown=False):
+    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, is_market_order=False):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
         from vali_objects.utils.limit_order.order_utils import OrderSize
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
         error_msg = None
 
-        new_src = OrderSource.get_fill(order.src)
-
+        new_src = OrderSource.ORGANIC if is_market_order else OrderSource.get_fill(order.src)
+        slippage = None if is_market_order else 0
         try:
             if order.execution_type == ExecutionType.BRACKET:
                 order_type = OrderType.opposite_order_type(order.order_type)
@@ -1215,14 +1202,15 @@ class LimitOrderManager(CacheController):
                 order_type = order.order_type
                 order_size = OrderSize.from_dict(Order.to_python_dict(order))
 
-            result = self.market_order_manager.execute_order(
+            result = self.market_order_client.execute_order(
                 miner_hotkey, order.order_uuid, trade_pair,
                 order.execution_type, order_type, order_size,
                 fill_price=fill_price,
                 price_sources=[price_source],
                 order_src=new_src,
                 now_ms=fill_time,
-                enforce_cooldown=enforce_market_cooldown,
+                slippage=slippage,
+                enforce_cooldown=is_market_order,
             )
 
             if not result:
@@ -1607,5 +1595,5 @@ class LimitOrderManager(CacheController):
         self._limit_orders.clear()
         self._last_fill_time.clear()
         # Also clear market order manager's cooldown cache
-        self.market_order_manager.clear_order_cooldown_cache()
+        self.market_order_client.clear_order_cooldown_cache()
         bt.logging.info("Cleared all limit orders from memory")

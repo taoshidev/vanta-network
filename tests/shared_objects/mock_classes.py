@@ -63,6 +63,9 @@ class MockLivePriceFetcherServer(LivePriceFetcherServer):
     def get_sorted_price_sources_for_trade_pair(self, trade_pair, time_ms=None, live=True):
         return [PriceSource(open=1, high=1, close=1, low=1, bid=1, ask=1)]
 
+    def calculate_slippage(self, bid: float, ask: float, order) -> float:
+        return 0.0
+
 
 class MockPolygonDataService(PolygonDataService):
     def __init__(self, api_key, disable_ws=True):

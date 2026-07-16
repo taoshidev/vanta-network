@@ -32,10 +32,10 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
-from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, CollateralRecord
-from vali_objects.utils.limit_order.order_processor import OrderProcessor
+from vali_objects.utils.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair
@@ -106,7 +106,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.running_unit_tests = running_unit_tests
         self.is_mainnet = is_mainnet
         self.nonce_manager = NonceManager()
-        self.market_order_manager = MarketOrderManager(serve=False)
+        self.market_order_client = MarketOrderClient()
         self.data_path = ValiConfig.BASE_DIR
 
         # Store connection_mode for use in _initialize_clients
@@ -174,6 +174,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
+        )
+        self.order_processor = OrderProcessor(
+            limit_order_client=self._limit_order_client,
+            market_order_client=self.market_order_client,
+            elimination_client=self._elimination_client,
+            entity_client=self._entity_client,
+            asset_selection_client=self._asset_selection_client,
         )
 
     # ============================================================================
@@ -1364,20 +1371,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 trailing_stop=data.get('trailing_stop'),
                 bracket_orders=data.get('bracket_orders'),
             )
-            signal = signal_obj.model_dump(mode='json')
-
             now_ms = TimeUtil.now_in_millis()
-            miner_repo_version = "development"
 
-            # Use unified OrderProcessor dispatcher (replaces lines 1466-1553)
-            result = OrderProcessor.process_order(
-                signal=signal,
-                miner_order_uuid=data.get('order_uuid'),
+            result = self.order_processor.process_vanta_signal(
+                hotkey=DEVELOPMENT_HOTKEY,
+                signal=signal_obj,
+                order_uuid=data.get('order_uuid'),
                 now_ms=now_ms,
-                miner_hotkey=DEVELOPMENT_HOTKEY,
-                miner_repo_version=miner_repo_version,
-                limit_order_client=self._limit_order_client,
-                market_order_manager=self.market_order_manager
             )
 
             # Consistent response format across all order types
