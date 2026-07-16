@@ -41,16 +41,15 @@ class PriceSlippageModel:
     _refresh_in_progress = False
     _refresh_current_date = None
 
-    def __init__(self, running_unit_tests=False, is_backtesting=False,
+    def __init__(self, live_price_fetcher=None, running_unit_tests=False, is_backtesting=False,
                  fetch_slippage_data=False, recalculate_slippage=False, capital=ValiConfig.DEFAULT_CAPITAL):
         PriceSlippageModel._running_unit_tests = running_unit_tests
         if not PriceSlippageModel.parameters:
             PriceSlippageModel.holidays_nyse = holidays.financial_holidays('NYSE')
             PriceSlippageModel.parameters = self.read_slippage_model_parameters()
 
-            # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
-            from vali_objects.price_fetcher import LivePriceFetcherClient
-            PriceSlippageModel.live_price_fetcher = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
+        if live_price_fetcher is not None:
+            PriceSlippageModel.live_price_fetcher = live_price_fetcher
 
         PriceSlippageModel.is_backtesting = is_backtesting
         PriceSlippageModel.fetch_slippage_data = fetch_slippage_data
@@ -63,17 +62,14 @@ class PriceSlippageModel:
         returns the percentage slippage of the current order.
         each asset class uses a unique model
         """
-        if order.execution_type != ExecutionType.MARKET:
-            return 0
-
         if not PriceSlippageModel.slippage_estimates:
             PriceSlippageModel.slippage_estimates = cls.read_slippage_estimates()
 
         trade_pair = order.trade_pair
         if bid * ask == 0:
-            if not trade_pair.is_crypto:  # For now, crypto does not have slippage
-                bt.logging.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
-                return 0  # Need valid bid and ask.
+            bt.logging.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
+            return 0
+
         size = abs(order.value)
         if size <= 1000:
             return 0  # assume 0 slippage when order size is under 1k

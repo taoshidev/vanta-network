@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class ExecutionType(Enum):
+class ExecutionType(str, Enum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
     LIMIT_CANCEL = "LIMIT_CANCEL"

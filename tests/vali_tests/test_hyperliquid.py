@@ -775,9 +775,7 @@ class TestHyperliquidTracker(TestBase):
         self.elimination_client = MagicMock()
         self.price_fetcher_client = MagicMock()
         self.asset_selection_client = MagicMock()
-        self.market_order_manager = MagicMock()
         self.limit_order_client = MagicMock()
-        self.uuid_tracker = MagicMock()
         self.rate_limiter = MagicMock()
 
         self.tracker = HyperliquidTracker(
@@ -785,9 +783,7 @@ class TestHyperliquidTracker(TestBase):
             elimination_client=self.elimination_client,
             price_fetcher_client=self.price_fetcher_client,
             asset_selection_client=self.asset_selection_client,
-            market_order_manager=self.market_order_manager,
             limit_order_client=self.limit_order_client,
-            uuid_tracker=self.uuid_tracker,
             rate_limiter=self.rate_limiter,
         )
 
@@ -1156,10 +1152,9 @@ class TestHyperliquidTracker(TestBase):
         self.assertEqual(call_args.kwargs['miner_repo_version'], 'hl_tracker')
 
     @patch('entity_management.hyperliquid_tracker.OrderProcessor')
-    def test_process_fill_increments_counter_and_tracks_uuid(self, mock_order_processor):
-        """Test that successful fill processing increments counter and tracks UUID."""
+    def test_process_fill_increments_counter(self, mock_order_processor):
+        """Test that successful fill processing increments counter."""
         mock_result = self._setup_successful_fill_mocks()
-        mock_result.should_track_uuid = True
         mock_order_processor.process_order.return_value = mock_result
 
         fill = self._make_fill()
@@ -1167,7 +1162,6 @@ class TestHyperliquidTracker(TestBase):
 
         self.assertEqual(self.tracker._fills_processed, 1)
         self.assertIsNotNone(self.tracker._last_fill_time)
-        self.uuid_tracker.add.assert_called_once()
 
     # ==================== Status ====================
 
@@ -1346,9 +1340,7 @@ class TestHyperliquidTracker(TestBase):
             elimination_client=self.elimination_client,
             price_fetcher_client=self.price_fetcher_client,
             asset_selection_client=self.asset_selection_client,
-            market_order_manager=self.market_order_manager,
             limit_order_client=self.limit_order_client,
-            uuid_tracker=self.uuid_tracker,
             rate_limiter=self.rate_limiter,
         )
         cached = fresh._last_observed_szi.get(VALID_HL_ADDRESS.lower())

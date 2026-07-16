@@ -50,7 +50,7 @@ class Signal(BaseModel):
         has_trailing = trailing_stop is not None
 
         execution_type = values.get('execution_type', ExecutionType.MARKET)
-        if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT, ExecutionType.STOP_LIMIT]:
+        if execution_type not in [ExecutionType.MARKET, ExecutionType.LIMIT, ExecutionType.STOP_LIMIT, ExecutionType.LIMIT_EDIT]:
             return values
 
         if (has_sl_tp or has_trailing) and not bracket_orders:
@@ -66,14 +66,7 @@ class Signal(BaseModel):
         if not bracket_orders:
             return values
 
-        price_fields = {'stop_loss', 'take_profit'}
-        trailing_fields = {'trailing_percent', 'trailing_value'}
-
-        for i, bracket in enumerate(bracket_orders):
-            price_present = [f for f in price_fields if bracket.get(f) is not None]
-            trailing_present = [f for f in trailing_fields if bracket.get(f) is not None]
-            if len(price_present) < 1 and len(trailing_present) < 1:
-                raise ValueError(f"bracket_orders[{i}]: at least one of stop_loss/take_profit/trailing_percent/trailing_value required")
+        for bracket in bracket_orders:
             if not bracket.get('order_uuid'):
                 bracket['order_uuid'] = str(uuid.uuid4())
 
@@ -112,18 +105,10 @@ class Signal(BaseModel):
     def validate_order_type(cls, values):
         """Validate order type restrictions and normalize size sign for SHORT."""
         execution_type = values.get('execution_type')
-        if execution_type in [ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL]:
+        if execution_type in [ExecutionType.LIMIT_EDIT, ExecutionType.LIMIT_CANCEL, ExecutionType.FLAT_ALL]:
             return values
 
         order_type = values.get('order_type')
-        is_flat = order_type == OrderType.FLAT or order_type == 'FLAT'
-
-        if execution_type == ExecutionType.LIMIT and is_flat:
-            raise ValueError("FLAT order is not supported for LIMIT orders")
-
-        if execution_type == ExecutionType.STOP_LIMIT and is_flat:
-            raise ValueError("FLAT order is not supported for STOP_LIMIT orders")
-
         for field in ['leverage', 'value', 'quantity']:
             size = values.get(field)
             if size is not None:
