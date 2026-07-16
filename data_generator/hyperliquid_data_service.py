@@ -79,7 +79,10 @@ class _HyperliquidWebsocketClient:
                         bt.logging.warning("Hyperliquid websocket ping failed, reconnecting")
                         break
                 except websockets.exceptions.ConnectionClosed as e:
-                    bt.logging.warning(f"Hyperliquid websocket closed: code={e.code}, reason={e.reason}")
+                    if e.rcvd is not None:
+                        bt.logging.warning(f"Hyperliquid websocket closed: code={e.rcvd.code}, reason={e.rcvd.reason}")
+                    else:
+                        bt.logging.warning("Hyperliquid websocket closed abnormally (no close frame received)")
                     break
                 except Exception as e:
                     if self._should_close:

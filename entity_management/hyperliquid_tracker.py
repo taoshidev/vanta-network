@@ -217,10 +217,15 @@ class HyperliquidTracker:
                             except asyncio.TimeoutError:
                                 continue
                             except websockets.exceptions.ConnectionClosed as e:
-                                bt.logging.warning(
-                                    f"[HL_{self.label}] WebSocket closed: code={getattr(e, 'code', None)} "
-                                    f"reason={getattr(e, 'reason', '')!r}"
-                                )
+                                if e.rcvd is not None:
+                                    bt.logging.warning(
+                                        f"[HL_{self.label}] WebSocket closed: code={e.rcvd.code} "
+                                        f"reason={e.rcvd.reason!r}"
+                                    )
+                                else:
+                                    bt.logging.warning(
+                                        f"[HL_{self.label}] WebSocket closed abnormally (no close frame received)"
+                                    )
                                 break
                             try:
                                 msg = json.loads(raw)
