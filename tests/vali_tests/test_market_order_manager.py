@@ -13,7 +13,7 @@ from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+from vali_objects.utils.market_order.market_order_manager import MarketOrderManager
 from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig

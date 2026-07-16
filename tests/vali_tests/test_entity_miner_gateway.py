@@ -701,9 +701,7 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
             elimination_client=MagicMock(),
             price_fetcher_client=MagicMock(),
             asset_selection_client=MagicMock(),
-            market_order_manager=MagicMock(),
             limit_order_client=MagicMock(),
-            uuid_tracker=MagicMock(),
             ws_notifier_client=MagicMock(),
         )
         return tracker
@@ -743,7 +741,6 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
             elimination_client=MagicMock(),
             price_fetcher_client=MagicMock(),
             asset_selection_client=MagicMock(),
-            market_order_manager=MagicMock(),
             limit_order_client=MagicMock(),
             uuid_tracker=MagicMock(),
             ws_notifier_client=None,

@@ -63,14 +63,14 @@ class LimitOrderServer(RPCServerBase):
         - LivePriceFetcherClient
         - PositionManagerClient
         - EliminationClient
-        - MarketOrderManager (for filling orders)
+        - MarketOrderClient (for filling orders)
 
         Args:
             running_unit_tests: Whether running in test mode
             slack_notifier: Optional SlackNotifier for health check alerts
             start_server: Whether to start RPC server immediately
             start_daemon: Whether to start daemon immediately
-            serve: Whether MarketOrderManager should start its own RPC servers (True in production, False in tests)
+            serve: Whether to broadcast position updates (True in production, False in tests)
         """
         self.running_unit_tests = running_unit_tests
         self._common_data_client = CommonDataClient(connect_immediately=False)

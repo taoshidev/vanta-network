@@ -158,3 +158,7 @@ class LivePriceFetcherClient(RPCClientBase):
     def clear_test_candle_data(self) -> None:
         """Clear all test candle data (test-only)."""
         return self._server.clear_test_candle_data()
+
+    def calculate_slippage(self, bid: float, ask: float, order) -> float:
+        """Calculate slippage for an order."""
+        return self._server.calculate_slippage(bid, ask, order)

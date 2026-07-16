@@ -11,7 +11,7 @@ from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS, P
 from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+from vali_objects.utils.market_order.market_order_manager import MarketOrderManager
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order

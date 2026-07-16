@@ -16,20 +16,15 @@ from typing import List, Dict
 
 import bittensor as bt
 
-from collections import defaultdict
-
 from shared_objects.cache_controller import CacheController
 from shared_objects.rpc.common_data_client import CommonDataClient
-from time_util.time_util import TimeUtil, MS_IN_24_HOURS
+from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
 
@@ -74,16 +69,6 @@ class MDDChecker(CacheController):
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair if not trade_pair.is_blocked]
         self.reset_debug_counters()
         self.n_poly_api_requests = 0
-
-        # Load persisted slippage features from disk for equities slippage calculation
-        try:
-            features_file = ValiBkpUtils.get_slippage_model_features_file()
-            persisted_features = ValiUtils.get_vali_json_file_dict(features_file)
-            if persisted_features:
-                PriceSlippageModel.features = defaultdict(dict, persisted_features)
-                bt.logging.info(f"MDDChecker loaded {len(persisted_features)} days of slippage features")
-        except Exception as e:
-            bt.logging.warning(f"MDDChecker could not load slippage features: {e}")
 
         bt.logging.info("MDDChecker initialized")
 

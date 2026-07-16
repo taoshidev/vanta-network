@@ -27,7 +27,6 @@ from template.protocol import SendSignal
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.data_sync.auto_sync import PositionSyncer
 from vali_objects.data_sync.order_sync_state import OrderSyncState
-from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
 from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
@@ -36,10 +35,10 @@ from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR
 from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.utils.limit_order.order_processor import OrderProcessor
+from vali_objects.utils.order_processor import OrderProcessor
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from runnable.run_migrations import main as run_migrations
 
@@ -192,6 +191,7 @@ class Validator(ValidatorBase):
         self.debt_ledger_client = orchestrator.get_client('debt_ledger')
         self.entity_client = orchestrator.get_client('entity')
         self.entity_collateral_client = orchestrator.get_client('entity_collateral')
+        self.market_order_client = orchestrator.get_client('market_order')
 
         # Get subtensor from SubtensorOpsServer
         subtensor_ops_server = orchestrator.get_server('subtensor_ops')
@@ -227,8 +227,13 @@ class Validator(ValidatorBase):
             is_mothership=self.is_mothership
         )
 
-        # MarketOrderManager creates its own ContractClient internally (forward compatibility)
-        self.market_order_manager = MarketOrderManager(self.config.serve, slack_notifier=self.slack_notifier)
+        self.order_processor = OrderProcessor(
+            limit_order_client=self.limit_order_client,
+            market_order_client=self.market_order_client,
+            elimination_client=self.elimination_client,
+            entity_client=self.entity_client,
+            asset_selection_client=self.asset_selection_client,
+        )
 
         # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
@@ -239,13 +244,8 @@ class Validator(ValidatorBase):
         hl_ws_notifier = WebSocketNotifierClient(connect_immediately=False)
         self.hl_tracker = HyperliquidTracker(
             entity_client=self.entity_client,
-            elimination_client=self.elimination_client,
             price_fetcher_client=self.price_fetcher_client,
-            asset_selection_client=self.asset_selection_client,
-            market_order_manager=self.market_order_manager,
-            limit_order_client=self.limit_order_client,
-            uuid_tracker=self.uuid_tracker,
-            rate_limiter=RateLimiter(),
+            order_processor=self.order_processor,
             ws_notifier_client=hl_ws_notifier,
         )
         self.hl_tracker.start()
@@ -409,157 +409,36 @@ class Validator(ValidatorBase):
 
         self.check_shutdown()
 
-    def should_fail_early(self, sender_hotkey, synapse: template.protocol.SendSignal | template.protocol.GetPositions, method: SynapseMethod,
-                          signal:dict=None, now_ms=None) -> bool:
+    def should_reject_synapse(self, sender_hotkey, synapse: template.protocol.SendSignal | template.protocol.GetPositions, method: SynapseMethod) -> bool:
         if is_shutdown():
             synapse.successfully_processed = False
             synapse.error_message = "Validator is restarting due to update. Please try again later."
-            bt.logging.trace(synapse.error_message)
             return True
 
-        # Don't allow miners to send too many signals in a short period of time
         if method == SynapseMethod.POSITION_INSPECTOR:
             allowed, wait_time = self.position_inspector_rate_limiter.is_allowed(sender_hotkey)
         elif method == SynapseMethod.SIGNAL:
             allowed, wait_time = self.order_rate_limiter.is_allowed(sender_hotkey)
         else:
             msg = "Received synapse does not match one of expected methods for: receive_signal or get_positions"
-            bt.logging.trace(msg)
             synapse.successfully_processed = False
             synapse.error_message = msg
             return True
 
         if not allowed:
-            msg = (f"Rate limited. Please wait {wait_time} seconds before sending another signal. "
-                   f"{method.value}")
-            bt.logging.trace(msg)
+            msg = f"Rate limited. Please wait {wait_time} seconds before sending another signal. {method.value}"
             synapse.successfully_processed = False
             synapse.error_message = msg
             return True
 
         if method == SynapseMethod.POSITION_INSPECTOR:
-            # Check version 0 (old version that was opt-in)
             if synapse.version == 0:
                 synapse.successfully_processed = False
                 synapse.error_message = "Please use the latest miner script that makes PI opt-in with the flag --run-position-inspector"
-                #bt.logging.info((sender_hotkey, synapse.error_message))
                 return True
-            else:
-                return False
+            return False
 
-        # don't process eliminated or deregistered miners
-        # Fast local lookup from EliminationClient cache (no RPC call!) - saves 66.81ms per order
-        elim_check_start = time.perf_counter()
-        elimination_info = self.elimination_client.get_elimination_local_cache(synapse.dendrite.hotkey)
-        elim_check_ms = (time.perf_counter() - elim_check_start) * 1000
-        bt.logging.info(f"[FAIL_EARLY_DEBUG] get_elimination_local_cache took {elim_check_ms:.2f}ms")
-
-        if elimination_info:
-            if elimination_info.get("reason") == "DEREGISTERED":
-                detected_ms = elimination_info.get("elimination_initiated_time_ms", 0)
-                dereg_date = TimeUtil.millis_to_formatted_date_str(detected_ms) if detected_ms else "unknown"
-                msg = (f"This miner hotkey {synapse.dendrite.hotkey} was previously de-registered and is not allowed to re-register. "
-                       f"De-registered on: {dereg_date} UTC. "
-                       f"Re-registration is not permitted on this subnet.")
-                bt.logging.warning(msg)
-            else:
-                msg = f"This miner hotkey {synapse.dendrite.hotkey} has been eliminated and cannot participate in this subnet. Try again after re-registering. elimination_info {elimination_info}"
-                bt.logging.debug(msg)
-            synapse.successfully_processed = False
-            synapse.error_message = msg
-            return True
-
-        # Entity hotkey validation: Don't allow orders from entity hotkeys (non-synthetic)
-        # Only synthetic hotkeys (subaccounts) can place orders
-        entity_check_start = time.perf_counter()
-        # Fast static function call (no RPC overhead!) - saves ~5-10ms per order
-        if is_synthetic_hotkey(sender_hotkey):
-            # This is a synthetic hotkey - verify it's active
-            found, status, _ = self.entity_client.get_subaccount_status(sender_hotkey)
-            if not found or status not in ['active', 'admin']:
-                msg = (f"Synthetic hotkey {sender_hotkey} is not active or not found. "
-                       f"Please ensure your subaccount is properly registered.")
-                bt.logging.warning(msg)
-                synapse.successfully_processed = False
-                synapse.error_message = msg
-                return True
-        else:
-            # Not a synthetic hotkey - check if it's an entity hotkey
-            entity_data = self.entity_client.get_entity_data(sender_hotkey)
-            if entity_data:
-                msg = (f"Entity hotkey {sender_hotkey} cannot place orders directly. "
-                       f"Please use a subaccount (synthetic hotkey) to place orders.")
-                bt.logging.warning(msg)
-                synapse.successfully_processed = False
-                synapse.error_message = msg
-                return True
-        entity_check_ms = (time.perf_counter() - entity_check_start) * 1000
-        bt.logging.info(f"[FAIL_EARLY_DEBUG] entity_hotkey_validation took {entity_check_ms:.2f}ms")
-
-        order_uuid = synapse.miner_order_uuid
-        tp = Order.parse_trade_pair_from_signal(signal)
-        if tp is not None and tp in NATIVE_CRYPTO_TO_HL_TRADE_PAIR:
-            hl_tp = NATIVE_CRYPTO_TO_HL_TRADE_PAIR[tp]
-            bt.logging.info(
-                f"Remapping native crypto trade pair {tp.trade_pair_id} -> {hl_tp.trade_pair_id}"
-            )
-            tp = hl_tp
-            signal["trade_pair"] = [hl_tp.trade_pair_id, hl_tp.trade_pair]
-        order_type = OrderType.from_string(signal.get("order_type") or "FLAT")
-        if order_uuid and self.uuid_tracker.exists(order_uuid):
-            # Parse execution type to check if this is a cancel operation
-            execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper()) if signal else ExecutionType.MARKET
-            # Allow duplicate UUIDs for LIMIT_CANCEL (reusing UUID to identify order to cancel)
-            if execution_type not in [ExecutionType.LIMIT_CANCEL, ExecutionType.LIMIT_EDIT, ExecutionType.FLAT_ALL]:
-                msg = (f"Order with uuid [{order_uuid}] has already been processed. "
-                       f"Please try again with a new order.")
-                bt.logging.error(msg)
-                synapse.error_message = msg
-
-        elif tp and tp.is_blocked:
-            msg = (f"Trade pair [{tp.trade_pair_id}] is no longer supported.")
-            synapse.error_message = msg
-            synapse.should_retry = False
-
-        elif signal and tp and not synapse.error_message:
-            # Fast local validation against the AssetSelectionClient's background-refreshed
-            # cache (no RPC call, no refresh penalty). selected_asset is read separately
-            # only for the error message.
-            asset_validate_start = time.perf_counter()
-            selected_asset = self.asset_selection_client.get_selection_local_cache(sender_hotkey)
-            if not selected_asset:
-                msg = (f"No asset class selected for hotkey [{sender_hotkey}]. "
-                       f"Select an asset class using the Vanta CLI before placing orders: "
-                       f"https://github.com/taoshidev/vanta-cli")
-                synapse.error_message = msg
-                synapse.should_retry = False
-
-            elif not selected_asset.can_trade(tp) and order_type != OrderType.FLAT:
-                asset_validate_ms = (time.perf_counter() - asset_validate_start) * 1000
-                bt.logging.info(f"[FAIL_EARLY_DEBUG] miner_asset_class_can_trade took {asset_validate_ms:.2f}ms")
-
-                msg = (
-                    f"Selected asset class [{selected_asset}] cannot submit orders for trade pair [{tp.trade_pair}]. "
-                    f"You can only trade pairs within your selected asset class."
-                )
-                synapse.error_message = msg
-                synapse.should_retry = False
-
-            else:
-                is_market_open = self.price_fetcher_client.is_market_open(tp, now_ms)
-                execution_type = ExecutionType.from_string(signal.get("execution_type", "MARKET").upper())
-                if execution_type in [ExecutionType.MARKET, ExecutionType.FLAT_ALL] and not is_market_open:
-                    synapse.error_message = f"Market for trade pair [{tp.trade_pair_id}] is closed. Please try again later."
-                    synapse.should_retry = False
-                elif tp.is_flat_only and order_type != OrderType.FLAT:
-                    synapse.error_message = (f"Trade pair [{tp.trade_pair_id}] is being discontinued. Please close your position.")
-                    synapse.should_retry = False
-
-        synapse.successfully_processed = not bool(synapse.error_message)
-        if synapse.error_message:
-            bt.logging.error(synapse.error_message)
-
-        return bool(synapse.error_message)
+        return False
 
     @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
@@ -597,7 +476,14 @@ class Validator(ValidatorBase):
         subaccount_id = synapse.subaccount_id
         synapse.validator_hotkey = self.wallet.hotkey.ss58_address
         miner_repo_version = synapse.repo_version
-        signal = synapse.signal
+        signal_dict = synapse.signal
+        order_uuid = SendSignal.parse_miner_uuid(synapse)
+
+        if not miner_hotkey:
+            synapse.successfully_processed = False
+            synapse.error_message = "Missing miner hotkey"
+            synapse.should_retry = False
+            return synapse
 
         # For entity miners: construct synthetic hotkey if subaccount_id provided
         if subaccount_id is not None:
@@ -610,50 +496,67 @@ class Validator(ValidatorBase):
                 synapse.error_message = validation['error_message']
                 synapse.should_retry = False
                 bt.logging.info(
-                    f"received invalid subaccount_id signal [{signal}] from miner_hotkey [{synthetic_hotkey}] using repo version [{miner_repo_version}].")
+                    f"received invalid subaccount_id signal [{signal_dict}] from miner_hotkey [{synthetic_hotkey}] using repo version [{miner_repo_version}].")
                 return synapse
 
             miner_hotkey = synthetic_hotkey  # Use synthetic hotkey for all downstream ops
 
-        bt.logging.info( f"received signal [{signal}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
+        bt.logging.info(f"received signal [{order_uuid}] [{signal_dict}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
 
-        # TIMING: Check should_fail_early timing
-        fail_early_start = TimeUtil.now_in_millis()
-        if self.should_fail_early(miner_hotkey, synapse, SynapseMethod.SIGNAL, signal=signal, now_ms=now_ms):
-            fail_early_ms = TimeUtil.now_in_millis() - fail_early_start
-            bt.logging.info(f"[TIMING] should_fail_early took {fail_early_ms}ms (rejected)")
+        if self.should_reject_synapse(miner_hotkey, synapse, SynapseMethod.SIGNAL):
             bt.logging.info(f"Order rejected for {miner_hotkey}: {synapse.error_message}")
             return synapse
-        fail_early_ms = TimeUtil.now_in_millis() - fail_early_start
-        bt.logging.info(f"[TIMING] should_fail_early took {fail_early_ms}ms")
 
-        # Early rejection if sync is waiting (fast local check, ~0.01ms)
         if self.order_sync.is_sync_waiting():
             synapse.successfully_processed = False
             synapse.error_message = "Validator is syncing positions. Please try again shortly."
             bt.logging.info(f"Rejected order from {miner_hotkey}: {synapse.error_message}")
             return synapse
 
+        try:
+            signal = Signal.model_validate(signal_dict)
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.should_retry = False
+            synapse.error_message = f"Invalid signal payload: {e}"
+            return synapse
+
+        if (
+            order_uuid
+            and signal.execution_type not in (ExecutionType.LIMIT_CANCEL, ExecutionType.LIMIT_EDIT, ExecutionType.FLAT_ALL)
+            and self.uuid_tracker.exists(order_uuid)
+        ):
+            synapse.successfully_processed = False
+            synapse.should_retry = False
+            synapse.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
+            bt.logging.error(synapse.error_message)
+            return synapse
+
+        ok, error_msg, resolved_tp = self.order_processor.validate(
+            hotkey=miner_hotkey,
+            execution_type=signal.execution_type,
+            trade_pair=signal.trade_pair,
+            order_type=signal.order_type,
+        )
+        if not ok:
+            synapse.successfully_processed = False
+            synapse.should_retry = False
+            synapse.error_message = error_msg
+            return synapse
+
+        if resolved_tp is not None and resolved_tp != signal.trade_pair:
+            signal = signal.model_copy(update={"trade_pair": resolved_tp})
+
         # Track order processing with context manager (auto-increments/decrements counter)
         with self.order_sync.begin_order():
             # error message to send back to miners in case of a problem so they can fix and resend
             error_message = ""
             try:
-                # TIMING: Parse operations
-                parse_start = TimeUtil.now_in_millis()
-                miner_order_uuid = SendSignal.parse_miner_uuid(synapse)
-                parse_ms = TimeUtil.now_in_millis() - parse_start
-                bt.logging.info(f"[TIMING] Parse operations took {parse_ms}ms")
-
-                # Use unified OrderProcessor dispatcher (replaces lines 602-661)
-                result = OrderProcessor.process_order(
+                result = self.order_processor.process_vanta_signal(
+                    hotkey=miner_hotkey,
                     signal=signal,
-                    miner_order_uuid=miner_order_uuid,
+                    order_uuid=order_uuid,
                     now_ms=now_ms,
-                    miner_hotkey=miner_hotkey,
-                    miner_repo_version=miner_repo_version,
-                    limit_order_client=self.limit_order_client,
-                    market_order_manager=self.market_order_manager
                 )
 
                 # Set synapse response (centralized - single line instead of 4)
@@ -661,22 +564,17 @@ class Validator(ValidatorBase):
 
                 # Track UUID if needed (centralized - single line instead of 3)
                 if result.should_track_uuid:
-                    self.uuid_tracker.add(miner_order_uuid)
+                    self.uuid_tracker.add(order_uuid)
 
                 # For logging (used in line 691)
                 order = result.order_for_logging
 
             except Exception as e:
-                exception_time = TimeUtil.now_in_millis()
-                if is_synthetic_hotkey(miner_hotkey):
-                    error_message = str(e)
-                else:
-                    error_message = f"Error processing order for [{miner_hotkey}] with error [{e}]"
-                bt.logging.error(traceback.format_exc())
-                bt.logging.info(f"[TIMING] Exception caught at {exception_time - now_ms}ms from start")
+                error_message = str(e)
+                bt.logging.error(f"Error processing signal {miner_hotkey} {order_uuid} {e}")
+
             finally:
-                # TIMING: Final processing
-                final_processing_start = TimeUtil.now_in_millis()
+                synapse.error_message = error_message
                 if error_message == "":
                     synapse.successfully_processed = True
                 else:
@@ -684,10 +582,7 @@ class Validator(ValidatorBase):
                     synapse.successfully_processed = False
                     synapse.should_retry = False
 
-                synapse.error_message = error_message
-                final_processing_ms = TimeUtil.now_in_millis() - final_processing_start
-                bt.logging.info(f"[TIMING] Final synapse setup took {final_processing_ms}ms")
-
+                # TODO Review overlap with serving in market order manager
                 if is_synthetic_hotkey(miner_hotkey):
                     self.entity_client.broadcast_subaccount_dashboard(miner_hotkey)
 
@@ -702,7 +597,7 @@ class Validator(ValidatorBase):
     def _get_positions(self, synapse: template.protocol.GetPositions,
                       ) -> template.protocol.GetPositions:
         miner_hotkey = synapse.dendrite.hotkey
-        if self.should_fail_early(miner_hotkey, synapse, SynapseMethod.POSITION_INSPECTOR):
+        if self.should_reject_synapse(miner_hotkey, synapse, SynapseMethod.POSITION_INSPECTOR):
             return synapse
         t0 = time.time()
         error_message = ""
