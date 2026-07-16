@@ -2,9 +2,6 @@
 
 Modularize the logic that was originally in validator.py. No IPC communication here.
 """
-import time
-import threading
-
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.trade_pair import TradePairSource
@@ -17,7 +14,6 @@ from vali_objects.exceptions.signal_exception import SignalException
 import bittensor as bt
 
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.trade_pair import TradePair
 from vali_objects.utils.leverage_utils import get_max_order_size
@@ -33,7 +29,7 @@ from shared_objects.locks.position_lock_client import PositionLockClient
 
 class MarketOrderManager():
 
-    def __init__(self, serve:bool, slack_notifier=None, running_unit_tests=False, connection_mode=RPCConnectionMode.RPC):
+    def __init__(self, serve:bool, running_unit_tests=False, connection_mode=RPCConnectionMode.RPC):
         self.serve = serve
         self.running_unit_tests = running_unit_tests
 
@@ -47,28 +43,7 @@ class MarketOrderManager():
         self._position_client = PositionManagerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
 
-        self.price_slippage_model = PriceSlippageModel(running_unit_tests=running_unit_tests)
-
-        # Cache to track last order time for each (miner_hotkey, trade_pair) combination
-        self.last_order_time_cache = {}  # Key: (miner_hotkey, trade_pair_id), Value: last_order_time_ms
-
-        # Start slippage feature refresher thread (disabled in tests)
-        # This thread refreshes slippage features daily and pre-populates tomorrow's features
-        if not running_unit_tests:
-            self.slippage_refresher = PriceSlippageModel.FeatureRefresher(
-                price_slippage_model=self.price_slippage_model,
-                slack_notifier=slack_notifier
-            )
-            self.slippage_refresher_thread = threading.Thread(
-                target=self.slippage_refresher.run_update_loop,
-                daemon=True,
-                name="SlippageRefresher"
-            )
-            self.slippage_refresher_thread.start()
-            bt.logging.info("Slippage feature refresher thread started")
-        else:
-            self.slippage_refresher = None
-            self.slippage_refresher_thread = None
+        self.last_order_time_cache = {}
 
     def execute_order(
         self,
@@ -93,6 +68,9 @@ class MarketOrderManager():
             err = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, hotkey)
             if err:
                 raise SignalException(err)
+
+        if not self._live_price_client.is_market_open(trade_pair):
+            raise SignalException(f"The market for {trade_pair.trade_pair_id} is currently closed.")
 
         with self._position_lock_client.get_lock(hotkey, trade_pair.trade_pair_id):
 
@@ -228,15 +206,8 @@ class MarketOrderManager():
             is_hl_taker=is_hl_taker,
         )
 
-        features_available = self.price_slippage_model.refresh_features_daily(
-            time_ms=now_ms, allow_blocking=False
-        )
-        if not features_available:
-            bt.logging.error("[_apply_order] Features not available for slippage calculation.")
-
-        # Respect explicit 0 slippage
         if slippage is None:
-            slippage = PriceSlippageModel.calculate_slippage(order.bid, order.ask, order)
+            slippage = self._live_price_client.calculate_slippage(order.bid, order.ask, order)
         order.slippage = slippage
 
         if not order.value or not order.quantity:
@@ -295,14 +266,12 @@ class MarketOrderManager():
         bt.logging.info(f"Found {total_positions} positions to close for miner [{hotkey}]")
 
         for i, position in enumerate(positions_to_close):
-            trade_pair = position.trade_pair
-            position_close_uuid = f"{position.position_uuid}_flat_all"
-
+            position_close_uuid = f"{position.position_uuid}-flat-all"
             try:
                 self.execute_order(
                     hotkey=hotkey,
                     order_uuid=position_close_uuid,
-                    trade_pair=trade_pair,
+                    trade_pair=position.trade_pair,
                     execution_type=ExecutionType.MARKET,
                     order_type=OrderType.FLAT,
                     order_size=OrderSize(),
@@ -310,18 +279,11 @@ class MarketOrderManager():
                     enforce_cooldown=False,
                 )
                 cnt_closed += 1
-                bt.logging.info(
-                    f"[FLAT_ALL] Closed position {i+1}/{total_positions} "
-                    f"[{trade_pair.trade_pair_id}] for miner [{hotkey}]"
-                )
-
-                if i < total_positions - 1:
-                    time.sleep(0.05)
 
             except Exception as e:
                 bt.logging.error(
                     f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
-                    f"[{trade_pair.trade_pair_id}] for miner [{hotkey}]: {str(e)}"
+                    f"[{position.trade_pair.trade_pair_id}] for miner [{hotkey}]: {str(e)}"
                 )
                 continue
 

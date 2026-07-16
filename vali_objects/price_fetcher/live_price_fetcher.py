@@ -1,3 +1,4 @@
+import threading
 import time
 import requests
 from typing import List, Optional, Tuple, Dict
@@ -11,6 +12,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, TradePairSource
+from vali_objects.enums.execution_type_enum import ExecutionType
 import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
@@ -48,6 +50,23 @@ class LivePriceFetcher:
             running_unit_tests=running_unit_tests
         )
 
+        from vali_objects.utils.price_slippage_model import PriceSlippageModel
+        self._price_slippage_model = PriceSlippageModel(
+            live_price_fetcher=self,
+            running_unit_tests=running_unit_tests,
+            is_backtesting=is_backtesting,
+        )
+        if not running_unit_tests and not is_backtesting:
+            _refresher = PriceSlippageModel.FeatureRefresher(
+                price_slippage_model=self._price_slippage_model,
+            )
+            threading.Thread(
+                target=_refresher.run_update_loop,
+                daemon=True,
+                name="SlippageRefresher",
+            ).start()
+            bt.logging.info("Slippage feature refresher thread started")
+
 
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()
@@ -55,6 +74,22 @@ class LivePriceFetcher:
         if self.databento_data_service:
             self.databento_data_service.stop_threads()
         self.hyperliquid_data_service.stop_threads()
+
+    def calculate_slippage(self, bid: float, ask: float, order) -> float:
+        """Route slippage calculation: HL source pairs use live L2 orderbook; all others use PriceSlippageModel."""
+        from vali_objects.utils.price_slippage_model import PriceSlippageModel
+        if abs(order.value) <= 1000:
+            return 0.0
+        if order.trade_pair.src == TradePairSource.HYPERLIQUID:
+            is_buy = order.leverage > 0
+            return self.hyperliquid_data_service.simulate_slippage(
+                order.trade_pair, abs(order.value), is_buy, order_uuid=order.order_uuid
+            ) or 0.0
+        return PriceSlippageModel.calculate_slippage(bid, ask, order)
+
+    def refresh_features_daily(self, time_ms: int = None, allow_blocking: bool = False) -> bool:
+        from vali_objects.utils.price_slippage_model import PriceSlippageModel
+        return PriceSlippageModel.refresh_features_daily(time_ms=time_ms, allow_blocking=allow_blocking)
 
     def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool,
                            order_uuid: str = None) -> Optional[float]:

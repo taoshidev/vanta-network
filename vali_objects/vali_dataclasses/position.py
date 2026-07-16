@@ -98,7 +98,7 @@ class Position(BaseModel):
         if market_value <= 0:
             return 0.0
 
-        if self.is_hl:
+        if self.trade_pair.src == TradePairSource.HYPERLIQUID:
             if not hl_funding_rates:
                 return 0
 

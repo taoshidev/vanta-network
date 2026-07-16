@@ -1531,7 +1531,7 @@ class TradePair(Enum):
         return TRADE_PAIR_STR_TO_TRADE_PAIR.get(trade_pair_str)
 
     def __str__(self):
-        return str(self.__json__())
+        return str(self.trade_pair_id)
 
 
 TRADE_PAIR_ID_TO_TRADE_PAIR = {x.trade_pair_id: x for x in TradePair}

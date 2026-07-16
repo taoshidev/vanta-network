@@ -703,7 +703,7 @@ class TestEntityCollateral(TestBase):
 
     def test_market_order_manager_has_entity_collateral_client(self):
         """Test that MarketOrderManager creates an EntityCollateralClient."""
-        from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+        from vali_objects.utils.market_order.market_order_manager import MarketOrderManager
         from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 
         mom = MarketOrderManager(serve=False, running_unit_tests=True)
