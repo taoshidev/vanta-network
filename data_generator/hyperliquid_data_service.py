@@ -45,8 +45,9 @@ class _HyperliquidWebsocketClient:
         self._ws = await websockets.connect(ValiConfig.hl_ws_url())
 
         try:
-            # Get the filtered, env-aware coin list from the service (includes dynamic coins,
-            # filtered by allMids availability to prevent testnet socket closes).
+            # Get the filtered, env-aware coin list from the service (filtered by
+            # allMids availability, across default and non-default dexes, to prevent
+            # testnet socket closes).
             coins = self._svc._get_subscription_coins()
 
             for coin in coins:
@@ -592,8 +593,56 @@ class HyperliquidDataService(BaseDataService):
         return total_usd / total_coins
 
     def _get_subscription_coins(self) -> set[str]:
-        """Return the set of HL coins to subscribe to for l2Book streams."""
-        return set(self._coin_to_trade_pair.keys())
+        """Return the filtered set of HL coins to subscribe to for l2Book streams.
+
+        Intersects the statically configured coin set with allMids availability
+        (default dex plus any non-default dexes referenced by colon-prefixed
+        hl_coin names, e.g. "xyz:AAPL") to avoid subscribing to coins unsupported
+        on the current HL env, which causes the HL server to close the WebSocket
+        connection.
+        """
+        configured_coins = set(self._coin_to_trade_pair.keys())
+
+        try:
+            resp = requests.post(
+                ValiConfig.hl_info_url(),
+                json={"type": "allMids"},
+                timeout=5,
+            )
+            mids = resp.json()
+            all_supported_keys = set(mids.keys()) if isinstance(mids, dict) else set()
+
+            # Non-default dexes (e.g. HIP-3 equities/commodities/indices) aren't included
+            # in the default-dex allMids response and must be queried separately.
+            non_default_dexes = {
+                coin.split(":")[0] for coin in configured_coins if ":" in coin
+            }
+            for dex in non_default_dexes:
+                try:
+                    r = requests.post(
+                        ValiConfig.hl_info_url(),
+                        json={"type": "allMids", "dex": dex},
+                        timeout=5,
+                    )
+                    all_supported_keys.update(r.json().keys())
+                except Exception as e:
+                    bt.logging.warning(f"[HL_DATA_SVC] Failed to fetch allMids for dex={dex}: {e}")
+
+            supported = configured_coins.intersection(all_supported_keys)
+            if not supported:
+                supported = configured_coins
+            elif supported != configured_coins:
+                skipped = sorted(configured_coins - supported)
+                bt.logging.info(
+                    f"[HL_DATA_SVC] Skipping unsupported l2Book coins on current HL env: {skipped}"
+                )
+            return supported
+        except Exception as e:
+            bt.logging.warning(
+                f"[HL_DATA_SVC] Failed to fetch allMids for coin filtering: {e}. "
+                "Falling back to configured coins."
+            )
+            return configured_coins
 
     def instantiate_not_pickleable_objects(self):
         pass
