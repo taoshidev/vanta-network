@@ -591,12 +591,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.add_collateral_record(collateral_record)
 
             if is_first_record:
-                account.daily_open_snapshot = DailyOpenSnapshot(
+                snapshot = DailyOpenSnapshot(
                     day_open_ms=TimeUtil.get_start_of_day_ms(timestamp_ms),
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
                 )
+                account.daily_open_snapshot = snapshot
+                account.max_equity_snapshot = snapshot
 
             # Save to disk
             self._save_accounts_to_disk()
@@ -606,14 +608,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         return collateral_record
 
-    def reset_account_fields(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
+    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
             if not account:
                 return False
+
             account.reset_account_fields()
             if miner_bucket:
                 account.miner_bucket = miner_bucket
+
             snapshot = DailyOpenSnapshot(
                 day_open_ms=TimeUtil.get_start_of_day_ms(),
                 account_size=account.get_account_size(),
@@ -621,8 +625,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 equity=account.equity,
             )
             account.daily_open_snapshot = snapshot
-            if account.max_equity_snapshot is None or snapshot.equity >= account.max_equity_snapshot.equity:
-                account.max_equity_snapshot = snapshot
+            account.max_equity_snapshot = snapshot
+            account.max_return = 1.0
+
             self._save_accounts_to_disk()
         return True
 

@@ -508,7 +508,7 @@ class ChallengePeriodManager(CacheController):
                     order_source=OrderSource.SUBACCOUNT_PROMOTION
                 )
                 # Reset account fields (PnL, capital used, borrowed amount, interest)
-                self._miner_account_client.reset_account_fields(hotkey, target_bucket)
+                self._miner_account_client.reset_account(hotkey, target_bucket)
                 # Archive all positions (disk move + memory removal)
                 self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
                 # Cancel all pending limit orders

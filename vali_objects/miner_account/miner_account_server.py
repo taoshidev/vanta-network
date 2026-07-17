@@ -153,9 +153,9 @@ class MinerAccountServer(RPCServerBase):
         """Delete the account size for a miner. Returns True if successful."""
         return self._manager.delete_miner_account_size(hotkey)
 
-    def reset_account_fields(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
+    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         """Reset account fields (PnL, capital used, borrowed amount, interest) for a miner."""
-        return self._manager.reset_account_fields(hotkey, miner_bucket)
+        return self._manager.reset_account(hotkey, miner_bucket)
 
     def get_miner_account_size(
         self,
