@@ -40,7 +40,6 @@ class DailyOpenSnapshot:
     account_size: float
     balance: float
     equity: float
-    bucket: Optional[str]      # MinerBucket.value or None
 
     @property
     def equity_return(self) -> float:
@@ -56,7 +55,6 @@ class DailyOpenSnapshot:
             'balance': self.balance,
             'equity': self.equity,
             'equity_return': self.equity_return,
-            'bucket': self.bucket,
         }
 
     @staticmethod
@@ -66,7 +64,6 @@ class DailyOpenSnapshot:
             account_size=d['account_size'],
             balance=d['balance'],
             equity=d['equity'],
-            bucket=d.get('bucket'),
         )
 
 
@@ -599,7 +596,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
-                    bucket=account.miner_bucket.value if account.miner_bucket else None,
                 )
 
             # Save to disk
@@ -623,7 +619,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account_size=account.get_account_size(),
                 balance=account.balance,
                 equity=account.equity,
-                bucket=account.miner_bucket.value if account.miner_bucket else None,
             )
             account.daily_open_snapshot = snapshot
             if account.max_equity_snapshot is None or snapshot.equity >= account.max_equity_snapshot.equity:
@@ -966,7 +961,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
-                    bucket=account.miner_bucket.value if account.miner_bucket else None,
                 )
                 account.daily_open_snapshot = snapshot
                 if account.max_equity_snapshot is None or snapshot.equity >= account.max_equity_snapshot.equity:
