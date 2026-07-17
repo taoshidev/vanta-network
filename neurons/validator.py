@@ -192,6 +192,7 @@ class Validator(ValidatorBase):
         self.entity_client = orchestrator.get_client('entity')
         self.entity_collateral_client = orchestrator.get_client('entity_collateral')
         self.market_order_client = orchestrator.get_client('market_order')
+        self.miner_account_client = orchestrator.get_client('miner_account')
 
         # Get subtensor from SubtensorOpsServer
         subtensor_ops_server = orchestrator.get_server('subtensor_ops')
@@ -230,9 +231,7 @@ class Validator(ValidatorBase):
         self.order_processor = OrderProcessor(
             limit_order_client=self.limit_order_client,
             market_order_client=self.market_order_client,
-            elimination_client=self.elimination_client,
-            entity_client=self.entity_client,
-            asset_selection_client=self.asset_selection_client,
+            miner_account_client=self.miner_account_client,
         )
 
         # Initialize UUID tracker with existing positions
@@ -488,17 +487,6 @@ class Validator(ValidatorBase):
         # For entity miners: construct synthetic hotkey if subaccount_id provided
         if subaccount_id is not None:
             synthetic_hotkey = f"{miner_hotkey}_{subaccount_id}"
-
-            # Validate using existing method (checks registration, active status, etc.)
-            validation = self.entity_client.validate_hotkey_for_orders(synthetic_hotkey)
-            if not validation['is_valid']:
-                synapse.successfully_processed = False
-                synapse.error_message = validation['error_message']
-                synapse.should_retry = False
-                bt.logging.info(
-                    f"received invalid subaccount_id signal [{signal_dict}] from miner_hotkey [{synthetic_hotkey}] using repo version [{miner_repo_version}].")
-                return synapse
-
             miner_hotkey = synthetic_hotkey  # Use synthetic hotkey for all downstream ops
 
         bt.logging.info(f"received signal [{order_uuid}] [{signal_dict}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
