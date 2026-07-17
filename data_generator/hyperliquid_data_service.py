@@ -18,7 +18,6 @@ from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracke
 
 REST_TIMEOUT_S = 10
 RECV_TIMEOUT_S = 30
-_L2_COIN_CACHE_TTL_S = 300.0
 
 # (interval, candle_span_ms) - sorted by span ascending, threshold is span * 5000 candles
 HL_CANDLE_INTERVALS = [
@@ -157,11 +156,6 @@ class HyperliquidDataService(BaseDataService):
         self._orderbooks_coarse_by_sigfigs: dict[int, dict[str, dict]] = {
             sig_figs: {} for sig_figs in ValiConfig.HL_L2_SIG_FIGS_CASCADE[1:]
         }
-
-        # Cache for subscription coin list (filtered by allMids availability).
-        # Persists across reconnects to avoid repeated REST calls on reconnect storms.
-        self._l2_coin_cache: set[str] | None = None
-        self._l2_coin_cache_ts: float = 0.0
 
         if disable_ws:
             self.websocket_manager_thread = None
@@ -598,51 +592,8 @@ class HyperliquidDataService(BaseDataService):
         return total_usd / total_coins
 
     def _get_subscription_coins(self) -> set[str]:
-        """Return the filtered set of HL coins to subscribe to for l2Book streams.
-
-        Builds the configured coin set from static TradePair crypto members, then
-        intersects with allMids availability to avoid subscribing to unsupported
-        coins on testnet, which causes the HL server to close the WebSocket connection.
-        Result is cached for _L2_COIN_CACHE_TTL_S seconds across reconnects.
-        """
-        configured_coins = set(self._coin_to_trade_pair.keys())
-
-        now = time.time()
-        if self._l2_coin_cache is not None and (now - self._l2_coin_cache_ts) < _L2_COIN_CACHE_TTL_S:
-            return self._l2_coin_cache | (configured_coins - self._l2_coin_cache)
-
-        try:
-            resp = requests.post(
-                ValiConfig.hl_info_url(),
-                json={"type": "allMids"},
-                timeout=5,
-            )
-            mids = resp.json()
-            if isinstance(mids, dict):
-                all_supported_keys = set(mids.keys())
-                supported = configured_coins.intersection(all_supported_keys)
-            else:
-                supported = configured_coins
-
-            if not supported:
-                supported = configured_coins
-            elif supported != configured_coins:
-                skipped = sorted(configured_coins - supported)
-                bt.logging.info(
-                    f"[HL_DATA_SVC] Skipping unsupported l2Book coins on current HL env: {skipped}"
-                )
-
-            self._l2_coin_cache = supported
-            self._l2_coin_cache_ts = now
-            return supported
-        except Exception as e:
-            bt.logging.warning(
-                f"[HL_DATA_SVC] Failed to fetch allMids for coin filtering: {e}. "
-                "Falling back to configured coins."
-            )
-            if self._l2_coin_cache:
-                return self._l2_coin_cache | configured_coins
-            return configured_coins
+        """Return the set of HL coins to subscribe to for l2Book streams."""
+        return set(self._coin_to_trade_pair.keys())
 
     def instantiate_not_pickleable_objects(self):
         pass
