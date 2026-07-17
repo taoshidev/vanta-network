@@ -123,6 +123,7 @@ class MinerAccount:
     # lazy-backfilled on next rebuild_account_state_from_positions call.
     capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
     daily_open_snapshot: Optional[DailyOpenSnapshot] = None
+    max_equity_snapshot: Optional[DailyOpenSnapshot] = None  # Highest daily-open equity ever seen
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -233,6 +234,7 @@ class MinerAccount:
             # JSON keys must be str; convert TradePairCategory enum to its .value
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
             'daily_open_snapshot': self.daily_open_snapshot.to_dict() if self.daily_open_snapshot else None,
+            'max_equity_snapshot': self.max_equity_snapshot.to_dict() if self.max_equity_snapshot else None,
         }
 
         if include_collateral_records:
@@ -423,6 +425,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
                     daily_open_snapshot_raw = last_record.get("daily_open_snapshot")
+                    max_equity_snapshot_raw = last_record.get("max_equity_snapshot")
                 else:
                     total_realized_pnl = None
                     capital_used = None
@@ -435,6 +438,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     unrealized_pnl = 0.0
                     capital_used_by_class_raw = {}
                     daily_open_snapshot_raw = None
+                    max_equity_snapshot_raw = None
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
                 # Missing field (older checkpoint) → empty dict; will be lazy-backfilled by
@@ -487,6 +491,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     except Exception:
                         pass
 
+                max_equity_snapshot = None
+                if max_equity_snapshot_raw:
+                    try:
+                        max_equity_snapshot = DailyOpenSnapshot.from_dict(max_equity_snapshot_raw)
+                    except Exception:
+                        pass
+
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
@@ -502,6 +513,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     unrealized_pnl=unrealized_pnl,
                     capital_used_by_class=capital_used_by_class,
                     daily_open_snapshot=daily_open_snapshot,
+                    max_equity_snapshot=max_equity_snapshot,
                 )
 
             except Exception as e:
@@ -606,13 +618,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.reset_account_fields()
             if miner_bucket:
                 account.miner_bucket = miner_bucket
-            account.daily_open_snapshot = DailyOpenSnapshot(
+            snapshot = DailyOpenSnapshot(
                 day_open_ms=TimeUtil.get_start_of_day_ms(),
                 account_size=account.get_account_size(),
                 balance=account.balance,
                 equity=account.equity,
                 bucket=account.miner_bucket.value if account.miner_bucket else None,
             )
+            account.daily_open_snapshot = snapshot
+            if account.max_equity_snapshot is None or snapshot.equity >= account.max_equity_snapshot.equity:
+                account.max_equity_snapshot = snapshot
             self._save_accounts_to_disk()
         return True
 
@@ -946,13 +961,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
         count = 0
         with self._accounts_lock:
             for account in self.accounts.values():
-                account.daily_open_snapshot = DailyOpenSnapshot(
+                snapshot = DailyOpenSnapshot(
                     day_open_ms=day_open_ms,
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
                     bucket=account.miner_bucket.value if account.miner_bucket else None,
                 )
+                account.daily_open_snapshot = snapshot
+                if account.max_equity_snapshot is None or snapshot.equity >= account.max_equity_snapshot.equity:
+                    account.max_equity_snapshot = snapshot
                 count += 1
             self._save_accounts_to_disk()
 
