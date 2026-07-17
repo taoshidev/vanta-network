@@ -267,9 +267,11 @@ class HyperliquidDataService(BaseDataService):
             )
 
     def _fetch_all_mids(self) -> dict[str, float]:
-        """Fetch mid prices for all coins via the REST API (default dex only).
+        """Fetch mid prices for all coins across all dexes via the REST API.
 
-        Returns {coin: mid_price}.
+        Fetches the default crypto dex first, then merges in each non-default dex
+        (identified by the colon-prefixed hl_coin names in the configured coin set).
+        Returns {coin: mid_price} with prefixed keys for non-default dex coins (e.g. "xyz:AAPL").
         """
         result: dict[str, float] = {}
 
@@ -284,6 +286,24 @@ class HyperliquidDataService(BaseDataService):
             result.update({coin: float(price) for coin, price in resp.json().items()})
         except Exception as e:
             bt.logging.error(f"Hyperliquid REST allMids (default dex) failed: {type(e).__name__}: {e}")
+
+        # Non-default dexes — derive names from prefixed hl_coin entries in the configured coin set
+        non_default_dexes = {
+            coin.split(":")[0]
+            for coin in self._coin_to_trade_pair.keys()
+            if ":" in coin
+        }
+        for dex in non_default_dexes:
+            try:
+                resp = requests.post(
+                    ValiConfig.hl_info_url(),
+                    json={"type": "allMids", "dex": dex},
+                    timeout=REST_TIMEOUT_S,
+                )
+                resp.raise_for_status()
+                result.update({coin: float(price) for coin, price in resp.json().items()})
+            except Exception as e:
+                bt.logging.error(f"Hyperliquid REST allMids (dex={dex}) failed: {type(e).__name__}: {e}")
 
         return result
 
