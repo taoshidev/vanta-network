@@ -10,12 +10,11 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
-from entity_management.entity_client import EntityClient
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
-from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.position import Position
@@ -72,15 +71,11 @@ class OrderProcessor:
         self,
         limit_order_client: LimitOrderClient,
         market_order_client: MarketOrderClient,
-        elimination_client: EliminationClient,
-        entity_client: EntityClient,
-        asset_selection_client: AssetSelectionClient,
+        miner_account_client: MinerAccountClient,
     ):
         self.limit_order_client = limit_order_client
         self.market_order_client = market_order_client
-        self.elimination_client = elimination_client
-        self.entity_client = entity_client
-        self.asset_selection_client = asset_selection_client
+        self.miner_account_client = miner_account_client
 
     def validate(
         self,
@@ -93,45 +88,49 @@ class OrderProcessor:
         Returns (ok, error_msg, resolved_trade_pair). Covers elimination,
         native crypto remapping, trade pair validity, asset class, and market hours.
         """
-        # 1. Elimination check
-        elimination_info = self.elimination_client.get_elimination_local_cache(hotkey)
-        if elimination_info:
-            msg = (
-                f"This miner hotkey {hotkey} has been eliminated and cannot participate in this subnet. "
-                f"Try again after re-registering. elimination_info {elimination_info}"
-            )
-            bt.logging.warning(msg)
-            return False, msg, None
-
-        # 2. Native crypto remapping
+        # Native crypto remapping
         if trade_pair is not None and trade_pair in NATIVE_CRYPTO_TO_HL_TRADE_PAIR:
             trade_pair = NATIVE_CRYPTO_TO_HL_TRADE_PAIR[trade_pair]
             bt.logging.info(f"Remapped native trade pair {trade_pair.trade_pair_id}")
 
-        # 3. Trade pair checks
+        # Trade pair checks
         if execution_type not in (ExecutionType.LIMIT_CANCEL, ExecutionType.LIMIT_EDIT, ExecutionType.FLAT_ALL):
             if trade_pair is None:
                 return False, "Invalid trade pair in signal.", None
             if trade_pair.is_blocked:
                 return False, f"Trade pair [{trade_pair.trade_pair_id}] is no longer supported.", trade_pair
 
-        # 4. Asset class check (FLAT market orders bypass this)
+        # Flat-only check
+        if trade_pair is not None and trade_pair.is_flat_only and order_type != OrderType.FLAT:
+            return False, f"Trade pair [{trade_pair.trade_pair_id}] is being discontinued. Please close your position.", trade_pair
+
+        miner_account = self.miner_account_client.get_account(hotkey)
+        if not miner_account:
+            msg = f"Miner account for hotkey [{hotkey}] is not yet initialized. Please try again shortly."
+            bt.logging.warning(msg)
+            return False, msg, trade_pair
+
+        # Elimination check
+        if miner_account.miner_bucket == MinerBucket.ELIMINATED:
+            msg = (
+                f"This miner hotkey {hotkey} has been eliminated and cannot participate in this subnet. "
+                f"Try again after re-registering."
+            )
+            bt.logging.warning(msg)
+            return False, msg, None
+
+        # Asset class check (FLAT market orders bypass this)
         if trade_pair is not None and order_type != OrderType.FLAT and execution_type not in (ExecutionType.MARKET, ExecutionType.FLAT_ALL):
-            selected_asset = self.asset_selection_client.get_selection_local_cache(hotkey)
-            if not selected_asset:
+            if not miner_account.asset_class:
                 msg = (
                     f"No asset class selected for hotkey [{hotkey}]. "
                     f"Select an asset class using the Vanta CLI before placing orders: "
                     f"https://github.com/taoshidev/vanta-cli"
                 )
                 return False, msg, trade_pair
-            if not selected_asset.can_trade(trade_pair):
-                msg = f"Selected asset class [{selected_asset}] cannot submit orders for trade pair [{trade_pair.trade_pair}]."
+            if not miner_account.asset_class.can_trade(trade_pair):
+                msg = f"Selected asset class [{miner_account.asset_class}] cannot submit orders for trade pair [{trade_pair.trade_pair}]."
                 return False, msg, trade_pair
-
-        # 5. Flat-only check
-        if trade_pair is not None and trade_pair.is_flat_only and order_type != OrderType.FLAT:
-            return False, f"Trade pair [{trade_pair.trade_pair_id}] is being discontinued. Please close your position.", trade_pair
 
         return True, "", trade_pair
 
