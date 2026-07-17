@@ -178,9 +178,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.order_processor = OrderProcessor(
             limit_order_client=self._limit_order_client,
             market_order_client=self.market_order_client,
-            elimination_client=self._elimination_client,
-            entity_client=self._entity_client,
-            asset_selection_client=self._asset_selection_client,
+            miner_account_client=self._miner_account_client,
         )
 
     # ============================================================================
