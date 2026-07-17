@@ -601,6 +601,19 @@ class ChallengePeriodManager(CacheController):
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
             last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
 
+            account_raw = accounts.get(hotkey, {})
+            if account_raw.get('miner_bucket') == MinerBucket.SUBACCOUNT_FUNDED.value:
+                max_equity_snap = account_raw.get('max_equity_snapshot')
+                if max_equity_snap:
+                    snap_equity_return = max_equity_snap.get('equity_return', 1.0)
+                    delta_pct = (snap_equity_return - eod_hwm) * 100.0
+                    btlogging.debug(
+                        f"[CHALLENGE] {hotkey} eod_hwm comparison: "
+                        f"ledger_eod_hwm={eod_hwm:.4f} "
+                        f"max_equity_snapshot.equity_return={snap_equity_return:.4f} "
+                        f"delta={delta_pct:+.2f}%"
+                    )
+
             # Use daily open snapshot from miner account for intraday drawdown baseline; fall back to ledger
             today_midnight_ms = TimeUtil.get_start_of_day_ms(now_ms)
             snapshot = accounts.get(hotkey, {}).get('daily_open_snapshot')
