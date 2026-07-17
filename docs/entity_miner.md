@@ -50,7 +50,7 @@ If the entity's balance is below the required theta, subaccount creation is reje
 
 After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all funded subaccounts. Each funded subaccount's margin is capped at 8% of its account size (the max drawdown threshold), and theta is consumed at a rate of **35 USD per theta**. Challenge period subaccounts are fully exempt, and do not require or consume any margin collateral.
 
-Incoming orders from funded subaccounts are blocked if the projected required collateral would exceed the entity's deposited balance. The validator reads deposited balances from an on-chain cache refreshed every ~60 seconds — if the cache has no entry for the entity, orders are rejected.
+Incoming orders from funded subaccounts are blocked if the projected required collateral would exceed the entity's deposited balance. The validator reads deposited balances from an on-chain cache refreshed every ~30 minutes — if the cache has no entry for the entity, orders are rejected.
 
 Collateral is slashed proportionally to realized losses each time a position closes at a loss, up to a maximum of 8% of the subaccount's account size. If a subaccount is eliminated, all remaining collateral headroom is slashed in a single call. Withdrawals are rejected if they would leave the entity below its current cross-margin requirement.
 
@@ -143,7 +143,7 @@ If the entity has no open positions, `required_theta = 0` and the full balance i
 | `ENTITY_MAX_SUBACCOUNTS` | 10,000 | Maximum subaccounts per entity |
 | `SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD` | 8% | MDD cap applied to funded subaccounts |
 | `ENTITY_COLLATERAL_CPT_RISK` | 35 | USD of loss capacity per theta (used for margin and slash-to-theta conversion) |
-| `ENTITY_COLLATERAL_CACHE_REFRESH_S` | 60 | Seconds between on-chain collateral cache refreshes |
+| `ENTITY_COLLATERAL_CACHE_REFRESH_S` | 1800 | Seconds between on-chain collateral cache refreshes (30 min) |
 
 </details>
 

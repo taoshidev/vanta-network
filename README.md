@@ -18,7 +18,7 @@
   ·
   <a href="https://www.vantatrading.io">Vanta Trading</a>
   ·
-  <a href="#installation">Installation</a>
+  <a href="#get-started">Installation</a>
   ·  
   <a href="https://www.vantanetwork.io/dashboard">Dashboard</a>
   ·
@@ -36,11 +36,9 @@
     <li><a href="#features">Features</a></li>
     <li><a href="#how-does-it-work">How does it work?</a></li>
     <li>
-      <a href="#getting-started">Getting Started</a>
+      <a href="#get-started">Get Started</a>
     </li>
-    <li><a href="#building-a-model">Building A Model</a></li>
-    <li><a href="#testing">Testing</a></li>
-    <li><a href="#faq">FAQ</a></li>
+    <li><a href="#building-a-strategy">Building a Strategy</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
 
@@ -100,18 +98,18 @@ those that provide the most returns, while never exceeding certain drawdown limi
 ### Rules
 
 1. Miners can submit LONG, SHORT, or FLAT signal for Forex, Crypto, Equities, or Commodities trade pairs into the network during market hours. <a href="https://github.com/taoshidev/vanta-network/blob/main/vali_objects/trade_pair.py#L125">Currently supported trade pairs</a>
-2. Miners are eliminated if they are detected as plagiarising other miners, or if they exceed 5% max intraday drawdown or 8% max end-of-day drawdown from high water mark (more info in the "Eliminations" section).
+2. Miners are eliminated if they are detected as plagiarising other miners, or if they exceed a 5% intraday drawdown from the day's opening equity, or an 8% end-of-day drawdown from their highest-ever end-of-day equity (high-water mark) (more info in the "Eliminations" section).
 3. There is a fee for leaving positions open "carry fee". The fee is equal to 10.95%/3% per year for a 1x leverage position (crypto/forex respectively); equities instead pay a 3%/yr stock-borrow fee (short) or 6.6%/yr margin interest on the borrowed amount (long); commodities currently carry no fee for standard positions <a href="https://docs.taoshi.io/tips/p4/">More info</a>
-4. There is a spread (transaction) fee applied to crypto pairs only, calculated as 0.1% multiplied by the leverage of each order. This simulates a transaction cost that a normal exchange would add.
+4. There is a spread (transaction) fee applied to crypto, equities, and commodities orders, calculated as a percentage of order value - 0.5% for crypto and equities, 0.45% for commodities (forex and indices have no spread fee). This simulates a transaction cost that a normal exchange would add.
 5. There is a slippage assessed per order. The slippage cost is is greater for orders with higher leverages, and in assets with lower liquidity.
-6. Miners are rewarded using a debt-based scoring system that tracks their emissions, performance, and penalties. Weights are set based on previous week's performance (PnL scaled by penalties), with payouts targeting completion by midnight on Sunday of each week <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md">More info</a>
+6. Miners are rewarded using a debt-based scoring system that tracks their emissions, performance, and penalties. Weights are set based on the previous week's performance (PnL scaled by penalties), with payout periods starting and ending at midnight UTC on Sunday <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md">More info</a>
 
 With this system only the world's best traders & deep learning / quant based trading systems can compete.
 
 
 # Eliminations
 
-In the Vanta Network, Eliminations occur for miners that commit plagiarism, or breach the drawdown limits.
+In the Vanta Network, Eliminations occur for miners that commit plagiarism, breach the drawdown limits, or fail to exit probation in time.
 
 
 ### Plagiarism Eliminations
@@ -120,11 +118,11 @@ Miners who repeatedly copy another miner's trades will be eliminated. Our system
 
 ### Max Drawdown Elimination
 
-Miners who exceed 10% max drawdowns will be eliminated. Our system continuously tracks each miner’s performance, measuring the maximum drop from peak portfolio value. If a miner’s drawdown exceeds the allowed threshold, they will be eliminated to maintain risk control.
+Miners who exceed a 5% intraday drawdown (measured from the day's opening equity) or an 8% end-of-day drawdown (measured from their highest-ever end-of-day equity) will be eliminated. Our system continuously tracks each miner's equity to enforce these limits and maintain risk control.
 
 ### Probation Elimination
 
-Miners who score less than the 15th highest ranking miner in each asset class will be observed in a probationary period. From that point, they have 30 days to outscore the lowest ranked (15th) miner still in the main competition in their asset class. If they fail to do so within that window, they will be eliminated.
+Miners who rank below the 25th highest ranking miner in each asset class will be observed in a probationary period. From that point, they have 90 days to achieve a rank of 25 or better in their asset class. If they fail to do so within that window, they will be eliminated.
 
 ### Post-Elimination
 
@@ -170,7 +168,7 @@ guide miners to compete.
 
 # Contributing
 
-For instructions on how to contribute to Taoshi, see CONTRIBUTING.md and Taoshi's code of conduct.
+To contribute to Taoshi, open a pull request or file an issue on this repository. For support, join us in the [Vanta Trading Discord](https://discord.gg/vantatrading).
 
 # License
 
