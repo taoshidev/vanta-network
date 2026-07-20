@@ -31,7 +31,7 @@ import bittensor as bt
 
 from runnable.migration_utils import MigrationUtils
 from time_util.time_util import TimeUtil
-from vali_objects.miner_account.miner_account_manager import DailyOpenSnapshot
+from vali_objects.miner_account.miner_account_manager import AccountSnapshot
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
 
@@ -96,7 +96,7 @@ def main(dry_run: bool = False) -> bool:
             best_return = max(1.0, dos_equity_return, ledger_hwm)
             equity = account_size * best_return
             day_open_ms = ledger_hwm_ms if (ledger_hwm_ms is not None and ledger_hwm == best_return) else dos_day_open_ms
-            snapshot = DailyOpenSnapshot(
+            snapshot = AccountSnapshot(
                 day_open_ms=day_open_ms,
                 account_size=account_size,
                 balance=equity,
