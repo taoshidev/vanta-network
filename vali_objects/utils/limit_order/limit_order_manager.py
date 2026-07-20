@@ -1198,7 +1198,7 @@ class LimitOrderManager(CacheController):
             bt.logging.warning(error_msg)
 
         except Exception as e:
-            error_msg = f"Could not fill limit order [{order.order_uuid}]: {e}. Cancelling order"
+            error_msg = f"Could not fill limit order [{miner_hotkey}] [{trade_pair.trade_pair_id}] [{order.order_uuid}]: {e}. Cancelling order"
             bt.logging.error(error_msg)
             new_src = OrderSource.get_cancel(order.src)
 
