@@ -602,12 +602,12 @@ class ChallengePeriodManager(CacheController):
             last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
 
             account_raw = accounts.get(hotkey, {})
-            if account_raw.get('miner_bucket') == MinerBucket.SUBACCOUNT_FUNDED.value:
-                max_equity_snap = account_raw.get('max_equity_snapshot')
-                if max_equity_snap:
-                    snap_equity_return = max_equity_snap.get('equity_return', 1.0)
-                    delta_pct = (snap_equity_return - eod_hwm) * 100.0
-                    btlogging.debug(
+            max_equity_snap = account_raw.get('max_equity_snapshot')
+            if max_equity_snap:
+                snap_equity_return = max_equity_snap.get('equity_return', 1.0)
+                delta_pct = (snap_equity_return - eod_hwm) * 100.0
+                if abs(delta_pct) > 1:
+                    btlogging.info(
                         f"[CHALLENGE] {hotkey} eod_hwm comparison: "
                         f"ledger_eod_hwm={eod_hwm:.4f} "
                         f"max_equity_snapshot.equity_return={snap_equity_return:.4f} "
