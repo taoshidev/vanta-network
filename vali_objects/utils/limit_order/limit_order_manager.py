@@ -11,12 +11,11 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.limit_order.order_trigger import (
-    LimitPriceSources,
+    build_limit_price_sources,
     evaluate_order_trigger,
-    single_source as _single_source,
 )
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 
@@ -396,7 +395,7 @@ class LimitOrderManager(CacheController):
                 price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
                 if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
                     _ps = price_sources[0]
-                    _, trigger_price = evaluate_order_trigger(order, open_position, _single_source(_ps))
+                    _, trigger_price = evaluate_order_trigger(order, open_position, [_ps])
                     should_fill_immediately = trigger_price is not None
 
         # Fill outside the lock to avoid reentrant lock issue
@@ -867,19 +866,12 @@ class LimitOrderManager(CacheController):
                         continue
 
                     total_checked += 1
+                    position = None  # fetched at most once, only for BRACKET orders
 
-                    # Cancel bracket orders with no position and no unfilled limit orders created before it
                     if order.src == OrderSource.BRACKET_UNFILLED:
                         position = self._get_open_position(miner_hotkey, order)
-                        if not position:
-                            bt.logging.info(f"[BRACKET CANCELLED] No position found for bracket order {order.order_uuid}, cancelling")
-                            self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
-                            continue
-                        if order.processed_ms < position.open_ms:
-                            bt.logging.info(
-                                f"[BRACKET CANCELLED] Bracket {order.order_uuid} (processed_ms={order.processed_ms}) "
-                                f"predates current position (open_ms={position.open_ms}), cancelling as orphan"
-                            )
+                        if not position or order.processed_ms < position.open_ms:
+                            bt.logging.info(f"[BRACKET CANCELLED] Invalid position for {order.order_uuid}, cancelling")
                             self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                             continue
 
@@ -888,21 +880,36 @@ class LimitOrderManager(CacheController):
                         if order.trailing_stop is not None:
                             prev_best_price = order.price
                             self._update_trailing_best_price(order, position.position_type, price_sources)
-                            if (order.price != prev_best_price
-                                    and now_ms - self._last_trailing_disk_write_ms.get(order.order_uuid, 0) >= 60_000):
+                            if order.price != prev_best_price:
                                 self._write_to_disk(miner_hotkey, order)
-                                self._attach_order_to_position(miner_hotkey, order)
-                                self._last_trailing_disk_write_ms[order.order_uuid] = now_ms
+                                if now_ms - self._last_trailing_disk_write_ms.get(order.order_uuid, 0) >= 60_000:
+                                    self._attach_order_to_position(miner_hotkey, order)
+                                    self._last_trailing_disk_write_ms[order.order_uuid] = now_ms
 
                     if not fill_allowed:
                         continue
 
-                    if self._attempt_fill_limit_order(miner_hotkey, order, price_sources, now_ms):
-                        total_filled += 1
-                        # DESIGN: Break after first fill to enforce LIMIT_ORDER_FILL_INTERVAL_MS
-                        # Only one order per trade pair per hotkey can fill within the interval.
-                        # This prevents rapid sequential fills and enforces rate limiting.
-                        break
+                    # Evaluate trigger using only sources newer than both the order and the last
+                    # fill (cutoff enforced inside build_limit_price_sources). position is already
+                    # fetched for BRACKET orders; None is correct for LIMIT/STOP_LIMIT.
+                    try:
+                        with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
+                            cutoff_ms = max(order.processed_ms, last_fill_time)
+                            trigger_ps, trigger_price = evaluate_order_trigger(order, position, price_sources, cutoff_ms)
+
+                        if trigger_price is not None:
+                            if order.execution_type == ExecutionType.STOP_LIMIT:
+                                self._convert_stop_limit_to_limit_order(miner_hotkey, order, TimeUtil.now_in_millis())
+                            else:
+                                self._fill_limit_order_with_price_source(miner_hotkey, order, trigger_ps, trigger_price)
+                            total_filled += 1
+                            # DESIGN: Break after first fill to enforce LIMIT_ORDER_FILL_INTERVAL_MS
+                            # Only one order per trade pair per hotkey can fill within the interval.
+                            break
+
+                    except Exception as e:
+                        bt.logging.error(f"Error attempting to fill limit order {order.order_uuid}: {e}")
+                        bt.logging.error(traceback.format_exc())
 
         if total_filled > 0:
             bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
@@ -1016,64 +1023,29 @@ class LimitOrderManager(CacheController):
 
     def _get_price_sources(self, trade_pair, now_ms):
         """
-        Get the best price sources for a trade pair at a given time.
-        Returns (ask) price source for LONG orders and (bid) price source for SHORT orders.
-
-        Args:
-            trade_pair: TradePair to get price for
-            now_ms: Current timestamp in milliseconds
+        Return raw WebSocket price sources for a trade pair within the look-back window.
+        Callers are responsible for filtering by timestamp and computing extrema.
 
         Returns:
-            Tuple of (bid_price_source, ask_price_source), or None if no price sources available
+            List of price-source objects, or None if none are available.
         """
-        end_ms = now_ms
         start_ms = now_ms - ValiConfig.LIMIT_ORDER_PRICE_BUFFER_MS
-        price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, end_ms)
-        if not price_sources:
-            # bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources or [])} no ws price sources")
-            return None
-
-        bid_ps_sorted = sorted(price_sources, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)
-        ask_ps_sorted = sorted(price_sources, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
-        max_bid_ps, min_bid_ps = bid_ps_sorted[0], bid_ps_sorted[-1]
-        min_ask_ps, max_ask_ps = ask_ps_sorted[0], ask_ps_sorted[-1]
-
-        if max_bid_ps.bid == 0 or min_ask_ps.ask == 0:
-            # bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} no bid/ask price")
-            return None
-
-        return LimitPriceSources(
-            min_bid_ps=min_bid_ps, max_bid_ps=max_bid_ps,
-            min_ask_ps=min_ask_ps, max_ask_ps=max_ask_ps,
-        )
-
-        # unique_sources = len({ps.source for ps in price_sources})
-        # if unique_sources > 1:
-        #     bid_ps = next((ps for ps in bid_ps_sorted[1:] if ps.source != max_bid_ps.source and abs(ps.start_ms - max_bid_ps.start_ms) > 1000), None)
-        #     ask_ps = next((ps for ps in ask_ps_sorted[1:] if ps.source != min_ask_ps.source and abs(ps.start_ms - min_ask_ps.start_ms) > 1000), None)
-        # else:
-        #     # require 3 data points, start walk at index 2
-        #     bid_ps = next((ps for ps in bid_ps_sorted[2:] if abs(ps.start_ms - max_bid_ps.start_ms) > 2000), None)
-        #     ask_ps = next((ps for ps in ask_ps_sorted[2:] if abs(ps.start_ms - min_ask_ps.start_ms) > 2000), None)
-
-        # if not bid_ps or not ask_ps or ask_ps.ask == 0 or bid_ps.bid == 0:
-        #     bt.logging.warning(f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} no bid/ask price")
-        #     return None
-
-        # # bt.logging.info(
-        # #     f"[LIMIT_PS][{trade_pair.trade_pair_id}] {len(price_sources)} bid/ask ({max_bid_ps.bid:.4f}->{bid_ps.bid:.4f}/{min_ask_ps.ask:.4f}->{ask_ps.ask:.4f}) {bid_ps.source} {ask_ps.source} "
-        # # )
-        # return (bid_ps, ask_ps)
+        price_sources = self.live_price_fetcher.get_ws_price_sources_in_window(trade_pair, start_ms, now_ms)
+        return price_sources or None
 
 
-    def _update_trailing_best_price(self, order, position_type, sources):
+    def _update_trailing_best_price(self, order, position_type, price_sources):
         """
         Mutate order.price with the new trailing-stop best price.
 
         LONG tracks the highest bid (max_bid_ps), SHORT tracks the lowest ask (min_ask_ps).
-        No-op if the order has no trailing_stop set.
+        No-op if the order has no trailing_stop set or no valid sources.
         """
         if order.trailing_stop is None:
+            return
+
+        sources = build_limit_price_sources(price_sources)
+        if sources is None:
             return
 
         if position_type == OrderType.LONG:
@@ -1093,57 +1065,6 @@ class LimitOrderManager(CacheController):
                 f"{order.price:.6f} -> {new_best:.6f} (observed={observed:.6f})"
             )
             order.price = new_best
-
-    def _attempt_fill_limit_order(self, miner_hotkey, order, price_sources, now_ms):
-        """
-        Attempt to fill a limit order. Returns True if filled, False otherwise.
-
-        IMPORTANT: This method checks trigger conditions under lock, but releases the lock
-        before calling _fill_limit_order_with_price_source to avoid deadlock (since that
-        method calls _close_limit_order which also acquires a lock).
-        """
-        trade_pair = order.trade_pair
-        trigger_ps, trigger_price = None, None
-
-        try:
-            # Check if order should be filled (under limit_order_locks)
-            with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
-                # Verify order still unfilled (regular limit, SL/TP, or stop-limit)
-                if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
-                    return False
-
-                # Check if limit price triggered
-                position = self._get_open_position(miner_hotkey, order)
-                trigger_ps, trigger_price = evaluate_order_trigger(order, position, price_sources)
-
-                last_fill_time = self._last_fill_time.get(trade_pair, {}).get(miner_hotkey, 0)
-                if trigger_ps and trigger_price and (trigger_ps.start_ms < order.processed_ms or trigger_ps.start_ms < last_fill_time):
-                    bt.logging.info(
-                        f"[LIMIT_ORDER] Skipping stale fill for {miner_hotkey} "
-                        f"{trade_pair.trade_pair_id} {order.order_uuid}: "
-                        f"trigger_ps.start_ms={trigger_ps.start_ms} "
-                        f"order.processed_ms={order.processed_ms} "
-                        f"last_fill_time={last_fill_time} "
-                        f"now_ms={now_ms}"
-                    )
-                    return False
-
-            # Fill OUTSIDE the lock to avoid deadlock with _close_limit_order
-            # Note: There's a small window where order could be cancelled between check and fill,
-            # but _fill_limit_order_with_price_source handles this gracefully
-            if trigger_price is not None:
-                if order.execution_type == ExecutionType.STOP_LIMIT:
-                    self._convert_stop_limit_to_limit_order(miner_hotkey, order, TimeUtil.now_in_millis())
-                else:
-                    self._fill_limit_order_with_price_source(miner_hotkey, order, trigger_ps, trigger_price)
-                return True
-
-            return False
-
-        except Exception as e:
-            bt.logging.error(f"Error attempting to fill limit order {order.order_uuid}: {e}")
-            bt.logging.error(traceback.format_exc())
-            return False
 
     def _convert_stop_limit_to_limit_order(self, miner_hotkey, order, now_ms):
         """
@@ -1319,6 +1240,7 @@ class LimitOrderManager(CacheController):
                 self.position_manager.remove_bracket_order_from_position(
                     miner_hotkey, trade_pair_id, order_uuid
                 )
+                self._last_trailing_disk_write_ms.pop(order_uuid, None)
 
             if miner_hotkey not in self._closed_orders:
                 self._closed_orders[miner_hotkey] = []

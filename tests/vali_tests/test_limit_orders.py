@@ -16,9 +16,9 @@ from vali_objects.vali_dataclasses.price_source import PriceSource
 from types import SimpleNamespace
 from vali_objects.utils.limit_order.order_trigger import (
     LimitPriceSources,
+    build_limit_price_sources,
     evaluate_bracket_trigger_price,
     evaluate_limit_trigger_price,
-    single_source,
 )
 
 
@@ -975,7 +975,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, build_limit_price_sources([price_source]))
 
         self.assertIsNotNone(trigger_price)
         self.assertEqual(trigger_price, 48000.0)  # Returns the stop_loss price
@@ -1022,7 +1022,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, build_limit_price_sources([price_source]))
 
         self.assertIsNotNone(trigger_price)
         self.assertEqual(trigger_price, 52000.0)  # Returns the take_profit price
@@ -1069,7 +1069,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, build_limit_price_sources([price_source]))
 
         self.assertIsNotNone(trigger_price)
         self.assertEqual(trigger_price, 52000.0)  # Returns the stop_loss price
@@ -1116,7 +1116,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, build_limit_price_sources([price_source]))
 
         self.assertIsNotNone(trigger_price)
         self.assertEqual(trigger_price, 48000.0)  # Returns the take_profit price
@@ -1165,7 +1165,7 @@ class TestLimitOrders(TestBase):
             lag_ms=0
         )
 
-        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, single_source(price_source))
+        _, trigger_price = evaluate_bracket_trigger_price(bracket_order, position, build_limit_price_sources([price_source]))
 
         self.assertIsNone(trigger_price)
 

@@ -8,32 +8,56 @@ Bracket SL/TP rules:
 Trailing-stop best-price tracking mutates `order.price` in place; otherwise
 this module reads but does not retain state.
 """
-from collections import namedtuple
+from typing import NamedTuple
 
 import bittensor as bt
 
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
+from vali_objects.vali_dataclasses.price_source import PriceSource
 
 
 # Extrema across the price-source window. LIMIT/STOP_LIMIT use aggressive
 # matching: max_bid_ps for SHORT/LTE legs, min_ask_ps for LONG/GTE legs.
-LimitPriceSources = namedtuple(
-    "LimitPriceSources",
-    ["min_bid_ps", "max_bid_ps", "min_ask_ps", "max_ask_ps"],
-)
+class LimitPriceSources(NamedTuple):
+    min_bid_ps: PriceSource
+    max_bid_ps: PriceSource
+    min_ask_ps: PriceSource
+    max_ask_ps: PriceSource
 
 
-def single_source(ps):
-    """Build a LimitPriceSources where every extremum is the same single source."""
+def build_limit_price_sources(price_sources, cutoff_ms: int = 0):
+    """
+    Compute bid/ask extrema across price sources that satisfy the time constraint
+    (start_ms >= cutoff_ms). cutoff_ms=0 (default) applies no filtering.
+    Returns LimitPriceSources, or None if no valid sources remain.
+    """
+    valid = [ps for ps in price_sources if ps.start_ms >= cutoff_ms] if cutoff_ms else price_sources
+    if not valid:
+        return None
+    bid_sorted = sorted(valid, key=lambda ps: ps.bid if ps.bid > 0 else ps.open, reverse=True)
+    ask_sorted = sorted(valid, key=lambda ps: ps.ask if ps.ask > 0 else ps.open)
+    max_bid_ps, min_bid_ps = bid_sorted[0], bid_sorted[-1]
+    min_ask_ps, max_ask_ps = ask_sorted[0], ask_sorted[-1]
+    if max_bid_ps.bid == 0 or min_ask_ps.ask == 0:
+        return None
     return LimitPriceSources(
-        min_bid_ps=ps, max_bid_ps=ps,
-        min_ask_ps=ps, max_ask_ps=ps,
+        min_bid_ps=min_bid_ps, max_bid_ps=max_bid_ps,
+        min_ask_ps=min_ask_ps, max_ask_ps=max_ask_ps,
     )
 
 
-def evaluate_order_trigger(order, position, sources):
-    """Dispatch to the right evaluator. Returns (trigger_ps, trigger_price)."""
+def evaluate_order_trigger(order, position, price_sources, cutoff_ms: int = 0):
+    """
+    Dispatch to the right evaluator. Returns (trigger_ps, trigger_price).
+
+    price_sources: full list of price-source objects for the look-back window.
+    cutoff_ms: only sources with start_ms >= cutoff_ms are used to build extrema.
+    """
+    sources = build_limit_price_sources(price_sources, cutoff_ms)
+    if sources is None:
+        return None, None
+
     trigger_ps, trigger_price = None, None
 
     if order.execution_type == ExecutionType.LIMIT:
