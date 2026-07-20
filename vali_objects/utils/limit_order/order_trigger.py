@@ -79,7 +79,7 @@ def evaluate_order_trigger(order, position, price_sources, cutoff_ms: int = 0):
 
     if trigger_price:
         bt.logging.info(
-            f"{order.execution_type} triggered: {order.trade_pair.trade_pair_id} "
+            f"{order.execution_type} triggered: {position.miner_hotkey} {order.trade_pair.trade_pair_id} "
             f"{order.order_uuid} trigger_price={trigger_price} price_source={trigger_ps}"
         )
 
