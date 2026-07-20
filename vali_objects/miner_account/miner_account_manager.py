@@ -958,7 +958,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             timestamp_ms = start_ms
         day_open_ms = TimeUtil.get_start_of_day_ms(timestamp_ms)
 
-        count = 0
+        to_log: list[tuple[str, dict]] = []
         with self._accounts_lock:
             targets = (
                 [self.accounts[hotkey]] if hotkey and hotkey in self.accounts
@@ -974,10 +974,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account.daily_open_snapshot = snapshot
                 if reset_snapshots or account.max_equity_snapshot is None or snapshot.equity >= account.max_equity_snapshot.equity:
                     account.max_equity_snapshot = snapshot
-                ValiBkpUtils.log_snapshot(account.miner_hotkey, snapshot.to_dict(), self.running_unit_tests)
-                count += 1
+                to_log.append((account.miner_hotkey, snapshot.to_dict()))
             self._save_accounts_to_disk()
 
+        for miner_hotkey, entry in to_log:
+            ValiBkpUtils.log_snapshot(miner_hotkey, entry, self.running_unit_tests)
+
+        count = len(to_log)
         elapsed_ms = TimeUtil.now_in_millis() - start_ms
         bt.logging.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms} in {elapsed_ms}ms")
         return count
