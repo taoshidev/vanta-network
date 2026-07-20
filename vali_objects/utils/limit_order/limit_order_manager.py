@@ -82,7 +82,7 @@ class LimitOrderManager(CacheController):
         self._last_print_time_ms = 0
 
         self._needs_initial_bracket_sync = True
-        self._last_trailing_disk_write_ms = {}  # {order_uuid: last_write_ms}
+        self._last_trailing_attach_ms = {}  # {order_uuid: last_write_ms}
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -878,13 +878,11 @@ class LimitOrderManager(CacheController):
                         # Trailing best_price tracking runs regardless of fill interval so the
                         # high-water/low-water mark stays accurate between fill attempts.
                         if order.trailing_stop is not None:
-                            prev_best_price = order.price
-                            self._update_trailing_best_price(order, position.position_type, price_sources)
-                            if order.price != prev_best_price:
+                            if self._update_trailing_best_price(order, position.position_type, price_sources):
                                 self._write_to_disk(miner_hotkey, order)
-                                if now_ms - self._last_trailing_disk_write_ms.get(order.order_uuid, 0) >= 60_000:
-                                    self._attach_order_to_position(miner_hotkey, order)
-                                    self._last_trailing_disk_write_ms[order.order_uuid] = now_ms
+                            if now_ms - self._last_trailing_attach_ms.get(order.order_uuid, 0) >= 60_000:
+                                self._attach_order_to_position(miner_hotkey, order)
+                                self._last_trailing_attach_ms[order.order_uuid] = now_ms
 
                     if not fill_allowed:
                         continue
@@ -1044,7 +1042,7 @@ class LimitOrderManager(CacheController):
         if order.trailing_stop is None:
             return
 
-        sources = build_limit_price_sources(price_sources)
+        sources = build_limit_price_sources(price_sources, cutoff_ms=order.processed_ms)
         if sources is None:
             return
 
@@ -1065,6 +1063,8 @@ class LimitOrderManager(CacheController):
                 f"{order.price:.6f} -> {new_best:.6f} (observed={observed:.6f})"
             )
             order.price = new_best
+            return True
+        return False
 
     def _convert_stop_limit_to_limit_order(self, miner_hotkey, order, now_ms):
         """
@@ -1240,7 +1240,7 @@ class LimitOrderManager(CacheController):
                 self.position_manager.remove_bracket_order_from_position(
                     miner_hotkey, trade_pair_id, order_uuid
                 )
-                self._last_trailing_disk_write_ms.pop(order_uuid, None)
+                self._last_trailing_attach_ms.pop(order_uuid, None)
 
             if miner_hotkey not in self._closed_orders:
                 self._closed_orders[miner_hotkey] = []
