@@ -974,6 +974,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account.daily_open_snapshot = snapshot
                 if reset_snapshots or account.max_equity_snapshot is None or snapshot.equity >= account.max_equity_snapshot.equity:
                     account.max_equity_snapshot = snapshot
+                ValiBkpUtils.log_snapshot(account.miner_hotkey, snapshot.to_dict(), self.running_unit_tests)
                 count += 1
             self._save_accounts_to_disk()
 
