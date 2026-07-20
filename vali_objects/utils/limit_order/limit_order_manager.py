@@ -820,10 +820,10 @@ class LimitOrderManager(CacheController):
             self._attach_order_to_position()
             self._needs_initial_bracket_sync = False
 
-        if now_ms - self._last_print_time_ms > 60 * 1000:
+        should_log = now_ms - self._last_print_time_ms > 60 * 1000
+        if should_log:
             total_orders = sum(len(orders) for hotkey_dict in list(self._limit_orders.values()) for orders in list(hotkey_dict.values()))
             bt.logging.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
-            self._last_print_time_ms = now_ms
 
         for trade_pair, hotkey_dict in list(self._limit_orders.items()):
             if trade_pair.is_blocked or not hotkey_dict:
@@ -909,8 +909,12 @@ class LimitOrderManager(CacheController):
                         bt.logging.error(f"Error attempting to fill limit order {order.order_uuid}: {e}")
                         bt.logging.error(traceback.format_exc())
 
-        if total_filled > 0:
-            bt.logging.info(f"Limit order check complete: checked={total_checked}, filled={total_filled}")
+        elapsed_ms = TimeUtil.now_in_millis() - now_ms
+        if should_log or total_filled > 0:
+            bt.logging.info(
+                f"Limit order check complete: checked={total_checked}, filled={total_filled}, elapsed={elapsed_ms}ms"
+            )
+            self._last_print_time_ms = TimeUtil.now_in_millis()
 
         return {
             'checked': total_checked,
