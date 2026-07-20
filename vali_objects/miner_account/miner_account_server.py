@@ -114,7 +114,7 @@ class MinerAccountServer(RPCServerBase):
             self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
             bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
             return None
-        count = self._manager.take_daily_open_snapshots()
+        count = self._manager.take_account_snapshot()
         self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
         bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
         return f"MinerAccount daemon iteration complete. Snapshots taken: {count}. Next snapshot in {self.daemon_interval_s:.0f}s."
