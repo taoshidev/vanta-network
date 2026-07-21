@@ -115,11 +115,34 @@ class _MultiResolutionL2BookClient:
             for sig_figs in self._coarse_sig_figs
         ]
 
+    async def _run_with_reconnect(self, client, handle_msg, label):
+        """Run one resolution's websocket client, reconnecting it independently (with
+        backoff) if its connection drops, without waiting on the other resolutions in
+        the cascade to also disconnect.
+        """
+        backoff = 1.0
+        while not client._should_close:
+            try:
+                await client.connect(handle_msg)
+            except Exception as e:
+                bt.logging.error(f"Hyperliquid websocket client ({label}) error: {type(e).__name__}: {e}")
+            if client._should_close:
+                break
+            bt.logging.warning(f"Hyperliquid websocket client ({label}) disconnected, "
+                               f"reconnecting in {backoff:.1f}s")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 1.5, 30.0)
+
     async def connect(self, handle_msg):
-        """Run one WebSocket connection per cascade resolution concurrently."""
-        coros = [self._full.connect(self._svc.handle_msg_full)]
+        """Run one WebSocket connection per cascade resolution concurrently, each
+        reconnecting independently on disconnect."""
+        coros = [self._run_with_reconnect(self._full, self._svc.handle_msg_full, "full precision")]
         for client, sig_figs in zip(self._coarse_clients, self._coarse_sig_figs):
-            coros.append(client.connect(lambda msg, sf=sig_figs: self._svc.handle_msg_coarse(sf, msg)))
+            coros.append(self._run_with_reconnect(
+                client,
+                lambda msg, sf=sig_figs: self._svc.handle_msg_coarse(sf, msg),
+                f"nSigFigs={sig_figs}",
+            ))
         await asyncio.gather(*coros)
 
     async def close(self):
