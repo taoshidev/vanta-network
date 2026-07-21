@@ -731,7 +731,7 @@ class EliminationManager(CacheController):
         for p in positions:
             self._position_client.delete_position(p.miner_hotkey, p.position_uuid)
 
-        self._miner_account_client.reset_account_fields(hotkey)
+        self._miner_account_client.reset_account(hotkey)
 
         try:
             shutil.rmtree(miner_dir)

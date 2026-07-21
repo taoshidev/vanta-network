@@ -509,7 +509,7 @@ class ChallengePeriodManager(CacheController):
                     order_source=OrderSource.SUBACCOUNT_PROMOTION
                 )
                 # Reset account fields (PnL, capital used, borrowed amount, interest)
-                self._miner_account_client.reset_account_fields(hotkey, target_bucket)
+                self._miner_account_client.reset_account(hotkey, target_bucket)
                 # Archive all positions (disk move + memory removal)
                 self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
                 # Cancel all pending limit orders
@@ -587,12 +587,25 @@ class ChallengePeriodManager(CacheController):
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
             last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
 
+            max_equity_snap = account.max_equity_snapshot
+            if max_equity_snap:
+                snap_equity_return = max_equity_snap.equity_return
+                delta_pct = (snap_equity_return - eod_hwm) * 100.0
+                if abs(delta_pct) > 1:
+                    btlogging.info(
+                        f"[CHALLENGE] {hotkey} eod_hwm comparison: "
+                        f"ledger_eod_hwm={eod_hwm:.4f} "
+                        f"max_equity_snapshot.equity_return={snap_equity_return:.4f} "
+                        f"delta={delta_pct:+.2f}%"
+                    )
+
             # Use daily open snapshot from miner account for intraday drawdown baseline; fall back to ledger
             today_midnight_ms = TimeUtil.get_start_of_day_ms(now_ms)
             snapshot = account.daily_open_snapshot
             if snapshot and snapshot.day_open_ms == today_midnight_ms:
                 last_eod = snapshot.equity_return
                 daily_open_equity = snapshot.equity_return
+                last_eod_checked_ms = snapshot.day_open_ms
 
             intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0 if daily_open_equity else 0.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0

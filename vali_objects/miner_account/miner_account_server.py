@@ -114,7 +114,7 @@ class MinerAccountServer(RPCServerBase):
             self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
             bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
             return None
-        count = self._manager.take_daily_open_snapshots()
+        count = self._manager.take_account_snapshot()
         self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
         bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
         return f"MinerAccount daemon iteration complete. Snapshots taken: {count}. Next snapshot in {self.daemon_interval_s:.0f}s."
@@ -153,9 +153,9 @@ class MinerAccountServer(RPCServerBase):
         """Delete the account size for a miner. Returns True if successful."""
         return self._manager.delete_miner_account_size(hotkey)
 
-    def reset_account_fields(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
+    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         """Reset account fields (PnL, capital used, borrowed amount, interest) for a miner."""
-        return self._manager.reset_account_fields(hotkey, miner_bucket)
+        return self._manager.reset_account(hotkey, miner_bucket)
 
     def get_miner_account_size(
         self,
