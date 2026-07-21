@@ -496,6 +496,7 @@ class PolygonDataService(BaseDataService):
                     start_timestamp = m.timestamp // 1000000  # convert nanoseconds to milliseconds
                     end_timestamp = None
                     open = close = vwap = high = low = m.fmv
+                    bid = ask = m.fmv  # Temporary compromise for trigger logic (tied to bid/ask)
                 else:
                     return None, None
                 #if m.exchange != self.equities_mapping['nasdaq']:
@@ -634,6 +635,8 @@ class PolygonDataService(BaseDataService):
                 self.WEBSOCKET_OBJECTS[TradePairCategory.FOREX].subscribe(symbol)
                 subbed.append(symbol)
             elif tp.is_equities:
+                if tp.src != TradePairSource.VANTA:
+                    continue
                 symbol = "FMV." + tp.trade_pair
                 subbed.append(symbol)
                 self.WEBSOCKET_OBJECTS[TradePairCategory.EQUITIES].subscribe(symbol)
