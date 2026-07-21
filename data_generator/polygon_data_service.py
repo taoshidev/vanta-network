@@ -496,6 +496,7 @@ class PolygonDataService(BaseDataService):
                     start_timestamp = m.timestamp // 1000000  # convert nanoseconds to milliseconds
                     end_timestamp = None
                     open = close = vwap = high = low = m.fmv
+                    bid = ask = m.fmv  # Temporary compromise for trigger logic (tied to bid/ask)
                 else:
                     return None, None
                 #if m.exchange != self.equities_mapping['nasdaq']:
