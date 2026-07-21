@@ -18,6 +18,11 @@ from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracke
 
 REST_TIMEOUT_S = 10
 RECV_TIMEOUT_S = 30
+# Reject a cached L2 book older than this for slippage/fill simulation, rather than
+# silently using arbitrarily old data from a feed that has stopped updating (e.g. a
+# resolution stuck between disconnect and reconnect). Set comfortably above the
+# per-resolution reconnect backoff cap (30s) plus resubscribe time.
+L2_BOOK_STALENESS_MS = 60_000
 
 # (interval, candle_span_ms) - sorted by span ascending, threshold is span * 5000 candles
 HL_CANDLE_INTERVALS = [
@@ -509,11 +514,18 @@ class HyperliquidDataService(BaseDataService):
         """
         coin = trade_pair.hl_coin
         cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
+        now_ms = TimeUtil.now_in_millis()
+
         full_book = self._orderbooks_full.get(coin, {})
-        books = [full_book] + [
-            self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
-            for sig_figs in cascade[1:]
-        ]
+        if full_book and now_ms - full_book.get("time", 0) > L2_BOOK_STALENESS_MS:
+            full_book = {}
+        books = []
+        for sig_figs in cascade[1:]:
+            book = self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
+            if book and now_ms - book.get("time", 0) > L2_BOOK_STALENESS_MS:
+                book = {}
+            books.append(book)
+        books = [full_book] + books
 
         primary = next((b for b in books if b), {})
         if not primary:
@@ -588,11 +600,18 @@ class HyperliquidDataService(BaseDataService):
         """
         coin = trade_pair.hl_coin
         cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
+        now_ms = TimeUtil.now_in_millis()
+
         full_book = self._orderbooks_full.get(coin, {})
-        books = [full_book] + [
-            self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
-            for sig_figs in cascade[1:]
-        ]
+        if full_book and now_ms - full_book.get("time", 0) > L2_BOOK_STALENESS_MS:
+            full_book = {}
+        books = []
+        for sig_figs in cascade[1:]:
+            book = self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
+            if book and now_ms - book.get("time", 0) > L2_BOOK_STALENESS_MS:
+                book = {}
+            books.append(book)
+        books = [full_book] + books
 
         primary = next((b for b in books if b), {})
         if not primary:
