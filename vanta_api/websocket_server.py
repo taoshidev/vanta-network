@@ -113,19 +113,29 @@ class WebSocketServerClient:
     sequence_number: int = 0
     subscribe_broadcasts: bool = False
     dashboard_subscriptions: dict[str, DashboardSubscription] = field(default_factory=dict)
+    # Guards sequence-number assignment so worker threads can serialize frames
+    # off the event loop while keeping per-client ordering monotonic.
+    send_lock: Lock = field(default_factory=Lock)
 
-    async def send(self, message:dict) -> None:
-        serialized_message = json.dumps(
-            {
-                "sequence": self.sequence_number,
-                "timestamp": TimeUtil.now_in_millis(),
-                "data": message
-            },
+    def serialize(self, message: dict) -> str:
+        """Assign the next sequence number and produce the wire string. Safe to
+        call from a worker thread — the lock keeps sequence assignment monotonic
+        even when several dashboard builds finish concurrently. Doing the
+        json.dumps here (not on the loop) is what keeps a frame herd from
+        stalling the event loop and tripping the ping-timeout mass-reap."""
+        with self.send_lock:
+            seq = self.sequence_number
+            self.sequence_number += 1
+        return json.dumps(
+            {"sequence": seq, "timestamp": TimeUtil.now_in_millis(), "data": message},
             cls=CustomEncoder,
-            separators=(",", ":")
+            separators=(",", ":"),
         )
-        self.sequence_number += 1
-        await self.websocket.send(serialized_message)
+
+    async def send(self, message: dict) -> None:
+        # Retained for loop-side callers (broadcasts). The hot dashboard path
+        # serializes in the worker via serialize() + WebSocketServer._send_serialized.
+        await self.websocket.send(self.serialize(message))
 
 
 class WebSocketServer(APIKeyMixin, RPCServerBase):
@@ -387,6 +397,26 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             bt.logging.error(f"WebSocketServer: Error sending to client {client_id}: {e}")
             self._remove_client(client_id)
 
+    async def _send_serialized(self, client: WebSocketServerClient, serialized: str) -> None:
+        """Loop-side raw send of an already-serialized frame (the worker did the
+        json.dumps). Same tier recheck + disconnect handling as _send_message,
+        but no serialization on the loop."""
+        client_id = client.client_id
+
+        if not self.can_access_tier(client.api_key, client.tier):
+            bt.logging.warning(f"WebSocketServer: Client {client_id} tier changed")
+            self._remove_client(client_id)
+            return
+
+        try:
+            await client.websocket.send(serialized)
+        except websockets.exceptions.ConnectionClosed:
+            bt.logging.info(f"WebSocketServer: Client {client_id} disconnected while sending")
+            self._remove_client(client_id)
+        except Exception as e:
+            bt.logging.error(f"WebSocketServer: Error sending to client {client_id}: {e}")
+            self._remove_client(client_id)
+
     async def _process_broadcast_message_queue(self) -> None:
         while True:
             try:
@@ -494,8 +524,11 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 subscription.next_attempt_ms = 0
                 subscription.update_times(dashboard)
 
+                # Serialize in THIS worker thread (json.dumps + sequence under
+                # the per-client lock); schedule only the raw send on the loop.
+                serialized = client.serialize({"dashboard": dashboard})
                 asyncio.run_coroutine_threadsafe(
-                    self._send_message(client, {"dashboard": dashboard}),
+                    self._send_serialized(client, serialized),
                     self._event_loop
                 )
 
@@ -969,7 +1002,12 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         self._handle_client,
                         self.host,
                         self.port,
-                        compression="deflate",
+                        # Compression disabled: per-frame permessage-deflate ran
+                        # ON the event loop and was a primary loop-stall cost
+                        # behind the 1006 bursts. Dashboards are modest; if
+                        # bandwidth ever demands it, compress in the worker
+                        # (alongside serialize()), not here.
+                        compression=None,
                         # Explicit keepalive: the library defaults (20s/20s) meant
                         # a transient event-loop stall past 20s reaped EVERY
                         # connection in the same second (the synchronized 1006

@@ -89,17 +89,21 @@ class TestSendDashboardUpdateBackoff(unittest.TestCase):
     def test_success_resets_backoff_and_sends(self):
         server = _bare_server()
         server._entity_client.get_subaccount_dashboard.return_value = {"ok": True}
-        server._send_message = MagicMock(return_value=MagicMock())  # sync mock → not a real coroutine
+        server._send_serialized = MagicMock(return_value=MagicMock())  # not a real coroutine
         sub = DashboardSubscription(failure_count=4, next_attempt_ms=999999999999)
+        client = MagicMock()
+        client.serialize.return_value = '{"sequence":0}'
 
         with patch("vanta_api.websocket_server.create_subaccount_dashboard",
                    return_value={"subaccount_info": {}}), \
              patch("vanta_api.websocket_server.asyncio.run_coroutine_threadsafe") as rcs:
-            server._send_dashboard_update("5Entity_1", MagicMock(), sub)
+            server._send_dashboard_update("5Entity_1", client, sub)
 
         self.assertEqual(sub.failure_count, 0)
         self.assertEqual(sub.next_attempt_ms, 0)
         self.assertGreater(sub.last_update_time_ms, 0)  # update_times stamped it
+        # Serialized in the worker (off the loop), then raw send scheduled.
+        client.serialize.assert_called_once_with({"dashboard": {"subaccount_info": {}}})
         rcs.assert_called_once()
 
     def test_build_exception_backs_off(self):
@@ -115,6 +119,38 @@ class TestSendDashboardUpdateBackoff(unittest.TestCase):
         self.assertEqual(sub.failure_count, 1)
         self.assertEqual(sub.last_update_time_ms, 0)
         rcs.assert_not_called()
+
+
+class TestClientSerialize(unittest.TestCase):
+    def _client(self):
+        ws = MagicMock()
+        return WebSocketServerClient(client_id=1, websocket=ws, api_key="k", tier=200)
+
+    def test_serialize_shape_and_sequence(self):
+        import json as _json
+        client = self._client()
+        s0 = _json.loads(client.serialize({"dashboard": {"a": 1}}))
+        s1 = _json.loads(client.serialize({"dashboard": {"a": 2}}))
+        self.assertEqual(s0["sequence"], 0)
+        self.assertEqual(s1["sequence"], 1)
+        self.assertEqual(s0["data"], {"dashboard": {"a": 1}})
+        self.assertIn("timestamp", s0)
+
+    def test_sequence_monotonic_under_concurrency(self):
+        import json as _json
+        from concurrent.futures import ThreadPoolExecutor
+        client = self._client()
+        N = 500
+
+        def one(_):
+            return _json.loads(client.serialize({"x": 1}))["sequence"]
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            seqs = list(pool.map(one, range(N)))
+
+        # No duplicates and no gaps despite concurrent worker-thread serialization.
+        self.assertEqual(sorted(seqs), list(range(N)))
+        self.assertEqual(client.sequence_number, N)
 
 
 class TestInitialSnapshot(unittest.TestCase):
