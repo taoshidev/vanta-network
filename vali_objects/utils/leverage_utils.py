@@ -104,7 +104,9 @@ def get_max_order_size(
         effective_buying_power = min(account.buying_power, per_class_room, overall_room)
 
     combined = min(max_position_value, effective_buying_power)
-    return max(0.0, combined - abs(position.net_value))
+    max_value_raw = combined - abs(position.net_value)
+    max_value = max_value_raw / (1 + trade_pair.transaction_fee_rate * account.multiplier)
+    return max(0.0, max_value)
 
 
 def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
