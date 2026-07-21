@@ -8,19 +8,22 @@ This document outlines how to run the miner REST server to receive external sign
 
 To run the signals server, you need to first setup your API key.
 
-Setup your `miner_secrets.json` file - inside the repository, you’ll go to the mining directory and add a file called `mining/miner_secrets.json`. Inside the file you should provide a unique API key value for your server to receive signals.
+Create `vanta_api/api_keys.json` (copy `vanta_api/api_keys_example.json` as a starting point). This is the file the miner REST server checks against when validating the `Authorization` header on incoming requests — it is reloaded automatically every 15 seconds, so keys can be added/removed without restarting the server.
 
 The file should look like so:
 
-```
-# replace xxxx with your API key
+```json
 {
-  "api_key": "xxxx"
+  "my_api_key": {
+    "key": "xxxx",
+    "tier": 200
+  }
 }
 ```
 
-Once you have your secrets file setup, you should keep it to reference from other systems
-to send in signals.
+Replace `xxxx` with your own API key value; the `my_api_key` name is just a label for your reference. Send this key as the `Authorization` header when submitting signals.
+
+> **Note**: `mining/miner_secrets.json` is unrelated to this server's authentication — it's read only by the deprecated legacy `run_receive_signals_server.py` and, for entity miners, by the Entity Miner Gateway (see [entity_miner.md](entity_miner.md)).
 
 ## Quick Start
 
@@ -43,7 +46,7 @@ This endpoint receives trading signals from external systems and processes them 
 **Required Headers**:
 ```
 'Content-Type': 'application/json',
-'Authorization': 'xxxx'   # (string): Your API key as configured in `mining/miner_secrets.json`. Used for authentication.
+'Authorization': 'xxxx'   # (string): Your API key as configured in `vanta_api/api_keys.json`. Used for authentication.
 ```
 
 **Request Body Fields**:

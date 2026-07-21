@@ -322,24 +322,26 @@ The command prints your API key. Store it — you will need it in `miner_secrets
 
 ### 8. Configure Miner Secrets
 
-Create `mining/miner_secrets.json` with your wallet credentials:
+Create `mining/miner_secrets.json` with your wallet credentials (copy `mining/miner_secrets_example.json` as a starting point, which also documents the optional USDC auto-payout fields):
 
 ```json
 {
-  "api_key": "your_api_key",
   "wallet_name": "your_wallet_name",
   "wallet_hotkey": "your_hotkey_name",
   "wallet_password": "your_wallet_password",
+  "validator_url": "your_validator_rest_url",
+  "validator_ws_url": "your_validator_ws_url",
   "validator_api_key": "your_validator_api_key"
 }
 ```
 
 | Field | Description |
 |---|---|
-| `api_key` | API key for authenticating requests to your miner's REST server |
 | `wallet_name` | Bittensor wallet name |
 | `wallet_hotkey` | Bittensor hotkey name |
 | `wallet_password` | Wallet coldkey password (used for signing subaccount creation requests) |
+| `validator_url` | Validator REST API URL (required for the dashboard and USDC payout daemon) |
+| `validator_ws_url` | Validator WebSocket URL (required for real-time dashboard streaming) |
 | `validator_api_key` | API key for the validator WebSocket connection (obtained via `vanta entity apikey`) |
 
 To register your entity miner's public endpoint URL with the validator, add:
@@ -352,7 +354,22 @@ To register your entity miner's public endpoint URL with the validator, add:
 
 Or set the `ENTITY_MINER_ENDPOINT_URL` environment variable instead.
 
-### 9. Run the Miner
+### 9. Configure Your Own API Key
+
+Requests *to* your entity miner gateway (order submission, subaccount creation, dashboard endpoints) are authenticated separately, against `vanta_api/api_keys.json` — not `miner_secrets.json`. Create it (copy `vanta_api/api_keys_example.json` as a starting point):
+
+```json
+{
+  "my_api_key": {
+    "key": "your_api_key",
+    "tier": 100
+  }
+}
+```
+
+Send this key as the `Authorization` header on requests to your gateway (see [entity_miner_rest_server.md](entity_miner_rest_server.md)).
+
+### 10. Run the Miner
 
 Run the miner with the `--entity-miner` flag to enable the Entity Miner Gateway:
 
@@ -385,7 +402,7 @@ python neurons/miner.py \
 
 This starts the miner REST API on port 8088, which handles both order submission and subaccount management.
 
-### 10. Create Subaccounts
+### 11. Create Subaccounts
 
 Create subaccounts under your entity via the Vanta CLI or directly via the Entity Miner Gateway.
 
@@ -430,7 +447,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
 
-### 11. Submit Orders
+### 12. Submit Orders
 
 Send orders to specific subaccounts by including `subaccount_id` in your order request:
 

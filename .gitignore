@@ -5,6 +5,10 @@
 # model parameters
 !vali_objects/utils/model_parameters/all_model_parameters.json
 !vali_objects/utils/model_parameters/slippage_estimates.json
+# secrets
+!secrets_example.json
+!mining/miner_secrets_example.json
+!vanta_api/api_keys_example.json
 
 # Markdown files (ignore temporary ones at root, keep important docs)
 *.md
