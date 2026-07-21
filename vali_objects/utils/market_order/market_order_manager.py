@@ -176,7 +176,6 @@ class MarketOrderManager():
             if max_order_value <= 0:
                 raise SignalException(f"No buying power remaining for {trade_pair.trade_pair_id}")
             sign = -1 if order_type == OrderType.SHORT else 1
-            # TODO max_order_value excludes transaction fees; a full-buying-power order will slightly overdraft after fee
             value = sign * min(abs(value), max_order_value)
             quantity, leverage, value = convert_order_sizes(
                 OrderSize(value=value), usd_base_rate, trade_pair, balance,
@@ -222,7 +221,10 @@ class MarketOrderManager():
         realized_pnl, transaction_fee, loan_repaid = position.add_order(order)
 
         if is_buy:
-            # TODO entity cross-margin gate (try_gate_position_open) is not enforced here; subaccount gating relies on get_max_order_size caps
+            allowed, reason = self._entity_collateral_client.try_gate_position_open(hotkey, order.value)
+            if not allowed:
+                bt.logging.error(f"Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
+                raise SignalException(f"Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
             self._miner_account_client.process_order_buy(
                 hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category
             )
