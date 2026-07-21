@@ -454,11 +454,11 @@ class ValiConfig:
     # HL_MAKER_FEE = 0.00015    # 0.015%
 
     TRANSACTION_FEE_RATE = {
-        TradePairCategory.CRYPTO: 0.0005,       # 0.5%
-        TradePairCategory.EQUITIES: 0.0005,     # 0.5%
-        TradePairCategory.COMMODITIES: 0.00045,  # 0.45% - HL TAKER FEE
+        TradePairCategory.CRYPTO: 0.0005,       # 0.05%
+        TradePairCategory.EQUITIES: 0.0005,     # 0.05%
+        TradePairCategory.COMMODITIES: 0.00045,  # 0.045% - HL TAKER FEE
         TradePairCategory.FOREX: 0,
-        TradePairCategory.INDICES: 0,
+        TradePairCategory.INDICES: 0.00045,      # 0.045% - HL TAKER FEE
     }
     CARRY_FEE_RATE_PER_INTERVAL = {
         TradePairCategory.CRYPTO: 0.0001,          # 10.95% annual / (365*3 intervals)

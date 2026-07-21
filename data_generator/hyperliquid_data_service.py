@@ -18,7 +18,11 @@ from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracke
 
 REST_TIMEOUT_S = 10
 RECV_TIMEOUT_S = 30
-_L2_COIN_CACHE_TTL_S = 300.0
+# Reject a cached L2 book older than this for slippage/fill simulation, rather than
+# silently using arbitrarily old data from a feed that has stopped updating (e.g. a
+# resolution stuck between disconnect and reconnect). Set comfortably above the
+# per-resolution reconnect backoff cap (30s) plus resubscribe time.
+L2_BOOK_STALENESS_MS = 60_000
 
 # (interval, candle_span_ms) - sorted by span ascending, threshold is span * 5000 candles
 HL_CANDLE_INTERVALS = [
@@ -46,8 +50,9 @@ class _HyperliquidWebsocketClient:
         self._ws = await websockets.connect(ValiConfig.hl_ws_url())
 
         try:
-            # Get the filtered, env-aware coin list from the service (includes dynamic coins,
-            # filtered by allMids availability to prevent testnet socket closes).
+            # Get the filtered, env-aware coin list from the service (filtered by
+            # allMids availability, across default and non-default dexes, to prevent
+            # testnet socket closes).
             coins = self._svc._get_subscription_coins()
 
             for coin in coins:
@@ -115,11 +120,34 @@ class _MultiResolutionL2BookClient:
             for sig_figs in self._coarse_sig_figs
         ]
 
+    async def _run_with_reconnect(self, client, handle_msg, label):
+        """Run one resolution's websocket client, reconnecting it independently (with
+        backoff) if its connection drops, without waiting on the other resolutions in
+        the cascade to also disconnect.
+        """
+        backoff = 1.0
+        while not client._should_close:
+            try:
+                await client.connect(handle_msg)
+            except Exception as e:
+                bt.logging.error(f"Hyperliquid websocket client ({label}) error: {type(e).__name__}: {e}")
+            if client._should_close:
+                break
+            bt.logging.warning(f"Hyperliquid websocket client ({label}) disconnected, "
+                               f"reconnecting in {backoff:.1f}s")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 1.5, 30.0)
+
     async def connect(self, handle_msg):
-        """Run one WebSocket connection per cascade resolution concurrently."""
-        coros = [self._full.connect(self._svc.handle_msg_full)]
+        """Run one WebSocket connection per cascade resolution concurrently, each
+        reconnecting independently on disconnect."""
+        coros = [self._run_with_reconnect(self._full, self._svc.handle_msg_full, "full precision")]
         for client, sig_figs in zip(self._coarse_clients, self._coarse_sig_figs):
-            coros.append(client.connect(lambda msg, sf=sig_figs: self._svc.handle_msg_coarse(sf, msg)))
+            coros.append(self._run_with_reconnect(
+                client,
+                lambda msg, sf=sig_figs: self._svc.handle_msg_coarse(sf, msg),
+                f"nSigFigs={sig_figs}",
+            ))
         await asyncio.gather(*coros)
 
     async def close(self):
@@ -157,11 +185,6 @@ class HyperliquidDataService(BaseDataService):
         self._orderbooks_coarse_by_sigfigs: dict[int, dict[str, dict]] = {
             sig_figs: {} for sig_figs in ValiConfig.HL_L2_SIG_FIGS_CASCADE[1:]
         }
-
-        # Cache for subscription coin list (filtered by allMids availability).
-        # Persists across reconnects to avoid repeated REST calls on reconnect storms.
-        self._l2_coin_cache: set[str] | None = None
-        self._l2_coin_cache_ts: float = 0.0
 
         if disable_ws:
             self.websocket_manager_thread = None
@@ -272,9 +295,11 @@ class HyperliquidDataService(BaseDataService):
             )
 
     def _fetch_all_mids(self) -> dict[str, float]:
-        """Fetch mid prices for all coins via the REST API (default dex only).
+        """Fetch mid prices for all coins across all dexes via the REST API.
 
-        Returns {coin: mid_price}.
+        Fetches the default crypto dex first, then merges in each non-default dex
+        (identified by the colon-prefixed hl_coin names in the configured coin set).
+        Returns {coin: mid_price} with prefixed keys for non-default dex coins (e.g. "xyz:AAPL").
         """
         result: dict[str, float] = {}
 
@@ -289,6 +314,24 @@ class HyperliquidDataService(BaseDataService):
             result.update({coin: float(price) for coin, price in resp.json().items()})
         except Exception as e:
             bt.logging.error(f"Hyperliquid REST allMids (default dex) failed: {type(e).__name__}: {e}")
+
+        # Non-default dexes — derive names from prefixed hl_coin entries in the configured coin set
+        non_default_dexes = {
+            coin.split(":")[0]
+            for coin in self._coin_to_trade_pair.keys()
+            if ":" in coin
+        }
+        for dex in non_default_dexes:
+            try:
+                resp = requests.post(
+                    ValiConfig.hl_info_url(),
+                    json={"type": "allMids", "dex": dex},
+                    timeout=REST_TIMEOUT_S,
+                )
+                resp.raise_for_status()
+                result.update({coin: float(price) for coin, price in resp.json().items()})
+            except Exception as e:
+                bt.logging.error(f"Hyperliquid REST allMids (dex={dex}) failed: {type(e).__name__}: {e}")
 
         return result
 
@@ -471,11 +514,18 @@ class HyperliquidDataService(BaseDataService):
         """
         coin = trade_pair.hl_coin
         cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
+        now_ms = TimeUtil.now_in_millis()
+
         full_book = self._orderbooks_full.get(coin, {})
-        books = [full_book] + [
-            self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
-            for sig_figs in cascade[1:]
-        ]
+        if full_book and now_ms - full_book.get("time", 0) > L2_BOOK_STALENESS_MS:
+            full_book = {}
+        books = []
+        for sig_figs in cascade[1:]:
+            book = self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
+            if book and now_ms - book.get("time", 0) > L2_BOOK_STALENESS_MS:
+                book = {}
+            books.append(book)
+        books = [full_book] + books
 
         primary = next((b for b in books if b), {})
         if not primary:
@@ -550,11 +600,18 @@ class HyperliquidDataService(BaseDataService):
         """
         coin = trade_pair.hl_coin
         cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
+        now_ms = TimeUtil.now_in_millis()
+
         full_book = self._orderbooks_full.get(coin, {})
-        books = [full_book] + [
-            self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
-            for sig_figs in cascade[1:]
-        ]
+        if full_book and now_ms - full_book.get("time", 0) > L2_BOOK_STALENESS_MS:
+            full_book = {}
+        books = []
+        for sig_figs in cascade[1:]:
+            book = self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
+            if book and now_ms - book.get("time", 0) > L2_BOOK_STALENESS_MS:
+                book = {}
+            books.append(book)
+        books = [full_book] + books
 
         primary = next((b for b in books if b), {})
         if not primary:
@@ -600,49 +657,62 @@ class HyperliquidDataService(BaseDataService):
     def _get_subscription_coins(self) -> set[str]:
         """Return the filtered set of HL coins to subscribe to for l2Book streams.
 
-        Builds the configured coin set from static TradePair crypto members, then
-        intersects with allMids availability to avoid subscribing to unsupported
-        coins on testnet, which causes the HL server to close the WebSocket connection.
-        Result is cached for _L2_COIN_CACHE_TTL_S seconds across reconnects.
+        Intersects the statically configured coin set with allMids availability
+        (default dex plus any non-default dexes referenced by colon-prefixed
+        hl_coin names, e.g. "xyz:AAPL") to avoid subscribing to coins unsupported
+        on the current HL env, which causes the HL server to close the WebSocket
+        connection.
         """
         configured_coins = set(self._coin_to_trade_pair.keys())
+        all_supported_keys: set[str] = set()
 
-        now = time.time()
-        if self._l2_coin_cache is not None and (now - self._l2_coin_cache_ts) < _L2_COIN_CACHE_TTL_S:
-            return self._l2_coin_cache | (configured_coins - self._l2_coin_cache)
-
+        # Default dex
         try:
             resp = requests.post(
                 ValiConfig.hl_info_url(),
                 json={"type": "allMids"},
-                timeout=5,
+                timeout=REST_TIMEOUT_S,
             )
+            resp.raise_for_status()
             mids = resp.json()
             if isinstance(mids, dict):
-                all_supported_keys = set(mids.keys())
-                supported = configured_coins.intersection(all_supported_keys)
-            else:
-                supported = configured_coins
-
-            if not supported:
-                supported = configured_coins
-            elif supported != configured_coins:
-                skipped = sorted(configured_coins - supported)
-                bt.logging.info(
-                    f"[HL_DATA_SVC] Skipping unsupported l2Book coins on current HL env: {skipped}"
-                )
-
-            self._l2_coin_cache = supported
-            self._l2_coin_cache_ts = now
-            return supported
+                all_supported_keys.update(mids.keys())
         except Exception as e:
+            bt.logging.warning(f"[HL_DATA_SVC] Failed to fetch allMids (default dex) for coin filtering: {e}")
+
+        # Non-default dexes (e.g. HIP-3 equities/commodities/indices) aren't included
+        # in the default-dex allMids response and must be queried separately.
+        non_default_dexes = {
+            coin.split(":")[0] for coin in configured_coins if ":" in coin
+        }
+        for dex in non_default_dexes:
+            try:
+                resp = requests.post(
+                    ValiConfig.hl_info_url(),
+                    json={"type": "allMids", "dex": dex},
+                    timeout=REST_TIMEOUT_S,
+                )
+                resp.raise_for_status()
+                all_supported_keys.update(resp.json().keys())
+            except Exception as e:
+                bt.logging.warning(f"[HL_DATA_SVC] Failed to fetch allMids for dex={dex}: {e}")
+
+        if not all_supported_keys:
+            # Every dex fetch failed outright — fail open rather than unsubscribing from everything.
             bt.logging.warning(
-                f"[HL_DATA_SVC] Failed to fetch allMids for coin filtering: {e}. "
-                "Falling back to configured coins."
+                "[HL_DATA_SVC] Failed to fetch allMids for coin filtering. Falling back to configured coins."
             )
-            if self._l2_coin_cache:
-                return self._l2_coin_cache | configured_coins
             return configured_coins
+
+        supported = configured_coins.intersection(all_supported_keys)
+        if not supported:
+            supported = configured_coins
+        elif supported != configured_coins:
+            skipped = sorted(configured_coins - supported)
+            bt.logging.info(
+                f"[HL_DATA_SVC] Skipping unsupported l2Book coins on current HL env: {skipped}"
+            )
+        return supported
 
     def instantiate_not_pickleable_objects(self):
         pass

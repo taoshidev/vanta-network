@@ -1180,6 +1180,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Validate asset_selection
             asset_selection = data.get('asset_selection')
+            if asset_selection == "hl_all":
+                asset_selection = "all_markets"
+
             if not asset_selection or not isinstance(asset_selection, str):
                 return jsonify({'error': 'Missing or invalid required field: asset_selection (string)'}), 400
 
