@@ -49,6 +49,12 @@ def convert_order_sizes(
     elif value is not None:
         quantity = (value * usd_base_conversion) / trade_pair.lot_size
 
+    if quantity is None:
+        raise ValueError(
+            f"Could not compute quantity from order_size={order_size!r}, "
+            f"trade_pair={trade_pair}, balance={balance:.2f}, usd_base_conversion={usd_base_conversion:.4f}"
+        )
+
     if round_qty:
         if trade_pair.is_forex:
             increment = ValiConfig.FOREX_MIN_ORDER_SIZE_SUB_NANO if use_nano_increment else ValiConfig.FOREX_MIN_ORDER_SIZE
