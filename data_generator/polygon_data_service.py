@@ -634,6 +634,8 @@ class PolygonDataService(BaseDataService):
                 self.WEBSOCKET_OBJECTS[TradePairCategory.FOREX].subscribe(symbol)
                 subbed.append(symbol)
             elif tp.is_equities:
+                if tp.src != TradePairSource.VANTA:
+                    continue
                 symbol = "FMV." + tp.trade_pair
                 subbed.append(symbol)
                 self.WEBSOCKET_OBJECTS[TradePairCategory.EQUITIES].subscribe(symbol)
