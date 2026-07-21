@@ -14,7 +14,7 @@ import time
 import traceback
 from typing import Dict, Any, Optional, Deque
 import websockets
-from websockets import CloseCode
+from websockets.protocol import State
 from websockets.legacy.server import WebSocketServerProtocol
 
 import bittensor as bt
@@ -48,6 +48,11 @@ MAX_N_WS_PER_API_KEY = 5
 SUBACCOUNT_REFRESH_INTERVAL_S = 0.1
 SUBACCOUNT_REFRESH_EXPIRATION_MS = 15 * 1000
 
+# Exponential backoff for subscriptions whose build fails or returns no
+# dashboard, so the 0.1s staleness scanner doesn't re-hammer them ~10x/s.
+SUBACCOUNT_RETRY_BASE_MS = 1000
+SUBACCOUNT_RETRY_MAX_MS = 30_000
+
 
 @dataclass
 class DashboardSubscription:
@@ -56,6 +61,13 @@ class DashboardSubscription:
     checkpoints_time_ms: int = 0
     daily_returns_time_ms: int = 0
     last_update_time_ms: int = 0
+    # Backoff for failed/empty builds: on failure the staleness scanner must
+    # not re-attempt this subscription every 100ms (it left last_update_time_ms
+    # stale and re-hammered ~10x/s forever — one missing subaccount saturated
+    # the pool and the GIL). failure_count drives an exponential next_attempt_ms
+    # gate; both reset to 0 on a successful build.
+    failure_count: int = 0
+    next_attempt_ms: int = 0
     lock: Lock = field(default_factory=Lock)
 
     @staticmethod
@@ -336,8 +348,24 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     bt.logging.info(
                         f"WebSocketServer: Removed client {client_id} from API key {api_key_alias}")
 
-            if client.websocket.state == websockets.protocol.OPEN:
-                client.websocket.fail_connection(code=CloseCode.ABNORMAL_CLOSURE)
+            # websockets 15: the handler receives an asyncio ServerConnection.
+            # `websockets.protocol.OPEN` no longer exists (use State.OPEN) and
+            # there is no sync `fail_connection()` — the previous code raised
+            # AttributeError here on every OPEN-client removal, leaking clients
+            # and hanging shutdown. Schedule the async close() on the server
+            # loop from whatever thread called us, guarding a closed/absent loop
+            # so teardown never raises.
+            if client.websocket.state == State.OPEN:
+                loop = self._event_loop
+                if loop is not None and not loop.is_closed():
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            client.websocket.close(code=1001, reason="client removed"),
+                            loop,
+                        )
+                    except Exception as e:
+                        bt.logging.debug(
+                            f"WebSocketServer: could not schedule close for {client_id}: {e}")
 
             bt.logging.info(f"WebSocketServer: Client {client_id} removed")
 
@@ -390,18 +418,44 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             bt.logging.error(f"WebSocketServer: Error queueing message: {e}")
             bt.logging.error(traceback.format_exc())
 
+    @staticmethod
+    def _apply_build_backoff(subscription: DashboardSubscription) -> None:
+        """Record a failed/empty build and push the subscription's next attempt
+        out exponentially. Must be called while holding subscription.lock."""
+        subscription.failure_count += 1
+        delay = min(
+            SUBACCOUNT_RETRY_BASE_MS * (2 ** (subscription.failure_count - 1)),
+            SUBACCOUNT_RETRY_MAX_MS,
+        )
+        subscription.next_attempt_ms = TimeUtil.now_in_millis() + delay
+
     def _send_dashboard_update(
         self,
         synthetic_hotkey: str,
         client: WebSocketServerClient,
         subscription: DashboardSubscription
     ) -> None:
+        # All subscription mutations happen under the lock so failure accounting
+        # and the send stay consistent with the scanner reading next_attempt_ms.
         try:
             with subscription.lock:
-                subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+                try:
+                    subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+                except Exception as e:
+                    self._apply_build_backoff(subscription)
+                    bt.logging.error(f"WebSocketServer: dashboard fetch failed for {synthetic_hotkey}: {e}")
+                    return
+
                 if subaccount_dashboard is None:
-                    bt.logging.warning(f"WebSocketServer: No dashboard found for synthetic hotkey {synthetic_hotkey}")
-                else:
+                    self._apply_build_backoff(subscription)
+                    # Log only on the first failure of a streak — backoff keeps
+                    # this from spamming once per 100ms.
+                    if subscription.failure_count <= 1:
+                        bt.logging.warning(
+                            f"WebSocketServer: No dashboard found for synthetic hotkey {synthetic_hotkey}")
+                    return
+
+                try:
                     dashboard = create_subaccount_dashboard(
                         synthetic_hotkey,
                         subaccount_dashboard,
@@ -417,13 +471,21 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         subscription.checkpoints_time_ms,
                         subscription.daily_returns_time_ms,
                     )
+                except Exception as e:
+                    self._apply_build_backoff(subscription)
+                    bt.logging.error(f"WebSocketServer: dashboard build failed for {synthetic_hotkey}: {e}")
+                    bt.logging.error(traceback.format_exc())
+                    return
 
-                    subscription.update_times(dashboard)
+                # Success: clear backoff and advance section watermarks.
+                subscription.failure_count = 0
+                subscription.next_attempt_ms = 0
+                subscription.update_times(dashboard)
 
-                    asyncio.run_coroutine_threadsafe(
-                        self._send_message(client, {"dashboard": dashboard}),
-                        self._event_loop
-                    )
+                asyncio.run_coroutine_threadsafe(
+                    self._send_message(client, {"dashboard": dashboard}),
+                    self._event_loop
+                )
 
         except Exception as e:
             bt.logging.error(f"WebSocketServer: Error processing dashboard update: {e}")
@@ -445,11 +507,16 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         while True:
             try:
                 time.sleep(SUBACCOUNT_REFRESH_INTERVAL_S)
-                expiration_ms = TimeUtil.now_in_millis() - SUBACCOUNT_REFRESH_EXPIRATION_MS
+                now_ms = TimeUtil.now_in_millis()
+                expiration_ms = now_ms - SUBACCOUNT_REFRESH_EXPIRATION_MS
                 for client in list(self._clients.values()):
                     subscriptions = dict(client.dashboard_subscriptions)
                     for synthetic_hotkey, subscription in subscriptions.items():
-                        if subscription.last_update_time_ms < expiration_ms:
+                        # Skip stale subscriptions still inside their failure
+                        # backoff window (next_attempt_ms), so one missing/slow
+                        # subaccount can't be rebuilt every 100ms.
+                        if (subscription.last_update_time_ms < expiration_ms
+                                and now_ms >= subscription.next_attempt_ms):
                             self._send_dashboard_update(synthetic_hotkey, client, subscription)
 
             except Exception as e:
@@ -873,6 +940,14 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         self.host,
                         self.port,
                         compression="deflate",
+                        # Explicit keepalive: the library defaults (20s/20s) meant
+                        # a transient event-loop stall past 20s reaped EVERY
+                        # connection in the same second (the synchronized 1006
+                        # bursts). A 60s ping_timeout tolerates a stall while the
+                        # real fix (off-loop serialization) removes its cause.
+                        ping_interval=20,
+                        ping_timeout=60,
+                        close_timeout=10,
                         reuse_address=True,  # Allow reuse of the address
                         reuse_port=True  # Allow reuse of the port (on platforms that support it)
                     )
