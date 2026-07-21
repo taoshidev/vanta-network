@@ -34,7 +34,7 @@ BLOCKED_TRADE_PAIR_IDS = {
     'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
     'XAGUSD', 'XAUUSD',  # replaced with GOLDUSDC, SILVERUSDC
     'TONUSDC',  # Delisted from Hyperliquid
-    
+
     # All vanta native crypto pairs deprecated for corresponding USDC pairs
     'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD',
     'DOGEUSD', 'ADAUSD', 'TAOUSD', 'HYPEUSD',
@@ -330,7 +330,6 @@ class TradePair(Enum):
     BJ     = ["BJ",     "BJ",     0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     BKNG   = ["BKNG",   "BKNG",   0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     BKR    = ["BKR",    "BKR",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
-    BLD    = ["BLD",    "BLD",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     BLDR   = ["BLDR",   "BLDR",   0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     BLK    = ["BLK",    "BLK",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     BLSH   = ["BLSH",   "BLSH",   0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
@@ -691,7 +690,6 @@ class TradePair(Enum):
     JBL    = ["JBL",    "JBL",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     JCI    = ["JCI",    "JCI",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     JEF    = ["JEF",    "JEF",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
-    JHG    = ["JHG",    "JHG",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     JHX    = ["JHX",    "JHX",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     JKHY   = ["JKHY",   "JKHY",   0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
     JLL    = ["JLL",    "JLL",    0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5)]
