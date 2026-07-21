@@ -95,7 +95,23 @@ class SubtensorOpsServer(RPCServerBase):
         """Single metagraph update iteration."""
         if self._is_shutdown():
             return
-        self.manager.update_metagraph()
+        try:
+            self.manager.update_metagraph()
+        except Exception:
+            # Account the failure on the MANAGER, not only this daemon's own
+            # backoff counter: update_metagraph() engages its
+            # connection-recreation path (and round-robin endpoint rotation on
+            # mainnet networks) only when manager.consecutive_failures > 0.
+            # Without this, a failed iteration retried the SAME dead websocket
+            # forever — observed on testnet, where the public endpoint's load
+            # balancer mixes healthy and broken backends, so a validator that
+            # drew a sick backend at boot could never heal. The counter is
+            # reset inside update_metagraph() after a fully successful sync
+            # (not here — the wrapper cannot distinguish a real sync from the
+            # rate-limited or anomalous-metagraph early returns). Re-raise so
+            # _daemon_loop applies its normal backoff.
+            self.manager.consecutive_failures += 1
+            raise
 
     def get_daemon_name(self) -> str:
         mode = "miner" if self.is_miner else "validator"

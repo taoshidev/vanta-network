@@ -181,14 +181,36 @@ class SubtensorOpsManager(CacheController):
             self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
         else:
             self._live_price_client = None
-        # Parse out the arg for subtensor.network. If it is "finney" or "subvortex", we will roundrobin on metagraph failure
-        self.round_robin_networks = ['finney', 'subvortex']
+        # Round-robin on metagraph failure for known public networks.
+        # 'subvortex' was removed: it is absent from bittensor's NETWORKS and
+        # entrypoint-subvortex.opentensor.ai is NXDOMAIN, so rotating onto it
+        # guaranteed a wasted retry cycle. With a single network the rotation
+        # degenerates to a same-endpoint reconnect, which is the actual healing
+        # mechanism (the recreate block in update_metagraph).
+        self.round_robin_networks = ['finney']
         self.round_robin_enabled = False
         self.current_round_robin_index = 0
         if self.config.subtensor.network in self.round_robin_networks:
-            bt.logging.info(f"Using round-robin metagraph for network {self.config.subtensor.network}. ")
-            self.round_robin_enabled = True
-            self.current_round_robin_index = self.round_robin_networks.index(self.config.subtensor.network)
+            # Guard: rotation rewrites chain_endpoint with the public
+            # entrypoint template. An operator who passed a CUSTOM
+            # --subtensor.chain_endpoint (e.g. a local node) keeps the default
+            # network name ('finney'), and rotation would clobber their
+            # endpoint irrecoverably on the first failure — so only enable
+            # rotation when the configured endpoint IS a default entrypoint.
+            configured_endpoint = getattr(self.config.subtensor, 'chain_endpoint', None)
+            default_endpoints = {None, ''} | {
+                f"wss://entrypoint-{n}.opentensor.ai:443" for n in self.round_robin_networks
+            }
+            if configured_endpoint in default_endpoints:
+                bt.logging.info(f"Using round-robin metagraph for network {self.config.subtensor.network}. ")
+                self.round_robin_enabled = True
+                self.current_round_robin_index = self.round_robin_networks.index(self.config.subtensor.network)
+            else:
+                bt.logging.info(
+                    f"Custom chain_endpoint configured ({configured_endpoint}); "
+                    f"round-robin rotation disabled to preserve it. Connection "
+                    f"recreation on failure remains active."
+                )
 
         # Initialize likely validators and miners with empty dictionaries. This maps hotkey to timestamp.
         self.likely_validators = {}
@@ -239,6 +261,9 @@ class SubtensorOpsManager(CacheController):
             mock_metagraph.block_at_registration = []
             mock_metagraph.emission = []
             mock_metagraph.axons = []
+            # Must be a real list: update_metagraph iterates it when logging
+            # permitted validators (a bare Mock attribute is not iterable).
+            mock_metagraph.validator_permit = []
 
             # Mock pool data
             mock_metagraph.pool = Mock()
@@ -306,6 +331,11 @@ class SubtensorOpsManager(CacheController):
             mock_metagraph.block_at_registration = [1000] * len(hotkeys)
             mock_metagraph.emission = [1.0] * len(hotkeys)
             mock_metagraph.axons = [n.axon_info for n in neurons]
+            # Must be a real list: update_metagraph iterates it when logging
+            # permitted validators (a bare Mock attribute is not iterable).
+            mock_metagraph.validator_permit = [
+                n.validator_trust > 0 for n in neurons
+            ]
 
             # Mock pool data
             mock_metagraph.pool = Mock()
@@ -977,9 +1007,13 @@ class SubtensorOpsManager(CacheController):
                 else:
                     new_subtensor = bt.Subtensor(config=self.config)
 
-                # Only cleanup old connection after new one successfully created (prevents file descriptor leak)
-                self._cleanup_subtensor_connection()
-                self.subtensor = new_subtensor
+                # Only cleanup old connection after new one successfully created (prevents file descriptor leak).
+                # Under the subtensor lock: weight-setter RPC threads hold it
+                # while an extrinsic is in flight on the OLD connection — the
+                # close+swap must not yank the websocket out from under them.
+                with get_subtensor_lock():
+                    self._cleanup_subtensor_connection()
+                    self.subtensor = new_subtensor
                 bt.logging.info("Successfully recreated subtensor connection after previous failures")
 
             except (ConnectionRefusedError, ConnectionError, OSError) as e:
@@ -1068,6 +1102,19 @@ class SubtensorOpsManager(CacheController):
 
         # self.log_metagraph_state()
         self.set_last_update_time()
+
+        # Reset failure accounting only after a FULLY successful sync — the
+        # early returns above (refresh rate-limit, anomalous metagraph) must
+        # not clear a pending reconnect. This is the counterpart of the
+        # increment in SubtensorOpsServer.run_daemon_iteration; a non-zero
+        # counter is what arms the connection-recreation block at the top of
+        # this method on the next call.
+        if self.consecutive_failures > 0:
+            bt.logging.info(
+                f"Metagraph update recovered after {self.consecutive_failures} "
+                f"consecutive failures; resetting failure count."
+            )
+        self.consecutive_failures = 0
 
 
 # len([x for x in self.metagraph.axons if '0.0.0.0' not in x.ip]), len([x for x in self.metagraph.neurons if '0.0.0.0' not in x.axon_info.for ip])

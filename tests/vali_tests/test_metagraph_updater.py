@@ -581,13 +581,33 @@ class TestSubtensorOpsManager(TestBase):
         self.assertTrue(updater.round_robin_enabled)
         self.assertEqual(updater.current_round_robin_index, 0)  # finney index
 
-        # Simulate network switch
+        # Simulate network switch. With 'subvortex' removed (NXDOMAIN, not in
+        # bittensor's NETWORKS), rotation degenerates to a same-endpoint
+        # reconnect: network and index stay on finney.
         initial_network = updater.config.subtensor.network
         updater._switch_to_next_network(cleanup_connection=False, create_new_subtensor=False)
 
-        # Verify network was switched
-        self.assertNotEqual(updater.config.subtensor.network, initial_network)
-        self.assertEqual(updater.current_round_robin_index, 1)  # subvortex index
+        self.assertEqual(updater.config.subtensor.network, initial_network)
+        self.assertEqual(updater.current_round_robin_index, 0)
+
+    def test_round_robin_disabled_for_custom_chain_endpoint(self):
+        """An operator passing only --subtensor.chain_endpoint keeps bittensor's
+        default network name ('finney'); rotation must NOT clobber the custom
+        endpoint with the public entrypoint template."""
+        config = self._create_mock_config(network="finney")
+        config.subtensor.chain_endpoint = "ws://127.0.0.1:9944"  # local node
+
+        updater = SubtensorOpsManager(
+            config=config,
+            hotkey=self.TEST_MINER_HOTKEY,
+            is_miner=True,
+            running_unit_tests=True
+        )
+
+        self.assertFalse(updater.round_robin_enabled)
+        # _switch_to_next_network must be a no-op when rotation is disabled.
+        updater._switch_to_next_network(cleanup_connection=False, create_new_subtensor=False)
+        self.assertEqual(updater.config.subtensor.chain_endpoint, "ws://127.0.0.1:9944")
 
 
 if __name__ == '__main__':
