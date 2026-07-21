@@ -119,8 +119,8 @@ The system uses a distributed RPC architecture for inter-process communication:
   - Scoring weights and risk parameters
   - Challenge period and elimination thresholds
 - **`miner_config.py`** - Miner configuration
-- **`requirements.txt`** - Python dependencies (Bittensor 9.9.0, Pydantic 2.10.3, financial APIs)
-- **`meta/meta.json`** - Version management (subnet_version: 8.8.8)
+- **`requirements.txt`** - Python dependencies (Bittensor 10.3.0, Pydantic 2.10.3, financial APIs)
+- **`meta/meta.json`** - Version management (subnet_version: 8.15.3)
 - **`setup.py`** - Package setup (taoshi-prop-net)
 
 ## Trading System Architecture
@@ -152,7 +152,7 @@ The system uses a distributed RPC architecture for inter-process communication:
   - Risk-adjusted performance penalties based on Sharpe, Sortino, Calmar, Omega ratios
 - **Fees**:
   - Carry fees: 10.95% annually (crypto), 3% annually (forex); equities instead pay a 3% annual stock-borrow fee (short) or 6.6% annual margin interest on the borrowed amount (long); commodities carry no fee for standard positions. Hyperliquid-linked entity positions pay live Hyperliquid funding rates instead of the flat carry fee, regardless of asset class.
-  - Spread fees: 0.5% × order value (crypto, equities), 0.45% × order value (commodities); none for forex/indices
+  - Spread fees: 0.05% × order value (crypto, equities), 0.045% × order value (commodities, indices); none for forex
   - Slippage costs: Higher for high leverage and low liquidity assets
 - **Leverage Limits**:
   - Crypto: 0.01 to 0.5x
@@ -226,21 +226,21 @@ client.set_direct_server(server_instance)
 ```
 
 ### External Dependencies
-- **Bittensor 9.9.0** - Blockchain and subnet integration
+- **Bittensor 10.3.0** - Blockchain and subnet integration
 - **Pydantic 2.10.3** - Data validation and serialization
 - **Financial APIs**:
-  - Polygon API Client 1.15.3 ($248/month)
+  - Polygon API Client 1.16.0 ($248/month)
   - Tiingo 0.15.6 ($50/month)
   - Databento 0.69.0 (optional, supplementary equities price source)
 - **ML Stack**: scikit-learn 1.5.0, scipy 1.13.0, pandas 2.2.2
 - **Web Services**:
   - Flask 3.0.3 + Waitress 2.1.2 for REST API
-  - WebSockets for real-time communication
+  - WebSockets 15.0.1 for real-time communication
 - **Data Visualization**: matplotlib 3.9.0
 - **Cloud Services**: Google Cloud Storage 2.17.0, Secret Manager 2.21.1
 - **Taoshi SDKs**:
-  - collateral_sdk@1.0.6 - Collateral management
-  - vanta-cli@2.0.0 - Vanta network CLI tools
+  - collateral_sdk@1.0.9 - Collateral management
+  - vanta-cli@3.0.1 - Vanta network CLI tools
 
 ## Production Deployment
 
@@ -254,7 +254,7 @@ The `run.sh` script provides production deployment with:
 - Minimum uptime: 5 minutes, Max restarts: 5
 
 ### Version Management
-- Current version: 8.8.8 (in `meta/meta.json`)
+- Current version: 8.15.3 (in `meta/meta.json`)
 - Version checking against GitHub API
 - Automatic pip install and package updates
 - Safe rollback: git pull only if version is newer

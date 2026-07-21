@@ -258,7 +258,7 @@ Internal Error (500):
 
 - **Crypto**: BTCUSDC, ETHUSDC, SOLUSDC, XRPUSDC, DOGEUSDC, ADAUSDC (USDC denominated)
 - **Forex**: EURUSD, GBPUSD, AUDUSD, USDCAD, USDCHF, NZDUSD, and other major currency pairs
-- **Equities**: Russell 1000 single stocks plus additional HL-matched names (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD)
+- **Equities**: Russell 1000 single stocks plus additional HL-matched names (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD, SPCX)
 - **Commodities**: GOLDUSDC, SILVERUSDC, COPPERUSDC, NATGASUSDC, PLATINUMUSDC, WTIOILUSDC, BRENTOILUSDC
 
 For the complete list of supported trade pairs and their current status, refer to `vali_objects/trade_pair.py`.
