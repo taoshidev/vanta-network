@@ -620,6 +620,7 @@ class ChallengePeriodManager(CacheController):
             if snapshot and snapshot.get('day_open_ms') == today_midnight_ms:
                 last_eod = snapshot['equity_return']
                 daily_open_equity = snapshot['equity_return']
+                last_eod_checked_ms = snapshot['day_open_ms']
 
             intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0 if daily_open_equity else 0.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
