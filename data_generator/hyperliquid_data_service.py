@@ -645,47 +645,55 @@ class HyperliquidDataService(BaseDataService):
         connection.
         """
         configured_coins = set(self._coin_to_trade_pair.keys())
+        all_supported_keys: set[str] = set()
 
+        # Default dex
         try:
             resp = requests.post(
                 ValiConfig.hl_info_url(),
                 json={"type": "allMids"},
-                timeout=5,
+                timeout=REST_TIMEOUT_S,
             )
+            resp.raise_for_status()
             mids = resp.json()
-            all_supported_keys = set(mids.keys()) if isinstance(mids, dict) else set()
-
-            # Non-default dexes (e.g. HIP-3 equities/commodities/indices) aren't included
-            # in the default-dex allMids response and must be queried separately.
-            non_default_dexes = {
-                coin.split(":")[0] for coin in configured_coins if ":" in coin
-            }
-            for dex in non_default_dexes:
-                try:
-                    r = requests.post(
-                        ValiConfig.hl_info_url(),
-                        json={"type": "allMids", "dex": dex},
-                        timeout=5,
-                    )
-                    all_supported_keys.update(r.json().keys())
-                except Exception as e:
-                    bt.logging.warning(f"[HL_DATA_SVC] Failed to fetch allMids for dex={dex}: {e}")
-
-            supported = configured_coins.intersection(all_supported_keys)
-            if not supported:
-                supported = configured_coins
-            elif supported != configured_coins:
-                skipped = sorted(configured_coins - supported)
-                bt.logging.info(
-                    f"[HL_DATA_SVC] Skipping unsupported l2Book coins on current HL env: {skipped}"
-                )
-            return supported
+            if isinstance(mids, dict):
+                all_supported_keys.update(mids.keys())
         except Exception as e:
+            bt.logging.warning(f"[HL_DATA_SVC] Failed to fetch allMids (default dex) for coin filtering: {e}")
+
+        # Non-default dexes (e.g. HIP-3 equities/commodities/indices) aren't included
+        # in the default-dex allMids response and must be queried separately.
+        non_default_dexes = {
+            coin.split(":")[0] for coin in configured_coins if ":" in coin
+        }
+        for dex in non_default_dexes:
+            try:
+                resp = requests.post(
+                    ValiConfig.hl_info_url(),
+                    json={"type": "allMids", "dex": dex},
+                    timeout=REST_TIMEOUT_S,
+                )
+                resp.raise_for_status()
+                all_supported_keys.update(resp.json().keys())
+            except Exception as e:
+                bt.logging.warning(f"[HL_DATA_SVC] Failed to fetch allMids for dex={dex}: {e}")
+
+        if not all_supported_keys:
+            # Every dex fetch failed outright — fail open rather than unsubscribing from everything.
             bt.logging.warning(
-                f"[HL_DATA_SVC] Failed to fetch allMids for coin filtering: {e}. "
-                "Falling back to configured coins."
+                "[HL_DATA_SVC] Failed to fetch allMids for coin filtering. Falling back to configured coins."
             )
             return configured_coins
+
+        supported = configured_coins.intersection(all_supported_keys)
+        if not supported:
+            supported = configured_coins
+        elif supported != configured_coins:
+            skipped = sorted(configured_coins - supported)
+            bt.logging.info(
+                f"[HL_DATA_SVC] Skipping unsupported l2Book coins on current HL env: {skipped}"
+            )
+        return supported
 
     def instantiate_not_pickleable_objects(self):
         pass
