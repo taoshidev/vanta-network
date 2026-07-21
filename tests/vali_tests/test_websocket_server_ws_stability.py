@@ -117,6 +117,30 @@ class TestSendDashboardUpdateBackoff(unittest.TestCase):
         rcs.assert_not_called()
 
 
+class TestInitialSnapshot(unittest.TestCase):
+    def test_submits_build_when_subscribed(self):
+        server = _bare_server()
+        server._thread_pool = MagicMock()
+        client = MagicMock()
+        sub = DashboardSubscription()
+        client.dashboard_subscriptions = {"5Entity_1": sub}
+
+        server._submit_initial_snapshot("5Entity_1", client)
+
+        server._thread_pool.submit.assert_called_once_with(
+            server._send_dashboard_update, "5Entity_1", client, sub)
+
+    def test_noop_when_not_subscribed(self):
+        server = _bare_server()
+        server._thread_pool = MagicMock()
+        client = MagicMock()
+        client.dashboard_subscriptions = {}
+
+        server._submit_initial_snapshot("5Entity_1", client)
+
+        server._thread_pool.submit.assert_not_called()
+
+
 class TestRemoveClient(unittest.TestCase):
     def _client(self, state=State.OPEN):
         ws = MagicMock()

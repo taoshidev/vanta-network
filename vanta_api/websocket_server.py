@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional, Deque
 import websockets
 from websockets.protocol import State
 from websockets.legacy.server import WebSocketServerProtocol
+from urllib.parse import urlsplit, parse_qs
 
 import bittensor as bt
 
@@ -418,6 +419,17 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             bt.logging.error(f"WebSocketServer: Error queueing message: {e}")
             bt.logging.error(traceback.format_exc())
 
+    def _submit_initial_snapshot(self, synthetic_hotkey: str, client: WebSocketServerClient) -> None:
+        """Push an immediate dashboard build on subscribe so the first frame
+        arrives in ~1-2s instead of waiting for the 0.1s staleness scanner to
+        reach this subaccount behind its (single-threaded) backlog. This is the
+        server-side home of the vanta-ui relay's initial-snapshot injection."""
+        subscription = client.dashboard_subscriptions.get(synthetic_hotkey)
+        if subscription is None:
+            return
+        self._thread_pool.submit(
+            self._send_dashboard_update, synthetic_hotkey, client, subscription)
+
     @staticmethod
     def _apply_build_backoff(subscription: DashboardSubscription) -> None:
         """Record a failed/empty build and push the subscription's next attempt
@@ -652,11 +664,27 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
             bt.logging.info(f"WebSocketServer: Client {client_id} authenticated successfully with tier {api_key_tier}")
 
+            # Clients that manage their own subscriptions — e.g. the vanta-ui SSE
+            # relay, which sends an explicit subscribe_subaccount for the one
+            # account it wants — can opt OUT of entity auto-subscribe-all with
+            # ?auto_subscribe=0. That stops them receiving (and having to filter)
+            # every other subaccount's frames, closing the cross-account leak at
+            # the source and removing the N-subaccount thundering herd at connect.
+            # Absent/unknown param keeps the default, so the entity-miner gateway
+            # and older clients are unaffected.
+            auto_subscribe_all = True
+            try:
+                qs = parse_qs(urlsplit(websocket.request.path).query)
+                if qs.get("auto_subscribe", ["1"])[0].strip().lower() in ("0", "false", "no"):
+                    auto_subscribe_all = False
+            except Exception:
+                pass
+
             # For entity clients (tier >= 200), auto-subscribe to all active subaccounts
             hl_mappings = {}
             subscribed_subaccounts = 0
 
-            if api_key_tier >= ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
+            if api_key_tier >= ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER and auto_subscribe_all:
                 entity_hotkey = self.api_key_to_alias.get(api_key)
                 if entity_hotkey:
                     try:
@@ -775,6 +803,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                     "action": "subscribe_subaccount",
                                     "subscribed_to": synthetic_hotkey
                                 }))
+                                self._submit_initial_snapshot(synthetic_hotkey, client)
                             elif client.tier < ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
                                 await websocket.send(json.dumps({
                                     "type": "subscription_status",
@@ -798,6 +827,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                     "action": "subscribe_subaccount",
                                     "subscribed_to": synthetic_hotkey
                                 }))
+                                self._submit_initial_snapshot(synthetic_hotkey, client)
 
                     elif message_type == "unsubscribe_subaccount":
                         synthetic_hotkey = data.get("synthetic_hotkey")
