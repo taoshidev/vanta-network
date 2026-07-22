@@ -325,6 +325,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             except Exception as e:
                 error_msg = f"Deposit execution failed: {str(e)}"
                 bt.logging.error(error_msg)
+                if "miner_hotkey" in locals():
+                    try:
+                        self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+                    except Exception as refresh_error:
+                        bt.logging.error(f"Failed to refresh account size for {miner_hotkey} after deposit failure: {refresh_error}")
                 return {
                     "successfully_processed": False,
                     "error_message": error_msg
@@ -540,6 +545,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         except Exception as e:
             error_msg = f"Withdrawal processing execution failed: {str(e)}"
             bt.logging.error(error_msg)
+            try:
+                self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+            except Exception as refresh_error:
+                bt.logging.error(f"Failed to refresh account size for {miner_hotkey} after withdrawal failure: {refresh_error}")
             return {
                 "successfully_processed": False,
                 "error_message": error_msg,
