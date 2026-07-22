@@ -1610,7 +1610,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'error': 'Refresh account size endpoint requires tier 500 access'}), 403
 
         try:
-            if not self._contract_client._set_miner_account_size(hotkey, TimeUtil.now_in_millis()):
+            if not self._contract_client.refresh_miner_account_size(hotkey):
                 return jsonify({'error': f'Could not retrieve collateral balance for {hotkey}'}), 500
 
             collateral_balance = self._contract_client.get_miner_collateral_balance(hotkey)

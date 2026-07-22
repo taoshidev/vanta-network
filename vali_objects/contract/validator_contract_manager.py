@@ -369,6 +369,19 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             bt.logging.error(f"Force deposit execution failed: {str(e)}")
             raise
 
+    def refresh_miner_account_size(self, hotkey: str) -> bool:
+        """
+        Refresh a miner's cached account size from their current on-chain collateral balance.
+        Read-only -- makes no on-chain transaction.
+
+        Args:
+            hotkey (str): Miner's SS58 hotkey
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        return self._set_miner_account_size(hotkey, TimeUtil.now_in_millis())
+
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """
         Query for slashed amount when a withdrawal request is received.

@@ -85,6 +85,10 @@ class ContractClient(RPCClientBase):
         """Update contract deposit without a stake transfer."""
         return self._server.force_deposit_rpc(amount, miner_hotkey)
 
+    def refresh_miner_account_size(self, hotkey: str) -> bool:
+        """Refresh a miner's cached account size from their current on-chain collateral balance."""
+        return self._server.refresh_miner_account_size_rpc(hotkey)
+
     # ==================== Verification Methods ====================
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
