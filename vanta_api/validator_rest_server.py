@@ -275,6 +275,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
+        self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -1589,6 +1590,43 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         except Exception as e:
             bt.logging.error(f"Error force depositing for {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def refresh_account_size(self, hotkey: str):
+        """
+        Refresh a miner's cached account size from their current on-chain collateral balance.
+        Read-only -- no on-chain transaction is made.
+        Requires tier 500 access.
+
+        Example:
+        curl -X POST http://localhost:48888/admin/refresh-account-size/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Refresh account size endpoint requires tier 500 access'}), 403
+
+        try:
+            if not self._contract_client._set_miner_account_size(hotkey, TimeUtil.now_in_millis()):
+                return jsonify({'error': f'Could not retrieve collateral balance for {hotkey}'}), 500
+
+            collateral_balance = self._contract_client.get_miner_collateral_balance(hotkey)
+            if collateral_balance is None:
+                return jsonify({'error': f'Could not retrieve collateral balance for {hotkey}'}), 500
+            account_size = min(ValiConfig.MAX_COLLATERAL_BALANCE_THETA, collateral_balance) * ValiConfig.COST_PER_THETA
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'collateral_balance': collateral_balance,
+                'account_size': account_size,
+            }), 200
+
+        except Exception as e:
+            bt.logging.error(f"Error refreshing account size for {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
