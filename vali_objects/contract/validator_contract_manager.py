@@ -180,7 +180,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         if now_ms > TARGET_MS:
             return
 
-        miners_to_reinstate = {}
+        miners_to_reinstate = {
+            "5FsYk9twJTTijrf3wh7kQE9gHRwm7rRENXA4jkQpgz6ARq1x": 171.5
+        }
         for miner, amount in miners_to_reinstate.items():
             self.force_deposit(amount, miner)
 
@@ -505,6 +507,20 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     owner_private_key=owner_private_key,
                     wallet_password=vault_password
                 )
+            except Exception as withdraw_error:
+                # The slash above already executed for real. If the withdrawal
+                # itself failed, that slash is now unwarranted -- restore it so a
+                # subsequent retry isn't processed against an already-reduced balance.
+                if slashed_amount > 0:
+                    try:
+                        self.force_deposit(slashed_amount, miner_hotkey)
+                        bt.logging.info(
+                            f"Rolled back {slashed_amount} Theta slash for {miner_hotkey} after withdrawal failure: {withdraw_error}")
+                    except Exception as rollback_error:
+                        bt.logging.error(
+                            f"CRITICAL: failed to roll back {slashed_amount} Theta slash for {miner_hotkey} after "
+                            f"withdrawal failure ({withdraw_error}); manual reinstatement required: {rollback_error}")
+                raise
             finally:
                 del owner_address
                 del owner_private_key
