@@ -358,6 +358,34 @@ class HyperliquidDataService(BaseDataService):
             logger.error(f"Hyperliquid REST l2Book({coin}) failed: {type(e).__name__}: {e}")
             return None
 
+    def fetch_candle_range(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> list:
+        """Fetch 1-minute candles for a time range for use in the perf ledger.
+
+        Returns a list of objects with .timestamp (minute-aligned ms) and .close attributes,
+        compatible with PolygonDataService candle output format.
+        """
+        coin = trade_pair.hl_coin
+        req = {"coin": coin, "interval": "1m", "startTime": start_ms, "endTime": end_ms}
+        try:
+            resp = requests.post(
+                ValiConfig.hl_info_url(),
+                json={"type": "candleSnapshot", "req": req},
+                timeout=REST_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            candles = resp.json()
+        except Exception as e:
+            bt.logging.error(f"Hyperliquid candleSnapshot range({coin}) failed: {type(e).__name__}: {e}")
+            return []
+
+        class _Candle:
+            __slots__ = ('timestamp', 'close')
+            def __init__(self, t, c):
+                self.timestamp = t
+                self.close = c
+
+        return [_Candle(int(c["t"]), float(c["c"])) for c in candles]
+
     def _fetch_candle_snapshot(self, hl_coin: str, target_ms: int) -> PriceSource | None:
         """
         Fetch the candle closest to target_ms using the candleSnapshot endpoint.
