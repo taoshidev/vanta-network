@@ -1661,14 +1661,20 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     def patch_position(self, hotkey: str, position_uuid: str):
         """
-        Edit orders within a single position and rebuild the position state.
-        Requires admin access.
+        Edit orders and/or fee_history within a single position and rebuild the position state.
+        Requires admin access. At least one of 'orders' or 'fee_history' must be provided.
+
+        Fee history entries are identified by (time_ms, fee_type). Only 'amount' is editable;
+        set to 0 to zero out a fee without removing the timestamp anchor used for accrual.
 
         Example:
         curl -X PATCH "http://localhost:48888/admin/<hotkey>/positions/<position_uuid>" \\
           -H "Authorization: Bearer YOUR_API_KEY" \\
           -H "Content-Type: application/json" \\
-          -d '{"orders": [{"order_uuid": "...", "edits": {"price": 124.00}}]}'
+          -d '{
+            "orders": [{"order_uuid": "...", "edits": {"price": 124.00}}],
+            "fee_history": [{"time_ms": 1234567890123, "fee_type": "carry", "amount": 0}]
+          }'
         """
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
@@ -1679,11 +1685,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         if not request.is_json:
             return jsonify({'error': 'Content-Type must be application/json'}), 400
         data = request.get_json()
-        if not data or 'orders' not in data:
-            return jsonify({'error': 'Missing required field: orders'}), 400
-        order_edits = data['orders']
-        if not isinstance(order_edits, list) or not order_edits:
+        if not data or ('orders' not in data and 'fee_history' not in data):
+            return jsonify({'error': 'Must provide at least one of: orders, fee_history'}), 400
+
+        order_edits = data.get('orders', [])
+        fee_edits = data.get('fee_history', [])
+
+        if 'orders' in data and (not isinstance(order_edits, list) or not order_edits):
             return jsonify({'error': 'orders must be a non-empty list'}), 400
+        if 'fee_history' in data and (not isinstance(fee_edits, list) or not fee_edits):
+            return jsonify({'error': 'fee_history must be a non-empty list'}), 400
 
         try:
             position = self._position_client.get_position(hotkey, position_uuid)
@@ -1691,7 +1702,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': f'Position {position_uuid} not found for hotkey {hotkey}'}), 404
 
             patch_denylist = {'order_uuid', 'trade_pair', 'trade_pair_id'}
-            # Validate all edits before applying any
+            # Validate all order edits before applying any
             order_by_uuid = {o.order_uuid: o for o in position.orders}
             for edit in order_edits:
                 if 'order_uuid' not in edit or 'edits' not in edit:
@@ -1702,7 +1713,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if edit['order_uuid'] not in order_by_uuid:
                     return jsonify({'error': f"Order {edit['order_uuid']} not found in position"}), 404
 
-            # Apply edits
+            # Validate all fee_history edits before applying any
+            fee_index = {(f['time_ms'], f['fee_type']): i for i, f in enumerate(position.fee_history)}
+            for fee_edit in fee_edits:
+                if 'time_ms' not in fee_edit or 'fee_type' not in fee_edit or 'amount' not in fee_edit:
+                    return jsonify({'error': 'Each fee_history entry must have time_ms, fee_type, and amount'}), 400
+                key = (fee_edit['time_ms'], fee_edit['fee_type'])
+                if key not in fee_index:
+                    return jsonify({'error': f"Fee not found: time_ms={fee_edit['time_ms']}, fee_type={fee_edit['fee_type']}"}), 404
+
+            # Apply order edits
             for edit in order_edits:
                 order = order_by_uuid[edit['order_uuid']]
                 merged = {**order.to_python_dict(), **edit['edits'], 'src': OrderSource.CORRECTION}
@@ -1736,6 +1756,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 idx = next(i for i, o in enumerate(position.orders) if o.order_uuid == edit['order_uuid'])
                 position.orders[idx] = new_order
 
+            # Apply fee_history edits (zero out amount, preserve timestamp anchor)
+            for fee_edit in fee_edits:
+                key = (fee_edit['time_ms'], fee_edit['fee_type'])
+                position.fee_history[fee_index[key]]['amount'] = fee_edit['amount']
+
             position.rebuild_position_with_updated_orders()
 
             if position.is_open_position and position.last_price_source:
@@ -1756,7 +1781,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
             self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
 
-            return jsonify({'status': 'success', 'position_uuid': position_uuid, 'orders_patched': len(order_edits)})
+            return jsonify({
+                'status': 'success',
+                'position_uuid': position_uuid,
+                'orders_patched': len(order_edits),
+                'fees_patched': len(fee_edits),
+            })
         except Exception as e:
             bt.logging.error(f"Error patching position {position_uuid} for hotkey {hotkey}: {e}")
             bt.logging.error(traceback.format_exc())
