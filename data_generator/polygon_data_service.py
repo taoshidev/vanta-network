@@ -251,10 +251,17 @@ class PolygonDataService(BaseDataService):
         # Key: (trade_pair, start_ms, end_ms) -> Value: List[PriceSource]
         self._test_candle_data = {}
 
+        # Only open a websocket for categories where Polygon actually has a VANTA-sourced pair to
+        # subscribe to. Crypto is fully Hyperliquid-sourced today, so its connection would sit idle.
+        enabled_websocket_categories = {
+            tpc for tpc in (TradePairCategory.CRYPTO, TradePairCategory.FOREX, TradePairCategory.EQUITIES)
+            if self.get_tradeable_pairs(category=tpc, include_blocked=False, src=TradePairSource.VANTA)
+        }
+
         super().__init__(
             provider_name=POLYGON_PROVIDER_NAME,
             running_unit_tests=running_unit_tests,
-            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX, TradePairCategory.EQUITIES}
+            enabled_websocket_categories=enabled_websocket_categories
         )
 
         self.MARKET_STATUS = None
@@ -626,6 +633,8 @@ class PolygonDataService(BaseDataService):
 
         for tp in pairs_to_subscribe:
             if tp.is_crypto:
+                if tp.src != TradePairSource.VANTA:
+                    continue
                 symbol = "XT." + tp.trade_pair.replace('/', '-')
                 self.WEBSOCKET_OBJECTS[TradePairCategory.CRYPTO].subscribe(symbol)
                 subbed.append(symbol)
