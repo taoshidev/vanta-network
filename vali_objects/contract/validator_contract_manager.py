@@ -323,6 +323,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             except Exception as e:
                 error_msg = f"Deposit execution failed: {str(e)}"
                 bt.logging.error(error_msg)
+                if "miner_hotkey" in locals():
+                    try:
+                        self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+                    except Exception as refresh_error:
+                        bt.logging.error(f"Failed to refresh account size for {miner_hotkey} after deposit failure: {refresh_error}")
                 return {
                     "successfully_processed": False,
                     "error_message": error_msg
@@ -505,6 +510,20 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     owner_private_key=owner_private_key,
                     wallet_password=vault_password
                 )
+            except Exception as withdraw_error:
+                # The slash above already executed for real. If the withdrawal
+                # itself failed, that slash is now unwarranted -- restore it so a
+                # subsequent retry isn't processed against an already-reduced balance.
+                if slashed_amount > 0:
+                    try:
+                        self.force_deposit(slashed_amount, miner_hotkey)
+                        bt.logging.info(
+                            f"Rolled back {slashed_amount} Theta slash for {miner_hotkey} after withdrawal failure: {withdraw_error}")
+                    except Exception as rollback_error:
+                        bt.logging.error(
+                            f"CRITICAL: failed to roll back {slashed_amount} Theta slash for {miner_hotkey} after "
+                            f"withdrawal failure ({withdraw_error}); manual reinstatement required: {rollback_error}")
+                raise
             finally:
                 del owner_address
                 del owner_private_key
@@ -524,6 +543,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         except Exception as e:
             error_msg = f"Withdrawal processing execution failed: {str(e)}"
             bt.logging.error(error_msg)
+            try:
+                self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+            except Exception as refresh_error:
+                bt.logging.error(f"Failed to refresh account size for {miner_hotkey} after withdrawal failure: {refresh_error}")
             return {
                 "successfully_processed": False,
                 "error_message": error_msg,
