@@ -18,6 +18,7 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 8. A maximum of **10 entities** can be registered on the network at any time.
 9. Each entity supports multiple subaccounts.
 10. **CRITICAL**: Never reuse synthetic hotkeys from eliminated subaccounts. Eliminated synthetic hotkeys are permanently blacklisted.
+11. Subaccounts are eliminated for inactivity: a subaccount in `SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED` that goes **60 days** without submitting a single order is eliminated with reason `INACTIVE`, the same rule applied to regular miners. This does not apply to the entity hotkey itself, which never submits orders.
 
 ## Collateral Requirements
 

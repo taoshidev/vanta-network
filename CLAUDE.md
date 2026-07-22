@@ -175,6 +175,9 @@ The system uses a distributed RPC architecture for inter-process communication:
 - **Probation**: Miners below rank 25 in asset class
   - 90-day probation period
   - Must achieve rank 25 or better to avoid elimination
+- **Inactivity**: Automatic elimination (`INACTIVE`) after 60 days without a submitted order
+  - Applies to MAINCOMP, CHALLENGE, and PROBATION miners, and to entity-miner subaccounts in SUBACCOUNT_CHALLENGE/SUBACCOUNT_FUNDED/SUBACCOUNT_ALPHA
+  - Does not apply to the entity hotkey itself (`ENTITY` bucket), which never submits orders directly
 
 ## Development Patterns
 

@@ -45,11 +45,12 @@ A long position is a bet that the trade pair will increase, while a short positi
    - Miners in probation have 60 days from time of demotion to be promoted back into main competition.
    - Promotion requires cumulative returns above 10% (crypto/equities/commodities) or 8% (forex) and ranking back into the top 25.
    - If they fail to do so within this window, they will be eliminated.
-11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
-12. A miner's order will be ignored if placing a trade outside of market hours.
-13. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
-14. There is a 5-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
-15. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
+11. Miners are eliminated for inactivity: if a miner in challenge period, main competition, or probation goes **60 days** without submitting a single order, it is eliminated with reason `INACTIVE`. This is checked continuously alongside the other elimination checks.
+12. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
+13. A miner's order will be ignored if placing a trade outside of market hours.
+14. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
+15. There is a 5-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
+16. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
 
 ## Asset Class Selection
 Each miner selects a single asset class to compete in (crypto, forex, equities, or commodities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
