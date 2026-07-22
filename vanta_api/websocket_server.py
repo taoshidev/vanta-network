@@ -14,8 +14,9 @@ import time
 import traceback
 from typing import Dict, Any, Optional, Deque
 import websockets
-from websockets import CloseCode
+from websockets.protocol import State
 from websockets.legacy.server import WebSocketServerProtocol
+from urllib.parse import urlsplit, parse_qs
 
 import bittensor as bt
 
@@ -48,6 +49,11 @@ MAX_N_WS_PER_API_KEY = 5
 SUBACCOUNT_REFRESH_INTERVAL_S = 0.1
 SUBACCOUNT_REFRESH_EXPIRATION_MS = 15 * 1000
 
+# Exponential backoff for subscriptions whose build fails or returns no
+# dashboard, so the 0.1s staleness scanner doesn't re-hammer them ~10x/s.
+SUBACCOUNT_RETRY_BASE_MS = 1000
+SUBACCOUNT_RETRY_MAX_MS = 30_000
+
 
 @dataclass
 class DashboardSubscription:
@@ -56,6 +62,13 @@ class DashboardSubscription:
     checkpoints_time_ms: int = 0
     daily_returns_time_ms: int = 0
     last_update_time_ms: int = 0
+    # Backoff for failed/empty builds: on failure the staleness scanner must
+    # not re-attempt this subscription every 100ms (it left last_update_time_ms
+    # stale and re-hammered ~10x/s forever — one missing subaccount saturated
+    # the pool and the GIL). failure_count drives an exponential next_attempt_ms
+    # gate; both reset to 0 on a successful build.
+    failure_count: int = 0
+    next_attempt_ms: int = 0
     lock: Lock = field(default_factory=Lock)
 
     @staticmethod
@@ -100,19 +113,29 @@ class WebSocketServerClient:
     sequence_number: int = 0
     subscribe_broadcasts: bool = False
     dashboard_subscriptions: dict[str, DashboardSubscription] = field(default_factory=dict)
+    # Guards sequence-number assignment so worker threads can serialize frames
+    # off the event loop while keeping per-client ordering monotonic.
+    send_lock: Lock = field(default_factory=Lock)
 
-    async def send(self, message:dict) -> None:
-        serialized_message = json.dumps(
-            {
-                "sequence": self.sequence_number,
-                "timestamp": TimeUtil.now_in_millis(),
-                "data": message
-            },
+    def serialize(self, message: dict) -> str:
+        """Assign the next sequence number and produce the wire string. Safe to
+        call from a worker thread — the lock keeps sequence assignment monotonic
+        even when several dashboard builds finish concurrently. Doing the
+        json.dumps here (not on the loop) is what keeps a frame herd from
+        stalling the event loop and tripping the ping-timeout mass-reap."""
+        with self.send_lock:
+            seq = self.sequence_number
+            self.sequence_number += 1
+        return json.dumps(
+            {"sequence": seq, "timestamp": TimeUtil.now_in_millis(), "data": message},
             cls=CustomEncoder,
-            separators=(",", ":")
+            separators=(",", ":"),
         )
-        self.sequence_number += 1
-        await self.websocket.send(serialized_message)
+
+    async def send(self, message: dict) -> None:
+        # Retained for loop-side callers (broadcasts). The hot dashboard path
+        # serializes in the worker via serialize() + WebSocketServer._send_serialized.
+        await self.websocket.send(self.serialize(message))
 
 
 class WebSocketServer(APIKeyMixin, RPCServerBase):
@@ -336,8 +359,24 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     bt.logging.info(
                         f"WebSocketServer: Removed client {client_id} from API key {api_key_alias}")
 
-            if client.websocket.state == websockets.protocol.OPEN:
-                client.websocket.fail_connection(code=CloseCode.ABNORMAL_CLOSURE)
+            # websockets 15: the handler receives an asyncio ServerConnection.
+            # `websockets.protocol.OPEN` no longer exists (use State.OPEN) and
+            # there is no sync `fail_connection()` — the previous code raised
+            # AttributeError here on every OPEN-client removal, leaking clients
+            # and hanging shutdown. Schedule the async close() on the server
+            # loop from whatever thread called us, guarding a closed/absent loop
+            # so teardown never raises.
+            if client.websocket.state == State.OPEN:
+                loop = self._event_loop
+                if loop is not None and not loop.is_closed():
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            client.websocket.close(code=1001, reason="client removed"),
+                            loop,
+                        )
+                    except Exception as e:
+                        bt.logging.debug(
+                            f"WebSocketServer: could not schedule close for {client_id}: {e}")
 
             bt.logging.info(f"WebSocketServer: Client {client_id} removed")
 
@@ -351,6 +390,26 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         try:
             await client.send(message)
+        except websockets.exceptions.ConnectionClosed:
+            bt.logging.info(f"WebSocketServer: Client {client_id} disconnected while sending")
+            self._remove_client(client_id)
+        except Exception as e:
+            bt.logging.error(f"WebSocketServer: Error sending to client {client_id}: {e}")
+            self._remove_client(client_id)
+
+    async def _send_serialized(self, client: WebSocketServerClient, serialized: str) -> None:
+        """Loop-side raw send of an already-serialized frame (the worker did the
+        json.dumps). Same tier recheck + disconnect handling as _send_message,
+        but no serialization on the loop."""
+        client_id = client.client_id
+
+        if not self.can_access_tier(client.api_key, client.tier):
+            bt.logging.warning(f"WebSocketServer: Client {client_id} tier changed")
+            self._remove_client(client_id)
+            return
+
+        try:
+            await client.websocket.send(serialized)
         except websockets.exceptions.ConnectionClosed:
             bt.logging.info(f"WebSocketServer: Client {client_id} disconnected while sending")
             self._remove_client(client_id)
@@ -390,18 +449,55 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             bt.logging.error(f"WebSocketServer: Error queueing message: {e}")
             bt.logging.error(traceback.format_exc())
 
+    def _submit_initial_snapshot(self, synthetic_hotkey: str, client: WebSocketServerClient) -> None:
+        """Push an immediate dashboard build on subscribe so the first frame
+        arrives in ~1-2s instead of waiting for the 0.1s staleness scanner to
+        reach this subaccount behind its (single-threaded) backlog. This is the
+        server-side home of the vanta-ui relay's initial-snapshot injection."""
+        subscription = client.dashboard_subscriptions.get(synthetic_hotkey)
+        if subscription is None:
+            return
+        self._thread_pool.submit(
+            self._send_dashboard_update, synthetic_hotkey, client, subscription)
+
+    @staticmethod
+    def _apply_build_backoff(subscription: DashboardSubscription) -> None:
+        """Record a failed/empty build and push the subscription's next attempt
+        out exponentially. Must be called while holding subscription.lock."""
+        subscription.failure_count += 1
+        delay = min(
+            SUBACCOUNT_RETRY_BASE_MS * (2 ** (subscription.failure_count - 1)),
+            SUBACCOUNT_RETRY_MAX_MS,
+        )
+        subscription.next_attempt_ms = TimeUtil.now_in_millis() + delay
+
     def _send_dashboard_update(
         self,
         synthetic_hotkey: str,
         client: WebSocketServerClient,
         subscription: DashboardSubscription
     ) -> None:
+        # All subscription mutations happen under the lock so failure accounting
+        # and the send stay consistent with the scanner reading next_attempt_ms.
         try:
             with subscription.lock:
-                subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+                try:
+                    subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+                except Exception as e:
+                    self._apply_build_backoff(subscription)
+                    bt.logging.error(f"WebSocketServer: dashboard fetch failed for {synthetic_hotkey}: {e}")
+                    return
+
                 if subaccount_dashboard is None:
-                    bt.logging.warning(f"WebSocketServer: No dashboard found for synthetic hotkey {synthetic_hotkey}")
-                else:
+                    self._apply_build_backoff(subscription)
+                    # Log only on the first failure of a streak — backoff keeps
+                    # this from spamming once per 100ms.
+                    if subscription.failure_count <= 1:
+                        bt.logging.warning(
+                            f"WebSocketServer: No dashboard found for synthetic hotkey {synthetic_hotkey}")
+                    return
+
+                try:
                     dashboard = create_subaccount_dashboard(
                         synthetic_hotkey,
                         subaccount_dashboard,
@@ -417,13 +513,24 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         subscription.checkpoints_time_ms,
                         subscription.daily_returns_time_ms,
                     )
+                except Exception as e:
+                    self._apply_build_backoff(subscription)
+                    bt.logging.error(f"WebSocketServer: dashboard build failed for {synthetic_hotkey}: {e}")
+                    bt.logging.error(traceback.format_exc())
+                    return
 
-                    subscription.update_times(dashboard)
+                # Success: clear backoff and advance section watermarks.
+                subscription.failure_count = 0
+                subscription.next_attempt_ms = 0
+                subscription.update_times(dashboard)
 
-                    asyncio.run_coroutine_threadsafe(
-                        self._send_message(client, {"dashboard": dashboard}),
-                        self._event_loop
-                    )
+                # Serialize in THIS worker thread (json.dumps + sequence under
+                # the per-client lock); schedule only the raw send on the loop.
+                serialized = client.serialize({"dashboard": dashboard})
+                asyncio.run_coroutine_threadsafe(
+                    self._send_serialized(client, serialized),
+                    self._event_loop
+                )
 
         except Exception as e:
             bt.logging.error(f"WebSocketServer: Error processing dashboard update: {e}")
@@ -445,11 +552,16 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         while True:
             try:
                 time.sleep(SUBACCOUNT_REFRESH_INTERVAL_S)
-                expiration_ms = TimeUtil.now_in_millis() - SUBACCOUNT_REFRESH_EXPIRATION_MS
+                now_ms = TimeUtil.now_in_millis()
+                expiration_ms = now_ms - SUBACCOUNT_REFRESH_EXPIRATION_MS
                 for client in list(self._clients.values()):
                     subscriptions = dict(client.dashboard_subscriptions)
                     for synthetic_hotkey, subscription in subscriptions.items():
-                        if subscription.last_update_time_ms < expiration_ms:
+                        # Skip stale subscriptions still inside their failure
+                        # backoff window (next_attempt_ms), so one missing/slow
+                        # subaccount can't be rebuilt every 100ms.
+                        if (subscription.last_update_time_ms < expiration_ms
+                                and now_ms >= subscription.next_attempt_ms):
                             self._send_dashboard_update(synthetic_hotkey, client, subscription)
 
             except Exception as e:
@@ -585,11 +697,27 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
             bt.logging.info(f"WebSocketServer: Client {client_id} authenticated successfully with tier {api_key_tier}")
 
+            # Clients that manage their own subscriptions — e.g. the vanta-ui SSE
+            # relay, which sends an explicit subscribe_subaccount for the one
+            # account it wants — can opt OUT of entity auto-subscribe-all with
+            # ?auto_subscribe=0. That stops them receiving (and having to filter)
+            # every other subaccount's frames, closing the cross-account leak at
+            # the source and removing the N-subaccount thundering herd at connect.
+            # Absent/unknown param keeps the default, so the entity-miner gateway
+            # and older clients are unaffected.
+            auto_subscribe_all = True
+            try:
+                qs = parse_qs(urlsplit(websocket.request.path).query)
+                if qs.get("auto_subscribe", ["1"])[0].strip().lower() in ("0", "false", "no"):
+                    auto_subscribe_all = False
+            except Exception:
+                pass
+
             # For entity clients (tier >= 200), auto-subscribe to all active subaccounts
             hl_mappings = {}
             subscribed_subaccounts = 0
 
-            if api_key_tier >= ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
+            if api_key_tier >= ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER and auto_subscribe_all:
                 entity_hotkey = self.api_key_to_alias.get(api_key)
                 if entity_hotkey:
                     try:
@@ -708,6 +836,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                     "action": "subscribe_subaccount",
                                     "subscribed_to": synthetic_hotkey
                                 }))
+                                self._submit_initial_snapshot(synthetic_hotkey, client)
                             elif client.tier < ValiConfig.SUBACCOUNT_SUBSCRIPTION_TIER:
                                 await websocket.send(json.dumps({
                                     "type": "subscription_status",
@@ -731,6 +860,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                     "action": "subscribe_subaccount",
                                     "subscribed_to": synthetic_hotkey
                                 }))
+                                self._submit_initial_snapshot(synthetic_hotkey, client)
 
                     elif message_type == "unsubscribe_subaccount":
                         synthetic_hotkey = data.get("synthetic_hotkey")
@@ -872,7 +1002,20 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         self._handle_client,
                         self.host,
                         self.port,
-                        compression="deflate",
+                        # Compression disabled: per-frame permessage-deflate ran
+                        # ON the event loop and was a primary loop-stall cost
+                        # behind the 1006 bursts. Dashboards are modest; if
+                        # bandwidth ever demands it, compress in the worker
+                        # (alongside serialize()), not here.
+                        compression=None,
+                        # Explicit keepalive: the library defaults (20s/20s) meant
+                        # a transient event-loop stall past 20s reaped EVERY
+                        # connection in the same second (the synchronized 1006
+                        # bursts). A 60s ping_timeout tolerates a stall while the
+                        # real fix (off-loop serialization) removes its cause.
+                        ping_interval=20,
+                        ping_timeout=60,
+                        close_timeout=10,
                         reuse_address=True,  # Allow reuse of the address
                         reuse_port=True  # Allow reuse of the port (on platforms that support it)
                     )
