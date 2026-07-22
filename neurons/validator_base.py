@@ -101,6 +101,12 @@ class ValidatorBase:
         # API Server related arguments
         parser.add_argument("--serve", action='store_true',
                             help="Start the API server for REST and WebSocket endpoints")
+        # Default spawn_api=True is backward-safe: a code update under an OLD run.sh keeps today's
+        # in-core spawning; only the split run.sh passes --no-spawn-api. See validator.py's spawn
+        # gate for why --serve must remain on alongside this.
+        parser.add_argument("--no-spawn-api", action='store_false', dest='spawn_api', default=True,
+                            help="Do not spawn the REST/WebSocket servers from the validator core "
+                                 "(they run as separate PM2 apps). Requires run.sh to launch them.")
         parser.add_argument("--api-host", type=str, default="127.0.0.1",
                             help="Host address for the API server")
         parser.add_argument("--api-rest-port", type=int, default=48888,

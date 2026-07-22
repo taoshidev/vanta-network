@@ -203,7 +203,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         self._debt_ledger_client = DebtLedgerClient(connection_mode=connection_mode)
         self._limit_order_client = LimitOrderClient(connection_mode=connection_mode)
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
-        self._statistics_client = MinerStatisticsClient(connection_mode=connection_mode)
+        # connect_immediately=False: MinerStatisticsClient defaults to eager-connect with 60 retries,
+        # which would block/crash WS construction if core isn't up. Lazy for the standalone app.
+        self._statistics_client = MinerStatisticsClient(connection_mode=connection_mode, connect_immediately=False)
         self._challenge_period_client = ChallengePeriodClient(
             connection_mode=connection_mode,
             running_unit_tests=running_unit_tests
@@ -933,7 +935,10 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         # Close the server
         if self.server:
-            await self.server.close()
+            # websockets 16.0 (asyncio API): Server.close() is SYNCHRONOUS (returns None) — do NOT
+            # await it (awaiting None raises TypeError and aborts graceful shutdown). It initiates
+            # the close; wait_closed() below is the awaitable that blocks until it finishes.
+            self.server.close()
             try:
                 await self.server.wait_closed()
             except Exception as e:
