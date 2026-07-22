@@ -146,7 +146,7 @@ npm install -g pm2
 brew install jq  # or apt install jq for Linux
 ```
 
-2. Create a `secrets.json` file in the repository root:
+2. Create a `secrets.json` file in the repository root (copy `secrets_example.json` as a starting point):
 ```json
 {
   "polygon_apikey": "YOUR_POLYGON_API_KEY",

@@ -18,6 +18,7 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 8. A maximum of **10 entities** can be registered on the network at any time.
 9. Each entity supports multiple subaccounts.
 10. **CRITICAL**: Never reuse synthetic hotkeys from eliminated subaccounts. Eliminated synthetic hotkeys are permanently blacklisted.
+11. Subaccounts are eliminated for inactivity: a subaccount in `SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED` that goes **60 days** without submitting a single order is eliminated with reason `INACTIVE`, the same rule applied to regular miners. This does not apply to the entity hotkey itself, which never submits orders.
 
 ## Collateral Requirements
 
@@ -50,7 +51,7 @@ If the entity's balance is below the required theta, subaccount creation is reje
 
 After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all funded subaccounts. Each funded subaccount's margin is capped at 8% of its account size (the max drawdown threshold), and theta is consumed at a rate of **35 USD per theta**. Challenge period subaccounts are fully exempt, and do not require or consume any margin collateral.
 
-Incoming orders from funded subaccounts are blocked if the projected required collateral would exceed the entity's deposited balance. The validator reads deposited balances from an on-chain cache refreshed every ~60 seconds — if the cache has no entry for the entity, orders are rejected.
+Incoming orders from funded subaccounts are blocked if the projected required collateral would exceed the entity's deposited balance. The validator reads deposited balances from an on-chain cache refreshed every ~30 minutes — if the cache has no entry for the entity, orders are rejected.
 
 Collateral is slashed proportionally to realized losses each time a position closes at a loss, up to a maximum of 8% of the subaccount's account size. If a subaccount is eliminated, all remaining collateral headroom is slashed in a single call. Withdrawals are rejected if they would leave the entity below its current cross-margin requirement.
 
@@ -143,7 +144,7 @@ If the entity has no open positions, `required_theta = 0` and the full balance i
 | `ENTITY_MAX_SUBACCOUNTS` | 10,000 | Maximum subaccounts per entity |
 | `SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD` | 8% | MDD cap applied to funded subaccounts |
 | `ENTITY_COLLATERAL_CPT_RISK` | 35 | USD of loss capacity per theta (used for margin and slash-to-theta conversion) |
-| `ENTITY_COLLATERAL_CACHE_REFRESH_S` | 60 | Seconds between on-chain collateral cache refreshes |
+| `ENTITY_COLLATERAL_CACHE_REFRESH_S` | 1800 | Seconds between on-chain collateral cache refreshes (30 min) |
 
 </details>
 
@@ -322,24 +323,26 @@ The command prints your API key. Store it — you will need it in `miner_secrets
 
 ### 8. Configure Miner Secrets
 
-Create `mining/miner_secrets.json` with your wallet credentials:
+Create `mining/miner_secrets.json` with your wallet credentials (copy `mining/miner_secrets_example.json` as a starting point, which also documents the optional USDC auto-payout fields):
 
 ```json
 {
-  "api_key": "your_api_key",
   "wallet_name": "your_wallet_name",
   "wallet_hotkey": "your_hotkey_name",
   "wallet_password": "your_wallet_password",
+  "validator_url": "your_validator_rest_url",
+  "validator_ws_url": "your_validator_ws_url",
   "validator_api_key": "your_validator_api_key"
 }
 ```
 
 | Field | Description |
 |---|---|
-| `api_key` | API key for authenticating requests to your miner's REST server |
 | `wallet_name` | Bittensor wallet name |
 | `wallet_hotkey` | Bittensor hotkey name |
 | `wallet_password` | Wallet coldkey password (used for signing subaccount creation requests) |
+| `validator_url` | Validator REST API URL (required for the dashboard and USDC payout daemon) |
+| `validator_ws_url` | Validator WebSocket URL (required for real-time dashboard streaming) |
 | `validator_api_key` | API key for the validator WebSocket connection (obtained via `vanta entity apikey`) |
 
 To register your entity miner's public endpoint URL with the validator, add:
@@ -352,7 +355,22 @@ To register your entity miner's public endpoint URL with the validator, add:
 
 Or set the `ENTITY_MINER_ENDPOINT_URL` environment variable instead.
 
-### 9. Run the Miner
+### 9. Configure Your Own API Key
+
+Requests *to* your entity miner gateway (order submission, subaccount creation, dashboard endpoints) are authenticated separately, against `vanta_api/api_keys.json` — not `miner_secrets.json`. Create it (copy `vanta_api/api_keys_example.json` as a starting point):
+
+```json
+{
+  "my_api_key": {
+    "key": "your_api_key",
+    "tier": 100
+  }
+}
+```
+
+Send this key as the `Authorization` header on requests to your gateway (see [entity_miner_rest_server.md](entity_miner_rest_server.md)).
+
+### 10. Run the Miner
 
 Run the miner with the `--entity-miner` flag to enable the Entity Miner Gateway:
 
@@ -385,7 +403,7 @@ python neurons/miner.py \
 
 This starts the miner REST API on port 8088, which handles both order submission and subaccount management.
 
-### 10. Create Subaccounts
+### 11. Create Subaccounts
 
 Create subaccounts under your entity via the Vanta CLI or directly via the Entity Miner Gateway.
 
@@ -430,7 +448,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
 
-### 11. Submit Orders
+### 12. Submit Orders
 
 Send orders to specific subaccounts by including `subaccount_id` in your order request:
 

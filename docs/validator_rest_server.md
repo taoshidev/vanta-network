@@ -313,7 +313,7 @@ Returns statistics for a specific miner.
 `GET /eliminations`
 
 Returns information about which miners have been eliminated and why. Note: deregistered miners are not shown in this list.
-More information can be found here: https://github.com/taoshidev/proprietary-trading-network/blob/main/docs/miner.md#miner
+More information can be found here: https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md#miner
 
 e.x:
 ```json

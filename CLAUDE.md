@@ -86,9 +86,9 @@ npm run preview  # Preview production build
 ### Data Infrastructure
 - **`data_generator/`** - Financial market data services (Polygon, Tiingo, Binance, Bybit, Kraken)
 - **`vanta_api/`** - Vanta Network API layer
-  - `rest_server.py` - REST API server for signal submission and queries
+  - `base_rest_server.py` - Shared REST server base; `miner_rest_server.py`, `entity_miner_rest_server.py`, `validator_rest_server.py` - per-role REST servers for signal submission and queries
   - `websocket_server.py` / `websocket_client.py` - Real-time WebSocket communication
-  - `api_manager.py` - API key and authentication management
+  - `miner_api_manager.py`, `entity_miner_api_manager.py`, `validator_api_manager.py` - API key and authentication management
   - `nonce_manager.py` - Request nonce handling
 - **`mining/`** - Signal processing pipeline
   - `received_signals/` - Incoming miner signals
@@ -119,8 +119,8 @@ The system uses a distributed RPC architecture for inter-process communication:
   - Scoring weights and risk parameters
   - Challenge period and elimination thresholds
 - **`miner_config.py`** - Miner configuration
-- **`requirements.txt`** - Python dependencies (Bittensor 9.9.0, Pydantic 2.10.3, financial APIs)
-- **`meta/meta.json`** - Version management (subnet_version: 8.8.8)
+- **`requirements.txt`** - Python dependencies (Bittensor 10.3.0, Pydantic 2.10.3, financial APIs)
+- **`meta/meta.json`** - Version management (subnet_version: 8.15.3)
 - **`setup.py`** - Package setup (taoshi-prop-net)
 
 ## Trading System Architecture
@@ -143,16 +143,16 @@ The system uses a distributed RPC architecture for inter-process communication:
 ### Performance Evaluation
 - **Current Scoring**: Debt-based system tracking emissions, performance, and penalties
   - PnL weight: 100% (other metrics set to 0 in current config)
-  - Weighted average with decay rate (0.075) for recent performance emphasis
-  - 120-day target ledger window
+  - Weights are set from the previous week's PnL (scaled by penalties); payout periods run midnight-to-midnight UTC, Sunday-to-Sunday
 - **Legacy Metrics** (configurable): Calmar, Sharpe, Omega, Sortino ratios + returns
+  - Weighted average with decay rate (0.075) for recent performance emphasis, 180-day target ledger window
 - **Risk Management**:
-  - 10% max drawdown elimination threshold (MAX_TOTAL_DRAWDOWN = 0.9)
-  - 5% daily drawdown limit (MAX_DAILY_DRAWDOWN = 0.95)
+  - 5% intraday drawdown elimination threshold, measured from the day's opening equity (FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05)
+  - 8% end-of-day drawdown elimination threshold, measured from the highest-ever end-of-day equity (FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08)
   - Risk-adjusted performance penalties based on Sharpe, Sortino, Calmar, Omega ratios
 - **Fees**:
   - Carry fees: 10.95% annually (crypto), 3% annually (forex); equities instead pay a 3% annual stock-borrow fee (short) or 6.6% annual margin interest on the borrowed amount (long); commodities carry no fee for standard positions. Hyperliquid-linked entity positions pay live Hyperliquid funding rates instead of the flat carry fee, regardless of asset class.
-  - Spread fees: 0.05% × order value (crypto, equities), 0.045% × order value (commodities); none for forex
+  - Spread fees: 0.05% × order value (crypto, equities), 0.045% × order value (commodities, indices); none for forex
   - Slippage costs: Higher for high leverage and low liquidity assets
 - **Leverage Limits**:
   - Crypto: 0.01 to 0.5x
@@ -166,15 +166,18 @@ The system uses a distributed RPC architecture for inter-process communication:
   - 75% similarity threshold, 10-day lookback window
   - Time-lag analysis for follower detection
   - 2-week review period before elimination
-- **Max Drawdown**: Automatic elimination at 10% MDD
-  - Continuous monitoring via `mdd_checker/` service
-  - 60-second refresh interval
+- **Max Drawdown**: Automatic elimination at a 5% intraday drawdown (from the day's opening equity) or an 8% end-of-day drawdown (from the highest-ever end-of-day equity)
+  - Continuous monitoring via `challenge_period/challengeperiod_manager.py`
+  - 30-second refresh interval
 - **Challenge Period**: New miners enter 61-90 day challenge period
   - Must reach 75th percentile to enter main competition
   - Minimal weights during challenge period
 - **Probation**: Miners below rank 25 in asset class
-  - 60-day probation period
-  - Must outscore 15th-ranked miner to avoid elimination
+  - 90-day probation period
+  - Must achieve rank 25 or better to avoid elimination
+- **Inactivity**: Automatic elimination (`INACTIVE`) after 60 days without a submitted order
+  - Applies to MAINCOMP, CHALLENGE, and PROBATION miners, and to entity-miner subaccounts in SUBACCOUNT_CHALLENGE/SUBACCOUNT_FUNDED/SUBACCOUNT_ALPHA
+  - Does not apply to the entity hotkey itself (`ENTITY` bucket), which never submits orders directly
 
 ## Development Patterns
 
@@ -226,21 +229,21 @@ client.set_direct_server(server_instance)
 ```
 
 ### External Dependencies
-- **Bittensor 9.9.0** - Blockchain and subnet integration
+- **Bittensor 10.3.0** - Blockchain and subnet integration
 - **Pydantic 2.10.3** - Data validation and serialization
 - **Financial APIs**:
-  - Polygon API Client 1.15.3 ($248/month)
+  - Polygon API Client 1.16.0 ($248/month)
   - Tiingo 0.15.6 ($50/month)
   - Databento 0.69.0 (optional, supplementary equities price source)
 - **ML Stack**: scikit-learn 1.5.0, scipy 1.13.0, pandas 2.2.2
 - **Web Services**:
   - Flask 3.0.3 + Waitress 2.1.2 for REST API
-  - WebSockets for real-time communication
+  - WebSockets 15.0.1 for real-time communication
 - **Data Visualization**: matplotlib 3.9.0
 - **Cloud Services**: Google Cloud Storage 2.17.0, Secret Manager 2.21.1
 - **Taoshi SDKs**:
-  - collateral_sdk@1.0.6 - Collateral management
-  - vanta-cli@2.0.0 - Vanta network CLI tools
+  - collateral_sdk@1.0.9 - Collateral management
+  - vanta-cli@3.0.1 - Vanta network CLI tools
 
 ## Production Deployment
 
@@ -254,7 +257,7 @@ The `run.sh` script provides production deployment with:
 - Minimum uptime: 5 minutes, Max restarts: 5
 
 ### Version Management
-- Current version: 8.8.8 (in `meta/meta.json`)
+- Current version: 8.15.3 (in `meta/meta.json`)
 - Version checking against GitHub API
 - Automatic pip install and package updates
 - Safe rollback: git pull only if version is newer

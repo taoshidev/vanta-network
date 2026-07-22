@@ -24,12 +24,12 @@ The steps detailed below regenerate the `validation/*` directory by fetching the
 ## Steps 
 1. **Get Restoration File**: Ping a Taoshi team member in the Discord and they will send you a near realtime checkpoint file. (Distribution limited to once a week for verified validators)
    
-2. **Prepare for Restoration**: Transfer the checkpoint file to the root level of the `proprietary-trading-network` directory on your validator:
+2. **Prepare for Restoration**: Transfer the checkpoint file to the root level of the `vanta-network` directory on your validator:
    - **If you receive a compressed file**: Name it `validator_checkpoint.json.gz`
    - **If you receive an uncompressed file**: Name it `validator_checkpoint.json`
    - **Auto-detection**: The script will automatically detect which format you have
 3. **Stop Validator**: Temporarily halt your validator with PM2 using `pm2 stop sn8 vanta`
-4. **Run Restoration Script**: Within the `proprietary-trading-network` directory, execute:
+4. **Run Restoration Script**: Within the `vanta-network` directory, execute:
 
     ```bash
     python3 restore_validator_from_backup.py
