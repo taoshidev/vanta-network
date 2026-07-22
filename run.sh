@@ -335,7 +335,6 @@ check_and_restart_pm2() {
 # Start core first (owns the state-tier RPC servers), then the API apps. Ordering is a nicety,
 # not a gate — the API apps lazy-connect and tolerate core being absent (readiness watchdog alerts).
 pip_install_if_requirements_changed
-# Fixed: Proper array passing
 check_and_restart_pm2 "$proc_name" "$script" args
 if [ "$serve_enabled" = true ]; then
     check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
