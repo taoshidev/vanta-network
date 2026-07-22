@@ -62,7 +62,7 @@ class DrawdownStats:
         if not d:
             return cls()
         valid_keys = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in valid_keys})
+        return cls(**{k: v for k, v in d.items() if k in valid_keys and v is not None})
 
 
 @dataclass
