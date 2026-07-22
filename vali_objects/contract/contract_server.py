@@ -146,6 +146,10 @@ class ContractServer(RPCServerBase):
         """Update contract deposit without a stake transfer."""
         return self._manager.force_deposit(amount, miner_hotkey)
 
+    def refresh_miner_account_size_rpc(self, hotkey: str) -> bool:
+        """Refresh a miner's cached account size from their current on-chain collateral balance."""
+        return self._manager.refresh_miner_account_size(hotkey)
+
     def set_test_collateral_balance_rpc(self, miner_hotkey: str, balance_rao: int) -> None:
         """Inject test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
         return self._manager.set_test_collateral_balance(miner_hotkey, balance_rao)

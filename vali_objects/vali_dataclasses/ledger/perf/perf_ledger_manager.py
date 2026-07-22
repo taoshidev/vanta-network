@@ -269,16 +269,19 @@ class PerfLedgerManager(CacheController):
                 return ret
 
             for hk, value in data.items():
-                if isinstance(value, dict):
-                    if 'cps' in value:
-                        # New flat format: value is a PerfLedger dict directly
-                        ret[hk] = PerfLedger.from_dict(value)
-                    elif 'portfolio' in value:
-                        # Old V2 bundle format: extract portfolio ledger
-                        ret[hk] = PerfLedger.from_dict(value['portfolio'])
-                    # else: skip unrecognized format
-                elif isinstance(value, PerfLedger):
-                    ret[hk] = value
+                try:
+                    if isinstance(value, dict):
+                        if 'cps' in value:
+                            # New flat format: value is a PerfLedger dict directly
+                            ret[hk] = PerfLedger.from_dict(value)
+                        elif 'portfolio' in value:
+                            # Old V2 bundle format: extract portfolio ledger
+                            ret[hk] = PerfLedger.from_dict(value['portfolio'])
+                        # else: skip unrecognized format
+                    elif isinstance(value, PerfLedger):
+                        ret[hk] = value
+                except Exception as e:
+                    bt.logging.error(f"Error reading perf ledger from disk for hotkey {hk}: {e}. Skipping; it will be rebuilt from position history.")
             return ret
 
         return dict(self.hotkey_to_perf_bundle)
@@ -294,13 +297,16 @@ class PerfLedgerManager(CacheController):
             data = ValiBkpUtils.read_compressed_json(compressed_json_path)
 
             for hk, value in data.items():
-                if isinstance(value, dict):
-                    if 'cps' in value:
-                        ret[hk] = PerfLedger.from_dict(value)
-                    elif 'portfolio' in value:
-                        ret[hk] = PerfLedger.from_dict(value['portfolio'])
-                elif isinstance(value, PerfLedger):
-                    ret[hk] = value
+                try:
+                    if isinstance(value, dict):
+                        if 'cps' in value:
+                            ret[hk] = PerfLedger.from_dict(value)
+                        elif 'portfolio' in value:
+                            ret[hk] = PerfLedger.from_dict(value['portfolio'])
+                    elif isinstance(value, PerfLedger):
+                        ret[hk] = value
+                except Exception as e:
+                    bt.logging.error(f"Error reading frozen perf ledger from disk for hotkey {hk}: {e}. Skipping.")
             return ret
 
         return dict(self._frozen_ledgers)
