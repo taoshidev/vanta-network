@@ -1042,19 +1042,21 @@ class EntityManager(ValidatorBroadcastBase):
         if not subaccount:
             return None
 
-        # Get debt ledger for this hotkey
         try:
+            # Debt ledger is informational only (checkpoints/total_checkpoints display fields);
+            # it plays no role in the payout math below, so its absence isn't fatal.
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
-            if not debt_ledger:
-                return None
 
             _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
-            if not _perf_ledger:
-                return None
-
-            perf_ledger = _perf_ledger.get(synthetic_hotkey)
+            perf_ledger = _perf_ledger.get(synthetic_hotkey) if _perf_ledger else None
             if not perf_ledger:
-                return None
+                is_currently_eliminated = self._challenge_period_client.get_miner_bucket(synthetic_hotkey) == MinerBucket.ELIMINATED
+                if is_currently_eliminated:
+                    # Perf ledgers for eliminated funded/alpha subaccounts get moved to frozen storage.
+                    frozen_ledgers = self._perf_ledger_client.get_frozen_ledgers()
+                    perf_ledger = frozen_ledgers.get(synthetic_hotkey) if frozen_ledgers else None
+                if not perf_ledger:
+                    return None
 
             EMPTY_RESPONSE = {
                 'hotkey': synthetic_hotkey,
@@ -1067,7 +1069,7 @@ class EntityManager(ValidatorBroadcastBase):
             if miner_bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
                 return EMPTY_RESPONSE
 
-            checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints]
+            checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
 
             positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
             orders = []
