@@ -853,7 +853,7 @@ class PositionManager:
         position_uuids_to_archive = []
         wipe_positions = False
         reopen_force_closed_orders = False
-        limit_orders_to_restore = {}
+        restore_limit_orders = False
         maincomp_start_times = {}
         miners_to_wipe_perf_ledger = []
 
@@ -890,7 +890,7 @@ class PositionManager:
             position_uuids_to_delete = []
             position_uuids_to_archive = []
             miners_to_promote = []
-            limit_orders_to_restore = {}
+            restore_limit_orders = False
             maincomp_start_times = {
                 "5GE7yeZ4w5mx4e8cgZ9iSdnP9bfyGfKbN3mKhwPsg9KNx6ep": 1767658708175,
                 "5GYP9zsvnNZU8gao2kPujRqseiuCAVWBSn8XGzodC25aPR4U": 1766276210003,
@@ -966,9 +966,9 @@ class PositionManager:
                             self.save_miner_position(pos, validate=False)
                             print(f'Removed eliminated orders from position {pos}')
 
-                for _order_uuid in limit_orders_to_restore.get(miner_hotkey, []):
-                    result = self._limit_order_client.restore_cancelled_limit_order(miner_hotkey, _order_uuid)
-                    print(f"Restored limit order {_order_uuid}: {result}")
+                if restore_limit_orders:
+                    result = self._limit_order_client.restore_cancelled_limit_orders(miner_hotkey)
+                    print(f"Restored limit orders: {result}")
 
                 # # Restore subaccount status for erroneously eliminated synthetic hotkeys
                 if is_synthetic_hotkey(miner_hotkey) and self._entity_client:

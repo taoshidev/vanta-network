@@ -630,7 +630,7 @@ class ValiBkpUtils:
         return f"{base_dir}{status_str}/"
 
     @staticmethod
-    def get_limit_orders(miner_hotkey, unfilled_only=False, *, running_unit_tests=False):
+    def get_limit_orders(miner_hotkey, status="unfilled", *, running_unit_tests=False):
         miner_limit_orders_dir = (f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}"
                                   f"{miner_hotkey}/limit_orders/")
 
@@ -639,24 +639,19 @@ class ValiBkpUtils:
 
         orders = []
         trade_pair_dirs = ValiBkpUtils.get_directories_in_dir(miner_limit_orders_dir)
-        if unfilled_only:
-            status_dirs = ["unfilled"]
-        else:
-            status_dirs = ["unfilled", "closed"]
         for trade_pair_id in trade_pair_dirs:
-            for status in status_dirs:
-                status_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, status, running_unit_tests)
+            status_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, status, running_unit_tests)
 
-                if not os.path.exists(status_dir):
-                    continue
+            if not os.path.exists(status_dir):
+                continue
 
-                try:
-                    status_files = ValiBkpUtils.get_all_files_in_dir(status_dir)
-                    for filename in status_files:
-                        with open(filename, 'r') as f:
-                            orders.append(json.load(f))
+            try:
+                status_files = ValiBkpUtils.get_all_files_in_dir(status_dir)
+                for filename in status_files:
+                    with open(filename, 'r') as f:
+                        orders.append(json.load(f))
 
-                except Exception as e:
-                    bt.logging.error(f"Error accessing {status} directory {status_dir}: {e}")
+            except Exception as e:
+                bt.logging.error(f"Error accessing {status} directory {status_dir}: {e}")
 
         return orders

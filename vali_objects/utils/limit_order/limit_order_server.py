@@ -214,9 +214,9 @@ class LimitOrderServer(RPCServerBase):
         """
         return self._manager.delete_all_limit_orders_for_hotkey(miner_hotkey)
 
-    def restore_cancelled_limit_order_rpc(self, miner_hotkey: str, order_uuid: str) -> bool:
-        """RPC method to restore a cancelled limit order to unfilled state."""
-        return self._manager.restore_cancelled_limit_order(miner_hotkey, order_uuid)
+    def restore_cancelled_limit_orders_rpc(self, miner_hotkey: str) -> int:
+        """RPC method to restore all ELIMINATION_CANCELLED limit orders for a hotkey."""
+        return self._manager.restore_cancelled_limit_orders(miner_hotkey)
 
     def sync_limit_orders_rpc(self, sync_data):
         """

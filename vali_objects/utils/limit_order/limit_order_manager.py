@@ -68,9 +68,8 @@ class LimitOrderManager(CacheController):
         self.running_unit_tests = running_unit_tests
 
         # Internal data structure: {TradePair: {hotkey: [Order]}}
-        # Regular Python dict - NO IPC!
+        # Regular Python dict - NO IPC! Only holds unfilled orders.
         self._limit_orders = {}
-        self._closed_orders = {}
         self._last_fill_time = {}
         self._last_print_time_ms = 0
 
@@ -570,9 +569,9 @@ class LimitOrderManager(CacheController):
                 return_data = [self._order_to_dict(o) for o in filtered_orders]
                 return return_data if return_data else None
 
-            # Get closed from cache (only when filtering)
-            for closed_order in self._closed_orders.get(miner_hotkey, []):
-                filtered_orders.append(closed_order)
+            # Read cancelled from disk when requested (filled orders are not persisted)
+            if "cancelled" in status_filter:
+                filtered_orders.extend(self._read_cancelled_orders_from_disk(miner_hotkey))
 
             # With filter - return dict grouped by status
             status_set = set(s.upper() for s in status_filter)
@@ -608,30 +607,10 @@ class LimitOrderManager(CacheController):
                     dashboard_order = order.to_dashboard(include_trade_pair=True)
                     open_orders[order.order_uuid] = dashboard_order
 
-        closed_orders = []
-        # Assume that if all the currently open orders are requested, then there is no
-        # reason to return any closed orders of the past, because they are only used
-        # to mark open orders as closed
-        if limit_orders_time_ms != 0:
-            orders = self._closed_orders.get(miner_hotkey)
-            if orders is not None:
-                # Use list copy to avoid locking or concurrent modification error
-                orders = list(orders)
-                for order in reversed(orders):
-                    if order.processed_ms <= limit_orders_time_ms:
-                        break
-                    snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
-                    closed_orders.append(order.order_uuid)
-
-        dashboard = {}
-
-        if open_orders:
-            dashboard["open_orders"] = open_orders
-        if closed_orders:
-            dashboard["closed_orders"] = closed_orders
-
-        if not dashboard:
+        if not open_orders:
             return None
+
+        dashboard = {"open_orders": open_orders}
 
         dashboard["limit_orders_time_ms"] = snapshot_time_ms
         return dashboard
@@ -711,73 +690,51 @@ class LimitOrderManager(CacheController):
             bt.logging.error(traceback.format_exc())
             raise
 
-    def restore_cancelled_limit_order(self, miner_hotkey: str, order_uuid: str) -> bool:
+    def restore_cancelled_limit_orders(self, miner_hotkey: str) -> int:
         """
-        Restore a single cancelled limit order back to unfilled state.
-        Idempotent — returns True immediately if the order is already active.
+        Restore all ELIMINATION_CANCELLED limit orders for a hotkey back to unfilled state.
+        Returns the number of orders restored.
         """
-        # Already active?
-        for trade_pair, hotkey_dict in self._limit_orders.items():
-            if miner_hotkey in hotkey_dict:
-                for order in hotkey_dict[miner_hotkey]:
-                    if order.order_uuid == order_uuid:
-                        bt.logging.info(f"[RESTORE] Order {order_uuid} already active for {miner_hotkey}")
-                        return True
+        unfilled_src = {
+            ExecutionType.LIMIT: OrderSource.LIMIT_UNFILLED,
+            ExecutionType.BRACKET: OrderSource.BRACKET_UNFILLED,
+            ExecutionType.STOP_LIMIT: OrderSource.STOP_LIMIT_UNFILLED,
+        }
 
-        # Find in closed orders
-        target_order = None
-        for order in self._closed_orders.get(miner_hotkey, []):
-            if order.order_uuid == order_uuid and OrderSource.is_cancelled(order.src):
-                target_order = order
-                break
+        cancelled_orders = self._read_cancelled_orders_from_disk(miner_hotkey)
+        eligible = [o for o in cancelled_orders if o.src == OrderSource.ELIMINATION_CANCELLED]
 
-        if not target_order:
-            bt.logging.warning(f"[RESTORE] Cancelled order {order_uuid} not found for {miner_hotkey}")
-            return False
+        restored = 0
+        for order in eligible:
+            trade_pair = order.trade_pair
+            trade_pair_id = trade_pair.trade_pair_id
 
-        trade_pair = target_order.trade_pair
-        trade_pair_id = trade_pair.trade_pair_id
+            with self.limit_order_locks.get_lock(miner_hotkey, trade_pair_id):
+                self._delete_from_disk(miner_hotkey, order)
 
-        with self.limit_order_locks.get_lock(miner_hotkey, trade_pair_id):
-            # Reverse src: CANCELLED → UNFILLED
-            if target_order.src == OrderSource.LIMIT_CANCELLED:
-                target_order.src = OrderSource.LIMIT_UNFILLED
-            elif target_order.src == OrderSource.BRACKET_CANCELLED:
-                target_order.src = OrderSource.BRACKET_UNFILLED
-            elif target_order.src == OrderSource.STOP_LIMIT_CANCELLED:
-                target_order.src = OrderSource.STOP_LIMIT_UNFILLED
+                order.src = unfilled_src.get(order.execution_type, OrderSource.LIMIT_UNFILLED)
 
-            # Remove from closed/ dir
-            closed_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, "closed", self.running_unit_tests)
-            closed_path = closed_dir + order_uuid
-            if os.path.exists(closed_path):
-                os.remove(closed_path)
+                self._write_to_disk(miner_hotkey, order)
 
-            # Write to unfilled/ dir
-            self._write_to_disk(miner_hotkey, target_order)
+                if trade_pair not in self._limit_orders:
+                    self._limit_orders[trade_pair] = {}
+                    self._last_fill_time[trade_pair] = {}
+                if miner_hotkey not in self._limit_orders[trade_pair]:
+                    self._limit_orders[trade_pair][miner_hotkey] = []
+                    self._last_fill_time[trade_pair][miner_hotkey] = 0
+                self._limit_orders[trade_pair][miner_hotkey].append(order)
 
-            # Add to active orders
-            if trade_pair not in self._limit_orders:
-                self._limit_orders[trade_pair] = {}
-                self._last_fill_time[trade_pair] = {}
-            if miner_hotkey not in self._limit_orders[trade_pair]:
-                self._limit_orders[trade_pair][miner_hotkey] = []
-                self._last_fill_time[trade_pair][miner_hotkey] = 0
-            self._limit_orders[trade_pair][miner_hotkey].append(target_order)
-            self._limit_orders[trade_pair][miner_hotkey].sort(key=lambda o: o.processed_ms)
+                if order.execution_type == ExecutionType.BRACKET:
+                    self._attach_order_to_position(miner_hotkey, order)
 
-            # Remove from closed orders memory
-            if miner_hotkey in self._closed_orders:
-                self._closed_orders[miner_hotkey] = [
-                    o for o in self._closed_orders[miner_hotkey] if o.order_uuid != order_uuid
-                ]
+            restored += 1
 
-            # Re-attach bracket orders to their parent positions
-            if target_order.execution_type == ExecutionType.BRACKET:
-                self._attach_order_to_position(miner_hotkey, target_order)
+        for trade_pair in self._limit_orders:
+            if miner_hotkey in self._limit_orders[trade_pair]:
+                self._limit_orders[trade_pair][miner_hotkey].sort(key=lambda o: o.processed_ms)
 
-        bt.logging.info(f"[RESTORE] Restored limit order {order_uuid} [{trade_pair_id}] for {miner_hotkey}")
-        return True
+        bt.logging.info(f"[RESTORE] Restored {restored} elimination-cancelled limit orders for {miner_hotkey}")
+        return restored
 
     # ============================================================================
     # Daemon Method (runs in separate process)
@@ -1214,7 +1171,8 @@ class LimitOrderManager(CacheController):
 
             order.src = src
             order.processed_ms = time_ms
-            self._write_to_disk(miner_hotkey, order)
+            if OrderSource.is_cancelled(src):
+                self._write_to_disk(miner_hotkey, order)
 
             # Remove closed orders from memory to prevent memory leak
             # Closed orders are persisted to disk and don't need to stay in memory
@@ -1231,10 +1189,6 @@ class LimitOrderManager(CacheController):
                     miner_hotkey, trade_pair_id, order_uuid
                 )
                 self._last_trailing_attach_ms.pop(order_uuid, None)
-
-            if miner_hotkey not in self._closed_orders:
-                self._closed_orders[miner_hotkey] = []
-            self._closed_orders[miner_hotkey].append(order)
 
             bt.logging.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
 
@@ -1376,7 +1330,7 @@ class LimitOrderManager(CacheController):
 
         now_ms = TimeUtil.now_in_millis()
         for hotkey in hotkeys:
-            miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, False, running_unit_tests=self.running_unit_tests)
+            miner_order_dicts = ValiBkpUtils.get_limit_orders(hotkey, "unfilled", running_unit_tests=self.running_unit_tests)
             for order_dict in miner_order_dicts:
                 try:
                     order = Order.from_dict(order_dict)
@@ -1397,10 +1351,6 @@ class LimitOrderManager(CacheController):
                         total_orders_read += 1
                         if order.src == OrderSource.BRACKET_UNFILLED:
                             total_bracket_orders += 1
-                    else:
-                        if hotkey not in self._closed_orders:
-                            self._closed_orders[hotkey] = []
-                        self._closed_orders[hotkey].append(order)
                     self._last_fill_time[trade_pair][hotkey] = 0
 
                 except Exception as e:
@@ -1456,15 +1406,18 @@ class LimitOrderManager(CacheController):
         bt.logging.info(f"[LIMIT ORDER INIT] Attached {total_attached}/{total_orders} bracket orders to positions")
 
     def _write_to_disk(self, miner_hotkey, order):
-        """Write order to disk."""
+        """Write unfilled or cancelled order to disk. Filled orders are not persisted."""
         if not order:
             return
         try:
             trade_pair_id = order.trade_pair.trade_pair_id
             if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                 status = "unfilled"
+            elif OrderSource.is_cancelled(order.src):
+                status = "cancelled"
             else:
-                status = "closed"
+                # Filled orders are not persisted to disk
+                return
 
             order_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, status, self.running_unit_tests)
             os.makedirs(order_dir, exist_ok=True)
@@ -1482,8 +1435,7 @@ class LimitOrderManager(CacheController):
             trade_pair_id = order.trade_pair.trade_pair_id
             order_uuid = order.order_uuid
 
-            # Try both unfilled and closed directories
-            for status in ["unfilled", "closed"]:
+            for status in ["unfilled", "cancelled"]:
                 order_dir = ValiBkpUtils.get_limit_orders_dir(miner_hotkey, trade_pair_id, status, self.running_unit_tests)
                 filepath = order_dir + order_uuid
 
@@ -1493,6 +1445,17 @@ class LimitOrderManager(CacheController):
 
         except Exception as e:
             bt.logging.error(f"Error deleting limit order from disk: {e}")
+
+    def _read_cancelled_orders_from_disk(self, miner_hotkey):
+        """Read all cancelled orders from disk for a hotkey. Returns list of Order objects."""
+        order_dicts = ValiBkpUtils.get_limit_orders(miner_hotkey, "cancelled", running_unit_tests=self.running_unit_tests)
+        orders = []
+        for order_dict in order_dicts:
+            try:
+                orders.append(Order.from_dict(order_dict))
+            except Exception as e:
+                bt.logging.error(f"Error deserializing cancelled order for {miner_hotkey}: {e}")
+        return orders
 
     def sync_limit_orders(self, sync_data):
         """Sync limit orders from external source."""
