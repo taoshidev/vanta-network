@@ -51,12 +51,26 @@ class OrderSyncClient:
             bt.logging.warning(f"OrderSyncClient.is_sync_waiting unreachable, assuming not waiting: {e}")
             return False
 
-    def begin_order(self, label: str = None) -> "OrderSyncClient._OrderContext":
+    def begin_order(self, label: str = None) -> "OrderSyncClient._OrderAdmission":
         """
-        Context manager bracketing one order; fail-open on registration (see class docstring).
+        Atomically gate + register one order. Returns an _OrderAdmission context manager:
+          - `admission.rejected is True`  => a sync is in progress; do NOT process the order,
+            reject it with should_retry=True. (Nothing was registered; __exit__ is a no-op.)
+          - `admission.rejected is False` => process normally; the registration is ended on exit.
+        Fail-open (R2.3): if coordination is unreachable (core down), returns rejected=False,
+        token=None — the order proceeds UNREGISTERED (sync can't run while core is down anyway).
+        This distinguishes "syncing" (server returned None → reject) from "unreachable" (RPC raised
+        → proceed), which a bare boolean could not.
         `label` (order_uuid + context) makes a reaped/stuck registration identifiable in a disaster.
         """
-        return self._OrderContext(self._client, label)
+        try:
+            token = self._client.begin_order(label)  # int => admitted, None => sync in progress
+            if token is None:
+                return self._OrderAdmission(self._client, token=None, rejected=True)
+            return self._OrderAdmission(self._client, token=token, rejected=False)
+        except Exception as e:
+            bt.logging.warning(f"OrderSyncClient.begin_order failed, proceeding without sync gate: {e}")
+            return self._OrderAdmission(self._client, token=None, rejected=False)
 
     def get_order_count(self) -> int:
         return self._client.get_order_count()
@@ -75,19 +89,20 @@ class OrderSyncClient:
 
     # ==================== Context managers ====================
 
-    class _OrderContext:
-        """Registers the order on enter, deregisters (by token) on exit. Fail-open on enter."""
-        def __init__(self, client: CommonDataClient, label: str = None):
+    class _OrderAdmission:
+        """
+        Outcome of begin_order, usable as a context manager around order processing.
+          .rejected: True => a sync is in progress; caller must reject (should_retry), skip work.
+          .token:    the in-flight registration token (None if rejected or fail-open unregistered).
+        __exit__ ends the registration (if any); the gate decision (whether to process) is the
+        caller's, based on .rejected.
+        """
+        def __init__(self, client: CommonDataClient, token, rejected: bool):
             self.client = client
-            self.label = label
-            self.token = None
+            self.token = token
+            self.rejected = rejected
 
         def __enter__(self):
-            try:
-                self.token = self.client.begin_order(self.label)
-            except Exception as e:
-                # R2.3: coordination unavailable must NOT block the order. Proceed unregistered.
-                bt.logging.warning(f"OrderSyncClient.begin_order failed, proceeding without sync gate: {e}")
             return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):

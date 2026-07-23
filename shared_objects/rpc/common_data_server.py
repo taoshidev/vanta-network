@@ -46,7 +46,7 @@ Usage in consumers:
 """
 import threading
 import time
-from collections import namedtuple
+from collections import deque, namedtuple
 import bittensor as bt
 
 from time_util.time_util import TimeUtil
@@ -110,6 +110,14 @@ class CommonDataServer(RPCServerBase):
         self._next_order_token = 0
         self._inflight_ttl_ms = ValiConfig.ORDER_INFLIGHT_TTL_MS  # instance attr so tests can shrink it
         self._last_backlog_warn_ms = 0      # throttle for the soft-cap backlog alert
+
+        # Authoritative order-UUID dedup (spec R2.6) — replaces the process-local UUIDTracker so
+        # dedup holds across a vanta-orders restart AND across multiple overlapping instances.
+        # deque = FIFO eviction order; set = O(1) membership; capacity-bounded like UUIDTracker.
+        self._order_uuids_deque = deque()
+        self._order_uuids_set = set()
+        self._order_uuid_capacity = ValiConfig.ORDER_UUID_DEDUP_CAPACITY
+
         self._sync_waiting = False
         self._last_sync_start_ms = 0
         self._last_sync_complete_ms = 0
@@ -244,19 +252,28 @@ class CommonDataServer(RPCServerBase):
             )
         return len(self._inflight_orders)
 
-    def begin_order_rpc(self, label: str = None) -> int:
+    def begin_order_rpc(self, label: str = None):
         """
-        Register an in-flight order. Returns an opaque token to pass back to end_order_rpc.
-        `label` is a free-form debug string (caller passes order_uuid + context) surfaced on reap
-        and via get_order_sync_state_rpc, so a stuck/abandoned order is identifiable.
+        Atomically gate + register an in-flight order. Returns an opaque token to pass back to
+        end_order_rpc, or **None if a sync is in progress** (sync_waiting set) — in which case the
+        caller must REJECT the order (should_retry) and NOT process it.
 
-        Reaps on every call so the map stays bounded by ~(TTL × arrival-rate) even during an
-        inflow-with-no-drain stall (nothing else may be calling end/wait/count). If the live count
-        crosses the soft cap, emit a throttled alert — orders aren't draining — but do NOT evict
-        live entries (that would undercount and let sync rewrite positions mid-order).
+        Returning None here is the fix for the check-then-register TOCTOU: an advisory
+        is_sync_waiting() pre-check followed by a separate register has a gap in which a sync can
+        start and reach its position rewrite before the order increments the count. Because setting
+        sync_waiting (wait_for_orders_rpc) and this check share _order_condition, an order either
+        registers BEFORE sync (so wait_for_orders waits for it) or is refused here — it can never
+        slip in and apply during the rewrite window (sync_waiting stays set until mark_sync_complete).
+
+        `label` is a free-form debug string (order_uuid + context) surfaced on reap and via
+        get_order_sync_state_rpc. Reaps on every call so the map stays bounded by ~(TTL ×
+        arrival-rate) even during an inflow-with-no-drain stall. If the live count crosses the soft
+        cap, emit a throttled alert — but do NOT evict live entries (would undercount).
         """
         with self._order_condition:
             count = self._reap_and_count_locked()
+            if self._sync_waiting:
+                return None  # sync quiescing/running — refuse; caller rejects with should_retry
             if count >= self._INFLIGHT_SOFT_CAP:
                 now_ms = TimeUtil.now_in_millis()
                 if now_ms - self._last_backlog_warn_ms > self._BACKLOG_WARN_THROTTLE_MS:
@@ -356,6 +373,74 @@ class CommonDataServer(RPCServerBase):
                 "in_flight_sample_truncated": count > self._IN_FLIGHT_SAMPLE,
             }
 
+    # ============ Order UUID Dedup RPC Methods (authoritative, cross-process/-instance, R2.6) ============
+
+    def _add_order_uuid_locked(self, uuid) -> None:
+        """Add uuid to the dedup set with FIFO capacity eviction. Caller holds _state_lock."""
+        if uuid in self._order_uuids_set:
+            return
+        if len(self._order_uuids_deque) >= self._order_uuid_capacity:
+            oldest = self._order_uuids_deque.popleft()
+            self._order_uuids_set.discard(oldest)
+        self._order_uuids_deque.append(uuid)
+        self._order_uuids_set.add(uuid)
+
+    def check_and_add_order_uuid_rpc(self, uuid) -> bool:
+        """
+        Atomic claim. Returns True if `uuid` was NOT already present (now claimed — the caller may
+        apply the order) or False if it was (duplicate — reject). This is the authoritative dedup
+        that replaces the process-local UUIDTracker; being server-side, one claim wins even across
+        two overlapping vanta-orders instances or a placer retry.
+
+        Call BEFORE applying the order. On apply FAILURE call release_order_uuid_rpc, else a
+        transient failure (the R4.1 retry case) would permanently block the retry and LOSE the
+        order. A falsy uuid is not dedup-able -> returns True without recording (nothing to claim).
+        """
+        if not uuid:
+            return True
+        with self._state_lock:
+            if uuid in self._order_uuids_set:
+                return False
+            self._add_order_uuid_locked(uuid)
+            return True
+
+    def release_order_uuid_rpc(self, uuid) -> None:
+        """
+        Undo a claim (call when the order apply FAILED after a successful check_and_add) so the
+        placer's retry can re-claim and succeed. No-op if absent. Rare path, so the O(n) deque
+        rebuild (mirroring UUIDTracker.remove) is acceptable.
+        """
+        if not uuid:
+            return
+        with self._state_lock:
+            if uuid in self._order_uuids_set:
+                self._order_uuids_set.discard(uuid)
+                self._order_uuids_deque = deque(u for u in self._order_uuids_deque if u != uuid)
+
+    def order_uuid_exists_rpc(self, uuid) -> bool:
+        """Read-only membership check (early-reject fast path also served by the client-local cache)."""
+        if not uuid:
+            return False
+        with self._state_lock:
+            return uuid in self._order_uuids_set
+
+    def seed_order_uuids_rpc(self, uuids) -> int:
+        """
+        Bulk-add uuids from committed position history at boot (the rebuild UUIDTracker did at
+        validator.py:233). CommonDataServer holds no position client, so the boot sequence extracts
+        the uuids and pushes them in here. Returns the resulting set size.
+        """
+        with self._state_lock:
+            for u in uuids:
+                if u:
+                    self._add_order_uuid_locked(u)
+            return len(self._order_uuids_set)
+
+    def order_uuid_count_rpc(self) -> int:
+        """Current number of tracked order uuids (debug/health)."""
+        with self._state_lock:
+            return len(self._order_uuids_set)
+
     # ==================== Test State Cleanup ====================
 
     def clear_test_state_rpc(self) -> None:
@@ -380,6 +465,9 @@ class CommonDataServer(RPCServerBase):
             self._sync_waiting = False
             self._last_sync_start_ms = 0
             self._last_sync_complete_ms = 0
+            # Reset the order-UUID dedup set (else dedup state leaks across tests).
+            self._order_uuids_deque.clear()
+            self._order_uuids_set.clear()
             bt.logging.debug("[COMMON_DATA] Test state cleared (shutdown, sync_in_progress, sync_epoch, order coordination reset)")
 
     # ==================== Combined State RPC Methods ====================
@@ -409,7 +497,8 @@ class CommonDataServer(RPCServerBase):
                 "sync_in_progress": self._sync_in_progress,
                 "sync_epoch": self._sync_epoch,
                 "n_orders_being_processed": self._reap_and_count_locked(),
-                "sync_waiting": self._sync_waiting
+                "sync_waiting": self._sync_waiting,
+                "order_uuid_count": len(self._order_uuids_set)
             }
 
 

@@ -202,7 +202,7 @@ class TestOrderSyncClient(unittest.TestCase):
         def is_sync_waiting(self):
             raise ConnectionError("CommonDataServer unreachable")
 
-        def begin_order(self):
+        def begin_order(self, label=None):
             raise ConnectionError("CommonDataServer unreachable")
 
         def end_order(self, token=None):
@@ -214,13 +214,45 @@ class TestOrderSyncClient(unittest.TestCase):
         self.assertFalse(sync.is_sync_waiting())
 
     def test_fail_open_begin_order(self):
-        """If begin_order is unreachable, the order still proceeds (no exception, no token)."""
+        """Unreachable coordination => proceed (fail-open), NOT reject; distinct from 'syncing'."""
         sync = OrderSyncClient(common_data_client=self._RaisingClient())
-        entered = False
-        with sync.begin_order() as ctx:
-            entered = True
-            self.assertIsNone(ctx.token, "Order should proceed unregistered when coordination is down")
-        self.assertTrue(entered, "The order body must run despite coordination being unreachable")
+        admission = sync.begin_order(label="x")
+        self.assertFalse(admission.rejected, "unreachable => proceed, not reject")
+        self.assertIsNone(admission.token, "proceeds unregistered")
+
+    # ==================== Atomic sync gate — TOCTOU fix (R2.5) ====================
+
+    def test_begin_order_refused_during_sync(self):
+        """Once sync_waiting is set, the gate refuses registration (None) so no order slips in."""
+        self.server.set_sync_waiting_rpc(True)
+        self.assertIsNone(self.sync._client.begin_order(), "server refuses registration during sync")
+        admission = self.sync.begin_order(label="late-order")
+        self.assertTrue(admission.rejected, "adapter surfaces the refusal so the caller rejects")
+        self.assertIsNone(admission.token)
+        self.assertEqual(self.sync.get_order_count(), 0, "nothing registered during sync")
+
+    def test_admitted_order_blocks_sync_then_new_orders_refused(self):
+        """Order admitted BEFORE sync => sync waits for it; meanwhile NEW orders are gate-refused."""
+        admission = self.sync.begin_order(label="early")
+        self.assertFalse(admission.rejected)
+        self.assertEqual(self.sync.get_order_count(), 1)
+
+        sync_done = [False]
+
+        def sync_thread():
+            with self.sync.begin_sync(timeout_seconds=1.0):
+                sync_done[0] = True
+
+        t = threading.Thread(target=sync_thread)
+        t.start()
+        time.sleep(0.05)
+        self.assertFalse(sync_done[0], "sync must wait for the already-admitted order")
+        # A new order arriving now (sync_waiting set) is refused by the atomic gate.
+        self.assertTrue(self.sync.begin_order(label="late").rejected)
+        # End the early order -> count drains -> sync proceeds.
+        self.sync._client.end_order(admission.token)
+        t.join(timeout=1.0)
+        self.assertTrue(sync_done[0], "sync proceeds once the admitted order ends")
 
     def test_sync_side_does_not_fail_open(self):
         """The sync side must NOT swallow errors — it cannot safely rewrite positions blind."""
