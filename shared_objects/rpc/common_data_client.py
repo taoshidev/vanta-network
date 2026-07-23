@@ -91,6 +91,43 @@ class CommonDataClient(RPCClientBase):
         """Set sync epoch to specific value."""
         self.call("set_sync_epoch_rpc", value)
 
+    # ============ Order/Sync Coordination Methods (cross-process OrderSyncState, R2.1) ============
+
+    def begin_order(self, label: str = None) -> int:
+        """
+        Register an in-flight order. Returns an opaque token to pass back to end_order().
+        `label` is a free-form debug string (e.g. order_uuid + context) surfaced on reap/introspection.
+        """
+        return self.call("begin_order_rpc", label)
+
+    def end_order(self, token: int = None) -> int:
+        """Deregister the in-flight order for `token`; wakes sync waiter at 0. Returns live count."""
+        return self.call("end_order_rpc", token)
+
+    def get_order_count(self) -> int:
+        """Current number of live (non-expired) in-flight orders."""
+        return self.call("get_order_count_rpc")
+
+    def is_sync_waiting(self) -> bool:
+        """True if a sync is waiting for orders to drain."""
+        return self.call("is_sync_waiting_rpc")
+
+    def set_sync_waiting(self, value: bool) -> None:
+        """Set the sync_waiting flag directly."""
+        self.call("set_sync_waiting_rpc", value)
+
+    def wait_for_orders(self, timeout_seconds: float = None) -> bool:
+        """Block until in-flight orders drain to 0; returns False on timeout."""
+        return self.call("wait_for_orders_rpc", timeout_seconds)
+
+    def mark_sync_complete(self) -> None:
+        """Clear sync_waiting (orders may resume)."""
+        self.call("mark_sync_complete_rpc")
+
+    def get_order_sync_state(self) -> dict:
+        """Snapshot of the order/sync coordination state."""
+        return self.call("get_order_sync_state_rpc")
+
     # ==================== Combined State Methods ====================
 
     def get_all_state(self) -> dict:
