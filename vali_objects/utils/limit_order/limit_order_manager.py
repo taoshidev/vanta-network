@@ -892,6 +892,10 @@ class LimitOrderManager(CacheController):
                     # fetched for BRACKET orders; None is correct for LIMIT/STOP_LIMIT.
                     try:
                         with self.limit_order_locks.get_lock(miner_hotkey, trade_pair.trade_pair_id):
+                            # Re-verify still unfilled under lock: a concurrent cancel_limit_order
+                            # call could have closed this order since the outer filter ran.
+                            if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
+                                continue
                             cutoff_ms = max(order.processed_ms, last_fill_time)
                             trigger_ps, trigger_price = evaluate_order_trigger(order, position, price_sources, cutoff_ms)
 
