@@ -136,7 +136,7 @@ class MarketOrderManager():
                 force_close_order_time = now_ms - 1 # 2 orders for the same trade pair cannot have the same timestamp
                 force_close_order_uuid = existing_open_pos.position_uuid[::-1] # uuid will stay the same across validators
                 self._add_order_to_existing_position(existing_open_pos, trade_pair, OrderType.FLAT,
-                                                     -existing_open_pos.net_quantity, 0.0, 0.0, force_close_order_time, miner_hotkey,
+                                                     -existing_open_pos.net_quantity, -existing_open_pos.net_leverage, -existing_open_pos.net_value, force_close_order_time, miner_hotkey,
                                                      price_sources, force_close_order_uuid, miner_repo_version,
                                                      OrderSource.MAX_ORDERS_PER_POSITION_CLOSE,
                                                      existing_open_pos.account_size)
@@ -635,10 +635,6 @@ class MarketOrderManager():
             account_size_ms = TimeUtil.now_in_millis() - account_size_start
             bt.logging.info(f"[LOCK_WORK] Get account size took {account_size_ms}ms")
 
-            account_balance = self._miner_account_client.get_balance(miner_hotkey)
-            if self.running_unit_tests:
-                account_balance = ValiConfig.MIN_CAPITAL
-
             # TIMING: Get or create position
             get_position_start = TimeUtil.now_in_millis()
             existing_position = self._get_or_create_open_position_from_new_order(trade_pair, signal_order_type,
@@ -647,6 +643,10 @@ class MarketOrderManager():
                                                                                  miner_repo_version, account_size)
             get_position_ms = TimeUtil.now_in_millis() - get_position_start
             bt.logging.info(f"[LOCK_WORK] Get/create position took {get_position_ms}ms")
+
+            account_balance = self._miner_account_client.get_balance(miner_hotkey)
+            if self.running_unit_tests:
+                account_balance = ValiConfig.MIN_CAPITAL
 
             # TIMING: Add order to position
             created_order = None
