@@ -157,6 +157,11 @@ class PriceSlippageModel:
 
         annualized_volatility = cls.features[order_date]["vol"][order.trade_pair.trade_pair_id]
         avg_daily_volume = cls.features[order_date]["adv"][order.trade_pair.trade_pair_id]
+
+        if annualized_volatility is None or avg_daily_volume is None:
+            bt.logging.error(f"None volatility or volume for {order.trade_pair.trade_pair_id} on {order_date}")
+            return 0.0001
+
         spread = ask - bid
         mid_price = (bid + ask) / 2
 
