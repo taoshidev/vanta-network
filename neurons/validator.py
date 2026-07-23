@@ -542,6 +542,7 @@ class Validator(ValidatorBase):
         with self.order_sync.begin_order():
             # error message to send back to miners in case of a problem so they can fix and resend
             error_message = ""
+            order_exc = None
             try:
                 result = self.order_processor.process_vanta_signal(
                     hotkey=miner_hotkey,
@@ -562,6 +563,7 @@ class Validator(ValidatorBase):
 
             except Exception as e:
                 error_message = str(e)
+                order_exc = e
                 logger.error(f"Error processing signal {miner_hotkey} {order_uuid} {e}")
 
             finally:
@@ -571,7 +573,11 @@ class Validator(ValidatorBase):
                 else:
                     logger.error(error_message)
                     synapse.successfully_processed = False
-                    synapse.should_retry = False
+                    # Transient infra failures (an RPC state server — incl. MarketOrderServer
+                    # :50027 — bouncing during a deploy) must be RETRIED by the placer, not
+                    # treated as a permanent rejection that loses the order. Business-logic
+                    # rejections (SignalException etc.) stay should_retry=False.
+                    synapse.should_retry = ErrorUtils.is_transient_rpc_error(order_exc)
 
                 # TODO Review overlap with serving in market order manager
                 if is_synthetic_hotkey(miner_hotkey):
