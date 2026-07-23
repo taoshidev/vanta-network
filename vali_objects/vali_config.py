@@ -293,6 +293,11 @@ class ValiConfig:
     # exceed the worst-case real order-processing time (lock wait + price fetch + write, ~seconds)
     # to avoid reaping a genuinely-live order; sync is infrequent (daily) so a generous value is fine.
     ORDER_INFLIGHT_TTL_MS = 60_000  # 60 seconds
+    # Server-side order-UUID dedup (spec R2.6): FIFO capacity of the authoritative dedup set on
+    # CommonDataServer that replaces the process-local UUIDTracker. Matches UUIDTracker's historic
+    # 100k. Dedup only needs to cover the retry/replay window (seconds–minutes), not forever;
+    # oldest uuids are evicted past capacity.
+    ORDER_UUID_DEDUP_CAPACITY = 100_000
     ORDER_MIN_LEVERAGE = 0.00001
     ORDER_MAX_LEVERAGE = 500
 
