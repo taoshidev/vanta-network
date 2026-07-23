@@ -9,7 +9,31 @@ from typing import Union, List, Callable, Any
 
 class ErrorUtils:
     """Shared utilities for error handling, formatting, and runtime protection across the codebase."""
-    
+
+    @staticmethod
+    def is_transient_rpc_error(exc: BaseException) -> bool:
+        """
+        True if `exc` is a transient RPC/infra failure (a state server — e.g. MarketOrderServer
+        :50027 — bouncing during a deploy) rather than a permanent business-logic rejection.
+
+        Used to decide whether an order ack should ask the placer to retry (should_retry=True).
+        Business rejections (SignalException, ValueError, invalid payloads, ...) return False and
+        must NOT be retried. OSError covers the connection family
+        (ConnectionRefusedError/ConnectionResetError, BrokenPipeError, TimeoutError all subclass
+        it); EOFError is what a multiprocessing BaseManager proxy raises when the server dies
+        mid-call; AuthenticationError can surface on a racing reconnect.
+
+        NOTE: should_retry=True only actually helps once the RPC client can re-establish a live
+        connection on the placer's retry (rpc_client_base has no reconnect-on-failure today — see
+        vanta-orders-extraction spec R4.1b) AND writes are idempotent across the retry (spec R2.6
+        server-side UUID dedup). This classifier is the safe, standalone first step.
+        """
+        if exc is None:
+            return False
+        from multiprocessing.context import AuthenticationError
+        return isinstance(exc, (OSError, EOFError, AuthenticationError))
+
+
     @staticmethod
     def get_compact_stacktrace(error: Union[str, Exception], 
                              relevant_keywords: List[str] = None,
