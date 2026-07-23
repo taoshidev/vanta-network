@@ -132,7 +132,7 @@ class LimitOrderServer(RPCServerBase):
         """
         return self._manager.process_limit_order(miner_hotkey, order, is_edit)
 
-    def cancel_limit_order_rpc(self, miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type=None):
+    def cancel_limit_order_rpc(self, miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type=None, order_src=None):
         """
         RPC method to cancel limit order(s).
         Args:
@@ -141,10 +141,11 @@ class LimitOrderServer(RPCServerBase):
             order_uuid: UUID of specific order to cancel, or None/empty for all
             now_ms: Current timestamp
             execution_type: Optional ExecutionType filter — when set with cancel_all, only cancels orders of this type
+            order_src: Optional OrderSource override — if specified, replaces the derived cancel src
         Returns:
             dict with cancellation details
         """
-        return self._manager.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type)
+        return self._manager.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
 
     def get_limit_order_by_uuid_rpc(self, miner_hotkey, order_uuid):
         """
@@ -393,9 +394,9 @@ class LimitOrderServer(RPCServerBase):
         """Process a limit order (direct call for tests)."""
         return self._manager.process_limit_order(miner_hotkey, order, is_edit)
 
-    def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type=None):
+    def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type=None, order_src=None):
         """Cancel limit order(s) (direct call for tests)."""
-        return self._manager.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type)
+        return self._manager.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
 
     def get_limit_order_by_uuid(self, miner_hotkey, order_uuid):
         """Get an unfilled limit order by UUID (direct call for tests)."""

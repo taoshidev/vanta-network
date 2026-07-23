@@ -66,7 +66,7 @@ class LimitOrderClient(RPCClientBase):
         return self._server.process_limit_order_rpc(miner_hotkey, order, is_edit)
 
     def cancel_limit_order(self, miner_hotkey: str, trade_pair_id: str | None,
-                          order_uuid: str, now_ms: int, execution_type=None) -> dict:
+                          order_uuid: str, now_ms: int, execution_type=None, order_src=None) -> dict:
         """
         Cancel limit order(s) via RPC.
 
@@ -76,6 +76,7 @@ class LimitOrderClient(RPCClientBase):
             order_uuid: UUID of order to cancel
             now_ms: Current timestamp
             execution_type: Optional ExecutionType filter — when set with cancel_all, only cancels orders of this type
+            order_src: Optional OrderSource override — if specified, replaces the derived cancel src
 
         Returns:
             dict with cancellation details
@@ -84,7 +85,7 @@ class LimitOrderClient(RPCClientBase):
             SignalException: Order not found (pickled from server)
             Exception: RPC or server errors
         """
-        return self._server.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type)
+        return self._server.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
 
     # ==================== Query Methods ====================
 

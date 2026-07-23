@@ -521,7 +521,7 @@ class EliminationManager(CacheController):
             # Also collateral slashed not relevant for subaccounts
             self._entity_collateral_client.try_slash_on_elimination(hotkey)
 
-        cancel_results = self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", elimination_time_ms)
+        cancel_results = self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", elimination_time_ms, OrderSource.ELIMINATION_CANCELLED)
         if cancel_results:
             bt.logging.info(f"Cancelled limit orders for eliminated miner [{hotkey}] {cancel_results}")
 

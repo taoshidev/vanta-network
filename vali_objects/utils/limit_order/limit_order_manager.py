@@ -440,7 +440,7 @@ class LimitOrderManager(CacheController):
         return None
 
 
-    def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type=None):
+    def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type=None, order_src=None):
         """
         RPC method to cancel limit order(s).
         Args:
@@ -448,6 +448,7 @@ class LimitOrderManager(CacheController):
             order_uuid: UUID of specific order to cancel, comma-separated for multiple, or None/empty for all
             now_ms: Current timestamp
             execution_type: Optional ExecutionType filter — when set with cancel_all, only cancels orders of this type
+            order_src: Optional OrderSource override — if specified, replaces the derived cancel src
         Returns:
             dict with cancellation details
         """
@@ -490,7 +491,7 @@ class LimitOrderManager(CacheController):
                 )
 
             for order in orders_to_cancel:
-                cancel_src = OrderSource.get_cancel(order.src)
+                cancel_src = order_src if order_src is not None else OrderSource.get_cancel(order.src)
                 self._close_limit_order(miner_hotkey, order, cancel_src, now_ms)
 
             return {

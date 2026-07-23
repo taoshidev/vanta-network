@@ -21,6 +21,7 @@ class OrderSource(IntEnum):
     STOP_LIMIT_CANCELLED = 15          # stop-limit order that was cancelled
     HYPERLIQUID = 16                   # order placed via Hyperliquid with exchange fill price
     CORRECTION = 17                    # order fields corrected post-submission
+    ELIMINATION_CANCELLED = 18         # limit/bracket/stop-limit order cancelled from elimination
 
     @staticmethod
     def get_fill(order_src):
@@ -73,6 +74,7 @@ class OrderSource(IntEnum):
             OrderSource.LIMIT_CANCELLED,
             OrderSource.BRACKET_CANCELLED,
             OrderSource.STOP_LIMIT_CANCELLED,
+            OrderSource.ELIMINATION_CANCELLED,
         }
 
     @staticmethod
