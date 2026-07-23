@@ -395,7 +395,7 @@ class LimitOrderManager(CacheController):
                 price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
                 if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
                     _ps = price_sources[0]
-                    _, trigger_price = evaluate_order_trigger(order, open_position, [_ps])
+                    _, trigger_price = evaluate_order_trigger(miner_hotkey, order, open_position, [_ps])
                     should_fill_immediately = trigger_price is not None
 
         # Fill outside the lock to avoid reentrant lock issue
@@ -897,7 +897,7 @@ class LimitOrderManager(CacheController):
                             if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                                 continue
                             cutoff_ms = max(order.processed_ms, last_fill_time)
-                            trigger_ps, trigger_price = evaluate_order_trigger(order, position, price_sources, cutoff_ms)
+                            trigger_ps, trigger_price = evaluate_order_trigger(miner_hotkey, order, position, price_sources, cutoff_ms)
 
                         if trigger_price is not None:
                             if order.execution_type == ExecutionType.STOP_LIMIT:

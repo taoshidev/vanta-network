@@ -14,6 +14,8 @@ import bittensor as bt
 
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
+from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
 
@@ -47,7 +49,7 @@ def build_limit_price_sources(price_sources, cutoff_ms: int = 0):
     )
 
 
-def evaluate_order_trigger(order, position, price_sources, cutoff_ms: int = 0):
+def evaluate_order_trigger(hotkey: str, order: Order, position: Position | None, price_sources, cutoff_ms: int = 0):
     """
     Dispatch to the right evaluator. Returns (trigger_ps, trigger_price).
 
@@ -79,7 +81,7 @@ def evaluate_order_trigger(order, position, price_sources, cutoff_ms: int = 0):
 
     if trigger_price:
         bt.logging.info(
-            f"{order.execution_type} triggered: {position.miner_hotkey} {order.trade_pair.trade_pair_id} "
+            f"{order.execution_type} triggered: {hotkey} {order.trade_pair.trade_pair_id} "
             f"{order.order_uuid} trigger_price={trigger_price} price_source={trigger_ps}"
         )
 
