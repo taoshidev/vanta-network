@@ -287,6 +287,12 @@ class ValiConfig:
     MAX_TOTAL_DRAWDOWN_V2 = 0.95
     MAX_ORDERS_PER_POSITION = 100
     ORDER_COOLDOWN_MS = 5000  # 5 seconds
+    # Cross-process order/sync coordination (spec R2.4): an in-flight order registration on
+    # CommonDataServer older than this is treated as abandoned (the producer — e.g. vanta-orders —
+    # crashed mid-order) and reaped, so it can't block position sync forever. Must comfortably
+    # exceed the worst-case real order-processing time (lock wait + price fetch + write, ~seconds)
+    # to avoid reaping a genuinely-live order; sync is infrequent (daily) so a generous value is fine.
+    ORDER_INFLIGHT_TTL_MS = 60_000  # 60 seconds
     ORDER_MIN_LEVERAGE = 0.00001
     ORDER_MAX_LEVERAGE = 500
 
