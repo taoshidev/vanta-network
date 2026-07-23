@@ -93,9 +93,10 @@ class CommonDataClient(RPCClientBase):
 
     # ============ Order/Sync Coordination Methods (cross-process OrderSyncState, R2.1) ============
 
-    def begin_order(self, label: str = None) -> int:
+    def begin_order(self, label: str = None):
         """
-        Register an in-flight order. Returns an opaque token to pass back to end_order().
+        Atomically gate + register an in-flight order. Returns a token (int) to pass back to
+        end_order(), or None if a sync is in progress (caller must reject the order, should_retry).
         `label` is a free-form debug string (e.g. order_uuid + context) surfaced on reap/introspection.
         """
         return self.call("begin_order_rpc", label)
@@ -127,6 +128,28 @@ class CommonDataClient(RPCClientBase):
     def get_order_sync_state(self) -> dict:
         """Snapshot of the order/sync coordination state."""
         return self.call("get_order_sync_state_rpc")
+
+    # ============ Order UUID Dedup Methods (authoritative, R2.6) ============
+
+    def check_and_add_order_uuid(self, uuid) -> bool:
+        """Atomic claim: True if newly claimed (apply the order), False if duplicate (reject)."""
+        return self.call("check_and_add_order_uuid_rpc", uuid)
+
+    def release_order_uuid(self, uuid) -> None:
+        """Undo a claim after an apply failure so the retry can re-claim."""
+        self.call("release_order_uuid_rpc", uuid)
+
+    def order_uuid_exists(self, uuid) -> bool:
+        """Read-only membership check."""
+        return self.call("order_uuid_exists_rpc", uuid)
+
+    def seed_order_uuids(self, uuids) -> int:
+        """Bulk-add uuids from committed positions at boot. Returns resulting set size."""
+        return self.call("seed_order_uuids_rpc", uuids)
+
+    def order_uuid_count(self) -> int:
+        """Number of tracked order uuids."""
+        return self.call("order_uuid_count_rpc")
 
     # ==================== Combined State Methods ====================
 
