@@ -88,10 +88,13 @@ class ValidatorBase:
         )
         return False, synapse.dendrite.hotkey
 
-    def get_config(self):
+    @staticmethod
+    def get_config():
         # Step 2: Set up the configuration parser
         # This function initializes the necessary command-line arguments.
         # Using command-line arguments allows users to customize various miner settings.
+        # NOTE: staticmethod so the standalone vanta-state entrypoint (run_state_server.py) can build
+        # an identical config for the state servers without constructing a Validator (or a wallet).
         parser = argparse.ArgumentParser()
         # Set autosync to store true if flagged, otherwise defaults to False.
         parser.add_argument("--autosync", action='store_true',
@@ -109,6 +112,19 @@ class ValidatorBase:
         parser.add_argument("--no-spawn-api", action='store_false', dest='spawn_api', default=True,
                             help="Do not spawn the REST/WebSocket servers from the validator core "
                                  "(they run as separate PM2 apps). Requires run.sh to launch them.")
+        # vanta-state split: when set, core does NOT host the order-write state servers — they run in
+        # the separate vanta-state PM2 app (run_state_server.py) so a core restart doesn't kill them.
+        # Core starts only its own tier (subtensor_ops + contract + scoring + metagraph) and reaches
+        # the state servers via RPC clients. Default False = today's single-process behavior
+        # (backward-safe under an old run.sh). Requires run.sh to launch vanta-state first.
+        parser.add_argument("--split-state", action='store_true', dest='split_state', default=False,
+                            help="Run the order-write state servers in a separate vanta-state PM2 app "
+                                 "instead of in-core. Requires run.sh to launch vanta-state.")
+        # Wallet-less identity for the vanta-state app (run_state_server.py). Core ignores it (it has
+        # a wallet); vanta-state passes the validator's ss58 so miner_account's ValidatorBroadcastBase
+        # gets its identity without loading a keypair. See NeuronContext.validator_hotkey_override.
+        parser.add_argument("--validator-hotkey", type=str, default=None, dest='validator_hotkey',
+                            help="Validator hotkey ss58 for the wallet-less vanta-state app; core ignores it.")
         parser.add_argument("--api-host", type=str, default="127.0.0.1",
                             help="Host address for the API server")
         parser.add_argument("--api-rest-port", type=int, default=48888,

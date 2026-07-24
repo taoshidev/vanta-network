@@ -6,15 +6,20 @@ generate_script="runnable/generate_request_outputs.py"
 # Standalone API apps (REST/WS split): own PM2 apps so an API-only deploy doesn't restart core.
 rest_script="vanta_api/run_rest_server.py"
 ws_script="vanta_api/run_ws_server.py"
+# vanta-state split: order-write state servers as their own PM2 app so a core restart can't kill
+# them. Only launched when --split-state is passed to core.
+state_script="vanta_api/run_state_server.py"
 autoRunLoc=$(readlink -f "$0")
 proc_name="vanta"
 generate_proc_name="generate"
 rest_proc_name="vanta-rest"
 ws_proc_name="vanta-ws"
+state_proc_name="vanta-state"
 args=()
 generate_args=() # Assuming no specific arguments to the generate script
 rest_args=()
 ws_args=()
+state_args=()
 version_location="meta/meta.json"
 version=".subnet_version"
 start_generate=false
@@ -235,10 +240,17 @@ done
 # forwarded to the API apps (netuid drives is_mainnet in REST). No --serve = today's behavior.
 netuid_value=""
 slack_webhook_value=""
+split_state_enabled=false
+wallet_name_value=""
+wallet_hotkey_value=""
+wallet_path_value="$HOME/.bittensor/wallets"
 for ((i = 0; i < ${#args[@]}; i++)); do
     case "${args[$i]}" in
         --serve)
             serve_enabled=true
+            ;;
+        --split-state)
+            split_state_enabled=true
             ;;
         --netuid)
             netuid_value="${args[$((i + 1))]}"
@@ -251,6 +263,24 @@ for ((i = 0; i < ${#args[@]}; i++)); do
             ;;
         --slack-webhook-url=*)
             slack_webhook_value="${args[$i]#*=}"
+            ;;
+        --wallet.name)
+            wallet_name_value="${args[$((i + 1))]}"
+            ;;
+        --wallet.name=*)
+            wallet_name_value="${args[$i]#*=}"
+            ;;
+        --wallet.hotkey)
+            wallet_hotkey_value="${args[$((i + 1))]}"
+            ;;
+        --wallet.hotkey=*)
+            wallet_hotkey_value="${args[$i]#*=}"
+            ;;
+        --wallet.path)
+            wallet_path_value="${args[$((i + 1))]}"
+            ;;
+        --wallet.path=*)
+            wallet_path_value="${args[$i]#*=}"
             ;;
     esac
 done
@@ -267,13 +297,43 @@ if [ "$serve_enabled" = true ]; then
     fi
 fi
 
+# vanta-state split: forward args to the state app. It runs WALLET-LESS, so we derive the validator
+# hotkey ss58 from the hotkey PUBKEY file (public data, no keypair loaded) and pass it in as a
+# string. Core already carries --split-state in its own args (it was passed to run.sh).
+if [ "$split_state_enabled" = true ]; then
+    hotkey_file="$wallet_path_value/$wallet_name_value/hotkeys/$wallet_hotkey_value"
+    validator_hotkey_ss58=""
+    if [ -f "$hotkey_file" ]; then
+        validator_hotkey_ss58=$(jq -r '.ss58Address' "$hotkey_file")
+    fi
+    if [ -z "$validator_hotkey_ss58" ] || [ "$validator_hotkey_ss58" = "null" ]; then
+        echo "ERROR: --split-state set but could not read validator hotkey ss58 from $hotkey_file"
+        echo "       (need --wallet.name and --wallet.hotkey; wallet path: $wallet_path_value)"
+        exit 1
+    fi
+    if [ -n "$netuid_value" ]; then
+        state_args+=("--netuid" "$netuid_value")
+    fi
+    state_args+=("--wallet.name" "$wallet_name_value" "--wallet.hotkey" "$wallet_hotkey_value")
+    state_args+=("--validator-hotkey" "$validator_hotkey_ss58")
+    if [ "$serve_enabled" = true ]; then
+        state_args+=("--serve")
+    fi
+    if [ -n "$slack_webhook_value" ]; then
+        state_args+=("--slack-webhook-url" "$slack_webhook_value")
+    fi
+fi
+
 branch=$(git branch --show-current)
 echo "Watching branch: $branch"
-if [ "$serve_enabled" = true ]; then
-    echo "PM2 process names: $proc_name, $rest_proc_name, $ws_proc_name"
-else
-    echo "PM2 process names: $proc_name"
+pm2_names="$proc_name"
+if [ "$split_state_enabled" = true ]; then
+    pm2_names="$state_proc_name, $pm2_names"
 fi
+if [ "$serve_enabled" = true ]; then
+    pm2_names="$pm2_names, $rest_proc_name, $ws_proc_name"
+fi
+echo "PM2 process names: $pm2_names"
 
 current_version=$(read_version_value)
 
@@ -332,9 +392,13 @@ check_and_restart_pm2() {
     pm2 start $proc_name.app.config.js
 }
 
-# Start core first (owns the state-tier RPC servers), then the API apps. Ordering is a nicety,
-# not a gate — the API apps lazy-connect and tolerate core being absent (readiness watchdog alerts).
+# Start order: vanta-state FIRST (owns the order-write state servers core connects to), then core,
+# then the API apps. Under --split-state this ordering matters — core's clients target vanta-state's
+# servers; the readiness watchdogs tolerate transient absence and alert on sustained un-readiness.
 pip_install_if_requirements_changed
+if [ "$split_state_enabled" = true ]; then
+    check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
+fi
 check_and_restart_pm2 "$proc_name" "$script" args
 if [ "$serve_enabled" = true ]; then
     check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
@@ -405,7 +469,12 @@ while true; do
                 echo "Package installation successful."
                 # Fail-safe: a version bump restarts ALL apps. Narrowing to the changed app is a
                 # future optimization — any shared-module change (vali_config, order/position
-                # models, RPC serialization) needs core+rest+ws restarted together to avoid skew.
+                # models, RPC serialization) needs ALL tiers restarted together to avoid skew.
+                # RPC is pickle with no version handshake, so vanta-state MUST restart with core
+                # (matched-pair rule); vanta-state first to mirror the startup order.
+                if [ "$split_state_enabled" = true ]; then
+                    check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
+                fi
                 check_and_restart_pm2 "$proc_name" "$script" args
                 if [ "$serve_enabled" = true ]; then
                     check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
