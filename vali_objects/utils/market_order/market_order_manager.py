@@ -63,7 +63,8 @@ class MarketOrderManager():
         now_ms: int | None = None,
         enforce_cooldown: bool = True,
     ) -> tuple[Order, Position] | None:
-        now_ms = now_ms or TimeUtil.now_in_millis()
+        _start = TimeUtil.now_in_millis()
+        now_ms = now_ms or _start
         if enforce_cooldown:
             err = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, hotkey)
             if err:
@@ -71,6 +72,11 @@ class MarketOrderManager():
 
         if not self._live_price_client.is_market_open(trade_pair):
             raise SignalException(f"The market for {trade_pair.trade_pair_id} is currently closed.")
+
+        bt.logging.info(
+            f"[ORDER_EXECUTION] {hotkey} {order_uuid} {trade_pair.trade_pair_id} "
+            f"{order_type} {execution_type} size={order_size} src={order_src}"
+        )
 
         with self._position_lock_client.get_lock(hotkey, trade_pair.trade_pair_id):
 
@@ -89,9 +95,15 @@ class MarketOrderManager():
             usd_base_rate = self._live_price_client.get_usd_base_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
             quote_usd_rate = self._live_price_client.get_quote_usd_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
 
+            bt.logging.info(
+                f"[ORDER_EXECUTION] {hotkey} {order_uuid} pricing: fill={fill_price} usd_base={usd_base_rate:.6g} "
+                f"quote_usd={quote_usd_rate:.6g} source={price_sources[0].source} "
+                f"bid/ask={price_sources[0].bid}/{price_sources[0].ask}"
+            )
+
             if position is not None and len(position.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
                 bt.logging.info(
-                    f"Miner [{hotkey}] hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
+                    f"[ORDER_EXECUTION] {hotkey} hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
                     f"Auto-closing {trade_pair.trade_pair_id} with {len(position.orders)} orders."
                 )
                 flat_uuid = position.position_uuid[::-1]
@@ -125,6 +137,7 @@ class MarketOrderManager():
                 fill_price, usd_base_rate, quote_usd_rate,
                 slippage, is_hl_taker
             )
+            bt.logging.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
             return order, position
 
     def _apply_order(
@@ -166,17 +179,26 @@ class MarketOrderManager():
             use_nano_increment=use_nano_increment,
         )
 
+        bt.logging.info(
+            f"[ORDER_EXECUTION] {hotkey} {order_uuid} sizing: qty={quantity:.6g} val=${value:.4f} (from {order_size})"
+        )
+
         if self._is_effective_close(position, order_type, quantity, value):
             order_type = OrderType.FLAT
             quantity, leverage, value = -position.net_quantity, -position.net_leverage, -position.net_value
 
         is_buy = order_type == position.position_type
         if is_buy:
-            max_order_value = get_max_order_size(miner_account, position)
+            max_order_value, binding_cap = get_max_order_size(miner_account, position)
             if max_order_value <= 0:
-                raise SignalException(f"No buying power remaining for {trade_pair.trade_pair_id}")
+                raise SignalException(f"{hotkey} {order_uuid} No buying power remaining for {trade_pair.trade_pair_id} (capped by {binding_cap})")
             sign = -1 if order_type == OrderType.SHORT else 1
-            value = sign * min(abs(value), max_order_value)
+            clamped_value = sign * min(abs(value), max_order_value)
+            if abs(clamped_value) < abs(value):
+                bt.logging.info(
+                    f"[ORDER_EXECUTION] {hotkey} {order_uuid} order value clamped from ${value:.4f} to ${clamped_value:.4f} by {binding_cap}"
+                )
+            value = clamped_value
             quantity, leverage, value = convert_order_sizes(
                 OrderSize(value=value), usd_base_rate, trade_pair, balance,
                 round_qty=True,
@@ -209,8 +231,10 @@ class MarketOrderManager():
             slippage = self._live_price_client.calculate_slippage(order.bid, order.ask, order)
         order.slippage = slippage
 
+        bt.logging.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} slippage={order.slippage:.6g}")
+
         if not order.value or not order.quantity:
-            raise SignalException(f"{hotkey} {order_uuid} Order value and quantity must be set before applying order. value={order.value}, quantity={order.quantity}")
+            raise SignalException(f"Order value and quantity must be set before applying order. value={order.value}, quantity={order.quantity}")
 
         if is_buy and trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA and miner_account.asset_class == MinerAssetClass.EQUITIES:
             cash_available = balance - (miner_account.capital_used - miner_account.total_borrowed_amount)
@@ -223,7 +247,7 @@ class MarketOrderManager():
         if is_buy:
             allowed, reason = self._entity_collateral_client.try_gate_position_open(hotkey, order.value)
             if not allowed:
-                bt.logging.error(f"Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
+                bt.logging.error(f"{hotkey} {order_uuid} Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
                 raise SignalException(f"Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
             self._miner_account_client.process_order_buy(
                 hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category

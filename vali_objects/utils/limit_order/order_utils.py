@@ -11,6 +11,18 @@ class OrderSize(NamedTuple):
     value: float | None = None
     bracket_pct: float | None = None
 
+    def __str__(self) -> str:
+        parts = []
+        if self.quantity is not None:
+            parts.append(f"qty={self.quantity:.6g}")
+        if self.leverage is not None:
+            parts.append(f"lev={self.leverage:.4g}x")
+        if self.value is not None:
+            parts.append(f"val=${self.value:.4f}")
+        if self.bracket_pct is not None:
+            parts.append(f"bracket={self.bracket_pct:.2%}")
+        return f"OrderSize({', '.join(parts) if parts else 'empty'})"
+
     @classmethod
     def from_dict(cls, _dict: dict) -> "OrderSize":
         def to_float(value):
