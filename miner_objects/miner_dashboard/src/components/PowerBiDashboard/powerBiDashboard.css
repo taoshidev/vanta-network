@@ -1,0 +1,253 @@
+.pbi-page {
+  min-height: 100vh;
+  width: 100%;
+  padding: 44px 28px;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(117, 146, 214, 0.35) 1px, transparent 0) 0 0 / 24px 24px,
+    #0d1a34;
+  color: #f3f7ff;
+}
+
+.pbi-dashboard {
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.pbi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 20px;
+  margin-bottom: 18px;
+  border-radius: 8px;
+  background: #18284c;
+}
+
+.pbi-brand {
+  font-family: "ADLaM Display", sans-serif;
+  font-size: 1.05rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.pbi-nav {
+  display: flex;
+  gap: 18px;
+  font-size: 0.82rem;
+  color: #9bb0dc;
+}
+
+.pbi-nav span.is-active {
+  color: #65a4ff;
+  font-weight: 700;
+}
+
+.pbi-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1.1fr 1.1fr 1.2fr;
+  grid-template-rows: auto auto;
+  grid-template-areas:
+    "left purchases progress weekly"
+    "left combo combo weekly";
+  gap: 14px;
+}
+
+.pbi-card {
+  background: #15264a;
+  border-radius: 8px;
+  border: 1px solid #263c69;
+  padding: 14px;
+}
+
+.pbi-card h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.pbi-card p {
+  margin: 2px 0 10px;
+  color: #9bb0dc;
+  font-size: 0.78rem;
+}
+
+.pbi-card--left {
+  grid-area: left;
+}
+
+.pbi-card--purchases {
+  grid-area: purchases;
+}
+
+.pbi-card--progress {
+  grid-area: progress;
+}
+
+.pbi-card--weekly {
+  grid-area: weekly;
+}
+
+.pbi-card--combo {
+  grid-area: combo;
+}
+
+.pbi-kpi,
+.pbi-progress-value {
+  display: block;
+  font-size: 2rem;
+  line-height: 1;
+  margin-top: 2px;
+  margin-bottom: 8px;
+}
+
+.pbi-pill {
+  display: inline-block;
+  font-size: 0.74rem;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: #dce7ff;
+  background: #2f4f87;
+}
+
+.pbi-progress-goal {
+  font-size: 0.78rem;
+  color: #c0d0ef;
+}
+
+.pbi-chart-wrap {
+  height: 180px;
+  margin: 4px 0 8px;
+}
+
+.pbi-mini-chart {
+  height: 96px;
+  margin-top: 8px;
+}
+
+.pbi-donut-chart {
+  height: 160px;
+  margin-top: 8px;
+}
+
+.pbi-metrics {
+  display: flex;
+  gap: 20px;
+  margin: 12px 0 8px;
+}
+
+.pbi-metrics div {
+  display: flex;
+  flex-direction: column;
+}
+
+.pbi-metrics strong {
+  font-size: 1.15rem;
+  line-height: 1.1;
+}
+
+.pbi-metrics span {
+  color: #9bb0dc;
+  font-size: 0.73rem;
+}
+
+.pbi-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 0.74rem;
+}
+
+.pbi-table th,
+.pbi-table td {
+  text-align: left;
+  padding: 5px 6px;
+  border-bottom: 1px solid #22385f;
+}
+
+.pbi-table th {
+  color: #91a8d8;
+  font-weight: 600;
+}
+
+.pbi-combo-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.pbi-combo-top span {
+  color: #9bb0dc;
+  font-size: 0.72rem;
+}
+
+.pbi-combo-top strong {
+  display: block;
+  font-size: 1.4rem;
+  line-height: 1.1;
+}
+
+.pbi-combo-top p {
+  max-width: 250px;
+  margin: 0;
+}
+
+.pbi-footer-stats {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pbi-footer-stats strong {
+  display: block;
+  font-size: 1.1rem;
+}
+
+.pbi-footer-stats span {
+  color: #9bb0dc;
+  font-size: 0.72rem;
+}
+
+@media (max-width: 1200px) {
+  .pbi-grid {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "left left"
+      "purchases progress"
+      "combo combo"
+      "weekly weekly";
+  }
+}
+
+@media (max-width: 720px) {
+  .pbi-page {
+    padding: 18px 12px;
+  }
+
+  .pbi-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .pbi-nav {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .pbi-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "left"
+      "purchases"
+      "progress"
+      "combo"
+      "weekly";
+  }
+
+  .pbi-combo-top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

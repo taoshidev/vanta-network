@@ -1,21 +1,17 @@
 import { useState, useEffect } from "react";
-import { AppShell, Center, Loader } from "@mantine/core";
-import { useDisclosure } from "@mantine/hooks";
+import { Center, Loader } from "@mantine/core";
 
 import { MinerData } from "../../types";
 import { getMinerData } from "../../lib";
 
 import { ErrorBoundary } from "../ErrorBoundary";
 import { ErrorFallback } from "../ErrorFallback";
-import { AppHeader } from "../AppHeader";
 import { Main } from "../Main";
 
 import "./App.css";
 import { isEmpty } from "lodash";
 
 export const App = () => {
-  const [opened, { toggle }] = useDisclosure();
-
   const [data, setData] = useState<MinerData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -59,24 +55,7 @@ export const App = () => {
     <ErrorBoundary
       fallback={<ErrorFallback error={new Error(error as string)} />}
     >
-      <AppShell
-        navbar={{
-          width: 300,
-          breakpoint: "sm",
-          collapsed: { desktop: true, mobile: !opened },
-        }}
-        padding="md"
-      >
-        <AppShell.Header>
-          <AppHeader opened={opened} toggle={toggle} data={data?.statistics} />
-        </AppShell.Header>
-
-        <AppShell.Navbar p="md">Navbar</AppShell.Navbar>
-
-        <AppShell.Main>
-          <Main data={data as MinerData} />
-        </AppShell.Main>
-      </AppShell>
+      <Main data={data as MinerData} />
     </ErrorBoundary>
   );
 };
