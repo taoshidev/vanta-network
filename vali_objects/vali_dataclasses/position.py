@@ -74,6 +74,8 @@ class Position(BaseModel):
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):
+        # Strip None values so Position field defaults are used instead of None
+        values = {k: v for k, v in values.items() if v is not None}
         tp = values['trade_pair']
         if hasattr(tp, 'trade_pair_id'):
             trade_pair_id = tp.trade_pair_id
@@ -87,6 +89,8 @@ class Position(BaseModel):
         updated_orders = []
         for order in orders:
             if not isinstance(order, Order):
+                # Strip None values so Order field defaults are used instead of None
+                order = {k: v for k, v in order.items() if v is not None}
                 order['trade_pair'] = trade_pair
             else:
                 order = order.model_copy(update={'trade_pair': trade_pair})
