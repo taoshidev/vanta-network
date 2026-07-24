@@ -193,9 +193,17 @@ class Validator(ValidatorBase):
             is_mainnet=self.is_mainnet
         )
 
-        # Start all servers AND wait for metagraph (blocks until ready)
+        # Start servers AND wait for metagraph (blocks until ready).
+        # --split-state: the order-write state servers run in the separate vanta-state app, so core
+        # starts only its own tier (subtensor_ops + contract + scoring + metagraph). Default: core
+        # hosts everything, exactly as before.
         orchestrator = ServerOrchestrator.get_instance()
-        orchestrator.start_validator_servers(context)
+        self.split_state = getattr(self.config, 'split_state', False)
+        if self.split_state:
+            bt.logging.info("[INIT] --split-state: core hosts its tier only; state servers run in vanta-state")
+            orchestrator.start_core_servers(context)
+        else:
+            orchestrator.start_validator_servers(context)
         bt.logging.success("[INIT] All servers started, metagraph populated")
 
         # Instantiate RPC clients directly (was orchestrator.get_client(...)). See import-block note:
@@ -224,26 +232,42 @@ class Validator(ValidatorBase):
         self.subtensor = subtensor_ops_server.get_subtensor()
         self.subtensor_ops_manager = subtensor_ops_server.manager  # For blacklist_fn
 
-        # Run pre-run setup (safe - metagraph already populated)
-        orchestrator.call_pre_run_setup(perform_order_corrections=True)
-
-        # Start remaining server daemons
-        orchestrator.start_server_daemons([
-            'perf_ledger',
-            'miner_account',
-            'challenge_period',
-            'elimination',
-            'position_manager',
-            'debt_ledger',
-            'limit_order',
-            'mdd_checker',
-            'core_outputs',
-            'miner_statistics',
-            'weight_calculator',
-            'entity',
-            'entity_collateral'
-        ])
-        bt.logging.success("[INIT] All daemons started, caches warmed")
+        if self.split_state:
+            # State servers (incl. position_manager) live in vanta-state, which runs pre_run_setup
+            # and their daemons itself. Core starts ONLY its own tier's daemons here; the
+            # vanta-state ones (miner_account, position_manager, limit_order, entity_collateral) are
+            # started by run_state_server.py.
+            orchestrator.start_server_daemons([
+                'perf_ledger',
+                'challenge_period',
+                'elimination',
+                'debt_ledger',
+                'mdd_checker',
+                'core_outputs',
+                'miner_statistics',
+                'weight_calculator',
+                'entity',
+            ])
+            bt.logging.success("[INIT] Core-tier daemons started (state daemons run in vanta-state)")
+        else:
+            # Single-process: core hosts everything (today's behavior).
+            orchestrator.call_pre_run_setup(perform_order_corrections=True)
+            orchestrator.start_server_daemons([
+                'perf_ledger',
+                'miner_account',
+                'challenge_period',
+                'elimination',
+                'position_manager',
+                'debt_ledger',
+                'limit_order',
+                'mdd_checker',
+                'core_outputs',
+                'miner_statistics',
+                'weight_calculator',
+                'entity',
+                'entity_collateral'
+            ])
+            bt.logging.success("[INIT] All daemons started, caches warmed")
         # ============================================================================
 
         # Create PositionSyncer (not a server, runs in main process)

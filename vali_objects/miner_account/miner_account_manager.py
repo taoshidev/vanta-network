@@ -282,7 +282,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
         collateral_balance_getter=None,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
         config=None,
-        is_testnet: bool = False
+        is_testnet: bool = False,
+        validator_hotkey: str = None
     ):
         """
         Initialize the manager.
@@ -295,13 +296,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
             connection_mode: RPC or LOCAL mode for asset selection client
             config: Bittensor config (for ValidatorBroadcastBase)
             is_testnet: Whether running on testnet (for ValidatorBroadcastBase)
+            validator_hotkey: Optional hotkey ss58 string for the wallet-less path (vanta-state).
+                When set, ValidatorBroadcastBase uses it instead of loading a wallet.
         """
         # Initialize ValidatorBroadcastBase first
         super().__init__(
             running_unit_tests=running_unit_tests,
             is_testnet=is_testnet,
             config=config,
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            validator_hotkey=validator_hotkey
         )
 
         self.running_unit_tests = running_unit_tests
