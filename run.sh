@@ -9,17 +9,22 @@ ws_script="vanta_api/run_ws_server.py"
 # vanta-state split: order-write state servers as their own PM2 app so a core restart can't kill
 # them. Only launched when --split-state is passed to core.
 state_script="vanta_api/run_state_server.py"
+# vanta-orders split: axon + HL + order path as their own PM2 app so a core restart doesn't drop
+# order reception. Launched when core is told --no-axon.
+orders_script="vanta_api/run_orders_server.py"
 autoRunLoc=$(readlink -f "$0")
 proc_name="vanta"
 generate_proc_name="generate"
 rest_proc_name="vanta-rest"
 ws_proc_name="vanta-ws"
 state_proc_name="vanta-state"
+orders_proc_name="vanta-orders"
 args=()
 generate_args=() # Assuming no specific arguments to the generate script
 rest_args=()
 ws_args=()
 state_args=()
+orders_args=()
 version_location="meta/meta.json"
 version=".subnet_version"
 start_generate=false
@@ -241,6 +246,7 @@ done
 netuid_value=""
 slack_webhook_value=""
 split_state_enabled=false
+orders_split_enabled=false
 wallet_name_value=""
 wallet_hotkey_value=""
 wallet_path_value="$HOME/.bittensor/wallets"
@@ -251,6 +257,9 @@ for ((i = 0; i < ${#args[@]}; i++)); do
             ;;
         --split-state)
             split_state_enabled=true
+            ;;
+        --no-axon)
+            orders_split_enabled=true
             ;;
         --netuid)
             netuid_value="${args[$((i + 1))]}"
@@ -324,11 +333,27 @@ if [ "$split_state_enabled" = true ]; then
     fi
 fi
 
+# vanta-orders app: it serves the axon + runs HL. It reuses core's args (wallet/netuid/axon/
+# subtensor/slack) so its wallet + axon.serve + chain config match core, but DROPS --split-state
+# (irrelevant — it starts no servers) and --no-axon (it MUST serve the axon), and adds --orders-app.
+if [ "$orders_split_enabled" = true ]; then
+    for a in "${args[@]}"; do
+        case "$a" in
+            --split-state|--no-axon) ;;  # drop: orders app starts no servers and must serve the axon
+            *) orders_args+=("$a") ;;
+        esac
+    done
+    orders_args+=("--orders-app")
+fi
+
 branch=$(git branch --show-current)
 echo "Watching branch: $branch"
 pm2_names="$proc_name"
 if [ "$split_state_enabled" = true ]; then
     pm2_names="$state_proc_name, $pm2_names"
+fi
+if [ "$orders_split_enabled" = true ]; then
+    pm2_names="$pm2_names, $orders_proc_name"
 fi
 if [ "$serve_enabled" = true ]; then
     pm2_names="$pm2_names, $rest_proc_name, $ws_proc_name"
@@ -400,6 +425,10 @@ if [ "$split_state_enabled" = true ]; then
     check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
 fi
 check_and_restart_pm2 "$proc_name" "$script" args
+if [ "$orders_split_enabled" = true ]; then
+    # After core: vanta-orders seeds dedup + primes its blacklist cache from core's metagraph on boot.
+    check_and_restart_pm2 "$orders_proc_name" "$orders_script" orders_args 10000
+fi
 if [ "$serve_enabled" = true ]; then
     check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
     check_and_restart_pm2 "$ws_proc_name" "$ws_script" ws_args 10000
@@ -476,6 +505,9 @@ while true; do
                     check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
                 fi
                 check_and_restart_pm2 "$proc_name" "$script" args
+                if [ "$orders_split_enabled" = true ]; then
+                    check_and_restart_pm2 "$orders_proc_name" "$orders_script" orders_args 10000
+                fi
                 if [ "$serve_enabled" = true ]; then
                     check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
                     check_and_restart_pm2 "$ws_proc_name" "$ws_script" ws_args 10000

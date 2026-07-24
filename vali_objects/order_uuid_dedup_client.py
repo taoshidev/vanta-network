@@ -102,16 +102,31 @@ class OrderUuidDedupClient:
         """
         if not uuid:
             return True
-        claimed = self._client.check_and_add_order_uuid(uuid)
+        try:
+            claimed = self._client.check_and_add_order_uuid(uuid)
+        except Exception as e:
+            # FAIL-OPEN (mirrors OrderSyncClient's R2.3): if the dedup server is unreachable (the
+            # state tier blipping during a deploy), do NOT let this RPC raise out of the order
+            # handler — that would mask the handler's crafted response (dropping should_retry and
+            # losing the order, the exact scenario R4.1 exists for). Proceed as if newly claimed:
+            # dedup is briefly unavailable, and accepting a possible duplicate during the outage
+            # beats losing orders (the server's own dedup still catches repeats once it returns).
+            bt.logging.warning(f"OrderUuidDedupClient.check_and_add fail-open (dedup unreachable): {e}")
+            self._remember_local(uuid)
+            return True
         self._remember_local(uuid)
         return claimed
 
     def release(self, uuid) -> None:
-        """Undo a claim after an apply failure (server-authoritative), and drop it from the cache."""
+        """Undo a claim after an apply failure (server-authoritative), and drop it from the cache.
+        Best-effort: a failed release RPC must never raise out of the order handler (see
+        check_and_add fail-open) — the server self-heals the claim via FIFO eviction if needed."""
         if not uuid:
             return
         try:
             self._client.release_order_uuid(uuid)
+        except Exception as e:
+            bt.logging.warning(f"OrderUuidDedupClient.release best-effort (dedup unreachable): {e}")
         finally:
             # Lazy tombstone (mirrors the server): drop from the membership set only; the stale
             # deque entry is reclaimed on the normal FIFO eviction in _remember_local. O(1), and
