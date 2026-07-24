@@ -122,6 +122,13 @@ class CommonDataServer(RPCServerBase):
         self._last_sync_start_ms = 0
         self._last_sync_complete_ms = 0
         self._order_condition = threading.Condition(self._state_lock)
+        # INVARIANT (load-bearing): the condition MUST wrap _state_lock, not a lock of its own.
+        # The R2.5a order/sync TOCTOU fix depends on begin_order_rpc's `_sync_waiting` check and
+        # wait_for_orders_rpc's `_sync_waiting = True` running under the SAME mutex. A future edit
+        # that gives the condition an independent lock would silently reopen that race. Use a real
+        # raise (not assert) so the guard survives `python -O`, which strips asserts.
+        if self._order_condition._lock is not self._state_lock:
+            raise RuntimeError("_order_condition must share _state_lock (order/sync TOCTOU invariant)")
 
         # Initialize RPCServerBase (no daemon needed for this simple state server)
         super().__init__(
@@ -376,7 +383,12 @@ class CommonDataServer(RPCServerBase):
     # ============ Order UUID Dedup RPC Methods (authoritative, cross-process/-instance, R2.6) ============
 
     def _add_order_uuid_locked(self, uuid) -> None:
-        """Add uuid to the dedup set with FIFO capacity eviction. Caller holds _state_lock."""
+        """Add uuid to the dedup set with FIFO capacity eviction. Caller holds _state_lock.
+
+        Evicting the oldest deque entry `discard`s it from the set (a no-op if that entry was
+        already released — a lazy tombstone, see release_order_uuid_rpc), which reclaims tombstoned
+        slots on the normal FIFO cycle.
+        """
         if uuid in self._order_uuids_set:
             return
         if len(self._order_uuids_deque) >= self._order_uuid_capacity:
@@ -407,15 +419,29 @@ class CommonDataServer(RPCServerBase):
     def release_order_uuid_rpc(self, uuid) -> None:
         """
         Undo a claim (call when the order apply FAILED after a successful check_and_add) so the
-        placer's retry can re-claim and succeed. No-op if absent. Rare path, so the O(n) deque
-        rebuild (mirroring UUIDTracker.remove) is acceptable.
+        placer's retry can re-claim and succeed. No-op if absent.
+
+        Lazy tombstone: drop `uuid` from the authoritative membership set (O(1)) and leave its stale
+        deque entry in place — it is reclaimed on the normal FIFO eviction in _add_order_uuid_locked
+        (which `discard`s the popped uuid, a no-op once tombstoned). This avoids an O(n) deque
+        rebuild on a path that clusters precisely during deploys (the scenario this dedup serves).
+        The membership set — not the deque — is authoritative for check_and_add/exists, so a
+        tombstoned uuid is immediately re-claimable.
+
+        Precise semantics of a released-then-RE-CLAIMED uuid: the re-claim appends a second deque
+        entry (the tombstone is not removed), so the uuid appears twice. When the stale (first)
+        entry later reaches the front, its `discard` drops the uuid from the set even though the
+        re-claim is still logically live — i.e. a re-claimed uuid can be evicted EARLIER than the
+        full capacity window (and the duplicate entry costs one slot until it too cycles out). This
+        is safe because dedup only needs to cover the retry/replay window (seconds–minutes) and a
+        placer retry re-claims within seconds, long before ~100k later insertions cycle the stale
+        entry out. If strict claimed-for-capacity is ever required, carry a tombstone set and skip
+        the re-append instead.
         """
         if not uuid:
             return
         with self._state_lock:
-            if uuid in self._order_uuids_set:
-                self._order_uuids_set.discard(uuid)
-                self._order_uuids_deque = deque(u for u in self._order_uuids_deque if u != uuid)
+            self._order_uuids_set.discard(uuid)
 
     def order_uuid_exists_rpc(self, uuid) -> bool:
         """Read-only membership check (early-reject fast path also served by the client-local cache)."""

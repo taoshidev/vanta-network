@@ -96,7 +96,7 @@ import atexit
 import sys
 import time
 import inspect
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Set
 from dataclasses import dataclass
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -560,6 +560,7 @@ class ServerOrchestrator:
         mode: ServerMode = ServerMode.TESTING,
         secrets: Optional[Dict] = None,
         context: Optional[NeuronContext] = None,
+        exclude_servers: Optional[Set[str]] = None,
         **kwargs
     ) -> None:
         """
@@ -572,6 +573,11 @@ class ServerOrchestrator:
             mode: ServerMode enum (TESTING, BACKTESTING, PRODUCTION, VALIDATOR)
             secrets: API secrets dictionary (required for live_price_fetcher in legacy mode)
             context: NeuronContext for VALIDATOR/MINER mode (contains config, wallet, slack_notifier, secrets, etc.)
+            exclude_servers: Optional set of server names to NOT start, even if required for the mode.
+                Used by the vanta-state split: vanta-state starts the full VALIDATOR tier minus
+                subtensor_ops (which stays LOCAL in core, holding the wallet). Excluding subtensor_ops
+                also makes the metagraph auto-wire below a no-op (it is guarded on subtensor_ops being
+                present), which is correct — core re-plumbs that edge cross-process (see start_state_servers).
             **kwargs: Additional server-specific kwargs
 
         Example:
@@ -618,8 +624,16 @@ class ServerOrchestrator:
             PortManager.force_kill_all_rpc_ports()
 
             # Determine which servers to start based on mode
+            exclude_servers = exclude_servers or set()
+            # Fail loud on a typo'd exclude name: a silent no-op would start a server meant to be
+            # excluded (e.g. subtensor_ops), quietly defeating the vanta-state split.
+            unknown = exclude_servers - set(self.SERVERS)
+            if unknown:
+                raise ValueError(f"exclude_servers contains unknown server names: {sorted(unknown)}")
             servers_to_start = []
             for server_name, server_config in self.SERVERS.items():
+                if server_name in exclude_servers:
+                    continue
                 if mode == ServerMode.TESTING and not server_config.required_in_testing:
                     continue
                 if mode == ServerMode.MINER and not server_config.required_in_miner:
@@ -1423,6 +1437,35 @@ class ServerOrchestrator:
 
         logger.info("[INIT] Metagraph populated, ready for other daemons")
         logger.info(f"All {neuron_type} servers started and initialized")
+
+    def start_state_servers(
+        self,
+        context: NeuronContext,
+    ) -> None:
+        """
+        Start the state tier (vanta-state): the full VALIDATOR server set EXCEPT subtensor_ops.
+
+        This is the vanta-state entrypoint's counterpart to start_neuron_servers. subtensor_ops holds
+        the wallet and does chain extrinsics, so it stays LOCAL in core; every other server (fill-path
+        + scoring) moves here so a core restart does not kill the state tier.
+
+        Differences from start_neuron_servers (deliberate):
+          - Excludes subtensor_ops (started LOCAL in core instead).
+          - Does NOT start the subtensor_ops daemon or block on metagraph population — core owns the
+            chain connection and pushes the metagraph across-process (back-edge re-plumbed separately).
+          - The metagraph auto-wire in start_all_servers is a no-op here (guarded on subtensor_ops).
+
+        Daemons and pre-run setup are still deferred to the entrypoint (call_pre_run_setup +
+        start_server_daemons), exactly as in the in-core path.
+        """
+        context.is_miner = False
+        logger.info("[INIT] Starting vanta-state servers (VALIDATOR tier minus subtensor_ops)...")
+        self.start_all_servers(
+            mode=ServerMode.VALIDATOR,
+            context=context,
+            exclude_servers={'subtensor_ops'},
+        )
+        logger.info("[INIT] vanta-state servers started (subtensor_ops stays in core)")
 
     def start_validator_servers(
         self,
