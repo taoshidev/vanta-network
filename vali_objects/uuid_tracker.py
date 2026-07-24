@@ -36,6 +36,30 @@ class UUIDTracker:
                 self.uuids = deque(u for u in self.uuids if u != uuid)
                 self.uuid_set.remove(uuid)
 
+    def check_and_add(self, uuid) -> bool:
+        """
+        Atomic claim: True if `uuid` was NOT already present (now claimed — apply the order), False
+        if it was (duplicate — reject). Falsy uuid is not dedup-able -> True. Mirrors
+        OrderUuidDedupClient.check_and_add so the order handler is identical across the monolith
+        (this in-memory tracker) and the orders app (server-backed dedup client).
+        """
+        if not uuid:
+            return True
+        with self.lock:
+            if uuid in self.uuid_set:
+                return False
+            if len(self.uuids) >= self.capacity:
+                old_uuid = self.uuids.popleft()
+                self.uuid_set.remove(old_uuid)
+            self.uuids.append(uuid)
+            self.uuid_set.add(uuid)
+            return True
+
+    def release(self, uuid) -> None:
+        """Undo a claim after an apply failure so a retry can re-claim. Mirrors
+        OrderUuidDedupClient.release."""
+        self.remove(uuid)
+
     def exists(self, uuid):
         with self.lock:  # Ensure exclusive access within this block
             return uuid in self.uuid_set

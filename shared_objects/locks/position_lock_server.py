@@ -29,6 +29,7 @@ from typing import Tuple, Dict
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig
+from time_util.time_util import TimeUtil
 
 
 class PositionLockServer(RPCServerBase):
@@ -65,6 +66,10 @@ class PositionLockServer(RPCServerBase):
         # Use threading.Lock since all RPC access goes through this server process
         self.locks: Dict[Tuple[str, str], threading.Lock] = {}
         self.locks_dict_lock = threading.Lock()  # Protect dict mutations
+        # Wall-clock ms when each currently-held lock was acquired (for lease reclaim). Absent = not
+        # held (or already released). Guarded by locks_dict_lock.
+        self.lock_held_at: Dict[Tuple[str, str], float] = {}
+        self._lock_lease_ms = ValiConfig.POSITION_LOCK_LEASE_MS
 
         # Initialize base class
         # daemon_interval_s: 60s (slow interval since daemon does nothing)
@@ -151,10 +156,35 @@ class PositionLockServer(RPCServerBase):
         Returns:
             bool: True if lock was acquired, False if timeout
         """
+        lock_key = (miner_hotkey, trade_pair_id)
         lock = self._get_or_create_lock(miner_hotkey, trade_pair_id)
+
+        # Lease reclaim (never-release protection): if this lock has been HELD past the lease, the
+        # holder is presumed dead (crashed between acquire and release — a real hazard now that the
+        # holder is the crashable vanta-orders process, not core). Force-release so the (hotkey,
+        # trade_pair) is not wedged forever. The lease is FAR above any real hold, so a live-but-slow
+        # holder is never reclaimed. Serialized under locks_dict_lock so only one reclaim fires.
+        now_ms = TimeUtil.now_in_millis()
+        with self.locks_dict_lock:
+            held_at = self.lock_held_at.get(lock_key)
+            if held_at is not None and (now_ms - held_at) > self._lock_lease_ms:
+                try:
+                    lock.release()
+                    bt.logging.warning(
+                        f"[LOCK_SERVER] Reclaimed stale lock for {miner_hotkey}.../{trade_pair_id} "
+                        f"held {(now_ms - held_at) / 1000:.1f}s (> {self._lock_lease_ms / 1000:.0f}s lease) "
+                        f"— presumed crashed holder"
+                    )
+                except RuntimeError:
+                    pass  # already free; nothing to reclaim
+                self.lock_held_at.pop(lock_key, None)
+
         acquired = lock.acquire(timeout=timeout)
 
-        if not acquired:
+        if acquired:
+            with self.locks_dict_lock:
+                self.lock_held_at[lock_key] = TimeUtil.now_in_millis()
+        else:
             bt.logging.warning(
                 f"[LOCK_SERVER] Failed to acquire lock for {miner_hotkey}.../{trade_pair_id} after {timeout}s"
             )
@@ -183,9 +213,13 @@ class PositionLockServer(RPCServerBase):
 
         try:
             lock.release()
+            with self.locks_dict_lock:
+                self.lock_held_at.pop(lock_key, None)  # no longer held → not eligible for reclaim
             return True
         except RuntimeError as e:
-            # Lock was not held (already released)
+            # Lock was not held (already released — possibly reclaimed by the lease above)
+            with self.locks_dict_lock:
+                self.lock_held_at.pop(lock_key, None)
             bt.logging.warning(
                 f"[LOCK_SERVER] Error releasing lock for {miner_hotkey}.../{trade_pair_id}: {e}"
             )

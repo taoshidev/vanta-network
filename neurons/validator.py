@@ -27,6 +27,8 @@ from template.protocol import SendSignal
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.data_sync.auto_sync import PositionSyncer
 from vali_objects.data_sync.order_sync_state import OrderSyncState
+from vali_objects.data_sync.order_sync_client import OrderSyncClient
+from vali_objects.order_uuid_dedup_client import OrderUuidDedupClient
 from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
@@ -42,11 +44,8 @@ from vali_objects.utils.order_processor import OrderProcessor
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from runnable.run_migrations import main as run_migrations
 
-# RPC clients instantiated directly (was orchestrator.get_client(...)). Direct instantiation
-# connects by service-name+port authkey regardless of which process spawned the server, which is
-# what lets the state tier move to its own process (vanta-state) later. In-process this is a
-# mechanical no-op: get_client in VALIDATOR mode is just client_class(running_unit_tests=False).
-# Precedent: ValidatorRestServer._initialize_clients / run_rest_server.py.
+# Clients connect by service-name+port authkey regardless of which process spawned the server, so
+# these work whether the target servers are in-process or in another tier's process.
 from shared_objects.rpc.metagraph_client import MetagraphClient
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
@@ -105,22 +104,30 @@ class Validator(ValidatorBase):
         except Exception as e:
             print(f"Error reading meta/meta.json: {e}")
 
-        # Run any pending migrations before initializing validator state
-        print("Checking for pending migrations...")
-        if not run_migrations():
-            print("ERROR: Migration failed. Starting validator without executing migrations")
-        else:
-            print("Migrations completed successfully.")
-
-        ValiBkpUtils.clear_tmp_dir()
-        self.uuid_tracker = UUIDTracker()
-
-        # Thread-safe state for coordinating order processing vs. position sync
-        # Tracks in-flight orders and signals when sync is waiting
-        self.order_sync = OrderSyncState()
-
+        # Read config before migrations: the role flags gate what runs below.
         self.config = self.get_config()
+        self.orders_app = getattr(self.config, 'orders_app', False)
+        self.split_state = getattr(self.config, 'split_state', False)
         self.is_mainnet = self.config.netuid == 8
+
+        # Migrations + tmp clear mutate on-disk state, which the client-only orders app does not own.
+        if not self.orders_app:
+            print("Checking for pending migrations...")
+            if not run_migrations():
+                print("ERROR: Migration failed. Starting validator without executing migrations")
+            else:
+                print("Migrations completed successfully.")
+            ValiBkpUtils.clear_tmp_dir()
+
+        # OrderUuidDedupClient is server-authoritative (survives a restart, holds across instances);
+        # UUIDTracker is process-local. The handler claims a uuid BEFORE applying (check_and_add) and
+        # releases on failure — this serializes concurrent same-uuid orders (32-worker executor),
+        # which the old add-after-success left able to both apply.
+        self.uuid_tracker = OrderUuidDedupClient() if self.orders_app else UUIDTracker()
+
+        # When split, the order side (vanta-orders) and sync side (core) coordinate through
+        # CommonDataServer; the monolith uses the in-memory equivalent.
+        self.order_sync = OrderSyncClient() if (self.orders_app or self.split_state) else OrderSyncState()
         # ValiConfig.HL_USE_TESTNET = not self.is_mainnet
         # Ensure the directory for logging exists, else create one.
         if not os.path.exists(self.config.full_path):
@@ -193,32 +200,26 @@ class Validator(ValidatorBase):
             is_mainnet=self.is_mainnet
         )
 
-        # Start servers AND wait for metagraph (blocks until ready).
-        # --split-state: the order-write state servers run in the separate vanta-state app, so core
-        # starts only its own tier (subtensor_ops + contract + scoring + metagraph). Default: core
-        # hosts everything, exactly as before.
+        # orders-app is a pure client (starts no servers); core-split starts only its own tier;
+        # the monolith starts everything.
         orchestrator = ServerOrchestrator.get_instance()
-        self.split_state = getattr(self.config, 'split_state', False)
-        if self.split_state:
+        if self.orders_app:
+            bt.logging.info("[INIT] --orders-app: starting NO servers (pure client of vanta-state/core)")
+        elif self.split_state:
             bt.logging.info("[INIT] --split-state: core hosts its tier only; state servers run in vanta-state")
             orchestrator.start_core_servers(context)
         else:
             orchestrator.start_validator_servers(context)
-        bt.logging.success("[INIT] All servers started, metagraph populated")
+        bt.logging.success("[INIT] Server startup phase complete")
 
-        # Instantiate RPC clients directly (was orchestrator.get_client(...)). See import-block note:
-        # decouples core's client acquisition from its own orchestrator so the state tier can move to
-        # a separate process later. Defaults reproduce VALIDATOR-mode get_client exactly
-        # (connection_mode=RPC, connect_immediately=False). asset_selection + elimination keep their
-        # 5s local cache — the only get_client special cases (server_orchestrator.py get_client).
         self.metagraph_client = MetagraphClient()
         self.price_fetcher_client = LivePriceFetcherClient()
         self.position_manager_client = PositionManagerClient()
-        # local cache: get_elimination_local_cache / get_departed_hotkey_info_local_cache per-order lookups
+        # local cache: per-order elimination / departed-hotkey lookups without an RPC each.
         self.elimination_client = EliminationClient(local_cache_refresh_period_ms=5000)
         self.challengeperiod_client = ChallengePeriodClient()
         self.limit_order_client = LimitOrderClient()
-        # local cache: prevents "Selected asset class: [unknown]" on the per-order asset-class lookup
+        # local cache: per-order asset-class lookup without an RPC each.
         self.asset_selection_client = AssetSelectionClient(local_cache_refresh_period_ms=5000)
         self.perf_ledger_client = PerfLedgerClient()
         self.debt_ledger_client = DebtLedgerClient()
@@ -227,16 +228,21 @@ class Validator(ValidatorBase):
         self.market_order_client = MarketOrderClient()
         self.miner_account_client = MinerAccountClient()
 
-        # Get subtensor from SubtensorOpsServer
-        subtensor_ops_server = orchestrator.get_server('subtensor_ops')
-        self.subtensor = subtensor_ops_server.get_subtensor()
-        self.subtensor_ops_manager = subtensor_ops_server.manager  # For blacklist_fn
+        if self.orders_app:
+            # subtensor_ops lives in core; build our own subtensor for the one-shot axon.serve, and
+            # leave subtensor_ops_manager None so blacklist_fn uses the metagraph-fed hotkey cache.
+            self.subtensor = bt.subtensor(config=self.config)
+            self.subtensor_ops_manager = None
+            self._init_blacklist_hotkey_cache()
+        else:
+            subtensor_ops_server = orchestrator.get_server('subtensor_ops')
+            self.subtensor = subtensor_ops_server.get_subtensor()
+            self.subtensor_ops_manager = subtensor_ops_server.manager  # For blacklist_fn
 
-        if self.split_state:
-            # State servers (incl. position_manager) live in vanta-state, which runs pre_run_setup
-            # and their daemons itself. Core starts ONLY its own tier's daemons here; the
-            # vanta-state ones (miner_account, position_manager, limit_order, entity_collateral) are
-            # started by run_state_server.py.
+        if self.orders_app:
+            bt.logging.info("[INIT] --orders-app: no server daemons / pre_run_setup (client of state tiers)")
+        elif self.split_state:
+            # Core starts only its own tier's daemons; vanta-state starts its own (incl. pre_run_setup).
             orchestrator.start_server_daemons([
                 'perf_ledger',
                 'challenge_period',
@@ -270,12 +276,15 @@ class Validator(ValidatorBase):
             bt.logging.success("[INIT] All daemons started, caches warmed")
         # ============================================================================
 
-        # Create PositionSyncer (not a server, runs in main process)
-        self.position_syncer = PositionSyncer(
-            order_sync=self.order_sync,
-            auto_sync_enabled=self.auto_sync,
-            is_mothership=self.is_mothership
-        )
+        # Position sync runs in core/monolith, not the orders app.
+        if self.orders_app:
+            self.position_syncer = None
+        else:
+            self.position_syncer = PositionSyncer(
+                order_sync=self.order_sync,
+                auto_sync_enabled=self.auto_sync,
+                is_mothership=self.is_mothership
+            )
 
         self.order_processor = OrderProcessor(
             limit_order_client=self.limit_order_client,
@@ -286,30 +295,35 @@ class Validator(ValidatorBase):
         # Initialize UUID tracker with existing positions
         self.uuid_tracker.add_initial_uuids(self.position_manager_client.get_positions_for_all_miners())
 
-        # Hyperliquid tracker (daemon thread for tracking HL trader fills)
-        from entity_management.hyperliquid_tracker import HyperliquidTracker
-        from vanta_api.websocket_notifier import WebSocketNotifierClient
-        hl_ws_notifier = WebSocketNotifierClient(connect_immediately=False)
-        self.hl_tracker = HyperliquidTracker(
-            entity_client=self.entity_client,
-            price_fetcher_client=self.price_fetcher_client,
-            order_processor=self.order_processor,
-            ws_notifier_client=hl_ws_notifier,
-        )
-        self.hl_tracker.start()
+        # HL tracker is co-resident with the axon (monolith or orders app), never in a core-split
+        # process, so a core restart doesn't drop HL fill ingestion.
+        if getattr(self.config, 'serve_axon', True) or self.orders_app:
+            from entity_management.hyperliquid_tracker import HyperliquidTracker
+            from vanta_api.websocket_notifier import WebSocketNotifierClient
+            hl_ws_notifier = WebSocketNotifierClient(connect_immediately=False)
+            self.hl_tracker = HyperliquidTracker(
+                entity_client=self.entity_client,
+                price_fetcher_client=self.price_fetcher_client,
+                order_processor=self.order_processor,
+                ws_notifier_client=hl_ws_notifier,
+            )
+            self.hl_tracker.start()
+        else:
+            self.hl_tracker = None
+            bt.logging.info("[INIT] --no-axon: HL tracker not started here (runs in vanta-orders app)")
 
-        # Verify hotkey is registered
+        # Verify hotkey is registered (via metagraph_client — available in all roles).
         bt.logging.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")
         if not self.metagraph_client.has_hotkey(self.wallet.hotkey.ss58_address):
             bt.logging.error(
                 f"\nYour validator hotkey: {self.wallet.hotkey.ss58_address} (wallet: {self.wallet.name}, hotkey: {self.wallet.hotkey_str}) "
-                f"is not registered to chain connection: {self.subtensor_ops_manager.get_subtensor()} \n"
-                f"Run btcli register and try again. "
+                f"is not registered on netuid {self.config.netuid}. Run btcli register and try again."
             )
             exit()
 
-        # Get subtensor from subtensor_ops_manager before calling parent init
-        self.subtensor = self.subtensor_ops_manager.get_subtensor()
+        # orders-app already set self.subtensor above; otherwise take subtensor_ops_manager's.
+        if self.subtensor_ops_manager is not None:
+            self.subtensor = self.subtensor_ops_manager.get_subtensor()
 
         # Build and link vali functions to the axon.
         # The axon handles request processing, allowing validators to send this process requests.
@@ -327,7 +341,7 @@ class Validator(ValidatorBase):
         # position-update broadcasts (market_order_manager.py) that feed the extracted WS server.
         # Under run.sh's split (--no-spawn-api), REST/WS run as their own PM2 apps — spawning here
         # too would double-bind 48888/8765/50014/50022. Defaults to spawning (backward-safe).
-        if self.config.serve and getattr(self.config, 'spawn_api', True):
+        if self.config.serve and getattr(self.config, 'spawn_api', True) and not self.orders_app:
             # Create API Manager with configuration options
             self.api_manager = ValidatorAPIManager(
                 slack_webhook_url=getattr(self.config, 'slack_webhook_url', None),
@@ -371,7 +385,8 @@ class Validator(ValidatorBase):
         # Validators on mainnet net to be syned for the first time or after interruption need to resync their
         # positions. Assert there are existing orders that occurred > 24hrs in the past. Assert that the newest order
         # was placed within 24 hours.
-        if self.is_mainnet:
+        # orders app doesn't sync (position_syncer is None).
+        if self.is_mainnet and not self.orders_app:
             n_positions_on_disk = self.position_manager_client.get_number_of_miners_with_any_positions()
             # Get extreme timestamps from all positions using client
             oldest_disk_ms, youngest_disk_ms = float("inf"), 0
@@ -411,8 +426,9 @@ class Validator(ValidatorBase):
                 f"Hotkey: {self.wallet.hotkey.ss58_address}",
                 level="warning"
             )
-        bt.logging.warning("Stopping axon...")
-        self.axon.stop()
+        if self.axon is not None:
+            bt.logging.warning("Stopping axon...")
+            self.axon.stop()
         # SubtensorOpsServer and all RPC servers shut down automatically via ShutdownCoordinator:
         if self.api_thread:
             bt.logging.warning("Stopping API manager...")
@@ -439,8 +455,12 @@ class Validator(ValidatorBase):
             )
         while not is_shutdown():
             try:
-                self.position_syncer.sync_positions_with_cooldown(self.auto_sync)
-                # All managers now run in their own daemon processes
+                if self.orders_app:
+                    # No sync loop; the axon and HL tracker run in their own threads.
+                    pass
+                else:
+                    self.position_syncer.sync_positions_with_cooldown(self.auto_sync)
+                    # All managers now run in their own daemon processes
 
             # In case of unforeseen errors, the validator will log the error and send notification to Slack
             except Exception as e:
@@ -495,19 +515,42 @@ class Validator(ValidatorBase):
 
         return False
 
+    def _init_blacklist_hotkey_cache(self, refresh_period_s: float = 12.0) -> None:
+        """
+        Registered-hotkey set for blacklist_fn, refreshed in the background from the metagraph server.
+        The orders app has no in-process subtensor_ops_manager to consult, and a per-request RPC would
+        be too slow; a brief core absence just leaves the set stale rather than blocking reception.
+        """
+        self._blacklist_hotkeys = set()
+        self._blacklist_cache_lock = threading.Lock()
+
+        def _refresh_loop():
+            while not is_shutdown():
+                try:
+                    hks = set(self.metagraph_client.get_hotkeys())
+                    with self._blacklist_cache_lock:
+                        self._blacklist_hotkeys = hks
+                except Exception as e:
+                    bt.logging.warning(f"[orders-app] blacklist hotkey cache refresh failed: {e}")
+                time.sleep(refresh_period_s)
+
+        # Prime once (best-effort) so the axon isn't cold when it starts serving.
+        try:
+            self._blacklist_hotkeys = set(self.metagraph_client.get_hotkeys())
+        except Exception as e:
+            bt.logging.warning(f"[orders-app] initial blacklist hotkey cache prime failed: {e}")
+        threading.Thread(target=_refresh_loop, daemon=True, name="blacklist-hotkey-cache").start()
+
     @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
-        """
-        Override blacklist_fn to use subtensor_ops_manager's cached hotkeys.
-
-        Performance impact:
-        - metagraph.has_hotkey() RPC call: ~5-10ms → <0.01ms (set lookup)
-
-        Cache is atomically refreshed by subtensor_ops_manager during metagraph updates.
-        """
-        # Fast local set lookup via subtensor_ops_manager (no RPC call!)
+        """Blacklist unregistered hotkeys via a fast local set lookup — subtensor_ops_manager's
+        in-process cache in the monolith/core, or the metagraph-fed cache in the orders app."""
         miner_hotkey = synapse.dendrite.hotkey
-        is_registered = self.subtensor_ops_manager.is_hotkey_registered_cached(miner_hotkey)
+        if self.subtensor_ops_manager is not None:
+            is_registered = self.subtensor_ops_manager.is_hotkey_registered_cached(miner_hotkey)
+        else:
+            with self._blacklist_cache_lock:
+                is_registered = miner_hotkey in self._blacklist_hotkeys
 
         if not is_registered:
             bt.logging.trace(
@@ -551,8 +594,10 @@ class Validator(ValidatorBase):
             bt.logging.info(f"Order rejected for {miner_hotkey}: {synapse.error_message}")
             return synapse
 
+        # Advisory fast-path reject; the authoritative gate is begin_order() below.
         if self.order_sync.is_sync_waiting():
             synapse.successfully_processed = False
+            synapse.should_retry = True
             synapse.error_message = "Validator is syncing positions. Please try again shortly."
             bt.logging.info(f"Rejected order from {miner_hotkey}: {synapse.error_message}")
             return synapse
@@ -565,11 +610,13 @@ class Validator(ValidatorBase):
             synapse.error_message = f"Invalid signal payload: {e}"
             return synapse
 
-        if (
-            order_uuid
+        # exists() is an advisory local pre-filter; check_and_add below is the authoritative claim
+        # (it also catches a lost-ack retry across a restart, when the local cache is cold).
+        should_dedup = (
+            bool(order_uuid)
             and signal.execution_type not in (ExecutionType.LIMIT_CANCEL, ExecutionType.LIMIT_EDIT, ExecutionType.FLAT_ALL)
-            and self.uuid_tracker.exists(order_uuid)
-        ):
+        )
+        if should_dedup and self.uuid_tracker.exists(order_uuid):
             synapse.successfully_processed = False
             synapse.should_retry = False
             synapse.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
@@ -591,11 +638,29 @@ class Validator(ValidatorBase):
         if resolved_tp is not None and resolved_tp != signal.trade_pair:
             signal = signal.model_copy(update={"trade_pair": resolved_tp})
 
-        # Track order processing with context manager (auto-increments/decrements counter)
-        with self.order_sync.begin_order():
+        # begin_order registers the in-flight order (sync waits for it). It also refuses (rejected)
+        # if a sync started since the advisory check above, so an order can't apply mid-rewrite;
+        # the in-memory OrderSyncState never rejects (rejected=False) and relies on that check.
+        with self.order_sync.begin_order() as _admission:
+            if getattr(_admission, 'rejected', False):
+                synapse.successfully_processed = False
+                synapse.should_retry = True
+                synapse.error_message = "Validator is syncing positions. Please try again shortly."
+                bt.logging.info(f"Rejected order from {miner_hotkey}: sync in progress")
+                return synapse
+
             # error message to send back to miners in case of a problem so they can fix and resend
             error_message = ""
             order_exc = None
+            # Claim the uuid BEFORE applying so a duplicate can't double-apply; released below if the
+            # apply fails (so a transient-error retry can re-claim) or the result is non-trackable.
+            if should_dedup and not self.uuid_tracker.check_and_add(order_uuid):
+                synapse.successfully_processed = False
+                synapse.should_retry = False
+                synapse.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
+                bt.logging.error(synapse.error_message)
+                return synapse
+            claimed = should_dedup
             try:
                 result = self.order_processor.process_vanta_signal(
                     hotkey=miner_hotkey,
@@ -607,16 +672,22 @@ class Validator(ValidatorBase):
                 # Set synapse response (centralized - single line instead of 4)
                 synapse.order_json = result.get_response_json()
 
-                # Track UUID if needed (centralized - single line instead of 3)
-                if result.should_track_uuid:
-                    self.uuid_tracker.add(order_uuid)
+                # The claim was taken before we knew the result; drop it if this order isn't tracked.
+                if claimed and not result.should_track_uuid:
+                    self.uuid_tracker.release(order_uuid)
+                    claimed = False
 
-                # For logging (used in line 691)
+                # For logging (used in the ack below)
                 order = result.order_for_logging
 
             except Exception as e:
                 error_message = str(e)
                 order_exc = e
+                # Apply failed — release the claim so the placer's retry (transient infra errors) can
+                # re-claim and succeed rather than being permanently rejected as a duplicate.
+                if claimed:
+                    self.uuid_tracker.release(order_uuid)
+                    claimed = False
                 bt.logging.error(f"Error processing signal {miner_hotkey} {order_uuid} {e}")
 
             finally:

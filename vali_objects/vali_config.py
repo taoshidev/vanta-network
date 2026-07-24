@@ -298,6 +298,13 @@ class ValiConfig:
     # 100k. Dedup only needs to cover the retry/replay window (seconds–minutes), not forever;
     # oldest uuids are evicted past capacity.
     ORDER_UUID_DEDUP_CAPACITY = 100_000
+    # Position-lock lease (never-release protection): a server-side (hotkey, trade_pair) lock held
+    # longer than this is presumed abandoned (holder crashed between acquire and release) and
+    # force-reclaimed on the next acquire. Set FAR above any real hold (order processing is a few
+    # seconds: lock wait + price fetch + write) so a live-but-slow holder is never reclaimed; the
+    # hazard it guards is a crashed vanta-orders process leaking a lock forever. Analog of
+    # ORDER_INFLIGHT_TTL_MS for the position-lock server.
+    POSITION_LOCK_LEASE_MS = 60_000  # 60 seconds
     ORDER_MIN_LEVERAGE = 0.00001
     ORDER_MAX_LEVERAGE = 500
 
