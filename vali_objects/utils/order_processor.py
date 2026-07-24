@@ -382,7 +382,8 @@ class OrderProcessor:
         for bracket in signal.bracket_orders:
             bracket_uuid = bracket.get("order_uuid")
             if not bracket_uuid:
-                raise SignalException("bulk bracket order updates must require bracket uuid")
+                bracket_uuid = str(uuid.uuid4())
+                # raise SignalException("bulk bracket order updates must require bracket uuid") TODO enforce
 
             existing_bracket = self.limit_order_client.get_limit_order_by_uuid(hotkey, bracket_uuid)
 
