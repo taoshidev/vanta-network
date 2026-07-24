@@ -251,6 +251,10 @@ class RPCClientBase:
         self._manager: Optional[BaseManager] = None
         self._proxy = None
         self._connected = False
+        # Serializes (re)connect/disconnect so that under concurrent load (this client is shared
+        # across the axon's executor threads) a transient-error storm doesn't spawn many managers or
+        # tear down a freshly-rebuilt connection. Reentrant: connect() may be entered via _server.
+        self._conn_lock = threading.RLock()
 
         # Direct server reference (used in LOCAL mode)
         self._direct_server = None
@@ -466,6 +470,30 @@ class RPCClientBase:
             logger.error(
                 f"{self.service_name}Client RPC call failed: {method_name}: {e}"
             )
+            # R4.1b self-heal: a transient RPC/infra failure (the server bounced during a deploy)
+            # leaves the cached proxy poisoned — without this, EVERY later call keeps failing until
+            # the client object is recreated. Drop the connection so the NEXT call (e.g. the placer's
+            # retry, gated by should_retry from is_transient_rpc_error) transparently reconnects via
+            # the _server property. Only in RPC mode (LOCAL/direct-server needs no reconnect), and
+            # only for transient errors — a business rejection is not a reason to drop the connection.
+            if self._direct_server is None:
+                from shared_objects.error_utils import ErrorUtils
+                if ErrorUtils.is_transient_rpc_error(e):
+                    # Serialize + de-dup the teardown: this client is shared across the axon's
+                    # executor threads, so a transient-error burst would otherwise have many threads
+                    # each disconnect/reconnect (churn). Only the first thread to still see a live
+                    # connection tears it down; the rest find it already dropped and skip. The next
+                    # call reconnects lazily via the _server property.
+                    with self._conn_lock:
+                        if self._connected:
+                            try:
+                                self.disconnect()
+                                bt.logging.warning(
+                                    f"{self.service_name}Client dropped poisoned connection after "
+                                    f"transient error; next call will reconnect."
+                                )
+                            except Exception:
+                                pass
             raise
 
     def is_connected(self) -> bool:

@@ -34,9 +34,18 @@ class ValidatorBase:
         # Dedicated thread pool for concurrent synchronous requests
         self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 
-        self.wire_axon()
+        # --no-axon (serve_axon=False): this process does not serve the axon — the vanta-orders app
+        # does. Core-split runs with serve_axon=False; the default monolith and vanta-orders run with
+        # serve_axon=True. The orders app ALWAYS serves the axon (that is its whole job), even if
+        # --no-axon leaked into its args. self.axon stays None otherwise so guards can check it.
+        if getattr(self.config, 'serve_axon', True) or getattr(self.config, 'orders_app', False):
+            self.wire_axon()
+        else:
+            self.axon = None
+            bt.logging.info("[INIT] --no-axon: axon not served here (runs in vanta-orders app)")
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
+        # (Unconditional — only needs metagraph_client, which is available regardless of the axon.)
         my_subnet_uid = self.metagraph_client.get_hotkeys().index(self.wallet.hotkey.ss58_address)
         logger.info(f"Running validator on uid: {my_subnet_uid}")
 
@@ -120,6 +129,20 @@ class ValidatorBase:
         parser.add_argument("--split-state", action='store_true', dest='split_state', default=False,
                             help="Run the order-write state servers in a separate vanta-state PM2 app "
                                  "instead of in-core. Requires run.sh to launch vanta-state.")
+        # vanta-orders split: when set, this process does NOT serve the axon or run the HL tracker —
+        # they run in the separate vanta-orders PM2 app (run_orders_server.py). Core passes this so a
+        # core restart doesn't drop order reception. Default True (serve_axon) = today's behavior
+        # (axon + HL in-process). Backward-safe polarity mirrors --no-spawn-api.
+        parser.add_argument("--no-axon", action='store_false', dest='serve_axon', default=True,
+                            help="Do not serve the axon or run the HL tracker in this process "
+                                 "(they run in the vanta-orders PM2 app). Requires run.sh to launch it.")
+        # vanta-orders app role: this process IS the order-reception tier — it serves the axon + runs
+        # HL and is a pure RPC CLIENT of vanta-state (order-write servers) and core (metagraph,
+        # scoring). It starts NO RPC servers, runs NO PositionSyncer/weight loop. Set by
+        # run_orders_server.py. Implies serve_axon=True. Default False = not the orders app.
+        parser.add_argument("--orders-app", action='store_true', dest='orders_app', default=False,
+                            help="Run as the vanta-orders app (axon + HL + order path, client of "
+                                 "vanta-state/core; starts no servers). Set by run_orders_server.py.")
         # Wallet-less identity for the vanta-state app (run_state_server.py). Core ignores it (it has
         # a wallet); vanta-state passes the validator's ss58 so miner_account's ValidatorBroadcastBase
         # gets its identity without loading a keypair. See NeuronContext.validator_hotkey_override.

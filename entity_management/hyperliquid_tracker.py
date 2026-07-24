@@ -1306,7 +1306,17 @@ class HyperliquidTracker:
         fill_hash: str,
         on_failure_clear_szi: Optional[tuple] = None,
     ) -> bool:
-        """Submit one order leg and handle broadcast + errors. Returns True on success."""
+        """Submit one order leg and handle broadcast + errors. Returns True on success.
+
+        R2.5b / KNOWN GAP (vanta-orders split): this HL fill is NOT yet routed through the
+        order/sync gate (self._order_sync.begin_order), so a fill applied while a core position sync
+        is rewriting the checkpoint can race it. It cannot be naively gated: the fill hash is
+        _record_hash'd BEFORE dispatch (see _handle_user_fills / the backup poll), HL WS fills are
+        push-once (not redelivered), and the backup poll advances its watermark unconditionally — so
+        a "defer on sync" that returns early would LOSE the fill. Correct gating = defer-and-replay
+        coordinated across the WS path, the backup-poll path, hash-recording, and the watermark. See
+        the vanta-orders spec R2.5b. Deliberately deferred rather than shipped as a fill-losing gate.
+        """
         try:
             self._order_processor.process_hyperliquid_order(
                 synthetic_hotkey,
