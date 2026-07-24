@@ -42,6 +42,25 @@ from vali_objects.utils.order_processor import OrderProcessor
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from runnable.run_migrations import main as run_migrations
 
+# RPC clients instantiated directly (was orchestrator.get_client(...)). Direct instantiation
+# connects by service-name+port authkey regardless of which process spawned the server, which is
+# what lets the state tier move to its own process (vanta-state) later. In-process this is a
+# mechanical no-op: get_client in VALIDATOR mode is just client_class(running_unit_tests=False).
+# Precedent: ValidatorRestServer._initialize_clients / run_rest_server.py.
+from shared_objects.rpc.metagraph_client import MetagraphClient
+from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
+from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.utils.elimination.elimination_client import EliminationClient
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
+from entity_management.entity_client import EntityClient
+from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+from vali_objects.utils.market_order.market_order_client import MarketOrderClient
+from vali_objects.miner_account.miner_account_client import MinerAccountClient
+
 def is_shutdown() -> bool:
     """Check if shutdown is in progress via ShutdownCoordinator."""
     return ShutdownCoordinator.is_shutdown()
@@ -179,20 +198,26 @@ class Validator(ValidatorBase):
         orchestrator.start_validator_servers(context)
         bt.logging.success("[INIT] All servers started, metagraph populated")
 
-        # Get clients from orchestrator
-        self.metagraph_client = orchestrator.get_client('metagraph')
-        self.price_fetcher_client = orchestrator.get_client('live_price_fetcher')
-        self.position_manager_client = orchestrator.get_client('position_manager')
-        self.elimination_client = orchestrator.get_client('elimination')
-        self.challengeperiod_client = orchestrator.get_client('challenge_period')
-        self.limit_order_client = orchestrator.get_client('limit_order')
-        self.asset_selection_client = orchestrator.get_client('asset_selection')
-        self.perf_ledger_client = orchestrator.get_client('perf_ledger')
-        self.debt_ledger_client = orchestrator.get_client('debt_ledger')
-        self.entity_client = orchestrator.get_client('entity')
-        self.entity_collateral_client = orchestrator.get_client('entity_collateral')
-        self.market_order_client = orchestrator.get_client('market_order')
-        self.miner_account_client = orchestrator.get_client('miner_account')
+        # Instantiate RPC clients directly (was orchestrator.get_client(...)). See import-block note:
+        # decouples core's client acquisition from its own orchestrator so the state tier can move to
+        # a separate process later. Defaults reproduce VALIDATOR-mode get_client exactly
+        # (connection_mode=RPC, connect_immediately=False). asset_selection + elimination keep their
+        # 5s local cache — the only get_client special cases (server_orchestrator.py get_client).
+        self.metagraph_client = MetagraphClient()
+        self.price_fetcher_client = LivePriceFetcherClient()
+        self.position_manager_client = PositionManagerClient()
+        # local cache: get_elimination_local_cache / get_departed_hotkey_info_local_cache per-order lookups
+        self.elimination_client = EliminationClient(local_cache_refresh_period_ms=5000)
+        self.challengeperiod_client = ChallengePeriodClient()
+        self.limit_order_client = LimitOrderClient()
+        # local cache: prevents "Selected asset class: [unknown]" on the per-order asset-class lookup
+        self.asset_selection_client = AssetSelectionClient(local_cache_refresh_period_ms=5000)
+        self.perf_ledger_client = PerfLedgerClient()
+        self.debt_ledger_client = DebtLedgerClient()
+        self.entity_client = EntityClient()
+        self.entity_collateral_client = EntityCollateralClient()
+        self.market_order_client = MarketOrderClient()
+        self.miner_account_client = MinerAccountClient()
 
         # Get subtensor from SubtensorOpsServer
         subtensor_ops_server = orchestrator.get_server('subtensor_ops')

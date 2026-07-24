@@ -23,10 +23,12 @@ Intended R1 order-handler flow (replacing UUIDTracker's exists()/add()):
 Claiming BEFORE the apply (not recording after) is what makes overlap safe; releasing on failure
 is what keeps R4.1's transient-error retries from being lost. A falsy uuid is not dedup-able.
 """
+from collections import deque
+
 import bittensor as bt
 
 from shared_objects.rpc.common_data_client import CommonDataClient
-from vali_objects.vali_config import RPCConnectionMode
+from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 
 
 class OrderUuidDedupClient:
@@ -40,7 +42,23 @@ class OrderUuidDedupClient:
             connection_mode=connection_mode,
             running_unit_tests=running_unit_tests,
         )
-        self._local = set()  # advisory fast-path cache; server is the source of truth
+        # Advisory fast-path cache; the server is the source of truth. FIFO-bounded (deque for
+        # eviction order + set for O(1) membership), mirroring the server's dedup set, so a
+        # long-lived vanta-orders process cannot leak one entry per order forever. A local miss is
+        # harmless — the caller falls through to the authoritative check_and_add.
+        self._local_capacity = ValiConfig.ORDER_UUID_DEDUP_CAPACITY
+        self._local_order = deque()
+        self._local = set()
+
+    def _remember_local(self, uuid) -> None:
+        """Record uuid in the bounded local cache with FIFO capacity eviction."""
+        if not uuid or uuid in self._local:
+            return
+        if len(self._local_order) >= self._local_capacity:
+            oldest = self._local_order.popleft()
+            self._local.discard(oldest)
+        self._local_order.append(uuid)
+        self._local.add(uuid)
 
     def add_initial_uuids(self, hk_to_positions) -> None:
         """
@@ -63,7 +81,8 @@ class OrderUuidDedupClient:
             bt.logging.info(f"OrderUuidDedupClient: seeded {len(uuids)} order uuids (server set size {total})")
         except Exception as e:
             bt.logging.warning(f"OrderUuidDedupClient: server seed failed, using local cache only: {e}")
-        self._local.update(uuids)
+        for u in uuids:
+            self._remember_local(u)
 
     def exists(self, uuid) -> bool:
         """
@@ -84,7 +103,7 @@ class OrderUuidDedupClient:
         if not uuid:
             return True
         claimed = self._client.check_and_add_order_uuid(uuid)
-        self._local.add(uuid)
+        self._remember_local(uuid)
         return claimed
 
     def release(self, uuid) -> None:
@@ -94,4 +113,7 @@ class OrderUuidDedupClient:
         try:
             self._client.release_order_uuid(uuid)
         finally:
+            # Lazy tombstone (mirrors the server): drop from the membership set only; the stale
+            # deque entry is reclaimed on the normal FIFO eviction in _remember_local. O(1), and
+            # keeps the deque bounded by capacity without an O(n) remove on the failure path.
             self._local.discard(uuid)
