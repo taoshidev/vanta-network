@@ -81,6 +81,8 @@ class Position(BaseModel):
         updated_orders = []
         for order in orders:
             if not isinstance(order, Order):
+                # Strip None values so Order field defaults are used instead of None
+                order = {k: v for k, v in order.items() if v is not None}
                 order['trade_pair'] = trade_pair
             else:
                 order = order.model_copy(update={'trade_pair': trade_pair})
