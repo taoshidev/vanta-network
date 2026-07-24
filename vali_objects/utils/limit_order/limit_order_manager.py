@@ -1,4 +1,5 @@
 import os
+import threading
 import traceback
 
 import bittensor as bt
@@ -73,6 +74,12 @@ class LimitOrderManager(CacheController):
         self._last_fill_time = {}
         self._last_print_time_ms = 0
 
+        # Lightweight closed-order tracking: {hotkey: [order_uuid, ...]}
+        # Maintained for api backwards compatibility
+        # Flushed per-hotkey each time get_dashboard is called.
+        self._closed_order_uuids: dict[str, list[str]] = {}
+        self._closed_order_uuids_lock = threading.Lock()
+
         self._needs_initial_bracket_sync = True
         self._last_trailing_attach_ms = {}  # {order_uuid: last_write_ms}
 
@@ -85,7 +92,7 @@ class LimitOrderManager(CacheController):
                     hotkey_to_orders[hotkey] = []
                 hotkey_to_orders[hotkey].extend(orders)
 
-# limit_order_locks: protects _limit_orders dictionary operations
+        # limit_order_locks: protects _limit_orders dictionary operations
         self.limit_order_locks = PositionLocks(
             hotkey_to_positions=hotkey_to_orders,
             is_backtesting=running_unit_tests,
@@ -607,10 +614,18 @@ class LimitOrderManager(CacheController):
                     dashboard_order = order.to_dashboard(include_trade_pair=True)
                     open_orders[order.order_uuid] = dashboard_order
 
-        if not open_orders:
+        with self._closed_order_uuids_lock:
+            closed_orders = self._closed_order_uuids.pop(miner_hotkey, [])
+
+        if not open_orders and not closed_orders:
             return None
 
-        dashboard = {"open_orders": open_orders}
+        dashboard = {}
+
+        if open_orders:
+            dashboard["open_orders"] = open_orders
+        if closed_orders:
+            dashboard["closed_orders"] = closed_orders
 
         dashboard["limit_orders_time_ms"] = snapshot_time_ms
         return dashboard
@@ -1182,6 +1197,10 @@ class LimitOrderManager(CacheController):
                 self._limit_orders[trade_pair][miner_hotkey] = [
                     o for o in orders if o.order_uuid != order_uuid
                 ]
+
+            # Track closed UUID so get_dashboard can report it until flushed
+            with self._closed_order_uuids_lock:
+                self._closed_order_uuids.setdefault(miner_hotkey, []).append(order_uuid)
 
             # Remove from position if bracket order
             if order.execution_type == ExecutionType.BRACKET:
