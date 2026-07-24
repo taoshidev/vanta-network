@@ -39,7 +39,9 @@ BLOCKED_TRADE_PAIR_IDS = {
     'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD',
     'DOGEUSD', 'ADAUSD', 'TAOUSD', 'HYPEUSD',
     'ZECUSD', 'BCHUSD', 'LINKUSD', 'XMRUSD',
-    'LTCUSD'
+    'LTCUSD',
+
+    'NSA'  # de-listed on 2026-07-22 NOTE could potentially delete trade pair
 }
 
 
