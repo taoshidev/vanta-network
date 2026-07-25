@@ -93,6 +93,7 @@ class PropNetOrderPlacer:
     # Constants for network retry logic (only retries on connection failures to mothership)
     MAX_NETWORK_RETRIES = 3
     NETWORK_RETRY_DELAY_SECONDS = 5
+    ELIMINATION_CACHE_TTL_SECONDS = 600
     # DEPRECATED: Thread pool used by file-based signal processing. Use REST server instead.
     MAX_WORKERS = 10
     THREAD_POOL_TIMEOUT = 300  # 5 minutes
@@ -115,6 +116,19 @@ class PropNetOrderPlacer:
         self._shutdown = False
         self._active_futures = set()
         self._lock = threading.Lock()
+        self._elimination_cache: Dict[int, float] = {}
+
+    def _is_subaccount_eliminated(self, subaccount_id: int) -> bool:
+        expiry = self._elimination_cache.get(subaccount_id)
+        if expiry is None:
+            return False
+        if time.time() >= expiry:
+            self._elimination_cache.pop(subaccount_id, None)
+            return False
+        return True
+
+    def _mark_subaccount_eliminated(self, subaccount_id: int) -> None:
+        self._elimination_cache[subaccount_id] = time.time() + self.ELIMINATION_CACHE_TTL_SECONDS
 
     def shutdown(self):
         """Gracefully shutdown the thread pool"""
@@ -390,6 +404,17 @@ class PropNetOrderPlacer:
         start_time = time.time()
 
         try:
+            if subaccount_id is not None and self._is_subaccount_eliminated(subaccount_id):
+                error_msg = "Subaccount is eliminated"
+                return {
+                    "success": False,
+                    "order_uuid": order_uuid,
+                    "order_json": None,
+                    "error_message": error_msg,
+                    "processing_time": time.time() - start_time,
+                    "message": f"Order failed on Vanta Network: {error_msg}"
+                }
+
             mothership_axon, other_axons = self._get_mothership_and_other_axons()
 
             if not mothership_axon and not self.running_unit_tests:
@@ -443,6 +468,8 @@ class PropNetOrderPlacer:
                 self.write_signal_to_processed_directory(signal_data, fake_signal_file_path, result["order_json"])
                 message = "Order successfully processed by Vanta Network"
             else:
+                if subaccount_id is not None and "eliminated" in (result["error_message"] or "").lower():
+                    self._mark_subaccount_eliminated(subaccount_id)
                 self.write_signal_to_failure_directory(signal_data, fake_signal_file_path, result["error_message"])
                 message = f"Order failed on Vanta Network: {result['error_message']}"
 
