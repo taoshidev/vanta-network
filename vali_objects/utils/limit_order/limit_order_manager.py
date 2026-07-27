@@ -47,10 +47,8 @@ class LimitOrderManager(CacheController):
     def __init__(self, running_unit_tests=False, serve=True, connection_mode: RPCConnectionMode=RPCConnectionMode.RPC):
         super().__init__(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
-        # Create own MarketOrderManager (forward compatibility - no parameter passing)
-        from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
-        self._market_order_manager = MarketOrderManager(
-            serve=serve,
+        from vali_objects.utils.market_order.market_order_client import MarketOrderClient
+        self._market_order_client = MarketOrderClient(
             running_unit_tests=running_unit_tests,
             connection_mode=connection_mode
         )
@@ -61,13 +59,8 @@ class LimitOrderManager(CacheController):
 
         # Create own RPC clients (forward compatibility - no parameter passing)
         from vali_objects.position_management.position_manager_client import PositionManagerClient
-        from vali_objects.utils.elimination.elimination_client import EliminationClient
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
-            connect_immediately=False,
-            connection_mode=connection_mode
-        )
-        self._elimination_client = EliminationClient(
             connect_immediately=False,
             connection_mode=connection_mode
         )
@@ -118,14 +111,8 @@ class LimitOrderManager(CacheController):
         return self._position_client
 
     @property
-    def elimination_manager(self):
-        """Get elimination manager client."""
-        return self._elimination_client
-
-    @property
-    def market_order_manager(self):
-        """Get market order manager."""
-        return self._market_order_manager
+    def market_order_client(self):
+        return self._market_order_client
 
     # ==================== Public API Methods ====================
     def health_check_rpc(self) -> dict:
@@ -408,7 +395,7 @@ class LimitOrderManager(CacheController):
                     if o.order_uuid == order_uuid:
                         orders_list.pop(i)
                         break
-            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, enforce_market_cooldown=True)
+            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, is_market_order=True)
             if fill_error:
                 raise SignalException(fill_error)
             bt.logging.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
@@ -1119,53 +1106,47 @@ class LimitOrderManager(CacheController):
                 f"[STOP_LIMIT] Failed to create child limit order from {order.order_uuid}: {e}"
             )
 
-    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, enforce_market_cooldown=False):
+    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, is_market_order=False):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
+        from vali_objects.utils.limit_order.order_utils import OrderSize
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
         error_msg = None
 
-        new_src = OrderSource.get_fill(order.src)
-
+        new_src = OrderSource.ORGANIC if is_market_order else OrderSource.get_fill(order.src)
+        slippage = None if is_market_order else 0
         try:
-            order_dict = Order.to_python_dict(order)
-            order_dict['price'] = fill_price
-
-            # Reverse order direction when exeucting BRACKET orders.
-            # bracket_pct (if set) is resolved against net_quantity inside
-            # market_order_manager under the position lock — leverage/value/quantity stay None here.
             if order.execution_type == ExecutionType.BRACKET:
-                closing_order_type = OrderType.opposite_order_type(order.order_type)
-                if not closing_order_type:
+                order_type = OrderType.opposite_order_type(order.order_type)
+                if not order_type:
                     raise ValueError("Bracket Order type was not LONG or SHORT")
+                sign = 1 if order_type == OrderType.LONG else -1
+                order_size = OrderSize(
+                    leverage=sign * abs(order.leverage) if order.leverage else None,
+                    value=sign * abs(order.value) if order.value else None,
+                    quantity=sign * abs(order.quantity) if order.quantity else None,
+                    bracket_pct=order.bracket_pct,
+                )
+            else:
+                order_type = order.order_type
+                order_size = OrderSize.from_dict(Order.to_python_dict(order))
 
-                sign = 1 if closing_order_type == OrderType.LONG else -1
-                order_dict['leverage'] = sign * abs(order.leverage) if order.leverage else None
-                order_dict['value'] = sign * abs(order.value) if order.value else None
-                order_dict['quantity'] = sign * abs(order.quantity) if order.quantity else None
-                order_dict['order_type'] = closing_order_type.name
-
-            err_msg, updated_position, created_order = self.market_order_manager._process_market_order(
-                order.order_uuid,
-                "limit_order",
-                trade_pair,
-                fill_time,
-                order_dict,
-                miner_hotkey,
-                [price_source],
-                enforce_market_cooldown
+            result = self.market_order_client.execute_order(
+                miner_hotkey, order.order_uuid, trade_pair,
+                order.execution_type, order_type, order_size,
+                fill_price=fill_price,
+                price_sources=[price_source],
+                order_src=new_src,
+                now_ms=fill_time,
+                slippage=slippage,
+                enforce_cooldown=is_market_order,
             )
 
-            # Issue 2: Check if err_msg is set - treat as failure
-            if err_msg:
-                raise ValueError(err_msg)
+            if not result:
+                raise ValueError("No position returned from order fill")
 
-            # Issue 5: updated_position being None is an error case, not fallback
-            if not updated_position:
-                raise ValueError("No position returned from market order processing")
+            filled_order, updated_position = result
 
-            # Issue 4: Copy values TO original order object rather than reassigning variable
-            filled_order = updated_position.orders[-1]
             order.leverage = filled_order.leverage
             order.value = filled_order.value
             order.quantity = filled_order.quantity
@@ -1544,5 +1525,5 @@ class LimitOrderManager(CacheController):
         self._limit_orders.clear()
         self._last_fill_time.clear()
         # Also clear market order manager's cooldown cache
-        self.market_order_manager.clear_order_cooldown_cache()
+        self.market_order_client.clear_order_cooldown_cache()
         bt.logging.info("Cleared all limit orders from memory")

@@ -9,9 +9,6 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import (
-    CRYPTO_CARRY_FEE_PER_INTERVAL,
-    FOREX_CARRY_FEE_PER_INTERVAL,
-    INDICES_CARRY_FEE_PER_INTERVAL,
     Position,
 )
 

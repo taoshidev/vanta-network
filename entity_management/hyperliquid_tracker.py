@@ -13,7 +13,7 @@ Architecture:
 - One _WebSocketShard per proxy IP (or one direct shard if no proxy configured)
 - Each shard manages up to 10 addresses, its own heartbeat, reconnect w/ backoff
 - Shared fill dedup via bounded hash set across all shards
-- Converts fills to market orders via OrderProcessor.process_order()
+- Converts fills to market orders via OrderProcessor.execute_hl_order()
 """
 from __future__ import annotations
 
@@ -46,12 +46,14 @@ except ImportError:
 from entity_management.entity_client import EntityClient
 from shared_objects.rate_limiter import RateLimiter
 from time_util.time_util import TimeUtil
+from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.utils.limit_order.order_utils import OrderSize
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.limit_order.order_processor import OrderProcessor
+from vali_objects.utils.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePair, TradePairSource
 from vali_objects.trade_pair import HL_COIN_TO_TRADE_PAIR
@@ -330,24 +332,15 @@ class HyperliquidTracker:
     def __init__(
         self,
         entity_client: EntityClient,
-        elimination_client,
         price_fetcher_client,
-        asset_selection_client,
-        market_order_manager,
-        limit_order_client,
-        uuid_tracker,
-        rate_limiter: Optional[RateLimiter] = None,
+        order_processor: OrderProcessor,
         ws_notifier_client: Optional[WebSocketNotifierClient] = None,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
     ):
         self._entity_client = entity_client
-        self._elimination_client = elimination_client
         self._price_fetcher_client = price_fetcher_client
-        self._asset_selection_client = asset_selection_client
-        self._market_order_manager = market_order_manager
-        self._limit_order_client = limit_order_client
-        self._uuid_tracker = uuid_tracker
-        self._rate_limiter = rate_limiter or RateLimiter()
+        self._order_processor = order_processor
+        self._rate_limiter = RateLimiter()
         self._ws_notifier_client = ws_notifier_client
 
         # Position client for querying current Vanta positions (weight delta calculation)
@@ -1219,9 +1212,9 @@ class HyperliquidTracker:
         if not account_state:
             return
 
-        synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
-        if not synthetic_hotkey and isinstance(hl_address, str):
-            synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address.lower())
+        synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(
+            hl_address.lower() if isinstance(hl_address, str) else hl_address
+        )
         if not synthetic_hotkey:
             return
 
@@ -1284,6 +1277,73 @@ class HyperliquidTracker:
 
     # ==================== Fill Processing ====================
 
+    def _compute_fill_price(
+        self,
+        trade_pair,
+        is_taker: bool,
+        raw_fill_price: Optional[float],
+        size_usd: float,
+        is_buying: bool,
+    ) -> Optional[float]:
+        """Simulate taker avg fill via L2 orderbook; fall back to raw HL fill price."""
+        if is_taker:
+            simulated = self._price_fetcher_client.simulate_avg_fill_price(trade_pair, size_usd, is_buying)
+            return simulated if simulated is not None else raw_fill_price
+        return raw_fill_price
+
+    def _dispatch_order(
+        self,
+        synthetic_hotkey: str,
+        order_uuid: str,
+        trade_pair,
+        order_type_enum: OrderType,
+        quantity: float,
+        fill_price: Optional[float],
+        price_sources,
+        is_taker: bool,
+        now_ms: int,
+        trade_pair_id: str,
+        fill_hash: str,
+        on_failure_clear_szi: Optional[tuple] = None,
+    ) -> bool:
+        """Submit one order leg and handle broadcast + errors. Returns True on success."""
+        try:
+            self._order_processor.process_hyperliquid_order(
+                synthetic_hotkey,
+                order_uuid,
+                trade_pair,
+                order_type_enum,
+                OrderSize(quantity=quantity),
+                fill_price=fill_price or None,
+                price_sources=price_sources,
+                is_taker=is_taker,
+                now_ms=now_ms,
+            )
+            self._fills_processed += 1
+            self._last_fill_time = time.time()
+            self._broadcast_accepted_fill(
+                synthetic_hotkey=synthetic_hotkey,
+                trade_pair=trade_pair_id,
+                order_type=order_type_enum.name,
+                fill_hash=fill_hash,
+            )
+            return True
+        except SignalException as e:
+            bt.logging.warning(f"[HL_TRACKER] Signal rejected for {synthetic_hotkey}: {e}")
+            self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
+        except Exception as e:
+            bt.logging.error(f"[HL_TRACKER] Order processing error for {synthetic_hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
+            if on_failure_clear_szi:
+                addr, coin = on_failure_clear_szi
+                key = addr.lower() if isinstance(addr, str) else addr
+                cached = self._last_observed_szi.get(key)
+                if cached and coin in cached:
+                    del cached[coin]
+                    self._save_observed_szi()
+        return False
+
     def _process_fill(self, hl_address: str, fill: dict, account_state: Optional[dict] = None):
         """
         Convert a Hyperliquid fill to a Vanta signal and process it.
@@ -1299,20 +1359,24 @@ class HyperliquidTracker:
             return
 
         trade_pair = HL_COIN_TO_TRADE_PAIR.get(coin)
-        below_threshold = False
         if trade_pair is None:
             bt.logging.debug(f"[HL_TRACKER] Unknown coin: {coin}")
             return
         trade_pair_id = trade_pair.trade_pair_id
 
         # Resolve synthetic hotkey
-        synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
-        if not synthetic_hotkey and isinstance(hl_address, str):
-            synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(
-                hl_address.lower()
-            )
+        synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(
+            hl_address.lower() if isinstance(hl_address, str) else hl_address
+        )
         if not synthetic_hotkey:
             bt.logging.warning(f"[HL_TRACKER] No synthetic hotkey for HL address {hl_address}")
+            return
+
+        # Rate limiting (entry-point specific)
+        allowed, wait_time = self._rate_limiter.is_allowed(synthetic_hotkey)
+        if not allowed:
+            bt.logging.info(f"[HL_TRACKER] Rate limited: {synthetic_hotkey} {coin}, wait {wait_time:.1f}s")
+            self._broadcast_rejection(synthetic_hotkey, f"Rate limited. Please wait {wait_time:.0f}s.")
             return
 
         # Get subaccount info for account_size
@@ -1327,36 +1391,7 @@ class HyperliquidTracker:
             return
 
         now_ms = TimeUtil.now_in_millis()
-
-        # === Fail-early checks (mirrors validator.py should_fail_early) ===
-
-        # Rate limiting
-        allowed, wait_time = self._rate_limiter.is_allowed(synthetic_hotkey)
-        if not allowed:
-            bt.logging.info(f"[HL_TRACKER] Rate limited: {synthetic_hotkey} {coin}, wait {wait_time:.1f}s")
-            self._broadcast_rejection(synthetic_hotkey, f"Rate limited. Please wait {wait_time:.0f}s.")
-            return
-
-        # Elimination check
-        elimination_info = self._elimination_client.get_elimination_local_cache(synthetic_hotkey)
-        if elimination_info:
-            bt.logging.info(f"[HL_TRACKER] Eliminated miner: {synthetic_hotkey} {coin}")
-            self._broadcast_rejection(synthetic_hotkey, f"Miner {synthetic_hotkey} has been eliminated.")
-            return
-
-        # Subaccount status check
-        validation = self._entity_client.validate_hotkey_for_orders(synthetic_hotkey)
-        if not validation.get("is_valid"):
-            error_message = validation.get('error_message', 'Subaccount validation failed')
-            bt.logging.info(f"[HL_TRACKER] Invalid hotkey: {synthetic_hotkey} {coin} - {error_message}")
-            self._broadcast_rejection(synthetic_hotkey, error_message)
-            return
-
-        # Trade pair blocked check
-        if trade_pair.is_blocked:
-            bt.logging.info(f"[HL_TRACKER] Blocked trade pair: {trade_pair_id} ({synthetic_hotkey})")
-            self._broadcast_rejection(synthetic_hotkey, f"Trade pair {trade_pair_id} is no longer supported.")
-            return
+        order_uuid = str(uuid.uuid4())
 
         # === Step 1: Fetch HL account state -> compute target weight ===
         if account_state is None:
@@ -1382,152 +1417,100 @@ class HyperliquidTracker:
             sign = 1 if target_signed_weight > 0 else -1
             target_signed_weight = sign * max_lev
 
-        # Step 3: Get current Vanta position -> compute current signed weight
+        # Step 3: Get current Vanta position -> compute current signed weight and delta
         current_position = self._position_client.get_open_position_for_trade_pair(
             synthetic_hotkey, trade_pair_id
         )
-        has_open_position = current_position and not current_position.is_closed_position
+        if target_signed_weight == 0 and not current_position:
+            return
 
-        # HL flat: skip weight calculation, go straight to FLAT order
-        if target_signed_weight == 0.0:
-            if not has_open_position:
-                return
-            delta = 0.0
-            current_signed_weight = 0.0
-            order_quantity = None
-        else:
-            current_signed_weight = 0.0
+        vanta_balance = self._miner_account_client.get_balance(synthetic_hotkey) or 1
+        if not vanta_balance or vanta_balance <= 0:
+            return
 
-            price_result = self._price_fetcher_client.get_latest_price(
-                trade_pair, now_ms
-            )
-            current_price = price_result[0] if price_result else None
-            if not current_price or current_price <= 0:
-                bt.logging.warning(
-                    f"[HL_TRACKER] Cannot compute order: no price for "
-                    f"{trade_pair_id}, skipping fill for {synthetic_hotkey}"
-                )
-                return
-
-            vanta_balance = self._miner_account_client.get_balance(synthetic_hotkey)
-            if not vanta_balance or vanta_balance <= 0:
-                bt.logging.warning(
-                    f"[HL_TRACKER] Cannot compute order: invalid balance "
-                    f"{vanta_balance} for {synthetic_hotkey}, skipping fill"
-                )
-                return
-
-            if has_open_position:
-                current_position_value = (
-                    current_position.net_quantity
-                    * trade_pair.lot_size
-                    * current_price
-                )
-                current_signed_weight = current_position_value / vanta_balance
-
-            # Step 4: Compute delta and order quantity
-            delta = target_signed_weight - current_signed_weight
-            order_quantity = delta * vanta_balance / (trade_pair.lot_size * current_price)
-
-        if abs(delta) < min_lev and target_signed_weight != 0.0:
+        price_sources = self._price_fetcher_client.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
+        if not price_sources or price_sources[0].close <= 0:
+            return
+        current_price = price_sources[0].close
+        current_signed_weight = (current_position.net_quantity * current_price) / vanta_balance if current_position else 0
+        delta = target_signed_weight - current_signed_weight
+        if abs(delta) < min_lev:
             bt.logging.info(
                 f"[HL_TRACKER] Skipping fill: {coin} delta={delta:+.4f} below min leverage {min_lev} "
                 f"target={target_signed_weight:+.4f} current={current_signed_weight:+.4f} -> {synthetic_hotkey}"
             )
             return
-
-        # Block position increases for coins below the liquidity threshold.
-        if below_threshold and delta != 0:
-            would_increase = (current_signed_weight >= 0 and delta > 0) or \
-                             (current_signed_weight <= 0 and delta < 0)
-            if would_increase:
-                bt.logging.info(
-                    f"[HL_TRACKER] Skipping fill: {coin} delta={delta:+.4f} blocked (below liquidity threshold) "
-                    f"current={current_signed_weight:+.4f} -> {synthetic_hotkey}"
-                )
-                return
-            # delta reduces or closes — allow through
+        order_quantity = delta * vanta_balance / (trade_pair.lot_size * current_price)
 
         # Step 5: Determine order type
         if target_signed_weight == 0.0:
-            order_type = "FLAT"
+            order_type = OrderType.FLAT
         elif delta > 0:
-            order_type = "LONG"
+            order_type = OrderType.LONG
         else:
-            order_type = "SHORT"
+            order_type = OrderType.SHORT
 
-        # === Step 6: Determine fill price from HL data ===
-        # Taker (market order): simulate avg fill price by walking the local L2 orderbook
-        #   (fine book first for near-spread precision, coarse book for deeper levels).
-        #   Fallback to actual HL fill price if orderbook data is unavailable.
-        # Maker (limit order): use the actual HL fill price directly.
-        # hl_slippage is always 0.0 — the price passed already reflects true execution
-        # quality, so applying slippage on top would double-count it (position.py multiplies
-        # entry/exit price by (1 + slippage)).
+        # Trading checks: elimination, UUID dedup, blocked trade pair, market hours
+        ok, error_msg, _ = self._order_processor.validate(
+            synthetic_hotkey, ExecutionType.MARKET, trade_pair, order_type
+        )
+        if not ok:
+            bt.logging.info(f"[HL_TRACKER] Order rejected for {synthetic_hotkey} {coin}: {error_msg}")
+            self._broadcast_rejection(synthetic_hotkey, error_msg)
+            return
+
+        # === Step 6: Resolve fill price and dispatch ===
+        # Taker fills: simulate avg fill price by walking the L2 orderbook (fallback to raw HL price).
+        # Maker fills: use the actual HL fill price directly.
+        # No additional slippage is applied — the price already reflects true execution quality.
         is_taker = fill.get("crossed", True)
-        hl_fill_price = None
-
-        raw_px = fill.get("px")
         raw_fill_price = None
-        if raw_px is not None:
+        if (raw_px := fill.get("px")) is not None:
             try:
                 raw_fill_price = float(raw_px)
             except (ValueError, TypeError):
                 pass
 
-        # === Flip handling ===
-        # Vanta positions cannot cross zero in a single order (position.py clamps
-        # to FLAT and discards the excess).  When HL flips direction we must split
-        # into two legs: FLAT the existing position, then open the new direction.
+        fill_hash = fill.get("hash") or fill.get("tid") or ""
+
+        # Vanta positions cannot cross zero in a single order — split a direction flip into
+        # FLAT then re-open.
         is_flip = (
-            has_open_position
+            current_position is not None
             and target_signed_weight != 0.0
             and current_signed_weight != 0.0
-            and ((current_signed_weight > 0) != (target_signed_weight > 0))
+            and (current_signed_weight > 0) != (target_signed_weight > 0)
         )
 
-        if is_flip:
-            self._process_flip(
-                coin, trade_pair, trade_pair_id, synthetic_hotkey,
-                current_position, target_signed_weight, current_signed_weight,
-                vanta_balance, current_price, is_taker, raw_fill_price,
-                fill, now_ms, hl_address,
+        on_failure_clear_szi = None
+        if is_flip and current_position:
+            bt.logging.info(
+                f"[HL_TRACKER] Flip detected: {coin} "
+                f"current={current_signed_weight:+.4f} target={target_signed_weight:+.4f} "
+                f"-> {synthetic_hotkey}"
             )
-            return
+            # Leg 1: FLAT existing position
+            close_size_usd = abs(current_position.net_quantity * trade_pair.lot_size * (raw_fill_price or current_price))
+            flat_price = self._compute_fill_price(trade_pair, is_taker, raw_fill_price, close_size_usd, current_position.net_quantity < 0)
+            if not self._dispatch_order(
+                synthetic_hotkey, str(uuid.uuid4()), trade_pair, OrderType.FLAT,
+                -current_position.net_quantity, flat_price, price_sources, is_taker, now_ms,
+                trade_pair_id, fill_hash,
+            ):
+                return
 
-        if is_taker:
-            if order_type == "FLAT":
-                translated_size_usd = abs(current_position.net_quantity * trade_pair.lot_size * raw_fill_price) if raw_fill_price else 0
-                is_buying = current_position.net_quantity < 0
-            else:
-                translated_size_usd = abs(order_quantity * trade_pair.lot_size * current_price)
-                is_buying = order_quantity > 0
+            # Leg 2: set up for the normal dispatch path below
+            order_type = OrderType.LONG if target_signed_weight > 0 else OrderType.SHORT
+            order_quantity = target_signed_weight * vanta_balance / (trade_pair.lot_size * current_price)
+            order_uuid = str(uuid.uuid4())
+            now_ms = TimeUtil.now_in_millis()
+            on_failure_clear_szi = (hl_address, coin)
 
-            hl_fill_price = self._price_fetcher_client.simulate_avg_fill_price(
-                trade_pair, translated_size_usd, is_buying
-            )
-            if hl_fill_price is None:
-                hl_fill_price = raw_fill_price
-        else:
-            hl_fill_price = raw_fill_price
-
-        # === Build signal (use quantity to bypass leverage * account_size conversion) ===
-        signal = {
-            "order_type": order_type,
-            "trade_pair": trade_pair_id,
-            "execution_type": "MARKET",
-            "is_hl": True,
-            "is_hl_taker": is_taker,
-            "hl_slippage": 0.0,
-        }
-        if order_type == "FLAT":
-            signal["quantity"] = -current_position.net_quantity
-        else:
-            signal["quantity"] = order_quantity
-        if hl_fill_price:
-            signal["price"] = hl_fill_price
-
-        miner_order_uuid = str(uuid.uuid4())
+        # Normal order (also handles flip leg 2 after the block above)
+        fill_quantity = -current_position.net_quantity if order_type == OrderType.FLAT and current_position else order_quantity
+        size_usd = abs(fill_quantity * trade_pair.lot_size * raw_fill_price)
+        is_buying = fill_quantity > 0
+        hl_fill_price = self._compute_fill_price(trade_pair, is_taker, raw_fill_price, size_usd, is_buying)
 
         bt.logging.info(
             f"[HL_TRACKER] Attempting order: {coin} {order_type} "
@@ -1536,195 +1519,9 @@ class HyperliquidTracker:
             f"is_taker={is_taker} -> {synthetic_hotkey}"
         )
 
-        # === Process order ===
-        try:
-            result = OrderProcessor.process_order(
-                signal=signal,
-                miner_order_uuid=miner_order_uuid,
-                now_ms=now_ms,
-                miner_hotkey=synthetic_hotkey,
-                miner_repo_version="hl_tracker",
-                limit_order_client=self._limit_order_client,
-                market_order_manager=self._market_order_manager,
-            )
-
-            # Track UUID
-            if result.should_track_uuid:
-                self._uuid_tracker.add(miner_order_uuid)
-
-            self._fills_processed += 1
-            self._last_fill_time = time.time()
-            self._broadcast_accepted_fill(
-                synthetic_hotkey=synthetic_hotkey,
-                trade_pair=trade_pair_id,
-                order_type=order_type,
-                fill_hash=fill.get("hash") or fill.get("tid") or "",
-            )
-
-            bt.logging.info(
-                f"[HL_TRACKER] Processed fill: {coin} target_weight={target_signed_weight:+.4f} "
-                f"current_weight={current_signed_weight:+.4f} delta={delta:+.4f} -> "
-                f"{synthetic_hotkey} {order_type} qty={order_quantity} "
-                f"fill_px={hl_fill_price} is_taker={is_taker}"
-            )
-
-        except SignalException as e:
-            bt.logging.warning(f"[HL_TRACKER] Signal rejected for {synthetic_hotkey}: {e}")
-            self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
-        except Exception as e:
-            bt.logging.error(f"[HL_TRACKER] Order processing error for {synthetic_hotkey}: {e}")
-            self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
-            bt.logging.error(traceback.format_exc())
-
-    def _process_flip(
-        self,
-        coin: str,
-        trade_pair,
-        trade_pair_id: str,
-        synthetic_hotkey: str,
-        current_position,
-        target_signed_weight: float,
-        current_signed_weight: float,
-        vanta_balance: float,
-        current_price: float,
-        is_taker: bool,
-        raw_fill_price,
-        fill: dict,
-        now_ms: int,
-        hl_address: str,
-    ):
-        """Handle a position flip (long→short or short→long) as two legs:
-        1. FLAT the existing position
-        2. Open new position in target direction (bypasses 5s cooldown)
-        """
-        fill_hash = fill.get("hash") or fill.get("tid") or ""
-        bt.logging.info(
-            f"[HL_TRACKER] Flip detected: {coin} "
-            f"current={current_signed_weight:+.4f} target={target_signed_weight:+.4f} "
-            f"-> {synthetic_hotkey}"
+        self._dispatch_order(
+            synthetic_hotkey, order_uuid, trade_pair, order_type,
+            fill_quantity, hl_fill_price, price_sources, is_taker, now_ms,
+            trade_pair_id, fill_hash,
+            on_failure_clear_szi=on_failure_clear_szi,
         )
-
-        # ── Leg 1: FLAT existing position ──
-        flat_fill_price = None
-        if is_taker:
-            close_size_usd = abs(
-                current_position.net_quantity * trade_pair.lot_size
-                * (raw_fill_price or current_price)
-            )
-            flat_fill_price = self._price_fetcher_client.simulate_avg_fill_price(
-                trade_pair, close_size_usd, current_position.net_quantity < 0,
-            )
-        if flat_fill_price is None:
-            flat_fill_price = raw_fill_price
-
-        flat_signal = {
-            "order_type": "FLAT",
-            "trade_pair": trade_pair_id,
-            "execution_type": "MARKET",
-            "is_hl": True,
-            "is_hl_taker": is_taker,
-            "hl_slippage": 0.0,
-            "leverage": 0.0,
-        }
-        if flat_fill_price:
-            flat_signal["price"] = flat_fill_price
-
-        flat_uuid = str(uuid.uuid4())
-
-        try:
-            flat_result = OrderProcessor.process_order(
-                signal=flat_signal,
-                miner_order_uuid=flat_uuid,
-                now_ms=now_ms,
-                miner_hotkey=synthetic_hotkey,
-                miner_repo_version="hl_tracker",
-                limit_order_client=self._limit_order_client,
-                market_order_manager=self._market_order_manager,
-            )
-            if flat_result.should_track_uuid:
-                self._uuid_tracker.add(flat_uuid)
-            self._fills_processed += 1
-            self._last_fill_time = time.time()
-            self._broadcast_accepted_fill(
-                synthetic_hotkey=synthetic_hotkey,
-                trade_pair=trade_pair_id,
-                order_type="FLAT",
-                fill_hash=fill_hash,
-            )
-            bt.logging.info(f"[HL_TRACKER] Flip leg 1 (FLAT) done: {coin} -> {synthetic_hotkey}")
-        except Exception as e:
-            bt.logging.error(f"[HL_TRACKER] Flip FLAT failed for {synthetic_hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
-            self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
-            return
-
-        # ── Leg 2: Open new position (bypass 5s cooldown) ──
-        new_order_type = "LONG" if target_signed_weight > 0 else "SHORT"
-        new_quantity = target_signed_weight * vanta_balance / (
-            trade_pair.lot_size * current_price
-        )
-
-        new_fill_price = None
-        if is_taker:
-            new_size_usd = abs(new_quantity * trade_pair.lot_size * current_price)
-            new_fill_price = self._price_fetcher_client.simulate_avg_fill_price(
-                trade_pair, new_size_usd, new_quantity > 0,
-            )
-        if new_fill_price is None:
-            new_fill_price = raw_fill_price
-
-        new_signal = {
-            "order_type": new_order_type,
-            "trade_pair": trade_pair_id,
-            "execution_type": "MARKET",
-            "is_hl": True,
-            "is_hl_taker": is_taker,
-            "hl_slippage": 0.0,
-            "quantity": new_quantity,
-        }
-        if new_fill_price:
-            new_signal["price"] = new_fill_price
-
-        new_uuid = str(uuid.uuid4())
-        new_now_ms = TimeUtil.now_in_millis()
-
-        bt.logging.info(
-            f"[HL_TRACKER] Flip leg 2 ({new_order_type}): {coin} "
-            f"weight={target_signed_weight:+.4f} qty={new_quantity} "
-            f"px={new_fill_price} -> {synthetic_hotkey}"
-        )
-
-        try:
-            err_msg, updated_pos, created_order = (
-                self._market_order_manager._process_market_order(
-                    new_uuid, "hl_tracker", trade_pair,
-                    new_now_ms, new_signal, synthetic_hotkey,
-                    price_sources=None, enforce_market_cooldown=False,
-                )
-            )
-            if err_msg:
-                raise SignalException(err_msg)
-
-            self._uuid_tracker.add(new_uuid)
-            self._fills_processed += 1
-            self._last_fill_time = time.time()
-            self._broadcast_accepted_fill(
-                synthetic_hotkey=synthetic_hotkey,
-                trade_pair=trade_pair_id,
-                order_type=new_order_type,
-                fill_hash=fill_hash,
-            )
-            bt.logging.info(
-                f"[HL_TRACKER] Flip complete: {coin} {new_order_type} "
-                f"weight={target_signed_weight:+.4f} -> {synthetic_hotkey}"
-            )
-        except Exception as e:
-            bt.logging.error(f"[HL_TRACKER] Flip leg 2 failed for {synthetic_hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
-            self._broadcast_rejection(synthetic_hotkey, f"Flip open rejected: {e}")
-            # Clear cached szi for this coin so reconciliation can retry
-            key = hl_address.lower() if isinstance(hl_address, str) else hl_address
-            cached = self._last_observed_szi.get(key)
-            if cached and coin in cached:
-                del cached[coin]
-                self._save_observed_szi()

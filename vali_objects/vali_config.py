@@ -175,6 +175,9 @@ class ValiConfig:
     RPC_ENTITY_COLLATERAL_PORT = 50026
     RPC_ENTITY_COLLATERAL_SERVICE_NAME = "EntityCollateralServer"
 
+    RPC_MARKET_ORDER_PORT = 50027
+    RPC_MARKET_ORDER_SERVICE_NAME = "MarketOrderServer"
+
     # Entity collateral cache refresh interval (seconds)
     ENTITY_COLLATERAL_CACHE_REFRESH_S = 30 * 60
 
@@ -449,28 +452,6 @@ class ValiConfig:
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
 
-    # HL fee constants
-    # HL_TAKER_FEE = 0.00045    # 0.045%
-    # HL_MAKER_FEE = 0.00015    # 0.015%
-
-    TRANSACTION_FEE_RATE = {
-        TradePairCategory.CRYPTO: 0.0005,       # 0.05%
-        TradePairCategory.EQUITIES: 0.0005,     # 0.05%
-        TradePairCategory.COMMODITIES: 0.00045,  # 0.045% - HL TAKER FEE
-        TradePairCategory.FOREX: 0,
-        TradePairCategory.INDICES: 0.00045,      # 0.045% - HL TAKER FEE
-    }
-    CARRY_FEE_RATE_PER_INTERVAL = {
-        TradePairCategory.CRYPTO: 0.0001,          # 10.95% annual / (365*3 intervals)
-        TradePairCategory.FOREX: 0.0000821918,     # 3% annual / 365 intervals
-        TradePairCategory.INDICES: 0.0001438356,   # 5.25% annual / 365 intervals
-        TradePairCategory.COMMODITIES: 0,          # TODO update? All commodities tp under HL which uses HL Funding
-        TradePairCategory.EQUITIES: 0,
-    }
-
-    ANNUAL_INTEREST_RATE = 0.066  # 6.6%
-    DAILY_INTEREST_RATE = ANNUAL_INTEREST_RATE / 365
-
     # Account size thresholds for leverage tier progression (non-challenge entity subaccounts)
     LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
@@ -645,9 +626,6 @@ class ValiConfig:
     MIN_COLLATERAL_VALUE = MIN_COLLATERAL_BALANCE_THETA * COST_PER_THETA   # Approx $150k
     MIN_CAPITAL = 5_000   # USD minimum capital account size
     DEFAULT_CAPITAL = 100_000  # conversion of 1x leverage to $100K in capital
-
-    ANNUAL_STOCK_BORROW_RATE = 0.03  # 3% annual borrow rate for short equity positions
-    DAILY_STOCK_BORROW_RATE = ANNUAL_STOCK_BORROW_RATE / 365
 
     # 100% percent of collateral deposit is at risk of slashing based on drawdown
     DRAWDOWN_SLASH_PROPORTION = 1.0

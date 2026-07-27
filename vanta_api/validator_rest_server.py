@@ -32,9 +32,10 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
-from vali_objects.utils.limit_order.market_order_manager import MarketOrderManager
+from vali_objects.utils.market_order.market_order_client import MarketOrderClient
+from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, CollateralRecord
-from vali_objects.utils.limit_order.order_processor import OrderProcessor
+from vali_objects.utils.order_processor import OrderProcessor
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory, TradePair
@@ -105,7 +106,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.running_unit_tests = running_unit_tests
         self.is_mainnet = is_mainnet
         self.nonce_manager = NonceManager()
-        self.market_order_manager = MarketOrderManager(serve=False)
+        self.market_order_client = MarketOrderClient()
         self.data_path = ValiConfig.BASE_DIR
 
         # Store connection_mode for use in _initialize_clients
@@ -173,6 +174,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             connection_mode=connection_mode,
             connect_immediately=False,
             running_unit_tests=running_unit_tests
+        )
+        self.order_processor = OrderProcessor(
+            limit_order_client=self._limit_order_client,
+            market_order_client=self.market_order_client,
+            miner_account_client=self._miner_account_client,
         )
 
     # ============================================================================
@@ -1363,20 +1369,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 trailing_stop=data.get('trailing_stop'),
                 bracket_orders=data.get('bracket_orders'),
             )
-            signal = signal_obj.model_dump(mode='json')
-
             now_ms = TimeUtil.now_in_millis()
-            miner_repo_version = "development"
 
-            # Use unified OrderProcessor dispatcher (replaces lines 1466-1553)
-            result = OrderProcessor.process_order(
-                signal=signal,
-                miner_order_uuid=data.get('order_uuid'),
+            result = self.order_processor.process_vanta_signal(
+                hotkey=DEVELOPMENT_HOTKEY,
+                signal=signal_obj,
+                order_uuid=data.get('order_uuid'),
                 now_ms=now_ms,
-                miner_hotkey=DEVELOPMENT_HOTKEY,
-                miner_repo_version=miner_repo_version,
-                limit_order_client=self._limit_order_client,
-                market_order_manager=self.market_order_manager
             )
 
             # Consistent response format across all order types
@@ -1456,13 +1455,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             else:
                 # Actual rebuild - persists to disk, preserving bucket and max_return
                 self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
-                rebuilt_account = self._miner_account_client.get_account(hotkey)
+                rebuilt_account_obj = self._miner_account_client.get_account(hotkey)
+                rebuilt_account = rebuilt_account_obj.to_dict() if rebuilt_account_obj else None
 
             return jsonify({
                 'status': 'success',
                 'preview': preview,
                 'position_count': len(positions),
-                'original_account': original_account,
+                'original_account': original_account.to_dict(),
                 'rebuilt_account': rebuilt_account
             })
 
@@ -1529,6 +1529,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         try:
             result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
+            self._miner_account_client.reset_account_fields(hotkey)
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
             self._elimination_client.remove_elimination(hotkey)
@@ -1743,8 +1744,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                         hotkey, timestamp_ms=new_order.processed_ms, use_account_floor=True
                     )
                     if portfolio_value:
-                        _, lev, val = MarketOrderManager.parse_order_size(
-                            {'quantity': new_order.quantity},
+                        _, lev, val = convert_order_sizes(
+                            OrderSize(quantity=new_order.quantity),
                             new_order.usd_base_rate,
                             new_order.trade_pair,
                             portfolio_value,
@@ -1766,7 +1767,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if position.is_open_position and position.last_price_source:
                 now_ms = TimeUtil.now_in_millis()
                 realtime_price = position.last_price_source.parse_appropriate_price(
-                    now_ms, position.trade_pair.is_forex, position.position_type, position
+                    now_ms, position.trade_pair.is_forex, position.position_type, position.position_type
                 )
                 if realtime_price:
                     position.set_returns(

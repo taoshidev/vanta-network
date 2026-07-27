@@ -147,9 +147,9 @@ class LivePriceFetcherServer(RPCServerBase):
     # DELEGATION METHODS (all business logic delegates to _fetcher)
     # ============================================================================
 
-    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position):
+    def get_usd_base_conversion(self, trade_pair, time_ms, price, order_type, position_type):
         """Delegate to fetcher."""
-        return self._fetcher.get_usd_base_conversion(trade_pair, time_ms, price, order_type, position)
+        return self._fetcher.get_usd_base_conversion(trade_pair, time_ms, price, order_type, position_type)
 
     def get_ws_price_sources_in_window(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
         """Delegate to fetcher."""
@@ -191,9 +191,9 @@ class LivePriceFetcherServer(RPCServerBase):
         """Delegate to fetcher."""
         return self._fetcher.get_quote(trade_pair, processed_ms)
 
-    def get_quote_usd_conversion(self, order, position):
+    def get_quote_usd_conversion(self, trade_pair, time_ms, price, order_type, position_type):
         """Delegate to fetcher."""
-        return self._fetcher.get_quote_usd_conversion(order, position)
+        return self._fetcher.get_quote_usd_conversion(trade_pair, time_ms, price, order_type, position_type)
 
     def get_corporate_actions(self, start_date_str: str, end_date_str: str | None = None) -> dict:
         return self._fetcher.get_corporate_actions(start_date_str, end_date_str)
@@ -230,6 +230,10 @@ class LivePriceFetcherServer(RPCServerBase):
     def clear_test_candle_data(self) -> None:
         """Test-only RPC method to clear all test candle data."""
         return self._fetcher.clear_test_candle_data()
+
+    def calculate_slippage(self, bid: float, ask: float, order) -> float:
+        """Delegate to fetcher."""
+        return self._fetcher.calculate_slippage(bid, ask, order)
 
     def simulate_slippage(self, trade_pair: TradePair, size_usd: float, is_buy: bool, order_uuid: str = None):
         """Delegate to fetcher."""

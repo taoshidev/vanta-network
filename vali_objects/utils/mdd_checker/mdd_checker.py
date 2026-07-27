@@ -16,20 +16,15 @@ from typing import List, Dict
 
 import bittensor as bt
 
-from collections import defaultdict
-
 from shared_objects.cache_controller import CacheController
 from shared_objects.rpc.common_data_client import CommonDataClient
-from time_util.time_util import TimeUtil, MS_IN_24_HOURS
+from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
 
@@ -74,16 +69,6 @@ class MDDChecker(CacheController):
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair if not trade_pair.is_blocked]
         self.reset_debug_counters()
         self.n_poly_api_requests = 0
-
-        # Load persisted slippage features from disk for equities slippage calculation
-        try:
-            features_file = ValiBkpUtils.get_slippage_model_features_file()
-            persisted_features = ValiUtils.get_vali_json_file_dict(features_file)
-            if persisted_features:
-                PriceSlippageModel.features = defaultdict(dict, persisted_features)
-                bt.logging.info(f"MDDChecker loaded {len(persisted_features)} days of slippage features")
-        except Exception as e:
-            bt.logging.warning(f"MDDChecker could not load slippage features: {e}")
 
         bt.logging.info("MDDChecker initialized")
 
@@ -301,7 +286,7 @@ class MDDChecker(CacheController):
                 any_changes = True
 
         if any_changes:
-            order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position)
+            order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position.position_type)
             order.bid = winning_event.bid
             order.ask = winning_event.ask
             # order.slippage = PriceSlippageModel.calculate_slippage(winning_event.bid, winning_event.ask, order)
@@ -416,11 +401,15 @@ class MDDChecker(CacheController):
             temp = tp_to_price_sources_for_realtime_price.get(trade_pair, [])
             price_source = temp[0] if temp else None
             realtime_price = price_source.parse_appropriate_price(
-                now_ms, trade_pair.is_forex, position.position_type, position
+                now_ms, trade_pair.is_forex, position.position_type, position.position_type
             ) if price_source else None
             ret_changed = False
 
-            quote_usd_conversion = self._live_price_client.get_quote_usd_conversion(position.orders[0], position)
+            first_order = position.orders[0]
+            quote_usd_conversion = self._live_price_client.get_quote_usd_conversion(
+                first_order.trade_pair, first_order.processed_ms, first_order.price,
+                first_order.order_type, position.position_type
+            )
 
             if position.is_open_position and realtime_price is not None:
                 orig_return = position.return_at_close

@@ -154,6 +154,15 @@ class Order(Signal):
         """
         return values
 
+    @model_validator(mode='before')
+    @classmethod
+    def validate_price_fields(cls, values):
+        """
+        Overrides inherited validate_price_fields from Signal.
+        Filled orders don't require limit_price/stop_price — those were trigger conditions.
+        """
+        return values
+
     @classmethod
     def from_dict(cls, order_dict):
         """

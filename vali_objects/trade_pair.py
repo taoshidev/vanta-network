@@ -8,50 +8,12 @@ from collections import defaultdict
 from enum import Enum
 from typing import NamedTuple
 
-
-# Positional leverage limits used in TradePair definitions below.
-CRYPTO_MIN_LEVERAGE = 0.01
-CRYPTO_MAX_LEVERAGE = 2.5
-FOREX_MIN_LEVERAGE = 0.1
-FOREX_MAX_LEVERAGE = 10
-INDICES_MIN_LEVERAGE = 0.1
-INDICES_MAX_LEVERAGE = 5
-EQUITIES_MIN_LEVERAGE = 0.01
-EQUITIES_MAX_LEVERAGE = 2
-COMMODITIES_MIN_LEVERAGE = 0.05
-COMMODITIES_MAX_LEVERAGE = 2
-
-# HL/HS leverage caps used in TradePair definitions below.
-HS_MIN_LEVERAGE = 0.01
-HS_MAX_LEVERAGE = 1.0
-
-# Trade-pair id sets used by TradePair.is_blocked / is_flat_only.
-FLAT_ONLY_TRADE_PAIR_IDS = {}
-BLOCKED_TRADE_PAIR_IDS = {
-    'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
-    'USDMXN',
-    'PAXGUSDC',      # Gold; kept GOLDUSDC
-    'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
-    'XAGUSD', 'XAUUSD',  # replaced with GOLDUSDC, SILVERUSDC
-    'TONUSDC',  # Delisted from Hyperliquid
-
-    # All vanta native crypto pairs deprecated for corresponding USDC pairs
-    'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD',
-    'DOGEUSD', 'ADAUSD', 'TAOUSD', 'HYPEUSD',
-    'ZECUSD', 'BCHUSD', 'LINKUSD', 'XMRUSD',
-    'LTCUSD',
-
-    'NSA'  # de-listed on 2026-07-22 NOTE could potentially delete trade pair
-}
-
-
 class TradePairCategory(str, Enum):
     CRYPTO = "crypto"
     FOREX = "forex"
     INDICES = "indices"
     EQUITIES = "equities"
     COMMODITIES = "commodities"
-
 
 class TradePairSource(str, Enum):
     VANTA = "vanta"
@@ -61,7 +23,6 @@ class TradePairSource(str, Enum):
 class InstrumentType(str, Enum):
     SPOT = "spot"
     PERP = "perp"
-
 
 class SubaccountTierBaseLeverage(NamedTuple):
     """Tagged wrapper for the per-pair Tier-1 base used by subaccount tier dispatch.
@@ -122,6 +83,68 @@ class IndicesSubcategory(TradePairSubcategory):
     @property
     def asset_class(self) -> TradePairCategory:
         return TradePairCategory.INDICES
+
+# Positional leverage limits used in TradePair definitions below.
+CRYPTO_MIN_LEVERAGE = 0.01
+CRYPTO_MAX_LEVERAGE = 2.5
+FOREX_MIN_LEVERAGE = 0.1
+FOREX_MAX_LEVERAGE = 10
+INDICES_MIN_LEVERAGE = 0.1
+INDICES_MAX_LEVERAGE = 5
+EQUITIES_MIN_LEVERAGE = 0.01
+EQUITIES_MAX_LEVERAGE = 2
+COMMODITIES_MIN_LEVERAGE = 0.05
+COMMODITIES_MAX_LEVERAGE = 2
+
+# HL/HS leverage caps used in TradePair definitions below.
+HS_MIN_LEVERAGE = 0.01
+HS_MAX_LEVERAGE = 1.0
+
+# HL fee constants
+HL_TAKER_FEE = 0.00045  # 0.045%
+HL_MAKER_FEE = 0.00015  # 0.015%
+
+# Vanta fee constants
+TRANSACTION_FEE_RATE = {
+    TradePairCategory.CRYPTO:      0.0005,   # 0.05%
+    TradePairCategory.EQUITIES:    0.0005,   # 0.05%
+    TradePairCategory.COMMODITIES: 0.00045,  # 0.045% — HL taker fee
+    TradePairCategory.FOREX:       0,
+    TradePairCategory.INDICES:     0,
+}
+
+CARRY_FEE_RATE_PER_INTERVAL = {
+    TradePairCategory.CRYPTO:      0.0001,        # 10.95% annual / (365 * 3)
+    TradePairCategory.FOREX:       0.0000821918,   # 3% annual / 365
+    TradePairCategory.INDICES:     0.0001438356,   # 5.25% annual / 365
+    TradePairCategory.COMMODITIES: 0,              # HL funding used instead
+    TradePairCategory.EQUITIES:    0,              # equity-specific rates below
+}
+
+ANNUAL_STOCK_BORROW_RATE    = 0.03   # 3% — short equity stock-borrow fee
+DAILY_STOCK_BORROW_RATE     = ANNUAL_STOCK_BORROW_RATE / 365
+
+ANNUAL_MARGIN_INTEREST_RATE = 0.066  # 6.6% — long equity margin interest
+DAILY_MARGIN_INTEREST_RATE  = ANNUAL_MARGIN_INTEREST_RATE / 365
+
+# Trade-pair id sets used by TradePair.is_blocked / is_flat_only.
+FLAT_ONLY_TRADE_PAIR_IDS = {}
+BLOCKED_TRADE_PAIR_IDS = {
+    'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI',  # Indices
+    'USDMXN',
+    'PAXGUSDC',      # Gold; kept GOLDUSDC
+    'BRENTOILUSDC',  # Oil; kept WTIOILUSDC
+    'XAGUSD', 'XAUUSD',  # replaced with GOLDUSDC, SILVERUSDC
+    'TONUSDC',  # Delisted from Hyperliquid
+
+    # All vanta native crypto pairs deprecated for corresponding USDC pairs
+    'BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD',
+    'DOGEUSD', 'ADAUSD', 'TAOUSD', 'HYPEUSD',
+    'ZECUSD', 'BCHUSD', 'LINKUSD', 'XMRUSD',
+    'LTCUSD',
+    
+    'NSA'  # de-listed on 2026-07-22 NOTE could potentially delete trade pair
+}
 
 
 class TradePair(Enum):
@@ -1369,6 +1392,18 @@ class TradePair(Enum):
         raise ValueError(f"TradePair {self.trade_pair_id} is missing subaccount_tier_base_leverage")
 
     @property
+    def transaction_fee_rate(self) -> float:
+        if self.src == TradePairSource.HYPERLIQUID:
+            return HL_TAKER_FEE
+        return TRANSACTION_FEE_RATE.get(self.trade_pair_category, 0)
+
+    @property
+    def carry_fee_rate_per_interval(self) -> float:
+        if self.src == TradePairSource.HYPERLIQUID:
+            return 0
+        return CARRY_FEE_RATE_PER_INTERVAL.get(self.trade_pair_category, 0)
+
+    @property
     def is_crypto(self):
         return self.trade_pair_category == TradePairCategory.CRYPTO
 
@@ -1496,7 +1531,7 @@ class TradePair(Enum):
         return TRADE_PAIR_STR_TO_TRADE_PAIR.get(trade_pair_str)
 
     def __str__(self):
-        return str(self.__json__())
+        return str(self.trade_pair_id)
 
 
 TRADE_PAIR_ID_TO_TRADE_PAIR = {x.trade_pair_id: x for x in TradePair}
