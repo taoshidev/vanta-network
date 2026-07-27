@@ -236,6 +236,12 @@ class MarketOrderManager():
         if not order.value or not order.quantity:
             raise SignalException(f"Order value and quantity must be set before applying order. value={order.value}, quantity={order.quantity}")
 
+        if is_buy:
+            allowed, reason = self._entity_collateral_client.try_gate_position_open(hotkey, order.value)
+            if not allowed:
+                bt.logging.error(f"{hotkey} {order_uuid} Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
+                raise SignalException(f"Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
+
         if is_buy and trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA and miner_account.asset_class == MinerAssetClass.EQUITIES:
             cash_available = balance - (miner_account.capital_used - miner_account.total_borrowed_amount)
             if abs(order.value) > cash_available:
@@ -245,10 +251,6 @@ class MarketOrderManager():
         realized_pnl, transaction_fee, loan_repaid = position.add_order(order)
 
         if is_buy:
-            allowed, reason = self._entity_collateral_client.try_gate_position_open(hotkey, order.value)
-            if not allowed:
-                bt.logging.error(f"{hotkey} {order_uuid} Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
-                raise SignalException(f"Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
             self._miner_account_client.process_order_buy(
                 hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category
             )

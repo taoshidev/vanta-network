@@ -117,6 +117,12 @@ class OrderProcessor:
             )
             bt.logging.warning(msg)
             return False, msg, None
+        elif miner_account.miner_bucket == MinerBucket.ENTITY:
+            msg = (f"Entity hotkey {hotkey} cannot place orders directly. "
+                   f"Please use a subaccount (synthetic hotkey) to place orders.")
+            bt.logging.warning(msg)
+            return False, msg, None
+
 
         # Asset class check (FLAT market orders bypass this)
         if trade_pair is not None and order_type != OrderType.FLAT and execution_type not in (ExecutionType.MARKET, ExecutionType.FLAT_ALL):
@@ -192,7 +198,7 @@ class OrderProcessor:
         if updated_position and updated_position.is_closed_position:
             self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
 
-        if created_order and signal.bracket_orders:
+        if created_order and (updated_position and not updated_position.is_closed_position) and signal.bracket_orders:
             created_order.bracket_orders = signal.bracket_orders
             self.limit_order_client.create_sltp_order(hotkey, created_order)
 
