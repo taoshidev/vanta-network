@@ -102,7 +102,7 @@ class Position(BaseModel):
             if not hl_funding_rates:
                 return 0
 
-            last_accrual_ms = self._last_fee_time_ms("hl_funding")
+            last_accrual_ms = max(self._last_fee_time_ms("hl_funding"), self._last_fee_time_ms("carry"))
             sign = 1.0 if self.position_type == OrderType.LONG else -1.0
             total_fee = 0.0
             last_settlement_ms = last_accrual_ms
