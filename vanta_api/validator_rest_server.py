@@ -1536,6 +1536,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
             self._elimination_client.remove_elimination(hotkey)
+            self._miner_account_client.reset_account(hotkey)
 
             if is_synthetic_hotkey(hotkey) and self._entity_client:
                 self._entity_client.restore_subaccount(hotkey)

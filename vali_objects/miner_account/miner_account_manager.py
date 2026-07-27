@@ -34,13 +34,12 @@ from shared_objects.log import logger
 
 
 @dataclass
-class DailyOpenSnapshot:
+class AccountSnapshot:
     """Account state captured at 00:00:00 UTC for a single miner."""
     day_open_ms: int           # Unix ms for 00:00:00 UTC of this day
     account_size: float
     balance: float
     equity: float
-    bucket: Optional[str]      # MinerBucket.value or None
 
     @property
     def equity_return(self) -> float:
@@ -52,21 +51,20 @@ class DailyOpenSnapshot:
     def to_dict(self) -> dict:
         return {
             'day_open_ms': self.day_open_ms,
+            'day_open_date': TimeUtil.millis_to_short_date_str(self.day_open_ms),
             'account_size': self.account_size,
             'balance': self.balance,
             'equity': self.equity,
             'equity_return': self.equity_return,
-            'bucket': self.bucket,
         }
 
     @staticmethod
-    def from_dict(d: dict) -> 'DailyOpenSnapshot':
-        return DailyOpenSnapshot(
+    def from_dict(d: dict) -> 'AccountSnapshot':
+        return AccountSnapshot(
             day_open_ms=d['day_open_ms'],
             account_size=d['account_size'],
             balance=d['balance'],
             equity=d['equity'],
-            bucket=d.get('bucket'),
         )
 
 
@@ -122,7 +120,7 @@ class MinerAccount:
     # (HL_ALL) for per-class portfolio cap enforcement. Empty for older checkpoints;
     # lazy-backfilled on next rebuild_account_state_from_positions call.
     capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
-    daily_open_snapshot: Optional[DailyOpenSnapshot] = None
+    daily_open_snapshot: Optional[AccountSnapshot] = None
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -488,7 +486,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 daily_open_snapshot = None
                 if daily_open_snapshot_raw:
                     try:
-                        daily_open_snapshot = DailyOpenSnapshot.from_dict(daily_open_snapshot_raw)
+                        daily_open_snapshot = AccountSnapshot.from_dict(daily_open_snapshot_raw)
                     except Exception:
                         pass
 
@@ -587,13 +585,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.add_collateral_record(collateral_record)
 
             if is_first_record:
-                account.daily_open_snapshot = DailyOpenSnapshot(
-                    day_open_ms=TimeUtil.get_start_of_day_ms(timestamp_ms),
-                    account_size=account.get_account_size(),
-                    balance=account.balance,
-                    equity=account.equity,
-                    bucket=account.miner_bucket.value if account.miner_bucket else None,
-                )
+                self.take_account_snapshot(hotkey=hotkey, timestamp_ms=timestamp_ms, reset_snapshot=True)
 
             # Save to disk
             self._save_accounts_to_disk()
@@ -603,21 +595,19 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         return collateral_record
 
-    def reset_account_fields(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
+    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
             if not account:
                 return False
+
             account.reset_account_fields()
             if miner_bucket:
                 account.miner_bucket = miner_bucket
-            account.daily_open_snapshot = DailyOpenSnapshot(
-                day_open_ms=TimeUtil.get_start_of_day_ms(),
-                account_size=account.get_account_size(),
-                balance=account.balance,
-                equity=account.equity,
-                bucket=account.miner_bucket.value if account.miner_bucket else None,
-            )
+
+            self.take_account_snapshot(hotkey=hotkey, reset_snapshot=True)
+            account.max_return = 1.0
+
             self._save_accounts_to_disk()
         return True
 
@@ -942,30 +932,56 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     # ==================== Daily Open Snapshot ====================
 
-    def take_daily_open_snapshots(self) -> int:
-        """Snapshot account state for all non-eliminated miners at the current UTC day open.
+    def take_account_snapshot(
+        self,
+        hotkey: Optional[str] = None,
+        timestamp_ms: Optional[int] = None,
+        reset_snapshot: bool = False,
+        update_daily_open: bool = False,
+    ) -> int:
+        """Snapshot account state at the current (or given) UTC day open.
 
-        Skips accounts with MinerBucket.ELIMINATED. Persists snapshots to disk via the
-        normal accounts save path. Returns the number of snapshots recorded.
+        Args:
+            hotkey: If provided, snapshot only this account. If None, snapshot all accounts.
+            timestamp_ms: Timestamp used to derive day_open_ms. Defaults to now.
+            reset_snapshot: If True, unconditionally overwrite daily_open_snapshot
+                             (e.g. new/reset accounts).
+            update_daily_open: If True, update daily_open_snapshot when a new day is detected.
+                               Should only be passed True when firing at the top of the UTC day
+                               (hour == 0) to avoid recording a mid-day value as the day open.
+
+        Returns the number of snapshots recorded.
         """
-        now_ms = TimeUtil.now_in_millis()
-        day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
+        start_ms = TimeUtil.now_in_millis()
+        if timestamp_ms is None:
+            timestamp_ms = start_ms
+        day_open_ms = TimeUtil.get_start_of_day_ms(timestamp_ms)
 
-        count = 0
+        to_log: list[tuple[str, dict]] = []
         with self._accounts_lock:
-            for account in self.accounts.values():
-                account.daily_open_snapshot = DailyOpenSnapshot(
+            targets = (
+                [self.accounts[hotkey]] if hotkey and hotkey in self.accounts
+                else self.accounts.values()
+            )
+            for account in targets:
+                snapshot = AccountSnapshot(
                     day_open_ms=day_open_ms,
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
-                    bucket=account.miner_bucket.value if account.miner_bucket else None,
                 )
-                count += 1
-            self._save_accounts_to_disk()
+                if reset_snapshot or (update_daily_open and (account.daily_open_snapshot is None or day_open_ms > account.daily_open_snapshot.day_open_ms)):
+                    account.daily_open_snapshot = snapshot
+                to_log.append((account.miner_hotkey, snapshot.to_dict()))
 
-        elapsed_ms = TimeUtil.now_in_millis() - now_ms
-        logger.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms} in {elapsed_ms}ms")
+        self._save_accounts_to_disk()
+
+        for miner_hotkey, entry in to_log:
+            ValiBkpUtils.log_snapshot(miner_hotkey, entry, self.running_unit_tests)
+
+        count = len(to_log)
+        elapsed_ms = TimeUtil.now_in_millis() - start_ms
+        bt.logging.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms} in {elapsed_ms}ms")
         return count
 
     # ==================== Asset Selection / Withdrawal Methods ====================
