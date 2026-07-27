@@ -10,7 +10,6 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
-from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
