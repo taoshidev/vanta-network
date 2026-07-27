@@ -80,8 +80,9 @@ class MinerAccountServer(RPCServerBase):
         self._is_mothership = False
 
         # Daemon configuration: align first run to the top of the next UTC hour
-        daemon_interval_s = MinerAccountServer._seconds_until_next_utc_hour()
-        hang_timeout_s = 3600 * 2 # 2 hours
+        daemon_interval_s = 3600   # 1 hour
+        hang_timeout_s = 3600 * 2  # 2 hours
+        daemon_stagger_s = MinerAccountServer._seconds_until_next_utc_hour()
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -95,6 +96,7 @@ class MinerAccountServer(RPCServerBase):
             start_daemon=False,  # Daemon started later via orchestrator
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
+            daemon_stagger_s=daemon_stagger_s,
         )
 
     # ==================== RPCServerBase Abstract Methods ====================
