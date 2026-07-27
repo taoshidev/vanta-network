@@ -678,11 +678,12 @@ class ChallengePeriodManager(CacheController):
             last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
 
             # Use daily open snapshot from miner account for intraday drawdown baseline; fall back to ledger
-            today_midnight_ms = TimeUtil.get_start_of_day_ms(now_ms)
+            day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
             snapshot = account.daily_open_snapshot
-            if snapshot and snapshot.day_open_ms == today_midnight_ms:
+            if snapshot and TimeUtil.get_start_of_day_ms(snapshot.snapshot_ms) == day_open_ms:
                 last_eod = snapshot.equity_return
                 daily_open_equity = snapshot.equity_return
+                last_eod_checked_ms = day_open_ms
 
             # Cache stats before rule checks so dashboard reflects what triggered elimination
             self.miner_states[hotkey].drawdown = DrawdownStats(

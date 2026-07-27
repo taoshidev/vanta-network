@@ -35,8 +35,8 @@ from shared_objects.log import logger
 
 @dataclass
 class AccountSnapshot:
-    """Account state captured at 00:00:00 UTC for a single miner."""
-    day_open_ms: int           # Unix ms for 00:00:00 UTC of this day
+    """Account state captured at a point in time for a single miner."""
+    snapshot_ms: int           # Unix ms of this snapshot
     account_size: float
     balance: float
     equity: float
@@ -50,8 +50,8 @@ class AccountSnapshot:
 
     def to_dict(self) -> dict:
         return {
-            'day_open_ms': self.day_open_ms,
-            'day_open_date': TimeUtil.millis_to_short_date_str(self.day_open_ms),
+            'snapshot_ms': self.snapshot_ms,
+            'snapshot_date': TimeUtil.millis_to_formatted_date_str(self.snapshot_ms),
             'account_size': self.account_size,
             'balance': self.balance,
             'equity': self.equity,
@@ -61,7 +61,7 @@ class AccountSnapshot:
     @staticmethod
     def from_dict(d: dict) -> 'AccountSnapshot':
         return AccountSnapshot(
-            day_open_ms=d['day_open_ms'],
+            snapshot_ms=d.get('snapshot_ms') or d['day_open_ms'],
             account_size=d['account_size'],
             balance=d['balance'],
             equity=d['equity'],
@@ -955,7 +955,6 @@ class MinerAccountManager(ValidatorBroadcastBase):
         start_ms = TimeUtil.now_in_millis()
         if timestamp_ms is None:
             timestamp_ms = start_ms
-        day_open_ms = TimeUtil.get_start_of_day_ms(timestamp_ms)
 
         to_log: list[tuple[str, dict]] = []
         with self._accounts_lock:
@@ -965,12 +964,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
             )
             for account in targets:
                 snapshot = AccountSnapshot(
-                    day_open_ms=day_open_ms,
+                    snapshot_ms=timestamp_ms,
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
                 )
-                if reset_snapshot or (update_daily_open and (account.daily_open_snapshot is None or day_open_ms > account.daily_open_snapshot.day_open_ms)):
+                stored = account.daily_open_snapshot
+                stored_day_open_ms = TimeUtil.get_start_of_day_ms(stored.snapshot_ms) if stored else None
+                day_open_ms = TimeUtil.get_start_of_day_ms(timestamp_ms)
+                if reset_snapshot or (update_daily_open and (stored_day_open_ms is None or day_open_ms > stored_day_open_ms)):
                     account.daily_open_snapshot = snapshot
                 to_log.append((account.miner_hotkey, snapshot.to_dict()))
 
@@ -981,7 +983,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         count = len(to_log)
         elapsed_ms = TimeUtil.now_in_millis() - start_ms
-        bt.logging.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms} in {elapsed_ms}ms")
+        bt.logging.info(f"Recorded snapshots for {count} miners at {timestamp_ms} in {elapsed_ms}ms")
         return count
 
     # ==================== Asset Selection / Withdrawal Methods ====================
