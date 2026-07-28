@@ -213,7 +213,7 @@ class ChallengePeriodManager(CacheController):
     - Server delegates all RPC methods to manager methods
     - Manager creates its own clients internally (forward compatibility)
     """
-    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-07-29 00:00:00")
+    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-08-05 00:00:00")
 
     def __init__(
         self,
