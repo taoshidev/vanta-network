@@ -1025,8 +1025,6 @@ class EntityManager(ValidatorBroadcastBase):
             end_time_ms = TimeUtil.now_in_millis()
             realtime = True
 
-        bt.logging.info(f"calculate_subaccount_payout query subaccount uuid: {subaccount_uuid}")
-
         # Translate UUID to hotkey
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
