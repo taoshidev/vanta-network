@@ -1025,8 +1025,6 @@ class EntityManager(ValidatorBroadcastBase):
             end_time_ms = TimeUtil.now_in_millis()
             realtime = True
 
-        bt.logging.info(f"calculate_subaccount_payout query subaccount uuid: {subaccount_uuid}")
-
         # Translate UUID to hotkey
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
@@ -1982,6 +1980,21 @@ class EntityManager(ValidatorBroadcastBase):
                 # Propagate hl_address to MinerAccount so buying_power uses the correct HS divisor
                 if hl_address and self._miner_account_client:
                     self._miner_account_client.set_hl_address(synthetic_hotkey, hl_address)
+
+                # Set account size for synthetic hotkey (mirrors create_subaccount)
+                if self._miner_account_client:
+                    cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
+                    set_size_success = self._miner_account_client.set_miner_account_size(
+                        synthetic_hotkey,
+                        collateral_balance_theta=account_size / cpt,
+                        timestamp_ms=TimeUtil.now_in_millis(),
+                        account_size=account_size,
+                        bucket=MinerBucket.SUBACCOUNT_CHALLENGE
+                    )
+                    if not set_size_success:
+                        bt.logging.warning(
+                            f"[ENTITY_MANAGER] Failed to set account size for {synthetic_hotkey} via broadcast"
+                        )
 
                 # Update next_subaccount_id if needed
                 if subaccount_id >= entity_data.next_subaccount_id:
