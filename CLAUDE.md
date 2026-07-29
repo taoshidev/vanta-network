@@ -152,7 +152,7 @@ The system uses a distributed RPC architecture for inter-process communication:
   - Risk-adjusted performance penalties based on Sharpe, Sortino, Calmar, Omega ratios
 - **Fees**:
   - Carry fees: 10.95% annually (crypto), 3% annually (forex); equities instead pay a 3% annual stock-borrow fee (short) or 6.6% annual margin interest on the borrowed amount (long); commodities carry no fee for standard positions. Hyperliquid-linked entity positions pay live Hyperliquid funding rates instead of the flat carry fee, regardless of asset class.
-  - Spread fees: 0.05% × order value (crypto, equities), 0.045% × order value (commodities, indices); none for forex
+  - Spread fees: 0.05% × order value (crypto, equities), 0.045% × order value (commodities, indices); none for forex. Hyperliquid-sourced pairs instead pay 0.03% (taker) or 0.015% (maker) regardless of asset class — the maker rate applies to resting limit fills and a bracket's take-profit leg; market fills, a bracket's stop-loss leg, and fills of unknown liquidity type are priced as taker.
   - Slippage costs: Higher for high leverage and low liquidity assets
 - **Leverage Limits**:
   - Crypto: 0.01 to 0.5x

@@ -109,7 +109,7 @@ HL_MAKER_FEE = 0.00015  # 0.015%
 TRANSACTION_FEE_RATE = {
     TradePairCategory.CRYPTO:      0.0005,   # 0.05%
     TradePairCategory.EQUITIES:    0.0005,   # 0.05%
-    TradePairCategory.COMMODITIES: 0.00045,  # 0.045% — HL taker fee
+    TradePairCategory.COMMODITIES: 0.00045,  # 0.045%
     TradePairCategory.FOREX:       0,
     TradePairCategory.INDICES:     0,
 }
