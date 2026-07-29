@@ -730,31 +730,51 @@ class DebtBasedScoring:
         """
         total_daily_target_payout = sum(miner_daily_target_payouts_usd.values())
 
-        if projected_daily_emissions_usd is None or projected_daily_emissions_usd <= 0:
-            bt.logging.warning(
-                "projected_daily_emissions_usd not provided or invalid. "
-                "Falling back to normalizing against total payouts (may not burn excess emissions)."
-            )
-            if total_daily_target_payout > 0:
-                return {
-                    hotkey: payout_usd / total_daily_target_payout
-                    for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
-                }
-            else:
-                return {hotkey: 0.0 for hotkey in miner_daily_target_payouts_usd}
-
         if verbose:
             bt.logging.info(
-                f"Normalizing weights against projected daily emissions: "
+                f"Distributing emissions by PnL share: "
                 f"total_daily_target=${total_daily_target_payout:.2f}, "
-                f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}, "
-                f"payout_fraction={total_daily_target_payout / projected_daily_emissions_usd:.4f}"
+                f"projected_daily_emissions=${projected_daily_emissions_usd:.2f} (informational only)"
             )
 
-        return {
-            hotkey: payout_usd / projected_daily_emissions_usd
-            for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
-        }
+        if total_daily_target_payout > 0:
+            return {
+                hotkey: payout_usd / total_daily_target_payout
+                for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
+            }
+        else:
+            return {hotkey: 0.0 for hotkey in miner_daily_target_payouts_usd}
+
+        # --- Previous/future behavior: normalize against projected total emissions ---
+        # Pays each miner up to their debt-based target; if sum(targets) < projected emissions,
+        # the surplus is left unassigned and gets burned via _normalize_with_burn_address.
+        # To restore: delete the proportional-share block above and uncomment this. Bump ACTIVATION_YEAR/MONTH
+        #
+        # if projected_daily_emissions_usd is None or projected_daily_emissions_usd <= 0:
+        #     bt.logging.warning(
+        #         "projected_daily_emissions_usd not provided or invalid. "
+        #         "Falling back to normalizing against total payouts (may not burn excess emissions)."
+        #     )
+        #     if total_daily_target_payout > 0:
+        #         return {
+        #             hotkey: payout_usd / total_daily_target_payout
+        #             for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
+        #         }
+        #     else:
+        #         return {hotkey: 0.0 for hotkey in miner_daily_target_payouts_usd}
+        #
+        # if verbose:
+        #     bt.logging.info(
+        #         f"Normalizing weights against projected daily emissions: "
+        #         f"total_daily_target=${total_daily_target_payout:.2f}, "
+        #         f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}, "
+        #         f"payout_fraction={total_daily_target_payout / projected_daily_emissions_usd:.4f}"
+        #     )
+        #
+        # return {
+        #     hotkey: payout_usd / projected_daily_emissions_usd
+        #     for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
+        # }
 
     @staticmethod
     def _estimate_alpha_emissions_until_target(
