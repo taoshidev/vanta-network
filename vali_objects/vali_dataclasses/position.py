@@ -420,7 +420,7 @@ class Position(BaseModel):
         is_reducing = order.order_type != self.position_type or self.is_closed_position
         self._update_position()
 
-        transaction_fee_rate = self.trade_pair.transaction_fee_rate
+        transaction_fee_rate = self.trade_pair.transaction_fee_rate(order)
         transaction_fee, loan_repaid = 0.0, 0.0
         if is_reducing:
             entry_value = abs(order.quantity) * self.trade_pair.lot_size * self.average_entry_price * order.quote_usd_rate

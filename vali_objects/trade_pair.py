@@ -100,8 +100,9 @@ COMMODITIES_MAX_LEVERAGE = 2
 HS_MIN_LEVERAGE = 0.01
 HS_MAX_LEVERAGE = 1.0
 
-# HL fee constants
-HL_TAKER_FEE = 0.00045  # 0.045%
+# HL fee constants. Applied to HL-sourced pairs, priced at or below HL's own schedule
+# (0.045% taker / 0.015% maker) by design.
+HL_TAKER_FEE = 0.0003   # 0.03%
 HL_MAKER_FEE = 0.00015  # 0.015%
 
 # Vanta fee constants
@@ -1392,10 +1393,17 @@ class TradePair(Enum):
         raise ValueError(f"TradePair {self.trade_pair_id} is missing subaccount_tier_base_leverage")
 
     @property
-    def transaction_fee_rate(self) -> float:
+    def taker_fee_rate(self) -> float:
+        """Worst-case rate, for sizing before the fill type is known."""
         if self.src == TradePairSource.HYPERLIQUID:
             return HL_TAKER_FEE
         return TRANSACTION_FEE_RATE.get(self.trade_pair_category, 0)
+
+    def transaction_fee_rate(self, order) -> float:
+        """Maker rate only when the fill added liquidity; taker when it took or is unknown."""
+        if self.src != TradePairSource.HYPERLIQUID:
+            return self.taker_fee_rate
+        return HL_MAKER_FEE if order.is_hl_taker is False else HL_TAKER_FEE
 
     @property
     def carry_fee_rate_per_interval(self) -> float:
