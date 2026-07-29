@@ -382,7 +382,7 @@ class LimitOrderManager(CacheController):
                 price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
                 if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
                     _ps = price_sources[0]
-                    _, trigger_price = evaluate_order_trigger(miner_hotkey, order, open_position, [_ps])
+                    _, trigger_price, _ = evaluate_order_trigger(miner_hotkey, order, open_position, [_ps])
                     should_fill_immediately = trigger_price is not None
 
         # Fill outside the lock to avoid reentrant lock issue
@@ -884,13 +884,13 @@ class LimitOrderManager(CacheController):
                             if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                                 continue
                             cutoff_ms = max(order.processed_ms, last_fill_time)
-                            trigger_ps, trigger_price = evaluate_order_trigger(miner_hotkey, order, position, price_sources, cutoff_ms)
+                            trigger_ps, trigger_price, is_taker = evaluate_order_trigger(miner_hotkey, order, position, price_sources, cutoff_ms)
 
                         if trigger_price is not None:
                             if order.execution_type == ExecutionType.STOP_LIMIT:
                                 self._convert_stop_limit_to_limit_order(miner_hotkey, order, TimeUtil.now_in_millis())
                             else:
-                                self._fill_limit_order_with_price_source(miner_hotkey, order, trigger_ps, trigger_price)
+                                self._fill_limit_order_with_price_source(miner_hotkey, order, trigger_ps, trigger_price, is_taker=is_taker)
                             total_filled += 1
                             # DESIGN: Break after first fill to enforce LIMIT_ORDER_FILL_INTERVAL_MS
                             # Only one order per trade pair per hotkey can fill within the interval.
@@ -1106,7 +1106,7 @@ class LimitOrderManager(CacheController):
                 f"[STOP_LIMIT] Failed to create child limit order from {order.order_uuid}: {e}"
             )
 
-    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, is_market_order=False):
+    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, is_market_order=False, is_taker=None):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
         from vali_objects.utils.limit_order.order_utils import OrderSize
         trade_pair = order.trade_pair
@@ -1115,6 +1115,8 @@ class LimitOrderManager(CacheController):
 
         new_src = OrderSource.ORGANIC if is_market_order else OrderSource.get_fill(order.src)
         slippage = None if is_market_order else 0
+        # An order that fills on submission crossed the spread, so it took liquidity.
+        is_taker = True if is_market_order else is_taker
         try:
             if order.execution_type == ExecutionType.BRACKET:
                 order_type = OrderType.opposite_order_type(order.order_type)
@@ -1139,6 +1141,7 @@ class LimitOrderManager(CacheController):
                 order_src=new_src,
                 now_ms=fill_time,
                 slippage=slippage,
+                is_hl_taker=is_taker,
                 enforce_cooldown=is_market_order,
             )
 

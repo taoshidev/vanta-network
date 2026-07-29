@@ -51,33 +51,38 @@ def build_limit_price_sources(price_sources, cutoff_ms: int = 0):
 
 def evaluate_order_trigger(hotkey: str, order: Order, position: Position | None, price_sources, cutoff_ms: int = 0):
     """
-    Dispatch to the right evaluator. Returns (trigger_ps, trigger_price).
+    Dispatch to the right evaluator. Returns (trigger_ps, trigger_price, is_taker).
+
+    is_taker reports whether the fill takes liquidity: False for orders that rested
+    on the book (LIMIT, bracket TP), True for those that sweep it (bracket SL).
 
     price_sources: full list of price-source objects for the look-back window.
     cutoff_ms: only sources with start_ms >= cutoff_ms are used to build extrema.
     """
     sources = build_limit_price_sources(price_sources, cutoff_ms)
     if sources is None:
-        return None, None
+        return None, None, None
 
-    trigger_ps, trigger_price = None, None
+    trigger_ps, trigger_price, is_taker = None, None, None
 
     if order.execution_type == ExecutionType.LIMIT:
         # LONG buys at min_ask, SHORT sells at max_bid (aggressive matching).
         trigger_ps = sources.min_ask_ps if order.order_type == OrderType.LONG else sources.max_bid_ps
         trigger_price = evaluate_limit_trigger_price(order, trigger_ps)
+        is_taker = False
 
     elif order.execution_type == ExecutionType.BRACKET:
         if not position:
-            return None, None
+            return None, None, None
         # Bracket evaluator returns the actual ps for the leg that fired.
-        trigger_ps, trigger_price = evaluate_bracket_trigger_price(order, position, sources)
+        trigger_ps, trigger_price, is_taker = evaluate_bracket_trigger_price(order, position, sources)
 
     elif order.execution_type == ExecutionType.STOP_LIMIT:
         # GTE triggers on upside breakout: min_ask is higher of the two and more favorable.
         # LTE triggers on downside breakout: max_bid is lower of the two and more favorable.
         trigger_ps = sources.min_ask_ps if order.stop_condition == StopCondition.GTE else sources.max_bid_ps
         trigger_price = evaluate_stop_limit_trigger_price(order, trigger_ps)
+        is_taker = True
 
     if trigger_price:
         bt.logging.info(
@@ -85,7 +90,10 @@ def evaluate_order_trigger(hotkey: str, order: Order, position: Position | None,
             f"{order.order_uuid} trigger_price={trigger_price} price_source={trigger_ps}"
         )
 
-    return trigger_ps, trigger_price
+    if trigger_price is None:
+        is_taker = None
+
+    return trigger_ps, trigger_price, is_taker
 
 
 def evaluate_limit_trigger_price(order, ps):
@@ -135,7 +143,10 @@ def _compute_trailing_sl(order, position_type):
 
 def evaluate_bracket_trigger_price(order, position, sources):
     """
-    Return (trigger_ps, trigger_price) if SL/TP boundary is hit, else (None, None).
+    Return (trigger_ps, trigger_price, is_taker) if SL/TP boundary is hit, else (None, None, None).
+
+    The SL leg sweeps the book on trigger (is_taker=True); the TP leg rests on it
+    like a plain limit (is_taker=False).
 
     The returned trigger_ps is the actual extremum that crossed the boundary
     (not just the favorable side), so callers can correctly gate on its
@@ -145,14 +156,14 @@ def evaluate_bracket_trigger_price(order, position, sources):
     orders; this function reads order.price but does not mutate it.
     """
     if not position:
-        return None, None
+        return None, None, None
 
     if order.processed_ms < position.open_ms:
         bt.logging.info(
             f"[BRACKET CANCELLED] Bracket {order.order_uuid} (processed_ms={order.processed_ms}) "
             f"predates current position (open_ms={position.open_ms}), skipping trigger as orphan"
         )
-        return None, None
+        return None, None, None
 
     position_type = position.position_type
     order.order_type = position_type
@@ -175,9 +186,9 @@ def evaluate_bracket_trigger_price(order, position, sources):
         min_bid = min_bid_ps.bid if min_bid_ps.bid > 0 else min_bid_ps.open
         max_bid = max_bid_ps.bid if max_bid_ps.bid > 0 else max_bid_ps.open
         if effective_sl is not None and min_bid <= effective_sl:
-            return min_bid_ps, effective_sl
+            return min_bid_ps, effective_sl, True
         if order.take_profit is not None and max_bid >= order.take_profit:
-            return max_bid_ps, order.take_profit
+            return max_bid_ps, order.take_profit, False
 
     elif position_type == OrderType.SHORT:
         min_ask_ps = sources.min_ask_ps
@@ -185,8 +196,8 @@ def evaluate_bracket_trigger_price(order, position, sources):
         max_ask = max_ask_ps.ask if max_ask_ps.ask > 0 else max_ask_ps.open
         min_ask = min_ask_ps.ask if min_ask_ps.ask > 0 else min_ask_ps.open
         if effective_sl is not None and max_ask >= effective_sl:
-            return max_ask_ps, effective_sl
+            return max_ask_ps, effective_sl, True
         if order.take_profit is not None and min_ask <= order.take_profit:
-            return min_ask_ps, order.take_profit
+            return min_ask_ps, order.take_profit, False
 
-    return None, None
+    return None, None, None
