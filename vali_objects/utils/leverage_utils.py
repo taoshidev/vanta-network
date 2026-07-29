@@ -112,8 +112,10 @@ def get_max_order_size(
     if combined == max_position_value:
         max_value_reason = f"per pair cap ({max_position_leverage}x)"
     max_value = combined - abs(position.net_value)
-    if max_value * (1 + trade_pair.taker_fee_rate * account.multiplier) > effective_buying_power:
-        max_value = max_value / (1 + trade_pair.taker_fee_rate * account.multiplier)
+
+    transaction_fee_rate = trade_pair.transaction_fee_rate()
+    if max_value * (1 + transaction_fee_rate * account.multiplier) > effective_buying_power:
+        max_value = max_value / (1 + transaction_fee_rate * account.multiplier)
 
     return max(0.0, max_value), max_value_reason
 
