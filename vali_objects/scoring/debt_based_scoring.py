@@ -748,7 +748,7 @@ class DebtBasedScoring:
         # --- Previous/future behavior: normalize against projected total emissions ---
         # Pays each miner up to their debt-based target; if sum(targets) < projected emissions,
         # the surplus is left unassigned and gets burned via _normalize_with_burn_address.
-        # To restore: delete the proportional-share block above and uncomment this.
+        # To restore: delete the proportional-share block above and uncomment this. Bump ACTIVATION_YEAR/MONTH
         #
         # if projected_daily_emissions_usd is None or projected_daily_emissions_usd <= 0:
         #     bt.logging.warning(
