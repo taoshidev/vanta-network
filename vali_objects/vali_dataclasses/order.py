@@ -28,7 +28,8 @@ class Order(Signal):
     src: int = OrderSource.ORGANIC
     realized_pnl: float = 0
     margin_loan: float = 0.0
-    is_hl_taker: OptionalType[bool] = None  # None=not HL, True=taker (0.045%), False=maker (0.015%)
+    # Liquidity flag. None=unknown (priced as taker), True=taker, False=maker.
+    is_hl_taker: OptionalType[bool] = None
 
     @field_validator('trade_pair', mode='before')
     @classmethod
@@ -199,6 +200,7 @@ class Order(Signal):
             'price_sources': self.price_sources,
             'order_uuid': self.order_uuid,
             'src': self.src,
+            'is_hl_taker': self.is_hl_taker,
             'execution_type': self.execution_type.name if self.execution_type else None,
             'realized_pnl': self.realized_pnl,
             'limit_price': self.limit_price,
