@@ -425,23 +425,23 @@ class EliminationManager(CacheController):
                 f"{dict(self._perf_ledger_client.get_perf_ledger_hks_to_invalidate())}"
             )
 
-            logger.debug("[ELIM_PROCESS] Starting handle_mdd_eliminations")
+            logger.info("[ELIM_PROCESS] Starting handle_mdd_eliminations")
             self.handle_mdd_eliminations()
 
-            logger.debug("[ELIM_PROCESS] Starting handle_zombies")
+            logger.info("[ELIM_PROCESS] Starting handle_zombies")
             self.handle_zombies()
 
-            logger.debug("[ELIM_PROCESS] Starting handle_idle_miners")
+            logger.info("[ELIM_PROCESS] Starting handle_idle_miners")
             self.handle_idle_miners()
 
             # Run after other checks so MDD/zombie/etc. take priority over DEREGISTERED
-            logger.debug("[ELIM_PROCESS] Starting handle_departed_hotkeys")
+            logger.info("[ELIM_PROCESS] Starting handle_departed_hotkeys")
             self.handle_departed_hotkeys()
 
-            logger.debug("[ELIM_PROCESS] Starting _cleanup_eliminated_miners")
+            logger.info("[ELIM_PROCESS] Starting _cleanup_eliminated_miners")
             self._cleanup_eliminated_miners(iteration_epoch)
 
-            logger.debug("[ELIM_PROCESS] Completed successfully")
+            logger.info("[ELIM_PROCESS] Completed successfully")
             # self.set_last_update_time()
 
             return self._to_slack_message()
@@ -704,36 +704,28 @@ class EliminationManager(CacheController):
     def _cleanup_eliminated_miners(self, iteration_epoch: int | None = None):
         """post-elimination cleanup: close open positions and delete unfilled limit orders"""
         now_ms = TimeUtil.now_in_millis()
+        _skip_buckets = (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA)
 
-        for elimination_data in list(self.eliminations.values()):
-            self._purge_expired_elimination(elimination_data, now_ms)
+        expired_hotkeys = [
+            row.hotkey
+            for row in self.eliminations.values()
+            if row.bucket_at_elimination not in _skip_buckets
+            and now_ms - row.elimination_initiated_time_ms >= ValiConfig.ELIMINATION_FILE_DELETION_DELAY_MS
+        ]
 
-    def _purge_expired_elimination(self, elimination_data, now_ms):
-        """Delete position files and miner directory after the retention window expires.
-        Skips funded subaccounts to preserve accrued realized pnl.
-        """
-        if elimination_data.bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
-            return
-
-        is_expired = now_ms - elimination_data.elimination_initiated_time_ms >= ValiConfig.ELIMINATION_FILE_DELETION_DELAY_MS
-        if not is_expired:
-            return
-
-        hotkey = elimination_data.hotkey
-        miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests) + hotkey
-        positions = self._position_client.get_positions_for_one_hotkey(hotkey)
-        if not positions:
-            return
-
-        for p in positions:
-            self._position_client.delete_position(p.miner_hotkey, p.position_uuid)
-
-        self._miner_account_client.reset_account_fields(hotkey)
-
-        try:
-            shutil.rmtree(miner_dir)
-        except FileNotFoundError:
-            pass
+        hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
+            expired_hotkeys, only_open_positions=False
+        )
+        expired_hotkeys_with_positions = [hk for hk in expired_hotkeys if hotkey_to_positions.get(hk)]
+        logger.info(f"[ELIM_CLEANUP] Purging {len(expired_hotkeys_with_positions)} expired eliminations: {expired_hotkeys_with_positions}")
+        miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests)
+        for hotkey in expired_hotkeys_with_positions:
+            logger.info(f"[ELIM_CLEANUP] Deleting positions and miner dir for {hotkey}")
+            self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
+            try:
+                shutil.rmtree(miner_dir + hotkey)
+            except FileNotFoundError:
+                pass
 
     def _get_departed_hotkeys_from_disk(self) -> dict:
         """Load departed hotkeys from disk (legacy) and default file for migration."""
