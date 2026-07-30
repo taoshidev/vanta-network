@@ -426,6 +426,10 @@ class ValiConfig:
     FUNDED_V0_CUTOFF_MS = 1773532799000  # Mar 14, 2026 23:59:59 UTC
     FUNDED_V1_CUTOFF_MS = 1779840000000  # May 27, 2026 00:00:00 UTC
 
+    # Entity subaccount (standard account) static drawdown rules
+    SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD = 0.05  # Rule 1: balance (excl. unrealized PnL) more than 5% below starting balance eliminates
+    SUBACCOUNT_EOD_EQUITY_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: equity (incl. unrealized PnL) more than 5% below starting balance at 00:00 UTC eliminates
+
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
 
