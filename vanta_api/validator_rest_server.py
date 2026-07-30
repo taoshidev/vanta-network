@@ -649,7 +649,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
         else:
             try:
-                orders_data = ValiBkpUtils.get_limit_orders(minerid, unfilled_only=True, running_unit_tests=False)
+                orders_data = ValiBkpUtils.get_limit_orders(minerid, "unfilled", running_unit_tests=False)
                 if not orders_data:
                     return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
             except Exception as e:

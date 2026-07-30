@@ -83,7 +83,8 @@ class OrderSource(IntEnum):
             return "UNFILLED"
         elif order_src in [OrderSource.LIMIT_FILLED, OrderSource.BRACKET_FILLED, OrderSource.STOP_LIMIT_FILLED]:
             return "FILLED"
-        elif order_src in [OrderSource.LIMIT_CANCELLED, OrderSource.BRACKET_CANCELLED, OrderSource.STOP_LIMIT_CANCELLED]:
+        elif order_src in [OrderSource.LIMIT_CANCELLED, OrderSource.BRACKET_CANCELLED, OrderSource.STOP_LIMIT_CANCELLED,
+                           OrderSource.ELIMINATION_CANCELLED]:
             return "CANCELLED"
         else:
             return OrderSource(order_src).name
