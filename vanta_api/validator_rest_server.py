@@ -1508,6 +1508,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 wipe_positions=data.get('wipe_positions', False),
                 reopen_force_closed_orders=data.get('reopen_force_closed_orders', False),
             )
+            positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+            self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
             return jsonify({'status': 'success', **result})
         except Exception as e:
             logger.error(f"Error wiping hotkey {hotkey}: {e}")
@@ -1706,6 +1708,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 result = self._position_client.wipe_hotkey(hotkey, position_uuids_to_archive=[position_uuid])
             else:
                 result = self._position_client.wipe_hotkey(hotkey, position_uuids_to_delete=[position_uuid])
+            positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+            self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
             return jsonify({'status': 'success', 'archived': archive, **result})
         except Exception as e:
             logger.error(f"Error deleting position {position_uuid} for hotkey {hotkey}: {e}")
@@ -2354,6 +2358,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             if reopen_positions:
                 self._position_client.wipe_hotkey(hotkey, reopen_force_closed_orders=True)
+                positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+                self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
 
             restored_orders = 0
             if reopen_orders:
