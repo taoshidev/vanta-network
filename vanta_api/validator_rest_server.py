@@ -649,7 +649,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
         else:
             try:
-                orders_data = ValiBkpUtils.get_limit_orders(minerid, unfilled_only=True, running_unit_tests=False)
+                orders_data = ValiBkpUtils.get_limit_orders(minerid, "unfilled", running_unit_tests=False)
                 if not orders_data:
                     return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
             except Exception as e:
@@ -2273,9 +2273,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         Query params:
           reopen_positions: if "true", strips force-close orders and reopens positions
+          reopen_orders: if "true", restores ELIMINATION_CANCELLED limit orders
 
         Example:
-        curl -X POST "http://localhost:48888/admin/revert-elimination/<hotkey>?reopen_positions=true" \\
+        curl -X POST "http://localhost:48888/admin/revert-elimination/<hotkey>?reopen_positions=true&reopen_orders=true" \\
           -H "Authorization: Bearer YOUR_API_KEY"
         """
         api_key = self._get_api_key_safe()
@@ -2284,8 +2285,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         if not self.can_access_tier(api_key, 500):
             return jsonify({'error': 'Revert elimination endpoint requires tier 500 access'}), 403
 
-        reopen_raw = request.args.get('reopen_positions', 'false')
-        reopen_force_closed = str(reopen_raw).strip().lower() == 'true'
+        reopen_positions = str(request.args.get('reopen_positions', 'false')).strip().lower() == 'true'
+        reopen_orders = str(request.args.get('reopen_orders', 'false')).strip().lower() == 'true'
 
         try:
             success = self._elimination_client.remove_elimination(hotkey)
@@ -2298,13 +2299,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
 
-            if reopen_force_closed:
+            if reopen_positions:
                 self._position_client.wipe_hotkey(hotkey, reopen_force_closed_orders=True)
+
+            restored_orders = 0
+            if reopen_orders:
+                restored_orders = self._limit_order_client.restore_cancelled_limit_orders(hotkey)
 
             return jsonify({
                 'status': 'success',
                 'hotkey': hotkey,
-                'reopen_force_closed_positions': reopen_force_closed,
+                'reopen_force_closed_positions': reopen_positions,
+                'restored_limit_orders': restored_orders,
             }), 200
 
         except Exception as e:
