@@ -13,6 +13,7 @@ from vali_objects.enums.order_type_enum import OrderType
 import bittensor as bt
 import re
 import math
+from shared_objects.log import logger
 
 
 class Position(BaseModel):
@@ -363,7 +364,7 @@ class Position(BaseModel):
 
     @staticmethod
     def _position_log(message):
-        bt.logging.trace("Position Notification - " + message)
+        logger.debug("Position Notification - " + message)
 
     def rebuild_position_with_updated_orders(self, price_fetcher_client=None):
         self.current_return = 1.0
@@ -383,7 +384,7 @@ class Position(BaseModel):
         self._update_position(price_fetcher_client)
 
     def log_position_status(self):
-        bt.logging.debug(
+        logger.debug(
             f"position details: "
             f"close_ms [{self.close_ms}] "
             f"initial entry price [{self.initial_entry_price}] "
@@ -402,7 +403,7 @@ class Position(BaseModel):
             }
             for order in self.orders
         ]
-        bt.logging.debug(f"position order details: " f"close_ms [{order_info}] ")
+        logger.debug(f"position order details: " f"close_ms [{order_info}] ")
 
     def add_order(self, order: Order, live_price_fetcher=None):
         if self.is_closed_position:
@@ -546,7 +547,7 @@ class Position(BaseModel):
             self._position_log("setting new position type as SHORT. Trade pair: " + str(self.trade_pair.trade_pair_id))
             self.position_type = OrderType.SHORT
         else:
-            bt.logging.error(
+            logger.error(
                 f"Position {self.position_uuid} has zero leverage initial order for "
                 f"{self.trade_pair.trade_pair_id}. Closing with 0 realized PnL."
             )
@@ -562,7 +563,7 @@ class Position(BaseModel):
 
         fill_price = price_source.parse_appropriate_price(close_ms, self.trade_pair.is_forex, OrderType.FLAT, self.position_type)
         if fill_price is None:
-            bt.logging.warning(
+            logger.warning(
                 f"force_close_position: no valid price in last_price_source for "
                 f"{self.position_uuid} ({self.trade_pair.trade_pair_id}) — "
                 f"falling back to price=0 with ELIMINATION_FLAT"
@@ -633,7 +634,7 @@ class Position(BaseModel):
             return False
 
         if self.last_stock_split_date == execution_date:
-            bt.logging.info(f"Stock split for {execution_date} already applied to position {self.position_uuid}")
+            logger.info(f"Stock split for {execution_date} already applied to position {self.position_uuid}")
             return False
 
         for order in self.orders:
@@ -712,7 +713,7 @@ class Position(BaseModel):
         self.cumulative_entry_value = 0.0
         self.realized_pnl = 0.0
         self.unrealized_pnl = 0.0
-        bt.logging.trace(f"Updating position {self.trade_pair.trade_pair_id} with n orders: {len(self.orders)}")
+        logger.debug(f"Updating position {self.trade_pair.trade_pair_id} with n orders: {len(self.orders)}")
         for order in self.orders:
             # set value and quantity if not set
             if (order.value is None or order.quantity is None) and order.leverage is not None:
@@ -745,7 +746,7 @@ class Position(BaseModel):
             adjusted_leverage = (
                 0.0 if self.position_type == OrderType.FLAT else order.leverage
             )
-            #bt.logging.info(
+            #logger.info(
             #    f"Updating position state for new order {order} with adjusted leverage {adjusted_quantity}"
             #)
             self.update_position_state_for_new_order(order, adjusted_quantity, adjusted_leverage, price_fetcher_client)

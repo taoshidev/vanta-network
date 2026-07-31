@@ -28,6 +28,7 @@ from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from shared_objects.log import logger
 
 
 class MetagraphServer(RPCServerBase):
@@ -110,7 +111,7 @@ class MetagraphServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
-        bt.logging.info(
+        logger.info(
             f"MetagraphServer initialized on port {ValiConfig.RPC_METAGRAPH_PORT if connection_mode == RPCConnectionMode.RPC else 'LOCAL'} - "
             f"'{self.DEVELOPMENT_HOTKEY}' hotkey will be available for development orders"
         )
@@ -182,7 +183,7 @@ class MetagraphServer(RPCServerBase):
                     return False
         except Exception as e:
             # If EntityClient fails (server not running, etc.), treat as not found
-            bt.logging.warning(f"[METAGRAPH] Failed to validate synthetic hotkey '{hotkey}': {e}")
+            logger.warning(f"[METAGRAPH] Failed to validate synthetic hotkey '{hotkey}': {e}")
             return False
 
         # Not in metagraph and not a valid synthetic hotkey

@@ -59,6 +59,7 @@ from collections import defaultdict
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
+from shared_objects.log import logger
 
 @dataclass
 class PayoutSettlement:
@@ -182,7 +183,7 @@ class DebtBasedScoring:
         """
         # Validate input to prevent division by zero
         if total_remaining_payout_usd <= 0:
-            bt.logging.warning(
+            logger.warning(
                 f"total_remaining_payout_usd must be > 0, got {total_remaining_payout_usd}. "
                 "Skipping projection log."
             )
@@ -204,7 +205,7 @@ class DebtBasedScoring:
         )
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"Projected emissions: {projected_alpha_available:.2f} ALPHA "
                 f"≈ ${projected_usd_available:.2f} USD"
             )
@@ -212,7 +213,7 @@ class DebtBasedScoring:
         # Check if projected emissions (in USD) are sufficient
         if projected_usd_available < total_remaining_payout_usd:
             shortage_pct = ((total_remaining_payout_usd - projected_usd_available) / total_remaining_payout_usd) * 100
-            bt.logging.warning(
+            logger.warning(
                 f"⚠️  INSUFFICIENT EMISSIONS: Projected USD value in next {days_until_target} days "
                 f"(${projected_usd_available:.2f}) is less than total remaining payout needed "
                 f"(${total_remaining_payout_usd:.2f}). Shortage: {shortage_pct:.1f}%. "
@@ -220,7 +221,7 @@ class DebtBasedScoring:
             )
         else:
             surplus_pct = ((projected_usd_available - total_remaining_payout_usd) / total_remaining_payout_usd) * 100
-            bt.logging.info(
+            logger.info(
                 f"✓ Projected USD value in next {days_until_target} days (${projected_usd_available:.2f}) exceeds "
                 f"total remaining payout needed (${total_remaining_payout_usd:.2f}). "
                 f"Surplus: {surplus_pct:.1f}%. "
@@ -486,7 +487,7 @@ class DebtBasedScoring:
 
         # Handle edge cases
         if not ledger_dict and not eligible_hotkeys:
-            bt.logging.info("No debt ledgers or hotkeys provided, setting burn address weight to 1.0")
+            logger.info("No debt ledgers or hotkeys provided, setting burn address weight to 1.0")
             burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph_client, is_testnet)
             return [(burn_hotkey, 1.0)]
 
@@ -494,7 +495,7 @@ class DebtBasedScoring:
         current_dt = TimeUtil.millis_to_datetime(current_time_ms)
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"Computing debt-based weights for {current_dt.strftime('%B %Y')} "
                 f"({len(ledger_dict)} miners)"
             )
@@ -519,7 +520,7 @@ class DebtBasedScoring:
         prev_target_end_ms = int(prev_target_end_dt.timestamp() * 1000)
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"Needed payout window (cumulative): {payout_calc_start_dt.strftime('%Y-%m-%d')} to "
                 f"{prev_target_end_dt.strftime('%Y-%m-%d')} "
                 f"(allows negative PnL to carry across weeks)"
@@ -534,7 +535,7 @@ class DebtBasedScoring:
         for hotkey, debt_ledger in ledger_dict.items():
             if not debt_ledger.checkpoints:
                 if verbose:
-                    bt.logging.debug(f"Skipping {hotkey}: no checkpoints")
+                    logger.debug(f"Skipping {hotkey}: no checkpoints")
                 miner_remaining_payouts_usd[hotkey] = 0.0
                 miner_actual_payouts_usd[hotkey] = 0.0
                 continue
@@ -600,7 +601,7 @@ class DebtBasedScoring:
         total_actual_payout_usd = sum(miner_actual_payouts_usd.values())
         total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
 
-        bt.logging.info(
+        logger.info(
             f"[PAYOUT_DEBUG] PAYOUT TOTALS: "
             f"remaining: ${total_remaining_payout_usd:.2f}\t"
             f"total required: ${total_needed_payout_usd:.2f}\t"
@@ -614,7 +615,7 @@ class DebtBasedScoring:
                 actual = miner_actual_payouts_usd.get(hotkey, 0.0)
                 needed = miner_needed_payouts_usd.get(hotkey, 0.0)
                 penalty_loss = miner_penalty_loss_usd.get(hotkey, 0.0)
-                bt.logging.info(
+                logger.info(
                     f"[PAYOUT_DEBUG] DEBT CALC [{hotkey}] remaining=${remaining:.2f}\t"
                     f"paid=${actual:.2f} / ${needed:.2f},\tpenalty_loss=${penalty_loss:.2f}"
                     f"{'<- needs payout' if remaining > 0 else ''}"
@@ -636,7 +637,7 @@ class DebtBasedScoring:
         )
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"[PAYOUT_DEBUG] PROJECTED EMISSIONS: {projected_alpha_available:.2f} ALPHA = ${projected_usd_available:.2f} USD "
                 f"over {days_until_target} days (${projected_usd_available / days_until_target:.2f}/day)"
             )
@@ -644,7 +645,7 @@ class DebtBasedScoring:
         if total_remaining_payout_usd > 0:
             DebtBasedScoring.log_projections(metagraph_client, days_until_target, verbose, total_remaining_payout_usd)
         else:
-            bt.logging.info(
+            logger.info(
                 f"No remaining payouts needed {total_remaining_payout_usd} or no days until target "
                 f"{days_until_target}, skipping projection log"
             )
@@ -681,7 +682,7 @@ class DebtBasedScoring:
 
         # Log weight summary before normalization
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"[PAYOUT_DEBUG] WEIGHT SUMMARY: {len(miner_weights_with_minimums)} miners, "
                 f"total_remaining_payout=${total_remaining_payout_usd:.2f}, "
                 f"projected_daily_usd=${projected_daily_usd:.2f}, "
@@ -690,7 +691,7 @@ class DebtBasedScoring:
             for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1]):
                 daily_target = miner_daily_target_payouts_usd.get(hk, 0.0)
                 if daily_target > 0:
-                    bt.logging.info(
+                    logger.info(
                         f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, daily_target=${daily_target:.2f}"
                     )
 
@@ -731,7 +732,7 @@ class DebtBasedScoring:
         total_daily_target_payout = sum(miner_daily_target_payouts_usd.values())
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"Distributing emissions by PnL share: "
                 f"total_daily_target=${total_daily_target_payout:.2f}, "
                 f"projected_daily_emissions=${projected_daily_emissions_usd:.2f} (informational only)"
@@ -751,7 +752,7 @@ class DebtBasedScoring:
         # To restore: delete the proportional-share block above and uncomment this. Bump ACTIVATION_YEAR/MONTH
         #
         # if projected_daily_emissions_usd is None or projected_daily_emissions_usd <= 0:
-        #     bt.logging.warning(
+        #     logger.warning(
         #         "projected_daily_emissions_usd not provided or invalid. "
         #         "Falling back to normalizing against total payouts (may not burn excess emissions)."
         #     )
@@ -764,7 +765,7 @@ class DebtBasedScoring:
         #         return {hotkey: 0.0 for hotkey in miner_daily_target_payouts_usd}
         #
         # if verbose:
-        #     bt.logging.info(
+        #     logger.info(
         #         f"Normalizing weights against projected daily emissions: "
         #         f"total_daily_target=${total_daily_target_payout:.2f}, "
         #         f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}, "
@@ -800,7 +801,7 @@ class DebtBasedScoring:
             total_alpha_per_tempo = sum(metagraph_client.get_emission())
             total_alpha_per_block = total_alpha_per_tempo / 360
             if verbose:
-                bt.logging.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")
+                logger.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")
 
             # Estimate blocks until target day
             # Use approximate 12 seconds per block (7200 blocks/day)
@@ -809,7 +810,7 @@ class DebtBasedScoring:
             # Calculate total TAO emissions until target
             total_alpha_until_target = total_alpha_per_block * blocks_until_target
             if verbose:
-                bt.logging.info(f"Projected ALPHA available until target: {total_alpha_until_target:.2f}")
+                logger.info(f"Projected ALPHA available until target: {total_alpha_until_target:.2f}")
             return total_alpha_until_target
 
             # # Get total TAO emission per block for the subnet (sum across all miners)
@@ -819,7 +820,7 @@ class DebtBasedScoring:
             # total_tao_per_block = total_tao_per_tempo / 360
             #
             # if verbose:
-            #     bt.logging.info(f"Current subnet emission rate: {total_tao_per_block:.6f} TAO/block")
+            #     logger.info(f"Current subnet emission rate: {total_tao_per_block:.6f} TAO/block")
             #
             # # Estimate blocks until target day
             # # Use approximate 12 seconds per block (7200 blocks/day)
@@ -829,7 +830,7 @@ class DebtBasedScoring:
             # total_tao_until_target = total_tao_per_block * blocks_until_target
             #
             # if verbose:
-            #     bt.logging.info(
+            #     logger.info(
             #         f"Estimated blocks until day {DebtBasedScoring.PAYOUT_TARGET_DAY}: {blocks_until_target}, "
             #         f"total TAO: {total_tao_until_target:.2f}"
             #     )
@@ -843,7 +844,7 @@ class DebtBasedScoring:
             # alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
             #
             # if tao_reserve_rao == 0 or alpha_reserve_rao == 0:
-            #     bt.logging.warning(
+            #     logger.warning(
             #         "Substrate reserve data not available in shared metagraph "
             #         f"(TAO={tao_reserve_rao} RAO, ALPHA={alpha_reserve_rao} RAO). "
             #         "Cannot calculate ALPHA conversion rate."
@@ -856,7 +857,7 @@ class DebtBasedScoring:
             # alpha_to_tao_rate = tao_reserve_rao / alpha_reserve_rao
             #
             # if verbose:
-            #     bt.logging.info(
+            #     logger.info(
             #         f"Substrate reserves: TAO={tao_reserve_rao / 1e9:.2f} TAO ({tao_reserve_rao:.0f} RAO), "
             #         f"ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA ({alpha_reserve_rao:.0f} RAO), "
             #         f"rate={alpha_to_tao_rate:.6f} TAO/ALPHA"
@@ -867,16 +868,16 @@ class DebtBasedScoring:
             # if alpha_to_tao_rate > 0:
             #     total_alpha_until_target = total_tao_until_target / alpha_to_tao_rate
             # else:
-            #     bt.logging.warning("ALPHA-to-TAO rate is zero, cannot convert")
+            #     logger.warning("ALPHA-to-TAO rate is zero, cannot convert")
             #     return 0.0
             #
             # if verbose:
-            #     bt.logging.info(f"Projected ALPHA available until target: {total_alpha_until_target:.2f}")
+            #     logger.info(f"Projected ALPHA available until target: {total_alpha_until_target:.2f}")
             #
             # return total_alpha_until_target
 
         except Exception as e:
-            bt.logging.error(f"Error estimating ALPHA emissions: {e}")
+            logger.error(f"Error estimating ALPHA emissions: {e}")
             raise
 
     @staticmethod
@@ -911,7 +912,7 @@ class DebtBasedScoring:
         alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
 
         if tao_reserve_rao == 0 or alpha_reserve_rao == 0:
-            bt.logging.warning(
+            logger.warning(
                 "Substrate reserve data not available for ALPHA→USD conversion. "
                 f"(TAO={tao_reserve_rao} RAO, ALPHA={alpha_reserve_rao} RAO)"
             )
@@ -947,7 +948,7 @@ class DebtBasedScoring:
         usd_amount = tao_amount * tao_to_usd_rate
 
         if verbose:
-            bt.logging.debug(
+            logger.debug(
                 f"ALPHA→USD conversion: {alpha_amount:.2f} ALPHA "
                 f"→ {tao_amount:.6f} TAO "
                 f"→ ${usd_amount:.2f} USD "
@@ -1158,7 +1159,7 @@ class DebtBasedScoring:
         zero_weight_miners.update(zero_collateral_miners)
 
         if zero_collateral_miners:
-            bt.logging.warning(
+            logger.warning(
                 f"Found {len(zero_collateral_miners)} CHALLENGE miners with ZERO collateral. "
                 f"All will receive 0 weight (priority dereg): {[hk[:16] for hk in zero_collateral_miners]}"
             )
@@ -1179,7 +1180,7 @@ class DebtBasedScoring:
                     1 for hk in additional_zero_weight
                     if priority_scores[hk][0] == 1  # Tier 1 = below MIN_COLLATERAL
                 )
-                bt.logging.info(
+                logger.info(
                     f"Assigned 0 weight to {len(additional_zero_weight)} additional CHALLENGE miners: "
                     f"{low_collateral_count} with low collateral, "
                     f"{len(additional_zero_weight) - low_collateral_count} with poor PnL"
@@ -1262,7 +1263,7 @@ class DebtBasedScoring:
                 if bucket == MinerBucket.CHALLENGE.value and hotkey in zero_weight_miners:
                     weights[hotkey] = 0.0
                     if verbose:
-                        bt.logging.debug(
+                        logger.debug(
                             f"  {hotkey[:16]}...{hotkey[-8:]}: "
                             f"pnl_usd=${pnl:.2f} (collateral-aware 0 weight)"
                         )
@@ -1272,7 +1273,7 @@ class DebtBasedScoring:
                     weights[hotkey] = floor + (normalized * (ceiling - floor))
 
                     if verbose:
-                        bt.logging.debug(
+                        logger.debug(
                             f"  {hotkey[:16]}...{hotkey[-8:]}: "
                             f"pnl_usd=${pnl:.2f}, norm={normalized:.4f}, "
                             f"weight={weights[hotkey]:.8f}"
@@ -1329,7 +1330,7 @@ class DebtBasedScoring:
                     weights[hotkey] = floor
 
             if verbose:
-                bt.logging.debug(
+                logger.debug(
                     f"  All CHALLENGE miners have 0 PnL, assigning 0 weight to {len(zero_weight_miners)} "
                     f"miners (collateral-aware), floor weight to others"
                 )
@@ -1338,7 +1339,7 @@ class DebtBasedScoring:
             for hotkey in pnl_scores.keys():
                 weights[hotkey] = floor
             if verbose:
-                bt.logging.debug(f"  All miners have 0 PnL, assigning floor weight")
+                logger.debug(f"  All miners have 0 PnL, assigning floor weight")
 
         return weights
 
@@ -1400,7 +1401,7 @@ class DebtBasedScoring:
             bucket = challengeperiod_client.get_miner_bucket(hotkey)
             # Handle None case - use UNKNOWN as default
             if bucket is None:
-                bt.logging.warning(
+                logger.warning(
                     f"get_miner_bucket returned None for hotkey {hotkey[:16]}...{hotkey[-8:]} in dust calculation. "
                     f"Using {MinerBucket.UNKNOWN.value} as default bucket."
                 )
@@ -1410,7 +1411,7 @@ class DebtBasedScoring:
             bucket_groups[bucket_value].append((hotkey, ledger))
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"Performance-scaled dust: Processing {len(ledger_dict)} miners across "
                 f"{len(bucket_groups)} buckets (30-day lookback, static dust={base_dust:.8f})"
             )
@@ -1423,7 +1424,7 @@ class DebtBasedScoring:
 
             if verbose:
                 bucket_name = MinerBucket(bucket).name if bucket in [b.value for b in MinerBucket] else "UNKNOWN"
-                bt.logging.debug(
+                logger.debug(
                     f"Performance-scaled dust bucket {bucket_name}: {len(miners)} miners, "
                     f"floor={floor:.8f}, ceiling={ceiling:.8f}"
                 )
@@ -1445,7 +1446,7 @@ class DebtBasedScoring:
                     max_zero_weight_miners=10
                 )
                 if zero_weight_miners and verbose:
-                    bt.logging.info(
+                    logger.info(
                         f"CHALLENGE bucket: {len(pnl_scores)} miners, "
                         f"{len(zero_weight_miners)} miners get 0 weight (collateral-aware prioritization)"
                     )
@@ -1463,7 +1464,7 @@ class DebtBasedScoring:
                 dynamic_weights.update(bucket_weights)
 
         if verbose:
-            bt.logging.info(f"Performance-scaled dust weights calculated for {len(dynamic_weights)} miners")
+            logger.info(f"Performance-scaled dust weights calculated for {len(dynamic_weights)} miners")
 
         return dynamic_weights
 
@@ -1513,7 +1514,7 @@ class DebtBasedScoring:
         # Only miners with ledgers participate in within-bucket ranking; ledger-less miners
         # fall through to static dust below.
         if current_time_ms is None:
-            bt.logging.warning(
+            logger.warning(
                 "current_time_ms not provided. Falling back to static dust weights."
             )
             dynamic_dust_weights = None
@@ -1528,9 +1529,9 @@ class DebtBasedScoring:
                     verbose=verbose
                 )
                 if verbose:
-                    bt.logging.info("Using performance-scaled dust weights (30-day PnL scaling within buckets)")
+                    logger.info("Using performance-scaled dust weights (30-day PnL scaling within buckets)")
             except Exception as e:
-                bt.logging.error(f"Error calculating performance-scaled dust weights: {e}. Falling back to static floor values.")
+                logger.error(f"Error calculating performance-scaled dust weights: {e}. Falling back to static floor values.")
                 dynamic_dust_weights = None
 
         # Static minimum weights (fallback for ledger-less miners or when dynamic calc fails)
@@ -1548,7 +1549,7 @@ class DebtBasedScoring:
         for hotkey in eligible_hotkeys:
             bucket = challengeperiod_client.get_miner_bucket(hotkey)
             if bucket is None:
-                bt.logging.warning(
+                logger.warning(
                     f"get_miner_bucket returned None for hotkey {hotkey[:16]}...{hotkey[-8:]}. "
                     f"Using {MinerBucket.UNKNOWN.value} as default status."
                 )
@@ -1573,7 +1574,7 @@ class DebtBasedScoring:
             miner_weights_with_minimums[hotkey] = final_weight
 
             if verbose:
-                bt.logging.debug(
+                logger.debug(
                     f"{hotkey[:16]}...{hotkey[-8:]}: "
                     f"status={current_status}, "
                     f"debt_weight={debt_weight:.8f}, "
@@ -1605,7 +1606,7 @@ class DebtBasedScoring:
         if burn_uid < len(hotkeys):
             return hotkeys[burn_uid]
         else:
-            bt.logging.warning(
+            logger.warning(
                 f"Burn UID {burn_uid} not found in metagraph "
                 f"(only {len(hotkeys)} UIDs). Using placeholder."
             )
@@ -1637,13 +1638,13 @@ class DebtBasedScoring:
             List of (hotkey, weight) tuples sorted by weight (descending)
         """
         if not weights:
-            bt.logging.info("No weights to normalize, returning empty list")
+            logger.info("No weights to normalize, returning empty list")
             return []
 
         sum_weights = sum(weights.values())
 
         if verbose:
-            bt.logging.info(f"Sum of weights before normalization: {sum_weights:.6f}")
+            logger.info(f"Sum of weights before normalization: {sum_weights:.6f}")
 
         burn_uid = DebtBasedScoring.get_burn_uid(is_testnet)
 
@@ -1654,7 +1655,7 @@ class DebtBasedScoring:
             # Get burn address hotkey
             burn_hotkey = DebtBasedScoring._get_burn_address_hotkey(metagraph_client, is_testnet)
 
-            bt.logging.info(
+            logger.info(
                 f"Sum of weights ({sum_weights:.6f}) < 1.0. "
                 f"Assigning {burn_weight:.6f} to burn address (uid {burn_uid})"
             )
@@ -1665,7 +1666,7 @@ class DebtBasedScoring:
 
         else:
             # Sum >= 1.0: normalize to exactly 1.0
-            bt.logging.info(
+            logger.info(
                 f"Sum of weights ({sum_weights:.6f}) >= 1.0. "
                 f"Normalizing to 1.0, burn address gets 0."
             )
@@ -1728,7 +1729,7 @@ class DebtBasedScoring:
         )
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"Pre-activation weights: {len(ledger_dict)} miners with dust weights, "
                 f"excess to burn address"
             )

@@ -9,6 +9,7 @@ import os
 
 from miner_config import MinerConfig
 from template.protocol import GetPositions
+from shared_objects.log import logger
 
 
 class PositionInspector:
@@ -34,7 +35,7 @@ class PositionInspector:
                 await self.log_validator_positions()
             except Exception as e:
                 # Handle exceptions or log errors
-                bt.logging.error(f"Error during position inspector update: {e}. Please alert a team member ASAP!")
+                logger.error(f"Error during position inspector update: {e}. Please alert a team member ASAP!")
             await asyncio.sleep(1)  # Don't busy loop
     
     def run_update_loop_sync(self):
@@ -67,7 +68,7 @@ class PositionInspector:
         for validator, response in zip(remaining_validators_to_query, responses):
             v_trust = hotkey_to_v_trust.get(validator.hotkey, 0)
             if response.error_message and v_trust >= MinerConfig.HIGH_V_TRUST_THRESHOLD:
-                bt.logging.warning(f"Error getting positions from {validator}. v_trust {v_trust} Error message: {response.error_message}")
+                logger.warning(f"Error getting positions from {validator}. v_trust {v_trust} Error message: {response.error_message}")
             if response.successfully_processed:
                 ret.append((validator, response.positions))
 
@@ -87,7 +88,7 @@ class PositionInspector:
                 hotkey_total_portfolio_leverage += abs(position['net_leverage'])
 
             if hotkey_total_portfolio_leverage >= 10:
-                bt.logging.warning(
+                logger.warning(
                     f"Validator {hotkey} has a total portfolio leverage of {hotkey_total_portfolio_leverage}. "
                     f"High leverage on crypto trade pairs comes with high fees which greatly increase your draw down.")
 
@@ -100,17 +101,17 @@ class PositionInspector:
         unique_counts = set(orders_count.values())
 
         if len(unique_counts) > 1:
-            bt.logging.warning("Spilling hotkey to positions:")
+            logger.warning("Spilling hotkey to positions:")
             for hotkey, count in orders_count.items():
                 axon_info = hotkey_to_validator[hotkey]
-                bt.logging.warning(f"Validator {hotkey} has {count} orders with v_trust {hotkey_to_v_trust[hotkey]}, axon: {axon_info}. "
+                logger.warning(f"Validator {hotkey} has {count} orders with v_trust {hotkey_to_v_trust[hotkey]}, axon: {axon_info}. "
                                    f"Validators may be mis-synced.")
                 for i, position in enumerate(hotkey_to_positions[hotkey]):
-                    bt.logging.warning(f"Position {i}: {position}")
+                    logger.warning(f"Position {i}: {position}")
 
 
         # Return the position in hotkey_to_positions that has the most orders
-        bt.logging.info(f"Validator with the most orders: {corresponding_hotkey}, n_orders: {max_order_count}, v_trust:"
+        logger.info(f"Validator with the most orders: {corresponding_hotkey}, n_orders: {max_order_count}, v_trust:"
                         f" {hotkey_to_v_trust.get(corresponding_hotkey, 0)}. Corresponding positions: {corresponding_positions}")
         return corresponding_positions
 
@@ -129,7 +130,7 @@ class PositionInspector:
 
             attempts += 1
 
-        bt.logging.info(f"Got positions from {len(hotkey_to_positions)} possible validators")
+        logger.info(f"Got positions from {len(hotkey_to_positions)} possible validators")
         # We consider a validator acked if it successfully responded to the signal.
         # Note, a validator that has this miner blacklisted will not be added.
         self.recently_acked_validators = hotkey_to_positions.keys()
@@ -154,16 +155,16 @@ class PositionInspector:
             return
 
         validators_to_query = self.get_possible_validators()
-        bt.logging.info(f"Querying {len(validators_to_query)} possible validators for positions")
+        logger.info(f"Querying {len(validators_to_query)} possible validators for positions")
         result = await self.get_positions_with_retry(validators_to_query)
 
         if result:
             self.write_positions_to_disk(result)
         else:
-            bt.logging.info("No positions found.")
+            logger.info("No positions found.")
 
         self.last_update_time = time.time()
-        bt.logging.success("PositionInspector successfully completed signal processing.")
+        logger.info("PositionInspector successfully completed signal processing.")
 
     def write_positions_to_disk(self, positions):
         """
@@ -179,7 +180,7 @@ class PositionInspector:
             with open(temp_path, 'w') as f:
                 json.dump(positions if positions else [], f, indent=2)
             shutil.move(temp_path, file_path)
-            bt.logging.info(f"Successfully saved {len(positions) if positions else 0} positions to {file_path}")
+            logger.info(f"Successfully saved {len(positions) if positions else 0} positions to {file_path}")
         except Exception as e:
-            bt.logging.error(f"Failed to save positions to disk: {e}")
+            logger.error(f"Failed to save positions to disk: {e}")
 

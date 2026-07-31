@@ -21,6 +21,7 @@ import bittensor as bt
 import argparse
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from time_util.time_util import TimeUtil
+from shared_objects.log import logger
 
 # Default to mainnet subnet 8
 DEFAULT_NETUID = 8
@@ -31,7 +32,6 @@ def main():
         description='Generate default_departed_hotkeys.json file from historical database',
         add_help=True
     )
-    bt.logging.add_args(parser)
     parser.add_argument(
         '--netuid',
         type=int,

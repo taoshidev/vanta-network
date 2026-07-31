@@ -50,6 +50,8 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
 from vanta_api.base_rest_server import BaseRestServer
 from vanta_api.nonce_manager import NonceManager
+import logging
+from shared_objects.log import logger
 
 
 class ValidatorRestServer(BaseRestServer, RPCServerBase):
@@ -192,12 +194,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         Shuts down both Flask server (BaseRestServer) and RPC server (RPCServerBase).
         """
-        bt.logging.info(f"{self.service_name} shutting down...")
+        logger.info(f"{self.service_name} shutting down...")
         # Stop Flask server (from BaseRestServer)
         BaseRestServer.shutdown(self)
         # Stop RPC server and daemon (from RPCServerBase)
         RPCServerBase.shutdown(self)
-        bt.logging.info(f"{self.service_name} shutdown complete")
+        logger.info(f"{self.service_name} shutdown complete")
 
     # ============================================================================
     # POSITION MANAGER ACCESS (forward compatibility - creates own client)
@@ -475,7 +477,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return self._jsonify_with_custom_encoder(data)
 
         except Exception as e:
-            bt.logging.error(f"Error retrieving perf ledger for {minerid}: {e}")
+            logger.error(f"Error retrieving perf ledger for {minerid}: {e}")
             return jsonify({'error': 'Internal server error retrieving perf ledger data'}), 500
 
     def get_debt_ledger(self):
@@ -503,7 +505,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             })
 
         except Exception as e:
-            bt.logging.error(f"Error retrieving debt ledger summaries via RPC: {e}")
+            logger.error(f"Error retrieving debt ledger summaries via RPC: {e}")
             return jsonify({'error': 'Internal server error retrieving debt ledger data'}), 500
 
     def get_penalty_ledger(self, minerid):
@@ -655,7 +657,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if not orders_data:
                     return jsonify({'error': f'No limit orders found for miner {minerid}'}), 404
             except Exception as e:
-                bt.logging.error(f"Error retrieving limit orders for {minerid}: {e}")
+                logger.error(f"Error retrieving limit orders for {minerid}: {e}")
                 return jsonify({'error': 'Error retrieving limit orders'}), 500
 
         return jsonify(orders_data)
@@ -719,7 +721,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify(result)
 
         except Exception as e:
-            bt.logging.error(f"Error retrieving orders for {minerid}: {e}")
+            logger.error(f"Error retrieving orders for {minerid}: {e}")
             return jsonify({'error': 'Error retrieving orders'}), 500
 
     def get_allowed_trade_pairs(self):
@@ -787,7 +789,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'timestamp': TimeUtil.now_in_millis(),
             })
         except Exception as e:
-            bt.logging.error(f"Error retrieving allowed trade pairs: {e}")
+            logger.error(f"Error retrieving allowed trade pairs: {e}")
             return jsonify({'error': 'Internal server error retrieving allowed trade pairs'}), 500
 
     # ============================================================================
@@ -845,7 +847,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify(result)
 
         except Exception as e:
-            bt.logging.error(f"Error processing collateral deposit: {e}")
+            logger.error(f"Error processing collateral deposit: {e}")
             return jsonify({'error': 'Internal server error processing deposit'}), 500
 
     def query_withdraw_collateral(self):
@@ -905,7 +907,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify(result)
 
         except Exception as e:
-            bt.logging.error(f"Error processing collateral withdrawal query: {e}")
+            logger.error(f"Error processing collateral withdrawal query: {e}")
             return jsonify({'error': 'Internal server error processing withdrawal query'}), 500
 
     def withdraw_collateral(self):
@@ -986,7 +988,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify(result)
 
         except Exception as e:
-            bt.logging.error(f"Error processing collateral withdrawal: {e}")
+            logger.error(f"Error processing collateral withdrawal: {e}")
             return jsonify({'error': 'Internal server error processing withdrawal'}), 500
 
     def get_all_collateral_data(self):
@@ -1056,7 +1058,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             })
 
         except Exception as e:
-            bt.logging.error(f"Error getting all collateral data: {e}")
+            logger.error(f"Error getting all collateral data: {e}")
             return jsonify({'error': 'Internal server error retrieving data'}), 500
 
     def get_collateral_balance(self, miner_address):
@@ -1078,7 +1080,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             })
 
         except Exception as e:
-            bt.logging.error(f"Error getting collateral balance for {miner_address}: {e}")
+            logger.error(f"Error getting collateral balance for {miner_address}: {e}")
             return jsonify({'error': 'Internal server error retrieving balance'}), 500
 
     def asset_selection(self):
@@ -1141,7 +1143,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify(result)
 
         except Exception as e:
-            bt.logging.error(f"Error processing asset selection: {e}")
+            logger.error(f"Error processing asset selection: {e}")
             return jsonify({'error': 'Internal server error processing asset selection'}), 500
 
     def update_asset_selection(self):
@@ -1225,7 +1227,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     )
 
             total_updated = sum(1 for r in results.values() if r.get('successfully_processed'))
-            bt.logging.info(
+            logger.info(
                 f"[REST] Asset selection update to '{asset_selection}' for {len(hotkeys)} hotkey(s); "
                 f"{total_updated} succeeded"
             )
@@ -1240,7 +1242,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             })
 
         except Exception as e:
-            bt.logging.error(f"Error processing asset selection update: {e}")
+            logger.error(f"Error processing asset selection update: {e}")
             return jsonify({'error': 'Internal server error processing asset selection update'}), 500
 
     def get_miner_selections(self):
@@ -1267,7 +1269,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             })
 
         except Exception as e:
-            bt.logging.error(f"Error retrieving miner selections: {e}")
+            logger.error(f"Error retrieving miner selections: {e}")
             return jsonify({'error': 'Internal server error retrieving miner selections'}), 500
 
     def process_development_order(self):
@@ -1326,13 +1328,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             # Log raw request data for debugging JSON parse errors
             raw_data = request.get_data(as_text=True)
-            bt.logging.debug(f"[DEV_ORDER] Raw request body (first 300 chars): {raw_data[:300]}")
-            bt.logging.debug(f"[DEV_ORDER] Request body length: {len(raw_data)} chars")
+            logger.debug(f"[DEV_ORDER] Raw request body (first 300 chars): {raw_data[:300]}")
+            logger.debug(f"[DEV_ORDER] Request body length: {len(raw_data)} chars")
 
             try:
                 data = request.get_json()
             except json.JSONDecodeError as e:
-                bt.logging.error(
+                logger.error(
                     f"[DEV_ORDER] JSON parse error at position {e.pos}: {e.msg}\n"
                     f"  Raw body: {raw_data}\n"
                     f"  Error context (char {max(0, e.pos-20)} to {min(len(raw_data), e.pos+20)}): "
@@ -1389,12 +1391,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             })
 
         except SignalException as e:
-            bt.logging.error(f"SignalException in development order: {e}")
+            logger.error(f"SignalException in development order: {e}")
             return jsonify({'error': f'Signal error: {str(e)}'}), 400
 
         except Exception as e:
-            bt.logging.error(f"Error processing development order: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error processing development order: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     # ============================================================================
@@ -1469,8 +1471,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             })
 
         except Exception as e:
-            bt.logging.error(f"Error rebuilding miner account for {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error rebuilding miner account for {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def wipe_hotkey(self, hotkey: str):
@@ -1509,8 +1511,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             )
             return jsonify({'status': 'success', **result})
         except Exception as e:
-            bt.logging.error(f"Error wiping hotkey {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error wiping hotkey {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def reset_hotkey(self, hotkey: str):
@@ -1541,8 +1543,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             return jsonify({'status': 'success', **result})
         except Exception as e:
-            bt.logging.error(f"Error resetting hotkey {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error resetting hotkey {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def update_drawdown_criteria(self):
@@ -1641,8 +1643,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }), 200
 
         except Exception as e:
-            bt.logging.error(f"Error force depositing for {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error force depositing for {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def refresh_account_size(self, hotkey: str):
@@ -1678,8 +1680,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }), 200
 
         except Exception as e:
-            bt.logging.error(f"Error refreshing account size for {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error refreshing account size for {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def delete_position(self, hotkey: str, position_uuid: str):
@@ -1707,8 +1709,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 result = self._position_client.wipe_hotkey(hotkey, position_uuids_to_delete=[position_uuid])
             return jsonify({'status': 'success', 'archived': archive, **result})
         except Exception as e:
-            bt.logging.error(f"Error deleting position {position_uuid} for hotkey {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error deleting position {position_uuid} for hotkey {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def patch_position(self, hotkey: str, position_uuid: str):
@@ -1840,8 +1842,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'fees_patched': len(fee_edits),
             })
         except Exception as e:
-            bt.logging.error(f"Error patching position {position_uuid} for hotkey {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error patching position {position_uuid} for hotkey {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     # ============================================================================
@@ -1925,7 +1927,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': message}), 400
 
         except Exception as e:
-            bt.logging.error(f"Error registering entity: {e}")
+            logger.error(f"Error registering entity: {e}")
             return jsonify({'error': 'Internal server error registering entity'}), 500
 
     def request_entity_api_key(self):
@@ -2008,8 +2010,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'api_key': new_api_key}), 200
 
         except Exception as e:
-            bt.logging.error(f"Error requesting entity API key: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error requesting entity API key: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': 'Internal server error'}), 500
 
     def create_subaccount(self):
@@ -2164,7 +2166,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             if success:
                 total_ms = int((time.time() - t_start) * 1000)
-                bt.logging.info(f"[REST_API] create_subaccount completed ({total_ms} ms) | timings: {timings}")
+                logger.info(f"[REST_API] create_subaccount completed ({total_ms} ms) | timings: {timings}")
                 return jsonify({
                     'status': 'success',
                     'message': message,
@@ -2174,7 +2176,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': message}), 400
 
         except Exception as e:
-            bt.logging.error(f"Error creating subaccount: {e}")
+            logger.error(f"Error creating subaccount: {e}")
             return jsonify({'error': 'Internal server error creating subaccount'}), 500
 
     def get_entity(self, entity_hotkey):
@@ -2210,7 +2212,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': f'Entity {entity_hotkey} not found'}), 404
 
         except Exception as e:
-            bt.logging.error(f"Error retrieving entity {entity_hotkey}: {e}")
+            logger.error(f"Error retrieving entity {entity_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving entity'}), 500
 
     def get_all_entities(self):
@@ -2245,7 +2247,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }), 200
 
         except Exception as e:
-            bt.logging.error(f"Error retrieving all entities: {e}")
+            logger.error(f"Error retrieving all entities: {e}")
             return jsonify({'error': 'Internal server error retrieving entities'}), 500
 
     def eliminate_subaccount(self):
@@ -2312,7 +2314,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': message}), 400
 
         except Exception as e:
-            bt.logging.error(f"Error eliminating subaccount: {e}")
+            logger.error(f"Error eliminating subaccount: {e}")
             return jsonify({'error': 'Internal server error eliminating subaccount'}), 500
 
     def revert_elimination(self, hotkey: str):
@@ -2366,8 +2368,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }), 200
 
         except Exception as e:
-            bt.logging.error(f"Error reverting elimination for {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error reverting elimination for {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def eliminate_hotkey(self, hotkey: str):
@@ -2409,7 +2411,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     reason=reason_str,
                 )
                 if not success:
-                    bt.logging.warning(f"Entity client eliminate_subaccount failed for {hotkey}: {message}")
+                    logger.warning(f"Entity client eliminate_subaccount failed for {hotkey}: {message}")
 
             self._elimination_client.append_elimination_row(hotkey, reason)
 
@@ -2420,8 +2422,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }), 200
 
         except Exception as e:
-            bt.logging.error(f"Error eliminating hotkey {hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error eliminating hotkey {hotkey}: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def get_subaccount_dashboard(self, synthetic_hotkey):
@@ -2483,7 +2485,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), 404
 
         except Exception as e:
-            bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
+            logger.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
 
     def get_hl_trader(self, hl_address: str):
@@ -2503,7 +2505,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         try:
             synthetic_hotkey = self._entity_client.get_synthetic_hotkey_for_hl_address(hl_address)
         except Exception as e:
-            bt.logging.error(f"get_hl_trader: lookup failed for {hl_address}: {e}")
+            logger.error(f"get_hl_trader: lookup failed for {hl_address}: {e}")
             return jsonify({'status': 'error', 'message': 'Internal error'}), 500
 
         if not synthetic_hotkey:
@@ -2514,7 +2516,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if subaccount_info is None:
                 return jsonify({'status': 'error', 'message': 'Trader data not available'}), 404
         except Exception as e:
-            bt.logging.error(f"get_hl_trader: subaccount lookup failed for {synthetic_hotkey}: {e}")
+            logger.error(f"get_hl_trader: subaccount lookup failed for {synthetic_hotkey}: {e}")
             return jsonify({'status': 'error', 'message': 'Internal error'}), 500
 
         ## TODO: update below when merging websocket v2
@@ -2526,7 +2528,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if section_data is not None:
                     dashboard[section] = section_data
             except Exception as ex:
-                bt.logging.error(f"get_hl_trader: error retrieving {section} for {synthetic_hotkey}: {ex}")
+                logger.error(f"get_hl_trader: error retrieving {section} for {synthetic_hotkey}: {ex}")
 
         query_args = request.args
         positions_time_ms = int(query_args.get("positions_time_ms", 0))
@@ -2555,7 +2557,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if subaccount_dashboard is None:
                 return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), HTTPStatus.NOT_FOUND
         except Exception as e:
-            bt.logging.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
+            logger.error(f"Error retrieving dashboard for {synthetic_hotkey}: {e}")
             return jsonify({'error': 'Internal server error retrieving dashboard'}), HTTPStatus.INTERNAL_SERVER_ERROR
 
         query_args = request.args
@@ -2631,7 +2633,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         try:
             limits_data = self._entity_client.get_hl_subaccount_limits_data(hl_address)
         except Exception as e:
-            bt.logging.error(f"get_hl_trader_limits: lookup failed for {hl_address}: {e}")
+            logger.error(f"get_hl_trader_limits: lookup failed for {hl_address}: {e}")
             return jsonify({'status': 'error', 'message': 'Internal error'}), 500
 
         if limits_data is None:
@@ -2692,7 +2694,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         try:
             leaderboard = self._entity_client.get_hl_leaderboard_data(entity_hotkey=entity_hotkey)
         except Exception as e:
-            bt.logging.error(f"get_hl_leaderboard: failed: {e}")
+            logger.error(f"get_hl_leaderboard: failed: {e}")
             return jsonify({'status': 'error', 'message': 'Internal error'}), 500
 
         response_body = json.dumps(leaderboard, cls=CustomEncoder)
@@ -2801,8 +2803,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         except Exception as e:
             error_msg = str(e)
-            bt.logging.error(f"Error calculating subaccount payout: {error_msg}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error calculating subaccount payout: {error_msg}")
+            logger.error(traceback.format_exc())
 
             return jsonify({
                 'error': 'Internal server error calculating payout',
@@ -2880,7 +2882,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': message}), 400
 
         except Exception as e:
-            bt.logging.error(f"Error setting entity endpoint: {e}")
+            logger.error(f"Error setting entity endpoint: {e}")
             return jsonify({'error': 'Internal server error setting entity endpoint'}), 500
 
     def get_entity_endpoint(self):
@@ -2922,7 +2924,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 }), 404
 
         except Exception as e:
-            bt.logging.error(f"Error looking up entity endpoint: {e}")
+            logger.error(f"Error looking up entity endpoint: {e}")
             return jsonify({'error': 'Internal server error looking up entity endpoint'}), 500
 
     def _verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:
@@ -2939,7 +2941,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         try:
             return self.contract_manager.verify_coldkey_owns_hotkey(coldkey_ss58, hotkey_ss58)
         except Exception as e:
-            bt.logging.error(f"Error verifying coldkey-hotkey ownership: {e}")
+            logger.error(f"Error verifying coldkey-hotkey ownership: {e}")
             return False
 
 
@@ -2951,7 +2953,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         api_key = self._get_api_key_safe()
         if api_key is None:
             # Log when no API key is found
-            bt.logging.debug(f"No API key found in request to {request.path}")
+            logger.debug(f"No API key found in request to {request.path}")
         return api_key
 
     def _get_file(self, f, attempts=3, binary=False):
@@ -2975,15 +2977,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return data
             except json.JSONDecodeError as e:
                 if attempt_number == attempts - 1:
-                    bt.logging.error(f"Failed to decode JSON after {attempts} attempts: {file_path}")
+                    logger.error(f"Failed to decode JSON after {attempts} attempts: {file_path}")
                     raise
                 else:
-                    bt.logging.debug(
+                    logger.debug(
                         f"Attempt {attempt_number + 1} failed with JSONDecodeError {e}, retrying..."
                     )
                 time.sleep(1)  # Wait before retrying
             except Exception as e:
-                bt.logging.error(f"Unexpected error reading file {file_path}: {type(e).__name__}: {str(e)}")
+                logger.error(f"Unexpected error reading file {file_path}: {type(e).__name__}: {str(e)}")
                 raise
 
     @staticmethod
@@ -3019,7 +3021,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 if __name__ == "__main__":
     import argparse
 
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
 
     # Set up command line argument parsing
     parser = argparse.ArgumentParser(description="Run the REST API server with API key authentication")

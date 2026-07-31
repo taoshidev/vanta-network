@@ -24,6 +24,8 @@ from vali_objects.position_management.position_utils.position_source import Posi
 from vali_objects.price_fetcher import LivePriceFetcherServer
 from vali_objects.utils.vali_utils import ValiUtils
 from time_util.time_util import TimeUtil
+import logging
+from shared_objects.log import logger
 
 
 class PositionFixer:
@@ -35,7 +37,7 @@ class PositionFixer:
         """
         
         # Initialize price fetcher
-        bt.logging.info("🔧 Initializing price fetcher...")
+        logger.info("🔧 Initializing price fetcher...")
         secrets = ValiUtils.get_secrets()
         self.live_price_fetcher = LivePriceFetcherServer(secrets, disable_ws=True)
         
@@ -59,7 +61,7 @@ class PositionFixer:
         Returns:
             Dictionary mapping hotkey -> list of positions with src=1 orders
         """
-        bt.logging.info("🔍 Loading all positions...")
+        logger.info("🔍 Loading all positions...")
         
         # Load all positions
         all_positions = self.position_source_manager.load_positions(
@@ -68,7 +70,7 @@ class PositionFixer:
             hotkeys=hotkeys
         )
         
-        bt.logging.info(f"✅ Loaded positions for {len(all_positions)} miners")
+        logger.info(f"✅ Loaded positions for {len(all_positions)} miners")
         
         # Find positions with src=1 orders
         src1_positions = defaultdict(list)
@@ -87,17 +89,17 @@ class PositionFixer:
                     src1_positions[hotkey].append(position)
                     self.positions_found += 1
                     
-                    bt.logging.debug(f"Found position {position.position_uuid} for {hotkey[:12]}... with src=1 order")
+                    logger.debug(f"Found position {position.position_uuid} for {hotkey[:12]}... with src=1 order")
                     
                 # Apply limit if specified
                 if limit and self.positions_found >= limit:
-                    bt.logging.info(f"🚫 Reached limit of {limit} positions, stopping search")
+                    logger.info(f"🚫 Reached limit of {limit} positions, stopping search")
                     break
                     
             if limit and self.positions_found >= limit:
                 break
         
-        bt.logging.info(f"📊 Found {self.positions_found} positions with src=1 orders out of {total_positions_checked} total positions")
+        logger.info(f"📊 Found {self.positions_found} positions with src=1 orders out of {total_positions_checked} total positions")
         return dict(src1_positions)
     
     def fix_position(self, position: Position) -> Tuple[bool, Optional[Dict], Optional[str]]:
@@ -119,7 +121,7 @@ class PositionFixer:
         assert len(src1_orders) == 1, "Expected exactly one src=1 order per position"
         assert position.orders[-1].src == 1, "Last order must be src=1"
 
-        #bt.logging.info(f"🔧 Fixing position {position.position_uuid} with {len(src1_orders)} src=1 orders")
+        #logger.info(f"🔧 Fixing position {position.position_uuid} with {len(src1_orders)} src=1 orders")
 
         # Create a copy of the position to work with
         position_copy = Position(
@@ -139,7 +141,7 @@ class PositionFixer:
         for i, order in enumerate(position_copy.orders):
             if order.src == 1:
                 # Fetch proper price for this order
-                bt.logging.debug(f"  📈 Fetching price for order at {TimeUtil.millis_to_formatted_date_str(order.processed_ms)}")
+                logger.debug(f"  📈 Fetching price for order at {TimeUtil.millis_to_formatted_date_str(order.processed_ms)}")
 
                 price_source = self.live_price_fetcher.get_close_at_date(
                     trade_pair=position.trade_pair,
@@ -163,7 +165,7 @@ class PositionFixer:
                 order.price = new_price
                 order.src = 3  # Change from 1 to 3
 
-                bt.logging.debug(f"  ✅ Updated order price to {new_price}, src changed to 3")
+                logger.debug(f"  ✅ Updated order price to {new_price}, src changed to 3")
 
                 fixed_orders.append({
                     'order_uuid': order.order_uuid,
@@ -206,8 +208,8 @@ class PositionFixer:
             'fixed_orders': fixed_orders
         }
 
-        bt.logging.debug(f"  📊 Return at close: {old_return_at_close} -> {new_return_at_close}")
-        bt.logging.debug(f"  📊 Current return: {old_curr_return} -> {new_curr_return}")
+        logger.debug(f"  📊 Return at close: {old_return_at_close} -> {new_return_at_close}")
+        logger.debug(f"  📊 Current return: {old_curr_return} -> {new_curr_return}")
 
         return True, update_data, None
 
@@ -312,13 +314,13 @@ WHERE order_uuid = '{order_data['order_uuid']}';
             src1_positions: Dictionary mapping hotkey -> list of positions to fix
             show_details: If True, show detailed comparison of old vs new values
         """
-        bt.logging.info(f"🔧 Processing {self.positions_found} positions with src=1 orders...")
+        logger.info(f"🔧 Processing {self.positions_found} positions with src=1 orders...")
         
         all_sql_statements = []
         all_comparisons = []  # Store comparisons for detailed output
         
         for hotkey, positions in src1_positions.items():
-            bt.logging.info(f"📋 Processing {len(positions)} positions for {hotkey[:12]}...")
+            logger.info(f"📋 Processing {len(positions)} positions for {hotkey[:12]}...")
             
             for position in positions:
                 success, update_data, error = self.fix_position(position)
@@ -329,7 +331,7 @@ WHERE order_uuid = '{order_data['order_uuid']}';
                     # Store update data for bulk SQL generation
                     self.update_data_list.append(update_data)
                     
-                    bt.logging.info(f"  ✅ Fixed position {position.position_uuid}")
+                    logger.info(f"  ✅ Fixed position {position.position_uuid}")
                     
                     # Store comparison data
                     if show_details:
@@ -342,13 +344,13 @@ WHERE order_uuid = '{order_data['order_uuid']}';
                     
                 else:
                     self.positions_failed += 1
-                    bt.logging.warning(f"  ❌ Failed to fix position {position.position_uuid}: {error}")
+                    logger.warning(f"  ❌ Failed to fix position {position.position_uuid}: {error}")
         
         # Show detailed comparisons if requested
         if show_details and all_comparisons:
             self._print_detailed_comparisons(all_comparisons)
         
-        bt.logging.info(f"📊 Processing complete: {self.positions_fixed} fixed, {self.positions_failed} failed")
+        logger.info(f"📊 Processing complete: {self.positions_fixed} fixed, {self.positions_failed} failed")
     
     def _generate_bulk_sql_commands(self) -> str:
         """
@@ -446,13 +448,13 @@ WHERE order_uuid = '{order_data['order_uuid']}';
             output_file: Optional file path to write SQL statements
         """
         if not self.positions_fixed:
-            bt.logging.warning("No positions were fixed - no SQL to output")
+            logger.warning("No positions were fixed - no SQL to output")
             return
         
         # Generate bulk SQL commands
         bulk_sql = self._generate_bulk_sql_commands()
         
-        bt.logging.info(f"📝 Generated bulk SQL commands for {self.positions_fixed} positions")
+        logger.info(f"📝 Generated bulk SQL commands for {self.positions_fixed} positions")
         
         if output_file:
             try:
@@ -464,9 +466,9 @@ WHERE order_uuid = '{order_data['order_uuid']}';
                     
                     f.write(bulk_sql)
                 
-                bt.logging.info(f"✅ Bulk SQL commands written to {output_file}")
+                logger.info(f"✅ Bulk SQL commands written to {output_file}")
             except Exception as e:
-                bt.logging.error(f"Failed to write SQL commands to file: {e}")
+                logger.error(f"Failed to write SQL commands to file: {e}")
         else:
             # Output to console
             print("\n" + "="*100)
@@ -502,13 +504,13 @@ def main():
     args = parser.parse_args()
     
     # Configure logging
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
     
     # Parse hotkeys if provided
     hotkeys = None
     if args.hotkeys:
         hotkeys = [hk.strip() for hk in args.hotkeys.split(',') if hk.strip()]
-        bt.logging.info(f"🎯 Filtering for {len(hotkeys)} specific hotkeys")
+        logger.info(f"🎯 Filtering for {len(hotkeys)} specific hotkeys")
     
     # Initialize position fixer
     fixer = PositionFixer()
@@ -517,7 +519,7 @@ def main():
     src1_positions = fixer.find_src1_positions(hotkeys=hotkeys, limit=args.limit)
 
     if not src1_positions:
-        bt.logging.info("🎉 No positions with src=1 orders found!")
+        logger.info("🎉 No positions with src=1 orders found!")
         return
 
     # Process all positions (show details when limit is used)
@@ -528,11 +530,11 @@ def main():
     fixer.output_sql_statements(args.output_file)
 
     # Summary
-    bt.logging.info(f"🎯 SUMMARY:")
-    bt.logging.info(f"  📊 Positions found: {fixer.positions_found}")
-    bt.logging.info(f"  ✅ Positions fixed: {fixer.positions_fixed}")
-    bt.logging.info(f"  ❌ Positions failed: {fixer.positions_failed}")
-    bt.logging.info(f"  📝 SQL statements generated: {len(fixer.sql_statements)}")
+    logger.info(f"🎯 SUMMARY:")
+    logger.info(f"  📊 Positions found: {fixer.positions_found}")
+    logger.info(f"  ✅ Positions fixed: {fixer.positions_fixed}")
+    logger.info(f"  ❌ Positions failed: {fixer.positions_failed}")
+    logger.info(f"  📝 SQL statements generated: {len(fixer.sql_statements)}")
 
 
 

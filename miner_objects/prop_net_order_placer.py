@@ -19,6 +19,7 @@ from template.protocol import SendSignal
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.order_signal import Signal
+from shared_objects.log import logger
 
 REPO_VERSION = 'unknown'
 with open(ValiBkpUtils.get_meta_json_path(), 'r') as f:
@@ -140,7 +141,7 @@ class PropNetOrderPlacer:
         DEPRECATED: File-based signal processing. Use REST server (process_a_signal_for_rest) instead.
         """
         if self._shutdown:
-            bt.logging.warning("PropNetOrderPlacer is shutting down, not accepting new signals")
+            logger.warning("PropNetOrderPlacer is shutting down, not accepting new signals")
             return
 
         # Submit tasks to thread pool
@@ -200,9 +201,9 @@ class PropNetOrderPlacer:
             return result
 
         except Exception as e:
-            bt.logging.error(f"Error processing signal {signal_file_path}: {e}")
+            logger.error(f"Error processing signal {signal_file_path}: {e}")
             import traceback
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
 
             # Send error notification to Slack
             if self.slack_notifier:
@@ -240,11 +241,11 @@ class PropNetOrderPlacer:
                 try:
                     result = future.result()
                     if result:
-                        bt.logging.debug(f"Successfully processed signal: {result}")
+                        logger.debug(f"Successfully processed signal: {result}")
                 except Exception as e:
-                    bt.logging.error(f"Future resulted in exception: {e}")
+                    logger.error(f"Future resulted in exception: {e}")
         except TimeoutError:
-            bt.logging.error(f"Some signal processing tasks timed out after {self.THREAD_POOL_TIMEOUT} seconds")
+            logger.error(f"Some signal processing tasks timed out after {self.THREAD_POOL_TIMEOUT} seconds")
             # Cancel timed-out futures
             for future in futures:
                 if not future.done():
@@ -270,9 +271,9 @@ class PropNetOrderPlacer:
             elif hotkey_to_v_trust.get(axon.hotkey, 0) >= MinerConfig.HIGH_V_TRUST_THRESHOLD:
                 other_axons.append(axon)
 
-        # bt.logging.info(f"Validator hotkey -> v_trust: {hotkey_to_v_trust}")
-        # bt.logging.info(f"Mothership validator: {mothership_axon.hotkey if mothership_axon else 'None'}")
-        # bt.logging.info(f"Other validators ({len(other_axons)}): {[a.hotkey for a in other_axons]}")
+        # logger.info(f"Validator hotkey -> v_trust: {hotkey_to_v_trust}")
+        # logger.info(f"Mothership validator: {mothership_axon.hotkey if mothership_axon else 'None'}")
+        # logger.info(f"Other validators ({len(other_axons)}): {[a.hotkey for a in other_axons]}")
         return mothership_axon, other_axons
 
     async def _send_order(self, synapse, mothership_axon, other_axons) -> dict:
@@ -310,12 +311,12 @@ class PropNetOrderPlacer:
                         return {"success": False, "order_json": "", "error_message": response.error_message}
 
                     # should_retry=True but failed -- transient issue, retry with delay
-                    bt.logging.warning(f"Mothership retryable error (attempt {attempt + 1}): {response.error_message}")
+                    logger.warning(f"Mothership retryable error (attempt {attempt + 1}): {response.error_message}")
                     if attempt < self.MAX_NETWORK_RETRIES - 1:
                         await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
 
                 except Exception as e:
-                    bt.logging.warning(f"Network error to mothership (attempt {attempt + 1}/{self.MAX_NETWORK_RETRIES}): {e}")
+                    logger.warning(f"Network error to mothership (attempt {attempt + 1}/{self.MAX_NETWORK_RETRIES}): {e}")
                     if attempt < self.MAX_NETWORK_RETRIES - 1:
                         await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
 
@@ -336,7 +337,7 @@ class PropNetOrderPlacer:
 
         if not mothership_axon and not self.running_unit_tests:
             error_msg = CONNECTION_ERROR_MSG
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             if self.config.write_failed_signal_logs:
                 self.write_signal_to_failure_directory(signal_data, signal_file_path, error_msg)
             return {"success": False, "order_json": "", "error_message": error_msg}
@@ -348,7 +349,7 @@ class PropNetOrderPlacer:
             execution_type = signal_data.get("execution_type", "MARKET")
             is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT", "FLAT_ALL")
             if miner_order_uuid in self.used_miner_uuids and not is_uuid_reuse_allowed:
-                bt.logging.warning(f"Duplicate miner order uuid {miner_order_uuid}, skipping")
+                logger.warning(f"Duplicate miner order uuid {miner_order_uuid}, skipping")
                 return None
             self.used_miner_uuids.add(miner_order_uuid)
 
@@ -370,7 +371,7 @@ class PropNetOrderPlacer:
         if result["success"]:
             self.write_signal_to_processed_directory(signal_data, signal_file_path, result["order_json"])
         elif self.config.write_failed_signal_logs:
-            bt.logging.error(f"Signal file {signal_file_path} failed: {result['error_message']}")
+            logger.error(f"Signal file {signal_file_path} failed: {result['error_message']}")
             self.write_signal_to_failure_directory(signal_data, signal_file_path, result["error_message"])
         else:
             self.write_signal_to_processed_directory(signal_data, signal_file_path, result["order_json"])
@@ -432,7 +433,7 @@ class PropNetOrderPlacer:
                 execution_type = str(signal.execution_type)
                 is_uuid_reuse_allowed = execution_type in ("LIMIT_CANCEL", "LIMIT_EDIT", "FLAT_ALL")
                 if order_uuid in self.used_miner_uuids and not is_uuid_reuse_allowed:
-                    bt.logging.warning(f"Duplicate miner order uuid {order_uuid}, skipping")
+                    logger.warning(f"Duplicate miner order uuid {order_uuid}, skipping")
                     return {
                         "success": False,
                         "order_uuid": order_uuid,
@@ -483,7 +484,7 @@ class PropNetOrderPlacer:
             }
 
         except Exception as e:
-            bt.logging.error(f"Error processing REST order {order_uuid}: {e}")
+            logger.error(f"Error processing REST order {order_uuid}: {e}")
 
             # Archive to failed_signals/ for audit trail
             fake_signal_file_path = f"/rest-api/{order_uuid}"
@@ -517,7 +518,7 @@ class PropNetOrderPlacer:
         try:
             asyncio.run(_query_validators_async(axons, send_signal_request))
         except Exception as e:
-            bt.logging.debug(f"Background validator query error (non-critical): {e}")
+            logger.debug(f"Background validator query error (non-critical): {e}")
 
 
     def write_signal_to_processed_directory(self, signal_data, signal_file_path: str, order_json: str):
@@ -549,7 +550,7 @@ class PropNetOrderPlacer:
         new_file_path = os.path.join(MinerConfig.get_miner_failed_signals_dir(), os.path.basename(signal_file_path))
         ValiBkpUtils.write_file(new_file_path, json.dumps(new_data))
 
-        bt.logging.info(f"Signal file modified with failure info: {new_file_path}")
+        logger.info(f"Signal file modified with failure info: {new_file_path}")
 
     def write_signal_to_directory(self, directory: str, signal_file_path, signal_data, success):
         """Write signal to specified directory"""
@@ -560,6 +561,6 @@ class PropNetOrderPlacer:
 
         msg = f"Signal file moved to {new_path}"
         if success:
-            bt.logging.success(msg)
+            logger.info(msg)
         else:
-            bt.logging.error(msg)
+            logger.error(msg)

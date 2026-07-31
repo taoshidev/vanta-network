@@ -28,6 +28,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
+from shared_objects.log import logger
 
 
 class MinerAccountServer(RPCServerBase):
@@ -110,13 +111,13 @@ class MinerAccountServer(RPCServerBase):
     def run_daemon_iteration(self) -> str | None:
         if self._snapshot_first_iteration:
             self._snapshot_first_iteration = False
-            bt.logging.info("MinerAccount daily open snapshot skipped on first iteration")
+            logger.info("MinerAccount daily open snapshot skipped on first iteration")
             self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
-            bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
+            logger.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
             return None
         count = self._manager.take_daily_open_snapshots()
         self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_midnight()
-        bt.logging.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
+        logger.info(f"MinerAccount daemon next snapshot in {self.daemon_interval_s:.0f}s")
         return f"MinerAccount daemon iteration complete. Snapshots taken: {count}. Next snapshot in {self.daemon_interval_s:.0f}s."
 
     # ==================== Setup Methods ====================
@@ -199,7 +200,7 @@ class MinerAccountServer(RPCServerBase):
         """
         try:
             sender_hotkey = synapse.dendrite.hotkey
-            bt.logging.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
+            logger.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
 
             # Extract collateral record data from synapse
             collateral_record_data = synapse.collateral_record
@@ -210,16 +211,16 @@ class MinerAccountServer(RPCServerBase):
             if success:
                 synapse.successfully_processed = True
                 synapse.error_message = ""
-                bt.logging.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
+                logger.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
             else:
                 synapse.successfully_processed = False
                 synapse.error_message = "Failed to process collateral record update"
-                bt.logging.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
+                logger.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
 
         except Exception as e:
             synapse.successfully_processed = False
             synapse.error_message = f"Error processing collateral record: {str(e)}"
-            bt.logging.error(f"Exception in receive_collateral_record: {e}")
+            logger.error(f"Exception in receive_collateral_record: {e}")
 
         return synapse
 

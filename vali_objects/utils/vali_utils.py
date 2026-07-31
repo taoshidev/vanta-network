@@ -11,6 +11,7 @@ from vali_objects.exceptions.vali_bkp_file_missing_exception import (
     ValiFileMissingException,
 )
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+from shared_objects.log import logger
 
 class ValiUtils:
     @staticmethod
@@ -55,7 +56,7 @@ class ValiUtils:
 
         secret = ValiUtils.get_secrets(secrets_path=secrets_path).get(secret_name)
         if secret is not None:
-            bt.logging.info(f"{secret_name} retrieved from local secrets file")
+            logger.info(f"{secret_name} retrieved from local secrets file")
         return secret
 
     @staticmethod
@@ -80,13 +81,13 @@ class ValiUtils:
             secret = response.payload.data.decode()
 
             if secret:
-                bt.logging.info(f"{secret_name} retrieved from Google Cloud Secret Manager")
+                logger.info(f"{secret_name} retrieved from Google Cloud Secret Manager")
                 return secret
             else:
-                bt.logging.debug(f"{secret_name} not found in Google Cloud Secret Manager")
+                logger.debug(f"{secret_name} not found in Google Cloud Secret Manager")
                 return None
         except Exception as e:
-            bt.logging.debug(f"Failed to retrieve {secret_name} from Google Cloud: {e}")
+            logger.debug(f"Failed to retrieve {secret_name} from Google Cloud: {e}")
 
     @staticmethod
     def get_taoshi_ts_secrets():
@@ -139,7 +140,7 @@ class ValiUtils:
             >>> wallet = bt.wallet(config=config)
             >>> if ValiUtils.is_mothership_wallet(wallet):
             >>>     # This is the mothership validator
-            >>>     bt.logging.info("Running as mothership")
+            >>>     logger.info("Running as mothership")
         """
         from vali_objects.vali_config import ValiConfig
 

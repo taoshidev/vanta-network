@@ -27,6 +27,7 @@ from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
+from shared_objects.log import logger
 
 
 class MDDChecker(CacheController):
@@ -70,7 +71,7 @@ class MDDChecker(CacheController):
         self.reset_debug_counters()
         self.n_poly_api_requests = 0
 
-        bt.logging.info("MDDChecker initialized")
+        logger.info("MDDChecker initialized")
 
     # ==================== Properties ====================
 
@@ -126,8 +127,8 @@ class MDDChecker(CacheController):
             return trade_pair_to_price_sources
 
         except Exception as e:
-            bt.logging.error(f"Error in get_sorted_price_sources: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error in get_sorted_price_sources: {e}")
+            logger.error(traceback.format_exc())
             return {}
 
     def mdd_check(self, iteration_epoch: int = None):
@@ -157,7 +158,7 @@ class MDDChecker(CacheController):
         rpc_ms = (time.perf_counter() - rpc_start) * 1000
 
         total_positions = sum(len(positions) for positions in hotkey_to_positions.values())
-        bt.logging.info(
+        logger.info(
             f"[MDD_RPC_TIMING] get_positions_for_hotkeys RPC read={rpc_ms:.2f}ms, "
             f"total_positions={total_positions}"
         )
@@ -170,7 +171,7 @@ class MDDChecker(CacheController):
         now_ms = TimeUtil.now_in_millis()
         for tp, sources in tp_to_price_sources.items():
             sources_str = ", ".join(ps.debug_str(now_ms) for ps in sources)
-            bt.logging.info(f"[MDD_PRICE_SOURCES] {tp.trade_pair_id}: [{sources_str}]")
+            logger.info(f"[MDD_PRICE_SOURCES] {tp.trade_pair_id}: [{sources_str}]")
 
         today_date_str = TimeUtil.millis_to_short_date_str(now_ms)
         if self.last_corporate_actions_date != today_date_str:
@@ -179,18 +180,18 @@ class MDDChecker(CacheController):
                 today_actions = actions_by_date.get(today_date_str)
                 if today_actions:
                     if today_actions.splits:
-                        bt.logging.info(f"[STOCK SPLITS] Found splits: {today_actions.splits}")
+                        logger.info(f"[STOCK SPLITS] Found splits: {today_actions.splits}")
                         for symbol, ratio in today_actions.splits.items():
                             self._position_client.apply_stock_split(symbol, ratio, today_date_str)
                     if today_actions.dividends:
-                        bt.logging.info(f"[DIVIDENDS] ex-date events: {today_actions.dividends}")
+                        logger.info(f"[DIVIDENDS] ex-date events: {today_actions.dividends}")
                         for symbol, div in today_actions.dividends.items():
                             self._position_client.process_dividend_ex_date(
                                 symbol, div.gross_dividend, div.payment_date, today_date_str
                             )
                 self.last_corporate_actions_date = today_date_str
             except Exception as e:
-                bt.logging.error(f"[CORPORATE ACTIONS] Failed to fetch or apply: {e}")
+                logger.error(f"[CORPORATE ACTIONS] Failed to fetch or apply: {e}")
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
             corrected = self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
@@ -198,9 +199,9 @@ class MDDChecker(CacheController):
                 try:
                     current_positions = self._position_client.get_positions_for_one_hotkey(hotkey)
                     self._miner_account_client.rebuild_account_state_from_positions(hotkey, current_positions)
-                    bt.logging.info(f"Rebuilt account state for {hotkey}... after price correction")
+                    logger.info(f"Rebuilt account state for {hotkey}... after price correction")
                 except Exception as e:
-                    bt.logging.error(f"Failed to rebuild account state for {hotkey}...: {e}")
+                    logger.error(f"Failed to rebuild account state for {hotkey}...: {e}")
 
         # Update unrealized PNL on MinerAccount for all miners
         hotkey_to_unrealized_pnl = {}
@@ -213,15 +214,15 @@ class MDDChecker(CacheController):
         if self.position_refresh_count > 0:
             avg_lock_ms = self.lock_acquisition_sum_ms / self.position_refresh_count
             avg_refresh_ms = self.position_refresh_sum_ms / self.position_refresh_count
-            bt.logging.info(
+            logger.info(
                 f"[MDD_RPC_TIMING] price_sources_fetch={price_fetch_ms:.2f}ms, "
                 f"positions_refreshed={self.position_refresh_count}, "
                 f"avg_lock_wait={avg_lock_ms:.2f}ms, avg_refresh={avg_refresh_ms:.2f}ms"
             )
         else:
-            bt.logging.info(f"[MDD_RPC_TIMING] price_sources_fetch={price_fetch_ms:.2f}ms, positions_refreshed=0")
+            logger.info(f"[MDD_RPC_TIMING] price_sources_fetch={price_fetch_ms:.2f}ms, positions_refreshed=0")
 
-        bt.logging.info(
+        logger.info(
             f"mdd checker completed. n orders corrected: {self.n_orders_corrected}. "
             f"n miners corrected: {len(self.miners_corrected)}. n_poly_api_requests: {self.n_poly_api_requests}."
         )
@@ -250,7 +251,7 @@ class MDDChecker(CacheController):
             if k in existing_dict:
                 existing_ps = existing_dict[k]
                 if candidate_ps.time_delta_from_now_ms(order_time_ms) < existing_ps.time_delta_from_now_ms(order_time_ms):
-                    bt.logging.info(
+                    logger.info(
                         f"Found a better price source for {hotkey} {trade_pair_str}! "
                         f"Replacing {existing_ps.debug_str(order_time_ms)} with {candidate_ps.debug_str(order_time_ms)}"
                     )
@@ -259,7 +260,7 @@ class MDDChecker(CacheController):
                 else:
                     new_price_sources.append(existing_ps)
             else:
-                bt.logging.info(
+                logger.info(
                     f"Found a new price source for {hotkey} {trade_pair_str}! Adding {candidate_ps.debug_str(order_time_ms)}"
                 )
                 new_price_sources.append(candidate_ps)
@@ -273,7 +274,7 @@ class MDDChecker(CacheController):
         winning_event: PriceSource = new_price_sources[0] if new_price_sources else None
 
         if not winning_event:
-            bt.logging.error(f"Could not find a winning event for {hotkey} {trade_pair_str}!")
+            logger.error(f"Could not find a winning event for {hotkey} {trade_pair_str}!")
             return False
 
         # Try to find a bid/ask for it if it is missing (Polygon and Tiingo equities)
@@ -282,7 +283,7 @@ class MDDChecker(CacheController):
             if bid and ask:
                 winning_event.bid = bid
                 winning_event.ask = ask
-                bt.logging.info(f"Found a bid/ask for {hotkey} {trade_pair_str} ps {winning_event}")
+                logger.info(f"Found a bid/ask for {hotkey} {trade_pair_str} ps {winning_event}")
                 any_changes = True
 
         if any_changes:
@@ -322,7 +323,7 @@ class MDDChecker(CacheController):
             now_ms = TimeUtil.now_in_millis()
             order_age_ms = now_ms - order.processed_ms
 
-            bt.logging.info(
+            logger.info(
                 f"[MDD_PRICE_TIMING] get_price_sources for order={fetch_ms:.2f}ms, "
                 f"order_age={order_age_ms/1000:.1f}s, trade_pair={trade_pair.trade_pair_id}, "
                 f"sources_found={len(price_sources) if price_sources else 0}"
@@ -340,7 +341,7 @@ class MDDChecker(CacheController):
         lock_request_time = time.perf_counter()
         with self._position_lock_client.get_lock(hotkey, trade_pair_id):
             lock_acquired_ms = (time.perf_counter() - lock_request_time) * 1000
-            bt.logging.trace(f"[MDD_LOCK_TIMING] Lock acquired for {hotkey}.../{trade_pair_id} in {lock_acquired_ms:.2f}ms")
+            logger.debug(f"[MDD_LOCK_TIMING] Lock acquired for {hotkey}.../{trade_pair_id} in {lock_acquired_ms:.2f}ms")
 
             # Refresh position inside lock for TOCTOU protection
             refresh_start = time.perf_counter()
@@ -348,7 +349,7 @@ class MDDChecker(CacheController):
             refresh_ms = (time.perf_counter() - refresh_start) * 1000
 
             if position_refreshed is None:
-                bt.logging.warning(
+                logger.warning(
                     f"mdd_checker: Position not found (uuid {position.position_uuid}... "
                     f"for {hotkey}.../{trade_pair_id}). Skipping."
                 )
@@ -375,7 +376,7 @@ class MDDChecker(CacheController):
 
                 price_sources_for_retro_fix = _get_sources_for_order(order, position.trade_pair)
                 if not price_sources_for_retro_fix:
-                    bt.logging.warning(
+                    logger.warning(
                         f"Unexpectedly could not find any new price sources for order "
                         f"{order.order_uuid} in {hotkey} {position.trade_pair.trade_pair}. "
                         f"If this issue persists, alert the team."
@@ -390,7 +391,7 @@ class MDDChecker(CacheController):
             # Rebuild the position with the newest price
             if n_orders_updated:
                 position.rebuild_position_with_updated_orders(self._live_price_client)
-                bt.logging.info(
+                logger.info(
                     f"Retroactively updated {n_orders_updated} order prices for {position.miner_hotkey} "
                     f"{position.trade_pair.trade_pair} return_at_close changed from {orig_return:.8f} to "
                     f"{position.return_at_close:.8f} avg_price changed from {orig_avg_price:.8f} to "
@@ -421,7 +422,7 @@ class MDDChecker(CacheController):
                 if iteration_epoch is not None:
                     current_epoch = self.sync_epoch
                     if current_epoch != iteration_epoch:
-                        bt.logging.warning(
+                        logger.warning(
                             f"Sync occurred during MDDChecker iteration for {hotkey} {trade_pair_id} "
                             f"(epoch {iteration_epoch} -> {current_epoch}). "
                             f"Skipping save to avoid data corruption"

@@ -29,6 +29,8 @@ from vali_objects.position_management.position_utils.position_source import Posi
 from vali_objects.trade_pair import TradePair, TradePairCategory, CryptoSubcategory, ForexSubcategory
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.vali_utils import ValiUtils
+import logging
+from shared_objects.log import logger
 
 # Database setup
 Base = declarative_base()
@@ -136,7 +138,7 @@ class PositionCategorizer:
         # Get the TradePair object from the ID
 
         if trade_pair_obj is None:
-            bt.logging.warning(f"Unknown trade pair ID: {trade_pair_obj.trade_pair_id}")
+            logger.warning(f"Unknown trade pair ID: {trade_pair_obj.trade_pair_id}")
             return categories
 
         # Get the trade pair info (list format from enum)
@@ -307,7 +309,7 @@ def analyze_miners_with_orders(all_positions: Dict[str, List[Position]]) -> Dict
     """
     miners_with_orders = {}
 
-    bt.logging.info("Analyzing order data for all miners...")
+    logger.info("Analyzing order data for all miners...")
 
     for hotkey, positions in all_positions.items():
         order_timestamps = []
@@ -342,7 +344,7 @@ def main():
     position_source_manager = PositionSourceManager(source_type=PositionSource.DATABASE)
 
     # Load all positions first to determine date bounds
-    bt.logging.info("Loading positions from database...")
+    logger.info("Loading positions from database...")
     all_positions = position_source_manager.load_positions(
         start_time_ms=None,  # Get all positions to determine bounds
         end_time_ms=None,
@@ -350,7 +352,7 @@ def main():
     )
 
     if not all_positions:
-        bt.logging.error("No positions found in database")
+        logger.error("No positions found in database")
         return
 
     # Initialize elimination tracker
@@ -361,17 +363,17 @@ def main():
 
     # Log elimination loading summary
     if elimination_timestamps:
-        bt.logging.info(
+        logger.info(
             f"✓ Elimination filtering enabled: {len(elimination_timestamps)} miners have eliminations on record")
     else:
-        bt.logging.info("ℹ Elimination filtering disabled: No elimination data available or failed to load")
+        logger.info("ℹ Elimination filtering disabled: No elimination data available or failed to load")
 
-    bt.logging.info("🚀 Running automated backfill mode...")
+    logger.info("🚀 Running automated backfill mode...")
 
     # Analyze miners with orders to determine what needs backfilling
     miners_with_orders = analyze_miners_with_orders(all_positions)
 
-    bt.logging.info(f"Found {len(miners_with_orders)} miners with orders. Checking portfolio coverage...")
+    logger.info(f"Found {len(miners_with_orders)} miners with orders. Checking portfolio coverage...")
 
     # Initialize shared data manager for efficient backfill processing
     database_url = None
@@ -382,19 +384,19 @@ def main():
             secrets = ValiUtils.get_secrets()
             database_url = secrets.get('database_url') or secrets.get('db_ptn_editor_url')
         except Exception as e:
-            bt.logging.debug(f"Could not get database URL from ValiUtils secrets: {e}")
+            logger.debug(f"Could not get database URL from ValiUtils secrets: {e}")
 
     if not database_url:
-        bt.logging.error("No database URL available for automated backfill. Use --database-url argument.")
+        logger.error("No database URL available for automated backfill. Use --database-url argument.")
         return
 
     # Initialize SharedDataManager with all data loaded at once
-    bt.logging.info("🚀 Initializing shared data manager for efficient backfill processing...")
+    logger.info("🚀 Initializing shared data manager for efficient backfill processing...")
     shared_data_manager = SharedDataManager(database_url, hotkeys=None)
     shared_data_manager.initialize_all_data()
 
     # Analyze first order times for miners where order.src = 1
-    bt.logging.info("📊 Analyzing first order times for orders with src = 1...")
+    logger.info("📊 Analyzing first order times for orders with src = 1...")
     
     first_order_timestamps = {}
     
@@ -412,10 +414,10 @@ def main():
             first_order_ms = min(qualifying_order_times)
             first_order_timestamps[hotkey] = first_order_ms
     
-    bt.logging.info(f"Found {len(first_order_timestamps)} miners with qualifying orders (src = 1)")
+    logger.info(f"Found {len(first_order_timestamps)} miners with qualifying orders (src = 1)")
     
     # Compare elimination times to first order times
-    bt.logging.info("📊 Comparing elimination times to first order times...")
+    logger.info("📊 Comparing elimination times to first order times...")
     
     # Find miners that have both elimination data and first order data
     elim_hotkeys = set(elimination_timestamps.keys())
@@ -424,11 +426,11 @@ def main():
     only_eliminated = elim_hotkeys - order_hotkeys
     only_orders = order_hotkeys - elim_hotkeys
     
-    bt.logging.info(f"Data summary:")
-    bt.logging.info(f"  - {len(common_miners)} miners with both elimination and first order data")
-    bt.logging.info(f"  - {len(only_eliminated)} miners with only elimination data (no src = 1 orders)")
-    bt.logging.info(f"  - {len(only_orders)} miners with only first order data (not eliminated)")
-    bt.logging.info("📊 Processing complete - generating analysis report...")
+    logger.info(f"Data summary:")
+    logger.info(f"  - {len(common_miners)} miners with both elimination and first order data")
+    logger.info(f"  - {len(only_eliminated)} miners with only elimination data (no src = 1 orders)")
+    logger.info(f"  - {len(only_orders)} miners with only first order data (not eliminated)")
+    logger.info("📊 Processing complete - generating analysis report...")
     
     # Collect results for miners with both data points
     both_data_results = []
@@ -642,11 +644,11 @@ def main():
     
     # Summary statistics
     total_unique_miners = len(elim_hotkeys | order_hotkeys)
-    bt.logging.info(f"Analysis summary:")
-    bt.logging.info(f"  - Total unique miners: {total_unique_miners}")
-    bt.logging.info(f"  - Miners with both data: {len(both_data_results)}")
-    bt.logging.info(f"  - Eliminated only: {len(only_eliminated)}")
-    bt.logging.info(f"  - Orders only: {len(only_orders)}")
+    logger.info(f"Analysis summary:")
+    logger.info(f"  - Total unique miners: {total_unique_miners}")
+    logger.info(f"  - Miners with both data: {len(both_data_results)}")
+    logger.info(f"  - Eliminated only: {len(only_eliminated)}")
+    logger.info(f"  - Orders only: {len(only_orders)}")
 
     return
 
@@ -654,9 +656,9 @@ def main():
 
 if __name__ == "__main__":
     # Prevent duplicate logging setup
-    if not hasattr(bt.logging._logger, '_handlers_configured'):
-        bt.logging.enable_info()
-        bt.logging._logger._handlers_configured = True
+    if not hasattr(logger, '_handlers_configured'):
+        logger.setLevel(logging.INFO)
+        logger._handlers_configured = True
 
     # Suppress noisy urllib3 warnings
     import logging

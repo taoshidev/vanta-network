@@ -3,6 +3,7 @@ import requests
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.vali_config import ValiConfig
 import bittensor as bt
+from shared_objects.log import logger
 
 
 class PlagiarismManager:
@@ -27,7 +28,7 @@ class PlagiarismManager:
 
         # If API call failed, return empty dict to maintain current state
         if current_plagiarism_miners is None:
-            bt.logging.error("API call failed - cannot determine plagiarism eliminations")
+            logger.error("API call failed - cannot determine plagiarism eliminations")
             return {}
 
         miners_to_eliminate = {}
@@ -44,7 +45,7 @@ class PlagiarismManager:
 
         # If API call failed, return empty lists to maintain current state
         if current_plagiarism_miners is None:
-            bt.logging.error("API call failed - maintaining current plagiarism state")
+            logger.error("API call failed - maintaining current plagiarism state")
             return [], []
 
         # The api is the source of truth
@@ -87,7 +88,7 @@ class PlagiarismManager:
                 if not isinstance(new_miners, dict):
                     raise ValueError(f"API returned invalid data type: expected dict, got: {new_miners} with type: {type(new_miners)}")
 
-                bt.logging.info(f"Updating plagiarism api miners from {self.plagiarism_miners} to {new_miners}")
+                logger.info(f"Updating plagiarism api miners from {self.plagiarism_miners} to {new_miners}")
                 self._update_plagiarism_in_memory(current_time, new_miners)
                 return self.plagiarism_miners
             except Exception as e:

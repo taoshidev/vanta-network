@@ -7,6 +7,7 @@ from typing import Optional
 from time_util.time_util import TimeUtil
 
 from vali_objects.enums.order_type_enum import OrderType
+from shared_objects.log import logger
 
 
 # Point-in-time (ws) or second candles only
@@ -118,7 +119,7 @@ class PriceSource:
                 elif position_type == OrderType.SHORT:
                     ans = self.ask
                 else:
-                    bt.logging.error(f'Initial position order is FLAT. Unexpected. Position type: {position_type}')
+                    logger.error(f'Initial position order is FLAT. Unexpected. Position type: {position_type}')
                     ans = self.vwap
             else:
                 raise Exception(f'Unexpected order type {order_type}')
@@ -130,7 +131,7 @@ class PriceSource:
                 ans = self.open
             else:
                 ans = self.close
-        #bt.logging.success(f'Parsed appropriate price {ans} from price_source {self} for order type {order_type} and trade_pair {position.trade_pair.trade_pair_id}')
+        #logger.info(f'Parsed appropriate price {ans} from price_source {self} for order type {order_type} and trade_pair {position.trade_pair.trade_pair_id}')
         return ans
 
     @staticmethod

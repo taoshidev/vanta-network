@@ -32,6 +32,7 @@ from vali_objects.utils.asset_selection.asset_selection_manager import AssetSele
 from vali_objects.vali_config import TradePairSource, ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 import template.protocol
+from shared_objects.log import logger
 
 
 class AssetSelectionServer(RPCServerBase):
@@ -94,7 +95,7 @@ class AssetSelectionServer(RPCServerBase):
             config=config
         )
 
-        bt.logging.success("[ASSET_SERVER] AssetSelectionManager initialized")
+        logger.info("[ASSET_SERVER] AssetSelectionManager initialized")
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -109,7 +110,7 @@ class AssetSelectionServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
-        bt.logging.success("[ASSET_SERVER] AssetSelectionServer initialized")
+        logger.info("[ASSET_SERVER] AssetSelectionServer initialized")
 
     # ==================== RPCServerBase Abstract Methods ====================
 
@@ -252,22 +253,22 @@ class AssetSelectionServer(RPCServerBase):
         """
         try:
             sender_hotkey = synapse.dendrite.hotkey
-            bt.logging.info(f"[ASSET_SERVER] Received AssetSelection synapse from validator hotkey [{sender_hotkey}]")
+            logger.info(f"[ASSET_SERVER] Received AssetSelection synapse from validator hotkey [{sender_hotkey}]")
             success = self._manager.receive_asset_selection_update(synapse.asset_selection, sender_hotkey)
 
             if success:
                 synapse.successfully_processed = True
                 synapse.error_message = ""
-                bt.logging.info(f"[ASSET_SERVER] Successfully processed AssetSelection synapse from {sender_hotkey}")
+                logger.info(f"[ASSET_SERVER] Successfully processed AssetSelection synapse from {sender_hotkey}")
             else:
                 synapse.successfully_processed = False
                 synapse.error_message = "Failed to process asset selection"
-                bt.logging.warning(f"[ASSET_SERVER] Failed to process AssetSelection synapse from {sender_hotkey}")
+                logger.warning(f"[ASSET_SERVER] Failed to process AssetSelection synapse from {sender_hotkey}")
 
         except Exception as e:
             synapse.successfully_processed = False
             synapse.error_message = f"Error processing asset selection: {str(e)}"
-            bt.logging.error(f"[ASSET_SERVER] Exception in receive_asset_selection: {e}")
+            logger.error(f"[ASSET_SERVER] Exception in receive_asset_selection: {e}")
 
         return synapse
 

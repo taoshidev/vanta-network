@@ -30,6 +30,7 @@ from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.price_fetcher.live_price_fetcher import LivePriceFetcher
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from shared_objects.log import logger
 
 
 class LivePriceFetcherServer(RPCServerBase):
@@ -118,7 +119,7 @@ class LivePriceFetcherServer(RPCServerBase):
 
     def shutdown(self):
         """Override shutdown to clean up data service threads."""
-        bt.logging.info("LivePriceFetcherServer shutting down data services...")
+        logger.info("LivePriceFetcherServer shutting down data services...")
         self.stop_all_threads()
         super().shutdown()
 

@@ -82,6 +82,7 @@ from shared_objects.rpc.watchdog_monitor import WatchdogMonitor
 from shared_objects.rpc.health_monitor import HealthMonitor
 from shared_objects.rpc.server_registry import ServerRegistry
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 def _enable_tcp_nodelay_on_listener(server) -> None:
@@ -108,10 +109,10 @@ def _enable_tcp_nodelay_on_listener(server) -> None:
                 if hasattr(socket_listener, '_socket') and socket_listener._socket is not None:
                     sock = socket_listener._socket
                     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                    bt.logging.debug("TCP_NODELAY enabled on RPC server listener socket")
+                    logger.debug("TCP_NODELAY enabled on RPC server listener socket")
     except Exception as e:
         # Non-critical optimization - log but don't fail
-        bt.logging.trace(f"Failed to enable TCP_NODELAY on server: {e}")
+        logger.debug(f"Failed to enable TCP_NODELAY on server: {e}")
 
 class ServerProcessHandle:
     """
@@ -183,10 +184,10 @@ class ServerProcessHandle:
         self._health_monitor.stop()
 
         if self.process is None or not self.process.is_alive():
-            bt.logging.debug(f"{self.service_name} process already stopped")
+            logger.debug(f"{self.service_name} process already stopped")
             return
 
-        bt.logging.info(f"{self.service_name} stopping process (PID: {self.process.pid})...")
+        logger.info(f"{self.service_name} stopping process (PID: {self.process.pid})...")
 
         # Terminate gracefully
         self.process.terminate()
@@ -194,11 +195,11 @@ class ServerProcessHandle:
 
         # Force kill if still alive
         if self.process.is_alive():
-            bt.logging.warning(f"{self.service_name} force killing process")
+            logger.warning(f"{self.service_name} force killing process")
             self.process.kill()
             self.process.join()
 
-        bt.logging.info(f"{self.service_name} process stopped")
+        logger.info(f"{self.service_name} process stopped")
 
     @property
     def pid(self) -> Optional[int]:
@@ -443,7 +444,7 @@ class RPCServerBase(ABC):
         from RPCClientBase instances.
         """
         if self._rpc_server is not None:
-            bt.logging.warning(f"{self.service_name} RPC server already started")
+            logger.warning(f"{self.service_name} RPC server already started")
             return
 
         start_time = time.time()
@@ -479,13 +480,13 @@ class RPCServerBase(ABC):
 
             # Wait for server to be ready
             if not self._server_ready.wait(timeout=5.0):
-                bt.logging.warning(f"{self.service_name} RPC server may not be fully ready")
+                logger.warning(f"{self.service_name} RPC server may not be fully ready")
 
             elapsed_ms = (time.time() - start_time) * 1000
-            bt.logging.success(f"{self.service_name} RPC server started on port {self.port} ({elapsed_ms:.0f}ms)")
+            logger.info(f"{self.service_name} RPC server started on port {self.port} ({elapsed_ms:.0f}ms)")
 
         except Exception as e:
-            bt.logging.error(f"{self.service_name} failed to start RPC server: {e}")
+            logger.error(f"{self.service_name} failed to start RPC server: {e}")
             raise
 
     def _serve_forever(self):
@@ -495,7 +496,7 @@ class RPCServerBase(ABC):
             self._rpc_server.serve_forever()
         except Exception as e:
             if not self._is_shutdown():
-                bt.logging.error(f"{self.service_name} RPC server error: {e}")
+                logger.error(f"{self.service_name} RPC server error: {e}")
 
     def stop_rpc_server(self):
         """Stop the RPC server and release the port."""
@@ -523,13 +524,13 @@ class RPCServerBase(ABC):
                         pass
 
             except Exception as e:
-                bt.logging.trace(f"{self.service_name} RPC server shutdown error: {e}")
+                logger.debug(f"{self.service_name} RPC server shutdown error: {e}")
 
             # Wait for the RPC thread to finish (short timeout)
             if rpc_thread and rpc_thread.is_alive():
                 rpc_thread.join(timeout=0.5)
                 if rpc_thread.is_alive():
-                    bt.logging.trace(f"{self.service_name} RPC thread still alive after join timeout")
+                    logger.debug(f"{self.service_name} RPC thread still alive after join timeout")
 
             # Clean up any lingering RPC connections/resources (prevents semaphore leaks)
             # The Server object maintains internal state that needs explicit cleanup
@@ -542,10 +543,10 @@ class RPCServerBase(ABC):
                 if hasattr(rpc_server, 'id_to_local_proxy_obj'):
                     rpc_server.id_to_local_proxy_obj.clear()
             except Exception as e:
-                bt.logging.trace(f"{self.service_name} error clearing server registries: {e}")
+                logger.debug(f"{self.service_name} error clearing server registries: {e}")
 
             elapsed_ms = (time.time() - start_time) * 1000
-            bt.logging.info(f"{self.service_name} RPC server stopped ({elapsed_ms:.0f}ms)")
+            logger.info(f"{self.service_name} RPC server stopped ({elapsed_ms:.0f}ms)")
 
     def _cleanup_stale_server(self):
         """
@@ -557,13 +558,13 @@ class RPCServerBase(ABC):
         if PortManager.is_port_free(self.port):
             return
 
-        bt.logging.warning(f"{self.service_name} port {self.port} in use, forcing cleanup...")
+        logger.warning(f"{self.service_name} port {self.port} in use, forcing cleanup...")
         PortManager.force_kill_port(self.port)
 
         # Wait for OS to release the port after killing process
         # Usually completes in <50ms, but allow up to 2 seconds
         if not PortManager.wait_for_port_release(self.port, timeout=2.0):
-            bt.logging.warning(
+            logger.warning(
                 f"{self.service_name} port {self.port} still not free after cleanup and 2s wait. "
                 f"Attempting to start anyway (SO_REUSEADDR may work)"
             )
@@ -597,7 +598,7 @@ class RPCServerBase(ABC):
             self.start_server_process(create_server)
         """
         if self._server_process is not None and self._server_process.is_alive():
-            bt.logging.warning(f"{self.service_name} server process already running")
+            logger.warning(f"{self.service_name} server process already running")
             return
 
         # Cleanup any stale servers on this port
@@ -617,7 +618,7 @@ class RPCServerBase(ABC):
                 name=f"{self.service_name}_ProcessHealth"
             )
             self._process_health_thread.start()
-            bt.logging.info(
+            logger.info(
                 f"{self.service_name} process health monitoring started "
                 f"(interval: {self.process_health_check_interval_s}s, "
                 f"auto_restart: {self.enable_process_auto_restart})"
@@ -636,13 +637,13 @@ class RPCServerBase(ABC):
         )
         self._server_process.start()
 
-        bt.logging.success(
+        logger.info(
             f"{self.service_name} server process started (PID: {self._server_process.pid})"
         )
 
     def _process_health_loop(self) -> None:
         """Background thread that monitors server process health."""
-        bt.logging.info(f"{self.service_name} process health loop started")
+        logger.info(f"{self.service_name} process health loop started")
 
         while not self._is_shutdown():
             time.sleep(self.process_health_check_interval_s)
@@ -661,7 +662,7 @@ class RPCServerBase(ABC):
                     f"Exit code: {exit_code}\n"
                     f"Auto-restart: {'Enabled' if self.enable_process_auto_restart else 'Disabled'}"
                 )
-                bt.logging.error(error_msg)
+                logger.error(error_msg)
 
                 if self.slack_notifier:
                     self.slack_notifier.send_message(error_msg, level="error")
@@ -669,11 +670,11 @@ class RPCServerBase(ABC):
                 if self.enable_process_auto_restart:
                     self._restart_server_process()
 
-        bt.logging.debug(f"{self.service_name} process health loop shutting down")
+        logger.debug(f"{self.service_name} process health loop shutting down")
 
     def _restart_server_process(self) -> None:
         """Restart the server process after it died."""
-        bt.logging.info(f"{self.service_name} restarting server process...")
+        logger.info(f"{self.service_name} restarting server process...")
 
         try:
             # Cleanup port
@@ -681,7 +682,7 @@ class RPCServerBase(ABC):
 
             # Wait for port to be released
             if not PortManager.wait_for_port_release(self.port, timeout=5.0):
-                bt.logging.warning(
+                logger.warning(
                     f"{self.service_name} port {self.port} still in use, attempting restart anyway"
                 )
 
@@ -689,7 +690,7 @@ class RPCServerBase(ABC):
             self._start_server_process_internal()
 
             restart_msg = f"✅ {self.service_name} server process restarted successfully"
-            bt.logging.success(restart_msg)
+            logger.info(restart_msg)
 
             if self.slack_notifier:
                 self.slack_notifier.send_message(restart_msg, level="info", bypass_cooldown=True)
@@ -700,8 +701,8 @@ class RPCServerBase(ABC):
                 f"❌ {self.service_name} server process restart failed: {e}\n"
                 f"Manual intervention required!"
             )
-            bt.logging.error(error_msg)
-            bt.logging.error(error_trace)
+            logger.error(error_msg)
+            logger.error(error_trace)
 
             if self.slack_notifier:
                 self.slack_notifier.send_message(
@@ -715,19 +716,19 @@ class RPCServerBase(ABC):
             return
 
         if self._server_process.is_alive():
-            bt.logging.info(
+            logger.info(
                 f"{self.service_name} terminating server process (PID: {self._server_process.pid})"
             )
             self._server_process.terminate()
             self._server_process.join(timeout=1.0)
 
             if self._server_process.is_alive():
-                bt.logging.warning(f"{self.service_name} force killing server process")
+                logger.warning(f"{self.service_name} force killing server process")
                 self._server_process.kill()
                 self._server_process.join(timeout=0.5)
 
         self._server_process = None
-        bt.logging.info(f"{self.service_name} server process stopped")
+        logger.info(f"{self.service_name} server process stopped")
 
     def is_server_process_alive(self) -> bool:
         """Check if the server process is running."""
@@ -745,7 +746,7 @@ class RPCServerBase(ABC):
         A watchdog thread monitors for hangs and sends alerts.
         """
         if self._daemon_started:
-            bt.logging.warning(f"{self.service_name} daemon already started")
+            logger.warning(f"{self.service_name} daemon already started")
             return
 
         # Start daemon thread
@@ -761,12 +762,12 @@ class RPCServerBase(ABC):
         if self.connection_mode == RPCConnectionMode.RPC:
             self._watchdog.start()
 
-        bt.logging.success(f"{self.service_name} daemon started (interval: {self.daemon_interval_s}s)")
+        logger.info(f"{self.service_name} daemon started (interval: {self.daemon_interval_s}s)")
 
     def _daemon_loop(self):
         """Main daemon loop - calls run_daemon_iteration() repeatedly."""
         setproctitle(self.get_daemon_name())
-        bt.logging.info(f"{self.service_name} daemon running")
+        logger.info(f"{self.service_name} daemon running")
 
         while not self._is_shutdown():
             try:
@@ -776,7 +777,7 @@ class RPCServerBase(ABC):
 
                 # Initial stagger delay on first iteration (if configured)
                 if self._first_iteration and self.daemon_stagger_s > 0:
-                    bt.logging.info(
+                    logger.info(
                         f"{self.service_name} first daemon iteration - "
                         f"staggering startup by {self.daemon_stagger_s:.0f}s..."
                     )
@@ -798,7 +799,7 @@ class RPCServerBase(ABC):
                     if message and self.slack_notifier:
                         self.slack_notifier.send_message(message, bypass_cooldown=True)
                 except Exception as e:
-                    bt.logging.error(f"[RPC_SERVER_BASE] Error sending slack message: {message} {e}")
+                    logger.error(f"[RPC_SERVER_BASE] Error sending slack message: {message} {e}")
 
                 time.sleep(self.daemon_interval_s)
 
@@ -812,7 +813,7 @@ class RPCServerBase(ABC):
                 backoff_seconds = self._backoff.calculate_backoff()
 
                 # Log error with failure count and backoff time
-                bt.logging.error(
+                logger.error(
                     f"{self.service_name} daemon error (failure #{self._backoff.consecutive_failures}): {e}",
                     exc_info=True
                 )
@@ -833,17 +834,17 @@ class RPCServerBase(ABC):
                     )
 
                 # Sleep for backoff duration
-                bt.logging.info(f"{self.service_name} backing off for {backoff_seconds:.0f}s before retry")
+                logger.info(f"{self.service_name} backing off for {backoff_seconds:.0f}s before retry")
                 time.sleep(backoff_seconds)
 
         # Skip logging to avoid race condition with pytest closing stdout/stderr
-        # bt.logging.info(f"{self.service_name} daemon shutting down")
+        # logger.info(f"{self.service_name} daemon shutting down")
 
     def stop_daemon(self):
         """Signal daemon to stop (via shutdown_dict)."""
         # Daemon checks shutdown_dict and will exit naturally
         self._daemon_started = False
-        bt.logging.info(f"{self.service_name} daemon stop signaled")
+        logger.info(f"{self.service_name} daemon stop signaled")
 
     # ==================== Standard RPC Methods ====================
 
@@ -898,11 +899,11 @@ class RPCServerBase(ABC):
             bool: True if daemon was started, False if already running
         """
         if self._daemon_started and self._daemon_thread and self._daemon_thread.is_alive():
-            bt.logging.warning(f"[{self.service_name}] Daemon already running")
+            logger.warning(f"[{self.service_name}] Daemon already running")
             return False
 
         self.start_daemon()
-        bt.logging.success(f"[{self.service_name}] Daemon started via RPC")
+        logger.info(f"[{self.service_name}] Daemon started via RPC")
         return True
 
     def stop_daemon_rpc(self) -> bool:
@@ -913,11 +914,11 @@ class RPCServerBase(ABC):
             bool: True if daemon was stopped, False if not running
         """
         if not self._daemon_thread or not self._daemon_thread.is_alive():
-            bt.logging.warning(f"[{self.service_name}] Daemon not running")
+            logger.warning(f"[{self.service_name}] Daemon not running")
             return False
 
         self.stop_daemon()
-        bt.logging.success(f"[{self.service_name}] Daemon stopped via RPC")
+        logger.info(f"[{self.service_name}] Daemon stopped via RPC")
         return True
 
     def is_daemon_running_rpc(self) -> bool:
@@ -966,7 +967,7 @@ class RPCServerBase(ABC):
 
     def shutdown(self):
         """Gracefully shutdown server and daemon."""
-        bt.logging.info(f"{self.service_name} shutting down...")
+        logger.info(f"{self.service_name} shutting down...")
         # Set local shutdown flag FIRST to stop daemon loops from making RPC calls
         # This prevents KeyError when CommonDataServer is shutdown before other servers
         self._local_shutdown = True
@@ -981,7 +982,7 @@ class RPCServerBase(ABC):
         self.stop_server_process()
         # Unregister from instance tracking
         ServerRegistry.unregister(self)
-        bt.logging.info(f"{self.service_name} shutdown complete")
+        logger.info(f"{self.service_name} shutdown complete")
 
     def __del__(self):
         """Cleanup on destruction."""
@@ -1036,14 +1037,14 @@ class RPCServerBase(ABC):
         # Log if we're filtering out any parameters (for debugging)
         filtered_out = set(kwargs.keys()) - set(filtered_kwargs.keys())
         if filtered_out:
-            bt.logging.debug(
+            logger.debug(
                 f"[{cls.service_name}] Filtered out unsupported parameters: {filtered_out}"
             )
 
         # Create server in-process (constructor never spawns, so no recursion)
         server_instance = cls(**filtered_kwargs)
 
-        bt.logging.success(f"[SERVER] {cls.service_name} ready on port {cls.service_port}")
+        logger.info(f"[SERVER] {cls.service_name} ready on port {cls.service_port}")
 
         if server_ready:
             server_ready.set()
@@ -1054,7 +1055,7 @@ class RPCServerBase(ABC):
 
         # Graceful shutdown
         server_instance.shutdown()
-        bt.logging.info(f"{cls.service_name} process exiting")
+        logger.info(f"{cls.service_name} process exiting")
 
 
     @classmethod
@@ -1146,7 +1147,7 @@ class RPCServerBase(ABC):
         create_ms = (t2 - t1) * 1000
         start_ms = (t3 - t2) * 1000
 
-        bt.logging.success(
+        logger.info(
             f"{cls.service_name} process spawned (PID: {process.pid}) ({elapsed_ms:.0f}ms) "
             f"[event={event_ms:.0f}ms, create={create_ms:.0f}ms, start={start_ms:.0f}ms]"
         )
@@ -1158,7 +1159,7 @@ class RPCServerBase(ABC):
                 t5 = time.time()
                 ready_ms = (t5 - t4) * 1000
                 total_ms = (t5 - start_time) * 1000
-                bt.logging.success(
+                logger.info(
                     f"{cls.service_name} server ready ({total_ms:.0f}ms) [ready={ready_ms:.0f}ms]"
                 )
             else:
@@ -1174,14 +1175,14 @@ class RPCServerBase(ABC):
                         f"  - Port already in use\n"
                         f"  - Initialization error in server __init__"
                     )
-                    bt.logging.error(error_msg)
+                    logger.error(error_msg)
                     if slack_notifier:
                         slack_notifier.send_message(error_msg, level="error")
                     raise RuntimeError(
                         f"{cls.service_name} process died during startup (exit code: {exit_code})"
                     )
                 else:
-                    bt.logging.warning(
+                    logger.warning(
                         f"{cls.service_name} server may not be fully ready after {ready_timeout}s timeout. "
                         f"Process is alive but didn't signal ready."
                     )
@@ -1251,12 +1252,12 @@ class RPCServerBase(ABC):
         manager = ServiceManager(address=address, authkey=authkey)
         server = manager.get_server()
 
-        bt.logging.success(f"{service_name} server ready on {address}")
+        logger.info(f"{service_name} server ready on {address}")
 
         # Signal that server is ready
         if server_ready:
             server_ready.set()
-            bt.logging.debug(f"{service_name} readiness event set")
+            logger.debug(f"{service_name} readiness event set")
 
         # Start serving (blocks forever)
         server.serve_forever()

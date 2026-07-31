@@ -30,6 +30,7 @@ from miner_config import MinerConfig
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
+from shared_objects.log import logger
 
 
 class MinerRestServer(BaseRestServer):
@@ -170,10 +171,10 @@ class MinerRestServer(BaseRestServer):
             # Generate order_uuid if not provided
             order_uuid = signal_data.get('order_uuid', str(uuid.uuid4()))
 
-            bt.logging.debug(f"Processing order {order_uuid}")
+            logger.debug(f"Processing order {order_uuid}")
 
         except Exception as e:
-            bt.logging.error(f"Error parsing request body: {e}")
+            logger.error(f"Error parsing request body: {e}")
             return jsonify({'success': False, 'error': f'Invalid request: {str(e)}'}), 400
 
         # 2.5. Validate signal data
@@ -196,16 +197,16 @@ class MinerRestServer(BaseRestServer):
                 bracket_orders=signal_data.get('bracket_orders')
             )
 
-            bt.logging.debug(f"Signal validation passed for order {order_uuid}: {signal}")
+            logger.debug(f"Signal validation passed for order {order_uuid}: {signal}")
 
         except ValueError as e:
-            bt.logging.warning(f"Signal validation failed for order {order_uuid}")
+            logger.warning(f"Signal validation failed for order {order_uuid}")
             return jsonify({
                 'success': False,
                 'error': f'Invalid signal data: {str(e)}'
             }), 400
         except Exception as e:
-            bt.logging.error(f"Unexpected error during signal validation for order {order_uuid}")
+            logger.error(f"Unexpected error during signal validation for order {order_uuid}")
             return jsonify({
                 'success': False,
                 'error': f'Signal validation error: {str(e)}'
@@ -213,7 +214,7 @@ class MinerRestServer(BaseRestServer):
 
         # 3. Call order_placer.process_a_signal_for_rest() directly
         try:
-            bt.logging.info(f"Processing order: {signal}...")
+            logger.info(f"Processing order: {signal}...")
 
             result = self.order_placer.process_a_signal_for_rest(
                 order_uuid=order_uuid,
@@ -221,14 +222,14 @@ class MinerRestServer(BaseRestServer):
                 subaccount_id=signal_data.get('subaccount_id', None)
             )
 
-            bt.logging.info(f"Order {order_uuid} processed in {result.get('processing_time', 0):.2f}s: success={result.get('success')}")
+            logger.info(f"Order {order_uuid} processed in {result.get('processing_time', 0):.2f}s: success={result.get('success')}")
 
             # 4. Return formatted response
             status_code = 200 if result.get('success') else 400
             return jsonify(result), status_code
 
         except Exception as e:
-            bt.logging.error(f"Error processing order {order_uuid}: {e}")
+            logger.error(f"Error processing order {order_uuid}: {e}")
             return jsonify({
                 'success': False,
                 'order_uuid': order_uuid,
@@ -286,7 +287,7 @@ class MinerRestServer(BaseRestServer):
             }), 404
 
         except Exception as e:
-            bt.logging.error(f"Error querying order status: {e}")
+            logger.error(f"Error querying order status: {e}")
             return jsonify({'error': f'Internal error: {str(e)}'}), 500
 
     def health_endpoint(self):

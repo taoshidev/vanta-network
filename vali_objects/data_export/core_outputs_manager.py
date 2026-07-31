@@ -36,6 +36,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.data_sync.validator_sync_base import AUTO_SYNC_ORDER_LAG_MS
+from shared_objects.log import logger
 
 
 # no filters,... , max filter
@@ -89,7 +90,7 @@ class CoreOutputsManager:
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
         self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
 
-        bt.logging.info(f"[COREOUTPUTS_MANAGER] CoreOutputsManager initialized")
+        logger.info(f"[COREOUTPUTS_MANAGER] CoreOutputsManager initialized")
 
     # ==================== Properties (Forward Compatibility) ====================
 
@@ -240,9 +241,9 @@ class CoreOutputsManager:
         blob.content_type = "application/gzip"
 
         # Upload the contents of the file to Google Cloud Storage
-        bt.logging.info(f'Uploading {blob_name} to {bucket_name}')
+        logger.info(f'Uploading {blob_name} to {bucket_name}')
         blob.upload_from_filename(filename=checkpoint_file_path)
-        bt.logging.info(f'Uploaded {blob_name} to {bucket_name}')
+        logger.info(f'Uploaded {blob_name} to {bucket_name}')
 
     def create_and_upload_production_files(
         self,
@@ -266,20 +267,20 @@ class CoreOutputsManager:
         try:
             asset_selections = self._asset_selection_client.get_all_miner_selections()
         except Exception as e:
-            bt.logging.warning(f"Could not fetch asset selections: {e}")
+            logger.warning(f"Could not fetch asset selections: {e}")
 
         # Get entity data via RPC client (forward compatibility)
         entities_dict = {}
         try:
             entities_dict = self._entity_client.to_checkpoint_dict()
         except Exception as e:
-            bt.logging.warning(f"Could not fetch entity data: {e}")
+            logger.warning(f"Could not fetch entity data: {e}")
 
         frozen_perf_ledgers = {}
         try:
             frozen_perf_ledgers = self._perf_ledger_client.get_frozen_ledgers()
         except Exception as e:
-            bt.logging.warning(f"Could not fetch frozen perf ledgers: {e}")
+            logger.warning(f"Could not fetch frozen perf ledgers: {e}")
 
         final_dict = {
             'version': ValiConfig.VERSION,

@@ -16,6 +16,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, De
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from entity_management import entity_utils
+from shared_objects.log import logger
 
 
 class DebtLedgerManager():
@@ -155,12 +156,12 @@ class DebtLedgerManager():
             True if the debt ledger was deleted, False if it did not exist
         """
         if not entity_utils.is_synthetic_hotkey(hotkey):
-            bt.logging.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only subaccount (synthetic) hotkeys can have their ledgers deleted")
+            logger.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only subaccount (synthetic) hotkeys can have their ledgers deleted")
             return False
         self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
         if hotkey in self.debt_ledgers:
             del self.debt_ledgers[hotkey]
-            bt.logging.info(f"[DEBT_LEDGER] Deleted debt and penalty ledgers for {hotkey}")
+            logger.info(f"[DEBT_LEDGER] Deleted debt and penalty ledgers for {hotkey}")
             self.save_to_disk(create_backup=False)
             return True
         return False
@@ -318,13 +319,13 @@ class DebtLedgerManager():
             # Compress with gzip and cache
             self._compressed_ledgers_cache = gzip.compress(json_str.encode('utf-8'))
 
-            bt.logging.info(
+            logger.info(
                 f"Updated compressed ledgers cache: {len(summaries)} ledgers, "
                 f"{len(self._compressed_ledgers_cache)} bytes"
             )
 
         except Exception as e:
-            bt.logging.error(f"Error updating compressed ledgers cache: {e}", exc_info=True)
+            logger.error(f"Error updating compressed ledgers cache: {e}", exc_info=True)
             # Keep old cache on error (don't clear it)
 
     def _get_ledger_path(self) -> str:
@@ -342,7 +343,7 @@ class DebtLedgerManager():
             create_backup: Whether to create timestamped backup before overwrite
         """
         if not self.debt_ledgers:
-            bt.logging.warning("No debt ledgers to save")
+            logger.warning("No debt ledgers to save")
             return
 
         ledger_path = self._get_ledger_path()
@@ -357,7 +358,7 @@ class DebtLedgerManager():
         # Atomic write: temp file -> move
         self._write_compressed(ledger_path, data)
 
-        bt.logging.info(f"Saved {len(self.debt_ledgers)} debt ledgers to {ledger_path}")
+        logger.info(f"Saved {len(self.debt_ledgers)} debt ledgers to {ledger_path}")
 
     def load_data_from_disk(self) -> int:
         """
@@ -370,7 +371,7 @@ class DebtLedgerManager():
         ledger_path = self._get_ledger_path()
 
         if not os.path.exists(ledger_path):
-            bt.logging.info("No existing debt ledger file found")
+            logger.info("No existing debt ledger file found")
             return 0
 
         # Load data
@@ -387,7 +388,7 @@ class DebtLedgerManager():
             ledger = DebtLedger.from_dict(ledger_dict)
             self.debt_ledgers[hotkey] = ledger
 
-        bt.logging.info(
+        logger.info(
             f"Loaded {len(self.debt_ledgers)} debt ledgers, "
             f"metadata: {metadata}, "
             f"last update: {TimeUtil.millis_to_formatted_date_str(metadata.get('last_update_ms', 0))}"
@@ -444,13 +445,13 @@ class DebtLedgerManager():
         else:
             # Full rebuild: start from scratch
             candidate_ledgers = {}
-            bt.logging.info("Full rebuild mode: building new debt ledgers from scratch")
+            logger.info("Full rebuild mode: building new debt ledgers from scratch")
 
         # Read all perf ledgers from perf ledger client
         all_perf_ledgers: Dict[str, PerfLedger] = self._perf_ledger_client.get_perf_ledgers()
 
         if not all_perf_ledgers:
-            bt.logging.warning("No performance ledgers found")
+            logger.warning("No performance ledgers found")
             return
 
         # Pick a reference portfolio ledger (use the one with the most checkpoints for maximum coverage)
@@ -466,10 +467,10 @@ class DebtLedgerManager():
                     reference_hotkey = hotkey
 
         if not reference_portfolio_ledger:
-            bt.logging.warning("No valid portfolio ledgers found with checkpoints")
+            logger.warning("No valid portfolio ledgers found with checkpoints")
             return
 
-        bt.logging.info(
+        logger.info(
             f"Using portfolio ledger from {reference_hotkey[:16]}...{reference_hotkey[-8:]} "
             f"as reference ({len(reference_portfolio_ledger.cps)} checkpoints, "
             f"target_cp_duration_ms: {reference_portfolio_ledger.target_cp_duration_ms}ms)"
@@ -511,7 +512,7 @@ class DebtLedgerManager():
                     f"This indicates the reference ledger is behind, which would cause history truncation."
                 )
 
-                bt.logging.info(
+                logger.info(
                     f"Delta update mode: resuming from {TimeUtil.millis_to_formatted_date_str(last_processed_ms)} "
                     f"(reference ledger with {max_checkpoint_count} checkpoints)"
                 )
@@ -532,10 +533,10 @@ class DebtLedgerManager():
             perf_checkpoints_to_process.append(checkpoint)
 
         if not perf_checkpoints_to_process:
-            bt.logging.info("No new checkpoints to process")
+            logger.info("No new checkpoints to process")
             return
 
-        bt.logging.info(
+        logger.info(
             f"Processing {len(perf_checkpoints_to_process)} checkpoints "
             f"(from {TimeUtil.millis_to_formatted_date_str(perf_checkpoints_to_process[0].last_update_ms)} "
             f"to {TimeUtil.millis_to_formatted_date_str(perf_checkpoints_to_process[-1].last_update_ms)})"
@@ -548,7 +549,7 @@ class DebtLedgerManager():
         earliest_emissions_ms = self.emissions_ledger_manager.get_earliest_emissions_timestamp()
 
         if earliest_emissions_ms:
-            bt.logging.info(
+            logger.info(
                 f"Earliest emissions data starts at {TimeUtil.millis_to_formatted_date_str(earliest_emissions_ms)}"
             )
 
@@ -561,7 +562,7 @@ class DebtLedgerManager():
             # Skip this entire timestamp if it's before the earliest emissions data
             if earliest_emissions_ms and perf_checkpoint.last_update_ms < earliest_emissions_ms:
                 if verbose:
-                    bt.logging.info(
+                    logger.info(
                         f"Skipping checkpoint {checkpoint_count} at {TimeUtil.millis_to_formatted_date_str(perf_checkpoint.last_update_ms)} "
                         f"(before earliest emissions data)"
                     )
@@ -619,7 +620,7 @@ class DebtLedgerManager():
                 # Validate timestamps match
                 if miner_perf_checkpoint.last_update_ms != perf_checkpoint.last_update_ms:
                     if verbose:
-                        bt.logging.warning(
+                        logger.warning(
                             f"Perf checkpoint timestamp mismatch for {hotkey}: "
                             f"expected {perf_checkpoint.last_update_ms}, got {miner_perf_checkpoint.last_update_ms}"
                         )
@@ -627,7 +628,7 @@ class DebtLedgerManager():
 
                 if penalty_checkpoint.last_processed_ms != miner_perf_checkpoint.last_update_ms:
                     if verbose:
-                        bt.logging.warning(
+                        logger.warning(
                             f"Penalty checkpoint timestamp mismatch for {hotkey}: "
                             f"expected {miner_perf_checkpoint.last_update_ms}, got {penalty_checkpoint.last_processed_ms}"
                         )
@@ -636,7 +637,7 @@ class DebtLedgerManager():
                 # Only validate emissions timestamp if we have an emissions checkpoint
                 if emissions_checkpoint and emissions_checkpoint.chunk_end_ms != miner_perf_checkpoint.last_update_ms:
                     if verbose:
-                        bt.logging.warning(
+                        logger.warning(
                             f"Emissions checkpoint end time mismatch for {hotkey}: "
                             f"expected {miner_perf_checkpoint.last_update_ms}, got {emissions_checkpoint.chunk_end_ms}"
                         )
@@ -653,7 +654,7 @@ class DebtLedgerManager():
                     last_checkpoint_ms = debt_ledger.checkpoints[-1].timestamp_ms
                     if miner_perf_checkpoint.last_update_ms <= last_checkpoint_ms:
                         if verbose:
-                            bt.logging.info(
+                            logger.info(
                                 f"Skipping checkpoint for {hotkey} at {miner_perf_checkpoint.last_update_ms} "
                                 f"(already processed, last checkpoint: {last_checkpoint_ms})"
                             )
@@ -719,7 +720,7 @@ class DebtLedgerManager():
             # Log progress for this checkpoint
             checkpoint_elapsed = time.time() - checkpoint_start_time
             checkpoint_dt = datetime.fromtimestamp(perf_checkpoint.last_update_ms / 1000, tz=timezone.utc)
-            bt.logging.info(
+            logger.info(
                 f"Checkpoint {checkpoint_count}/{len(perf_checkpoints_to_process)} "
                 f"({checkpoint_dt.strftime('%Y-%m-%d %H:%M UTC')}): "
                 f"{hotkeys_processed_at_checkpoint} hotkeys processed, "
@@ -729,7 +730,7 @@ class DebtLedgerManager():
 
         # Build completed successfully - atomically swap candidate ledgers into production
         # This prevents race conditions where ledgers momentarily disappear during build
-        bt.logging.info(
+        logger.info(
             f"Build completed successfully: {checkpoint_count} checkpoints for {len(candidate_ledgers)} hotkeys. "
             f"Atomically updating debt ledgers..."
         )
@@ -738,19 +739,19 @@ class DebtLedgerManager():
         self.debt_ledgers = candidate_ledgers
 
         # Aggregate entity debt ledgers before saving so entity ledgers are persisted and cached
-        bt.logging.info("Aggregating entity debt ledgers...")
+        logger.info("Aggregating entity debt ledgers...")
         self.aggregate_entity_debt_ledgers(target_cp_duration_ms, verbose=verbose)
 
         # Save to disk after atomic swap and aggregation
-        bt.logging.info(f"Saving {len(self.debt_ledgers)} debt ledgers to disk...")
+        logger.info(f"Saving {len(self.debt_ledgers)} debt ledgers to disk...")
         self.save_to_disk(create_backup=False)
 
         # Update compressed ledgers cache for instant RPC access (matches MinerStatisticsManager pattern)
-        bt.logging.info("Updating compressed ledgers cache...")
+        logger.info("Updating compressed ledgers cache...")
         self._update_compressed_ledgers_cache()
 
         # Final summary
-        bt.logging.info(
+        logger.info(
             f"Debt ledgers updated: {checkpoint_count} checkpoints processed, "
             f"{len(self.debt_ledgers)} hotkeys tracked "
             f"(target_cp_duration_ms: {target_cp_duration_ms}ms)"
@@ -784,10 +785,10 @@ class DebtLedgerManager():
             all_entities = self._entity_client.get_all_entities()
 
             if not all_entities:
-                bt.logging.info("No entities registered - skipping entity aggregation")
+                logger.info("No entities registered - skipping entity aggregation")
                 return
 
-            bt.logging.info(f"Aggregating debt ledgers for {len(all_entities)} entities")
+            logger.info(f"Aggregating debt ledgers for {len(all_entities)} entities")
 
             # Get frozen perf ledgers and convert to debt ledgers grouped by entity
             # Manually conver them to debt ledger checkpoints to reuse realized hwm gated emissions
@@ -823,7 +824,7 @@ class DebtLedgerManager():
                     entity_to_frozen_debt_ledgers[entity_hk].append((synthetic_hotkey, frozen_debt_ledger))
 
             if entity_to_frozen_debt_ledgers:
-                bt.logging.info(f"Converted frozen perf ledgers to debt ledgers for {len(entity_to_frozen_debt_ledgers)} entities")
+                logger.info(f"Converted frozen perf ledgers to debt ledgers for {len(entity_to_frozen_debt_ledgers)} entities")
 
             entity_count = 0
             for entity_hotkey, entity_data in all_entities.items():
@@ -834,7 +835,7 @@ class DebtLedgerManager():
                 has_frozen_ledgers = entity_hotkey in entity_to_frozen_debt_ledgers
                 if not active_subaccounts and not has_frozen_ledgers:
                     if verbose:
-                        bt.logging.info(f"Entity {entity_hotkey} has no active subaccounts or frozen ledgers - skipping")
+                        logger.info(f"Entity {entity_hotkey} has no active subaccounts or frozen ledgers - skipping")
                     continue
 
                 # Get debt ledgers for all active subaccounts
@@ -855,7 +856,7 @@ class DebtLedgerManager():
 
                 if not subaccount_ledgers:
                     if verbose:
-                        bt.logging.info(
+                        logger.info(
                             f"Entity {entity_hotkey} has {len(active_subaccounts)} active subaccounts "
                             f"but no debt ledgers found - skipping"
                         )
@@ -988,15 +989,15 @@ class DebtLedgerManager():
                 entity_count += 1
 
                 if verbose:
-                    bt.logging.info(
+                    logger.info(
                         f"Aggregated {len(aggregated_checkpoints)} checkpoints for entity {entity_hotkey} "
                         f"from {len(subaccount_ledgers)} active subaccounts"
                     )
 
-            bt.logging.info(
+            logger.info(
                 f"Entity aggregation completed: {entity_count} entities aggregated "
                 f"({len(all_entities) - entity_count} skipped with no data)"
             )
 
         except Exception as e:
-            bt.logging.error(f"Error aggregating entity debt ledgers: {e}", exc_info=True)
+            logger.error(f"Error aggregating entity debt ledgers: {e}", exc_info=True)

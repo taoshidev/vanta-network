@@ -11,6 +11,7 @@ import bittensor.utils.networking
 from pydantic import Field
 
 from typing import List
+from shared_objects.log import logger
 
 
 original_Synapse_get_required_fields = bt.Synapse.get_required_fields
@@ -57,7 +58,7 @@ class SendSignal(bt.Synapse):
         temp = synapse.miner_order_uuid
         assert isinstance(temp, str), f"excepted string miner uuid but got {temp}"
         if not temp:
-            bt.logging.warning(f'miner_order_uuid is empty for miner_hotkey [{synapse.dendrite.hotkey}] miner_repo_version '
+            logger.warning(f'miner_order_uuid is empty for miner_hotkey [{synapse.dendrite.hotkey}] miner_repo_version '
                                f'[{synapse.repo_version}]. Generating a new one.')
             temp = str(uuid.uuid4())
         return temp

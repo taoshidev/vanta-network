@@ -10,6 +10,7 @@ from vali_objects.vali_dataclasses.position import Position, Order
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_config import TradePair
 from vali_objects.utils.functional_utils import FunctionalUtils
+from shared_objects.log import logger
 
 class RiskProfiling:
     
@@ -132,7 +133,7 @@ class RiskProfiling:
         msg_lines.append(f"{'='*100}")
         
         # Log as single warning
-        bt.logging.warning('\n'.join(msg_lines))
+        logger.warning('\n'.join(msg_lines))
     @staticmethod
     def monotonic_positions(position: Position, verbose=False) -> Position:
         """
@@ -364,7 +365,7 @@ class RiskProfiling:
         # Now compute the cumulative leverages on the position since inception
         positional_delta_leverages = [x.leverage for x in position.orders]
         if len(positional_delta_leverages) == 0:
-            bt.logging.warning(f"Position unexpectedly has no valid orders when assessing risk, uuid: {position.position_uuid}")
+            logger.warning(f"Position unexpectedly has no valid orders when assessing risk, uuid: {position.position_uuid}")
             return 0
 
         positional_aggregate_leverages = np.abs(np.cumsum(positional_delta_leverages))

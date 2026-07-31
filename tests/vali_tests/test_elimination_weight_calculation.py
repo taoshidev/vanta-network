@@ -27,6 +27,7 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.scoring.scoring import Scoring
+from shared_objects.log import logger
 
 
 class TestEliminationWeightCalculation(TestBase):
@@ -253,18 +254,18 @@ class TestEliminationWeightCalculation(TestBase):
         # 3. Penalty ledgers (via PenaltyLedgerManager) ⚠️ Need to build
 
         # Build penalty ledgers FIRST (they depend on perf ledgers and challenge period data)
-        bt.logging.info("Building penalty ledgers...")
+        logger.info("Building penalty ledgers...")
         self.debt_ledger_client.build_penalty_ledgers(verbose=False, delta_update=False)
 
         # Build emissions ledgers SECOND (they depend on metagraph data)
-        bt.logging.info("Building emissions ledgers...")
+        logger.info("Building emissions ledgers...")
         self.debt_ledger_client.build_emissions_ledgers(delta_update=False)
 
         # Now build debt ledgers THIRD (combines all three sources)
-        bt.logging.info("Building debt ledgers...")
+        logger.info("Building debt ledgers...")
         self.debt_ledger_client.build_debt_ledgers(verbose=False, delta_update=False)
 
-        bt.logging.info(f"Built debt ledgers for {len(self.all_miners)} miners")
+        logger.info(f"Built debt ledgers for {len(self.all_miners)} miners")
 
     def _setup_eliminations(self):
         """Set up initial eliminations"""

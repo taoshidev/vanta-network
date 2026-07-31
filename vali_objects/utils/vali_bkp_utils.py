@@ -18,6 +18,7 @@ from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_config import TradePair
+from shared_objects.log import logger
 
 
 def orjson_encoder(obj):
@@ -98,7 +99,7 @@ class ValiBkpUtils:
             return vanta_path
         elif os.path.exists(ptn_path):
             import bittensor as bt
-            bt.logging.warning(
+            logger.warning(
                 "⚠️  Using api_keys.json from ptn_api/ (deprecated). "
                 "Please run vanta_api/migrate_from_ptn.sh to migrate your files."
             )
@@ -249,9 +250,9 @@ class ValiBkpUtils:
                     import pickle
                     with open(pkl_path, 'rb') as f:
                         data = pickle.load(f)
-                    bt.logging.info(f"Read perf_ledgers from actual pickle file {pkl_path}")
+                    logger.info(f"Read perf_ledgers from actual pickle file {pkl_path}")
                 except Exception as e:
-                    bt.logging.error(f"Failed to migrate perf_ledgers from .pkl: {e}")
+                    logger.error(f"Failed to migrate perf_ledgers from .pkl: {e}")
                     return False
 
             try:
@@ -260,11 +261,11 @@ class ValiBkpUtils:
 
                 # Delete the misnamed .pkl file after successful migration
                 os.remove(pkl_path)
-                bt.logging.info(f"Migrated perf_ledgers from {pkl_path} to {new_path}")
+                logger.info(f"Migrated perf_ledgers from {pkl_path} to {new_path}")
                 return True
 
             except Exception as e:
-                bt.logging.error(f"Failed to migrate perf_ledgers from .pkl: {e}")
+                logger.error(f"Failed to migrate perf_ledgers from .pkl: {e}")
                 return False
 
         # Priority 2: Check for legacy .json file (original uncompressed format)
@@ -280,11 +281,11 @@ class ValiBkpUtils:
 
                 # Delete legacy file after successful migration
                 os.remove(legacy_path)
-                bt.logging.info(f"Migrated perf_ledgers from {legacy_path} to {new_path}")
+                logger.info(f"Migrated perf_ledgers from {legacy_path} to {new_path}")
                 return True
 
             except Exception as e:
-                bt.logging.error(f"Failed to migrate perf_ledgers from .json: {e}")
+                logger.error(f"Failed to migrate perf_ledgers from .json: {e}")
                 return False
 
         # No migration needed - already using .json.gz or no file exists
@@ -451,7 +452,7 @@ class ValiBkpUtils:
         """
         if os.path.exists(directory):
             shutil.rmtree(directory)
-            bt.logging.debug(f"Cleared directory: {directory}")
+            logger.debug(f"Cleared directory: {directory}")
 
     @staticmethod
     def clear_all_miner_directories(running_unit_tests=False):
@@ -467,7 +468,7 @@ class ValiBkpUtils:
         miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)
         if os.path.exists(miner_dir):
             shutil.rmtree(miner_dir)
-            bt.logging.info(f"Cleared all miner directories from {miner_dir}")
+            logger.info(f"Cleared all miner directories from {miner_dir}")
         # Recreate empty directory
         os.makedirs(miner_dir, exist_ok=True)
 
@@ -652,6 +653,6 @@ class ValiBkpUtils:
                         orders.append(json.load(f))
 
             except Exception as e:
-                bt.logging.error(f"Error accessing {status} directory {status_dir}: {e}")
+                logger.error(f"Error accessing {status} directory {status_dir}: {e}")
 
         return orders

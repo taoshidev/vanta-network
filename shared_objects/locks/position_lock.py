@@ -1,6 +1,7 @@
 from threading import Lock
 import bittensor as bt
 from typing import Tuple, Optional, Dict
+from shared_objects.log import logger
 
 
 class LocalLocks:
@@ -72,14 +73,14 @@ class PositionLocks:
         # Create appropriate implementation
         if mode == 'local':
             self.impl = LocalLocks(hotkey_to_positions)
-            bt.logging.info("PositionLocks: Using LOCAL mode (threading locks)")
+            logger.info("PositionLocks: Using LOCAL mode (threading locks)")
 
         elif mode == 'rpc':
             # Import here to avoid circular dependency
             from shared_objects.locks.position_lock_client import PositionLockClient
 
             self.impl = PositionLockClient(running_unit_tests=running_unit_tests)
-            bt.logging.info("PositionLocks: Using RPC mode (dedicated lock server)")
+            logger.info("PositionLocks: Using RPC mode (dedicated lock server)")
 
         else:
             raise ValueError(f"Invalid mode: {mode}. Must be 'local' or 'rpc'")

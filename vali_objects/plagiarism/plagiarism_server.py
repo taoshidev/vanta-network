@@ -28,6 +28,7 @@ import bittensor as bt
 from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 # ==================== Server Implementation ====================
@@ -88,7 +89,7 @@ class PlagiarismServer(RPCServerBase):
         self.refreshed_plagiarism_time_ms = 0
         self.plagiarism_miners: Dict[str, dict] = {}
 
-        bt.logging.success(f"PlagiarismServer initialized on port {ValiConfig.RPC_PLAGIARISM_PORT}")
+        logger.info(f"PlagiarismServer initialized on port {ValiConfig.RPC_PLAGIARISM_PORT}")
 
     # ==================== RPCServerBase Abstract Methods ====================
 
@@ -130,7 +131,7 @@ class PlagiarismServer(RPCServerBase):
 
         # If API call failed, return empty dict to maintain current state
         if current_plagiarism_miners is None:
-            bt.logging.error("API call failed - cannot determine plagiarism eliminations")
+            logger.error("API call failed - cannot determine plagiarism eliminations")
             return {}
 
         miners_to_eliminate = {}
@@ -156,7 +157,7 @@ class PlagiarismServer(RPCServerBase):
 
         # If API call failed, return empty lists to maintain current state
         if current_plagiarism_miners is None:
-            bt.logging.error("API call failed - maintaining current plagiarism state")
+            logger.error("API call failed - maintaining current plagiarism state")
             return [], []
 
         # The api is the source of truth
@@ -222,7 +223,7 @@ class PlagiarismServer(RPCServerBase):
                 if not isinstance(new_miners, dict):
                     raise ValueError(f"API returned invalid data type: expected dict, got: {new_miners} with type: {type(new_miners)}")
 
-                bt.logging.info(f"Updating plagiarism api miners from {self.plagiarism_miners} to {new_miners}")
+                logger.info(f"Updating plagiarism api miners from {self.plagiarism_miners} to {new_miners}")
                 self._update_plagiarism_in_memory_rpc(current_time, new_miners)
                 return self.plagiarism_miners
             except Exception as e:
@@ -319,7 +320,7 @@ def start_plagiarism_server(
         start_daemon=False
     )
 
-    bt.logging.success(f"PlagiarismServer ready on port {ValiConfig.RPC_PLAGIARISM_PORT}")
+    logger.info(f"PlagiarismServer ready on port {ValiConfig.RPC_PLAGIARISM_PORT}")
 
     if server_ready:
         server_ready.set()
@@ -330,4 +331,4 @@ def start_plagiarism_server(
 
     # Graceful shutdown
     server_instance.shutdown()
-    bt.logging.info("PlagiarismServer process exiting")
+    logger.info("PlagiarismServer process exiting")

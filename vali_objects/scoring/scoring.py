@@ -23,6 +23,7 @@ from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from entity_management.entity_utils import is_synthetic_hotkey
 import bittensor as bt
+from shared_objects.log import logger
 
 
 @dataclass
@@ -87,15 +88,15 @@ class Scoring:
             metrics=None,
             all_miner_account_sizes: dict[str, float]=None
     ) -> List[Tuple[str, float]]:
-        bt.logging.info(f"compute_results_checkpoint called with {len(ledger_dict)} miners")
+        logger.info(f"compute_results_checkpoint called with {len(ledger_dict)} miners")
 
         if len(ledger_dict) == 0:
-            bt.logging.debug("No results to compute, returning empty list")
+            logger.debug("No results to compute, returning empty list")
             return []
 
         if len(ledger_dict) == 1:
             miner = list(ledger_dict.keys())[0]
-            bt.logging.info(
+            logger.info(
                 f"compute_results_checkpoint - Only one miner: {miner}, returning 1.0 for the solo miner weight")
             return [(miner, 1.0)]
 
@@ -125,20 +126,20 @@ class Scoring:
             weighting=weighting,
             all_miner_account_sizes=all_miner_account_sizes
         )
-        bt.logging.info(f"asset_softmaxed_scores has {len(asset_softmaxed_scores)} asset classes")
+        logger.info(f"asset_softmaxed_scores has {len(asset_softmaxed_scores)} asset classes")
 
         # Now combine the percentile scores using asset class emission weights
         asset_aggregated_scores = Scoring.asset_class_score_aggregation(asset_softmaxed_scores)
-        bt.logging.info(f"asset_aggregated_scores has {len(asset_aggregated_scores)} miners")
+        logger.info(f"asset_aggregated_scores has {len(asset_aggregated_scores)} miners")
 
         # Force good performance of all error metrics
         combined_weighed = asset_aggregated_scores + full_penalty_miner_scores
-        bt.logging.info(f"combined_weighed has {len(combined_weighed)} entries (aggregated: {len(asset_aggregated_scores)}, penalties: {len(full_penalty_miner_scores)})")
+        logger.info(f"combined_weighed has {len(combined_weighed)} entries (aggregated: {len(asset_aggregated_scores)}, penalties: {len(full_penalty_miner_scores)})")
         combined_scores = dict(combined_weighed)
 
         # Normalize the scores
         normalized_scores = Scoring.normalize_scores(combined_scores)
-        bt.logging.info(f"normalized_scores has {len(normalized_scores)} miners, returning results")
+        logger.info(f"normalized_scores has {len(normalized_scores)} miners, returning results")
         return sorted(normalized_scores.items(), key=lambda x: x[1], reverse=True)
 
     @staticmethod
@@ -155,9 +156,9 @@ class Scoring:
         asset_competitiveness: dictionary with asset classes as keys and their competitiveness as values.
         asset_miner_softmaxed_scores: A dictionary with softmax scores for each miner within each asset class
         """
-        bt.logging.info(f"score_miner_asset_classes called with {len(ledger_dict)} miners")
+        logger.info(f"score_miner_asset_classes called with {len(ledger_dict)} miners")
         if len(ledger_dict) <= 1:
-            bt.logging.info("score_miner_asset_classes: <= 1 miner, returning empty dicts (no competition)")
+            logger.info("score_miner_asset_classes: <= 1 miner, returning empty dicts (no competition)")
             return {}, {}
 
         if evaluation_time_ms is None:
@@ -179,7 +180,7 @@ class Scoring:
         asset_competitiveness = {
             asset_class: sum(scores.values()) for asset_class, scores in asset_combined_scores.items()
         }
-        bt.logging.debug(f"Asset competitiveness: {asset_competitiveness}")
+        logger.debug(f"Asset competitiveness: {asset_competitiveness}")
 
         # Now we probably want to apply the softmax to the asset combined scores
         asset_miner_softmaxed_scores = Scoring.softmax_by_asset(asset_combined_scores)
@@ -210,10 +211,10 @@ class Scoring:
 
         """
         if ledger_dict is None or len(ledger_dict) == 0:
-            bt.logging.warning("No ledger provided for scoring, returning empty scores")
+            logger.warning("No ledger provided for scoring, returning empty scores")
 
         if positions is None or len(positions) == 0:
-            bt.logging.warning("No positions provided for scoring, returning empty scores")
+            logger.warning("No positions provided for scoring, returning empty scores")
 
         if evaluation_time_ms is None:
             evaluation_time_ms = TimeUtil.now_in_millis()
@@ -349,7 +350,7 @@ class Scoring:
             miner_penalties[miner] = cumulative_penalty
 
         if empty_ledger_miners:
-            bt.logging.warning(
+            logger.warning(
                 f"Unexpectedly skipping miners with empty ledgers [(hk, n_positions)]: {empty_ledger_miners}")
 
         return miner_penalties
@@ -359,14 +360,14 @@ class Scoring:
         """
         Args: scores: dict[str, float] - the scores of the miner returns
         """
-        # bt.logging.info(f"Normalizing scores: {scores}")
+        # logger.info(f"Normalizing scores: {scores}")
         if len(scores) == 0:
-            bt.logging.info("No scores to normalize, returning empty list")
+            logger.info("No scores to normalize, returning empty list")
             return {}
 
         sum_scores = sum(scores.values())
         if sum_scores == 0:
-            bt.logging.info("sum_scores is 0, returning empty list")
+            logger.info("sum_scores is 0, returning empty list")
             return {}
 
         normalized_scores = {
@@ -457,7 +458,7 @@ class Scoring:
             asset_class_emission = asset_class_breakdown.get(asset_class, {}).get('emission', 0.0)
 
             if asset_class_emission == 0:
-                bt.logging.warning(f"Asset class {asset_class} has no emission. Please report this issue!")
+                logger.warning(f"Asset class {asset_class} has no emission. Please report this issue!")
 
             for miner, score in scores.items():
                 if miner not in aggregated_scores:
@@ -485,11 +486,11 @@ class Scoring:
         temperature = ValiConfig.SOFTMAX_TEMPERATURE
 
         if not returns:
-            bt.logging.debug("No returns to score, returning empty list")
+            logger.debug("No returns to score, returning empty list")
             return []
 
         if len(returns) == 1:
-            bt.logging.info("softmax_scores - Only one miner, returning 1.0 for the solo miner weight")
+            logger.info("softmax_scores - Only one miner, returning 1.0 for the solo miner weight")
             return [(returns[0][0], 1.0)]
 
         # Extract scores and apply softmax with temperature
@@ -525,12 +526,12 @@ class Scoring:
         Args: miner_scores: list[tuple[str, float]] - the scores of the miners
         """
         if len(miner_scores) == 0:
-            bt.logging.debug("No miner scores to compute percentiles, returning empty list")
+            logger.debug("No miner scores to compute percentiles, returning empty list")
             return []
 
         if len(miner_scores) == 1:
             miner, score = miner_scores[0]
-            bt.logging.info(
+            logger.info(
                 f"miner_scores_percentiles - Only one miner: {miner}, returning 1.0 for the solo miner weight")
             return [(miner, 1.0)]
 
@@ -562,7 +563,7 @@ class Scoring:
         MAX_WEIGHT = ValiConfig.CHALLENGE_PERIOD_MAX_WEIGHT
 
         if not ledgers or not miner_scores:
-            bt.logging.info(f"Ledgers: {ledgers} and miner scores: {miner_scores}, returning empty list")
+            logger.info(f"Ledgers: {ledgers} and miner scores: {miner_scores}, returning empty list")
             return []
 
         time_weighted = sorted(

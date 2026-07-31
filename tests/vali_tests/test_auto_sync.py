@@ -16,6 +16,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
+from shared_objects.log import logger
 
 
 class TestAutoSync(TestBase):
@@ -122,7 +123,7 @@ class TestAutoSync(TestBase):
         except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
             # Server may have crashed - log and skip (tests that need metagraph will fail anyway)
             import bittensor as bt
-            bt.logging.warning(f"Failed to set metagraph hotkeys in setUp (server may have crashed): {e}")
+            logger.warning(f"Failed to set metagraph hotkeys in setUp (server may have crashed): {e}")
 
         # Create default test data
         self.default_order = Order(

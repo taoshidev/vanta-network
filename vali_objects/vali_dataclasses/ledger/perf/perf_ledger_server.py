@@ -29,6 +29,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
+from shared_objects.log import logger
 
 
 class PerfLedgerServer(RPCServerBase):
@@ -86,7 +87,7 @@ class PerfLedgerServer(RPCServerBase):
             parallel_mode=parallel_mode
         )
 
-        bt.logging.info(f"[PERFLEDGER_SERVER] PerfLedgerManager initialized")
+        logger.info(f"[PERFLEDGER_SERVER] PerfLedgerManager initialized")
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -114,20 +115,20 @@ class PerfLedgerServer(RPCServerBase):
     def run_daemon_iteration(self) -> None:
         """Single iteration of daemon work - delegates to manager's update loop logic."""
         if self.sync_in_progress:
-            bt.logging.debug("[PERF_LEDGER_DAEMON] Sync in progress, pausing...")
+            logger.debug("[PERF_LEDGER_DAEMON] Sync in progress, pausing...")
             return
 
         if self._manager.refresh_allowed(ValiConfig.PERF_LEDGER_REFRESH_TIME_MS):
-            bt.logging.info("[PERF_LEDGER_DAEMON] Starting perf ledger update...")
+            logger.info("[PERF_LEDGER_DAEMON] Starting perf ledger update...")
             self._manager.update(regenerate_all_ledgers=False)
             self._regenerate_all_ledgers = False
             self._manager.set_last_update_time(skip_message=False)  # Enable logging to confirm updates
-            bt.logging.success("[PERF_LEDGER_DAEMON] Perf ledger update completed")
+            logger.info("[PERF_LEDGER_DAEMON] Perf ledger update completed")
         else:
             # Log when refresh is not allowed (helps diagnose silent daemon)
             time_since_last_update_ms = TimeUtil.now_in_millis() - self._manager.get_last_update_time_ms()
             time_until_next_update_ms = ValiConfig.PERF_LEDGER_REFRESH_TIME_MS - time_since_last_update_ms
-            bt.logging.debug(
+            logger.debug(
                 f"[PERF_LEDGER_DAEMON] Refresh not allowed yet "
                 f"(next update in {time_until_next_update_ms/1000:.1f}s)"
             )
@@ -191,7 +192,7 @@ class PerfLedgerServer(RPCServerBase):
         if not miners_to_wipe:
             return
 
-        bt.logging.info(f'[PERFLEDGER_SERVER] Wiping perf ledgers for {len(miners_to_wipe)} miners')
+        logger.info(f'[PERFLEDGER_SERVER] Wiping perf ledgers for {len(miners_to_wipe)} miners')
 
         # Get current ledgers
         perf_ledgers = self._manager.get_perf_ledgers()
@@ -201,7 +202,7 @@ class PerfLedgerServer(RPCServerBase):
         perf_ledgers_new = {k: v for k, v in perf_ledgers.items() if k not in miners_to_wipe}
         n_after = len(perf_ledgers_new)
 
-        bt.logging.info(f'[PERFLEDGER_SERVER] Wiped perf ledgers: {n_before} -> {n_after}')
+        logger.info(f'[PERFLEDGER_SERVER] Wiped perf ledgers: {n_before} -> {n_after}')
 
         # Save filtered ledgers
         self._manager.save_perf_ledgers(perf_ledgers_new)

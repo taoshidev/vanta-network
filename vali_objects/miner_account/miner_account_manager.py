@@ -28,6 +28,7 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
+from shared_objects.log import logger
 
 
 # ==================== Data Classes ====================
@@ -348,9 +349,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 self.accounts.clear()
                 self.accounts.update(parsed_accounts)
 
-            bt.logging.info(f"Loaded {len(self.accounts)} miner accounts from disk")
+            logger.info(f"Loaded {len(self.accounts)} miner accounts from disk")
         except Exception as e:
-            bt.logging.warning(f"Failed to load miner accounts from disk: {e}")
+            logger.warning(f"Failed to load miner accounts from disk: {e}")
 
     def re_init_account_sizes(self):
         """Public method to reload accounts from disk (useful for tests)"""
@@ -363,7 +364,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 data_dict = self.accounts_dict()
                 ValiBkpUtils.write_file(self.MINER_ACCOUNTS_FILE, data_dict)
             except Exception as e:
-                bt.logging.error(f"Failed to save miner accounts to disk: {e}")
+                logger.error(f"Failed to save miner accounts to disk: {e}")
 
     def accounts_dict(self, most_recent_only: bool = False) -> Dict[str, Any]:
         """Convert miner accounts to checkpoint format for backup/sync
@@ -448,7 +449,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     try:
                         capital_used_by_class[TradePairCategory(cat_str)] = float(amount)
                     except ValueError:
-                        bt.logging.warning(f"Unknown asset_class '{cat_str}' in capital_used_by_class for {hotkey}; skipping")
+                        logger.warning(f"Unknown asset_class '{cat_str}' in capital_used_by_class for {hotkey}; skipping")
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -474,7 +475,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                         try:
                             asset_class = MinerAssetClass(asset_class_str)
                         except ValueError:
-                            bt.logging.warning(f"Unknown asset_class '{asset_class_str}' for {hotkey}")
+                            logger.warning(f"Unknown asset_class '{asset_class_str}' for {hotkey}")
 
                 # Parse miner_bucket from disk (None for legacy data, filled on first CP refresh)
                 miner_bucket = None
@@ -482,7 +483,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     try:
                         miner_bucket = MinerBucket(miner_bucket_str)
                     except ValueError:
-                        bt.logging.warning(f"Unknown miner_bucket '{miner_bucket_str}' for {hotkey}")
+                        logger.warning(f"Unknown miner_bucket '{miner_bucket_str}' for {hotkey}")
 
                 daily_open_snapshot = None
                 if daily_open_snapshot_raw:
@@ -509,7 +510,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 )
 
             except Exception as e:
-                bt.logging.warning(f"Failed to parse account for {hotkey}: {e}")
+                logger.warning(f"Failed to parse account for {hotkey}: {e}")
 
         return parsed_accounts
 
@@ -522,7 +523,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             with self._accounts_lock:
                 if not account_sizes_data:
                     assert self.running_unit_tests, "Empty account sizes data can only be used in test mode"
-                    bt.logging.info("Clearing all miner accounts")
+                    logger.info("Clearing all miner accounts")
                     self.accounts.clear()
                     self._save_accounts_to_disk()
                     return
@@ -533,9 +534,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 self.accounts.update(parsed_accounts)
 
                 self._save_accounts_to_disk()
-                bt.logging.info(f"Synced {len(self.accounts)} miner accounts")
+                logger.info(f"Synced {len(self.accounts)} miner accounts")
         except Exception as e:
-            bt.logging.error(f"Failed to sync miner accounts data: {e}")
+            logger.error(f"Failed to sync miner accounts data: {e}")
 
     # ==================== Account Size Methods ====================
 
@@ -554,7 +555,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             CollateralRecord if successful, None otherwise
         """
         if collateral_balance_theta is None:
-            bt.logging.warning(f"Could not set account size for {hotkey}: collateral_balance is None")
+            logger.warning(f"Could not set account size for {hotkey}: collateral_balance is None")
             return None
 
         # CRITICAL SECTION: Acquire lock for timestamp + record creation + append + save
@@ -580,7 +581,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 last_record = account.collateral_records[-1]
                 if (last_record.account_size == collateral_record.account_size and
                         last_record.account_size_theta == collateral_record.account_size_theta):
-                    bt.logging.info(f"Skipping save for {hotkey} - new record matches last record")
+                    logger.info(f"Skipping save for {hotkey} - new record matches last record")
                     return collateral_record
             # Add the new record and update account size
             account.add_collateral_record(collateral_record)
@@ -597,7 +598,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             # Save to disk
             self._save_accounts_to_disk()
 
-        bt.logging.info(
+        logger.info(
             f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
 
         return collateral_record
@@ -634,13 +635,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
         with self._accounts_lock:
             if hotkey in self.accounts:
                 del self.accounts[hotkey]
-                bt.logging.info(f"Deleted account size for {hotkey}")
+                logger.info(f"Deleted account size for {hotkey}")
 
                 # Save to disk
                 self._save_accounts_to_disk()
                 return True
             else:
-                bt.logging.debug(f"No account size to delete for {hotkey}")
+                logger.debug(f"No account size to delete for {hotkey}")
                 return True  # Return True - idempotent behavior
 
     def get_miner_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
@@ -703,10 +704,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account_size = collateral_record_data.get("account_size")
                 account_size_theta = collateral_record_data.get("account_size_theta")
                 update_time_ms = collateral_record_data.get("update_time_ms")
-                bt.logging.info(f"Processing collateral record update for miner {hotkey}")
+                logger.info(f"Processing collateral record update for miner {hotkey}")
 
                 if not all([hotkey, account_size is not None, update_time_ms]):
-                    bt.logging.warning(f"Invalid collateral record data received: {collateral_record_data}")
+                    logger.warning(f"Invalid collateral record data received: {collateral_record_data}")
                     return False
 
                 # Create a CollateralRecord object
@@ -719,7 +720,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 # Check if we already have this record (avoid duplicates)
                 if account.collateral_records:
                     if account.collateral_records[-1].account_size == account_size:
-                        bt.logging.debug(f"Most recent collateral record for {hotkey} already exists")
+                        logger.debug(f"Most recent collateral record for {hotkey} already exists")
                         return True
 
                 # Add the new record and update account size
@@ -728,14 +729,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 # Save to disk
                 self._save_accounts_to_disk()
 
-                bt.logging.info(
+                logger.info(
                     f"Updated miner account size for {hotkey}: ${account_size} (valid from {collateral_record.valid_date_str})")
                 return True
 
         except Exception as e:
-            bt.logging.error(f"Error processing collateral record update: {e}")
+            logger.error(f"Error processing collateral record update: {e}")
             import traceback
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return False
 
     # ==================== MinerAccount Cache Methods ====================
@@ -868,7 +869,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             self._save_accounts_to_disk()
 
-            bt.logging.info(
+            logger.info(
                 f"[PROCESS ORDER BUY {hotkey}] ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
@@ -908,7 +909,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             self._save_accounts_to_disk()
 
-            bt.logging.info(
+            logger.info(
                 f"[PROCESS ORDER SELL {hotkey}] entry_value=${entry_value_usd:.2f}, pnl=${realized_pnl:.2f}, "
                 f"loan_repaid=${loan_repaid:.2f}, balance=${account.balance:.2f}, buying_power=${account.buying_power:.2f}"
             )
@@ -961,7 +962,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             self._save_accounts_to_disk()
 
         elapsed_ms = TimeUtil.now_in_millis() - now_ms
-        bt.logging.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms} in {elapsed_ms}ms")
+        logger.info(f"Recorded daily open snapshots for {count} miners at day_open_ms={day_open_ms} in {elapsed_ms}ms")
         return count
 
     # ==================== Asset Selection / Withdrawal Methods ====================
@@ -1011,7 +1012,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.capital_used_by_class = computed.capital_used_by_class
             self._save_accounts_to_disk()
 
-        bt.logging.info(
+        logger.info(
             f"[REBUILD {hotkey}] capital_used=${account.capital_used:.2f}, "
             f"realized_pnl=${account.total_realized_pnl:.2f}, "
             f"fees_paid=${account.total_fees_paid:.2f}, "
@@ -1027,7 +1028,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             # Save to disk
             self._save_accounts_to_disk()
 
-            bt.logging.info(
+            logger.info(
                 f"[{hotkey}] Set asset class to {asset_selection.value}: "
                 f"balance: ${account.balance:.2f}, buying_power: ${account.buying_power:.2f}"
             )

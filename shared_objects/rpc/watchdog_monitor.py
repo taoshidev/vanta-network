@@ -11,6 +11,7 @@ import threading
 import bittensor as bt
 from time_util.time_util import TimeUtil
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+from shared_objects.log import logger
 
 
 class WatchdogMonitor:
@@ -67,7 +68,7 @@ class WatchdogMonitor:
     def start(self) -> None:
         """Start the watchdog monitoring thread."""
         if self._started:
-            bt.logging.warning(f"{self.service_name} watchdog already started")
+            logger.warning(f"{self.service_name} watchdog already started")
             return
 
         self._started = True
@@ -77,7 +78,7 @@ class WatchdogMonitor:
             name=f"{self.service_name}_Watchdog"
         )
         self._watchdog_thread.start()
-        bt.logging.info(
+        logger.info(
             f"{self.service_name} watchdog started "
             f"(timeout: {self.hang_timeout_s}s)"
         )
@@ -118,11 +119,11 @@ class WatchdogMonitor:
                     f"(threshold: {self.hang_timeout_s}s)\n"
                     f"The daemon may be stuck and require investigation."
                 )
-                bt.logging.error(hang_msg)
+                logger.error(hang_msg)
                 if self.slack_notifier:
                     self.slack_notifier.send_message(hang_msg, level="error")
 
-        bt.logging.debug(f"{self.service_name} watchdog shutting down")
+        logger.debug(f"{self.service_name} watchdog shutting down")
 
     @property
     def last_heartbeat_ms(self) -> int:

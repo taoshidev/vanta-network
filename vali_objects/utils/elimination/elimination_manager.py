@@ -49,6 +49,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_utils.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
+from shared_objects.log import logger
 
 
 # Constants for departed hotkeys tracking
@@ -367,7 +368,7 @@ class EliminationManager(CacheController):
 
         self.last_new_eliminations_checked_ms: int = TimeUtil.now_in_millis()
 
-        bt.logging.info(f"[ELIM_MANAGER] EliminationManager initialized with {len(self.eliminations)} eliminations")
+        logger.info(f"[ELIM_MANAGER] EliminationManager initialized with {len(self.eliminations)} eliminations")
 
     # ==================== Pickle Prevention ====================
 
@@ -423,34 +424,34 @@ class EliminationManager(CacheController):
             if not self.first_refresh_ran:
                 self.first_refresh_ran = True
 
-            bt.logging.info(
+            logger.info(
                 f"running elimination manager. invalidation data "
                 f"{dict(self._perf_ledger_client.get_perf_ledger_hks_to_invalidate())}"
             )
 
-            bt.logging.debug("[ELIM_PROCESS] Starting handle_mdd_eliminations")
+            logger.debug("[ELIM_PROCESS] Starting handle_mdd_eliminations")
             self.handle_mdd_eliminations()
 
-            bt.logging.debug("[ELIM_PROCESS] Starting handle_zombies")
+            logger.debug("[ELIM_PROCESS] Starting handle_zombies")
             self.handle_zombies()
 
-            bt.logging.debug("[ELIM_PROCESS] Starting handle_idle_miners")
+            logger.debug("[ELIM_PROCESS] Starting handle_idle_miners")
             self.handle_idle_miners()
 
             # Run after other checks so MDD/zombie/etc. take priority over DEREGISTERED
-            bt.logging.debug("[ELIM_PROCESS] Starting handle_departed_hotkeys")
+            logger.debug("[ELIM_PROCESS] Starting handle_departed_hotkeys")
             self.handle_departed_hotkeys()
 
-            bt.logging.debug("[ELIM_PROCESS] Starting _cleanup_eliminated_miners")
+            logger.debug("[ELIM_PROCESS] Starting _cleanup_eliminated_miners")
             self._cleanup_eliminated_miners(iteration_epoch)
 
-            bt.logging.debug("[ELIM_PROCESS] Completed successfully")
+            logger.debug("[ELIM_PROCESS] Completed successfully")
             # self.set_last_update_time()
 
             return self._to_slack_message()
 
         except Exception as e:
-            bt.logging.error(f"[ELIM_PROCESS] process_eliminations() failed with exception: {e}", exc_info=True)
+            logger.error(f"[ELIM_PROCESS] process_eliminations() failed with exception: {e}", exc_info=True)
             # Re-raise to let RPC framework handle it properly
             raise
 
@@ -475,12 +476,12 @@ class EliminationManager(CacheController):
 
         Acquires eliminations_lock to ensure atomic check-update-save operation.
         """
-        bt.logging.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
+        logger.info(f"[ELIM_DEBUG] append_elimination_row called for {hotkey}, reason={reason}")
         if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
             return
 
         if hotkey in self.eliminations:
-            bt.logging.warning(f"[ELIM_DEBUG] Attempted to eliminate {hotkey} already in eliminations "
+            logger.warning(f"[ELIM_DEBUG] Attempted to eliminate {hotkey} already in eliminations "
                                f"(original elimination: {self.eliminations[hotkey]})")
             return
 
@@ -511,10 +512,10 @@ class EliminationManager(CacheController):
             drawdown_threshold = _drawdown_thresholds.get(reason, 1 - ValiConfig.MAX_TOTAL_DRAWDOWN)  # Other elimination reasons default to max drawdown 10%
             slash_proportion = (elimination_drawdown_pct or 0) / (drawdown_threshold*100)
             slash_proportion = max(0.0, min(1.0, slash_proportion))
-            bt.logging.info(f"Elimination slash proportion: {slash_proportion}")
+            logger.info(f"Elimination slash proportion: {slash_proportion}")
             collateral_slashed = self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion)
             if not collateral_slashed:
-                bt.logging.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}")
+                logger.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}")
 
         if is_subaccount and bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
             # Assume succes (slashed on entity collateral daemon)
@@ -523,7 +524,7 @@ class EliminationManager(CacheController):
 
         cancel_results = self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", elimination_time_ms, order_src=OrderSource.ELIMINATION_CANCELLED)
         if cancel_results:
-            bt.logging.info(f"Cancelled limit orders for eliminated miner [{hotkey}] {cancel_results}")
+            logger.info(f"Cancelled limit orders for eliminated miner [{hotkey}] {cancel_results}")
 
         closed = self._position_client.close_all_positions(hotkey, elimination_time_ms, OrderSource.PRICE_FILLED_ELIMINATION_FLAT)
         if closed:
@@ -541,13 +542,13 @@ class EliminationManager(CacheController):
                 row_added_ms=TimeUtil.now_in_millis(),
                 collateral_slashed=collateral_slashed
         )
-        bt.logging.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
+        logger.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
 
         with self.eliminations_lock:
             dict_len_before = len(self.eliminations)
             self.eliminations[hotkey] = elimination_row
             dict_len_after = len(self.eliminations)
-            bt.logging.info(f"[ELIM_DEBUG] Eliminations dict grew from {dict_len_before} to {dict_len_after} entries")
+            logger.info(f"[ELIM_DEBUG] Eliminations dict grew from {dict_len_before} to {dict_len_after} entries")
 
             # Save while holding lock to prevent concurrent disk writes
             self._save_eliminations_locked()
@@ -567,7 +568,7 @@ class EliminationManager(CacheController):
 
     def handle_mdd_eliminations(self):
         """Check for MDD eliminations."""
-        bt.logging.info("checking main competition for maximum drawdown eliminations.")
+        logger.info("checking main competition for maximum drawdown eliminations.")
 
         # Get MAINCOMP hotkeys from cp_client
         regular_miner_buckets = [bucket for bucket in MinerBucket if bucket.is_regular_miner]
@@ -583,7 +584,7 @@ class EliminationManager(CacheController):
             miner_exceeds_mdd, drawdown_percentage = LedgerUtils.is_beyond_max_drawdown(ledger_element=ledger)
 
             if miner_exceeds_mdd:
-                bt.logging.info(f"[ELIMINATION] {miner_hotkey} mdd={drawdown_percentage:.2f}%, mdd elimination disabled for now")
+                logger.info(f"[ELIMINATION] {miner_hotkey} mdd={drawdown_percentage:.2f}%, mdd elimination disabled for now")
                 # TODO enable mdd
                 # self.append_elimination_row(miner_hotkey, EliminationReason.MAX_TOTAL_DRAWDOWN.value, elimination_drawdown_pct=drawdown_percentage)
 
@@ -606,7 +607,7 @@ class EliminationManager(CacheController):
         now_ms = TimeUtil.now_in_millis()
         IDLE_ELIMINATION_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-06-08 00:00:00")
 
-        bt.logging.info("checking all active buckets for inactive miner eliminations.")
+        logger.info("checking all active buckets for inactive miner eliminations.")
 
         active_buckets = [MinerBucket.MAINCOMP, MinerBucket.CHALLENGE, MinerBucket.PROBATION,
                           MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA]
@@ -626,7 +627,7 @@ class EliminationManager(CacheController):
         idle_hotkeys = {}
         near_idle_hotkeys = {}
 
-        bt.logging.info(f"Inactive miner cutoff: {TimeUtil.millis_to_formatted_date_str(now_ms - idle_threshold_ms)}")
+        logger.info(f"Inactive miner cutoff: {TimeUtil.millis_to_formatted_date_str(now_ms - idle_threshold_ms)}")
         for hotkey, positions in hotkey_to_positions.items():
             if hotkey in self.eliminations:
                 continue
@@ -636,12 +637,12 @@ class EliminationManager(CacheController):
 
             if last_order_ms is not None and (now_ms - last_order_ms) > idle_threshold_ms:
                 idle_hotkeys[hotkey] = last_order_ms
-                bt.logging.info(
+                logger.info(
                     f"inactive miner detected: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
                 )
             elif last_order_ms is not None and (now_ms - last_order_ms) > near_idle_threshold_ms:
                 near_idle_hotkeys[hotkey] = last_order_ms
-                bt.logging.info(
+                logger.info(
                     f"Miner approaching inactive threshold: {hotkey}. Last order: {last_order_ms} ({TimeUtil.millis_to_formatted_date_str(last_order_ms)})"
                 )
 
@@ -649,7 +650,7 @@ class EliminationManager(CacheController):
             return
 
         for hotkey, last_order_ms in idle_hotkeys.items():
-            bt.logging.info(f"Eliminating inactive miner {hotkey}.")
+            logger.info(f"Eliminating inactive miner {hotkey}.")
             self.append_elimination_row(hotkey=hotkey, reason=EliminationReason.INACTIVE, elimination_time_ms=last_order_ms+idle_threshold_ms)
 
 
@@ -671,14 +672,14 @@ class EliminationManager(CacheController):
             gained_hotkeys = current_hotkeys - self.previous_metagraph_hotkeys
 
             if lost_hotkeys:
-                bt.logging.debug(f"Metagraph lost hotkeys: {lost_hotkeys}")
+                logger.debug(f"Metagraph lost hotkeys: {lost_hotkeys}")
             if gained_hotkeys:
-                bt.logging.debug(f"Metagraph gained hotkeys: {gained_hotkeys}")
+                logger.debug(f"Metagraph gained hotkeys: {gained_hotkeys}")
 
             deregistered_set = {hk for hk, row in self.eliminations.items() if row.reason == EliminationReason.DEREGISTERED.value}
             re_registered_hotkeys = gained_hotkeys & deregistered_set
             if re_registered_hotkeys:
-                bt.logging.warning(
+                logger.warning(
                     f"Detected {len(re_registered_hotkeys)} re-registered miners: {re_registered_hotkeys}. "
                     f"These hotkeys were previously de-registered and have re-registered. Their orders will be rejected."
                 )
@@ -687,12 +688,12 @@ class EliminationManager(CacheController):
             if lost_hotkeys and not is_anomalous:
                 new_departures = lost_hotkeys - set(self.eliminations.keys())
                 if new_departures:
-                    bt.logging.info(
+                    logger.info(
                         f"Tracked {len(new_departures)} newly departed hotkeys: {new_departures}. "
                         f"Total deregistered: {len(deregistered_set) + len(new_departures)}"
                     )
             elif lost_hotkeys:
-                bt.logging.warning(
+                logger.warning(
                     f"Detected anomalous metagraph change: {len(lost_hotkeys)} hotkeys lost "
                     f"({100 * len(lost_hotkeys) / len(self.previous_metagraph_hotkeys):.1f}% of total). "
                     f"Not tracking as departed to avoid false positives."
@@ -749,7 +750,7 @@ class EliminationManager(CacheController):
             if isinstance(departed_data, list):
                 departed_data = {hotkey: {"detected_ms": 0} for hotkey in departed_data}
             if departed_data:
-                bt.logging.info(f"Migrating {len(departed_data)} departed hotkeys from disk into eliminations")
+                logger.info(f"Migrating {len(departed_data)} departed hotkeys from disk into eliminations")
             return departed_data
         except Exception:
             pass
@@ -763,7 +764,7 @@ class EliminationManager(CacheController):
             if isinstance(departed_data, list):
                 departed_data = {hotkey: {"detected_ms": 0} for hotkey in departed_data}
             if departed_data:
-                bt.logging.info(f"Migrating {len(departed_data)} departed hotkeys from default file into eliminations")
+                logger.info(f"Migrating {len(departed_data)} departed hotkeys from default file into eliminations")
             return departed_data
         except Exception:
             return {}
@@ -841,7 +842,7 @@ class EliminationManager(CacheController):
             removed = [x for x in hotkeys_before if x not in hotkeys_after]
             added = [x for x in hotkeys_after if x not in hotkeys_before]
 
-            bt.logging.info(f'sync_eliminations: removed {len(removed)} {removed}, added {len(added)} {added}')
+            logger.info(f'sync_eliminations: removed {len(removed)} {removed}, added {len(added)} {added}')
 
             # Atomic batch update (clear + repopulate while holding lock)
             self.eliminations.clear()
@@ -919,10 +920,10 @@ class EliminationManager(CacheController):
             if not data:
                 return {}
             result = {e['hotkey']: EliminationRow.from_dict(e) for e in data}
-            bt.logging.trace(f"Loaded {len(result)} eliminations from disk")
+            logger.debug(f"Loaded {len(result)} eliminations from disk")
             return result
         except Exception as e:
-            bt.logging.warning(f"Could not load eliminations from disk: {e}. Starting with empty dict.")
+            logger.warning(f"Could not load eliminations from disk: {e}. Starting with empty dict.")
             return {}
 
     def _save_eliminations_to_disk(self, eliminations) -> None:
@@ -932,7 +933,7 @@ class EliminationManager(CacheController):
         if not isinstance(eliminations, list):
             eliminations = list(eliminations)
         ValiBkpUtils.write_file(self.ELIMINATIONS_FILE, {CacheController.ELIMINATIONS: eliminations})
-        bt.logging.info(f"[ELIM_DEBUG] Successfully wrote {len(eliminations)} eliminations to disk")
+        logger.info(f"[ELIM_DEBUG] Successfully wrote {len(eliminations)} eliminations to disk")
 
     def _save_eliminations_locked(self):
         """Save eliminations to disk (caller MUST hold eliminations_lock)."""

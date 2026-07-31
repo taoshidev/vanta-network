@@ -29,6 +29,8 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 
 from vali_objects.vali_dataclasses.position import Position
 from entity_management.entity_utils import is_synthetic_hotkey
+import logging
+from shared_objects.log import logger
 
 
 class PerfLedgerManager(CacheController):
@@ -121,17 +123,17 @@ class PerfLedgerManager(CacheController):
         self.update_to_n_open_positions = {}
         self._hl_funding_rates_cache: dict = {}  # (coin, position_uuid) -> funding_rates dict
         self.target_ledger_window_ms = target_ledger_window_ms
-        bt.logging.info(f"Running performance ledger manager with mode {self.parallel_mode.name}")
+        logger.info(f"Running performance ledger manager with mode {self.parallel_mode.name}")
         if self.is_backtesting or self.parallel_mode != ParallelizationMode.SERIAL:
-            bt.logging.debug("[PERF_LEDGER] Skipping disk load (backtesting or non-SERIAL mode)")
+            logger.debug("[PERF_LEDGER] Skipping disk load (backtesting or non-SERIAL mode)")
         else:
-            bt.logging.info("[PERF_LEDGER] Loading initial performance ledgers from disk...")
+            logger.info("[PERF_LEDGER] Loading initial performance ledgers from disk...")
             initial_perf_ledgers = self.get_perf_ledgers(from_disk=True)
-            bt.logging.success(f"[PERF_LEDGER] Loaded {len(initial_perf_ledgers)} performance ledger bundles from disk")
+            logger.info(f"[PERF_LEDGER] Loaded {len(initial_perf_ledgers)} performance ledger bundles from disk")
             for k, v in initial_perf_ledgers.items():
                 self.hotkey_to_perf_bundle[k] = v
             initial_frozen_ledgers = self.get_frozen_ledgers(from_disk=True)
-            bt.logging.success(f"[PERF_LEDGER] Loaded {len(initial_frozen_ledgers)} frozen performance ledgers from disk")
+            logger.info(f"[PERF_LEDGER] Loaded {len(initial_frozen_ledgers)} frozen performance ledgers from disk")
             for k, v in initial_frozen_ledgers.items():
                 self._frozen_ledgers[k] = v
         if secrets:
@@ -151,7 +153,7 @@ class PerfLedgerManager(CacheController):
                 coin, position.open_ms, current_time_ms
             )
         except Exception as e:
-            bt.logging.warning(f"[PERF_LEDGER] Failed to fetch HL funding rates for {coin}: {e}")
+            logger.warning(f"[PERF_LEDGER] Failed to fetch HL funding rates for {coin}: {e}")
             return None
 
     @property
@@ -189,7 +191,7 @@ class PerfLedgerManager(CacheController):
         for hk, ledger in frozen_from_disk.items():
             self._frozen_ledgers[hk] = ledger
 
-        bt.logging.info(f"Reinitialized {len(self.hotkey_to_perf_bundle)} perf ledgers and {len(self._frozen_ledgers)} frozen ledgers from disk")
+        logger.info(f"Reinitialized {len(self.hotkey_to_perf_bundle)} perf ledgers and {len(self._frozen_ledgers)} frozen ledgers from disk")
 
     def __getstate__(self):
         """
@@ -244,13 +246,13 @@ class PerfLedgerManager(CacheController):
 
     @staticmethod
     def print_bundle(hk: str, ledger: PerfLedger):
-        bt.logging.success(f'Hotkey: {hk}. Max return: {ledger.max_return}. Initialization time: {TimeUtil.millis_to_timestamp(ledger.initialization_time_ms)}')
-        bt.logging.info(f'  --portfolio-- ')
+        logger.info(f'Hotkey: {hk}. Max return: {ledger.max_return}. Initialization time: {TimeUtil.millis_to_timestamp(ledger.initialization_time_ms)}')
+        logger.info(f'  --portfolio-- ')
         for idx, x in enumerate(ledger.cps):
             last_update_formatted = TimeUtil.millis_to_timestamp(x.last_update_ms)
             if 1:  # idx == 0 or idx == len(ledger.cps) - 1:
-                bt.logging.info(f'    {idx} {last_update_formatted} {x}')
-        bt.logging.info('portfolio', f'max_perf_ledger_return: {ledger.max_return}')
+                logger.info(f'    {idx} {last_update_formatted} {x}')
+        logger.info('portfolio', f'max_perf_ledger_return: {ledger.max_return}')
 
     def get_perf_ledgers(self, from_disk=False) -> dict[str, PerfLedger]:
         ret = {}
@@ -281,7 +283,7 @@ class PerfLedgerManager(CacheController):
                     elif isinstance(value, PerfLedger):
                         ret[hk] = value
                 except Exception as e:
-                    bt.logging.error(f"Error reading perf ledger from disk for hotkey {hk}: {e}. Skipping; it will be rebuilt from position history.")
+                    logger.error(f"Error reading perf ledger from disk for hotkey {hk}: {e}. Skipping; it will be rebuilt from position history.")
             return ret
 
         return dict(self.hotkey_to_perf_bundle)
@@ -306,7 +308,7 @@ class PerfLedgerManager(CacheController):
                     elif isinstance(value, PerfLedger):
                         ret[hk] = value
                 except Exception as e:
-                    bt.logging.error(f"Error reading frozen perf ledger from disk for hotkey {hk}: {e}. Skipping.")
+                    logger.error(f"Error reading frozen perf ledger from disk for hotkey {hk}: {e}. Skipping.")
             return ret
 
         return dict(self._frozen_ledgers)
@@ -352,7 +354,7 @@ class PerfLedgerManager(CacheController):
                 continue
 
             if hotkey in self.perf_ledger_hks_to_invalidate:
-                bt.logging.warning(f"Skipping hotkey {hotkey} in filtered_ledger_for_scoring due to invalidation.")
+                logger.warning(f"Skipping hotkey {hotkey} in filtered_ledger_for_scoring due to invalidation.")
                 continue
 
             if perf_ledger is None or len(perf_ledger.cps) == 0:
@@ -396,7 +398,7 @@ class PerfLedgerManager(CacheController):
         file_path = ValiBkpUtils.get_frozen_perf_ledgers_path(self.running_unit_tests)
         ValiBkpUtils.write_compressed_json(file_path, frozen_ledgers_data)
         self._frozen_ledgers = self.get_frozen_ledgers(from_disk=True)
-        bt.logging.info(f"Synced {len(self._frozen_ledgers)} frozen perf ledgers from auto sync")
+        logger.info(f"Synced {len(self._frozen_ledgers)} frozen perf ledgers from auto sync")
 
     @staticmethod
     def clear_perf_ledgers_from_disk_autosync(hotkeys:list):
@@ -438,7 +440,7 @@ class PerfLedgerManager(CacheController):
 
     def run_update_loop(self):
         setproctitle(f"vali_{self.__class__.__name__}")
-        bt.logging.enable_info()
+        logger.setLevel(logging.INFO)
         while not self._is_shutdown():
             try:
                 if self.refresh_allowed(ValiConfig.PERF_LEDGER_REFRESH_TIME_MS):
@@ -447,8 +449,8 @@ class PerfLedgerManager(CacheController):
 
             except Exception as e:
                 # Handle exceptions or log errors
-                bt.logging.error(f"Error during perf ledger update: {e}. Please alert a team member ASAP!")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"Error during perf ledger update: {e}. Please alert a team member ASAP!")
+                logger.error(traceback.format_exc())
                 time.sleep(30)
             time.sleep(1)
 
@@ -483,7 +485,7 @@ class PerfLedgerManager(CacheController):
             last_event_time_ms = max(p.orders[-1].processed_ms, last_event_time_ms)
 
             if p.is_closed_position and len(p.orders) < 2:
-                bt.logging.warning(f"perf ledger generate_order_timeline. Skipping closed position for hk {hk} with < 2 orders: {p}")
+                logger.warning(f"perf ledger generate_order_timeline. Skipping closed position for hk {hk} with < 2 orders: {p}")
                 continue
             for o in p.orders:
                 if o.processed_ms <= now_ms:
@@ -561,7 +563,7 @@ class PerfLedgerManager(CacheController):
             ans = ShortcutReason.OUTSIDE_WINDOW
 
         if 0 and ans != ShortcutReason.NO_SHORTCUT:
-            bt.logging.info('---------------------------------------------------------------------')
+            logger.info('---------------------------------------------------------------------')
             for tp_id, historical_positions in tp_to_historical_positions.items():
                 positions = []
                 for i, historical_position in enumerate(historical_positions):
@@ -573,14 +575,14 @@ class PerfLedgerManager(CacheController):
                         foo = False
                     positions.append((historical_position.position_uuid, [x.price for x in historical_position.orders],
                                       historical_position.return_at_close, foo, historical_position.is_open_position))
-                bt.logging.info(f'{tp_id}: {positions}')
+                logger.info(f'{tp_id}: {positions}')
 
             final_cp = portfolio_pl.cps[-1] if portfolio_pl and portfolio_pl.cps else None
             n_orders_per_position_counter = Counter()
             for tp_id, historical_positions in tp_to_historical_positions.items():
                 for historical_position in historical_positions:
                     n_orders_per_position_counter[len(historical_position.orders)] += 1
-            bt.logging.info(f' Skipping ({reason}) with n_positions: {n_positions} n_open_positions: {n_open_positions} n_closed_positions: '
+            logger.info(f' Skipping ({reason}) with n_positions: {n_positions} n_open_positions: {n_open_positions} n_closed_positions: '
                   f'{n_closed_positions}, n_positions_newly_opened: {n_positions_newly_opened}, '
                   f'start_time_ms: {TimeUtil.millis_to_formatted_date_str(start_time_ms)} ({start_time_ms}) , '
                   f'end_time_ms: {TimeUtil.millis_to_formatted_date_str(end_time_ms)} ({end_time_ms}) , '
@@ -589,7 +591,7 @@ class PerfLedgerManager(CacheController):
                   f'portfolio_ret: {self.portfolio_ret} '
                   f'n_orders_per_position_counter: {n_orders_per_position_counter} '
                   f'final portfolio cp {final_cp}')
-            bt.logging.info('---------------------------------------------------------------------')
+            logger.info('---------------------------------------------------------------------')
 
         return ans, portfolio_return, portfolio_realized_pnl, portfolio_unrealized_pnl, any_open
 
@@ -791,7 +793,7 @@ class PerfLedgerManager(CacheController):
 
     def check_liquidated(self, miner_hotkey, portfolio_return, t_ms, tp_to_historical_positions, portfolio_pl: PerfLedger):
         if portfolio_return == 0:
-            bt.logging.warning(f"Portfolio value is {portfolio_return} for miner {miner_hotkey} at {t_ms}. Eliminating miner.")
+            logger.warning(f"Portfolio value is {portfolio_return} for miner {miner_hotkey} at {t_ms}. Eliminating miner.")
             #self.hk_to_dd_stats[miner_hotkey]['eliminated'] = True
             for _, v in tp_to_historical_positions.items():
                 for pos in v:
@@ -825,7 +827,7 @@ class PerfLedgerManager(CacheController):
             prev_price_key = tp_id + '_prev'
             if prev_price_key in portfolio_pl.last_known_prices:
                 del portfolio_pl.last_known_prices[prev_price_key]
-            bt.logging.debug(f"Removed closed position {tp_id} from price tracking")
+            logger.debug(f"Removed closed position {tp_id} from price tracking")
 
     def condense_positions(self, tp_to_historical_positions: dict[str: Position]) -> (float, float, dict[str: Position]):
         initial_return = 1.0
@@ -1033,12 +1035,12 @@ class PerfLedgerManager(CacheController):
             # A negative gap means we're re-processing old data (regeneration)
             # A positive gap means start_time is in the future - this is a bug
             if gap != 0:
-                bt.logging.error(f"BUG DETECTED: Attempting to build ledger starting from future time")
-                bt.logging.error(f"  Ledger ID: portfolio")
-                bt.logging.error(f"  Ledger last_update_ms: {expected_start} ({TimeUtil.millis_to_formatted_date_str(expected_start)})")
-                bt.logging.error(f"  Requested start_time_ms: {start_time_ms} ({TimeUtil.millis_to_formatted_date_str(start_time_ms)})")
-                bt.logging.error(f"  Gap: {gap/1000/60:.2f} minutes into the future")
-                bt.logging.error(f"  End time: {TimeUtil.millis_to_formatted_date_str(end_time_ms)}")
+                logger.error(f"BUG DETECTED: Attempting to build ledger starting from future time")
+                logger.error(f"  Ledger ID: portfolio")
+                logger.error(f"  Ledger last_update_ms: {expected_start} ({TimeUtil.millis_to_formatted_date_str(expected_start)})")
+                logger.error(f"  Requested start_time_ms: {start_time_ms} ({TimeUtil.millis_to_formatted_date_str(start_time_ms)})")
+                logger.error(f"  Gap: {gap/1000/60:.2f} minutes into the future")
+                logger.error(f"  End time: {TimeUtil.millis_to_formatted_date_str(end_time_ms)}")
                 raise AssertionError(
                     f"Cannot start building from future time. "
                     f"Ledger at {TimeUtil.millis_to_formatted_date_str(expected_start)}, "
@@ -1053,13 +1055,13 @@ class PerfLedgerManager(CacheController):
         if not is_ledger_first_update:
             gap_from_last_update = start_time_ms - portfolio_pl.last_update_ms
             if gap_from_last_update != 1:
-                bt.logging.error(f"Gap validation failed for portfolio:")
-                bt.logging.error(f"  perf_ledger.last_update_ms: {portfolio_pl.last_update_ms}")
-                bt.logging.error(f"  start_time_ms: {start_time_ms}")
-                bt.logging.error(f"  gap: {gap_from_last_update}")
-                bt.logging.error(f"  Ledger has {len(portfolio_pl.cps)} checkpoints")
+                logger.error(f"Gap validation failed for portfolio:")
+                logger.error(f"  perf_ledger.last_update_ms: {portfolio_pl.last_update_ms}")
+                logger.error(f"  start_time_ms: {start_time_ms}")
+                logger.error(f"  gap: {gap_from_last_update}")
+                logger.error(f"  Ledger has {len(portfolio_pl.cps)} checkpoints")
                 if len(portfolio_pl.cps) > 0:
-                    bt.logging.error(f"  Last checkpoint time: {portfolio_pl.cps[-1].last_update_ms}")
+                    logger.error(f"  Last checkpoint time: {portfolio_pl.cps[-1].last_update_ms}")
             assert gap_from_last_update == 1, (
                 f"Gap detected for portfolio ledger between last_update_ms and start_time_ms: "
                 f"{gap_from_last_update/1000/60:.2f} minutes. "
@@ -1070,7 +1072,7 @@ class PerfLedgerManager(CacheController):
         # If we skipped time advancement (batch already processed), return now
         # We've already initialized any new trade pairs above, so we're done
         if skip_time_advancement:
-            bt.logging.debug(f"Skipping time advancement for miner {miner_hotkey} "
+            logger.debug(f"Skipping time advancement for miner {miner_hotkey} "
                            f"(batch already processed at {TimeUtil.millis_to_formatted_date_str(end_time_ms)})")
             return False
 
@@ -1083,7 +1085,7 @@ class PerfLedgerManager(CacheController):
         if shortcut_reason != ShortcutReason.NO_SHORTCUT:
             # Don't update if end_time is before the ledger's current state
             if portfolio_pl.last_update_ms > 0 and end_time_ms < portfolio_pl.last_update_ms:
-                bt.logging.warning(f"Skipping shortcut update for portfolio - end_time_ms ({TimeUtil.millis_to_formatted_date_str(end_time_ms)}) "
+                logger.warning(f"Skipping shortcut update for portfolio - end_time_ms ({TimeUtil.millis_to_formatted_date_str(end_time_ms)}) "
                                f"is before last_update_ms ({TimeUtil.millis_to_formatted_date_str(portfolio_pl.last_update_ms)})")
             else:
                 tp_return = self.get_bypass_values_if_applicable(
@@ -1152,7 +1154,7 @@ class PerfLedgerManager(CacheController):
             portfolio_realized_pnl = initial_realized_pnl
             portfolio_unrealized_pnl = initial_unrealized_pnl
 
-            bt.logging.warning(f"build_perf_ledger: while loop will not execute for miner {miner_hotkey}. "
+            logger.warning(f"build_perf_ledger: while loop will not execute for miner {miner_hotkey}. "
                              f"start_time: {TimeUtil.millis_to_formatted_date_str(start_time_ms)}, "
                              f"end_time: {TimeUtil.millis_to_formatted_date_str(end_time_ms)}")
 
@@ -1178,18 +1180,18 @@ class PerfLedgerManager(CacheController):
                 time_diff_ms = portfolio_pl.last_update_ms - t_ms
                 time_diff_days = time_diff_ms / (1000 * 60 * 60 * 24)
 
-                bt.logging.error("CRITICAL TIMESTAMP BUG DETECTED:")
-                bt.logging.error(f"  Current processing time: {t_ms} ({TimeUtil.millis_to_formatted_date_str(t_ms)})")
-                bt.logging.error(f"  Last checkpoint time:    {portfolio_pl.last_update_ms} ({TimeUtil.millis_to_formatted_date_str(portfolio_pl.last_update_ms)})")
-                bt.logging.error(f"  Time difference:         {time_diff_ms} ms ({time_diff_days:.1f} days)")
-                bt.logging.error(f"  Mode: {mode}")
-                bt.logging.error(f"  Parallel mode: {self.parallel_mode}")
-                bt.logging.error(f"  Checkpoint details: accum_ms={portfolio_pl.cps[-1].accum_ms if portfolio_pl.cps else 'No checkpoints'}")
+                logger.error("CRITICAL TIMESTAMP BUG DETECTED:")
+                logger.error(f"  Current processing time: {t_ms} ({TimeUtil.millis_to_formatted_date_str(t_ms)})")
+                logger.error(f"  Last checkpoint time:    {portfolio_pl.last_update_ms} ({TimeUtil.millis_to_formatted_date_str(portfolio_pl.last_update_ms)})")
+                logger.error(f"  Time difference:         {time_diff_ms} ms ({time_diff_days:.1f} days)")
+                logger.error(f"  Mode: {mode}")
+                logger.error(f"  Parallel mode: {self.parallel_mode}")
+                logger.error(f"  Checkpoint details: accum_ms={portfolio_pl.cps[-1].accum_ms if portfolio_pl.cps else 'No checkpoints'}")
 
                 if time_diff_days > 1:
-                    bt.logging.error(f"  EXTREME TIMESTAMP ERROR: Checkpoint is {time_diff_days:.1f} days in the future!")
-                    bt.logging.error("  This indicates a critical bug in void filling or boundary logic.")
-                    bt.logging.error(f"  Portfolio PL object: {portfolio_pl}")
+                    logger.error(f"  EXTREME TIMESTAMP ERROR: Checkpoint is {time_diff_days:.1f} days in the future!")
+                    logger.error("  This indicates a critical bug in void filling or boundary logic.")
+                    logger.error(f"  Portfolio PL object: {portfolio_pl}")
 
                 raise Exception(f'CRITICAL TIMESTAMP BUG DETECTED: t_ms {t_ms} is before last_update_ms {portfolio_pl.last_update_ms}. '
                                 f'Check logs for more details.')
@@ -1289,7 +1291,7 @@ class PerfLedgerManager(CacheController):
                         if hist_pos.position_uuid == closed_position.position_uuid:
                             portfolio_unrealized_pnl -= hist_pos.unrealized_pnl
                             portfolio_realized_pnl += closed_position.realized_pnl
-                            bt.logging.debug(
+                            logger.debug(
                                 f"Converted PnL for position {closed_position.position_uuid} closing during checkpoint: "
                                 f"removed unrealized ${hist_pos.unrealized_pnl:.2f}, added realized ${closed_position.realized_pnl:.2f}"
                             )
@@ -1332,7 +1334,7 @@ class PerfLedgerManager(CacheController):
                             continue
 
                         if last_price_ms <= position.orders[-1].processed_ms:
-                            bt.logging.warning(f'Unexpected price continuity rejection for {tp_id} at {t_ms} with last known price {last_price} at {last_price_ms}. Position last order at {position.orders[-1].processed_ms}')
+                            logger.warning(f'Unexpected price continuity rejection for {tp_id} at {t_ms} with last known price {last_price} at {last_price_ms}. Position last order at {position.orders[-1].processed_ms}')
                             continue
 
 
@@ -1372,7 +1374,7 @@ class PerfLedgerManager(CacheController):
 
         changes_str = ", ".join(changes_parts)
 
-        bt.logging.info(
+        logger.info(
             f"perf ledger price continuity applied for miner {hotkey}... | "
             f"Open positions: {n_open_positions} | "
             f"Trade pairs traded: {n_trade_pairs_traded} | "
@@ -1412,7 +1414,7 @@ class PerfLedgerManager(CacheController):
             first_order_time_ms = min(p.orders[0].processed_ms for p in positions)
             portfolio_pl = PerfLedger(initialization_time_ms=first_order_time_ms, target_ledger_window_ms=self.target_ledger_window_ms)
             verbose = True
-            bt.logging.info(f"Creating new perf ledger for {hotkey} with init time: {TimeUtil.millis_to_formatted_date_str(first_order_time_ms)}")
+            logger.info(f"Creating new perf ledger for {hotkey} with init time: {TimeUtil.millis_to_formatted_date_str(first_order_time_ms)}")
         else:
             portfolio_pl = deepcopy(portfolio_pl)
             verbose = False
@@ -1486,28 +1488,28 @@ class PerfLedgerManager(CacheController):
                     open_positions = [p for p in tp_to_historical_positions[symbol] if p.is_open_position]
                     last_position = tp_to_historical_positions[symbol][-1]
 
-                    bt.logging.error(f"ASSERTION VIOLATION DIAGNOSTICS for hotkey {hotkey} trade_pair {symbol}:")
-                    bt.logging.error(f"  n_open_positions: {n_open_positions}, n_closed_positions: {n_closed_positions}")
-                    bt.logging.error(f"  last_position.is_open_position: {last_position.is_open_position}")
-                    bt.logging.error(f"  last_position.is_closed_position: {last_position.is_closed_position}")
-                    bt.logging.error(f"  last_position.close_ms: {last_position.close_ms}")
-                    bt.logging.error(f"  last_position.position_type: {last_position.position_type}")
-                    bt.logging.error(f"  last_position.n_orders: {len(last_position.orders)}")
+                    logger.error(f"ASSERTION VIOLATION DIAGNOSTICS for hotkey {hotkey} trade_pair {symbol}:")
+                    logger.error(f"  n_open_positions: {n_open_positions}, n_closed_positions: {n_closed_positions}")
+                    logger.error(f"  last_position.is_open_position: {last_position.is_open_position}")
+                    logger.error(f"  last_position.is_closed_position: {last_position.is_closed_position}")
+                    logger.error(f"  last_position.close_ms: {last_position.close_ms}")
+                    logger.error(f"  last_position.position_type: {last_position.position_type}")
+                    logger.error(f"  last_position.n_orders: {len(last_position.orders)}")
 
                     # Check for inconsistent state: close_ms set but is_open_position=True
                     for i, p in enumerate(open_positions):
                         has_flat_order = any(o.order_type == OrderType.FLAT for o in p.orders)
-                        bt.logging.error(f"  open_position[{i}]:")
-                        bt.logging.error(f"    position_uuid: {p.position_uuid}")
-                        bt.logging.error(f"    close_ms: {p.close_ms} (INCONSISTENT: should be None for open positions)")
-                        bt.logging.error(f"    is_closed_position: {p.is_closed_position}")
-                        bt.logging.error(f"    position_type: {p.position_type}")
-                        bt.logging.error(f"    n_orders: {len(p.orders)}")
-                        bt.logging.error(f"    has_flat_order: {has_flat_order}")
-                        bt.logging.error(f"    order_types: {[o.order_type.value for o in p.orders]}")
-                        bt.logging.error(f"    order_sources: {[o.src for o in p.orders]}")
+                        logger.error(f"  open_position[{i}]:")
+                        logger.error(f"    position_uuid: {p.position_uuid}")
+                        logger.error(f"    close_ms: {p.close_ms} (INCONSISTENT: should be None for open positions)")
+                        logger.error(f"    is_closed_position: {p.is_closed_position}")
+                        logger.error(f"    position_type: {p.position_type}")
+                        logger.error(f"    n_orders: {len(p.orders)}")
+                        logger.error(f"    has_flat_order: {has_flat_order}")
+                        logger.error(f"    order_types: {[o.order_type.value for o in p.orders]}")
+                        logger.error(f"    order_sources: {[o.src for o in p.orders]}")
                         if not has_flat_order:
-                            bt.logging.error(f"    THEORY CONFIRMED: Open position WITHOUT FLAT order but likely manually closed!")
+                            logger.error(f"    THEORY CONFIRMED: Open position WITHOUT FLAT order but likely manually closed!")
 
                 assert n_open_positions == 0 or n_open_positions == 1, (n_open_positions, n_closed_positions, [p for p in tp_to_historical_positions[symbol] if p.is_open_position])
                 if n_open_positions == 1:
@@ -1590,7 +1592,7 @@ class PerfLedgerManager(CacheController):
             pl_update_start_time_ms = portfolio_pl.initialization_time_ms
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"Done updating perf ledger for {hotkey} {hotkey_i + 1}/{n_hotkeys} in {time.time() - t0:.2f}s. "
                 f"Update start time {TimeUtil.millis_to_formatted_date_str(pl_update_start_time_ms)}. End time {TimeUtil.millis_to_formatted_date_str(now_ms)}. "
                 f"Lag: {lag}s. Total product: {total_product}. Last portfolio value: {last_portfolio_value}."
@@ -1616,18 +1618,18 @@ class PerfLedgerManager(CacheController):
         n_hotkeys = len(hotkey_to_positions)
         for hotkey_i, (hotkey, positions) in enumerate(hotkey_to_positions.items()):
             try:
-                # bt.logging.info(f"Building perf ledger for {hotkey} ({hotkey_i + 1}/{n_hotkeys})")
+                # logger.info(f"Building perf ledger for {hotkey} ({hotkey_i + 1}/{n_hotkeys})")
                 account_size = hotkey_to_account_size.get(hotkey) if hotkey_to_account_size else None
                 self.update_one_perf_ledger_bundle(hotkey_i, n_hotkeys, hotkey, positions, now_ms, existing_perf_ledgers,
                                                    account_size=account_size)
             except Exception as e:
-                bt.logging.error(f"Error updating perf ledger for {hotkey}: {e}. Please alert a team member ASAP!")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"Error updating perf ledger for {hotkey}: {e}. Please alert a team member ASAP!")
+                logger.error(traceback.format_exc())
                 continue
 
         n_perf_ledgers = len(existing_perf_ledgers) if existing_perf_ledgers else 0
         n_hotkeys_with_positions = len(hotkey_to_positions) if hotkey_to_positions else 0
-        bt.logging.success(f"Done updating perf ledger for all hotkeys in {time.time() - t_init} s. n_perf_ledgers {n_perf_ledgers}. n_hotkeys_with_positions {n_hotkeys_with_positions}")
+        logger.info(f"Done updating perf ledger for all hotkeys in {time.time() - t_init} s. n_perf_ledgers {n_perf_ledgers}. n_hotkeys_with_positions {n_hotkeys_with_positions}")
         if self._is_shutdown():
             return
 
@@ -1661,7 +1663,7 @@ class PerfLedgerManager(CacheController):
                     hotkeys_with_no_positions.add(k)
             for k in hotkeys_with_no_positions:
                 del hotkey_to_positions[k]
-            bt.logging.info('PERF LEDGERS TOTAL N POSITIONS IN MEMORY: ' + str(n_positions_total), 'TOTAL N HOTKEYS IN MEMORY: ' + str(n_hotkeys_total))
+            logger.info('PERF LEDGERS TOTAL N POSITIONS IN MEMORY: ' + str(n_positions_total), 'TOTAL N HOTKEYS IN MEMORY: ' + str(n_hotkeys_total))
 
         return hotkey_to_positions, hotkeys_with_no_positions
 
@@ -1679,7 +1681,7 @@ class PerfLedgerManager(CacheController):
         if self.is_backtesting:
             if not t_ms:
                 raise Exception("t_ms must be provided in backtesting mode")
-            bt.logging.info(f'Updating perf ledgers for backtesting at time {TimeUtil.millis_to_formatted_date_str(t_ms)}')
+            logger.info(f'Updating perf ledgers for backtesting at time {TimeUtil.millis_to_formatted_date_str(t_ms)}')
         if t_ms is None:
             t_ms = TimeUtil.now_in_millis() - self.UPDATE_LOOKBACK_MS
 
@@ -1708,7 +1710,7 @@ class PerfLedgerManager(CacheController):
             if hk in perf_ledger_bundles and hk not in self._frozen_ledgers:
                 self._frozen_ledgers[hk] = perf_ledger_bundles[hk]
                 del perf_ledger_bundles[hk]
-                bt.logging.info(f"Moved frozen ledger for {hk} to frozen storage")
+                logger.info(f"Moved frozen ledger for {hk} to frozen storage")
 
         hotkeys_to_delete = set([x for x in hotkeys_with_no_positions if x in perf_ledger_bundles])
         rss_modified = False
@@ -1731,9 +1733,9 @@ class PerfLedgerManager(CacheController):
                 n_valid_times += 1
 
         if hotkeys_rrr:
-            bt.logging.warning(f'Removing recently re-registered hotkeys from perf ledgers. n_valid_times {n_valid_times} total_n_times {total_n_times}. pct valid {n_valid_times / total_n_times * 100:.2f}%')
+            logger.warning(f'Removing recently re-registered hotkeys from perf ledgers. n_valid_times {n_valid_times} total_n_times {total_n_times}. pct valid {n_valid_times / total_n_times * 100:.2f}%')
             for x in list(zip(hotkeys_rrr, deltas)):
-                bt.logging.warning(x)
+                logger.warning(x)
             hotkeys_to_delete.update(hotkeys_rrr)
 
         # Determine which hotkeys to remove from the perf ledger
@@ -1763,7 +1765,7 @@ class PerfLedgerManager(CacheController):
         if self.hks_attempting_invalidations:
             for hk, t in self.perf_ledger_hks_to_invalidate.items():
                 hotkeys_to_delete.add(hk)
-                bt.logging.info(f"perf ledger marked for full rebuild for hk {hk} due to position sync at time {t}")
+                logger.info(f"perf ledger marked for full rebuild for hk {hk} due to position sync at time {t}")
 
         for k in hotkeys_to_delete:
             if k in perf_ledger_bundles:
@@ -1774,24 +1776,24 @@ class PerfLedgerManager(CacheController):
         #hk_to_last_update_date = {k: TimeUtil.millis_to_formatted_date_str(v.last_update_ms)
         #                            if v.last_update_ms else 'N/A' for k, v in perf_ledgers.items()}
 
-        bt.logging.info(f"perf ledger PLM hotkeys to delete: {hotkeys_to_delete}. rss: {self.random_security_screenings}")
+        logger.info(f"perf ledger PLM hotkeys to delete: {hotkeys_to_delete}. rss: {self.random_security_screenings}")
 
         if regenerate_all_ledgers or testing_one_hotkey:
-            bt.logging.info("Regenerating all perf ledgers")
+            logger.info("Regenerating all perf ledgers")
             for k in list(perf_ledger_bundles.keys()):
                 del perf_ledger_bundles[k]
         try:
             self.restore_out_of_sync_ledgers(perf_ledger_bundles, hotkey_to_positions)
             if regenerate_all_ledgers or testing_one_hotkey:
-                bt.logging.info(f"  After restore_out_of_sync_ledgers: {len(perf_ledger_bundles)} ledgers")
+                logger.info(f"  After restore_out_of_sync_ledgers: {len(perf_ledger_bundles)} ledgers")
         except Exception as e:
-            bt.logging.warning(f"Couldn't restore out of sync ledgers: {e}. Continuing...")
-            bt.logging.warning(traceback.format_exc())
+            logger.warning(f"Couldn't restore out of sync ledgers: {e}. Continuing...")
+            logger.warning(traceback.format_exc())
 
         # Time in the past to start updating the perf ledgers
-        bt.logging.info("Fetching miner account sizes...")
+        logger.info("Fetching miner account sizes...")
         hotkey_to_account_size = self._miner_account_client.get_all_miner_account_sizes()
-        bt.logging.info(f"Got {len(hotkey_to_account_size)} miner account sizes. Starting update_all_perf_ledgers for {len(hotkey_to_positions)} hotkeys.")
+        logger.info(f"Got {len(hotkey_to_account_size)} miner account sizes. Starting update_all_perf_ledgers for {len(hotkey_to_positions)} hotkeys.")
         self.update_all_perf_ledgers(hotkey_to_positions, perf_ledger_bundles, t_ms, hotkey_to_account_size=hotkey_to_account_size)
 
         # Clear invalidations after successful update. Prevent race condition by only clearing if we attempted invalidation for specific hk
@@ -1831,7 +1833,7 @@ class PerfLedgerManager(CacheController):
             del self._frozen_ledgers[hk]
         if removed:
             self.save_frozen_ledgers_to_disk()
-            bt.logging.info(f"[PERF_LEDGER] Removed {len(removed)} hotkeys from frozen ledgers: {removed}")
+            logger.info(f"[PERF_LEDGER] Removed {len(removed)} hotkeys from frozen ledgers: {removed}")
 
     def save_frozen_ledgers_to_disk(self, frozen_ledgers: dict[str, PerfLedger] = None):
         if frozen_ledgers is None:
@@ -1905,7 +1907,7 @@ class PerfLedgerManager(CacheController):
         # Let's nuke them to allow freed hotkeys to escape elimination.
         for hk, t in self.perf_ledger_hks_to_invalidate.items():
             if hk not in self.hks_attempting_invalidations:
-                bt.logging.warning(f"perf ledger invalidated for hk {hk} during update dat {self.perf_ledger_hks_to_invalidate[hk]}. Removing from perf ledgers.")
+                logger.warning(f"perf ledger invalidated for hk {hk} during update dat {self.perf_ledger_hks_to_invalidate[hk]}. Removing from perf ledgers.")
                 perf_ledgers_copy.pop(hk, None)
 
         if not self.is_backtesting:
@@ -1948,7 +1950,7 @@ class PerfLedgerManager(CacheController):
                 order_time_str = TimeUtil.millis_to_formatted_date_str(smallest_conflict_time_ms)
                 last_acked_time_str = TimeUtil.millis_to_formatted_date_str(last_acked_order_time_ms)
                 ledger_last_update_time_str = TimeUtil.millis_to_formatted_date_str(ledger_last_update_time)
-                bt.logging.info(f"Recovering checkpoints for {hk}. Order came in at {order_time_str} after last acked time {last_acked_time_str} but before perf ledger update time {ledger_last_update_time_str}")
+                logger.info(f"Recovering checkpoints for {hk}. Order came in at {order_time_str} after last acked time {last_acked_time_str} but before perf ledger update time {ledger_last_update_time_str}")
                 pl.trim_checkpoints(smallest_conflict_time_ms)
                 if len(pl.cps) == 0:
                     pl.max_return = 1.0
@@ -1977,7 +1979,7 @@ class PerfLedgerManager(CacheController):
         pl_start_time = TimeUtil.millis_to_formatted_date_str(last_update_time_ms)
         pl_end_time = TimeUtil.millis_to_formatted_date_str(portfolio_pl.last_update_ms)
 
-        bt.logging.success(f'Completed update_one_perf_ledger_parallel for {hotkey} in {time.time() - t0} s over '
+        logger.info(f'Completed update_one_perf_ledger_parallel for {hotkey} in {time.time() - t0} s over '
               f'{pl_start_time} to {pl_end_time}.')
         return hotkey, new_ledger
 
@@ -2008,7 +2010,7 @@ class PerfLedgerManager(CacheController):
             # CRITICAL BUG FIX: Validate now_ms to prevent future timestamp issues
             current_time_ms = TimeUtil.now_in_millis()
             if now_ms > current_time_ms + 86400000:  # More than 1 day in the future
-                bt.logging.error(
+                logger.error(
                     f"CRITICAL TIMESTAMP ERROR: now_ms ({now_ms}) is {(now_ms - current_time_ms) / 86400000:.1f} days "
                     f"in the future compared to current time ({current_time_ms}). "
                     f"This will cause assertion failures. Using current time instead.")
@@ -2023,7 +2025,7 @@ class PerfLedgerManager(CacheController):
                 break
 
         if parallel_mode == ParallelizationMode.PYSPARK:
-            bt.logging.info(
+            logger.info(
                 f"Updating perf ledgers in parallel with {self.parallel_mode.name}. RDD size: {len(hotkey_data)}")
             # Create RDD from hotkey data
             hotkey_rdd = spark.sparkContext.parallelize(hotkey_data)
@@ -2037,7 +2039,7 @@ class PerfLedgerManager(CacheController):
 
         n_perf_ledgers = len(updated_perf_ledgers)
         n_hotkeys_with_positions = len(hotkey_to_positions)
-        bt.logging.success(f"Done updating perf ledgers with {self.parallel_mode.name} in {time.time() - t_init}s. "
+        logger.info(f"Done updating perf ledgers with {self.parallel_mode.name} in {time.time() - t_init}s. "
                            f"n_perf_ledgers: {n_perf_ledgers}, n_hotkeys_with_positions: {n_hotkeys_with_positions}")
 
         self.save_perf_ledgers(updated_perf_ledgers)

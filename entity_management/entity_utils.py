@@ -7,6 +7,7 @@ These are static utility functions that can be called without RPC overhead.
 """
 import bittensor as bt
 from typing import Tuple, Optional
+from shared_objects.log import logger
 
 
 def is_synthetic_hotkey(hotkey: str) -> bool:
@@ -114,7 +115,7 @@ def create_subaccount_dashboard(
             if section_data is not None:
                 dashboard[section] = section_data
         except Exception as ex:
-            bt.logging.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
+            logger.error(f"Error retrieving {section} for {synthetic_hotkey}: {ex}")
 
     add_to_dashboard("challenge_period", challenge_period_client.get_dashboard)
     add_to_dashboard("drawdown", challenge_period_client.get_drawdown_stats)

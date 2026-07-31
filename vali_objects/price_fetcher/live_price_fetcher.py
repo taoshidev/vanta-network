@@ -17,6 +17,7 @@ import bittensor as bt
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from shared_objects.log import logger
 
 
 class LivePriceFetcher:
@@ -65,7 +66,7 @@ class LivePriceFetcher:
                 daemon=True,
                 name="SlippageRefresher",
             ).start()
-            bt.logging.info("Slippage feature refresher thread started")
+            logger.info("Slippage feature refresher thread started")
 
 
     def stop_all_threads(self):
@@ -216,7 +217,7 @@ class LivePriceFetcher:
                 tiingo_fut.cancel()
                 if hl_fut:
                     hl_fut.cancel()
-                bt.logging.warning(f"dual_rest_get REST API requests timed out. trade_pairs: {trade_pairs}.")
+                logger.warning(f"dual_rest_get REST API requests timed out. trade_pairs: {trade_pairs}.")
 
         return polygon_results, tiingo_results, hyperliquid_results
 
@@ -359,7 +360,7 @@ class LivePriceFetcher:
 
         # If all sources have None close, return empty list
         if not valid_data:
-            bt.logging.warning("All price sources have None close values, returning empty list")
+            logger.warning("All price sources have None close values, returning empty list")
             return []
 
         # Function to calculate bounds
@@ -424,13 +425,13 @@ class LivePriceFetcher:
                 ma = max((x.close for x in non_null_sources))
                 debug[tp.trade_pair] += f" Removed {[x.close for x in removed_sources]} Original min/max {mi}/{ma}"
 
-        bt.logging.info(f"Fetched candles {debug} in window"
+        logger.info(f"Fetched candles {debug} in window"
                         f" {TimeUtil.millis_to_formatted_date_str(start_time_ms)} to "
                         f"{TimeUtil.millis_to_formatted_date_str(end_time_ms)}")
 
         # If Polygon has any missing keys, it is intentional and corresponds to a closed market. We don't want to use twelvedata for this TODO: fall back to live price from TD/POLY.
         # if self.twelvedata_available and len(ans) == 0:
-        #    bt.logging.info(f"Fetching candles from TD for {[x.trade_pair for x in trade_pairs]} from {start_time_ms} to {end_time_ms}")
+        #    logger.info(f"Fetching candles from TD for {[x.trade_pair for x in trade_pairs]} from {start_time_ms} to {end_time_ms}")
         #    closes = self.twelve_data.get_closes(trade_pairs=trade_pairs)
         #    ans.update(closes)
         return ans
@@ -444,7 +445,7 @@ class LivePriceFetcher:
             results = self.hyperliquid_data_service.get_price_rest([trade_pair], timestamp_ms, live=False)
             price_source = results.get(trade_pair)
             if not price_source:
-                bt.logging.warning(f"Hyperliquid REST returned no price source for {trade_pair.trade_pair} at {timestamp_ms} ms")
+                logger.warning(f"Hyperliquid REST returned no price source for {trade_pair.trade_pair} at {timestamp_ms} ms")
             return price_source
 
         price_source = None
@@ -460,14 +461,14 @@ class LivePriceFetcher:
         if price_source is None:
             price_source = self.polygon_data_service.get_close_at_date_minute_fallback(trade_pair=trade_pair, target_timestamp_ms=timestamp_ms)
             if price_source:
-                bt.logging.warning(
+                logger.warning(
                     f"Fell back to Polygon get_date_minute_fallback for price of {trade_pair.trade_pair} at {TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)}, price_source: {price_source}")
 
         if price_source is None:
             tiingo_results = self.tiingo_data_service.get_price_rest([trade_pair], timestamp_ms, live=False)
             price_source = tiingo_results.get(trade_pair)
             if verbose and price_source is not None:
-                bt.logging.warning(
+                logger.warning(
                     f"Fell back to Tiingo get_date for price of {trade_pair.trade_pair} at {TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)}, ms: {timestamp_ms}")
 
         """
@@ -476,11 +477,11 @@ class LivePriceFetcher:
                                                                              timestamp_ms=timestamp_ms)
             if price:
                 formatted_date = TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)
-                bt.logging.warning(
+                logger.warning(
                     f"Fell back to Polygon get_close_in_past_hour_fallback for price of {trade_pair.trade_pair} at {formatted_date}, ms: {timestamp_ms}")
         if price is None:
             formatted_date = TimeUtil.timestamp_ms_to_eastern_time_str(timestamp_ms)
-            bt.logging.error(
+            logger.error(
                 f"Failed to get data at ET date {formatted_date} for {trade_pair.trade_pair}. Timestamp ms: {timestamp_ms}."
                 f" Ask a team member to investigate this issue.")
         """
@@ -522,7 +523,7 @@ class LivePriceFetcher:
             )
             return usd_conversion if b_usd else 1.0 / usd_conversion
 
-        bt.logging.error(f"Unable to fetch quote currency {trade_pair.quote} to USD conversion at time {time_ms}. No price sources available (websocket or REST).")
+        logger.error(f"Unable to fetch quote currency {trade_pair.quote} to USD conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
         # TODO: raise Exception(f"Unable to fetch currency conversion from {from_currency} to USD at time {time_ms}.")
 
@@ -562,7 +563,7 @@ class LivePriceFetcher:
             )
             return usd_conversion if usd_a else 1.0 / usd_conversion
 
-        bt.logging.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}. No price sources available (websocket or REST).")
+        logger.error(f"Unable to fetch USD to base currency {trade_pair.base} conversion at time {time_ms}. No price sources available (websocket or REST).")
         return 1.0
 
     def get_corporate_actions(self, start_date_str: str, end_date_str: str | None = None) -> dict:

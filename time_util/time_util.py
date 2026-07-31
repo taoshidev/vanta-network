@@ -18,6 +18,7 @@ from pandas.tseries.holiday import USFederalHolidayCalendar  # noqa: E402
 
 import pandas_market_calendars as mcal  # noqa: E402
 from pandas.tseries.holiday import Holiday, nearest_workday, GoodFriday  # noqa: E402
+from shared_objects.log import logger
 MS_IN_1_HOUR = 3600000
 MS_IN_8_HOURS =  28800000
 MS_IN_24_HOURS = 86400000
@@ -110,7 +111,7 @@ class ForexHolidayCalendar(USFederalHolidayCalendar):
         """Check if the Forex market is closed for the entire UTC day."""
 
         if testing_day is None or not isinstance(testing_day, date):
-            bt.logging.info(f"testing day is invalid, returning false: {testing_day}")
+            logger.info(f"testing day is invalid, returning false: {testing_day}")
             return False
 
         # Check start, middle, and end of UTC day

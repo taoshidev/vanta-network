@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from multiprocessing import Process
 import bittensor as bt
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+from shared_objects.log import logger
 
 
 class HealthMonitor:
@@ -77,7 +78,7 @@ class HealthMonitor:
     def start(self) -> None:
         """Start background health monitoring thread."""
         if self._health_thread is not None:
-            bt.logging.warning(f"{self.service_name} health monitor already started")
+            logger.warning(f"{self.service_name} health monitor already started")
             return
 
         self._health_thread = threading.Thread(
@@ -86,7 +87,7 @@ class HealthMonitor:
             name=f"{self.service_name}_HealthMonitor"
         )
         self._health_thread.start()
-        bt.logging.info(
+        logger.info(
             f"{self.service_name} health monitoring started "
             f"(interval: {self.health_check_interval_s}s, "
             f"auto_restart: {self.enable_auto_restart})"
@@ -96,7 +97,7 @@ class HealthMonitor:
         """Stop health monitoring."""
         self._stopped = True
         if self._health_thread:
-            bt.logging.debug(f"{self.service_name} health monitoring stopped")
+            logger.debug(f"{self.service_name} health monitoring stopped")
 
     def _health_loop(self) -> None:
         """Background thread monitoring process health."""
@@ -114,7 +115,7 @@ class HealthMonitor:
                     f"Exit code: {exit_code}\n"
                     f"Auto-restart: {'Enabled' if self.enable_auto_restart else 'Disabled'}"
                 )
-                bt.logging.error(error_msg)
+                logger.error(error_msg)
 
                 if self.slack_notifier:
                     self.slack_notifier.send_message(error_msg, level="error")
@@ -122,11 +123,11 @@ class HealthMonitor:
                 if self.enable_auto_restart and not self._stopped:
                     self._restart()
 
-        bt.logging.debug(f"{self.service_name} health loop exiting")
+        logger.debug(f"{self.service_name} health loop exiting")
 
     def _restart(self) -> None:
         """Restart the process using the restart callback."""
-        bt.logging.info(f"{self.service_name} restarting process...")
+        logger.info(f"{self.service_name} restarting process...")
 
         try:
             # Call the restart callback to get a new process
@@ -136,7 +137,7 @@ class HealthMonitor:
                 f"✅ {self.service_name} process restarted successfully "
                 f"(new PID: {self.process.pid})"
             )
-            bt.logging.success(restart_msg)
+            logger.info(restart_msg)
 
             if self.slack_notifier:
                 self.slack_notifier.send_message(restart_msg, level="info")
@@ -147,8 +148,8 @@ class HealthMonitor:
                 f"❌ {self.service_name} process restart failed: {e}\n"
                 f"Manual intervention required!"
             )
-            bt.logging.error(error_msg)
-            bt.logging.error(error_trace)
+            logger.error(error_msg)
+            logger.error(error_trace)
 
             if self.slack_notifier:
                 self.slack_notifier.send_message(

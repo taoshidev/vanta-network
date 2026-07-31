@@ -21,6 +21,7 @@ import bittensor as bt
 from miner_config import MinerConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vanta_api.miner_rest_server import MinerRestServer
+from shared_objects.log import logger
 
 
 class MinerAPIManager:
@@ -73,7 +74,7 @@ class MinerAPIManager:
         REST server runs in-process (Flask in background thread).
         This method blocks until KeyboardInterrupt.
         """
-        bt.logging.info("Starting Miner REST API server...")
+        logger.info("Starting Miner REST API server...")
 
         # Create REST server in-process with direct PropNetOrderPlacer reference
         try:
@@ -87,16 +88,16 @@ class MinerAPIManager:
             )
             # BaseRestServer.__init__ already started Flask in background thread
 
-            bt.logging.success(
+            logger.info(
                 f"Miner REST API server started at http://{self.api_host}:{self.api_rest_port}"
             )
-            bt.logging.info(f"Endpoints available:")
-            bt.logging.info(f"  POST   /api/submit-order        - Synchronous order submission")
-            bt.logging.info(f"  GET    /api/order-status/<uuid>  - Query order status")
-            bt.logging.info(f"  GET    /api/health              - Health check")
+            logger.info(f"Endpoints available:")
+            logger.info(f"  POST   /api/submit-order        - Synchronous order submission")
+            logger.info(f"  GET    /api/order-status/<uuid>  - Query order status")
+            logger.info(f"  GET    /api/health              - Health check")
 
         except Exception as e:
-            bt.logging.error(f"Failed to start Miner REST API server: {e}")
+            logger.error(f"Failed to start Miner REST API server: {e}")
             raise
 
         # Keep main thread alive
@@ -104,12 +105,12 @@ class MinerAPIManager:
             while True:
                 time.sleep(60)
         except KeyboardInterrupt:
-            bt.logging.info("Shutting down Miner API server...")
+            logger.info("Shutting down Miner API server...")
             self.shutdown()
 
     def shutdown(self):
         """Gracefully shutdown REST server."""
         if self.rest_server:
-            bt.logging.info("Stopping REST server...")
+            logger.info("Stopping REST server...")
             self.rest_server.shutdown()
-            bt.logging.info("REST server stopped")
+            logger.info("REST server stopped")

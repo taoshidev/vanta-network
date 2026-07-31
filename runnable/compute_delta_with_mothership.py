@@ -8,19 +8,21 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.position_management.position_manager import PositionManager
 import bittensor as bt
+import logging
+from shared_objects.log import logger
 
 
 def compute_delta(mothership_json, min_time_ms):
 
-    bt.logging.info("Found mothership data with the following attributes:")
+    logger.info("Found mothership data with the following attributes:")
     # Log every key and value apir in the data except for positions, eliminations, and plagiarism scores
     for key, value in mothership_json.items():
         # Check is the value is of type dict or list. If so, print the size of the dict or list
         if isinstance(value, dict) or isinstance(value, list):
             # Log the size of the positions, eliminations, and plagiarism scores
-            bt.logging.info(f"    {key}: {len(value)} entries")
+            logger.info(f"    {key}: {len(value)} entries")
         else:
-            bt.logging.info(f"    {key}: {value}")
+            logger.info(f"    {key}: {value}")
     backup_creation_time_ms = mothership_json['created_timestamp_ms']
 
     # EliminationServer creates its own RPC clients internally (forward compatibility pattern)
@@ -49,20 +51,20 @@ def compute_delta(mothership_json, min_time_ms):
         formatted_disk_date_smallest = smallest_disk_ms
         formatted_backup_date_smallest = smallest_backup_ms
 
-    bt.logging.info("Timestamp analysis of mothership vs disk (UTC):")
-    bt.logging.info(f"    mothership_creation_time: {formatted_backup_creation_time}")
-    bt.logging.info(f"    smallest_disk_order_timestamp: {formatted_disk_date_smallest}")
-    bt.logging.info(f"    smallest_mothership_order_timestamp: {formatted_backup_date_smallest}")
-    bt.logging.info(f"    oldest_disk_order_timestamp: {formatted_disk_date_largest}")
-    bt.logging.info(f"    oldest_mothership_order_timestamp: {formatted_backup_date_largest}")
+    logger.info("Timestamp analysis of mothership vs disk (UTC):")
+    logger.info(f"    mothership_creation_time: {formatted_backup_creation_time}")
+    logger.info(f"    smallest_disk_order_timestamp: {formatted_disk_date_smallest}")
+    logger.info(f"    smallest_mothership_order_timestamp: {formatted_backup_date_smallest}")
+    logger.info(f"    oldest_disk_order_timestamp: {formatted_disk_date_largest}")
+    logger.info(f"    oldest_mothership_order_timestamp: {formatted_backup_date_largest}")
 
 
     n_existing_position = position_manager.get_number_of_miners_with_any_positions()
     n_existing_eliminations = position_manager.get_number_of_eliminations()
     msg = (f"Detected {n_existing_position} existing hotkeys with positions, {n_existing_eliminations} existing eliminations")
-    bt.logging.info(msg)
+    logger.info(msg)
 
-    bt.logging.info("Computing delta positions")
+    logger.info("Computing delta positions")
 
     delta_positions = []
     position_uuids_added = set()
@@ -120,7 +122,7 @@ def get_mothership_checkpoint(url, api_key):
 
 
 if __name__ == "__main__":
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
     parser = argparse.ArgumentParser(description="Compute a delta with mothership in a format that can be used with PM.")
     parser.add_argument('--api-key', type=str, default=None)
     parser.add_argument('--url', type=str, default=None)
@@ -136,11 +138,11 @@ if __name__ == "__main__":
     api_key = args.api_key
     url = args.url
     min_time_ms = args.min_time_ms
-    bt.logging.info(f"Computing delta. api_key: {api_key}, url: {url}, min_time_ms: {min_time_ms}")
+    logger.info(f"Computing delta. api_key: {api_key}, url: {url}, min_time_ms: {min_time_ms}")
 
     mothership_json = get_mothership_checkpoint(url, api_key)
     #with open('validator_checkpoint.json', 'r') as f:
     #    mothership_json = json.loads(f.read())
 
     compute_delta(mothership_json, min_time_ms)
-    bt.logging.info("Delta complete in %.2f seconds" % (time.time() - t0))
+    logger.info("Delta complete in %.2f seconds" % (time.time() - t0))

@@ -40,6 +40,7 @@ from runnable.migration_utils import MigrationUtils
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
+from shared_objects.log import logger
 
 
 def main(dry_run: bool = False, running_unit_tests: bool = False) -> bool:
@@ -100,7 +101,7 @@ def main(dry_run: bool = False, running_unit_tests: bool = False) -> bool:
 
         except Exception as e:
             failed += 1
-            bt.logging.error(
+            logger.error(
                 f"Failed to backfill {hotkey}: {e}\n{traceback.format_exc()}"
             )
 

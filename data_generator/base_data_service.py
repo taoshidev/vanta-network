@@ -18,6 +18,8 @@ from time_util.time_util import TimeUtil, UnifiedMarketCalendar
 from vali_objects.trade_pair import TradePair, TradePairCategory
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 from vali_objects.vali_dataclasses.price_source import PriceSource
+import logging
+from shared_objects.log import logger
 
 POLYGON_PROVIDER_NAME = "Polygon"
 TIINGO_PROVIDER_NAME = "Tiingo"
@@ -37,7 +39,7 @@ def exception_handler_decorator():
             except Exception as e:
                 func_name = func.__name__
                 thread_id = threading.get_native_id()
-                bt.logging.error(f"Failed to get {func_name} with error: {e}, type: {type(e).__name__} in thread {thread_id}")
+                logger.error(f"Failed to get {func_name} with error: {e}, type: {type(e).__name__} in thread {thread_id}")
                 return {}
 
         return wrapper
@@ -193,7 +195,7 @@ class BaseDataService(ABC):
         self.n_flushes += 1
         if t0:
             t1 = time.time()
-            bt.logging.info(
+            logger.info(
                 f"Flushed recent {self.provider_name} events to shared memory in {t1 - t0:.2f} seconds, n_flushes {self.n_flushes}")
 
     def stop_threads(self):
@@ -201,9 +203,9 @@ class BaseDataService(ABC):
         Stop the threads that are running the websocket clients.
         """
         if self.websocket_manager_thread:
-            bt.logging.info(f"Stopping {self.provider_name} websocket manager thread")
+            logger.info(f"Stopping {self.provider_name} websocket manager thread")
             self.websocket_manager_thread.join(timeout=1)
-            bt.logging.info(f"Stopped {self.provider_name} websocket manager thread")
+            logger.info(f"Stopped {self.provider_name} websocket manager thread")
 
         # Websockets are now managed as asyncio tasks in the manager thread
 
@@ -213,7 +215,7 @@ class BaseDataService(ABC):
         instead of threads, which simplifies the event loop management.
         """
         setproctitle(f"vali_ws_{self.provider_name}")
-        bt.logging.enable_info()
+        logger.setLevel(logging.INFO)
 
         # Create a single event loop for the thread
         loop = asyncio.new_event_loop()
@@ -235,20 +237,20 @@ class BaseDataService(ABC):
                     client = self.WEBSOCKET_OBJECTS.get(category)
 
                     if client:
-                        bt.logging.info(f"Connecting {self.provider_name} websocket for {category}")
+                        logger.info(f"Connecting {self.provider_name} websocket for {category}")
                         # Use await instead of run_until_complete since we're in a coroutine
                         await client.connect(self.handle_msg)
-                        bt.logging.warning(f"{self.provider_name}[{category}] connection closed, restarting")
+                        logger.warning(f"{self.provider_name}[{category}] connection closed, restarting")
                     else:
-                        bt.logging.warning(f"{self.provider_name}[{category}] client not created, retrying")
+                        logger.warning(f"{self.provider_name}[{category}] client not created, retrying")
                         await asyncio.sleep(5)
                         continue
 
                 except asyncio.CancelledError:
-                    bt.logging.info(f"{self.provider_name}[{category}] websocket task cancelled")
+                    logger.info(f"{self.provider_name}[{category}] websocket task cancelled")
                     break  # Exit the loop if task is cancelled
                 except Exception as e:
-                    bt.logging.error(f"{self.provider_name}[{category}] websocket error: {type(e).__name__}: {e}")
+                    logger.error(f"{self.provider_name}[{category}] websocket error: {type(e).__name__}: {e}")
 
                 # Clean up before reconnecting
                 try:
@@ -256,7 +258,7 @@ class BaseDataService(ABC):
                     # Wait before reconnecting
                     await asyncio.sleep(5)
                 except Exception as e:
-                    bt.logging.error(f"Error during websocket cleanup for {category}: {e}")
+                    logger.error(f"Error during websocket cleanup for {category}: {e}")
                     await asyncio.sleep(5)  # Back off on errors
         
         # Store run_websocket as instance method for access in restart
@@ -283,12 +285,12 @@ class BaseDataService(ABC):
                         try:
                             self.debug_log()
                         except Exception as e:
-                            bt.logging.error(f"debug_log() failed: {e}")
+                            logger.error(f"debug_log() failed: {e}")
                         last_debug = now
 
                 except Exception as e:
-                    bt.logging.error(f"Error in health check: {e}")
-                    bt.logging.error(traceback.format_exc())
+                    logger.error(f"Error in health check: {e}")
+                    logger.error(traceback.format_exc())
 
                 await asyncio.sleep(5)  # Check every 5 seconds
 
@@ -307,8 +309,8 @@ class BaseDataService(ABC):
         try:
             loop.run_until_complete(asyncio.gather(*tasks))
         except Exception as e:
-            bt.logging.error(f"Main event loop error: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Main event loop error: {e}")
+            logger.error(traceback.format_exc())
         finally:
             try:
                 # Clean up any pending tasks
@@ -318,7 +320,7 @@ class BaseDataService(ABC):
                 # Close the event loop
                 loop.close()
             except Exception as e:
-                bt.logging.error(f"Error during shutdown: {e}")
+                logger.error(f"Error during shutdown: {e}")
 
     async def _check_websocket_health(self, tpc: TradePairCategory, loop):
         """Check and maintain health of a single websocket"""
@@ -332,7 +334,7 @@ class BaseDataService(ABC):
             trade_pair = self.get_first_trade_pair_in_category(tpc)
             if trade_pair and not self.is_market_open(trade_pair):
                 if task and not task.done():
-                    bt.logging.info(f"{self.provider_name}[{tpc}] market closed, stopping")
+                    logger.info(f"{self.provider_name}[{tpc}] market closed, stopping")
                     task.cancel()
                     try:
                         await task
@@ -370,7 +372,7 @@ class BaseDataService(ABC):
 
     async def _restart_websocket(self, tpc: TradePairCategory, loop, reason: str):
         """Restart websocket with exponential backoff"""
-        bt.logging.warning(f"{self.provider_name}[{tpc}] restarting: {reason}")
+        logger.warning(f"{self.provider_name}[{tpc}] restarting: {reason}")
         
         # Apply backoff
         now = time.time()
@@ -378,7 +380,7 @@ class BaseDataService(ABC):
         
         if time_since_last < 60:  # Recent restart
             backoff = self.restart_backoff[tpc]
-            bt.logging.info(f"Applying {backoff:.1f}s backoff for {tpc}")
+            logger.info(f"Applying {backoff:.1f}s backoff for {tpc}")
             await asyncio.sleep(backoff)
             self.restart_backoff[tpc] = min(backoff * 1.5, 30.0)
         else:
@@ -394,7 +396,7 @@ class BaseDataService(ABC):
             new_task = loop.create_task(self._run_websocket(tpc))
             self.websocket_tasks[tpc] = new_task
         except Exception as e:
-            bt.logging.error(f"Failed to create task for {tpc}: {e}")
+            logger.error(f"Failed to create task for {tpc}: {e}")
             self.websocket_tasks[tpc] = None
 
     async def _cleanup_websocket(self, tpc: TradePairCategory):
@@ -408,9 +410,9 @@ class BaseDataService(ABC):
                     client._should_close = True
                 if hasattr(client, 'close'):
                     await client.close()
-                bt.logging.info(f"Cleaned up {self.provider_name}[{tpc}] websocket")
+                logger.info(f"Cleaned up {self.provider_name}[{tpc}] websocket")
             except Exception as e:
-                bt.logging.error(f"Cleanup error for {tpc}: {e}")
+                logger.error(f"Cleanup error for {tpc}: {e}")
             finally:
                 self.WEBSOCKET_OBJECTS[tpc] = None
 
@@ -467,13 +469,13 @@ class BaseDataService(ABC):
         formatted_lags = {tp: f"{lag:.2f}" for tp, lag in self.trade_pair_to_longest_seen_lag_s.items()}
         formatted_lags = {k: v for k, v in formatted_lags.items() if float(v) > 10}
         formatted_lags = dict(sorted(formatted_lags.items(), key=lambda x: float(x[1]), reverse=True))
-        bt.logging.info(f"{self.provider_name} Worst lags seen: {formatted_lags}")
+        logger.info(f"{self.provider_name} Worst lags seen: {formatted_lags}")
         # Log the last time since websocket ping
         now_ms = TimeUtil.now_in_millis()
         formatted_lags = {tp: f"{(now_ms - price_source.end_ms) / 1000.0:.2f}" for tp, price_source in
                           self.latest_websocket_events.items()}
         formatted_lags = dict(sorted(formatted_lags.items(), key=lambda x: float(x[1]), reverse=True))
-        bt.logging.info(f"{self.provider_name} Current websocket lags (s): {formatted_lags}")
+        logger.info(f"{self.provider_name} Current websocket lags (s): {formatted_lags}")
         # Log the prices
         formatted_prices = {}
         for tp, price_source in self.latest_websocket_events.items():
@@ -482,8 +484,8 @@ class BaseDataService(ABC):
             else:
                 formatted_prices[tp] = f"{price_source.close:.2f}"
 
-        bt.logging.info(f"{self.provider_name} Latest websocket prices: {formatted_prices}")
-        bt.logging.info(f'{self.provider_name} websocket n_events_global: {self.tpc_to_n_events}. n_equity_events_skipped_afterhours: {self.n_equity_events_skipped_afterhours}')
+        logger.info(f"{self.provider_name} Latest websocket prices: {formatted_prices}")
+        logger.info(f'{self.provider_name} websocket n_events_global: {self.tpc_to_n_events}. n_equity_events_skipped_afterhours: {self.n_equity_events_skipped_afterhours}')
 
     def get_price_before_market_close(self, trade_pair: TradePair) -> float | None:
         pass
@@ -499,6 +501,6 @@ class BaseDataService(ABC):
         lag_s = time.time() - timestamp_ms / 1000.0
         is_stale = lag_s > max_allowed_lag_s
         if is_stale:
-            bt.logging.info(f"Found stale TD websocket data for {trade_pair.trade_pair}. Lag_s: {lag_s} "
+            logger.info(f"Found stale TD websocket data for {trade_pair.trade_pair}. Lag_s: {lag_s} "
                             f"seconds. Max allowed lag for category: {max_allowed_lag_s} seconds. Ignoring this data.")
         return cur_event

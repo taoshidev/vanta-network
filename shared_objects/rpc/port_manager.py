@@ -22,6 +22,7 @@ import subprocess
 import time
 
 import bittensor as bt
+from shared_objects.log import logger
 
 
 class PortManager:
@@ -216,7 +217,7 @@ class PortManager:
 
                         # Force kill immediately - no graceful shutdown
                         os.kill(pid, signal.SIGKILL)
-                        bt.logging.debug(f"Force-killed PID {pid}")
+                        logger.debug(f"Force-killed PID {pid}")
                     except (ValueError, ProcessLookupError, OSError):
                         pass  # Process already dead or invalid PID
 

@@ -20,6 +20,7 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
+from shared_objects.log import logger
 
 
 class TestMinerStatistics(TestBase):
@@ -84,7 +85,7 @@ class TestMinerStatistics(TestBase):
 
     def setUp(self):
         """Per-test setup: Reset data state (fast - no server restarts)."""
-        # Enable debug logging to see bt.logging.info() statements
+        # Enable debug logging to see logger.info() statements
         bt.logging.set_debug()
 
         # Clear all data for test isolation (both memory and disk)

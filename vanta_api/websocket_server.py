@@ -40,6 +40,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLed
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
 from vanta_api.api_key_refresh import APIKeyMixin
+from shared_objects.log import logger
 
 # Maximum number of websocket connections allowed per API key for tiers below
 # subaccount access
@@ -244,9 +245,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         # Start API key refresh thread
         self.start_refresh_thread()
 
-        bt.logging.info(f"WebSocketServer: Initialized with {len(self.accessible_api_keys)} API keys")
+        logger.info(f"WebSocketServer: Initialized with {len(self.accessible_api_keys)} API keys")
         if self.send_test_positions:
-            bt.logging.info(f"WebSocketServer: Test orders will be sent every {self.test_positions_interval} seconds")
+            logger.info(f"WebSocketServer: Test orders will be sent every {self.test_positions_interval} seconds")
 
         # Initialize RPCServerBase (provides RPC server for other processes to queue messages)
         # This will set self.port = ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT (50014)
@@ -263,7 +264,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         # Restore WebSocket port for convenience (some methods expect self.port = websocket port)
         self.port = self.websocket_port
 
-        bt.logging.success(f"WebSocketServer: RPC server initialized on port {ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT}")
+        logger.info(f"WebSocketServer: RPC server initialized on port {ValiConfig.RPC_WEBSOCKET_NOTIFIER_PORT}")
 
     def _cleanup_stale_server(self):
         """
@@ -285,12 +286,12 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         # Now clean up WebSocket port using self.websocket_port (8765)
         from shared_objects.rpc.port_manager import PortManager
         if not PortManager.is_port_free(self.websocket_port):
-            bt.logging.warning(f"WebSocketServer: WebSocket port {self.websocket_port} in use, forcing cleanup...")
+            logger.warning(f"WebSocketServer: WebSocket port {self.websocket_port} in use, forcing cleanup...")
             PortManager.force_kill_port(self.websocket_port)
 
             # Wait for OS to release the port after killing process
             if not PortManager.wait_for_port_release(self.websocket_port, timeout=2.0):
-                bt.logging.warning(
+                logger.warning(
                     f"WebSocketServer: WebSocket port {self.websocket_port} still not free after cleanup. "
                     f"Will attempt to bind anyway (reuse_port may work)"
                 )
@@ -307,7 +308,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 # Queue it for processing
                 await self._broadcast_message_queue.put(self._create_test_position(current_time))
 
-                bt.logging.info(f"WebSocketServer: Generated test position")
+                logger.info(f"WebSocketServer: Generated test position")
 
                 # Wait before generating the next order
                 await asyncio.sleep(self.test_positions_interval)
@@ -315,7 +316,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                bt.logging.error(f"WebSocketServer: Error generating test order: {e}")
+                logger.error(f"WebSocketServer: Error generating test order: {e}")
                 await asyncio.sleep(self.test_positions_interval)
 
     def _create_test_position(self, timestamp: int) -> Dict[str, Any]:
@@ -356,7 +357,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 if client_id in client_ids:
                     client_ids.remove(client_id)
                     api_key_alias = self.api_key_to_alias.get(client.api_key, "Unknown")
-                    bt.logging.info(
+                    logger.info(
                         f"WebSocketServer: Removed client {client_id} from API key {api_key_alias}")
 
             # websockets 15: the handler receives an asyncio ServerConnection.
@@ -375,26 +376,26 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                             loop,
                         )
                     except Exception as e:
-                        bt.logging.debug(
+                        logger.debug(
                             f"WebSocketServer: could not schedule close for {client_id}: {e}")
 
-            bt.logging.info(f"WebSocketServer: Client {client_id} removed")
+            logger.info(f"WebSocketServer: Client {client_id} removed")
 
     async def _send_message(self, client, message) -> None:
         client_id = client.client_id
 
         if not self.can_access_tier(client.api_key, client.tier):
-            bt.logging.warning(f"WebSocketServer: Client {client_id} tier changed")
+            logger.warning(f"WebSocketServer: Client {client_id} tier changed")
             self._remove_client(client_id)
             return
 
         try:
             await client.send(message)
         except websockets.exceptions.ConnectionClosed:
-            bt.logging.info(f"WebSocketServer: Client {client_id} disconnected while sending")
+            logger.info(f"WebSocketServer: Client {client_id} disconnected while sending")
             self._remove_client(client_id)
         except Exception as e:
-            bt.logging.error(f"WebSocketServer: Error sending to client {client_id}: {e}")
+            logger.error(f"WebSocketServer: Error sending to client {client_id}: {e}")
             self._remove_client(client_id)
 
     async def _send_serialized(self, client: WebSocketServerClient, serialized: str) -> None:
@@ -404,17 +405,17 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         client_id = client.client_id
 
         if not self.can_access_tier(client.api_key, client.tier):
-            bt.logging.warning(f"WebSocketServer: Client {client_id} tier changed")
+            logger.warning(f"WebSocketServer: Client {client_id} tier changed")
             self._remove_client(client_id)
             return
 
         try:
             await client.websocket.send(serialized)
         except websockets.exceptions.ConnectionClosed:
-            bt.logging.info(f"WebSocketServer: Client {client_id} disconnected while sending")
+            logger.info(f"WebSocketServer: Client {client_id} disconnected while sending")
             self._remove_client(client_id)
         except Exception as e:
-            bt.logging.error(f"WebSocketServer: Error sending to client {client_id}: {e}")
+            logger.error(f"WebSocketServer: Error sending to client {client_id}: {e}")
             self._remove_client(client_id)
 
     async def _process_broadcast_message_queue(self) -> None:
@@ -435,8 +436,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                bt.logging.error(f"WebSocketServer: Error processing message from queue: {e}")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"WebSocketServer: Error processing message from queue: {e}")
+                logger.error(traceback.format_exc())
 
     def _queue_broadcast_message(self, message) -> None:
         try:
@@ -446,8 +447,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             )
 
         except Exception as e:
-            bt.logging.error(f"WebSocketServer: Error queueing message: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"WebSocketServer: Error queueing message: {e}")
+            logger.error(traceback.format_exc())
 
     def _submit_initial_snapshot(self, synthetic_hotkey: str, client: WebSocketServerClient) -> None:
         """Push an immediate dashboard build on subscribe so the first frame
@@ -485,7 +486,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     subaccount_dashboard = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
                 except Exception as e:
                     self._apply_build_backoff(subscription)
-                    bt.logging.error(f"WebSocketServer: dashboard fetch failed for {synthetic_hotkey}: {e}")
+                    logger.error(f"WebSocketServer: dashboard fetch failed for {synthetic_hotkey}: {e}")
                     return
 
                 if subaccount_dashboard is None:
@@ -493,7 +494,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     # Log only on the first failure of a streak — backoff keeps
                     # this from spamming once per 100ms.
                     if subscription.failure_count <= 1:
-                        bt.logging.warning(
+                        logger.warning(
                             f"WebSocketServer: No dashboard found for synthetic hotkey {synthetic_hotkey}")
                     return
 
@@ -515,8 +516,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     )
                 except Exception as e:
                     self._apply_build_backoff(subscription)
-                    bt.logging.error(f"WebSocketServer: dashboard build failed for {synthetic_hotkey}: {e}")
-                    bt.logging.error(traceback.format_exc())
+                    logger.error(f"WebSocketServer: dashboard build failed for {synthetic_hotkey}: {e}")
+                    logger.error(traceback.format_exc())
                     return
 
                 # Success: clear backoff and advance section watermarks.
@@ -533,8 +534,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 )
 
         except Exception as e:
-            bt.logging.error(f"WebSocketServer: Error processing dashboard update: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"WebSocketServer: Error processing dashboard update: {e}")
+            logger.error(traceback.format_exc())
 
     def _process_dashboard_update_queue(self) -> None:
         while True:
@@ -545,8 +546,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     if subscription is not None:
                         self._thread_pool.submit(self._send_dashboard_update, synthetic_hotkey, client, subscription)
             except Exception as e:
-                bt.logging.error(f"WebSocketServer: Error processing dashboard update: {e}")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"WebSocketServer: Error processing dashboard update: {e}")
+                logger.error(traceback.format_exc())
 
     def _process_dashboard_refresh(self) -> None:
         while True:
@@ -565,8 +566,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                             self._send_dashboard_update(synthetic_hotkey, client, subscription)
 
             except Exception as e:
-                bt.logging.error(f"WebSocketServer: Error processing dashboard refresh: {e}")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"WebSocketServer: Error processing dashboard refresh: {e}")
+                logger.error(traceback.format_exc())
 
     def run_daemon_iteration(self) -> None:
         """
@@ -604,8 +605,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 self.broadcast_subaccount_dashboard_rpc(position.miner_hotkey)
 
         except Exception as e:
-            bt.logging.error(f"WebSocketServer: Error broadcasting position update: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"WebSocketServer: Error broadcasting position update: {e}")
+            logger.error(traceback.format_exc())
 
     def broadcast_subaccount_dashboard_rpc(self, synthetic_hotkey: str) -> None:
         """
@@ -629,7 +630,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             websocket: WebSocket connection
         """
         client_id = id(websocket)
-        bt.logging.info(f"WebSocketServer: New client connected (ID: {client_id})")
+        logger.info(f"WebSocketServer: New client connected (ID: {client_id})")
 
         try:
             # Read API key from Authorization: Bearer header (websockets 15+: websocket.request.headers)
@@ -684,10 +685,10 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                             }))
                             await oldest_client.websocket.close()
                         except Exception as e:
-                            bt.logging.error(f"WebSocketServer: Error closing oldest connection {oldest_client_id}: {e}")
+                            logger.error(f"WebSocketServer: Error closing oldest connection {oldest_client_id}: {e}")
                     self._remove_client(oldest_client_id)
                     api_key_alias = self.api_key_to_alias.get(api_key, "Unknown")
-                    bt.logging.info(f"WebSocketServer: Dropped oldest client {oldest_client_id} for API key "
+                    logger.info(f"WebSocketServer: Dropped oldest client {oldest_client_id} for API key "
                           f"{api_key_alias} to make room for new client {client_id}")
 
             # Register client
@@ -695,7 +696,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             self._clients[client_id] = client
             self._api_key_client_ids[api_key].append(client_id)
 
-            bt.logging.info(f"WebSocketServer: Client {client_id} authenticated successfully with tier {api_key_tier}")
+            logger.info(f"WebSocketServer: Client {client_id} authenticated successfully with tier {api_key_tier}")
 
             # Clients that manage their own subscriptions — e.g. the vanta-ui SSE
             # relay, which sends an explicit subscribe_subaccount for the one
@@ -739,13 +740,13 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                 if hl_addr:
                                     hl_mappings[hl_addr] = synthetic_hotkey
                             if subscribed_subaccounts > 0:
-                                bt.logging.info(
+                                logger.info(
                                     f"WebSocketServer: Auto-subscribed client {client_id} to "
                                     f"{subscribed_subaccounts} subaccounts for entity {entity_hotkey}"
                                 )
                     except Exception as e:
-                        bt.logging.error(f"WebSocketServer: Error auto-subscribing entity {entity_hotkey}: {e}")
-                        bt.logging.error(traceback.format_exc())
+                        logger.error(f"WebSocketServer: Error auto-subscribing entity {entity_hotkey}: {e}")
+                        logger.error(traceback.format_exc())
 
             await websocket.send(json.dumps({
                 "status": "success",
@@ -777,7 +778,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         # Handle subscription to all data
                         if data.get("all", False):
                             client.subscribe_broadcasts = True
-                            bt.logging.info(f"WebSocketServer: Client {client_id} subscribed to all data")
+                            logger.info(f"WebSocketServer: Client {client_id} subscribed to all data")
                             await websocket.send(json.dumps({
                                 "type": "subscription_status",
                                 "status": "success",
@@ -791,7 +792,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         # Handle unsubscription
                         if data.get("all", False):
                             client.subscribe_broadcasts = False
-                            bt.logging.info(f"WebSocketServer: Client {client_id} unsubscribed from all data")
+                            logger.info(f"WebSocketServer: Client {client_id} unsubscribed from all data")
                             await websocket.send(json.dumps({
                                 "type": "subscription_status",
                                 "status": "success",
@@ -829,7 +830,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                     checkpoints_time_ms=checkpoints_time_ms,
                                     daily_returns_time_ms=daily_returns_time_ms,
                                 )
-                                bt.logging.info(f"WebSocketServer: Client {client_id} subscribed to subaccount {synthetic_hotkey}")
+                                logger.info(f"WebSocketServer: Client {client_id} subscribed to subaccount {synthetic_hotkey}")
                                 await websocket.send(json.dumps({
                                     "type": "subscription_status",
                                     "status": "success",
@@ -853,7 +854,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                                     checkpoints_time_ms=checkpoints_time_ms,
                                     daily_returns_time_ms=daily_returns_time_ms,
                                 )
-                                bt.logging.info(f"WebSocketServer: Client {client_id} subscribed to subaccount {synthetic_hotkey}")
+                                logger.info(f"WebSocketServer: Client {client_id} subscribed to subaccount {synthetic_hotkey}")
                                 await websocket.send(json.dumps({
                                     "type": "subscription_status",
                                     "status": "success",
@@ -865,7 +866,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     elif message_type == "unsubscribe_subaccount":
                         synthetic_hotkey = data.get("synthetic_hotkey")
                         client.dashboard_subscriptions.pop(synthetic_hotkey, None)
-                        bt.logging.info(f"WebSocketServer: Client {client_id} unsubscribed from subaccount {synthetic_hotkey}")
+                        logger.info(f"WebSocketServer: Client {client_id} unsubscribed from subaccount {synthetic_hotkey}")
                         await websocket.send(json.dumps({
                             "type": "subscription_status",
                             "status": "success",
@@ -876,18 +877,18 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 except websockets.exceptions.ConnectionClosed:
                     break
                 except json.JSONDecodeError:
-                    bt.logging.warning(f"WebSocketServer: Received invalid JSON from client {client_id}")
+                    logger.warning(f"WebSocketServer: Received invalid JSON from client {client_id}")
                 except Exception as e:
-                    bt.logging.error(f"WebSocketServer: Error processing message from client {client_id}: {e}")
-                    bt.logging.error(traceback.format_exc())
+                    logger.error(f"WebSocketServer: Error processing message from client {client_id}: {e}")
+                    logger.error(traceback.format_exc())
 
         except websockets.exceptions.ConnectionClosed:
-            bt.logging.info(f"WebSocketServer: Client {client_id} disconnected")
+            logger.info(f"WebSocketServer: Client {client_id} disconnected")
         except json.JSONDecodeError:
-            bt.logging.warning(f"WebSocketServer: Received invalid JSON data from client {client_id}")
+            logger.warning(f"WebSocketServer: Received invalid JSON data from client {client_id}")
         except Exception as e:
-            bt.logging.error(f"WebSocketServer: Error handling client {client_id}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"WebSocketServer: Error handling client {client_id}: {e}")
+            logger.error(traceback.format_exc())
         finally:
             self._remove_client(client_id)
 
@@ -939,11 +940,11 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                             self._event_loop
                         )
 
-            bt.logging.info(
+            logger.info(
                 f"WebSocketServer: Auto-subscribed {len(client_ids)} entity client(s) to new subaccount {synthetic_hotkey}")
             return True
         except Exception as e:
-            bt.logging.error(f"WebSocketServer: Error notifying new subaccount {synthetic_hotkey}: {e}")
+            logger.error(f"WebSocketServer: Error notifying new subaccount {synthetic_hotkey}: {e}")
             return False
 
     async def start(self) -> None:
@@ -988,14 +989,14 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         # Start test order generator if enabled
         if self.send_test_positions:
-            bt.logging.info(f"WebSocketServer: Starting test order generator")
+            logger.info(f"WebSocketServer: Starting test order generator")
             self.test_positions_task = asyncio.create_task(self._generate_test_ws_positions())
 
         attempts = 0
         while attempts < self.max_reconnect_attempts or self.max_reconnect_attempts <= 0:
             try:
                 # Create the server with appropriate handler
-                bt.logging.info(f"WebSocketServer: Attempting to bind WebSocket server to {self.host}:{self.port} (attempt {attempts + 1})...")
+                logger.info(f"WebSocketServer: Attempting to bind WebSocket server to {self.host}:{self.port} (attempt {attempts + 1})...")
 
                 try:
                     self.server = await websockets.serve(
@@ -1019,28 +1020,28 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         reuse_address=True,  # Allow reuse of the address
                         reuse_port=True  # Allow reuse of the port (on platforms that support it)
                     )
-                    bt.logging.info(f"WebSocketServer: websockets.serve() completed successfully")
+                    logger.info(f"WebSocketServer: websockets.serve() completed successfully")
                 except Exception as serve_error:
-                    bt.logging.error(f"WebSocketServer: ERROR: websockets.serve() raised exception: {type(serve_error).__name__}: {serve_error}")
+                    logger.error(f"WebSocketServer: ERROR: websockets.serve() raised exception: {type(serve_error).__name__}: {serve_error}")
                     raise
 
-                bt.logging.info(f"WebSocketServer: WebSocket server started at ws://{self.host}:{self.port}")
+                logger.info(f"WebSocketServer: WebSocket server started at ws://{self.host}:{self.port}")
 
                 # Keep the server running indefinitely
-                bt.logging.info(f"WebSocketServer: Entering main event loop (await asyncio.Future())...")
+                logger.info(f"WebSocketServer: Entering main event loop (await asyncio.Future())...")
                 await asyncio.Future()
 
             except OSError as e:
                 attempts += 1
-                bt.logging.error(
+                logger.error(
                     f"WebSocketServer: Failed to start WebSocket server (attempt {attempts}/{self.max_reconnect_attempts}): OSError {e.errno}: {e}")
-                bt.logging.error(f"WebSocketServer: Error details - errno: {e.errno}, strerror: {e.strerror}")
+                logger.error(f"WebSocketServer: Error details - errno: {e.errno}, strerror: {e.strerror}")
 
                 if attempts < self.max_reconnect_attempts or self.max_reconnect_attempts <= 0:
-                    bt.logging.info(f"WebSocketServer: Retrying in {self.reconnect_interval} seconds...")
+                    logger.info(f"WebSocketServer: Retrying in {self.reconnect_interval} seconds...")
                     await asyncio.sleep(self.reconnect_interval)
                 else:
-                    bt.logging.error(f"WebSocketServer: Maximum retry attempts reached. Giving up.")
+                    logger.error(f"WebSocketServer: Maximum retry attempts reached. Giving up.")
                     raise
             except asyncio.CancelledError:
                 if self._broadcast_message_queue_task:
@@ -1059,14 +1060,14 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 raise
 
             except Exception as e:
-                bt.logging.error(f"WebSocketServer: Unexpected error starting WebSocket server: {type(e).__name__}: {e}")
-                bt.logging.error(f"WebSocketServer: Full traceback:")
-                bt.logging.error(f"WebSocketServer: {traceback.format_exc()}")
+                logger.error(f"WebSocketServer: Unexpected error starting WebSocket server: {type(e).__name__}: {e}")
+                logger.error(f"WebSocketServer: Full traceback:")
+                logger.error(f"WebSocketServer: {traceback.format_exc()}")
                 raise
 
     async def shutdown(self) -> None:
         """Gracefully shut down the WebSocket server."""
-        bt.logging.info(f"WebSocketServer: Shutting down WebSocket server...")
+        logger.info(f"WebSocketServer: Shutting down WebSocket server...")
 
         # Signal the shutdown to all tasks
         if self.shutdown_event:
@@ -1080,7 +1081,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             try:
                 await self.server.wait_closed()
             except Exception as e:
-                bt.logging.error(f"WebSocketServer: Error while waiting for server to close: {e}")
+                logger.error(f"WebSocketServer: Error while waiting for server to close: {e}")
 
         connected_clients = list(self._clients.values())
         self._clients = {}
@@ -1090,7 +1091,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
             try:
                 await client.websocket.close()
             except Exception as e:
-                bt.logging.error(f"WebSocketServer: Error closing client {client.client_id}: {e}")
+                logger.error(f"WebSocketServer: Error closing client {client.client_id}: {e}")
 
         # Wait a bit for connections to close
         await asyncio.sleep(0.5)
@@ -1108,7 +1109,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         # Wait for all tasks to complete cancellation with exception handling
         if tasks_to_cancel:
-            bt.logging.info(f"WebSocketServer: Waiting for {len(tasks_to_cancel)} tasks to cancel...")
+            logger.info(f"WebSocketServer: Waiting for {len(tasks_to_cancel)} tasks to cancel...")
             for task in tasks_to_cancel:
                 try:
                     # Use wait_for with a timeout to avoid hanging
@@ -1117,9 +1118,9 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     # This is expected
                     pass
                 except Exception as e:
-                    bt.logging.error(f"WebSocketServer: Error cancelling task: {e}")
+                    logger.error(f"WebSocketServer: Error cancelling task: {e}")
 
-        bt.logging.info(f"WebSocketServer: WebSocket server shutdown complete")
+        logger.info(f"WebSocketServer: WebSocket server shutdown complete")
 
     @classmethod
     def entry_point_start_server(cls, **kwargs):
@@ -1154,59 +1155,59 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
         # Log filtered parameters
         filtered_out = set(kwargs.keys()) - set(filtered_kwargs.keys())
         if filtered_out:
-            bt.logging.debug(f"[{cls.service_name}] Filtered out parameters: {filtered_out}")
+            logger.debug(f"[{cls.service_name}] Filtered out parameters: {filtered_out}")
 
         # Create server instance (starts RPC server)
-        bt.logging.info(f"[{cls.service_name}] Creating server instance...")
+        logger.info(f"[{cls.service_name}] Creating server instance...")
         server_instance = cls(**filtered_kwargs)
 
-        bt.logging.success(f"[{cls.service_name}] RPC server ready on port {cls.service_port}")
+        logger.info(f"[{cls.service_name}] RPC server ready on port {cls.service_port}")
 
         # Signal ready BEFORE starting async loop (so clients can connect to RPC)
         if server_ready:
             server_ready.set()
-            bt.logging.info(f"[{cls.service_name}] Server ready event signaled")
+            logger.info(f"[{cls.service_name}] Server ready event signaled")
 
         # Now start the WebSocket async event loop (this blocks)
-        bt.logging.info(f"[{cls.service_name}] Starting WebSocket async event loop...")
+        logger.info(f"[{cls.service_name}] Starting WebSocket async event loop...")
         try:
             server_instance.run()
         except Exception as e:
-            bt.logging.error(f"[{cls.service_name}] WebSocket loop error: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"[{cls.service_name}] WebSocket loop error: {e}")
+            logger.error(traceback.format_exc())
             raise
 
-        bt.logging.info(f"[{cls.service_name}] process exiting")
+        logger.info(f"[{cls.service_name}] process exiting")
 
     def run(self):
         """Start the server in the current process."""
-        bt.logging.info(f"WebSocketServer: Starting WebSocket server...")
+        logger.info(f"WebSocketServer: Starting WebSocket server...")
         setproctitle(f"vali_{self.__class__.__name__}")
         try:
-            bt.logging.info(f"WebSocketServer: Creating new event loop...")
+            logger.info(f"WebSocketServer: Creating new event loop...")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
             self.shutdown_event = asyncio.Event()
 
-            bt.logging.info(f"WebSocketServer: Creating main task for start()...")
+            logger.info(f"WebSocketServer: Creating main task for start()...")
             main_task = loop.create_task(self.start())
 
-            bt.logging.info(f"WebSocketServer: Creating thread for dashboard updates...")
+            logger.info(f"WebSocketServer: Creating thread for dashboard updates...")
             dashboard_update_thread = Thread(target=self._process_dashboard_update_queue, daemon=True)
             dashboard_update_thread.start()
 
-            bt.logging.info(f"WebSocketServer: Creating thread for dashboard refreshes...")
+            logger.info(f"WebSocketServer: Creating thread for dashboard refreshes...")
             dashboard_refresh_thread = Thread(target=self._process_dashboard_refresh, daemon=True)
             dashboard_refresh_thread.start()
 
             # Run the loop until keyboard interrupt
-            bt.logging.info(f"WebSocketServer: Running event loop with run_until_complete()...")
+            logger.info(f"WebSocketServer: Running event loop with run_until_complete()...")
             try:
                 loop.run_until_complete(main_task)
-                bt.logging.info(f"WebSocketServer: Event loop completed (this shouldn't happen unless shutting down)")
+                logger.info(f"WebSocketServer: Event loop completed (this shouldn't happen unless shutting down)")
             except KeyboardInterrupt:
-                bt.logging.info(f"WebSocketServer: Keyboard interrupt detected! Shutting down...")
+                logger.info(f"WebSocketServer: Keyboard interrupt detected! Shutting down...")
                 # Set shutdown event - this will signal all tasks to stop
                 self.shutdown_event.set()
 
@@ -1224,16 +1225,16 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
 
-                bt.logging.info(f"WebSocketServer: All tasks have been stopped.")
+                logger.info(f"WebSocketServer: All tasks have been stopped.")
             finally:
                 # Close the loop
                 loop.close()
 
         except Exception as e:
-            bt.logging.error(f"WebSocketServer: FATAL ERROR in WebSocket server run(): {type(e).__name__}: {e}")
-            bt.logging.error(f"WebSocketServer: Full traceback:")
-            bt.logging.error(f"{traceback.format_exc()}")
-            bt.logging.error(f"WebSocketServer: WebSocket server process exiting due to error")
+            logger.error(f"WebSocketServer: FATAL ERROR in WebSocket server run(): {type(e).__name__}: {e}")
+            logger.error(f"WebSocketServer: Full traceback:")
+            logger.error(f"{traceback.format_exc()}")
+            logger.error(f"WebSocketServer: WebSocket server process exiting due to error")
             raise
 
 
@@ -1253,16 +1254,16 @@ if __name__ == "__main__":
     if not os.path.exists(args.api_keys_file):
         with open(args.api_keys_file, "w") as f:
             json.dump({"test_user": "test_key", "client": "abc"}, f)
-        bt.logging.info(f"WebSocketServer: Created test API keys file at {args.api_keys_file}")
+        logger.info(f"WebSocketServer: Created test API keys file at {args.api_keys_file}")
 
     # Create a manager instance for testing
     mp_manager = Manager()
     test_queue = mp_manager.Queue()
 
-    bt.logging.info(f"WebSocketServer: Starting WebSocket server on {ValiConfig.VANTA_WEBSOCKET_HOST}:{ValiConfig.VANTA_WEBSOCKET_PORT} (hardcoded in ValiConfig)")
-    bt.logging.info(f"WebSocketServer: Test positions: {'Enabled' if args.test_positions else 'Disabled'}")
+    logger.info(f"WebSocketServer: Starting WebSocket server on {ValiConfig.VANTA_WEBSOCKET_HOST}:{ValiConfig.VANTA_WEBSOCKET_PORT} (hardcoded in ValiConfig)")
+    logger.info(f"WebSocketServer: Test positions: {'Enabled' if args.test_positions else 'Disabled'}")
     if args.test_positions:
-        bt.logging.info(f"WebSocketServer: Test position interval: {args.test_position_interval} seconds")
+        logger.info(f"WebSocketServer: Test position interval: {args.test_position_interval} seconds")
 
     # Create and run the server (host/port read from ValiConfig)
     server = WebSocketServer(

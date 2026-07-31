@@ -15,6 +15,7 @@ import requests as http_requests
 
 from entity_management.payment_ledger import PaymentLedger, PaymentRecord, PayoutRunResult
 from miner_config import MinerConfig
+from shared_objects.log import logger
 
 try:
     from web3 import Web3
@@ -88,7 +89,7 @@ class USDCPaymentService:
             abi=USDC_ERC20_ABI
         )
 
-        bt.logging.info(
+        logger.info(
             f"[USDC_PAYMENT] Initialized: wallet={self._account.address}, "
             f"chain_id={chain_id}, usdc={usdc_contract_address}"
         )
@@ -137,7 +138,7 @@ class USDCPaymentService:
         # 1. Get subaccounts from validator
         subaccounts = self._query_entity_subaccounts(entity_hotkey)
         if subaccounts is None:
-            bt.logging.error("[USDC_PAYMENT] Failed to query entity subaccounts from validator")
+            logger.error("[USDC_PAYMENT] Failed to query entity subaccounts from validator")
             return result
 
         result.total_subaccounts = len(subaccounts)
@@ -154,7 +155,7 @@ class USDCPaymentService:
                 continue
             eligible.append(sa)
 
-        bt.logging.info(
+        logger.info(
             f"[USDC_PAYMENT] {len(eligible)}/{len(subaccounts)} subaccounts eligible for payout"
         )
 
@@ -167,7 +168,7 @@ class USDCPaymentService:
 
             # Double-payment guard
             if self._ledger.has_been_paid(sub_uuid, start_time_ms, end_time_ms):
-                bt.logging.info(
+                logger.info(
                     f"[USDC_PAYMENT] Skipping {synthetic_hotkey}: already paid for this period"
                 )
                 result.skipped_count += 1
@@ -175,7 +176,7 @@ class USDCPaymentService:
 
             # KYC verification — only pay accounts that have completed KYC
             if not self._check_kyc_status(payout_address):
-                bt.logging.info(
+                logger.info(
                     f"[USDC_PAYMENT] Skipping {synthetic_hotkey}: KYC not approved for {payout_address}"
                 )
                 result.skipped_count += 1
@@ -184,12 +185,12 @@ class USDCPaymentService:
             # Query validator for payout amount
             payout_usd = self._query_validator_payout(sub_uuid, start_time_ms, end_time_ms)
             if payout_usd is None:
-                bt.logging.warning(f"[USDC_PAYMENT] Failed to get payout for {synthetic_hotkey}")
+                logger.warning(f"[USDC_PAYMENT] Failed to get payout for {synthetic_hotkey}")
                 result.skipped_count += 1
                 continue
 
             if payout_usd < MinerConfig.PAYMENT_MIN_USDC_AMOUNT:
-                bt.logging.info(
+                logger.info(
                     f"[USDC_PAYMENT] Skipping {synthetic_hotkey}: "
                     f"payout ${payout_usd:.2f} below minimum ${MinerConfig.PAYMENT_MIN_USDC_AMOUNT}"
                 )
@@ -201,7 +202,7 @@ class USDCPaymentService:
         result.eligible_count = len(payout_queue)
 
         if not payout_queue:
-            bt.logging.info("[USDC_PAYMENT] No eligible payouts to process")
+            logger.info("[USDC_PAYMENT] No eligible payouts to process")
             return result
 
         # 4. Check total USDC balance (abort entire run if insufficient)
@@ -213,7 +214,7 @@ class USDCPaymentService:
                 f"[USDC_PAYMENT] Insufficient USDC balance: have ${usdc_balance:.2f}, "
                 f"need ${total_needed:.2f} for {len(payout_queue)} payouts. Aborting entire run."
             )
-            bt.logging.error(msg)
+            logger.error(msg)
             if self._slack_notifier:
                 self._slack_notifier.send_message(msg, level="error", bypass_cooldown=True)
             return result
@@ -222,18 +223,18 @@ class USDCPaymentService:
         eth_balance = self.get_eth_balance()
         if eth_balance < 0.001:
             msg = f"[USDC_PAYMENT] ETH balance too low for gas: {eth_balance:.6f} ETH. Aborting."
-            bt.logging.error(msg)
+            logger.error(msg)
             if self._slack_notifier:
                 self._slack_notifier.send_message(msg, level="error", bypass_cooldown=True)
             return result
 
         if dry_run:
-            bt.logging.info(
+            logger.info(
                 f"[USDC_PAYMENT] DRY RUN: Would pay {len(payout_queue)} subaccounts "
                 f"totaling ${total_needed:.2f} USDC"
             )
             for sa, amount in payout_queue:
-                bt.logging.info(
+                logger.info(
                     f"  {sa.get('synthetic_hotkey', 'unknown')}: "
                     f"${amount:.2f} -> {sa.get('payout_address')}"
                 )
@@ -288,7 +289,7 @@ class USDCPaymentService:
                 )
                 result.successful_count += 1
                 result.total_usd_paid += payout_usd
-                bt.logging.info(
+                logger.info(
                     f"[USDC_PAYMENT] Confirmed: {synthetic_hotkey} -> "
                     f"${payout_usd:.2f} USDC tx={tx_hash}"
                 )
@@ -300,7 +301,7 @@ class USDCPaymentService:
                     error_message="Transaction not confirmed within timeout"
                 )
                 result.failed_count += 1
-                bt.logging.error(
+                logger.error(
                     f"[USDC_PAYMENT] Failed confirmation: {synthetic_hotkey} tx={tx_hash}"
                 )
 
@@ -308,7 +309,7 @@ class USDCPaymentService:
             result.payments.append(payment)
 
         # 7. Log summary
-        bt.logging.info(
+        logger.info(
             f"[USDC_PAYMENT] Run complete: {result.successful_count} successful, "
             f"{result.failed_count} failed, {result.skipped_count} skipped, "
             f"${result.total_usd_paid:.2f} total paid"
@@ -346,7 +347,7 @@ class USDCPaymentService:
                 timeout=15
             )
             if resp.status_code != 200:
-                bt.logging.warning(
+                logger.warning(
                     f"[USDC_PAYMENT] KYC check failed for {wallet_address} "
                     f"({resp.status_code}): {resp.text}"
                 )
@@ -357,14 +358,14 @@ class USDCPaymentService:
             kyc_status = data.get("kycStatus", "none")
 
             if not verified:
-                bt.logging.info(
+                logger.info(
                     f"[USDC_PAYMENT] KYC not approved for {wallet_address} "
                     f"(status={kyc_status}), skipping payout"
                 )
             return verified
 
         except Exception as e:
-            bt.logging.error(f"[USDC_PAYMENT] Error checking KYC for {wallet_address}: {e}")
+            logger.error(f"[USDC_PAYMENT] Error checking KYC for {wallet_address}: {e}")
             return False
 
     def _query_entity_subaccounts(self, entity_hotkey: str) -> Optional[list]:
@@ -379,7 +380,7 @@ class USDCPaymentService:
                 timeout=30
             )
             if resp.status_code != 200:
-                bt.logging.error(
+                logger.error(
                     f"[USDC_PAYMENT] Validator entity query failed ({resp.status_code}): {resp.text}"
                 )
                 return None
@@ -392,7 +393,7 @@ class USDCPaymentService:
             return list(subaccounts_dict.values())
 
         except Exception as e:
-            bt.logging.error(f"[USDC_PAYMENT] Error querying entity subaccounts: {e}")
+            logger.error(f"[USDC_PAYMENT] Error querying entity subaccounts: {e}")
             return None
 
     def _query_validator_payout(
@@ -414,7 +415,7 @@ class USDCPaymentService:
                 timeout=30
             )
             if resp.status_code != 200:
-                bt.logging.warning(
+                logger.warning(
                     f"[USDC_PAYMENT] Payout query failed for {subaccount_uuid} "
                     f"({resp.status_code}): {resp.text}"
                 )
@@ -425,7 +426,7 @@ class USDCPaymentService:
             return payout_data.get("payout")
 
         except Exception as e:
-            bt.logging.error(f"[USDC_PAYMENT] Error querying payout for {subaccount_uuid}: {e}")
+            logger.error(f"[USDC_PAYMENT] Error querying payout for {subaccount_uuid}: {e}")
             return None
 
     def _send_usdc_transfer(self, to_address: str, amount_raw: int) -> Optional[str]:
@@ -469,7 +470,7 @@ class USDCPaymentService:
             return tx_hash.hex()
 
         except Exception as e:
-            bt.logging.error(f"[USDC_PAYMENT] Transfer failed to {to_address}: {e}")
+            logger.error(f"[USDC_PAYMENT] Transfer failed to {to_address}: {e}")
             return None
 
     def _send_usdc_transfer_with_retry(self, to_address: str, amount_raw: int) -> Optional[str]:
@@ -480,7 +481,7 @@ class USDCPaymentService:
                 return tx_hash
 
             if attempt < MinerConfig.PAYMENT_MAX_RETRIES - 1:
-                bt.logging.warning(
+                logger.warning(
                     f"[USDC_PAYMENT] Transfer attempt {attempt + 1} failed, "
                     f"retrying in {MinerConfig.PAYMENT_RETRY_DELAY_S}s..."
                 )
@@ -504,10 +505,10 @@ class USDCPaymentService:
             if receipt["status"] == 1:
                 return True, receipt["blockNumber"]
             else:
-                bt.logging.error(f"[USDC_PAYMENT] Tx reverted: {tx_hash}")
+                logger.error(f"[USDC_PAYMENT] Tx reverted: {tx_hash}")
                 return False, receipt.get("blockNumber")
         except Exception as e:
-            bt.logging.error(f"[USDC_PAYMENT] Confirmation timeout/error for {tx_hash}: {e}")
+            logger.error(f"[USDC_PAYMENT] Confirmation timeout/error for {tx_hash}: {e}")
             return False, None
 
     def check_pending_payments(self) -> int:
@@ -536,7 +537,7 @@ class USDCPaymentService:
                             block_number=receipt["blockNumber"],
                             confirmed_at_ms=int(time.time() * 1000)
                         )
-                        bt.logging.info(
+                        logger.info(
                             f"[USDC_PAYMENT] Recovered pending payment {payment.payment_id}: confirmed"
                         )
                     else:
@@ -546,16 +547,16 @@ class USDCPaymentService:
                             block_number=receipt["blockNumber"],
                             error_message="Transaction reverted (found during recovery)"
                         )
-                        bt.logging.warning(
+                        logger.warning(
                             f"[USDC_PAYMENT] Recovered pending payment {payment.payment_id}: reverted"
                         )
                     resolved += 1
             except Exception as e:
-                bt.logging.debug(
+                logger.debug(
                     f"[USDC_PAYMENT] Could not check pending payment {payment.payment_id}: {e}"
                 )
 
         if resolved:
-            bt.logging.info(f"[USDC_PAYMENT] Resolved {resolved} pending payments from previous run")
+            logger.info(f"[USDC_PAYMENT] Resolved {resolved} pending payments from previous run")
 
         return resolved

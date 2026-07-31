@@ -25,8 +25,10 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint
+import logging
+from shared_objects.log import logger
 
-bt.logging.enable_info()
+logger.setLevel(logging.INFO)
 
 
 class TestDebtLedgers(TestBase):
@@ -186,7 +188,7 @@ class TestDebtLedgers(TestBase):
             # Save the emissions ledger via RPC
             self.debt_ledger_client.set_emissions_ledger(hotkey, emissions_ledger)
 
-        bt.logging.info(f"Created mock emissions for {len(perf_ledgers)} hotkeys")
+        logger.info(f"Created mock emissions for {len(perf_ledgers)} hotkeys")
 
     def _build_all_ledgers(self, verbose=False):
         """
@@ -203,15 +205,15 @@ class TestDebtLedgers(TestBase):
             verbose: Enable detailed logging
         """
         # Build penalty ledgers FIRST (they depend on perf ledgers and challenge period data)
-        bt.logging.info("Building penalty ledgers...")
+        logger.info("Building penalty ledgers...")
         self.debt_ledger_client.build_penalty_ledgers(verbose=verbose, delta_update=False)
 
         # Create mock emissions ledgers SECOND (avoids blockchain access in tests)
-        bt.logging.info("Creating mock emissions ledgers...")
+        logger.info("Creating mock emissions ledgers...")
         self._create_mock_emissions()
 
         # Now build debt ledgers THIRD (combines all three sources)
-        bt.logging.info("Building debt ledgers...")
+        logger.info("Building debt ledgers...")
         self.debt_ledger_client.build_debt_ledgers(verbose=verbose, delta_update=False)
 
     def test_basic_debt_ledger_creation(self):
@@ -240,7 +242,7 @@ class TestDebtLedgers(TestBase):
         if self.DEFAULT_MINER_HOTKEY in debt_ledgers:
             ledger = debt_ledgers[self.DEFAULT_MINER_HOTKEY]
             self.assertEqual(ledger.hotkey, self.DEFAULT_MINER_HOTKEY)
-            bt.logging.info(f"Created debt ledger with {len(ledger.checkpoints)} checkpoints")
+            logger.info(f"Created debt ledger with {len(ledger.checkpoints)} checkpoints")
 
     def test_debt_checkpoint_structure(self):
         """
@@ -436,7 +438,7 @@ class TestDebtLedgers(TestBase):
             self.assertIn("portfolio_return", summary)
             self.assertIn("weighted_score", summary)
 
-            bt.logging.info(f"Summary for {self.DEFAULT_MINER_HOTKEY}: {summary}")
+            logger.info(f"Summary for {self.DEFAULT_MINER_HOTKEY}: {summary}")
 
         # Test get_all_summaries
         all_summaries = self.debt_ledger_client.get_all_summaries()
@@ -471,7 +473,7 @@ class TestDebtLedgers(TestBase):
             summaries = json.loads(decompressed)
             self.assertIsInstance(summaries, dict)
 
-            bt.logging.info(
+            logger.info(
                 f"Compressed summaries: {len(compressed)} bytes, {len(summaries)} ledgers"
             )
 
@@ -522,7 +524,7 @@ class TestDebtLedgers(TestBase):
             ledger1 = debt_ledgers[self.DEFAULT_MINER_HOTKEY]
             ledger2 = debt_ledgers[self.DEFAULT_MINER_HOTKEY_2]
 
-            bt.logging.info(
+            logger.info(
                 f"Miner 1: {len(ledger1.checkpoints)} checkpoints, "
                 f"Miner 2: {len(ledger2.checkpoints)} checkpoints"
             )
@@ -550,7 +552,7 @@ class TestDebtLedgers(TestBase):
         self.assertIn("timestamp_ms", health)
         self.assertIn("total_ledgers", health)
 
-        bt.logging.info(f"Health check: {health}")
+        logger.info(f"Health check: {health}")
 
     def test_production_integration_smoke_test(self):
         """
@@ -565,17 +567,17 @@ class TestDebtLedgers(TestBase):
 
         This is the main smoke test ensuring production code paths work.
         """
-        bt.logging.info("="*80)
-        bt.logging.info("Starting production integration smoke test")
-        bt.logging.info("="*80)
+        logger.info("="*80)
+        logger.info("Starting production integration smoke test")
+        logger.info("="*80)
 
         # Step 1: Create and save positions
-        bt.logging.info("Step 1: Creating test positions...")
+        logger.info("Step 1: Creating test positions...")
         self.position_client.save_miner_position(self.default_btc_position)
         self.position_client.save_miner_position(self.default_nvda_position)
 
         # Step 2: Update performance ledgers
-        bt.logging.info("Step 2: Updating performance ledgers...")
+        logger.info("Step 2: Updating performance ledgers...")
         self.perf_ledger_client.update()
 
         # Verify perf ledgers were created
@@ -584,30 +586,30 @@ class TestDebtLedgers(TestBase):
         self.assertIn(self.DEFAULT_MINER_HOTKEY, perf_ledgers)
 
         portfolio_pl = perf_ledgers[self.DEFAULT_MINER_HOTKEY]
-        bt.logging.info(f"  Created {len(portfolio_pl.cps)} perf checkpoints")
+        logger.info(f"  Created {len(portfolio_pl.cps)} perf checkpoints")
 
         # Step 3: Build all three ledgers (integrates perf + emissions + penalties)
-        bt.logging.info("Step 3: Building all ledgers (penalty, emissions, debt)...")
+        logger.info("Step 3: Building all ledgers (penalty, emissions, debt)...")
         start_time = time.time()
         self._build_all_ledgers(verbose=True)
         build_time = time.time() - start_time
-        bt.logging.info(f"  Built all ledgers in {build_time:.2f}s")
+        logger.info(f"  Built all ledgers in {build_time:.2f}s")
 
         # Step 4: Verify debt ledgers were created
-        bt.logging.info("Step 4: Verifying debt ledgers...")
+        logger.info("Step 4: Verifying debt ledgers...")
         debt_ledgers = self.debt_ledger_client.get_all_ledgers()
 
         if self.DEFAULT_MINER_HOTKEY in debt_ledgers:
             ledger = debt_ledgers[self.DEFAULT_MINER_HOTKEY]
-            bt.logging.info(f"  Debt ledger created with {len(ledger.checkpoints)} checkpoints")
+            logger.info(f"  Debt ledger created with {len(ledger.checkpoints)} checkpoints")
 
             # Verify checkpoint structure
             if ledger.checkpoints:
                 latest = ledger.checkpoints[-1]
-                bt.logging.info(f"  Latest checkpoint timestamp: {TimeUtil.millis_to_formatted_date_str(latest.timestamp_ms)}")
-                bt.logging.info(f"  Portfolio return: {latest.portfolio_return:.4f}")
-                bt.logging.info(f"  Total penalty: {latest.total_penalty:.4f}")
-                bt.logging.info(f"  Weighted score: {latest.weighted_score:.4f}")
+                logger.info(f"  Latest checkpoint timestamp: {TimeUtil.millis_to_formatted_date_str(latest.timestamp_ms)}")
+                logger.info(f"  Portfolio return: {latest.portfolio_return:.4f}")
+                logger.info(f"  Total penalty: {latest.total_penalty:.4f}")
+                logger.info(f"  Weighted score: {latest.weighted_score:.4f}")
 
                 # Verify checkpoint has all required data
                 self.assertIsNotNone(latest.portfolio_return)
@@ -615,19 +617,19 @@ class TestDebtLedgers(TestBase):
                 self.assertIsNotNone(latest.weighted_score)
 
             # Step 5: Test summary generation
-            bt.logging.info("Step 5: Testing summary generation...")
+            logger.info("Step 5: Testing summary generation...")
             summary = self.debt_ledger_client.get_ledger_summary(self.DEFAULT_MINER_HOTKEY)
             if summary:
-                bt.logging.info(f"  Summary total_checkpoints: {summary.get('total_checkpoints')}")
-                bt.logging.info(f"  Summary portfolio_return: {summary.get('portfolio_return'):.4f}")
-                bt.logging.info(f"  Summary weighted_score: {summary.get('weighted_score'):.4f}")
+                logger.info(f"  Summary total_checkpoints: {summary.get('total_checkpoints')}")
+                logger.info(f"  Summary portfolio_return: {summary.get('portfolio_return'):.4f}")
+                logger.info(f"  Summary weighted_score: {summary.get('weighted_score'):.4f}")
 
             # Step 6: Test compressed cache
-            bt.logging.info("Step 6: Testing compressed summaries cache...")
+            logger.info("Step 6: Testing compressed summaries cache...")
             compressed = self.debt_ledger_client.get_compressed_summaries()
             if compressed:
-                bt.logging.info(f"  Compressed cache size: {len(compressed)} bytes")
+                logger.info(f"  Compressed cache size: {len(compressed)} bytes")
 
-        bt.logging.info("="*80)
-        bt.logging.info("Production integration smoke test completed successfully")
-        bt.logging.info("="*80)
+        logger.info("="*80)
+        logger.info("Production integration smoke test completed successfully")
+        logger.info("="*80)

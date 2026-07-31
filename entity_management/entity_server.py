@@ -15,6 +15,7 @@ import template.protocol
 from entity_management.entity_manager import EntityManager, SubaccountInfo, EntityData
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.log import logger
 
 
 class EntityServer(RPCServerBase):
@@ -69,7 +70,7 @@ class EntityServer(RPCServerBase):
             config=config
         )
 
-        bt.logging.info("[ENTITY_SERVER] EntityManager initialized")
+        logger.info("[ENTITY_SERVER] EntityManager initialized")
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -107,7 +108,7 @@ class EntityServer(RPCServerBase):
         # Run elimination assessment - sync with central elimination registry
         elim_count = self._manager.assess_eliminations()
 
-        bt.logging.info(
+        logger.info(
             f"[ENTITY_SERVER] Daemon iteration complete: "
             f"{elim_count} eliminations synced"
         )
@@ -464,7 +465,7 @@ class EntityServer(RPCServerBase):
         """
         try:
             sender_hotkey = synapse.dendrite.hotkey
-            bt.logging.info(
+            logger.info(
                 f"[ENTITY_SERVER] Received SubaccountRegistration synapse from validator hotkey [{sender_hotkey}]"
             )
             success = self.receive_subaccount_registration_update_rpc(synapse.subaccount_data, sender_hotkey)
@@ -472,22 +473,22 @@ class EntityServer(RPCServerBase):
             if success:
                 synapse.successfully_processed = True
                 synapse.error_message = ""
-                bt.logging.info(
+                logger.info(
                     f"[ENTITY_SERVER] Successfully processed SubaccountRegistration synapse from {sender_hotkey}"
                 )
             else:
                 synapse.successfully_processed = False
                 synapse.error_message = "Failed to process subaccount registration"
-                bt.logging.warning(
+                logger.warning(
                     f"[ENTITY_SERVER] Failed to process SubaccountRegistration synapse from {sender_hotkey}"
                 )
 
         except Exception as e:
             synapse.successfully_processed = False
             synapse.error_message = f"Error processing subaccount registration: {e}"
-            bt.logging.error(f"[ENTITY_SERVER] Error processing SubaccountRegistration synapse: {e}")
+            logger.error(f"[ENTITY_SERVER] Error processing SubaccountRegistration synapse: {e}")
             import traceback
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
 
         return synapse
 
@@ -555,7 +556,7 @@ class EntityServer(RPCServerBase):
         """
         try:
             sender_hotkey = synapse.dendrite.hotkey
-            bt.logging.info(
+            logger.info(
                 f"[ENTITY_SERVER] Received EntityEndpointUpdate synapse from validator hotkey [{sender_hotkey}]"
             )
             success = self.receive_entity_endpoint_update_rpc(synapse.endpoint_data, sender_hotkey)
@@ -563,22 +564,22 @@ class EntityServer(RPCServerBase):
             if success:
                 synapse.successfully_processed = True
                 synapse.error_message = ""
-                bt.logging.info(
+                logger.info(
                     f"[ENTITY_SERVER] Successfully processed EntityEndpointUpdate synapse from {sender_hotkey}"
                 )
             else:
                 synapse.successfully_processed = False
                 synapse.error_message = "Failed to process entity endpoint update"
-                bt.logging.warning(
+                logger.warning(
                     f"[ENTITY_SERVER] Failed to process EntityEndpointUpdate synapse from {sender_hotkey}"
                 )
 
         except Exception as e:
             synapse.successfully_processed = False
             synapse.error_message = f"Error processing entity endpoint update: {e}"
-            bt.logging.error(f"[ENTITY_SERVER] Error processing EntityEndpointUpdate synapse: {e}")
+            logger.error(f"[ENTITY_SERVER] Error processing EntityEndpointUpdate synapse: {e}")
             import traceback
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
 
         return synapse
 

@@ -8,6 +8,7 @@ import bittensor as bt
 import traceback
 from vali_objects.vali_dataclasses.position import Position
 from time_util.time_util import TimeUtil
+from shared_objects.log import logger
 
 
 class PositionSource(Enum):
@@ -51,7 +52,7 @@ class PositionSourceManager:
         Returns:
             Dictionary mapping hotkeys to their Position objects
         """
-        bt.logging.info(f"Loading positions from source: {self.source_type.value}")
+        logger.info(f"Loading positions from source: {self.source_type.value}")
         
         if self.source_type == PositionSource.DATABASE:
             ans = self._load_from_database(start_time_ms, end_time_ms, hotkeys)
@@ -60,7 +61,7 @@ class PositionSourceManager:
         else:  # DISK
             # For disk-based loading, return empty dict as positions are loaded
             # through existing PositionManager/PerfLedgerManager mechanisms
-            bt.logging.info("Disk source selected - positions will be loaded via PositionManager")
+            logger.info("Disk source selected - positions will be loaded via PositionManager")
             ans = {}
         return ans
             
@@ -79,12 +80,12 @@ class PositionSourceManager:
         Returns:
             Dictionary mapping hotkeys to their Position objects
         """
-        bt.logging.info(f"Loading positions from database for period "
+        logger.info(f"Loading positions from database for period "
                        f"{TimeUtil.millis_to_formatted_date_str(start_time_ms) if start_time_ms else 'beginning'} to "
                        f"{TimeUtil.millis_to_formatted_date_str(end_time_ms) if end_time_ms else 'now'}")
         
         if hotkeys:
-            bt.logging.info(f"Filtering for {len(hotkeys)} specific hotkeys")
+            logger.info(f"Filtering for {len(hotkeys)} specific hotkeys")
 
         # Import taoshi.ts.ptn locally to avoid circular import
         try:
@@ -93,7 +94,7 @@ class PositionSourceManager:
             from taoshi.ts.ptn import wiring
             from taoshi.ts import ptn as ptn_utils
         except ImportError as e:
-            bt.logging.error(f"Failed to import taoshi.ts.ptn: {e}")
+            logger.error(f"Failed to import taoshi.ts.ptn: {e}")
             traceback.print_exc()
             return {}
 
@@ -107,7 +108,7 @@ class PositionSourceManager:
             miner_hotkeys=hotkeys if hotkeys else []
         )
 
-        bt.logging.info(f"Retrieved {len(filtered_positions)}/{sum(len(v) for _, v in filtered_positions.items())} hotkeys/positions from database")
+        logger.info(f"Retrieved {len(filtered_positions)}/{sum(len(v) for _, v in filtered_positions.items())} hotkeys/positions from database")
 
 
         return filtered_positions
@@ -123,10 +124,10 @@ class PositionSourceManager:
         try:
             from tests.test_data.backtest_test_positions import get_test_positions
         except ImportError as e:
-            bt.logging.error(f"Failed to import test positions: {e}")
+            logger.error(f"Failed to import test positions: {e}")
             raise
             
-        bt.logging.info("Loading test positions")
+        logger.info("Loading test positions")
         
         test_positions = get_test_positions()
         hk_to_positions = defaultdict(list)
@@ -135,7 +136,7 @@ class PositionSourceManager:
         if test_positions:
             start_time_ms = min(min(o['processed_ms'] for o in pos['orders']) for pos in test_positions)
             end_time_ms = max(max(o['processed_ms'] for o in pos['orders']) for pos in test_positions)
-            bt.logging.info(f"Test data time range: "
+            logger.info(f"Test data time range: "
                            f"{TimeUtil.millis_to_formatted_date_str(start_time_ms)} to "
                            f"{TimeUtil.millis_to_formatted_date_str(end_time_ms)}")
         
@@ -144,10 +145,10 @@ class PositionSourceManager:
                 position_obj = Position(**pos_data)
                 hk_to_positions[position_obj.miner_hotkey].append(position_obj)
             except Exception as e:
-                bt.logging.error(f"Failed to create Position object from test data: {e}")
+                logger.error(f"Failed to create Position object from test data: {e}")
                 continue
                 
-        bt.logging.info(f"Loaded {sum(len(positions) for positions in hk_to_positions.values())} "
+        logger.info(f"Loaded {sum(len(positions) for positions in hk_to_positions.values())} "
                        f"test positions for {len(hk_to_positions)} miners")
         
         return dict(hk_to_positions)
@@ -161,7 +162,7 @@ class PositionSourceManager:
             hk_to_positions: Dictionary mapping hotkeys to Position objects
         """
         if not hk_to_positions:
-            bt.logging.warning("No positions to save to position manager")
+            logger.warning("No positions to save to position manager")
             return
             
         position_count = 0
@@ -170,4 +171,4 @@ class PositionSourceManager:
                 position_manager.save_miner_position(position)
                 position_count += 1
         
-        bt.logging.info(f"Saved {position_count} positions for {len(hk_to_positions)} miners to position manager")
+        logger.info(f"Saved {position_count} positions for {len(hk_to_positions)} miners to position manager")

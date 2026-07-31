@@ -17,6 +17,7 @@ from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from shared_objects.log import logger
 
 
 # Extrema across the price-source window. LIMIT/STOP_LIMIT use aggressive
@@ -85,7 +86,7 @@ def evaluate_order_trigger(hotkey: str, order: Order, position: Position | None,
         is_taker = True
 
     if trigger_price:
-        bt.logging.info(
+        logger.info(
             f"{order.execution_type} triggered: {hotkey} {order.trade_pair.trade_pair_id} "
             f"{order.order_uuid} trigger_price={trigger_price} price_source={trigger_ps}"
         )
@@ -159,7 +160,7 @@ def evaluate_bracket_trigger_price(order, position, sources):
         return None, None, None
 
     if order.processed_ms < position.open_ms:
-        bt.logging.info(
+        logger.info(
             f"[BRACKET CANCELLED] Bracket {order.order_uuid} (processed_ms={order.processed_ms}) "
             f"predates current position (open_ms={position.open_ms}), skipping trigger as orphan"
         )

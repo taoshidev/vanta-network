@@ -7,6 +7,7 @@ This module provides a reusable exponential backoff strategy for handling
 daemon failures with smart defaults based on daemon execution frequency.
 """
 import bittensor as bt
+from shared_objects.log import logger
 
 
 class ExponentialBackoff:
@@ -74,7 +75,7 @@ class ExponentialBackoff:
         self.max_backoff_s = max_backoff_s
 
         # Log configuration
-        bt.logging.debug(
+        logger.debug(
             f"{service_name} backoff: "
             f"interval={daemon_interval_s:.0f}s, "
             f"initial={initial_backoff_s:.0f}s, "
@@ -88,7 +89,7 @@ class ExponentialBackoff:
     def reset(self) -> None:
         """Reset failure counter (call on successful iteration)."""
         if self._consecutive_failures > 0:
-            bt.logging.info(
+            logger.info(
                 f"{self.service_name} recovered after "
                 f"{self._consecutive_failures} failure(s)"
             )

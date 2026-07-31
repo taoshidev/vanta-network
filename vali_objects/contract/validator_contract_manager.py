@@ -29,6 +29,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from entity_management.entity_client import EntityClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+from shared_objects.log import logger
 
 
 # ==================== Constants ====================
@@ -120,10 +121,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         # Initialize collateral manager based on network type
         if self.is_testnet:
-            bt.logging.info("Using testnet collateral manager")
+            logger.info("Using testnet collateral manager")
             self.collateral_manager = CollateralManager(Network.TESTNET)
         else:
-            bt.logging.info("Using mainnet collateral manager")
+            logger.info("Using mainnet collateral manager")
             self.collateral_manager = CollateralManager(Network.MAINNET)
 
         # GCP secret manager
@@ -186,7 +187,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         update_thread = threading.Thread(target=self.refresh_miner_account_sizes, daemon=True)
         update_thread.start()
-        bt.logging.info("Miner account size refresh started in background thread")
+        logger.info("Miner account size refresh started in background thread")
 
     def refresh_miner_account_sizes(self):
         """
@@ -199,13 +200,13 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         for hotkey in hotkeys:
             try:
                 prev_acct_size = self._miner_account_client.get_miner_account_size(hotkey)
-                bt.logging.info(f"Current account size for {hotkey}: ${prev_acct_size:,.2f}")
+                logger.info(f"Current account size for {hotkey}: ${prev_acct_size:,.2f}")
                 self._set_miner_account_size(hotkey)
                 update_count += 1
                 time.sleep(0.5)
             except Exception as e:
-                bt.logging.error(f"Failed to update account size for {hotkey}: {e}")
-        bt.logging.info(f"Account size refresh completed for {update_count} miners")
+                logger.error(f"Failed to update account size for {hotkey}: {e}")
+        logger.info(f"Account size refresh completed for {update_count} miners")
 
     def health_check(self) -> dict:
         """Health check for monitoring."""
@@ -240,15 +241,15 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             Dict[str, Any]: Result of deposit operation
         """
         try:
-            bt.logging.info("Received deposit request")
+            logger.info("Received deposit request")
             # Decode and validate the extrinsic
             try:
                 encoded_extrinsic = bytes.fromhex(extrinsic_hex)
                 extrinsic = self.collateral_manager.decode_extrinsic(encoded_extrinsic)
-                bt.logging.info("Extrinsic decoded successfully")
+                logger.info("Extrinsic decoded successfully")
             except Exception as e:
                 error_msg = f"Invalid extrinsic data: {str(e)}"
-                bt.logging.error(error_msg)
+                logger.error(error_msg)
                 return {
                     "successfully_processed": False,
                     "error_message": error_msg
@@ -271,14 +272,14 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 #                      f"Current: {current_balance_theta:.2f} Theta, "
                 #                      f"Deposit: {deposit_amount_theta:.2f} Theta, "
                 #                      f"Limit: {self.max_theta} Theta")
-                #         bt.logging.warning(error_msg)
+                #         logger.warning(error_msg)
                 #         return {
                 #             "successfully_processed": False,
                 #             "error_message": error_msg
                 #         }
                 #
                 # except Exception as e:
-                #     bt.logging.error(f"Failed to check balance limit: {e}")
+                #     logger.error(f"Failed to check balance limit: {e}")
                 #     return {
                 #         "successfully_processed": False,
                 #         "error_message": e
@@ -291,7 +292,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 #         "error_message": "Miner has open positions, please close all positions before depositing or withdrawing collateral"
                 #     }
 
-                bt.logging.info(f"Processing deposit for: {deposit_amount_theta} Theta to miner: {miner_hotkey}")
+                logger.info(f"Processing deposit for: {deposit_amount_theta} Theta to miner: {miner_hotkey}")
                 owner_address = ValiUtils.get_secret("collateral_owner_address")
                 owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
                 vault_password = ValiUtils.get_secret("gcp_vali_pw_name")
@@ -312,7 +313,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
                 deposited_theta = self.to_theta(deposited_balance.rao)
                 msg = f"Deposit successful: {deposited_theta} Theta deposited to miner: {miner_hotkey}"
-                bt.logging.info(msg)
+                logger.info(msg)
                 self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
                 self._entity_collateral_client.offset_collateral_cache(miner_hotkey, deposited_theta)
                 return {
@@ -322,12 +323,12 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
             except Exception as e:
                 error_msg = f"Deposit execution failed: {str(e)}"
-                bt.logging.error(error_msg)
+                logger.error(error_msg)
                 if "miner_hotkey" in locals():
                     try:
                         self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
                     except Exception as refresh_error:
-                        bt.logging.error(f"Failed to refresh account size for {miner_hotkey} after deposit failure: {refresh_error}")
+                        logger.error(f"Failed to refresh account size for {miner_hotkey} after deposit failure: {refresh_error}")
                 return {
                     "successfully_processed": False,
                     "error_message": error_msg
@@ -335,7 +336,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         except Exception as e:
             error_msg = f"Deposit processing error: {str(e)}"
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             return {
                 "successfully_processed": False,
                 "error_message": error_msg
@@ -351,7 +352,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             miner_hotkey (str): Miner's SS58 hotkey address
         """
         try:
-            bt.logging.info(f"Processing force deposit to {miner_hotkey} for {amount} Theta")
+            logger.info(f"Processing force deposit to {miner_hotkey} for {amount} Theta")
             owner_address = ValiUtils.get_secret("collateral_owner_address")
             owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
             try:
@@ -364,9 +365,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             finally:
                 del owner_address
                 del owner_private_key
-            bt.logging.info(f"Force deposit successful: {amount} Theta deposited for {miner_hotkey}")
+            logger.info(f"Force deposit successful: {amount} Theta deposited for {miner_hotkey}")
         except Exception as e:
-            bt.logging.error(f"Force deposit execution failed: {str(e)}")
+            logger.error(f"Force deposit execution failed: {str(e)}")
             raise
 
     def refresh_miner_account_size(self, hotkey: str) -> bool:
@@ -394,24 +395,24 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
-            bt.logging.info("Received withdrawal query {miner_hotkey} withdraw amount: {amount:.4f}")
+            logger.info("Received withdrawal query {miner_hotkey} withdraw amount: {amount:.4f}")
 
             # Check collateral balance
             theta_current_balance = self.get_miner_collateral_balance(miner_hotkey)
             if theta_current_balance is None:
                 error_msg = f"Failed to retrieve collateral balance for {miner_hotkey}"
-                bt.logging.error(error_msg)
+                logger.error(error_msg)
                 return {"successfully_processed": False, "error_message": error_msg}
 
             if amount > theta_current_balance:
                 error_msg = f"Insufficient collateral balance. Available: {theta_current_balance}, Requested: {amount}"
-                bt.logging.error(error_msg)
+                logger.error(error_msg)
                 return {"successfully_processed": False, "error_message": error_msg}
 
             required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(miner_hotkey)
             if theta_current_balance - amount < required_min_theta:
                 error_msg = f"Insufficient collateral: {theta_current_balance - amount:.2f} theta after withdrawal < {required_min_theta:.2f} theta required"
-                bt.logging.error(f"{error_msg}")
+                logger.error(f"{error_msg}")
                 return {"successfully_processed": False, "error_message": error_msg}
 
             positions = self._position_client.get_positions_for_one_hotkey(miner_hotkey)
@@ -421,7 +422,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     f"Cannot withdraw collateral with open positions, please close all positions before withdrawing collateral. "
                     f"Open positions: {[pos.trade_pair.trade_pair_id for pos in open_positions]}"
                 )
-                bt.logging.error(error_msg)
+                logger.error(error_msg)
                 return {"successfully_processed": False, "error_message": error_msg}
 
             slashed_amount = 0
@@ -471,12 +472,12 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 "withdrawal_amount": withdrawal_amount,
                 "new_balance": new_balance
             }
-            bt.logging.info(f"{miner_hotkey} Query withdrawal request results: {result}")
+            logger.info(f"{miner_hotkey} Query withdrawal request results: {result}")
             return result
 
         except Exception as e:
             error_msg = f"Withdrawal query error: {str(e)}"
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             return {
                 "successfully_processed": False,
                 "error_message": error_msg
@@ -495,7 +496,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
-            bt.logging.info("Received withdrawal request")
+            logger.info("Received withdrawal request")
 
             query_result = self.query_withdrawal_request(amount, miner_hotkey)
             if not query_result["successfully_processed"]:
@@ -504,7 +505,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             slashed_amount = query_result["slashed_amount"]
             drawdown = query_result["drawdown"]
 
-            bt.logging.info(
+            logger.info(
                 f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {drawdown*100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
             if slashed_amount > 0:
                 self.slash_miner_collateral(miner_hotkey, slashed_amount)
@@ -530,10 +531,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 if slashed_amount > 0:
                     try:
                         self.force_deposit(slashed_amount, miner_hotkey)
-                        bt.logging.info(
+                        logger.info(
                             f"Rolled back {slashed_amount} Theta slash for {miner_hotkey} after withdrawal failure: {withdraw_error}")
                     except Exception as rollback_error:
-                        bt.logging.error(
+                        logger.error(
                             f"CRITICAL: failed to roll back {slashed_amount} Theta slash for {miner_hotkey} after "
                             f"withdrawal failure ({withdraw_error}); manual reinstatement required: {rollback_error}")
                 raise
@@ -543,7 +544,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 del vault_password
             returned_theta = self.to_theta(withdrawn_balance.rao)
             msg = f"Withdrawal successful: {returned_theta} Theta withdrawn for {miner_hotkey}, returned to {miner_coldkey}"
-            bt.logging.info(msg)
+            logger.info(msg)
             self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
             self._entity_collateral_client.offset_collateral_cache(miner_hotkey, -returned_theta)
             return {
@@ -555,11 +556,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         except Exception as e:
             error_msg = f"Withdrawal processing execution failed: {str(e)}"
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             try:
                 self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
             except Exception as refresh_error:
-                bt.logging.error(f"Failed to refresh account size for {miner_hotkey} after withdrawal failure: {refresh_error}")
+                logger.error(f"Failed to refresh account size for {miner_hotkey} after withdrawal failure: {refresh_error}")
             return {
                 "successfully_processed": False,
                 "error_message": error_msg,
@@ -575,12 +576,12 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return False
 
         if not (0.0 <= slash_proportion <= 1.0):
-            bt.logging.error(f"Invalid collateral slash proportion: {slash_proportion}")
+            logger.error(f"Invalid collateral slash proportion: {slash_proportion}")
             return False
 
         current_balance_theta = self.get_miner_collateral_balance(miner_hotkey)
         if current_balance_theta is None or current_balance_theta <= 0:
-            bt.logging.info(f"No slashing available for {miner_hotkey}, balance is {current_balance_theta}")
+            logger.info(f"No slashing available for {miner_hotkey}, balance is {current_balance_theta}")
             return False
 
         slash_amount = min(current_balance_theta, self.max_theta) * slash_proportion
@@ -597,22 +598,22 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return False
 
         if slash_amount is None or slash_amount < 0:
-            bt.logging.error(f"Invalid collateral slash amount: {slash_amount}")
+            logger.error(f"Invalid collateral slash amount: {slash_amount}")
             return False
 
         current_balance_theta = self.get_miner_collateral_balance(miner_hotkey)
         if current_balance_theta is None or current_balance_theta <= 0:
-            bt.logging.info(f"No slashing available for {miner_hotkey}, balance is {current_balance_theta}")
+            logger.info(f"No slashing available for {miner_hotkey}, balance is {current_balance_theta}")
             return False
 
         # Ensure we don't slash more than the current balance or max theta
         slash_amount = min(slash_amount, current_balance_theta, self.max_theta)
         if slash_amount <= 0:
-            bt.logging.info(f"No slashing required for {miner_hotkey} (calculated amount: {slash_amount})")
+            logger.info(f"No slashing required for {miner_hotkey} (calculated amount: {slash_amount})")
             return True
 
         # Call collateral SDK slash method
-        bt.logging.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey}")
+        logger.info(f"Processing slash of {slash_amount} Theta from {miner_hotkey}")
         slash_amount_rao = int(slash_amount * 10 ** 9)
         owner_address = ValiUtils.get_secret("collateral_owner_address")
         owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
@@ -626,10 +627,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     owner_private_key=owner_private_key,
                 )
             except Exception as e:
-                bt.logging.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
+                logger.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
                 return False
 
-            bt.logging.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
+            logger.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
 
             try:
                 self.collateral_manager.burn(
@@ -638,9 +639,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     vault_wallet=self.wallet,
                     wallet_password=vault_password,
                 )
-                bt.logging.info(f"Successfully burned {slash_amount} Theta for {miner_hotkey} slash")
+                logger.info(f"Successfully burned {slash_amount} Theta for {miner_hotkey} slash")
             except Exception as e:
-                bt.logging.error(
+                logger.error(
                     f"Slash succeeded but burn failed for {miner_hotkey} - "
                     f"{slash_amount} Theta funds remain in slashedCollateral pool: {e}"
                 )
@@ -675,11 +676,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 # Check if this is a rate limiting error (429)
                 if "429" in str(e) and attempt < max_retries - 1:
                     wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s, 8s
-                    bt.logging.warning(
+                    logger.warning(
                         f"Rate limited getting balance for {miner_address}, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
-                    bt.logging.error(f"Failed to get collateral balance for {miner_address}: {e}")
+                    logger.error(f"Failed to get collateral balance for {miner_address}: {e}")
                     return None
         return None
 
@@ -688,7 +689,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         try:
             return self.collateral_manager.get_total_collateral()
         except Exception as e:
-            bt.logging.error(f"Failed to get total collateral: {e}")
+            logger.error(f"Failed to get total collateral: {e}")
             return 0
 
     def get_slashed_collateral(self) -> int:
@@ -696,7 +697,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         try:
             return self.collateral_manager.get_slashed_collateral()
         except Exception as e:
-            bt.logging.error(f"Failed to get slashed collateral: {e}")
+            logger.error(f"Failed to get slashed collateral: {e}")
             return 0
 
     def _set_miner_account_size(self, hotkey: str, timestamp_ms: int = None, account_size: float = None) -> bool:
@@ -715,7 +716,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             # Get collateral balance outside lock (external RPC call)
             collateral_balance = self.get_miner_collateral_balance(hotkey)
             if collateral_balance is None:
-                bt.logging.warning(f"Could not retrieve collateral balance for {hotkey}")
+                logger.warning(f"Could not retrieve collateral balance for {hotkey}")
                 return False
         else:
             # Subaccount miner
@@ -789,7 +790,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         # 1. Check in-memory cache first
         with self._coldkey_hotkey_cache_lock:
             if cache_key in self._coldkey_hotkey_cache:
-                bt.logging.info(f"Using cached ownership result for {hotkey_ss58}")
+                logger.info(f"Using cached ownership result for {hotkey_ss58}")
                 return self._coldkey_hotkey_cache[cache_key]
 
         # 2. Try metagraph (fast - already in memory, no blockchain query)
@@ -800,14 +801,14 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     # Cache the result
                     with self._coldkey_hotkey_cache_lock:
                         self._coldkey_hotkey_cache[cache_key] = True
-                    bt.logging.info(f"Verified ownership via metagraph for {coldkey_ss58} and {hotkey_ss58}")
+                    logger.info(f"Verified ownership via metagraph for {coldkey_ss58} and {hotkey_ss58}")
                     return True
         except Exception as e:
-            bt.logging.warning(f"Failed to check metagraph for {hotkey_ss58}: {e}")
+            logger.warning(f"Failed to check metagraph for {hotkey_ss58}: {e}")
 
         # 3. Fallback to subtensor for non-registered hotkeys
         try:
-            bt.logging.info(f"Hotkey {hotkey_ss58} not in metagraph, querying subtensor")
+            logger.info(f"Hotkey {hotkey_ss58} not in metagraph, querying subtensor")
             subtensor_api = self.collateral_manager.subtensor_api
             coldkey_owner = subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
             is_owner = coldkey_owner == coldkey_ss58
@@ -816,10 +817,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             with self._coldkey_hotkey_cache_lock:
                 self._coldkey_hotkey_cache[cache_key] = is_owner
 
-            bt.logging.info(f"Verified ownership via subtensor for {coldkey_ss58} and {hotkey_ss58}")
+            logger.info(f"Verified ownership via subtensor for {coldkey_ss58} and {hotkey_ss58}")
             return is_owner
         except Exception as e:
-            bt.logging.error(f"Error verifying coldkey-hotkey ownership: {e}")
+            logger.error(f"Error verifying coldkey-hotkey ownership: {e}")
             return False
 
     # ==================== Test Data Injection Methods ====================
