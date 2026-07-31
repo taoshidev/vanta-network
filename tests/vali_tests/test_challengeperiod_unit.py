@@ -315,6 +315,50 @@ def test_check_static_ignores_legacy_drawdown_pcts():
     assert ChallengePeriodManager._check_static_eod_drawdown(state) is None
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 3c — uses_static_drawdown_rules (effective-time gate)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+EFFECTIVE_MS = ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS
+
+
+def test_uses_static_rules_false_for_regular_miner():
+    state = _state(MinerBucket.CHALLENGE, EFFECTIVE_MS + DAILY_MS)
+    assert state.uses_static_drawdown_rules is False
+
+
+def test_uses_static_rules_challenge_registered_after_effective():
+    state = _state(MinerBucket.SUBACCOUNT_CHALLENGE, EFFECTIVE_MS + DAILY_MS)
+    assert state.uses_static_drawdown_rules is True
+
+
+def test_uses_static_rules_challenge_registered_before_effective():
+    state = _state(MinerBucket.SUBACCOUNT_CHALLENGE, EFFECTIVE_MS - DAILY_MS)
+    assert state.uses_static_drawdown_rules is False
+
+
+def test_uses_static_rules_registered_exactly_at_effective():
+    state = _state(MinerBucket.SUBACCOUNT_CHALLENGE, EFFECTIVE_MS)
+    assert state.uses_static_drawdown_rules is True
+
+
+def test_uses_static_rules_funded_keyed_on_challenge_registration():
+    state = MinerBucketState("test_hk", [
+        BucketEntry(MinerBucket.SUBACCOUNT_CHALLENGE, EFFECTIVE_MS - DAILY_MS),
+        BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, EFFECTIVE_MS + DAILY_MS * 5),
+    ])
+    assert state.uses_static_drawdown_rules is False
+
+
+def test_uses_static_rules_eliminated_falls_back_to_previous_bucket():
+    state = MinerBucketState("test_hk", [
+        BucketEntry(MinerBucket.SUBACCOUNT_CHALLENGE, EFFECTIVE_MS + DAILY_MS),
+        BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, EFFECTIVE_MS + DAILY_MS * 5),
+        BucketEntry(MinerBucket.ELIMINATED, EFFECTIVE_MS + DAILY_MS * 10),
+    ])
+    assert state.uses_static_drawdown_rules is True
+
+
 def test_should_demote_non_maincomp():
     for bucket in (MinerBucket.CHALLENGE, MinerBucket.PROBATION):
         state = _state(bucket)

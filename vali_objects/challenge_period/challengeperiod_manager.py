@@ -203,6 +203,21 @@ class MinerBucketState:
     def eod_drawdown_threshold_pct(self):
         return self.eod_drawdown_threshold * 100
 
+    @property
+    def uses_static_drawdown_rules(self) -> bool:
+        """True for subaccounts registered at/after SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS — they use
+        the static drawdown rules; earlier subaccounts keep the legacy intraday/EOD-trailing rules.
+        Registration time is the SUBACCOUNT_CHALLENGE entry start, same convention as the V0/V1
+        threshold cutoffs. Always False for regular miners."""
+        bucket = self.current_bucket
+        if bucket == MinerBucket.ELIMINATED and len(self.entries) >= 2:
+            bucket = self.entries[-2].bucket
+        if not bucket.is_subaccount:
+            return False
+        challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
+        registration_ms = challenge_entry.start_time_ms if challenge_entry else None
+        return registration_ms is None or registration_ms >= ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS
+
 
 class ChallengePeriodManager(CacheController):
     """
@@ -312,8 +327,8 @@ class ChallengePeriodManager(CacheController):
                 continue
 
 
-            if state.current_bucket.is_subaccount:
-                # Subaccount (standard account) rules — both measured against starting balance
+            if state.uses_static_drawdown_rules:
+                # Static rules for subaccounts registered after the effective time — both measured against starting balance
                 # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
                     eliminations[hotkey] = reason
@@ -324,17 +339,16 @@ class ChallengePeriodManager(CacheController):
                     eliminations[hotkey] = reason
                     continue
             else:
+                # Legacy rules: pre-effective subaccounts eliminate immediately; regular miners only after activation
                 # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
                 if reason := self._check_intraday_drawdown(state):
-                    # Active for regular miners after activation
-                    if current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                    if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
                         eliminations[hotkey] = reason
                     continue
 
                 # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
                 if reason := self._check_eod_drawdown(state):
-                    # Active for regular miners after activation
-                    if current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                    if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
                         eliminations[hotkey] = reason
                     continue
 
@@ -943,6 +957,7 @@ class ChallengePeriodManager(CacheController):
             "eod_drawdown_threshold": eod_threshold,
             "static_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD,
             "static_eod_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD,
+            "uses_static_drawdown_rules": state.uses_static_drawdown_rules,
         }
 
     # ==================== Disk I/O ====================
