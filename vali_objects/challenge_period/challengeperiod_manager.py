@@ -9,6 +9,7 @@ ChallengePeriodServer wraps this and exposes methods via RPC.
 This follows the same pattern as EliminationManager.
 """
 from dataclasses import asdict, dataclass, field, fields
+from enum import Enum
 
 from bittensor.utils.btlogging import logging as btlogging
 import threading
@@ -40,6 +41,11 @@ from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
 from entity_management.entity_client import EntityClient
 
+class DrawdownCriteria(str, Enum):
+    TRAILING = "trailing"   # intraday + EOD trailing (regular miners and pre-effective subaccounts)
+    STATIC = "static"   # static balance + static EOD (post-effective subaccounts, non-HL)
+
+
 @dataclass
 class DrawdownStats:
     current_equity: float = 1.0
@@ -47,25 +53,49 @@ class DrawdownStats:
     daily_open_equity: float | None = 1.0
     eod_hwm: float = 1.0
     last_eod_equity: float = 1.0
-    intraday_drawdown_pct: float = 0.0
-    eod_drawdown_pct: float = 0.0
-    static_drawdown_pct: float = 0.0
-    static_eod_drawdown_pct: float = 0.0
     last_eod_checked_ms: int | None = None
+    criteria: DrawdownCriteria = DrawdownCriteria.TRAILING
 
     @property
-    def current_return(self):
+    def intraday_drawdown_pct(self) -> float:
+        if not self.daily_open_equity:
+            return 0.0
+        return (1.0 - self.current_equity / self.daily_open_equity) * 100.0
+
+    @property
+    def eod_drawdown_pct(self) -> float:
+        return (1.0 - self.last_eod_equity / self.eod_hwm) * 100.0
+
+    @property
+    def static_drawdown_pct(self) -> float:
+        return (1.0 - self.current_balance) * 100.0
+
+    @property
+    def static_eod_drawdown_pct(self) -> float:
+        return (1.0 - self.last_eod_equity) * 100.0
+
+    @property
+    def current_return(self) -> float:
         return min(self.current_equity, self.current_balance) - 1.0
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d['intraday_drawdown_pct'] = self.intraday_drawdown_pct
+        d['eod_drawdown_pct'] = self.eod_drawdown_pct
+        d['static_drawdown_pct'] = self.static_drawdown_pct
+        d['static_eod_drawdown_pct'] = self.static_eod_drawdown_pct
+        d['current_return'] = self.current_return
+        return d
 
     @classmethod
     def from_dict(cls, d: dict | None) -> 'DrawdownStats':
         if not d:
             return cls()
         valid_keys = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in valid_keys and v is not None})
+        kwargs = {k: v for k, v in d.items() if k in valid_keys and v is not None}
+        if 'criteria' in kwargs:
+            kwargs['criteria'] = DrawdownCriteria(kwargs['criteria'])
+        return cls(**kwargs)
 
 
 @dataclass
@@ -326,8 +356,7 @@ class ChallengePeriodManager(CacheController):
                 eliminations[hotkey] = reason
                 continue
 
-
-            if self._uses_static_drawdown_rules(state, asset_selections.get(hotkey)):
+            if state.drawdown.criteria == DrawdownCriteria.STATIC:
                 # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
                 # both measured against starting balance
                 # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
@@ -432,16 +461,6 @@ class ChallengePeriodManager(CacheController):
             btlogging.info(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
 
         return None
-
-    @staticmethod
-    def _uses_static_drawdown_rules(state: MinerBucketState, asset_class: MinerAssetClass | None) -> bool:
-        """Static rules apply to post-effective subaccounts, except Hyperscaled (HL_ALL) subaccounts,
-        which are temporarily excluded and keep the legacy rules. An unresolved asset class defaults
-        to legacy rules so an as-yet-unclassified Hyperscaled subaccount is never mistakenly put on
-        static rules."""
-        if asset_class is None:
-            return False
-        return state.uses_static_drawdown_rules and asset_class != MinerAssetClass.HL_ALL
 
     @staticmethod
     def _check_static_drawdown(state: MinerBucketState) -> EliminationReason | None:
@@ -669,24 +688,17 @@ class ChallengePeriodManager(CacheController):
                 last_eod = snapshot.equity_return
                 daily_open_equity = snapshot.equity_return
 
-            intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0 if daily_open_equity else 0.0
-            eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
-            # Static-baseline stats for subaccount rules: loss measured against starting balance (account_size)
-            static_drawdown_pct = (1.0 - current_balance) * 100.0
-            static_eod_drawdown_pct = (1.0 - last_eod) * 100.0
+            state = self.miner_states[hotkey]
 
             # Cache stats before rule checks so dashboard reflects what triggered elimination
-            self.miner_states[hotkey].drawdown = DrawdownStats(
+            state.drawdown = DrawdownStats(
                 current_equity=current_equity,
                 current_balance=current_balance,
                 daily_open_equity=daily_open_equity,
-                eod_drawdown_pct=eod_drawdown_pct,
                 eod_hwm=eod_hwm,
-                intraday_drawdown_pct=intraday_drawdown_pct,
-                static_drawdown_pct=static_drawdown_pct,
-                static_eod_drawdown_pct=static_eod_drawdown_pct,
                 last_eod_equity=last_eod,
                 last_eod_checked_ms=last_eod_checked_ms,
+                criteria=state.drawdown.criteria,
             )
 
     def _refresh_rank_cache(
@@ -829,8 +841,19 @@ class ChallengePeriodManager(CacheController):
             if hotkey in skip_hotkeys:
                 continue
             start_time = hk_to_first_order_time_ms.get(hotkey, default_time)
-            bucket = MinerBucket.SUBACCOUNT_CHALLENGE if is_synthetic_hotkey(hotkey) else MinerBucket.CHALLENGE
-            self.set_miner_bucket(hotkey, bucket, start_time)
+            if is_synthetic_hotkey(hotkey):
+                bucket = MinerBucket.SUBACCOUNT_CHALLENGE
+                asset_class = self._asset_selection_client.get_asset_selection(hotkey)
+                criteria = (
+                    DrawdownCriteria.STATIC
+                    if start_time >= ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS
+                    and asset_class != MinerAssetClass.HL_ALL
+                    else DrawdownCriteria.TRAILING
+                )
+            else:
+                bucket = MinerBucket.CHALLENGE
+                criteria = None
+            self.set_miner_bucket(hotkey, bucket, start_time, criteria=criteria)
             btlogging.info(f"Adding {hotkey} to challenge period with start time {start_time}")
             state_changed = True
 
@@ -863,16 +886,21 @@ class ChallengePeriodManager(CacheController):
             return
         btlogging.info(f"[CP_MANAGER] Synced {len(hotkey_to_bucket)} miner buckets to MinerAccount")
 
-    def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int, *, replace_top=False) -> bool:
+    def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int, *, replace_top=False, criteria: DrawdownCriteria | None = None) -> bool:
         """
-        Set or update a miner's bucket information, replace_top to override most recent entry
+        Set or update a miner's bucket information, replace_top to override most recent entry.
+
+        criteria: if provided, set on the new state's drawdown at creation time (subaccounts only).
 
         Returns:
             True if this is a new miner, False if updating existing
         """
         with self._buckets_lock:
-            if not hotkey in self.miner_states:
-                self.miner_states[hotkey] = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)])
+            if hotkey not in self.miner_states:
+                state = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)])
+                if criteria is not None:
+                    state.drawdown.criteria = criteria
+                self.miner_states[hotkey] = state
                 return True
             else:
                 self.miner_states[hotkey].add_bucket_entry(bucket, start_time_ms, replace_top=replace_top)
@@ -966,14 +994,12 @@ class ChallengePeriodManager(CacheController):
 
         intraday_threshold = state.intraday_drawdown_threshold
         eod_threshold = state.eod_drawdown_threshold
-        asset_class = self._asset_selection_client.get_asset_selection(synthetic_hotkey)
         return {
             **state.drawdown.to_dict(),
             "intraday_drawdown_threshold": intraday_threshold,
             "eod_drawdown_threshold": eod_threshold,
             "static_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD,
             "static_eod_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD,
-            "uses_static_drawdown_rules": self._uses_static_drawdown_rules(state, asset_class),
         }
 
     # ==================== Disk I/O ====================

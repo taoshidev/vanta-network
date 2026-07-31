@@ -87,9 +87,9 @@ class ChallengePeriodClient(RPCClientBase):
     def get_dashboard(self, hotkey) -> dict | None:
         return self._server.get_dashboard_rpc(hotkey)
 
-    def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int) -> bool:
+    def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int, criteria=None) -> bool:
         """Set or update a miner's bucket information."""
-        return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms)
+        return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms, criteria)
 
     def remove_miners(self, hotkeys: str) -> bool:
         """Remove a miner from active_miners."""
