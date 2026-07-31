@@ -183,6 +183,7 @@ class MarketOrderManager():
             f"[ORDER_EXECUTION] {hotkey} {order_uuid} sizing: qty={quantity:.6g} val=${value:.4f} (from {order_size})"
         )
 
+        position.set_returns(fill_price, quote_usd_conversion=quote_usd_rate)
         if self._is_effective_close(position, order_type, quantity, value):
             order_type = OrderType.FLAT
             quantity, leverage, value = -position.net_quantity, -position.net_leverage, -position.net_value
@@ -247,7 +248,6 @@ class MarketOrderManager():
             if abs(order.value) > cash_available:
                 order.margin_loan = abs(order.value) * 0.5
 
-        position.set_returns(order.price)
         realized_pnl, transaction_fee, loan_repaid = position.add_order(order)
 
         if is_buy:
