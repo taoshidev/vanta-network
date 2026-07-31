@@ -121,8 +121,8 @@ class ChallengePeriodServer(RPCServerBase):
     def get_health_check_details(self) -> dict:
         return {"active_miners_count": len(self._manager.miner_states)}
 
-    def set_miner_bucket_rpc(self, hotkey: str, bucket: MinerBucket, start_time_ms: int) -> bool:
-        return self._manager.set_miner_bucket(hotkey, bucket, start_time_ms)
+    def set_miner_bucket_rpc(self, hotkey: str, bucket: MinerBucket, start_time_ms: int, criteria=None) -> bool:
+        return self._manager.set_miner_bucket(hotkey, bucket, start_time_ms, criteria=criteria)
 
     def remove_miners_rpc(self, hotkeys: str | list[str]) -> bool:
         return self._manager.remove_miners(hotkeys)

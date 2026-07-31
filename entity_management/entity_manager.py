@@ -43,6 +43,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.challenge_period.challengeperiod_manager import DrawdownCriteria
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
@@ -563,6 +564,18 @@ class EntityManager(ValidatorBroadcastBase):
                 self._uuid_to_hotkey[subaccount_uuid] = synthetic_hotkey
 
             self._write_entities_from_memory_to_disk()
+
+            # Register subaccount with challenge period, setting drawdown criteria at creation time
+            miner_asset_class = MinerAssetClass(asset_class) if asset_class else None
+            criteria = (
+                DrawdownCriteria.STATIC
+                if now_ms >= ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS
+                and miner_asset_class != MinerAssetClass.HL_ALL
+                else DrawdownCriteria.TRAILING
+            )
+            self._challenge_period_client.set_miner_bucket(
+                synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms, criteria=criteria
+            )
 
             if not self.running_unit_tests:
                 try:
