@@ -22,11 +22,13 @@ The two tiers are complementary:
   - Tier-1 integration tests check the RPC boundary and cross-process state.
 """
 import contextlib
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
@@ -46,6 +48,8 @@ THRESHOLD = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT
 RANK_LIMIT = ValiConfig.PROMOTION_THRESHOLD_RANK
 INTRADAY_DD_PCT = ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100
 EOD_DD_PCT = ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD * 100
+STATIC_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
+STATIC_EOD_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
 
 _CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager.PerfLedgerClient",
@@ -657,3 +661,209 @@ class TestChallengePeriodManagerLogic(TestBase):
             dd = mgr.miner_states[hk].drawdown
             self.assertEqual(dd.intraday_drawdown_pct, default_dd.intraday_drawdown_pct)
             self.assertEqual(dd.eod_drawdown_pct, default_dd.eod_drawdown_pct)
+
+    # ── Section 6: Subaccount static drawdown rules ───────────────────────────
+
+    def _refresh_with_patched_caches(self, mgr, now):
+        with (
+            patch.object(mgr, '_refresh_drawdown_cache'),
+            patch.object(mgr, '_refresh_rank_cache'),
+            patch.object(mgr, '_save_to_disk'),
+            patch.object(mgr, '_sync_buckets_to_accounts'),
+        ):
+            mgr.refresh(current_time_ms=now)
+
+    def test_refresh_eliminates_subaccount_funded_static_drawdown(self):
+        """SUBACCOUNT_FUNDED with balance more than 5% below starting balance is eliminated."""
+        now = TimeUtil.now_in_millis()
+        hk = "hk_static_funded"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                current_balance=1.0 - (STATIC_DD_PCT + 1.0) / 100,
+                static_drawdown_pct=STATIC_DD_PCT + 1.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
+            kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
+            self.assertEqual(kwargs["reason"], EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN)
+            self.assertAlmostEqual(kwargs["elimination_drawdown_pct"], STATIC_DD_PCT + 1.0)
+
+    def test_refresh_eliminates_subaccount_challenge_static_drawdown(self):
+        """SUBACCOUNT_CHALLENGE gets the challenge-period static reason."""
+        now = TimeUtil.now_in_millis()
+        hk = "hk_static_challenge"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_CHALLENGE, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT + 1.0)
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
+            kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
+            self.assertEqual(kwargs["reason"], EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN)
+
+    def test_refresh_eliminates_subaccount_static_eod_drawdown(self):
+        """SUBACCOUNT_FUNDED with midnight equity more than 5% below starting balance is
+        eliminated at the EOD check, with the elimination timestamped at that midnight."""
+        now = TimeUtil.now_in_millis()
+        midnight_ms = (now // MS_IN_24_HOURS) * MS_IN_24_HOURS
+        hk = "hk_static_eod"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                last_eod_equity=1.0 - (STATIC_EOD_DD_PCT + 1.0) / 100,
+                static_eod_drawdown_pct=STATIC_EOD_DD_PCT + 1.0,
+                last_eod_checked_ms=midnight_ms,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
+            kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
+            self.assertEqual(kwargs["reason"], EliminationReason.FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN)
+            self.assertAlmostEqual(kwargs["elimination_drawdown_pct"], STATIC_EOD_DD_PCT + 1.0)
+            self.assertEqual(kwargs["elimination_time_ms"], midnight_ms)
+
+    def test_refresh_subaccount_survives_deep_intraday_equity_dip(self):
+        """Key behavior change: a deep unrealized intraday dip (would have died under the
+        legacy intraday/EOD-trailing rules) no longer eliminates a subaccount as long as
+        balance and midnight equity stay within the static limits."""
+        now = TimeUtil.now_in_millis()
+        hk = "hk_deep_dip"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                current_equity=0.88,
+                current_balance=0.99,
+                intraday_drawdown_pct=12.0,
+                eod_drawdown_pct=9.0,
+                static_drawdown_pct=1.0,
+                static_eod_drawdown_pct=2.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.SUBACCOUNT_FUNDED)
+            mgr._elimination_client.append_elimination_row.assert_not_called()
+
+    def test_refresh_subaccount_survives_at_exact_static_thresholds(self):
+        """Exactly 5% down on both static measures survives (strict > comparison)."""
+        now = TimeUtil.now_in_millis()
+        hk = "hk_boundary"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                current_balance=1.0 - STATIC_DD_PCT / 100,
+                last_eod_equity=1.0 - STATIC_EOD_DD_PCT / 100,
+                static_drawdown_pct=STATIC_DD_PCT,
+                static_eod_drawdown_pct=STATIC_EOD_DD_PCT,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.SUBACCOUNT_FUNDED)
+            mgr._elimination_client.append_elimination_row.assert_not_called()
+
+    def test_refresh_regular_miner_ignores_static_stats(self):
+        """Regular miners are never evaluated against the static subaccount rules."""
+        now = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS
+        hk = "hk_regular_static"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                static_drawdown_pct=50.0,
+                static_eod_drawdown_pct=50.0,
+            )
+            mgr.miner_states[hk].rank = 1
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.CHALLENGE)
+            mgr._elimination_client.append_elimination_row.assert_not_called()
+
+    def test_refresh_regular_miner_intraday_inactive_before_activation(self):
+        """Before DRAWDOWN_ACTIVATION_MS a regular miner tripping the intraday rule is not eliminated."""
+        now = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS - DAILY_MS
+        hk = "hk_pre_activation"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                intraday_drawdown_pct=INTRADAY_DD_PCT + 1.0,
+                daily_open_equity=1.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.CHALLENGE)
+            mgr._elimination_client.append_elimination_row.assert_not_called()
+
+    def test_refresh_regular_miner_intraday_eliminates_after_activation(self):
+        """After DRAWDOWN_ACTIVATION_MS the legacy intraday rule still eliminates regular miners."""
+        now = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS
+        hk = "hk_post_activation"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                intraday_drawdown_pct=INTRADAY_DD_PCT + 1.0,
+                daily_open_equity=1.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
+            kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
+            self.assertEqual(kwargs["reason"], EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN)
+
+    def test_refresh_drawdown_cache_computes_static_pcts(self):
+        """_refresh_drawdown_cache derives both static percentages from account balance
+        and the latest midnight equity checkpoint."""
+        now = TimeUtil.now_in_millis()
+        hk = "hk_static_cache"
+        account_size = 100_000.0
+        today_midnight_ms = (now // MS_IN_24_HOURS) * MS_IN_24_HOURS
+
+        ledger = PerfLedger(cps=[
+            PerfCheckpoint(last_update_ms=today_midnight_ms, prev_portfolio_ret=1.0,
+                           accum_ms=DAILY_MS, equity_ret=0.93, gain=0.0, loss=-0.07, mdd=1.0),
+        ])
+        account = SimpleNamespace(
+            account_size=account_size,
+            balance=account_size * 0.96,
+            equity=account_size * 0.90,
+            daily_open_snapshot=None,
+        )
+
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now - DAILY_MS * 5)
+            mgr._refresh_drawdown_cache([hk], {hk: account}, {hk: ledger}, {hk: []}, now)
+
+            dd = mgr.miner_states[hk].drawdown
+            self.assertAlmostEqual(dd.static_drawdown_pct, 4.0, delta=1e-6)
+            self.assertAlmostEqual(dd.static_eod_drawdown_pct, 7.0, delta=1e-6)
+
+    def test_get_drawdown_stats_includes_static_fields(self):
+        """Dashboard payload carries the static percentages and thresholds."""
+        now = TimeUtil.now_in_millis()
+        hk = "hk_dd_stats"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now)
+            mgr.miner_states[hk].drawdown = DrawdownStats(static_drawdown_pct=1.5, static_eod_drawdown_pct=2.5)
+
+            stats = mgr.get_drawdown_stats(hk)
+            self.assertEqual(stats["static_drawdown_pct"], 1.5)
+            self.assertEqual(stats["static_eod_drawdown_pct"], 2.5)
+            self.assertEqual(stats["static_drawdown_threshold"], ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD)
+            self.assertEqual(stats["static_eod_drawdown_threshold"], ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD)
