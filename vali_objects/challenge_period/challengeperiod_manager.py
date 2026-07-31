@@ -436,7 +436,11 @@ class ChallengePeriodManager(CacheController):
     @staticmethod
     def _uses_static_drawdown_rules(state: MinerBucketState, asset_class: MinerAssetClass | None) -> bool:
         """Static rules apply to post-effective subaccounts, except Hyperscaled (HL_ALL) subaccounts,
-        which are temporarily excluded and keep the legacy rules."""
+        which are temporarily excluded and keep the legacy rules. An unresolved asset class defaults
+        to legacy rules so an as-yet-unclassified Hyperscaled subaccount is never mistakenly put on
+        static rules."""
+        if asset_class is None:
+            return False
         return state.uses_static_drawdown_rules and asset_class != MinerAssetClass.HL_ALL
 
     @staticmethod
@@ -523,12 +527,16 @@ class ChallengePeriodManager(CacheController):
             else:
                 elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
 
+            is_static = elimination_reason.is_static_drawdown or elimination_reason.is_static_eod_drawdown
+            intraday_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.intraday_drawdown_pct
+            eod_drawdown_pct = state.drawdown.static_eod_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
+
             self._elimination_client.append_elimination_row(
                 hotkey=hotkey,
                 reason=elimination_reason,
                 elimination_drawdown_pct=elimination_drawdown_pct,
-                intraday_drawdown_pct=state.drawdown.intraday_drawdown_pct,
-                eod_drawdown_pct=state.drawdown.eod_drawdown_pct,
+                intraday_drawdown_pct=intraday_drawdown_pct,
+                eod_drawdown_pct=eod_drawdown_pct,
                 elimination_time_ms=elimination_time_ms,
                 bucket_at_elimination=state.current_bucket,
             )
