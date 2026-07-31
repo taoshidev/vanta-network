@@ -49,6 +49,8 @@ class DrawdownStats:
     last_eod_equity: float = 1.0
     intraday_drawdown_pct: float = 0.0
     eod_drawdown_pct: float = 0.0
+    static_drawdown_pct: float = 0.0
+    static_eod_drawdown_pct: float = 0.0
     last_eod_checked_ms: int | None = None
 
     @property
@@ -596,6 +598,9 @@ class ChallengePeriodManager(CacheController):
 
             intraday_drawdown_pct = (1.0 - current_equity / daily_open_equity) * 100.0 if daily_open_equity else 0.0
             eod_drawdown_pct = (1.0 - last_eod / eod_hwm) * 100.0
+            # Static-baseline stats for subaccount rules: loss measured against starting balance (account_size)
+            static_drawdown_pct = (1.0 - current_balance) * 100.0
+            static_eod_drawdown_pct = (1.0 - last_eod) * 100.0
 
             # Cache stats before rule checks so dashboard reflects what triggered elimination
             self.miner_states[hotkey].drawdown = DrawdownStats(
@@ -605,6 +610,8 @@ class ChallengePeriodManager(CacheController):
                 eod_drawdown_pct=eod_drawdown_pct,
                 eod_hwm=eod_hwm,
                 intraday_drawdown_pct=intraday_drawdown_pct,
+                static_drawdown_pct=static_drawdown_pct,
+                static_eod_drawdown_pct=static_eod_drawdown_pct,
                 last_eod_equity=last_eod,
                 last_eod_checked_ms=last_eod_checked_ms,
             )
@@ -890,6 +897,8 @@ class ChallengePeriodManager(CacheController):
             **state.drawdown.to_dict(),
             "intraday_drawdown_threshold": intraday_threshold,
             "eod_drawdown_threshold": eod_threshold,
+            "static_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD,
+            "static_eod_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD,
         }
 
     # ==================== Disk I/O ====================
