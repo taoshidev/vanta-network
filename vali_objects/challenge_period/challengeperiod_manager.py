@@ -133,6 +133,7 @@ class MinerBucketState:
             f"{self.hotkey} {self.current_bucket.value} {start} rank={self.rank} "
             f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={f'{dd.daily_open_equity:.4f}' if dd.daily_open_equity is not None else 'None'} | "
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
+            f"static_dd={dd.static_drawdown_pct:.2f}% static_eod_dd={dd.static_eod_drawdown_pct:.2f}% "
             f"eod_hwm={dd.eod_hwm:.4f}"
         )
 
@@ -311,19 +312,31 @@ class ChallengePeriodManager(CacheController):
                 continue
 
 
-            # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
-            if reason := self._check_intraday_drawdown(state):
-                # Active intraday/eod drawdown for regular miners after activation
-                if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+            if state.current_bucket.is_subaccount:
+                # Subaccount (standard account) rules — both measured against starting balance
+                # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
+                if reason := self._check_static_drawdown(state):
                     eliminations[hotkey] = reason
-                continue
+                    continue
 
-            # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
-            if reason := self._check_eod_drawdown(state):
-                # Active intraday/eod drawdown for regular miners after activation
-                if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                # Rule 2: Static EOD drawdown — equity at the 00:00 UTC check cannot be more than 5% below starting balance
+                if reason := self._check_static_eod_drawdown(state):
                     eliminations[hotkey] = reason
-                continue
+                    continue
+            else:
+                # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
+                if reason := self._check_intraday_drawdown(state):
+                    # Active for regular miners after activation
+                    if current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                        eliminations[hotkey] = reason
+                    continue
+
+                # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
+                if reason := self._check_eod_drawdown(state):
+                    # Active for regular miners after activation
+                    if current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                        eliminations[hotkey] = reason
+                    continue
 
             _asset = asset_selections.get(hotkey)
             if _asset is None:
@@ -406,6 +419,32 @@ class ChallengePeriodManager(CacheController):
         return None
 
     @staticmethod
+    def _check_static_drawdown(state: MinerBucketState) -> EliminationReason | None:
+        threshold_pct = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
+        if state.drawdown.static_drawdown_pct > threshold_pct:
+            btlogging.warning(f"[CHALLENGE] ELIMINATION static drawdown {threshold_pct}%: {state}")
+            if state.current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+                return EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN
+            else:
+                return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN
+        elif state.drawdown.static_drawdown_pct > threshold_pct * 0.75:
+            btlogging.info(f"[CHALLENGE] near static drawdown {threshold_pct}%: {state}")
+        return None
+
+    @staticmethod
+    def _check_static_eod_drawdown(state: MinerBucketState) -> EliminationReason | None:
+        threshold_pct = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
+        if state.drawdown.static_eod_drawdown_pct > threshold_pct:
+            btlogging.warning(f"[CHALLENGE] ELIMINATION static EOD drawdown {threshold_pct}%: {state}")
+            if state.current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+                return EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN
+            else:
+                return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN
+        elif state.drawdown.static_eod_drawdown_pct > threshold_pct * 0.75:
+            btlogging.info(f"[CHALLENGE] near static EOD drawdown {threshold_pct}%: {state}")
+        return None
+
+    @staticmethod
     def _check_demotion(state: MinerBucketState) -> bool:
         if state.current_bucket == MinerBucket.MAINCOMP:
             result = (state.rank > ValiConfig.PROMOTION_THRESHOLD_RANK
@@ -455,6 +494,11 @@ class ChallengePeriodManager(CacheController):
                 elimination_time_ms = state.drawdown.last_eod_checked_ms or current_time_ms
             elif elimination_reason.is_intraday_drawdown:
                 elimination_drawdown_pct = state.drawdown.intraday_drawdown_pct
+            elif elimination_reason.is_static_drawdown:
+                elimination_drawdown_pct = state.drawdown.static_drawdown_pct
+            elif elimination_reason.is_static_eod_drawdown:
+                elimination_drawdown_pct = state.drawdown.static_eod_drawdown_pct
+                elimination_time_ms = state.drawdown.last_eod_checked_ms or current_time_ms
             else:
                 elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
 
