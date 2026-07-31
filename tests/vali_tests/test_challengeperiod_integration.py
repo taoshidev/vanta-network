@@ -29,6 +29,7 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.elimination_reason_enum import EliminationReason
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
@@ -862,6 +863,7 @@ class TestChallengePeriodManagerLogic(TestBase):
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now)
             mgr.miner_states[hk].drawdown = DrawdownStats(static_drawdown_pct=1.5, static_eod_drawdown_pct=2.5)
+            mgr._asset_selection_client.get_asset_selection.return_value = MinerAssetClass.CRYPTO
 
             stats = mgr.get_drawdown_stats(hk)
             self.assertEqual(stats["static_drawdown_pct"], 1.5)
@@ -951,3 +953,53 @@ class TestChallengePeriodManagerLogic(TestBase):
             self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
             kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
             self.assertEqual(kwargs["reason"], EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
+
+    def test_refresh_hyperscaled_subaccount_ignores_static_rules(self):
+        """Hyperscaled (HL_ALL) subaccounts are excluded from the static rules even when
+        registered after the effective time."""
+        now = STATIC_EFFECTIVE_MS + DAILY_MS * 4
+        hk = "hk_hyperscaled_static"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                static_drawdown_pct=50.0,
+                static_eod_drawdown_pct=50.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            mgr._asset_selection_client.get_asset_selections.return_value = {hk: MinerAssetClass.HL_ALL}
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.SUBACCOUNT_FUNDED)
+            mgr._elimination_client.append_elimination_row.assert_not_called()
+
+    def test_refresh_hyperscaled_subaccount_eliminates_via_legacy_rules(self):
+        """Hyperscaled subaccounts still eliminate immediately under the legacy intraday rule."""
+        now = STATIC_EFFECTIVE_MS + DAILY_MS * 4
+        hk = "hk_hyperscaled_legacy"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now - DAILY_MS * 3)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                intraday_drawdown_pct=INTRADAY_DD_PCT + 1.0,
+                daily_open_equity=1.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            mgr._asset_selection_client.get_asset_selections.return_value = {hk: MinerAssetClass.HL_ALL}
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
+            kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
+            self.assertEqual(kwargs["reason"], EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
+
+    def test_get_drawdown_stats_hyperscaled_reports_legacy_rules(self):
+        """Dashboard payload reports uses_static_drawdown_rules=False for Hyperscaled subaccounts."""
+        now = STATIC_EFFECTIVE_MS + DAILY_MS
+        hk = "hk_hyperscaled_stats"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now)
+            mgr._asset_selection_client.get_asset_selection.return_value = MinerAssetClass.HL_ALL
+
+            stats = mgr.get_drawdown_stats(hk)
+            self.assertFalse(stats["uses_static_drawdown_rules"])
