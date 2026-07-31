@@ -50,6 +50,7 @@ INTRADAY_DD_PCT = ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100
 EOD_DD_PCT = ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD * 100
 STATIC_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
 STATIC_EOD_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
+STATIC_EFFECTIVE_MS = ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS
 
 _CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager.PerfLedgerClient",
@@ -675,7 +676,7 @@ class TestChallengePeriodManagerLogic(TestBase):
 
     def test_refresh_eliminates_subaccount_funded_static_drawdown(self):
         """SUBACCOUNT_FUNDED with balance more than 5% below starting balance is eliminated."""
-        now = TimeUtil.now_in_millis()
+        now = STATIC_EFFECTIVE_MS + DAILY_MS * 4  # registration below lands after the effective time
         hk = "hk_static_funded"
         mgr, stack = self._make_manager()
         with stack:
@@ -694,7 +695,7 @@ class TestChallengePeriodManagerLogic(TestBase):
 
     def test_refresh_eliminates_subaccount_challenge_static_drawdown(self):
         """SUBACCOUNT_CHALLENGE gets the challenge-period static reason."""
-        now = TimeUtil.now_in_millis()
+        now = STATIC_EFFECTIVE_MS + DAILY_MS * 4
         hk = "hk_static_challenge"
         mgr, stack = self._make_manager()
         with stack:
@@ -710,7 +711,7 @@ class TestChallengePeriodManagerLogic(TestBase):
     def test_refresh_eliminates_subaccount_static_eod_drawdown(self):
         """SUBACCOUNT_FUNDED with midnight equity more than 5% below starting balance is
         eliminated at the EOD check, with the elimination timestamped at that midnight."""
-        now = TimeUtil.now_in_millis()
+        now = STATIC_EFFECTIVE_MS + DAILY_MS * 4
         midnight_ms = (now // MS_IN_24_HOURS) * MS_IN_24_HOURS
         hk = "hk_static_eod"
         mgr, stack = self._make_manager()
@@ -734,7 +735,7 @@ class TestChallengePeriodManagerLogic(TestBase):
         """Key behavior change: a deep unrealized intraday dip (would have died under the
         legacy intraday/EOD-trailing rules) no longer eliminates a subaccount as long as
         balance and midnight equity stay within the static limits."""
-        now = TimeUtil.now_in_millis()
+        now = STATIC_EFFECTIVE_MS + DAILY_MS * 4
         hk = "hk_deep_dip"
         mgr, stack = self._make_manager()
         with stack:
@@ -755,7 +756,7 @@ class TestChallengePeriodManagerLogic(TestBase):
 
     def test_refresh_subaccount_survives_at_exact_static_thresholds(self):
         """Exactly 5% down on both static measures survives (strict > comparison)."""
-        now = TimeUtil.now_in_millis()
+        now = STATIC_EFFECTIVE_MS + DAILY_MS * 4
         hk = "hk_boundary"
         mgr, stack = self._make_manager()
         with stack:
@@ -855,7 +856,7 @@ class TestChallengePeriodManagerLogic(TestBase):
 
     def test_get_drawdown_stats_includes_static_fields(self):
         """Dashboard payload carries the static percentages and thresholds."""
-        now = TimeUtil.now_in_millis()
+        now = STATIC_EFFECTIVE_MS + DAILY_MS
         hk = "hk_dd_stats"
         mgr, stack = self._make_manager()
         with stack:
@@ -867,3 +868,86 @@ class TestChallengePeriodManagerLogic(TestBase):
             self.assertEqual(stats["static_eod_drawdown_pct"], 2.5)
             self.assertEqual(stats["static_drawdown_threshold"], ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD)
             self.assertEqual(stats["static_eod_drawdown_threshold"], ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD)
+            self.assertTrue(stats["uses_static_drawdown_rules"])
+
+    # ── Section 7: Static rules effective-time gate ───────────────────────────
+
+    def test_refresh_pre_effective_subaccount_keeps_legacy_rules(self):
+        """Subaccounts registered before the effective time still eliminate immediately
+        on the legacy intraday rule (no activation gate for subaccounts)."""
+        now = STATIC_EFFECTIVE_MS - DAILY_MS  # also before DRAWDOWN_ACTIVATION_MS
+        hk = "hk_pre_effective_legacy"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.miner_states[hk] = MinerBucketState(hk, [
+                BucketEntry(MinerBucket.SUBACCOUNT_CHALLENGE, STATIC_EFFECTIVE_MS - DAILY_MS * 30),
+                BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, STATIC_EFFECTIVE_MS - DAILY_MS * 10),
+            ])
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                intraday_drawdown_pct=INTRADAY_DD_PCT + 1.0,
+                daily_open_equity=1.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 30)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
+            kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
+            self.assertEqual(kwargs["reason"], EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
+
+    def test_refresh_pre_effective_subaccount_ignores_static_stats(self):
+        """Subaccounts registered before the effective time are not evaluated against the static rules."""
+        now = STATIC_EFFECTIVE_MS + DAILY_MS
+        hk = "hk_pre_effective_static"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.miner_states[hk] = MinerBucketState(hk, [
+                BucketEntry(MinerBucket.SUBACCOUNT_CHALLENGE, STATIC_EFFECTIVE_MS - DAILY_MS * 30),
+                BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, STATIC_EFFECTIVE_MS - DAILY_MS * 10),
+            ])
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                static_drawdown_pct=50.0,
+                static_eod_drawdown_pct=50.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 30)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.SUBACCOUNT_FUNDED)
+            mgr._elimination_client.append_elimination_row.assert_not_called()
+
+    def test_refresh_subaccount_registered_at_effective_uses_static_rules(self):
+        """Registration exactly at the effective time uses the static rules (>= comparison)."""
+        now = STATIC_EFFECTIVE_MS + DAILY_MS
+        hk = "hk_at_effective"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_CHALLENGE, STATIC_EFFECTIVE_MS)
+            mgr.miner_states[hk].drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT + 1.0)
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
+            kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
+            self.assertEqual(kwargs["reason"], EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN)
+
+    def test_refresh_funded_promoted_after_effective_keeps_legacy_rules(self):
+        """The gate keys on SUBACCOUNT_CHALLENGE registration time, not the promotion time:
+        a miner registered before the effective time keeps legacy rules even when promoted after it."""
+        now = STATIC_EFFECTIVE_MS + DAILY_MS * 8
+        hk = "hk_promoted_after"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.miner_states[hk] = MinerBucketState(hk, [
+                BucketEntry(MinerBucket.SUBACCOUNT_CHALLENGE, STATIC_EFFECTIVE_MS - DAILY_MS * 30),
+                BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, STATIC_EFFECTIVE_MS + DAILY_MS * 5),
+            ])
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                intraday_drawdown_pct=INTRADAY_DD_PCT + 1.0,
+                daily_open_equity=1.0,
+                static_drawdown_pct=50.0,
+            )
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 30)
+            self._refresh_with_patched_caches(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
+            kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
+            self.assertEqual(kwargs["reason"], EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
