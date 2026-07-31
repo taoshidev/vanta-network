@@ -327,8 +327,9 @@ class ChallengePeriodManager(CacheController):
                 continue
 
 
-            if state.uses_static_drawdown_rules:
-                # Static rules for subaccounts registered after the effective time — both measured against starting balance
+            if self._uses_static_drawdown_rules(state, asset_selections.get(hotkey)):
+                # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
+                # both measured against starting balance
                 # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
                     eliminations[hotkey] = reason
@@ -431,6 +432,12 @@ class ChallengePeriodManager(CacheController):
             btlogging.info(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
 
         return None
+
+    @staticmethod
+    def _uses_static_drawdown_rules(state: MinerBucketState, asset_class: MinerAssetClass | None) -> bool:
+        """Static rules apply to post-effective subaccounts, except Hyperscaled (HL_ALL) subaccounts,
+        which are temporarily excluded and keep the legacy rules."""
+        return state.uses_static_drawdown_rules and asset_class != MinerAssetClass.HL_ALL
 
     @staticmethod
     def _check_static_drawdown(state: MinerBucketState) -> EliminationReason | None:
@@ -951,13 +958,14 @@ class ChallengePeriodManager(CacheController):
 
         intraday_threshold = state.intraday_drawdown_threshold
         eod_threshold = state.eod_drawdown_threshold
+        asset_class = self._asset_selection_client.get_asset_selection(synthetic_hotkey)
         return {
             **state.drawdown.to_dict(),
             "intraday_drawdown_threshold": intraday_threshold,
             "eod_drawdown_threshold": eod_threshold,
             "static_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD,
             "static_eod_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD,
-            "uses_static_drawdown_rules": state.uses_static_drawdown_rules,
+            "uses_static_drawdown_rules": self._uses_static_drawdown_rules(state, asset_class),
         }
 
     # ==================== Disk I/O ====================

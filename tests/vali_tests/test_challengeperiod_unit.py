@@ -15,6 +15,7 @@ from vali_objects.challenge_period.challengeperiod_manager import (
     MinerBucketState,
 )
 from vali_objects.enums.elimination_reason_enum import EliminationReason
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import TradePairCategory, ValiConfig
 
@@ -357,6 +358,13 @@ def test_uses_static_rules_eliminated_falls_back_to_previous_bucket():
         BucketEntry(MinerBucket.ELIMINATED, EFFECTIVE_MS + DAILY_MS * 10),
     ])
     assert state.uses_static_drawdown_rules is True
+
+
+def test_uses_static_rules_helper_excludes_hyperscaled():
+    state = _state(MinerBucket.SUBACCOUNT_CHALLENGE, EFFECTIVE_MS + DAILY_MS)
+    assert ChallengePeriodManager._uses_static_drawdown_rules(state, MinerAssetClass.HL_ALL) is False
+    assert ChallengePeriodManager._uses_static_drawdown_rules(state, MinerAssetClass.CRYPTO) is True
+    assert ChallengePeriodManager._uses_static_drawdown_rules(state, None) is True
 
 
 def test_should_demote_non_maincomp():
