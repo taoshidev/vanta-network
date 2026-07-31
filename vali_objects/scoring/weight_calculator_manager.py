@@ -412,11 +412,13 @@ class WeightCalculatorManager(CacheController):
         for hotkey in all_required_payouts:
             payout_penalized = all_required_payouts.get(hotkey, 0.0)
             actual = all_emissions_cumulative.get(hotkey, 0.0)
-            miner_remaining_payouts_usd[hotkey] = max(0.0, payout_penalized - actual)
+            miner_remaining_payouts_usd[hotkey] = max(0.0, payout_penalized)
+            # miner_remaining_payouts_usd[hotkey] = max(0.0, payout_penalized - actual)
 
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
         total_actual_payout_usd = sum(all_emissions_cumulative.values())
-        total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
+        total_needed_payout_usd = total_remaining_payout_usd
+        # total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
         bt.logging.info(
             f"[PAYOUT] SUMMARY ({len(miner_remaining_payouts_usd)} miners): "
             f"remaining_payouts=${total_remaining_payout_usd:.2f}, "
