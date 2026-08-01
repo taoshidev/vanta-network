@@ -233,20 +233,6 @@ class MinerBucketState:
     def eod_drawdown_threshold_pct(self):
         return self.eod_drawdown_threshold * 100
 
-    @property
-    def uses_static_drawdown_rules(self) -> bool:
-        """True for subaccounts registered at/after SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS — they use
-        the static drawdown rules; earlier subaccounts keep the legacy intraday/EOD-trailing rules.
-        Registration time is the SUBACCOUNT_CHALLENGE entry start, same convention as the V0/V1
-        threshold cutoffs. Always False for regular miners."""
-        bucket = self.current_bucket
-        if bucket == MinerBucket.ELIMINATED and len(self.entries) >= 2:
-            bucket = self.entries[-2].bucket
-        if not bucket.is_subaccount:
-            return False
-        challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
-        registration_ms = challenge_entry.start_time_ms if challenge_entry else None
-        return registration_ms is None or registration_ms >= ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS
 
 
 class ChallengePeriodManager(CacheController):
