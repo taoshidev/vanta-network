@@ -564,6 +564,18 @@ class EntityManager(ValidatorBroadcastBase):
 
             self._write_entities_from_memory_to_disk()
 
+            # Register subaccount with challenge period. Drawdown criteria (static vs. trailing) is
+            # derived on demand from created_at_ms/asset_class rather than stamped here, so it can't
+            # go stale on promotion or fail to reach other validators.
+            try:
+                self._challenge_period_client.set_miner_bucket(
+                    synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms
+                )
+            except Exception as e:
+                bt.logging.error(
+                    f"[ENTITY_MANAGER] Failed to register {synthetic_hotkey} with challenge period: {e}"
+                )
+
             if not self.running_unit_tests:
                 try:
                     self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
@@ -683,6 +695,23 @@ class EntityManager(ValidatorBroadcastBase):
             self._miner_account_client.set_hl_address(subaccount_info.synthetic_hotkey, hl_address)
 
         return True, subaccount_info, message
+
+    def get_all_subaccount_created_at_ms(self) -> Dict[str, int]:
+        """
+        Get creation timestamps for all subaccounts, keyed by synthetic hotkey.
+
+        Used by ChallengePeriodManager to derive each subaccount's drawdown criteria
+        (static vs. trailing) on demand, without a per-hotkey RPC round trip.
+
+        Returns:
+            Dict mapping synthetic_hotkey -> created_at_ms
+        """
+        result = {}
+        with self._entities_lock:
+            for entity_data in self.entities.values():
+                for subaccount in entity_data.subaccounts.values():
+                    result[subaccount.synthetic_hotkey] = subaccount.created_at_ms
+        return result
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """
