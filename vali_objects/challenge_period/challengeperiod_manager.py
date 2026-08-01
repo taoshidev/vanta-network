@@ -984,8 +984,10 @@ class ChallengePeriodManager(CacheController):
         intraday_threshold = state.intraday_drawdown_threshold
         eod_threshold = state.eod_drawdown_threshold
         asset_class = self._asset_selection_client.get_asset_selection(synthetic_hotkey)
-        subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
-        created_at_ms = subaccount_info.get("created_at_ms") if subaccount_info else None
+        created_at_ms = None
+        if is_synthetic_hotkey(synthetic_hotkey):
+            subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
+            created_at_ms = subaccount_info.get("created_at_ms") if subaccount_info else None
         criteria = self._get_drawdown_criteria(state, asset_class, created_at_ms)
         return {
             **state.drawdown.to_dict(),
