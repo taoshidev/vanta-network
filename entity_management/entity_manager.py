@@ -567,9 +567,14 @@ class EntityManager(ValidatorBroadcastBase):
             # Register subaccount with challenge period. Drawdown criteria (static vs. trailing) is
             # derived on demand from created_at_ms/asset_class rather than stamped here, so it can't
             # go stale on promotion or fail to reach other validators.
-            self._challenge_period_client.set_miner_bucket(
-                synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms
-            )
+            try:
+                self._challenge_period_client.set_miner_bucket(
+                    synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms
+                )
+            except Exception as e:
+                bt.logging.error(
+                    f"[ENTITY_MANAGER] Failed to register {synthetic_hotkey} with challenge period: {e}"
+                )
 
             if not self.running_unit_tests:
                 try:
