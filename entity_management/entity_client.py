@@ -143,6 +143,15 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_all_active_hl_subaccounts_rpc()
 
+    def get_all_subaccount_created_at_ms(self) -> Dict[str, int]:
+        """
+        Get creation timestamps for all subaccounts, keyed by synthetic hotkey.
+
+        Returns:
+            Dict mapping synthetic_hotkey -> created_at_ms
+        """
+        return self._server.get_all_subaccount_created_at_ms_rpc()
+
     def get_synthetic_hotkey_for_hl_address(self, hl_address: str) -> Optional[str]:
         """
         O(1) lookup of synthetic hotkey for a Hyperliquid address.

@@ -43,7 +43,6 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
-from vali_objects.challenge_period.challengeperiod_manager import DrawdownCriteria
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
@@ -565,16 +564,11 @@ class EntityManager(ValidatorBroadcastBase):
 
             self._write_entities_from_memory_to_disk()
 
-            # Register subaccount with challenge period, setting drawdown criteria at creation time
-            miner_asset_class = MinerAssetClass(asset_class) if asset_class else None
-            criteria = (
-                DrawdownCriteria.STATIC
-                if now_ms >= ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS
-                and miner_asset_class != MinerAssetClass.HL_ALL
-                else DrawdownCriteria.TRAILING
-            )
+            # Register subaccount with challenge period. Drawdown criteria (static vs. trailing) is
+            # derived on demand from created_at_ms/asset_class rather than stamped here, so it can't
+            # go stale on promotion or fail to reach other validators.
             self._challenge_period_client.set_miner_bucket(
-                synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms, criteria=criteria
+                synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms
             )
 
             if not self.running_unit_tests:
@@ -696,6 +690,23 @@ class EntityManager(ValidatorBroadcastBase):
             self._miner_account_client.set_hl_address(subaccount_info.synthetic_hotkey, hl_address)
 
         return True, subaccount_info, message
+
+    def get_all_subaccount_created_at_ms(self) -> Dict[str, int]:
+        """
+        Get creation timestamps for all subaccounts, keyed by synthetic hotkey.
+
+        Used by ChallengePeriodManager to derive each subaccount's drawdown criteria
+        (static vs. trailing) on demand, without a per-hotkey RPC round trip.
+
+        Returns:
+            Dict mapping synthetic_hotkey -> created_at_ms
+        """
+        result = {}
+        with self._entities_lock:
+            for entity_data in self.entities.values():
+                for subaccount in entity_data.subaccounts.values():
+                    result[subaccount.synthetic_hotkey] = subaccount.created_at_ms
+        return result
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """
