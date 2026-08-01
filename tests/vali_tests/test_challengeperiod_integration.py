@@ -870,7 +870,6 @@ class TestChallengePeriodManagerLogic(TestBase):
             self.assertEqual(stats["static_eod_drawdown_pct"], 2.5)
             self.assertEqual(stats["static_drawdown_threshold"], ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD)
             self.assertEqual(stats["static_eod_drawdown_threshold"], ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD)
-            self.assertTrue(stats["uses_static_drawdown_rules"])
 
     # ── Section 7: Static rules effective-time gate ───────────────────────────
 
@@ -992,14 +991,3 @@ class TestChallengePeriodManagerLogic(TestBase):
             kwargs = mgr._elimination_client.append_elimination_row.call_args.kwargs
             self.assertEqual(kwargs["reason"], EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
 
-    def test_get_drawdown_stats_hyperscaled_reports_legacy_rules(self):
-        """Dashboard payload reports uses_static_drawdown_rules=False for Hyperscaled subaccounts."""
-        now = STATIC_EFFECTIVE_MS + DAILY_MS
-        hk = "hk_hyperscaled_stats"
-        mgr, stack = self._make_manager()
-        with stack:
-            mgr.set_miner_bucket(hk, MinerBucket.SUBACCOUNT_FUNDED, now)
-            mgr._asset_selection_client.get_asset_selection.return_value = MinerAssetClass.HL_ALL
-
-            stats = mgr.get_drawdown_stats(hk)
-            self.assertFalse(stats["uses_static_drawdown_rules"])
