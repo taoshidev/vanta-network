@@ -841,19 +841,8 @@ class ChallengePeriodManager(CacheController):
             if hotkey in skip_hotkeys:
                 continue
             start_time = hk_to_first_order_time_ms.get(hotkey, default_time)
-            if is_synthetic_hotkey(hotkey):
-                bucket = MinerBucket.SUBACCOUNT_CHALLENGE
-                asset_class = self._asset_selection_client.get_asset_selection(hotkey)
-                criteria = (
-                    DrawdownCriteria.STATIC
-                    if start_time >= ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS
-                    and asset_class != MinerAssetClass.HL_ALL
-                    else DrawdownCriteria.TRAILING
-                )
-            else:
-                bucket = MinerBucket.CHALLENGE
-                criteria = None
-            self.set_miner_bucket(hotkey, bucket, start_time, criteria=criteria)
+            bucket = MinerBucket.SUBACCOUNT_CHALLENGE if is_synthetic_hotkey(hotkey) else MinerBucket.CHALLENGE
+            self.set_miner_bucket(hotkey, bucket, start_time)
             btlogging.info(f"Adding {hotkey} to challenge period with start time {start_time}")
             state_changed = True
 
