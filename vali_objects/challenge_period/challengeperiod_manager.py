@@ -869,6 +869,9 @@ class ChallengePeriodManager(CacheController):
         Set or update a miner's bucket information, replace_top to override most recent entry.
         drawdown_criteria is set only on first creation and ignored for existing states.
 
+        Only persists to disk on first creation - drawdown_criteria is write-once, and updates to
+        an existing state are already covered by the caller's own batched save (see refresh()).
+
         Returns:
             True if this is a new miner, False if updating existing
         """
@@ -876,10 +879,10 @@ class ChallengePeriodManager(CacheController):
             if hotkey not in self.miner_states:
                 self.miner_states[hotkey] = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)], drawdown_criteria=drawdown_criteria)
                 is_new = True
+                self._save_to_disk()
             else:
                 self.miner_states[hotkey].add_bucket_entry(bucket, start_time_ms, replace_top=replace_top)
                 is_new = False
-        self._save_to_disk()
         return is_new
 
     def remove_miners(self, hotkeys: str | list[str]) -> bool:

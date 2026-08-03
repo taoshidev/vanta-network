@@ -120,6 +120,8 @@ Miners who repeatedly copy another miner's trades will be eliminated. Our system
 
 Miners who exceed a 5% intraday drawdown (measured from the day's opening equity) or an 8% end-of-day drawdown (measured from their highest-ever end-of-day equity) will be eliminated. Our system continuously tracks each miner's equity to enforce these limits and maintain risk control.
 
+Entity subaccounts (see <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/entity_miner.md">Entity Miner docs</a>) follow a related but distinct drawdown rule set, assigned per-subaccount at creation: either the same trailing intraday/EOD rules as regular miners, or a static rule that eliminates if balance or 00:00 UTC equity drops more than 5% below the subaccount's starting balance.
+
 ### Probation Elimination
 
 Miners who rank below the 25th highest ranking miner in each asset class will be observed in a probationary period. From that point, they have 90 days to achieve a rank of 25 or better in their asset class. If they fail to do so within that window, they will be eliminated.

@@ -914,6 +914,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
   "entity_coldkey": "5FxY...",
   "account_size": 50000,
   "asset_class": "crypto",
+  "drawdown_criteria": "trailing",
   "signature": "0x...",
   "version": "2.0.0"
 }
@@ -938,9 +939,10 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `entity_coldkey` (string, required): The entity's coldkey SS58 address
 - `account_size` (float, required): Account size in USD. Must be positive.
 - `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, or `"commodities"` for standard subaccounts. HL-linked subaccounts (with `hl_address`) use `"hl_all"`.
-- `signature` (string, required): Coldkey signature over the sorted-JSON of `{account_size, asset_class, entity_coldkey, entity_hotkey}` (plus `hl_address` and optionally `payout_address` for HL subaccounts).
+- `signature` (string, required): Coldkey signature over the sorted-JSON of `{account_size, asset_class, entity_coldkey, entity_hotkey}` (plus `hl_address` and optionally `payout_address` for HL subaccounts). `drawdown_criteria` is not part of the signed payload.
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
+- `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules). Fixed for the life of the subaccount once created. HL-linked subaccounts always get `"trailing"` regardless of what's passed.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
 **Response:**
@@ -954,6 +956,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
     "synthetic_hotkey": "5GhDr3xy...abc_0",
     "asset_class": "crypto",
     "account_size": 50000.0,
+    "drawdown_criteria": "trailing",
     "status": "active",
     "created_at_ms": 1702345678901,
     "eliminated_at_ms": null
@@ -967,6 +970,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `synthetic_hotkey`: Generated hotkey for trading operations (`{entity_hotkey}_{id}`)
 - `asset_class`: Asset class assigned to this subaccount
 - `account_size`: USD account size
+- `drawdown_criteria`: Drawdown rule set for this subaccount (`"trailing"` or `"static"`), fixed at creation
 - `status`: Current status (`"active"`, `"eliminated"`, or `"unknown"`)
 - `created_at_ms`: Timestamp when subaccount was created
 - `eliminated_at_ms`: Timestamp when eliminated (null if active)
@@ -1126,7 +1130,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 **Aggregated Data Includes:**
 - Subaccount info (status, timestamps, entity parent)
 - Challenge period status (bucket, start time, progress)
-- Drawdown stats (current equity, daily open equity, EOD high water mark — synthetic hotkeys only)
+- Drawdown stats (trailing and static rule inputs/thresholds, applicable criteria — synthetic hotkeys only)
 - Debt ledger data (performance metrics, returns)
 - Position data (open positions, leverage, PnL)
 - Statistics (cached metrics, scores, rankings)
@@ -1142,6 +1146,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
       "entity_hotkey": "5GhDr3xy...abc",
       "subaccount_id": 0,
       "status": "active",
+      "drawdown_criteria": "trailing",
       "created_at_ms": 1702345678901,
       "eliminated_at_ms": null
     },
@@ -1152,13 +1157,20 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
     // drawdown is only included for synthetic hotkeys and only after the first evaluation cycle
     "drawdown": {
       "current_equity": 1.032,
+      "current_balance": 1.018,
       "daily_open_equity": 1.045,
       "eod_hwm": 1.065,
       "last_eod_equity": 1.050,
       "intraday_drawdown_pct": 1.24,
       "eod_drawdown_pct": 1.41,
+      "static_drawdown_pct": 0.0,
+      "static_eod_drawdown_pct": 0.0,
+      "current_return": 0.018,
       "intraday_drawdown_threshold": 0.05,
-      "eod_drawdown_threshold": 0.05
+      "eod_drawdown_threshold": 0.05,
+      "static_drawdown_threshold": 0.05,
+      "static_eod_drawdown_threshold": 0.05,
+      "criteria": "trailing"
     },
     "ledger": {
       "hotkey": "5GhDr3xy...abc_0",
@@ -1548,7 +1560,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 **Aggregated Data Includes:**
 - Subaccount info (status, timestamps, entity parent)
 - Challenge period status (bucket, start time, progress)
-- Drawdown stats (current equity, daily open equity, EOD high water mark — synthetic hotkeys only)
+- Drawdown stats (trailing and static rule inputs/thresholds, applicable criteria — synthetic hotkeys only)
 - Debt ledger data (performance metrics, returns)
 - Position data (open positions, leverage, PnL)
 - Statistics (daily returns)
@@ -1576,6 +1588,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "subaccount_uuid": "abc...789",
       "asset_class": "crypto",
       "account_size": 100000.0,
+      "drawdown_criteria": "static",
       "status": "active",
       "created_at_ms": 1770657674533,
       "eliminated_at_ms": null
@@ -1587,18 +1600,25 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
     // drawdown is only included for synthetic hotkeys and only after the first evaluation cycle
     "drawdown": {
       "current_equity": 1.032,
+      "current_balance": 0.968,
       "daily_open_equity": 1.045,
       "eod_hwm": 1.065,
       "last_eod_equity": 1.050,
       "intraday_drawdown_pct": 1.24,
       "eod_drawdown_pct": 1.41,
+      "static_drawdown_pct": 3.2,
+      "static_eod_drawdown_pct": 0.0,
+      "current_return": -0.032,
       "intraday_drawdown_threshold": 0.05,
-      "eod_drawdown_threshold": 0.05
+      "eod_drawdown_threshold": 0.05,
+      "static_drawdown_threshold": 0.05,
+      "static_eod_drawdown_threshold": 0.05,
+      "criteria": "static"
     },
     // elimination is only included if the subaccount is eliminated
     "elimination": {
       "elimination_initiated_time_ms": 1771893304364,
-      "reason": "FAILED_CHALLENGE_PERIOD_DRAWDOWN",
+      "reason": "FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN",
       "dd": 99.99929388128832
     },
     "account_size_data": {
@@ -1745,15 +1765,30 @@ This is the only guaranteed section of the response. All other sections may be m
 
 **Drawdown (synthetic hotkeys only):**
 
-Only present after the first challenge period evaluation cycle (~60s after startup). Values match exactly what the evaluation loop computed.
+Only present after the first challenge period evaluation cycle (~60s after startup). Values match exactly what the evaluation loop computed. All fields below are always computed and present regardless of which rule set applies to this subaccount (see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules)) — `criteria` indicates which pair of fields actually drives elimination for this subaccount.
 - `current_equity`: Portfolio equity at last evaluation: `(balance + unrealized_pnl) / account_size`
-- `daily_open_equity`: Equity at today's midnight UTC checkpoint (Rule 1 baseline). Defaults to `1.0` if no midnight checkpoint exists yet.
-- `eod_hwm`: Highest end-of-day equity across all midnight checkpoints ever (Rule 2 high water mark). Defaults to `1.0` if no midnight checkpoints exist.
+- `current_balance`: Portfolio balance at last evaluation, excluding unrealized PnL: `balance / account_size`
+- `daily_open_equity`: Equity at today's midnight UTC checkpoint (trailing Rule 1 baseline). Defaults to `1.0` if no midnight checkpoint exists yet.
+- `eod_hwm`: Highest end-of-day equity across all midnight checkpoints ever (trailing Rule 2 high water mark). Defaults to `1.0` if no midnight checkpoints exist.
 - `last_eod_equity`: Most recent midnight checkpoint equity. Defaults to `1.0` if no midnight checkpoints exist yet.
-- `intraday_drawdown_pct`: Percentage drop from `daily_open_equity` to `current_equity`. Positive = drawdown, negative = gain since open.
-- `eod_drawdown_pct`: Percentage drop from `eod_hwm` to `last_eod_equity`. `0.0` if no midnight checkpoints exist.
-- `intraday_drawdown_threshold`: Elimination threshold for Rule 1 (e.g. `0.05` = 5%).
-- `eod_drawdown_threshold`: Elimination threshold for Rule 2 (e.g. `0.05` = 5%).
+- `intraday_drawdown_pct`: Percentage drop from `daily_open_equity` to `current_equity`. Positive = drawdown, negative = gain since open. Drives elimination only when `criteria` is `"trailing"`.
+- `eod_drawdown_pct`: Percentage drop from `eod_hwm` to `last_eod_equity`. `0.0` if no midnight checkpoints exist. Drives elimination only when `criteria` is `"trailing"`.
+- `static_drawdown_pct`: Percentage drop from starting balance (`1.0`) to `current_balance`. Drives elimination only when `criteria` is `"static"`.
+- `static_eod_drawdown_pct`: Percentage drop from starting balance (`1.0`) to `last_eod_equity`. Drives elimination only when `criteria` is `"static"`.
+- `current_return`: `min(current_equity, current_balance) - 1.0` — used for challenge-period promotion, independent of drawdown criteria.
+- `intraday_drawdown_threshold`: Elimination threshold for trailing Rule 1 (e.g. `0.05` = 5%).
+- `eod_drawdown_threshold`: Elimination threshold for trailing Rule 2 (e.g. `0.05` = 5%).
+- `static_drawdown_threshold`: Elimination threshold for static Rule 1 (`0.05` = 5%).
+- `static_eod_drawdown_threshold`: Elimination threshold for static Rule 2 (`0.05` = 5%).
+- `criteria`: Which rule set is actually applied for this subaccount — `"trailing"` or `"static"`. Mirrors `subaccount_info.drawdown_criteria`, fixed at creation.
+
+#### Static vs. Trailing Drawdown Rules
+
+Each subaccount is assigned a `drawdown_criteria` at creation (see [Create Subaccount](#create-subaccount)) that never changes for the life of the subaccount:
+- **`"trailing"`** (default): eliminated at intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaching the applicable threshold (5% during challenge, 8% once funded — same as regular miners).
+- **`"static"`**: eliminated when current balance (excluding unrealized PnL) drops more than 5% below the subaccount's starting balance, or when equity at the 00:00 UTC checkpoint drops more than 5% below starting balance. These thresholds do not change between challenge and funded periods. HL-linked subaccounts always use `"trailing"`.
+
+Elimination reasons reflect which rule triggered: `FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN` / `FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN` (Rule 1) and `FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN` / `FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN` (Rule 2) for `"static"` subaccounts, versus the existing `*_INTRADAY_DRAWDOWN` / `*_EOD_DRAWDOWN` reasons for `"trailing"`.
 
 **Elimination:**
 

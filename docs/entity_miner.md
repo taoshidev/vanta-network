@@ -175,7 +175,9 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
 
 Passing is evaluated continuously — a subaccount is promoted immediately once `min(account balance, account equity)` meets the threshold. Assessment runs automatically via the validator's EntityServer daemon every 5 minutes.
 
-**Elimination during challenge:** A subaccount is eliminated if its intraday drawdown or drawdown from the end-of-day high-water mark reaches **5%**.
+**Elimination during challenge:** Each subaccount is assigned a drawdown rule set at creation (`drawdown_criteria`), which is fixed for the life of the subaccount:
+- **Trailing** (default): eliminated if intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaches **5%**.
+- **Static**: eliminated if current balance (excluding unrealized PnL) drops more than **5%** below the subaccount's starting balance, or if equity at the 00:00 UTC checkpoint drops more than **5%** below starting balance.
 
 **Portfolio leverage limits:** A subaccount's maximum portfolio leverage (the sum of all open position leverages) is capped by tier. **Tier 1** applies to any subaccount in `SUBACCOUNT_CHALLENGE`, regardless of account size. Once promoted to `SUBACCOUNT_FUNDED`, the tier is instead determined by account size, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
 
@@ -190,9 +192,11 @@ Passing is evaluated continuously — a subaccount is promoted immediately once 
 
 ### After the Challenge Period
 
-Once in SUBACCOUNT_FUNDED:
-- Standard **8% max drawdown** elimination applies (same as regular miners).
-- After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is eligible for additional funding.
+Once in SUBACCOUNT_FUNDED, the subaccount keeps the same `drawdown_criteria` it was created with:
+- **Trailing** (default): standard **8% max drawdown** elimination applies (same as regular miners) — intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaching **8%**.
+- **Static**: still eliminated at **5%** below starting balance (live balance or 00:00 UTC equity), same thresholds as during challenge — this rule set does not loosen after funding.
+
+After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is eligible for additional funding.
 
 ## Getting Started
 
@@ -421,7 +425,7 @@ vanta entity create-subaccount \
 curl -X POST http://localhost:8088/api/create-subaccount \
   -H "Content-Type: application/json" \
   -H "Authorization: your_api_key" \
-  -d '{"asset_class": "crypto", "account_size": 10000.0}'
+  -d '{"asset_class": "crypto", "account_size": 10000.0, "drawdown_criteria": "trailing"}'
 ```
 
 #### Response
@@ -436,6 +440,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
     "synthetic_hotkey": "5GhDr..._0",
     "account_size": 10000.0,
     "asset_class": "crypto",
+    "drawdown_criteria": "trailing",
     "status": "active"
   }
 }
@@ -447,6 +452,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 |---|---|---|------------------------------------------------------------------------------|
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
+| `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
 
 ### 12. Submit Orders
 
@@ -578,11 +584,12 @@ The signature is produced by signing `{"entity_coldkey": "...", "entity_hotkey":
   "entity_hotkey": "<hotkey_ss58>",
   "account_size": 10000.0,
   "asset_class": "crypto",
+  "drawdown_criteria": "trailing",
   "signature": "<coldkey_signature>"
 }
 ```
 
-The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys).
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys). `drawdown_criteria` is optional (defaults to `"trailing"` if omitted) and is not currently part of the signed payload.
 
 Response:
 
@@ -626,19 +633,21 @@ Each subaccount is identified by a synthetic hotkey with the format `{entity_hot
 
 ### Limits
 
-| Constraint                          | Value                                  |
-|-------------------------------------|----------------------------------------|
-| Max entities on the network         | 10                                     |
-| Max account size per subaccount     | $100,000 USD                           |
-| Challenge period return threshold   | ≥ 8% for fx + equities, 10% for crypto |
-| Challenge period drawdown threshold | 5%                                     |
-| Funded period drawdown threshold    | 8%                                     |
+| Constraint                                    | Value                                  |
+|------------------------------------------------|----------------------------------------|
+| Max entities on the network                   | 10                                     |
+| Max account size per subaccount               | $100,000 USD                           |
+| Challenge period return threshold             | ≥ 8% for fx + equities, 10% for crypto |
+| Challenge period drawdown threshold (trailing) | 5%                                     |
+| Funded period drawdown threshold (trailing)    | 8%                                     |
+| Drawdown threshold (static, challenge + funded) | 5%                                    |
 
 ### Elimination
 
 Subaccounts can be eliminated for:
-- **Challenge period failure** — drawdown exceeds 5% before achieving the 8% return threshold
-- **Funded period failure** — drawdown exceeds 8%
+- **Trailing criteria, challenge period failure** — drawdown exceeds 5% before achieving the return threshold
+- **Trailing criteria, funded period failure** — drawdown exceeds 8%
+- **Static criteria (challenge or funded)** — balance or 00:00 UTC equity drops more than 5% below starting balance
 - **Plagiarism** — detected order similarity with other miners
 
 Eliminated subaccount ids are permanently retired. Create a new subaccount to replace an eliminated one.
