@@ -2035,6 +2035,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             account_size = data['account_size']
             asset_class = data['asset_class']
             admin = data.get('admin')
+            drawdown_criteria = data.get('drawdown_criteria', 'trailing')
 
             # Validate admin flag type early
             if admin is not None and not isinstance(admin, bool):
@@ -2106,7 +2107,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, admin=bool(admin)
+                    entity_hotkey, account_size, asset_class, admin=bool(admin), drawdown_criteria=drawdown_criteria
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 

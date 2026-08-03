@@ -150,7 +150,8 @@ class EntityServer(RPCServerBase):
         entity_hotkey: str,
         account_size: float,
         asset_class: str,
-        admin: bool = False
+        admin: bool = False,
+        drawdown_criteria: str = "trailing",
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -160,12 +161,13 @@ class EntityServer(RPCServerBase):
             account_size: Account size in USD
             asset_class: Asset class selection
             admin: If True, skip collateral slashing and exclude from payouts
+            drawdown_criteria: "trailing" or "static"
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         success, subaccount_info, message = self._manager.create_subaccount(
-            entity_hotkey, account_size, asset_class, admin=admin
+            entity_hotkey, account_size, asset_class, admin=admin, drawdown_criteria=drawdown_criteria
         )
 
         # Convert SubaccountInfo to dict for RPC serialization
@@ -210,15 +212,6 @@ class EntityServer(RPCServerBase):
             List of (hl_address, subaccount_info_dict) tuples
         """
         return self._manager.get_all_active_hl_subaccounts()
-
-    def get_all_subaccount_created_at_ms_rpc(self) -> Dict[str, int]:
-        """
-        Get creation timestamps for all subaccounts, keyed by synthetic hotkey.
-
-        Returns:
-            Dict mapping synthetic_hotkey -> created_at_ms
-        """
-        return self._manager.get_all_subaccount_created_at_ms()
 
     def get_synthetic_hotkey_for_hl_address_rpc(self, hl_address: str) -> Optional[str]:
         """

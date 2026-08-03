@@ -429,8 +429,6 @@ class ValiConfig:
     # Entity subaccount (standard account) static drawdown rules
     SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD = 0.05  # Rule 1: balance (excl. unrealized PnL) more than 5% below starting balance eliminates
     SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: equity (incl. unrealized PnL) more than 5% below starting balance at 00:00 UTC eliminates
-    # Static rules apply to subaccounts registered at/after this time; earlier registrations keep the legacy rules
-    SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS = 1785585600000  # Aug 1, 2026 12:00:00 UTC
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
