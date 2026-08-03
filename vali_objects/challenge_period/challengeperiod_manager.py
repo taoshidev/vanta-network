@@ -875,10 +875,12 @@ class ChallengePeriodManager(CacheController):
         with self._buckets_lock:
             if hotkey not in self.miner_states:
                 self.miner_states[hotkey] = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)], drawdown_criteria=drawdown_criteria)
-                return True
+                is_new = True
             else:
                 self.miner_states[hotkey].add_bucket_entry(bucket, start_time_ms, replace_top=replace_top)
-                return False
+                is_new = False
+        self._save_to_disk()
+        return is_new
 
     def remove_miners(self, hotkeys: str | list[str]) -> bool:
         """Remove hotkeys from memory - CALL OUTSIDE OF LOCK"""
