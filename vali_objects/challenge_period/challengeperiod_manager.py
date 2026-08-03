@@ -99,6 +99,7 @@ class MinerBucketState:
     hotkey: str
     entries: list[BucketEntry]
     drawdown: DrawdownStats = field(default_factory=DrawdownStats)
+    drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING
     rank: int | None = None
 
     def __post_init__(self):
@@ -134,20 +135,24 @@ class MinerBucketState:
         return [entry.to_dict() for entry in self.entries]
 
     def to_checkpoint_dict(self) -> dict:
-        """Serialize full state (entries + drawdown + rank) for on-disk checkpoint."""
+        """Serialize full state (entries + drawdown + drawdown_criteria + rank) for on-disk checkpoint."""
         return {
             "entries": [entry.to_dict() for entry in self.entries],
             "drawdown": self.drawdown.to_dict(),
+            "drawdown_criteria": self.drawdown_criteria.value,
             "rank": self.rank,
         }
 
     @classmethod
     def from_checkpoint_dict(cls, hotkey: str, data: dict) -> 'MinerBucketState':
         entries = [BucketEntry.from_dict(entry) for entry in data.get("entries", [])]
+        criteria_str = data.get("drawdown_criteria")
+        criteria = DrawdownCriteria(criteria_str) if criteria_str else DrawdownCriteria.TRAILING
         return cls(
             hotkey=hotkey,
             entries=entries,
             drawdown=DrawdownStats.from_dict(data.get("drawdown")),
+            drawdown_criteria=criteria,
             rank=data.get("rank"),
         )
 
@@ -155,8 +160,9 @@ class MinerBucketState:
         from datetime import datetime
         start = datetime.fromtimestamp(self.current_bucket_start_ms / 1000).strftime("%Y-%m-%d %H:%M")
         dd = self.drawdown
+        criteria_str = self.drawdown_criteria.value
         return (
-            f"{self.hotkey} {self.current_bucket.value} {start} rank={self.rank} "
+            f"{self.hotkey} {self.current_bucket.value} {start} rank={self.rank} criteria={criteria_str} "
             f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={f'{dd.daily_open_equity:.4f}' if dd.daily_open_equity is not None else 'None'} | "
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
             f"static_dd={dd.static_drawdown_pct:.2f}% static_eod_dd={dd.static_eod_drawdown_pct:.2f}% "
@@ -297,7 +303,6 @@ class ChallengePeriodManager(CacheController):
         btlogging.info(f"[CHALLENGE] Starting challenge period loop {current_time_ms} iteration_epoch={iteration_epoch}")
 
         asset_selections = self._asset_selection_client.get_asset_selections()
-        subaccount_created_at_ms = self._entity_client.get_all_subaccount_created_at_ms()
         all_hotkeys = self._position_client.get_all_hotkeys()
         filtered_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
             hotkeys=all_hotkeys
@@ -310,7 +315,7 @@ class ChallengePeriodManager(CacheController):
             hotkeys=list(filtered_positions.keys()),
             eliminated_hotkeys=hotkeys_elimination_sync,
             hk_to_first_order_time_ms=hk_to_first_order_time,
-            default_time=current_time_ms
+            default_time=current_time_ms,
         )
         state_changed |= self.sync_plagiarism_miners(hotkeys_plagiarism_sync, current_time_ms)
         state_changed |= self.sync_elimination_miners(hotkeys_elimination_sync, current_time_ms)
@@ -339,10 +344,7 @@ class ChallengePeriodManager(CacheController):
                 eliminations[hotkey] = reason
                 continue
 
-            criteria = self._get_drawdown_criteria(
-                state, asset_selections.get(hotkey), subaccount_created_at_ms.get(hotkey)
-            )
-            if criteria == DrawdownCriteria.STATIC:
+            if state.drawdown_criteria == DrawdownCriteria.STATIC:
                 # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
                 # both measured against starting balance
                 # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
@@ -447,28 +449,6 @@ class ChallengePeriodManager(CacheController):
             btlogging.info(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
 
         return None
-
-    @staticmethod
-    def _get_drawdown_criteria(
-        state: MinerBucketState, asset_class: MinerAssetClass | None, created_at_ms: int | None
-    ) -> DrawdownCriteria:
-        """Static rules apply only to subaccounts registered at/after SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS,
-        excluding Hyperscaled (HL_ALL) subaccounts. created_at_ms comes from EntityManager (the
-        subaccount's authoritative, immutable creation time) rather than bucket-entry history, so this
-        is derived fresh on every call instead of cached — it can't go stale across promotion/elimination-
-        revert (which reset DrawdownStats) or fail to reach other validators (drawdown is never synced
-        across validators). Unknown asset class or creation time defaults to legacy rules. Regular
-        (non-subaccount) miners always use legacy rules."""
-        bucket = state.current_bucket
-        if bucket == MinerBucket.ELIMINATED and len(state.entries) >= 2:
-            bucket = state.entries[-2].bucket
-        if not bucket.is_subaccount:
-            return DrawdownCriteria.TRAILING
-        if created_at_ms is None or created_at_ms < ValiConfig.SUBACCOUNT_STATIC_RULES_EFFECTIVE_MS:
-            return DrawdownCriteria.TRAILING
-        if asset_class is None or asset_class == MinerAssetClass.HL_ALL:
-            return DrawdownCriteria.TRAILING
-        return DrawdownCriteria.STATIC
 
     @staticmethod
     def _check_static_drawdown(state: MinerBucketState) -> EliminationReason | None:
@@ -836,7 +816,7 @@ class ChallengePeriodManager(CacheController):
         hotkeys: list[str],
         eliminated_hotkeys: list[str],
         hk_to_first_order_time_ms: dict[str, int],
-        default_time: int
+        default_time: int,
     ) -> bool:
         """Add new hotkeys and correct start times for existing CHALLENGE miners."""
         skip_hotkeys = set(self.miner_states.keys()) | set(eliminated_hotkeys)
@@ -847,7 +827,7 @@ class ChallengePeriodManager(CacheController):
                 continue
             start_time = hk_to_first_order_time_ms.get(hotkey, default_time)
             bucket = MinerBucket.SUBACCOUNT_CHALLENGE if is_synthetic_hotkey(hotkey) else MinerBucket.CHALLENGE
-            self.set_miner_bucket(hotkey, bucket, start_time)
+            self.set_miner_bucket(hotkey, bucket, start_time, drawdown_criteria=DrawdownCriteria.TRAILING)
             btlogging.info(f"Adding {hotkey} to challenge period with start time {start_time}")
             state_changed = True
 
@@ -880,16 +860,25 @@ class ChallengePeriodManager(CacheController):
             return
         btlogging.info(f"[CP_MANAGER] Synced {len(hotkey_to_bucket)} miner buckets to MinerAccount")
 
-    def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int, *, replace_top=False) -> bool:
+    def set_miner_bucket(
+        self,
+        hotkey: str,
+        bucket: MinerBucket,
+        start_time_ms: int,
+        *,
+        replace_top=False,
+        drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING,
+    ) -> bool:
         """
-        Set or update a miner's bucket information, replace_top to override most recent entry
+        Set or update a miner's bucket information, replace_top to override most recent entry.
+        drawdown_criteria is set only on first creation and ignored for existing states.
 
         Returns:
             True if this is a new miner, False if updating existing
         """
         with self._buckets_lock:
             if hotkey not in self.miner_states:
-                self.miner_states[hotkey] = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)])
+                self.miner_states[hotkey] = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)], drawdown_criteria=drawdown_criteria)
                 return True
             else:
                 self.miner_states[hotkey].add_bucket_entry(bucket, start_time_ms, replace_top=replace_top)
@@ -983,19 +972,14 @@ class ChallengePeriodManager(CacheController):
 
         intraday_threshold = state.intraday_drawdown_threshold
         eod_threshold = state.eod_drawdown_threshold
-        asset_class = self._asset_selection_client.get_asset_selection(synthetic_hotkey)
-        created_at_ms = None
-        if is_synthetic_hotkey(synthetic_hotkey):
-            subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
-            created_at_ms = subaccount_info.get("created_at_ms") if subaccount_info else None
-        criteria = self._get_drawdown_criteria(state, asset_class, created_at_ms)
+        criteria = state.drawdown_criteria
         return {
             **state.drawdown.to_dict(),
             "intraday_drawdown_threshold": intraday_threshold,
             "eod_drawdown_threshold": eod_threshold,
             "static_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD,
             "static_eod_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD,
-            "criteria": criteria.value,
+            "drawdown_criteria": criteria.value,
         }
 
     # ==================== Disk I/O ====================
@@ -1019,48 +1003,14 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def parse_checkpoint_dict(json_dict) -> dict[str, MinerBucketState]:
-        """Parse checkpoint dict from disk. Handles 4 formats:
-        1. Legacy testing/success format: {"testing": {hk: time}, "success": {hk: time}}
-        2. Legacy single-bucket dict: {hk: {"bucket": ..., "bucket_start_time": ..., "previous_bucket": ..., ...}}
-        3. Entries list format: {hk: [{"bucket": ..., "bucket_start_time": ...}, ...]}
-        4. Full MinerBucketState format: {hk: {"entries": [...], "drawdown": {...}, "rank": ...}}
+        """Parse checkpoint dict from disk or validator sync.
+        Expected format: {hk: {"entries": [...], "drawdown": {...}, "drawdown_criteria": ..., "rank": ...}}
         """
-        formatted_dict = {}
-
-        if "testing" in json_dict.keys() and "success" in json_dict.keys():
-            # Legacy format
-            testing = json_dict.get("testing", {})
-            success = json_dict.get("success", {})
-            for hotkey, start_time in testing.items():
-                formatted_dict[hotkey] = MinerBucketState(hotkey, [BucketEntry(MinerBucket.CHALLENGE, start_time)])
-            for hotkey, start_time in success.items():
-                formatted_dict[hotkey] = MinerBucketState(hotkey, [BucketEntry(MinerBucket.MAINCOMP, start_time)])
-        else:
-            for hotkey, info in json_dict.items():
-                if isinstance(info, list):
-                    # Entries list format
-                    formatted_dict[hotkey] = MinerBucketState(hotkey, [
-                        BucketEntry.from_dict(entry) for entry in info
-                    ])
-                elif isinstance(info, dict) and "entries" in info:
-                    # Full MinerBucketState checkpoint format
-                    formatted_dict[hotkey] = MinerBucketState.from_checkpoint_dict(hotkey, info)
-                elif isinstance(info, dict):
-                    entries = []
-                    # Legacy single-bucket dict format
-                    bucket = MinerBucket(info["bucket"]) if info.get("bucket") else None
-                    bucket_start_time = info.get("bucket_start_time")
-                    if bucket and bucket_start_time:
-                        entries.append(BucketEntry(bucket, bucket_start_time))
-
-                    previous_bucket = MinerBucket(info["previous_bucket"]) if info.get("previous_bucket") else None
-                    previous_bucket_start_time = info.get("previous_bucket_start_time")
-                    if previous_bucket is not None and previous_bucket_start_time is not None:
-                        entries.append(BucketEntry(previous_bucket, previous_bucket_start_time))
-
-                    formatted_dict[hotkey] = MinerBucketState(hotkey, entries)
-
-        return formatted_dict
+        return {
+            hotkey: MinerBucketState.from_checkpoint_dict(hotkey, info)
+            for hotkey, info in json_dict.items()
+            if isinstance(info, dict) and "entries" in info
+        }
 
     def _save_to_disk(self):
         """Write challenge period data from memory to disk."""
