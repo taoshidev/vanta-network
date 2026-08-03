@@ -93,7 +93,8 @@ class EntityClient(RPCClientBase):
         entity_hotkey: str,
         account_size: float,
         asset_class: str,
-        admin: bool = False
+        admin: bool = False,
+        drawdown_criteria: str = "trailing",
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -103,11 +104,12 @@ class EntityClient(RPCClientBase):
             account_size: Account size in USD
             asset_class: Asset class selection
             admin: If True, skip collateral slashing and exclude from payouts
+            drawdown_criteria: "trailing" or "static"
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, admin=admin)
+        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, admin=admin, drawdown_criteria=drawdown_criteria)
 
     def create_hl_subaccount(
         self,
