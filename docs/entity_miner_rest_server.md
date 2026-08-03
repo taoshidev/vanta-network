@@ -56,13 +56,25 @@ Returns the cached dashboard for a Hyperliquid address. The cache is populated i
   "challenge_period": { "bucket": "CHALLENGE", "start_time_ms": 1702345678901 },
   "drawdown": {
     "current_equity": 1.032,
+    "current_balance": 1.018,
     "daily_open_equity": 1.045,
     "eod_hwm": 1.065,
+    "last_eod_equity": 1.041,
     "intraday_drawdown_pct": 1.24,
-    "eod_drawdown_pct": 1.41
+    "eod_drawdown_pct": 1.41,
+    "static_drawdown_pct": 0.0,
+    "static_eod_drawdown_pct": 0.0,
+    "current_return": 0.018,
+    "intraday_drawdown_threshold": 0.05,
+    "eod_drawdown_threshold": 0.05,
+    "static_drawdown_threshold": 0.05,
+    "static_eod_drawdown_threshold": 0.05,
+    "criteria": "trailing"
   }
 }
 ```
+
+`drawdown_criteria` is fixed per subaccount at creation (see [entity_miner.md](entity_miner.md#elimination)) and reflected here as `criteria`. HL-linked subaccounts are always created with `criteria: "trailing"` — the `static_*` fields are still present (drawdown stats are always computed regardless of which rule set applies) but are not used to decide elimination for a `"trailing"` subaccount.
 
 **Error Responses:**
 ```json
@@ -193,13 +205,15 @@ Authorization: Bearer <api_key>
 ```json
 {
   "asset_class": "crypto",
-  "account_size": 50000.0
+  "account_size": 50000.0,
+  "drawdown_criteria": "trailing"
 }
 ```
 
 **Parameters:**
 - `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, or `"hl_all"`
 - `account_size` (float, required): Account size in USD. Must be positive.
+- `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [entity_miner.md](entity_miner.md#elimination). Fixed for the life of the subaccount once created. Always forced to `"trailing"` for HL-linked subaccounts (`hl_address` present), regardless of what's passed.
 
 **Success Response (200):**
 ```json
@@ -212,6 +226,7 @@ Authorization: Bearer <api_key>
     "synthetic_hotkey": "5GhDr3xy...abc_0",
     "asset_class": "crypto",
     "account_size": 50000.0,
+    "drawdown_criteria": "trailing",
     "status": "active",
     "created_at_ms": 1702345678901,
     "eliminated_at_ms": null
@@ -223,7 +238,7 @@ Authorization: Bearer <api_key>
 
 | Code | Cause |
 |------|-------|
-| 400 | Missing/invalid field (`asset_class`, `account_size`) |
+| 400 | Missing/invalid field (`asset_class`, `account_size`, `drawdown_criteria`) |
 | 401 | Invalid or missing API key |
 | 403 | Max HL traders limit reached (HL path only) |
 | 500 | Wallet not configured or signing error |

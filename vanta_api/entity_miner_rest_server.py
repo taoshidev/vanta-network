@@ -971,6 +971,7 @@ class EntityMinerRestServer(MinerRestServer):
                 hl_address = request_data["hl_address"]
                 payout_address = request_data.get("payout_address")
                 asset_class = "hl_all"
+                drawdown_criteria = "trailing"
             else:
                 hl_address = None
                 payout_address = None
@@ -980,6 +981,9 @@ class EntityMinerRestServer(MinerRestServer):
                 # Map hl_all to all markets for non-hyperliquid TODO remove after migration
                 if asset_class == "hl_all":
                     asset_class = "all_markets"
+                drawdown_criteria = request_data.get("drawdown_criteria", "trailing")
+                if drawdown_criteria not in ("trailing", "static"):
+                    return jsonify({'status': 'error', 'message': 'drawdown_criteria must be "trailing" or "static"'}), 400
 
             admin = request_data.get("admin")
 
@@ -1062,6 +1066,7 @@ class EntityMinerRestServer(MinerRestServer):
                 "entity_coldkey": self._coldkey.ss58_address,
                 "account_size": account_size,
                 "asset_class": asset_class,
+                "drawdown_criteria": drawdown_criteria,
                 "signature": signature,
                 "version": "2.2.1"
             }

@@ -14,6 +14,8 @@ from vali_objects.challenge_period.challengeperiod_manager import (
     DrawdownStats,
     MinerBucketState,
 )
+from vali_objects.enums.elimination_reason_enum import EliminationReason
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import TradePairCategory, ValiConfig
 
@@ -261,6 +263,58 @@ def test_should_demote_maincomp_no_rank():
     state = _state(MinerBucket.MAINCOMP)
     state.rank = None
     assert ChallengePeriodManager._check_demotion(state) is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 3b — _check_static_drawdown / _check_static_eod_drawdown (subaccounts)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+STATIC_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100      # 5.0
+STATIC_EOD_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100  # 5.0
+
+
+def test_check_static_drawdown_at_threshold_survives():
+    state = _state(MinerBucket.SUBACCOUNT_FUNDED)
+    state.drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT)
+    assert ChallengePeriodManager._check_static_drawdown(state) is None
+
+
+def test_check_static_drawdown_funded_reason():
+    state = _state(MinerBucket.SUBACCOUNT_FUNDED)
+    state.drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT + 0.01)
+    assert ChallengePeriodManager._check_static_drawdown(state) == EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN
+
+
+def test_check_static_drawdown_challenge_reason():
+    state = _state(MinerBucket.SUBACCOUNT_CHALLENGE)
+    state.drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT + 0.01)
+    assert ChallengePeriodManager._check_static_drawdown(state) == EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN
+
+
+def test_check_static_eod_drawdown_at_threshold_survives():
+    state = _state(MinerBucket.SUBACCOUNT_FUNDED)
+    state.drawdown = DrawdownStats(static_eod_drawdown_pct=STATIC_EOD_DD_PCT)
+    assert ChallengePeriodManager._check_static_eod_drawdown(state) is None
+
+
+def test_check_static_eod_drawdown_funded_reason():
+    state = _state(MinerBucket.SUBACCOUNT_FUNDED)
+    state.drawdown = DrawdownStats(static_eod_drawdown_pct=STATIC_EOD_DD_PCT + 0.01)
+    assert ChallengePeriodManager._check_static_eod_drawdown(state) == EliminationReason.FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN
+
+
+def test_check_static_eod_drawdown_challenge_reason():
+    state = _state(MinerBucket.SUBACCOUNT_CHALLENGE)
+    state.drawdown = DrawdownStats(static_eod_drawdown_pct=STATIC_EOD_DD_PCT + 0.01)
+    assert ChallengePeriodManager._check_static_eod_drawdown(state) == EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN
+
+
+def test_check_static_ignores_legacy_drawdown_pcts():
+    state = _state(MinerBucket.SUBACCOUNT_FUNDED)
+    state.drawdown = DrawdownStats(intraday_drawdown_pct=12.0, eod_drawdown_pct=9.0)
+    assert ChallengePeriodManager._check_static_drawdown(state) is None
+    assert ChallengePeriodManager._check_static_eod_drawdown(state) is None
+
 
 
 def test_should_demote_non_maincomp():

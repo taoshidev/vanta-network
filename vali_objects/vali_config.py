@@ -420,11 +420,15 @@ class ValiConfig:
     FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V1 = 0.08 # V1 applies to subaccounts registered before Wed May 27, 2026
     FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
     FUNDED_EOD_DRAWDOWN_THRESHOLD_V0 = 0.10  # V0 applies to subaccounts registered before Sun Mar 15, 2026
-    FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
+    FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08  # Rule 2: 8% drop from highest-ever EOD equity (trailing) eliminates
 
     # Registration cutoffs for versioned SUBACCOUNT_FUNDED thresholds (ms)
     FUNDED_V0_CUTOFF_MS = 1773532799000  # Mar 14, 2026 23:59:59 UTC
     FUNDED_V1_CUTOFF_MS = 1779840000000  # May 27, 2026 00:00:00 UTC
+
+    # Entity subaccount (standard account) static drawdown rules
+    SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD = 0.05  # Rule 1: balance (excl. unrealized PnL) more than 5% below starting balance eliminates
+    SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: equity (incl. unrealized PnL) more than 5% below starting balance at 00:00 UTC eliminates
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA

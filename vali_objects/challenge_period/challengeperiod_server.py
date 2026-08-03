@@ -11,6 +11,7 @@ import time
 import bittensor as bt
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
+from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -121,8 +122,14 @@ class ChallengePeriodServer(RPCServerBase):
     def get_health_check_details(self) -> dict:
         return {"active_miners_count": len(self._manager.miner_states)}
 
-    def set_miner_bucket_rpc(self, hotkey: str, bucket: MinerBucket, start_time_ms: int) -> bool:
-        return self._manager.set_miner_bucket(hotkey, bucket, start_time_ms)
+    def set_miner_bucket_rpc(
+        self,
+        hotkey: str,
+        bucket: MinerBucket,
+        start_time_ms: int,
+        drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING,
+    ) -> bool:
+        return self._manager.set_miner_bucket(hotkey, bucket, start_time_ms, drawdown_criteria=drawdown_criteria)
 
     def remove_miners_rpc(self, hotkeys: str | list[str]) -> bool:
         return self._manager.remove_miners(hotkeys)

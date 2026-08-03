@@ -43,6 +43,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
@@ -66,6 +67,7 @@ class SubaccountInfo(BaseModel):
     reg_fee_theta: float = Field(default=0.0, description="Cost of registration fee in theta")
     reg_fee_slashed_ms: Optional[float] = Field(default=None, description="Timestamp when registration fee was paid")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
+    drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
@@ -399,6 +401,7 @@ class EntityManager(ValidatorBroadcastBase):
         admin: bool = False,
         hl_address: Optional[str] = None,
         payout_address: Optional[str] = None,
+        drawdown_criteria: str = "trailing",
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount for an entity.
@@ -552,6 +555,7 @@ class EntityManager(ValidatorBroadcastBase):
                 reg_fee_theta=required_theta,
                 reg_fee_slashed_ms=None,
                 asset_class=asset_class,
+                drawdown_criteria=drawdown_criteria,
                 hl_address=hl_address,
                 payout_address=payout_address,
             )
@@ -564,23 +568,24 @@ class EntityManager(ValidatorBroadcastBase):
 
             self._write_entities_from_memory_to_disk()
 
+            # Register subaccount with challenge period
+            try:
+                self._challenge_period_client.set_miner_bucket(
+                    synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms,
+                    drawdown_criteria=DrawdownCriteria(drawdown_criteria),
+                )
+            except Exception as e:
+                bt.logging.error(
+                    f"[ENTITY_MANAGER] Failed to register {synthetic_hotkey} with challenge period: {e}"
+                )
+
             if not self.running_unit_tests:
                 try:
                     self._websocket_client.notify_new_subaccount(entity_hotkey, synthetic_hotkey)
                 except Exception as notify_err:
                     bt.logging.debug(f"[ENTITY_MANAGER] New subaccount WS notification failed: {notify_err}")
 
-                self.broadcast_subaccount_registration(
-                    entity_hotkey=entity_hotkey,
-                    subaccount_id=subaccount_id,
-                    subaccount_uuid=subaccount_uuid,
-                    synthetic_hotkey=synthetic_hotkey,
-                    account_size=account_size,
-                    asset_class=asset_class,
-                    status=initial_status,
-                    hl_address=hl_address,
-                    payout_address=payout_address
-                )
+                self.broadcast_subaccount_registration(entity_hotkey, subaccount_info)
                 self.broadcast_subaccount_dashboard(synthetic_hotkey)
 
             total_ms = int((time.time() - t_start) * 1000)
@@ -670,7 +675,8 @@ class EntityManager(ValidatorBroadcastBase):
         # Delegate to standard create_subaccount for all existing validation
         success, subaccount_info, message = self.create_subaccount(
             entity_hotkey, account_size, asset_class, admin=admin,
-            hl_address=hl_address, payout_address=payout_address
+            hl_address=hl_address, payout_address=payout_address,
+            drawdown_criteria="trailing"
         )
 
         if not success:
@@ -1800,54 +1806,17 @@ class EntityManager(ValidatorBroadcastBase):
 
     # ==================== Validator Broadcast Methods ====================
 
-    def broadcast_subaccount_registration(
-        self,
-        entity_hotkey: str,
-        subaccount_id: int,
-        subaccount_uuid: str,
-        synthetic_hotkey: str,
-        account_size: float,
-        asset_class: str,
-        status: str = "active",
-        hl_address: Optional[str] = None,
-        payout_address: Optional[str] = None
-    ):
-        """
-        Broadcast SubaccountRegistration synapse to other validators using shared broadcast base.
-
-        Args:
-            entity_hotkey: The VANTA_ENTITY_HOTKEY
-            subaccount_id: The subaccount ID
-            subaccount_uuid: The subaccount UUID
-            synthetic_hotkey: The synthetic hotkey
-            account_size: Account size in USD (immutable)
-            asset_class: Asset class selection (immutable)
-            status: Subaccount status (active, admin, etc.)
-            hl_address: Optional Hyperliquid address for HL subaccounts
-            payout_address: Optional EVM payout address for HL subaccounts
-        """
+    def broadcast_subaccount_registration(self, entity_hotkey: str, subaccount_info: SubaccountInfo):
+        """Broadcast SubaccountRegistration synapse to other validators."""
         def create_synapse():
-            subaccount_data = {
-                "entity_hotkey": entity_hotkey,
-                "subaccount_id": subaccount_id,
-                "subaccount_uuid": subaccount_uuid,
-                "synthetic_hotkey": synthetic_hotkey,
-                "account_size": account_size,
-                "asset_class": asset_class,
-                "status": status,
-                "hl_address": hl_address,
-                "payout_address": payout_address
-            }
-            if hl_address:
-                subaccount_data["hl_address"] = hl_address
-            if payout_address:
-                subaccount_data["payout_address"] = payout_address
-            return template.protocol.SubaccountRegistration(subaccount_data=subaccount_data)
+            data = subaccount_info.model_dump()
+            data["entity_hotkey"] = entity_hotkey
+            return template.protocol.SubaccountRegistration(subaccount_data=data)
 
         self._broadcast_to_validators(
             synapse_factory=create_synapse,
             broadcast_name="SubaccountRegistration",
-            context={"synthetic_hotkey": synthetic_hotkey}
+            context={"synthetic_hotkey": subaccount_info.synthetic_hotkey}
         )
 
     def receive_subaccount_registration_update(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
@@ -1869,17 +1838,29 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Use master lock: might create new entity, then modify it
             with self._entities_lock:
-                # Extract data from the synapse
                 entity_hotkey = subaccount_data.get("entity_hotkey")
-                subaccount_id = subaccount_data.get("subaccount_id")
-                subaccount_uuid = subaccount_data.get("subaccount_uuid")
-                synthetic_hotkey = subaccount_data.get("synthetic_hotkey")
-                account_size = subaccount_data.get("account_size")
-                asset_class = subaccount_data.get("asset_class")
-                status = subaccount_data.get("status", "active")  # Default to active for backwards compatibility
-                hl_address = subaccount_data.get("hl_address")
+
+                # Reconstruct SubaccountInfo; fall back gracefully for older broadcasts missing created_at_ms
+                subaccount_info_data = {k: v for k, v in subaccount_data.items() if k != "entity_hotkey"}
+                if "created_at_ms" not in subaccount_info_data or subaccount_info_data["created_at_ms"] is None:
+                    subaccount_info_data["created_at_ms"] = TimeUtil.now_in_millis()
+                try:
+                    subaccount_info = SubaccountInfo(**subaccount_info_data)
+                except Exception as parse_err:
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Invalid subaccount registration data: {parse_err}"
+                    )
+                    return False
+
+                subaccount_id = subaccount_info.subaccount_id
+                subaccount_uuid = subaccount_info.subaccount_uuid
+                synthetic_hotkey = subaccount_info.synthetic_hotkey
+                account_size = subaccount_info.account_size
+                asset_class = subaccount_info.asset_class
+                status = subaccount_info.status
+                hl_address = subaccount_info.hl_address
                 normalized_hl = self._normalize_hl_address(hl_address)
-                payout_address = subaccount_data.get("payout_address")
+                payout_address = subaccount_info.payout_address
 
                 bt.logging.info(
                     f"[ENTITY_MANAGER] Processing subaccount registration for {synthetic_hotkey}"
@@ -1952,21 +1933,16 @@ class EntityManager(ValidatorBroadcastBase):
                         )
                         return False
 
-                # Create new subaccount info
-                now_ms = TimeUtil.now_in_millis()
-                hl_address = subaccount_data.get("hl_address")
-                payout_address = subaccount_data.get("payout_address")
-                subaccount_info = SubaccountInfo(
-                    subaccount_id=subaccount_id,
-                    subaccount_uuid=subaccount_uuid,
-                    synthetic_hotkey=synthetic_hotkey,
-                    status=status,
-                    created_at_ms=now_ms,
-                    account_size=account_size,
-                    asset_class=asset_class,
-                    hl_address=hl_address,
-                    payout_address=payout_address
+                # Set asset selection for synthetic hotkey
+                asset_selection_result = self._asset_selection_client.process_asset_selection_request(
+                    asset_selection=asset_class,
+                    miner=synthetic_hotkey
                 )
+                if not asset_selection_result.get('successfully_processed', False):
+                    bt.logging.warning(
+                        f"[ENTITY_MANAGER] Failed to set asset selection for {synthetic_hotkey} via broadcast: "
+                        f"{asset_selection_result.get('error_message', 'Unknown error')}"
+                    )
 
                 # Add to entity
                 entity_data.subaccounts[subaccount_id] = subaccount_info
@@ -2002,6 +1978,17 @@ class EntityManager(ValidatorBroadcastBase):
 
                 # Save to disk
                 self._write_entities_from_memory_to_disk()
+
+                # Register with challenge period
+                try:
+                    self._challenge_period_client.set_miner_bucket(
+                        synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, subaccount_info.created_at_ms,
+                        drawdown_criteria=DrawdownCriteria(subaccount_info.drawdown_criteria),
+                    )
+                except Exception as e:
+                    bt.logging.error(
+                        f"[ENTITY_MANAGER] Failed to register {synthetic_hotkey} with challenge period via broadcast: {e}"
+                    )
 
                 bt.logging.info(
                     f"[ENTITY_MANAGER] Registered subaccount {synthetic_hotkey} via broadcast"
