@@ -22,6 +22,7 @@ Usage:
 """
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.challenge_period.challengeperiod_manager import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
 
@@ -87,9 +88,15 @@ class ChallengePeriodClient(RPCClientBase):
     def get_dashboard(self, hotkey) -> dict | None:
         return self._server.get_dashboard_rpc(hotkey)
 
-    def set_miner_bucket(self, hotkey: str, bucket: MinerBucket, start_time_ms: int) -> bool:
+    def set_miner_bucket(
+        self,
+        hotkey: str,
+        bucket: MinerBucket,
+        start_time_ms: int,
+        drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING,
+    ) -> bool:
         """Set or update a miner's bucket information."""
-        return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms)
+        return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms, drawdown_criteria)
 
     def remove_miners(self, hotkeys: str) -> bool:
         """Remove a miner from active_miners."""
