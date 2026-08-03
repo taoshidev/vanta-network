@@ -690,23 +690,6 @@ class EntityManager(ValidatorBroadcastBase):
 
         return True, subaccount_info, message
 
-    def get_all_subaccount_created_at_ms(self) -> Dict[str, int]:
-        """
-        Get creation timestamps for all subaccounts, keyed by synthetic hotkey.
-
-        Used by ChallengePeriodManager to derive each subaccount's drawdown criteria
-        (static vs. trailing) on demand, without a per-hotkey RPC round trip.
-
-        Returns:
-            Dict mapping synthetic_hotkey -> created_at_ms
-        """
-        result = {}
-        with self._entities_lock:
-            for entity_data in self.entities.values():
-                for subaccount in entity_data.subaccounts.values():
-                    result[subaccount.synthetic_hotkey] = subaccount.created_at_ms
-        return result
-
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """
         Get all active subaccounts with HL addresses.
