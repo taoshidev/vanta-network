@@ -10,7 +10,8 @@ Clients connect using ChallengePeriodClient.
 import time
 import bittensor as bt
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager, DrawdownCriteria
+from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
+from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase

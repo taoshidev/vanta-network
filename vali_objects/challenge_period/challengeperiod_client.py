@@ -22,7 +22,7 @@ Usage:
 """
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.challenge_period.challengeperiod_manager import DrawdownCriteria
+from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
 

@@ -9,7 +9,6 @@ ChallengePeriodServer wraps this and exposes methods via RPC.
 This follows the same pattern as EliminationManager.
 """
 from dataclasses import asdict, dataclass, field, fields
-from enum import Enum
 
 from bittensor.utils.btlogging import logging as btlogging
 import threading
@@ -33,6 +32,7 @@ from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.elimination_reason_enum import EliminationReason
+from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
@@ -40,10 +40,6 @@ from vali_objects.miner_account.miner_account_manager import MinerAccount
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
 from entity_management.entity_client import EntityClient
-
-class DrawdownCriteria(str, Enum):
-    TRAILING = "trailing"   # intraday + EOD trailing (regular miners and pre-effective subaccounts)
-    STATIC = "static"   # static balance + static EOD (post-effective subaccounts, non-HL)
 
 
 @dataclass
