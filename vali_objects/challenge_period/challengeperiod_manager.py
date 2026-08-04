@@ -9,6 +9,7 @@ ChallengePeriodServer wraps this and exposes methods via RPC.
 This follows the same pattern as EliminationManager.
 """
 from dataclasses import asdict, dataclass, field, fields
+from typing import Tuple
 
 from bittensor.utils.btlogging import logging as btlogging
 import threading
@@ -884,6 +885,16 @@ class ChallengePeriodManager(CacheController):
                 self.miner_states[hotkey].add_bucket_entry(bucket, start_time_ms, replace_top=replace_top)
                 is_new = False
         return is_new
+
+    def update_drawdown_criteria(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
+        """Update drawdown_criteria for an existing miner state and persist to disk."""
+        with self._buckets_lock:
+            state = self.miner_states.get(hotkey)
+            if not state:
+                return False, f"{hotkey} not found in challenge period manager"
+            state.drawdown_criteria = criteria
+            self._save_to_disk()
+        return True, f"drawdown_criteria updated to '{criteria.value}' for {hotkey}"
 
     def remove_miners(self, hotkeys: str | list[str]) -> bool:
         """Remove hotkeys from memory - CALL OUTSIDE OF LOCK"""

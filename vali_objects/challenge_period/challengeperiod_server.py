@@ -9,6 +9,7 @@ Clients connect using ChallengePeriodClient.
 """
 import time
 import bittensor as bt
+from typing import Tuple
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
@@ -130,6 +131,9 @@ class ChallengePeriodServer(RPCServerBase):
         drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING,
     ) -> bool:
         return self._manager.set_miner_bucket(hotkey, bucket, start_time_ms, drawdown_criteria=drawdown_criteria)
+
+    def update_drawdown_criteria_rpc(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
+        return self._manager.update_drawdown_criteria(hotkey, criteria)
 
     def remove_miners_rpc(self, hotkeys: str | list[str]) -> bool:
         return self._manager.remove_miners(hotkeys)
