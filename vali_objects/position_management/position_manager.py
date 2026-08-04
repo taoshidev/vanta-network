@@ -522,10 +522,20 @@ class PositionManager:
                 new_closed_positions = True
 
             dashboard_filled_orders = {}
+            # A bracket order that fills in more than one chunk produces several
+            # fills sharing one order_uuid; keying the dict by the raw uuid would
+            # silently drop all but the last such fill. Repeat fills get an
+            # "@{occurrence}" suffix. The occurrence count runs over ALL of the
+            # position's orders (not just those past the watermark) so a fill
+            # keeps the same key in every incremental frame that includes it.
+            fill_counts = {}
             for order in position.orders:
+                occurrence = fill_counts.get(order.order_uuid, 0)
+                fill_counts[order.order_uuid] = occurrence + 1
                 if order.processed_ms > positions_time_ms:
                     snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
-                    dashboard_filled_orders[order.order_uuid] = order.to_dashboard()
+                    key = order.order_uuid if occurrence == 0 else f"{order.order_uuid}@{occurrence}"
+                    dashboard_filled_orders[key] = order.to_dashboard()
 
             dashboard_unfilled_orders = {
                 order.order_uuid: order.to_dashboard()
