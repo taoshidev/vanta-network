@@ -9,21 +9,18 @@ from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position_management.position_utils.position_splitter import PositionSplitter
 from vali_objects.vali_dataclasses.position import Position
-import bittensor as bt
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from entity_management.entity_client import EntityClient
+from shared_objects.log import logger
 
 AUTO_SYNC_ORDER_LAG_MS = 1000 * 60 * 60 * 24
 
@@ -101,7 +98,7 @@ class ValidatorSyncBase():
         assert candidate_data, "Candidate data must be provided"
 
         backup_creation_time_ms = candidate_data['created_timestamp_ms']
-        bt.logging.info(f"Automated sync. Shadow mode {shadow_mode}. Found backup creation time: {TimeUtil.millis_to_formatted_date_str(backup_creation_time_ms)}")
+        logger.info(f"Automated sync. Shadow mode {shadow_mode}. Found backup creation time: {TimeUtil.millis_to_formatted_date_str(backup_creation_time_ms)}")
 
         candidate_hk_to_positions = {}
         for hk, data in candidate_data['positions'].items():
@@ -122,11 +119,11 @@ class ValidatorSyncBase():
             hard_snap_cutoff_ms = candidate_data['hard_snap_cutoff_ms']
         else:
             hard_snap_cutoff_ms = backup_creation_time_ms - AUTO_SYNC_ORDER_LAG_MS
-        bt.logging.info(
+        logger.info(
             f"Automated sync. hard_snap_cutoff_ms: {TimeUtil.millis_to_formatted_date_str(hard_snap_cutoff_ms)}")
 
         if self.is_mothership:
-            bt.logging.info("Mothership detected")
+            logger.info("Mothership detected")
 
         # Check if disk_positions was explicitly provided
         disk_positions_provided = disk_positions is not None
@@ -171,13 +168,13 @@ class ValidatorSyncBase():
         miner_account_sizes_data = candidate_data.get('miner_account_sizes', {})
         if miner_account_sizes_data:
             if not shadow_mode:
-                bt.logging.info(f"Syncing {len(miner_account_sizes_data)} miner account size records from auto sync")
+                logger.info(f"Syncing {len(miner_account_sizes_data)} miner account size records from auto sync")
                 self._miner_account_client.sync_miner_account_sizes_data(miner_account_sizes_data)
 
         # Sync frozen perf ledgers if available
         frozen_perf_ledgers_data = candidate_data.get('frozen_perf_ledgers', {})
         if frozen_perf_ledgers_data and not shadow_mode:
-            bt.logging.info(f"Syncing {len(frozen_perf_ledgers_data)} frozen perf ledger records from auto sync")
+            logger.info(f"Syncing {len(frozen_perf_ledgers_data)} frozen perf ledger records from auto sync")
             self._perf_ledger_client.sync_frozen_ledgers(frozen_perf_ledgers_data)
 
         eliminated_hotkeys = set([e['hotkey'] for e in eliminations])
@@ -214,7 +211,7 @@ class ValidatorSyncBase():
                     full_traceback = traceback.format_exc()
                     # Slice the last 1000 characters of the traceback
                     limited_traceback = full_traceback[-1000:]
-                    bt.logging.error(f"Error syncing positions for hotkey {hotkey} trade pair {trade_pair}. Error: {e} traceback: {limited_traceback}")
+                    logger.error(f"Error syncing positions for hotkey {hotkey} trade pair {trade_pair}. Error: {e} traceback: {limited_traceback}")
                     # If this is PositionSyncResultException, throw it up. Otherwise, log the error and continue.
                     if isinstance(e, PositionSyncResultException):
                         raise e
@@ -231,23 +228,23 @@ class ValidatorSyncBase():
                 ]
                 if positions_to_archive:
                     n = self._position_manager_client.archive_positions_for_hotkey(hotkey, positions=positions_to_archive)
-                    bt.logging.info(f"[SYNC] Archived {n}/{len(uuids)} positions for {hotkey} from mothership checkpoint")
+                    logger.info(f"[SYNC] Archived {n}/{len(uuids)} positions for {hotkey} from mothership checkpoint")
 
         # Sync asset selections if available
         asset_selections_data = candidate_data.get('asset_selections', {})
         if asset_selections_data:
-            bt.logging.info(f"Syncing {len(asset_selections_data)} miner asset selections from auto sync")
+            logger.info(f"Syncing {len(asset_selections_data)} miner asset selections from auto sync")
             if not shadow_mode:
-                bt.logging.info(f"Syncing {len(asset_selections_data)} miner asset selection records from auto sync")
+                logger.info(f"Syncing {len(asset_selections_data)} miner asset selection records from auto sync")
                 self._asset_selection_client.sync_miner_asset_selection_data(asset_selections_data)
 
         # Sync entity data if available
         entities_data = candidate_data.get('entities', {})
         if entities_data and not shadow_mode:
-            bt.logging.info(f"Syncing {len(entities_data)} entity records from auto sync")
+            logger.info(f"Syncing {len(entities_data)} entity records from auto sync")
             self._entity_client.sync_entity_data(entities_data)
         elif entities_data and shadow_mode:
-            bt.logging.info(f"Shadow mode: Would sync {len(entities_data)} entity records (skipped)")
+            logger.info(f"Shadow mode: Would sync {len(entities_data)} entity records (skipped)")
 
         # Reorganized stats with clear, grouped naming
         # Overview
@@ -269,42 +266,42 @@ class ValidatorSyncBase():
         # Note: Raw counts use existing legacy keys directly (no duplication)
 
         # Print reorganized stats with clear grouping
-        bt.logging.info("=" * 60)
-        bt.logging.info("AUTOSYNC STATISTICS")
-        bt.logging.info("=" * 60)
+        logger.info("=" * 60)
+        logger.info("AUTOSYNC STATISTICS")
+        logger.info("=" * 60)
         
         # Overview section
-        bt.logging.info("SYNC OVERVIEW:")
-        bt.logging.info(f"  miners_processed: {self.global_stats.get('miners_processed', 0)}")
-        bt.logging.info(f"  miners_eliminated_skipped: {self.global_stats.get('miners_eliminated_skipped', 0)}")
-        bt.logging.info(f"  sync_duration_seconds: {time.time() - t0:.2f}")
+        logger.info("SYNC OVERVIEW:")
+        logger.info(f"  miners_processed: {self.global_stats.get('miners_processed', 0)}")
+        logger.info(f"  miners_eliminated_skipped: {self.global_stats.get('miners_eliminated_skipped', 0)}")
+        logger.info(f"  sync_duration_seconds: {time.time() - t0:.2f}")
         
         # Position outcomes
-        bt.logging.info("POSITION OUTCOMES (by unique miners):")
-        bt.logging.info(f"  miners_with_position_updates: {self.global_stats.get('miners_with_position_updates', 0)}")
-        bt.logging.info(f"  miners_with_position_matches: {self.global_stats.get('miners_with_position_matches', 0)}")
-        bt.logging.info(f"  miners_with_position_insertions: {self.global_stats.get('miners_with_position_insertions', 0)}")
-        bt.logging.info(f"  miners_with_position_deletions: {self.global_stats.get('miners_with_position_deletions', 0)}")
+        logger.info("POSITION OUTCOMES (by unique miners):")
+        logger.info(f"  miners_with_position_updates: {self.global_stats.get('miners_with_position_updates', 0)}")
+        logger.info(f"  miners_with_position_matches: {self.global_stats.get('miners_with_position_matches', 0)}")
+        logger.info(f"  miners_with_position_insertions: {self.global_stats.get('miners_with_position_insertions', 0)}")
+        logger.info(f"  miners_with_position_deletions: {self.global_stats.get('miners_with_position_deletions', 0)}")
         
         # Order outcomes
-        bt.logging.info("ORDER OUTCOMES (by unique miners):")
-        bt.logging.info(f"  miners_with_order_updates: {self.global_stats.get('miners_with_order_updates', 0)}")
-        bt.logging.info(f"  miners_with_order_matches: {self.global_stats.get('miners_with_order_matches', 0)}")
-        bt.logging.info(f"  miners_with_order_insertions: {self.global_stats.get('miners_with_order_insertions', 0)}")
-        bt.logging.info(f"  miners_with_order_deletions: {self.global_stats.get('miners_with_order_deletions', 0)}")
+        logger.info("ORDER OUTCOMES (by unique miners):")
+        logger.info(f"  miners_with_order_updates: {self.global_stats.get('miners_with_order_updates', 0)}")
+        logger.info(f"  miners_with_order_matches: {self.global_stats.get('miners_with_order_matches', 0)}")
+        logger.info(f"  miners_with_order_insertions: {self.global_stats.get('miners_with_order_insertions', 0)}")
+        logger.info(f"  miners_with_order_deletions: {self.global_stats.get('miners_with_order_deletions', 0)}")
         
         # Order-level operation counts (more actionable metrics)
-        bt.logging.info("ORDER OPERATIONS (total counts):")
-        bt.logging.info(f"  total_orders_inserted: {self.global_stats.get('orders_inserted', 0)}")
-        bt.logging.info(f"  total_orders_updated: {self.global_stats.get('orders_updated', 0)}")
-        bt.logging.info(f"  total_orders_deleted: {self.global_stats.get('orders_deleted', 0)}")
-        bt.logging.info(f"  total_orders_matched: {self.global_stats.get('orders_matched', 0)}")
+        logger.info("ORDER OPERATIONS (total counts):")
+        logger.info(f"  total_orders_inserted: {self.global_stats.get('orders_inserted', 0)}")
+        logger.info(f"  total_orders_updated: {self.global_stats.get('orders_updated', 0)}")
+        logger.info(f"  total_orders_deleted: {self.global_stats.get('orders_deleted', 0)}")
+        logger.info(f"  total_orders_matched: {self.global_stats.get('orders_matched', 0)}")
         
         # Raw counts (total items and miners processed)
-        bt.logging.info("RAW COUNTS (total items and miners processed):")
-        bt.logging.info(f"  total_positions_processed: {self.global_stats.get('positions_matched', 0)}")
-        bt.logging.info(f"  total_orders_processed: {self.global_stats.get('orders_matched', 0)}")
-        bt.logging.info(f"  total_miners_processed: {self.global_stats.get('miners_processed', 0)}")
+        logger.info("RAW COUNTS (total items and miners processed):")
+        logger.info(f"  total_positions_processed: {self.global_stats.get('positions_matched', 0)}")
+        logger.info(f"  total_orders_processed: {self.global_stats.get('orders_matched', 0)}")
+        logger.info(f"  total_miners_processed: {self.global_stats.get('miners_processed', 0)}")
         
         # Other stats (exclude keys we already displayed above)
         excluded_keys = {
@@ -317,11 +314,11 @@ class ValidatorSyncBase():
         other_stats = {k: v for k, v in self.global_stats.items() 
                       if not k.startswith('miners_with_') and k not in excluded_keys}
         if other_stats:
-            bt.logging.info("OTHER STATS:")
+            logger.info("OTHER STATS:")
             for k, v in other_stats.items():
-                bt.logging.info(f"  {k}: {v}")
+                logger.info(f"  {k}: {v}")
         
-        bt.logging.info("=" * 60)
+        logger.info("=" * 60)
 
     def write_modifications(self, position_to_sync_status, stats):
         # Track position sync statuses for global stats
@@ -443,7 +440,7 @@ class ValidatorSyncBase():
             # Save the closed position back to disk
             self._position_manager_client.save_miner_position(position_to_close, delete_open_position_if_exists=False)
 
-            bt.logging.warning(
+            logger.warning(
                 f"Closed duplicate open position {position_to_close.position_uuid} (open_ms={position_to_close.open_ms}) "
                 f"in favor of newer position {position_to_keep.position_uuid} (open_ms={position_to_keep.open_ms}) "
                 f"for miner {p1.miner_hotkey} trade_pair {p1.trade_pair.trade_pair_id}"
@@ -957,7 +954,7 @@ class ValidatorSyncBase():
                             self._position_manager_client.delete_position(position.miner_hotkey, position.position_uuid)
                         stats['positions_deleted'] += 1
 
-                    bt.logging.warning(
+                    logger.warning(
                         f"Deleted {len(positions_to_delete)} problematic positions for "
                         f"hotkey {hotkey} trade pair {trade_pair.trade_pair_id} "
                         f"(overlaps: {len(overlapping_position_uuids)}, "
@@ -965,21 +962,21 @@ class ValidatorSyncBase():
                     )
 
         # Log summary
-        bt.logging.info("=" * 60)
-        bt.logging.info("POSITION INTEGRITY CHECK SUMMARY")
-        bt.logging.info("=" * 60)
-        bt.logging.info(f"Hotkeys checked: {stats['hotkeys_checked']}")
-        bt.logging.info(f"Trade pairs checked: {stats['trade_pairs_checked']}")
-        bt.logging.info(f"Hotkeys with overlaps: {len(stats['hotkeys_with_overlaps'])}")
-        bt.logging.info(f"Hotkeys with invariant violations: {len(stats['hotkeys_with_invariant_violations'])}")
-        bt.logging.info(f"Total positions deleted: {stats['positions_deleted']}")
-        bt.logging.info(f"  - Due to overlaps: {stats['positions_deleted_overlaps']}")
-        bt.logging.info(f"  - Due to invariant violations: {stats['positions_deleted_invariant_violations']}")
+        logger.info("=" * 60)
+        logger.info("POSITION INTEGRITY CHECK SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"Hotkeys checked: {stats['hotkeys_checked']}")
+        logger.info(f"Trade pairs checked: {stats['trade_pairs_checked']}")
+        logger.info(f"Hotkeys with overlaps: {len(stats['hotkeys_with_overlaps'])}")
+        logger.info(f"Hotkeys with invariant violations: {len(stats['hotkeys_with_invariant_violations'])}")
+        logger.info(f"Total positions deleted: {stats['positions_deleted']}")
+        logger.info(f"  - Due to overlaps: {stats['positions_deleted_overlaps']}")
+        logger.info(f"  - Due to invariant violations: {stats['positions_deleted_invariant_violations']}")
         if stats['trade_pairs_with_overlaps']:
-            bt.logging.info(f"Trade pairs with overlaps: {dict(stats['trade_pairs_with_overlaps'])}")
+            logger.info(f"Trade pairs with overlaps: {dict(stats['trade_pairs_with_overlaps'])}")
         if stats['trade_pairs_with_invariant_violations']:
-            bt.logging.info(f"Trade pairs with invariant violations: {dict(stats['trade_pairs_with_invariant_violations'])}")
-        bt.logging.info("=" * 60)
+            logger.info(f"Trade pairs with invariant violations: {dict(stats['trade_pairs_with_invariant_violations'])}")
+        logger.info("=" * 60)
 
         return stats
 
@@ -1079,7 +1076,7 @@ class ValidatorSyncBase():
             # Keep the last one, delete all others
             for p in open_positions_sorted[:-1]:
                 violation_uuids.add(p.position_uuid)
-            bt.logging.warning(
+            logger.warning(
                 f"INVARIANT VIOLATION: Found {n_open} open positions (max 1 allowed). "
                 f"Will delete {len(violation_uuids)} older open positions."
             )
@@ -1091,7 +1088,7 @@ class ValidatorSyncBase():
                 # The open position is NOT last - this is a violation
                 open_position = open_positions[0]
                 violation_uuids.add(open_position.position_uuid)
-                bt.logging.warning(
+                logger.warning(
                     f"INVARIANT VIOLATION: Found 1 open position but it's NOT the last chronologically. "
                     f"Last position is closed (close_ms={last_position.close_ms}). "
                     f"Will delete the misplaced open position {open_position.position_uuid}."
@@ -1109,13 +1106,13 @@ class ValidatorSyncBase():
             # For closed positions: close_ms must be a real timestamp (not None, not 0)
             if p.is_open_position and p.close_ms is not None and p.close_ms != 0:
                 violation_uuids.add(p.position_uuid)
-                bt.logging.warning(
+                logger.warning(
                     f"INVARIANT VIOLATION: Position {p.position_uuid} has is_open_position=True "
                     f"but close_ms={p.close_ms} (should be None or 0). Will delete."
                 )
             elif p.is_closed_position and (p.close_ms is None or p.close_ms == 0):
                 violation_uuids.add(p.position_uuid)
-                bt.logging.warning(
+                logger.warning(
                     f"INVARIANT VIOLATION: Position {p.position_uuid} has is_closed_position=True "
                     f"but close_ms={p.close_ms} (should be a real timestamp). Will delete."
                 )
@@ -1131,7 +1128,7 @@ class ValidatorSyncBase():
                 if not p.orders or p.orders[-1].order_type != OrderType.FLAT:
                     violation_uuids.add(p.position_uuid)
                     last_order_type = p.orders[-1].order_type.name if p.orders else "NO_ORDERS"
-                    bt.logging.warning(
+                    logger.warning(
                         f"INVARIANT VIOLATION: Position {p.position_uuid} is closed "
                         f"but last order is {last_order_type} (should be FLAT). Will delete."
                     )

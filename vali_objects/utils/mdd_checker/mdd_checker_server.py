@@ -22,11 +22,11 @@ Usage:
         start_daemon=True
     )
 """
-import bittensor as bt
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.utils.mdd_checker.mdd_checker import MDDChecker
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 class MDDCheckerServer(RPCServerBase):
@@ -85,7 +85,7 @@ class MDDCheckerServer(RPCServerBase):
         if start_daemon:
             self.start_daemon()
 
-        bt.logging.success("MDDCheckerServer initialized")
+        logger.info("MDDCheckerServer initialized")
 
     # ==================== RPCServerBase Abstract Methods ====================
 
@@ -96,7 +96,7 @@ class MDDCheckerServer(RPCServerBase):
         Checks for sync in progress, then runs MDD check.
         """
         if self._checker.sync_in_progress:
-            bt.logging.debug("MDDCheckerServer: Sync in progress, pausing...")
+            logger.debug("MDDCheckerServer: Sync in progress, pausing...")
             return
 
         iteration_epoch = self._checker.sync_epoch

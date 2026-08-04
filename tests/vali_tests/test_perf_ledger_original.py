@@ -1,4 +1,3 @@
-import bittensor as bt
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -8,8 +7,10 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
+import logging
+from shared_objects.log import logger
 
-bt.logging.enable_info()
+logger.setLevel(logging.INFO)
 
 class TestPerfLedgers(TestBase):
     """

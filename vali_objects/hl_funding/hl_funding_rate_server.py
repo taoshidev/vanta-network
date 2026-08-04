@@ -4,13 +4,13 @@ HLFundingRateServer - RPC server for HL funding rate management.
 Follows the EntityServer pattern. Runs a daemon that periodically fetches
 recent funding rates from the HL API.
 """
-import bittensor as bt
 from typing import Dict, List, Optional
 
 from time_util.time_util import TimeUtil
 from vali_objects.hl_funding.hl_funding_rate_manager import HLFundingRateManager
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePair, TradePairSource
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.log import logger
 
 
 class HLFundingRateServer(RPCServerBase):
@@ -63,9 +63,9 @@ class HLFundingRateServer(RPCServerBase):
         start_ms = now_ms - ValiConfig.HL_FUNDING_BACKFILL_HOURS * 3600 * 1000
         coins = self._get_coins()
         if not coins:
-            bt.logging.warning("[HL_FUNDING_SERVER] No coins available, skipping backfill.")
+            logger.warning("[HL_FUNDING_SERVER] No coins available, skipping backfill.")
             return
-        bt.logging.info(f"[HL_FUNDING_SERVER] Backfilling {ValiConfig.HL_FUNDING_BACKFILL_HOURS}h of rates for {len(coins)} coins")
+        logger.info(f"[HL_FUNDING_SERVER] Backfilling {ValiConfig.HL_FUNDING_BACKFILL_HOURS}h of rates for {len(coins)} coins")
         self._manager.fetch_and_store_rates(coins, start_ms, now_ms)
 
     def run_daemon_iteration(self):

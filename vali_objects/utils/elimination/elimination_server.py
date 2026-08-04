@@ -35,7 +35,7 @@ from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import RPCConnectionMode
 
-import bittensor as bt
+from shared_objects.log import logger
 
 
 # ==================== Server Implementation ====================
@@ -92,7 +92,7 @@ class EliminationServer(RPCServerBase):
             serve=serve
         )
 
-        bt.logging.info(f"[ELIM_SERVER] EliminationManager initialized")
+        logger.info("[ELIM_SERVER] EliminationManager initialized")
 
         # Cache for fast fail-early checks (auto-refreshed by daemon)
         self._eliminations_cache = {}  # {hotkey: elimination_dict}
@@ -138,7 +138,7 @@ class EliminationServer(RPCServerBase):
         Checks for sync in progress, then processes eliminations via manager.
         """
         if self.sync_in_progress:
-            bt.logging.debug("EliminationServer: Sync in progress, pausing...")
+            logger.debug("EliminationServer: Sync in progress, pausing...")
             return
 
         iteration_epoch = self.sync_epoch
@@ -170,12 +170,12 @@ class EliminationServer(RPCServerBase):
 
         with self._cache_lock:
             self._eliminations_cache = eliminations_snapshot
-            bt.logging.debug(f"[CACHE_REFRESH] Refreshed: {len(self._eliminations_cache)} eliminated")
+            logger.debug(f"[CACHE_REFRESH] Refreshed: {len(self._eliminations_cache)} eliminated")
 
     def _cache_refresh_loop(self):
         """Background daemon that refreshes cache periodically."""
         setproctitle("vali_EliminationCacheRefresher")
-        bt.logging.info(f"Elimination cache refresh daemon started ({ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S}-second interval)")
+        logger.info(f"Elimination cache refresh daemon started ({ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S}-second interval)")
 
         while not self._is_shutdown():
             try:
@@ -188,16 +188,16 @@ class EliminationServer(RPCServerBase):
                 # If we're shutting down, exit gracefully without logging error
                 if self._is_shutdown():
                     break
-                bt.logging.error(f"Error in cache refresh daemon: {e}")
+                logger.error(f"Error in cache refresh daemon: {e}")
                 time.sleep(ValiConfig.ELIMINATION_CACHE_REFRESH_INTERVAL_S)
 
-        bt.logging.info("Elimination cache refresh daemon shutting down")
+        logger.info("Elimination cache refresh daemon shutting down")
 
     def _start_cache_refresh_daemon(self):
         """Start the background cache refresh thread."""
         refresh_thread = threading.Thread(target=self._cache_refresh_loop, daemon=True)
         refresh_thread.start()
-        bt.logging.info("Started cache refresh daemon")
+        logger.info("Started cache refresh daemon")
 
     # ==================== RPC Methods (exposed to client) ====================
 

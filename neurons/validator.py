@@ -2,14 +2,12 @@
 # Copyright (c) 2024 Yuma Rao
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
-import json
 import os
 import sys
 import threading
 import signal
 
 from vali_objects.enums.misc import SynapseMethod
-from vali_objects.enums.order_type_enum import OrderType
 from vanta_api.validator_api_manager import ValidatorAPIManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
 from entity_management.entity_utils import is_synthetic_hotkey
@@ -30,17 +28,15 @@ from vali_objects.data_sync.order_sync_state import OrderSyncState
 from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
-from vali_objects.exceptions.signal_exception import SignalException
-from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.order_processor import OrderProcessor
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from runnable.run_migrations import main as run_migrations
+from shared_objects.log import logger
 
 def is_shutdown() -> bool:
     """Check if shutdown is in progress via ShutdownCoordinator."""
@@ -78,7 +74,7 @@ class Validator(ValidatorBase):
     def __init__(self):
         setproctitle(f"vali_{self.__class__.__name__}")
         # Try to read the file meta/meta.json and print it out
-        # Note: Use print() instead of bt.logging before bt.logging is configured
+        # Note: Use print() here since self.config (and its logging level) isn't parsed yet
         try:
             with open("meta/meta.json", "r") as f:
                 meta_content = f.read()
@@ -116,34 +112,32 @@ class Validator(ValidatorBase):
 
         # Initialize Bittensor wallet objects FIRST (needed for SlackNotifier)
         # Wallet holds cryptographic information, ensuring secure transactions and communication.
-        # Activating Bittensor's logging with the set configurations.
-        bt.logging(config=self.config, logging_dir=self.config.full_path)
 
         # Initialize Bittensor miner objects
         # These classes are vital to interact and function within the Bittensor network.
-        bt.logging.info("Setting up bittensor objects.")
+        logger.info("Setting up bittensor objects.")
 
         # Wallet holds cryptographic information, ensuring secure transactions and communication.
-        bt.logging.info("Initializing validator wallet...")
+        logger.info("Initializing validator wallet...")
         wallet_start_time = time.time()
         self.wallet = bt.Wallet(config=self.config)
         wallet_elapsed_s = time.time() - wallet_start_time
-        bt.logging.success(f"Validator wallet initialized in {wallet_elapsed_s:.2f}s")
+        logger.info(f"Validator wallet initialized in {wallet_elapsed_s:.2f}s")
 
         # Determine if this validator is the mothership using centralized utility
         self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet, not self.is_mainnet)
-        bt.logging.info(f"Is mothership validator: {self.is_mothership}")
+        logger.info(f"Is mothership validator: {self.is_mothership}")
 
         # Auto-sync disabled for mothership (it's the source of truth)
         self.auto_sync = getattr(self.config, 'autosync', False) and not self.is_mothership
 
-        bt.logging.info(
+        logger.info(
             f"Running validator for subnet: {self.config.netuid} with autosync set to: {self.auto_sync} "
             f"on network: {self.config.subtensor.chain_endpoint} with config:"
         )
 
         # This logs the active configuration to the specified logging directory for review.
-        bt.logging.info(self.config)
+        logger.info(self.config)
 
         # Initialize Slack notifier for error reporting
         # Created before LivePriceFetcher so it can be passed for crash notifications
@@ -159,9 +153,9 @@ class Validator(ValidatorBase):
         # This must be initialized before any RPC servers are created
         # Reset flag on attach to clear any stale shutdown state from crashed/killed processes
         ShutdownCoordinator.initialize(reset_on_attach=True)
-        bt.logging.success("[INIT] ShutdownCoordinator initialized (shared memory)")
+        logger.info("[INIT] ShutdownCoordinator initialized (shared memory)")
 
-        bt.logging.info(f"Wallet: {self.wallet}")
+        logger.info(f"Wallet: {self.wallet}")
 
         # ============================================================================
         # SERVER ORCHESTRATOR - Centralized server lifecycle management
@@ -177,7 +171,7 @@ class Validator(ValidatorBase):
         # Start all servers AND wait for metagraph (blocks until ready)
         orchestrator = ServerOrchestrator.get_instance()
         orchestrator.start_validator_servers(context)
-        bt.logging.success("[INIT] All servers started, metagraph populated")
+        logger.info("[INIT] All servers started, metagraph populated")
 
         # Get clients from orchestrator
         self.metagraph_client = orchestrator.get_client('metagraph')
@@ -218,7 +212,7 @@ class Validator(ValidatorBase):
             'entity',
             'entity_collateral'
         ])
-        bt.logging.success("[INIT] All daemons started, caches warmed")
+        logger.info("[INIT] All daemons started, caches warmed")
         # ============================================================================
 
         # Create PositionSyncer (not a server, runs in main process)
@@ -250,9 +244,9 @@ class Validator(ValidatorBase):
         self.hl_tracker.start()
 
         # Verify hotkey is registered
-        bt.logging.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")
+        logger.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")
         if not self.metagraph_client.has_hotkey(self.wallet.hotkey.ss58_address):
-            bt.logging.error(
+            logger.error(
                 f"\nYour validator hotkey: {self.wallet.hotkey.ss58_address} (wallet: {self.wallet.name}, hotkey: {self.wallet.hotkey_str}) "
                 f"is not registered to chain connection: {self.subtensor_ops_manager.get_subtensor()} \n"
                 f"Run btcli register and try again. "
@@ -293,14 +287,14 @@ class Validator(ValidatorBase):
             time.sleep(0.1)
             if not self.api_thread.is_alive():
                 raise RuntimeError("API thread failed to start")
-            bt.logging.info(
+            logger.info(
                 f"API services thread started - REST: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_rest_port', 48888)}, "
                 f"WebSocket: {getattr(self.config, 'api_host', '0.0.0.0')}:{getattr(self.config, 'api_ws_port', 8765)}")
         else:
             self.api_thread = None
-            bt.logging.info("API services not enabled - skipping")
+            logger.info("API services not enabled - skipping")
 
-        bt.logging.info("[INIT] All initialization steps completed successfully!")
+        logger.info("[INIT] All initialization steps completed successfully!")
 
         # Send success notification to Slack
         if self.slack_notifier:
@@ -328,7 +322,7 @@ class Validator(ValidatorBase):
             if oldest_disk_ms == float("inf"):
                 oldest_disk_ms = 0  # No positions found
             if (n_positions_on_disk > 0):
-                bt.logging.info(f"Found {n_positions_on_disk} hotkeys with positions on disk."
+                logger.info(f"Found {n_positions_on_disk} hotkeys with positions on disk."
                                 f" Found oldest_disk_ms: {TimeUtil.millis_to_datetime(oldest_disk_ms)},"
                                 f" youngest_disk_ms: {TimeUtil.millis_to_datetime(youngest_disk_ms)}")
             one_day_ago = TimeUtil.timestamp_to_millis(TimeUtil.generate_start_timestamp(days=1))
@@ -337,7 +331,7 @@ class Validator(ValidatorBase):
                        "Restoring validator with 24 hour lagged file. More info here: "
                        "https://github.com/taoshidev/proprietary-trading-network/"
                        "blob/main/docs/regenerating_validator_state.md")
-                bt.logging.warning(msg)
+                logger.warning(msg)
                 self.position_syncer.sync_positions(
                     False, candidate_data=self.position_syncer.read_validator_checkpoint_from_gcloud_zip())
 
@@ -346,7 +340,7 @@ class Validator(ValidatorBase):
         if not is_shutdown():
             return
         # Handle shutdown gracefully
-        bt.logging.warning("Performing graceful exit...")
+        logger.warning("Performing graceful exit...")
 
         # Send shutdown notification to Slack
         if self.slack_notifier:
@@ -355,11 +349,11 @@ class Validator(ValidatorBase):
                 f"Hotkey: {self.wallet.hotkey.ss58_address}",
                 level="warning"
             )
-        bt.logging.warning("Stopping axon...")
+        logger.warning("Stopping axon...")
         self.axon.stop()
         # SubtensorOpsServer and all RPC servers shut down automatically via ShutdownCoordinator:
         if self.api_thread:
-            bt.logging.warning("Stopping API manager...")
+            logger.warning("Stopping API manager...")
             self.api_thread.join()
         signal.alarm(0)
         print("Graceful shutdown completed")
@@ -367,7 +361,7 @@ class Validator(ValidatorBase):
 
     def main(self):
         # Keep the vali alive. This loop maintains the vali's operations until intentionally stopped.
-        bt.logging.info("Starting main loop")
+        logger.info("Starting main loop")
 
         # Send startup notification to Slack
         if self.slack_notifier:
@@ -389,7 +383,7 @@ class Validator(ValidatorBase):
             # In case of unforeseen errors, the validator will log the error and send notification to Slack
             except Exception as e:
                 error_traceback = traceback.format_exc()
-                bt.logging.error(error_traceback)
+                logger.error(error_traceback)
 
                 error_message = ErrorUtils.format_error_for_slack(
                     error=e,
@@ -454,12 +448,12 @@ class Validator(ValidatorBase):
         is_registered = self.subtensor_ops_manager.is_hotkey_registered_cached(miner_hotkey)
 
         if not is_registered:
-            bt.logging.trace(
+            logger.debug(
                 f"Blacklisting unrecognized hotkey {miner_hotkey}"
             )
             return True, miner_hotkey
 
-        bt.logging.trace(
+        logger.debug(
             f"Not Blacklisting recognized hotkey {miner_hotkey}"
         )
         return False, miner_hotkey
@@ -489,16 +483,16 @@ class Validator(ValidatorBase):
             synthetic_hotkey = f"{miner_hotkey}_{subaccount_id}"
             miner_hotkey = synthetic_hotkey  # Use synthetic hotkey for all downstream ops
 
-        bt.logging.info(f"received signal [{order_uuid}] [{signal_dict}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
+        logger.info(f"received signal [{order_uuid}] [{signal_dict}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
 
         if self.should_reject_synapse(miner_hotkey, synapse, SynapseMethod.SIGNAL):
-            bt.logging.info(f"Order rejected for {miner_hotkey}: {synapse.error_message}")
+            logger.info(f"Order rejected for {miner_hotkey}: {synapse.error_message}")
             return synapse
 
         if self.order_sync.is_sync_waiting():
             synapse.successfully_processed = False
             synapse.error_message = "Validator is syncing positions. Please try again shortly."
-            bt.logging.info(f"Rejected order from {miner_hotkey}: {synapse.error_message}")
+            logger.info(f"Rejected order from {miner_hotkey}: {synapse.error_message}")
             return synapse
 
         try:
@@ -517,7 +511,7 @@ class Validator(ValidatorBase):
             synapse.successfully_processed = False
             synapse.should_retry = False
             synapse.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
-            bt.logging.error(synapse.error_message)
+            logger.error(synapse.error_message)
             return synapse
 
         ok, error_msg, resolved_tp = self.order_processor.validate(
@@ -559,14 +553,14 @@ class Validator(ValidatorBase):
 
             except Exception as e:
                 error_message = str(e)
-                bt.logging.error(f"Error processing signal {miner_hotkey} {order_uuid} {e}")
+                logger.error(f"Error processing signal {miner_hotkey} {order_uuid} {e}")
 
             finally:
                 synapse.error_message = error_message
                 if error_message == "":
                     synapse.successfully_processed = True
                 else:
-                    bt.logging.error(error_message)
+                    logger.error(error_message)
                     synapse.successfully_processed = False
                     synapse.should_retry = False
 
@@ -575,7 +569,7 @@ class Validator(ValidatorBase):
                     self.entity_client.broadcast_subaccount_dashboard(miner_hotkey)
 
                 processing_time_ms = TimeUtil.now_in_millis() - now_ms
-                bt.logging.success(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
+                logger.info(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
                                    f"Process time {processing_time_ms}ms. order {order}")
 
                 # Context manager auto-decrements counter and notifies waiters on exit
@@ -599,18 +593,18 @@ class Validator(ValidatorBase):
             n_positions_sent = len(synapse.positions)
         except Exception as e:
             error_message = f"Error in GetPositions for [{miner_hotkey}] with error [{e}]. Perhaps the position was being written to disk at the same time."
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
 
         if error_message == "":
             synapse.successfully_processed = True
         else:
-            bt.logging.error(error_message)
+            logger.error(error_message)
             synapse.successfully_processed = False
         synapse.error_message = error_message
         msg = f"Sending {n_positions_sent} positions back to miner: {hotkey} in {round(time.time() - t0, 3)} seconds."
         if synapse.error_message:
             msg += f" Error: {synapse.error_message}"
-        bt.logging.info(msg)
+        logger.info(msg)
         return synapse
 
 # This is the main function, which runs the miner.

@@ -10,7 +10,6 @@ Tests end-to-end dashboard data scenarios including:
 - Challenge period, positions, ledger, and elimination data
 """
 import unittest
-from copy import deepcopy
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -555,7 +554,7 @@ class TestEntityDashboardIntegration(TestBase):
         # 9. Augmented scores (should exist)
         self.assertIn('augmented_scores', statistics_data)
 
-        print(f"✓ All statistics fields validated successfully")
+        print("✓ All statistics fields validated successfully")
         print(f"  Full statistics keys: {list(statistics_data.keys())}")
 
     def test_dashboard_data_all_services_integration(self):
@@ -637,7 +636,6 @@ class TestEntityDashboardIntegration(TestBase):
         - Statistics cache is populated
         - Elimination data (when applicable)
         """
-        import time
 
         # CRITICAL: Add synthetic hotkey to metagraph (statistics generation only processes metagraph hotkeys)
         current_hotkeys = self.metagraph_client.get_hotkeys()
@@ -706,9 +704,9 @@ class TestEntityDashboardIntegration(TestBase):
         # 4. LEDGER (Debt Ledger) - May or may not be populated
         ledger_data = dashboard['ledger']
         if ledger_data:
-            print(f"✓ Ledger data exists")
+            print("✓ Ledger data exists")
         else:
-            print(f"⚠ Ledger data is None (debt ledger may not be built for this hotkey)")
+            print("⚠ Ledger data is None (debt ledger may not be built for this hotkey)")
 
         # 5. STATISTICS - May or may not be populated
         statistics_data = dashboard['statistics']
@@ -717,23 +715,23 @@ class TestEntityDashboardIntegration(TestBase):
             self.assertEqual(statistics_data['hotkey'], self.synthetic_hotkey)
             print(f"✓ Statistics exists with fields: {list(statistics_data.keys())[:10]}...")
         else:
-            print(f"⚠ Statistics is None (miner may not be in eligible bucket for statistics)")
+            print("⚠ Statistics is None (miner may not be in eligible bucket for statistics)")
 
         # 6. ELIMINATION - Should be None (not eliminated)
         elimination_data = dashboard['elimination']
         self.assertIsNone(elimination_data, "Elimination should be None for active subaccount")
-        print(f"✓ Elimination: None (as expected)")
+        print("✓ Elimination: None (as expected)")
 
         # Print summary
         print("\n" + "="*60)
         print("DASHBOARD FIELD POPULATION SUMMARY:")
         print("="*60)
-        print(f"✓ subaccount_info: POPULATED")
-        print(f"✓ challenge_period: POPULATED")
-        print(f"✓ positions: POPULATED (20 positions)")
+        print("✓ subaccount_info: POPULATED")
+        print("✓ challenge_period: POPULATED")
+        print("✓ positions: POPULATED (20 positions)")
         print(f"{'✓' if ledger_data else '⚠'} ledger: {'POPULATED' if ledger_data else 'NULL (expected in tests)'}")
         print(f"{'✓' if statistics_data else '⚠'} statistics: {'POPULATED' if statistics_data else 'NULL (expected in tests)'}")
-        print(f"✓ elimination: NULL (expected)")
+        print("✓ elimination: NULL (expected)")
         print("="*60)
 
 

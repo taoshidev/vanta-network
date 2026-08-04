@@ -5,7 +5,9 @@ import os
 from typing import Tuple
 
 import bittensor as bt
-bt.logging.enable_info()
+import logging
+from shared_objects.log import logger
+logger.setLevel(logging.INFO)
 
 import template
 from time_util.time_util import timeme
@@ -36,7 +38,7 @@ class ValidatorBase:
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
         my_subnet_uid = self.metagraph_client.get_hotkeys().index(self.wallet.hotkey.ss58_address)
-        bt.logging.info(f"Running validator on uid: {my_subnet_uid}")
+        logger.info(f"Running validator on uid: {my_subnet_uid}")
 
     def _receive_signal_sync(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
         """
@@ -76,12 +78,12 @@ class ValidatorBase:
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
         miner_hotkey = synapse.dendrite.hotkey
         if not metagraph.has_hotkey(miner_hotkey):
-            bt.logging.trace(
+            logger.debug(
                 f"Blacklisting unrecognized hotkey {synapse.dendrite.hotkey}"
             )
             return True, synapse.dendrite.hotkey
 
-        bt.logging.trace(
+        logger.debug(
             f"Not Blacklisting recognized hotkey {synapse.dendrite.hotkey}"
         )
         return False, synapse.dendrite.hotkey
@@ -114,8 +116,13 @@ class ValidatorBase:
 
         # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
         bt.Subtensor.add_args(parser)
-        # Adds logging specific arguments i.e. --logging.debug ..., --logging.trace .. or --logging.logging_dir ...
-        bt.logging.add_args(parser)
+        # Logging arguments (--logging.debug, --logging.trace, --logging.logging_dir)
+        parser.add_argument("--logging.debug", action="store_true", default=False,
+                            help="Turn on debugging information")
+        parser.add_argument("--logging.trace", action="store_true", default=False,
+                            help="Turn on trace level information")
+        parser.add_argument("--logging.logging_dir", type=str, default=os.path.expanduser("~/.bittensor/miners"),
+                            help="Logging default root directory.")
         # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
         bt.Wallet.add_args(parser)
 
@@ -138,9 +145,9 @@ class ValidatorBase:
         # To print help message, run python3 template/miner.py --help
         config = bt.Config(parser)
         if config.logging.debug:
-            bt.logging.enable_debug()
+            logger.setLevel(logging.DEBUG)
         if config.logging.trace:
-            bt.logging.enable_trace()
+            logger.setLevel(logging.DEBUG)
 
         # Step 3: Set up logging directory
         # Logging captures events for diagnosis or understanding miner's behavior.
@@ -156,15 +163,15 @@ class ValidatorBase:
         return config
 
     def wire_axon(self):
-        bt.logging.info(f"setting port [{self.config.axon.port}]")
-        bt.logging.info(f"setting external port [{self.config.axon.external_port}]")
+        logger.info(f"setting port [{self.config.axon.port}]")
+        logger.info(f"setting external port [{self.config.axon.external_port}]")
         self.axon = bt.Axon(
             wallet=self.wallet, port=self.config.axon.port, external_port=self.config.axon.external_port
         )
-        bt.logging.info(f"Axon {self.axon}")
+        logger.info(f"Axon {self.axon}")
 
         # Attach determines which functions are called when servicing a request.
-        bt.logging.info("Attaching forward function to axon.")
+        logger.info("Attaching forward function to axon.")
 
         def rs_blacklist_fn(synapse: template.protocol.SendSignal) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_client)
@@ -211,7 +218,7 @@ class ValidatorBase:
 
         # Serve passes the axon information to the network + netuid we are hosting on.
         # This will auto-update if the axon port of external ip have changed.
-        bt.logging.info(
+        logger.info(
             f"Serving attached axons on network:"
             f" {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
         )
@@ -220,5 +227,5 @@ class ValidatorBase:
             self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
 
         # Starts the miner's axon, making it active on the network.
-        bt.logging.info(f"Starting axon server on port: {self.config.axon.port}")
+        logger.info(f"Starting axon server on port: {self.config.axon.port}")
         self.axon.start()

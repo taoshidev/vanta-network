@@ -9,6 +9,8 @@ Usage:
 
 import bittensor as bt
 import sys
+import logging
+from shared_objects.log import logger
 
 def check_validator_weights(
     validator_hotkey: str,
@@ -214,7 +216,7 @@ Examples:
 
     args = parser.parse_args()
 
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
 
     # Determine which hotkeys to check
     if args.hotkeys:

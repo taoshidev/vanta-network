@@ -3,7 +3,7 @@ import traceback
 
 import requests
 
-from typing import List, Optional
+from typing import List
 
 from vali_objects.vali_dataclasses.order import Order
 from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
@@ -16,11 +16,11 @@ from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSour
 import time
 
 from vali_objects.utils.vali_utils import ValiUtils
-import bittensor as bt
 from polygon import RESTClient
 
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
+from shared_objects.log import logger
 
 DEBUG = 0
 
@@ -117,7 +117,7 @@ class ExchangeMappingHelper:
             if exchange_name in live_mapping:
                 live_id = live_mapping[exchange_name]
                 if live_id != fallback_id:
-                    bt.logging.error(
+                    logger.error(
                         f"[ExchangeMappingHelper] {asset_class.upper()} mapping divergence detected! "
                         f"Exchange '{exchange_name}': fallback ID={fallback_id}, live API ID={live_id}. "
                         f"Please update the fallback mapping in polygon_data_service.py"
@@ -126,7 +126,7 @@ class ExchangeMappingHelper:
         # Check for exchanges in fallback that are missing from live mapping
         missing_in_live = set(fallback_mapping.keys()) - set(live_mapping.keys())
         if missing_in_live:
-            bt.logging.warning(
+            logger.warning(
                 f"[ExchangeMappingHelper] {asset_class.upper()} exchanges in fallback but missing from live API: "
                 f"{sorted(missing_in_live)}. These exchanges may have been deprecated by Polygon."
             )
@@ -134,7 +134,7 @@ class ExchangeMappingHelper:
         # Check for new exchanges in live mapping not in fallback (informational)
         new_in_live = set(live_mapping.keys()) - set(fallback_mapping.keys())
         if new_in_live:
-            bt.logging.info(
+            logger.info(
                 f"[ExchangeMappingHelper] New {asset_class} exchanges available in Polygon API (not in fallback): "
                 f"{sorted(new_in_live)}"
             )
@@ -161,7 +161,7 @@ class ExchangeMappingHelper:
                     entry['name'].lower(): entry['id']
                     for entry in data['results']
                 }
-                bt.logging.info("Successfully created crypto mapping from API.")
+                logger.info("Successfully created crypto mapping from API.")
                 # Validate live mapping against fallback to detect divergences
                 self._validate_mapping_against_fallback(
                     self.crypto_mapping,
@@ -169,11 +169,11 @@ class ExchangeMappingHelper:
                     "crypto"
                 )
             else:
-                bt.logging.warning("Unexpected response structure. Using fallback mapping.")
+                logger.warning("Unexpected response structure. Using fallback mapping.")
                 self.crypto_mapping = self.crypto_fallback_mapping
 
         except Exception as e:
-            bt.logging.error(f"Crypto mapping API request failed: {e}. Using fallback mapping.")
+            logger.error(f"Crypto mapping API request failed: {e}. Using fallback mapping.")
             self.crypto_mapping = self.crypto_fallback_mapping
 
     def create_stock_mapping(self):
@@ -198,7 +198,7 @@ class ExchangeMappingHelper:
                     entry['name'].lower(): entry['id']
                     for entry in data['results']
                 }
-                bt.logging.info("Successfully created stock mapping from API.")
+                logger.info("Successfully created stock mapping from API.")
                 # Validate live mapping against fallback to detect divergences
                 self._validate_mapping_against_fallback(
                     self.stock_mapping,
@@ -206,11 +206,11 @@ class ExchangeMappingHelper:
                     "stocks"
                 )
             else:
-                bt.logging.warning("Unexpected response structure. Using fallback mapping.")
+                logger.warning("Unexpected response structure. Using fallback mapping.")
                 self.stock_mapping = self.stock_fallback_mapping
 
         except Exception as e:
-            bt.logging.error(f"Stock mapping API request failed: {e}. Using fallback mapping.")
+            logger.error(f"Stock mapping API request failed: {e}. Using fallback mapping.")
             self.stock_mapping = self.stock_fallback_mapping
 
 
@@ -289,7 +289,6 @@ class PolygonDataService(BaseDataService):
         # This ensures test price sources are visible to daemon code paths like check_and_fill_limit_orders()
         # IMPORTANT: Preserve the original timestamp so mdd_check() can find the price source
         # when querying for the exact order timestamp
-        from time_util.time_util import TimeUtil
         updated_price_source = PriceSource(
             source=price_source.source,
             timespan_ms=price_source.timespan_ms,
@@ -450,7 +449,7 @@ class PolygonDataService(BaseDataService):
             if stats:
                 stats['n_skipped'] += 1
                 if stats['n'] % 10 == 0:
-                    bt.logging.warning(f"Ignoring unusual Forex price data bid: {m.bid_price:.4f}, ask: {m.ask_price:.4f}, "
+                    logger.warning(f"Ignoring unusual Forex price data bid: {m.bid_price:.4f}, ask: {m.ask_price:.4f}, "
                                    f"{delta:.4f} time {TimeUtil.millis_to_formatted_date_str(t_ms // 1000000)}")
             return None, None, None
         #elif stats:
@@ -564,7 +563,7 @@ class PolygonDataService(BaseDataService):
         try:
             m = None
             for m in msgs:
-                #bt.logging.info(f"Received price event: {m}")
+                #logger.info(f"Received price event: {m}")
                 # print('received message:', m, type(m))
                 if isinstance(m, EquityAgg):
                     tp = self.symbol_to_trade_pair(m.symbol[2:])  # I:SPX -> SPX
@@ -604,13 +603,13 @@ class PolygonDataService(BaseDataService):
             if DEBUG:
                 print('last message:', m, 'n msgs total:', len(msgs))
                 history_size = sum(len(v) for v in self.trade_pair_to_price_history.values())
-                bt.logging.info("History Size: " + str(history_size))
-                bt.logging.info(f"n_events_global: {sum(self.tpc_to_n_events.values())} breakdown {self.tpc_to_n_events}")
+                logger.info("History Size: " + str(history_size))
+                logger.info(f"n_events_global: {sum(self.tpc_to_n_events.values())} breakdown {self.tpc_to_n_events}")
         except Exception as e:
             full_traceback = traceback.format_exc()
             # Slice the last 1000 characters of the traceback
             limited_traceback = full_traceback[-1000:]
-            bt.logging.error(f"Failed to handle POLY websocket message with error: {e}, last message {m} "
+            logger.error(f"Failed to handle POLY websocket message with error: {e}, last message {m} "
                              f"type: {type(e).__name__}, traceback: {limited_traceback}")
 
     def instantiate_not_pickleable_objects(self):
@@ -644,7 +643,7 @@ class PolygonDataService(BaseDataService):
                 continue
             else:
                 raise ValueError(f"Unknown trade pair category: {tp.trade_pair_category}")
-        bt.logging.info(f"{self.provider_name} subscribed to {len(subbed)} symbols in {tpc} category: {subbed}")
+        logger.info(f"{self.provider_name} subscribed to {len(subbed)} symbols in {tpc} category: {subbed}")
 
     def symbol_to_trade_pair(self, symbol: str):
         # Should work for indices and forex
@@ -702,8 +701,8 @@ class PolygonDataService(BaseDataService):
                     if result is not None:
                         all_trade_pair_closes[tp] = result
                 except Exception as exc:
-                    bt.logging.error(f"{tp} generated an exception: {exc}. Continuing...")
-                    bt.logging.error(traceback.format_exc())
+                    logger.error(f"{tp} generated an exception: {exc}. Continuing...")
+                    logger.error(traceback.format_exc())
 
         return all_trade_pair_closes
 
@@ -733,7 +732,7 @@ class PolygonDataService(BaseDataService):
             prev_timestamp = epoch_miliseconds
 
         if not final_agg:
-            bt.logging.warning(f"Polygon failed to fetch REST data for {trade_pair.trade_pair} at time "
+            logger.warning(f"Polygon failed to fetch REST data for {trade_pair.trade_pair} at time "
                                f"{TimeUtil.millis_to_formatted_date_str(timestamp_ms)}. "
                                f"If you keep seeing this warning, report it to the team ASAP")
 
@@ -773,7 +772,7 @@ class PolygonDataService(BaseDataService):
         if tpc == TradePairCategory.EQUITIES:
             feed = self.stocks_feed
         client = WebSocketClient(market=market, api_key=self._api_key, feed=feed)
-        bt.logging.info(f"Created {self.provider_name} websocket for {tpc}. feed {feed.name}")
+        logger.info(f"Created {self.provider_name} websocket for {tpc}. feed {feed.name}")
         self.WEBSOCKET_OBJECTS[tpc] = client
 
 
@@ -829,7 +828,7 @@ class PolygonDataService(BaseDataService):
         lag_s = time.time() - timestamp_ms / 1000.0
         is_stale = lag_s > max_allowed_lag_s
         if is_stale:
-            bt.logging.info(f"Found stale TD websocket data for {trade_pair.trade_pair}. Lag_s: {lag_s} "
+            logger.info(f"Found stale TD websocket data for {trade_pair.trade_pair}. Lag_s: {lag_s} "
                             f"seconds. Max allowed lag for category: {max_allowed_lag_s} seconds. Ignoring this data.")
         return cur_event
 
@@ -1200,7 +1199,7 @@ class PolygonDataService(BaseDataService):
             prev_timestamp = epoch_miliseconds
 
         if not aggs:
-            bt.logging.trace(f"{POLYGON_PROVIDER_NAME} failed to fetch candle data for {trade_pair.trade_pair}. "
+            logger.debug(f"{POLYGON_PROVIDER_NAME} failed to fetch candle data for {trade_pair.trade_pair}. "
                              f" Perhaps this trade pair was closed during the specified window.")
 
         return aggs
@@ -1297,12 +1296,12 @@ class PolygonDataService(BaseDataService):
                     if split_from and split_to and split_from != 0:
                         result[ticker] = split_to / split_from
                     else:
-                        bt.logging.warning(f"Found stock split for {ticker} on {execution_date_str}, but could not resolve stock split ratio")
+                        logger.warning(f"Found stock split for {ticker} on {execution_date_str}, but could not resolve stock split ratio")
 
             return result
 
         except Exception as e:
-            bt.logging.error(f"Failed to fetch stock split data from massive.com: {e}")
+            logger.error(f"Failed to fetch stock split data from massive.com: {e}")
             return {}
 
 if __name__ == "__main__":

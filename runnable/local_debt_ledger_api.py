@@ -11,7 +11,7 @@ import argparse
 import json
 import sys
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, Any
 import urllib.request
 import urllib.error
 
@@ -43,7 +43,7 @@ class DebtLedgerTester:
             with urllib.request.urlopen(req, timeout=30) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode('utf-8'))
-                    print(f"✓ Successfully fetched debt ledger data")
+                    print("✓ Successfully fetched debt ledger data")
                     return data
                 else:
                     print(f"✗ HTTP Error: {response.status}")
@@ -137,8 +137,8 @@ class DebtLedgerTester:
         print(f"Total checkpoints: {len(checkpoints)}")
 
         if summary:
-            print(f"\n--- Overall Summary ---")
-            print(f"Cumulative Emissions:")
+            print("\n--- Overall Summary ---")
+            print("Cumulative Emissions:")
             print(f"  Alpha: {summary.get('cumulative_emissions_alpha', 0):.2f}")
             print(f"  TAO: {summary.get('cumulative_emissions_tao', 0):.4f}")
             print(f"  USD: ${summary.get('cumulative_emissions_usd', 0):,.2f}")
@@ -178,7 +178,7 @@ class DebtLedgerTester:
         difference_pct = (difference / cumulative_alpha_emissions * 100) if cumulative_alpha_emissions != 0 else 0
 
         # ALPHA Balance Validation
-        print(f"\n--- ALPHA Balance Validation ---")
+        print("\n--- ALPHA Balance Validation ---")
         print(f"Initial ALPHA Balance: {initial_alpha_balance:.6f}")
         print(f"Final ALPHA Balance: {final_alpha_balance:.6f}")
         print(f"Balance Delta: {balance_delta:.6f}")
@@ -193,7 +193,7 @@ class DebtLedgerTester:
 
         # Latest values
         latest_cp = checkpoints[-1]
-        print(f"\n--- Latest Checkpoint ---")
+        print("\n--- Latest Checkpoint ---")
         # Use timestamp_utc if available, otherwise convert timestamp_ms to UTC
         if 'timestamp_utc' in latest_cp:
             timestamp_str = latest_cp['timestamp_utc']
@@ -208,19 +208,19 @@ class DebtLedgerTester:
         print(f"Weighted Score: {latest_cp['derived']['weighted_score']:.6f}")
 
         # Statistics over all checkpoints
-        print(f"\n--- Statistics Over All Checkpoints ---")
-        print(f"Emissions per Checkpoint (TAO):")
+        print("\n--- Statistics Over All Checkpoints ---")
+        print("Emissions per Checkpoint (TAO):")
         print(f"  Min:  {df['chunk_tao'].min():.4f}")
         print(f"  Max:  {df['chunk_tao'].max():.4f}")
         print(f"  Mean: {df['chunk_tao'].mean():.4f}")
         print(f"  Total: {df['chunk_tao'].sum():.4f}")
 
-        print(f"\nPortfolio Return:")
+        print("\nPortfolio Return:")
         print(f"  Min:  {df['portfolio_return'].min():.6f} ({df['portfolio_return'].min()*100:.4f}%)")
         print(f"  Max:  {df['portfolio_return'].max():.6f} ({df['portfolio_return'].max()*100:.4f}%)")
         print(f"  Mean: {df['portfolio_return'].mean():.6f} ({df['portfolio_return'].mean()*100:.4f}%)")
 
-        print(f"\nWeighted Score:")
+        print("\nWeighted Score:")
         print(f"  Min:  {df['weighted_score'].min():.6f}")
         print(f"  Max:  {df['weighted_score'].max():.6f}")
         print(f"  Mean: {df['weighted_score'].mean():.6f}")

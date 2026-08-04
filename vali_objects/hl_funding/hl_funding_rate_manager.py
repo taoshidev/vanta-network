@@ -10,10 +10,10 @@ import threading
 from bisect import bisect_left, bisect_right
 from typing import Dict, List, Optional
 
-import bittensor as bt
 import requests
 
 from vali_objects.vali_config import ValiConfig
+from shared_objects.log import logger
 
 
 class HLFundingRateManager:
@@ -42,9 +42,9 @@ class HLFundingRateManager:
                 # Ensure sorted
                 for coin, rates in data.items():
                     self._rates[coin] = sorted(rates, key=lambda r: r["time_ms"])
-                bt.logging.info(f"[HL_FUNDING] Loaded {sum(len(v) for v in self._rates.values())} funding rate records from disk")
+                logger.info(f"[HL_FUNDING] Loaded {sum(len(v) for v in self._rates.values())} funding rate records from disk")
         except Exception as e:
-            bt.logging.warning(f"[HL_FUNDING] Failed to load from disk: {e}")
+            logger.warning(f"[HL_FUNDING] Failed to load from disk: {e}")
 
     def _save_to_disk(self):
         """Persist funding rates to disk."""
@@ -55,7 +55,7 @@ class HLFundingRateManager:
             with open(self.PERSISTENCE_PATH, "w") as f:
                 json.dump(self._rates, f)
         except Exception as e:
-            bt.logging.warning(f"[HL_FUNDING] Failed to save to disk: {e}")
+            logger.warning(f"[HL_FUNDING] Failed to save to disk: {e}")
 
     def fetch_and_store_rates(self, coins: List[str], start_ms: int, end_ms: int):
         """
@@ -93,7 +93,7 @@ class HLFundingRateManager:
                         self._rates[coin] = sorted(existing, key=lambda r: r["time_ms"])
 
             except Exception as e:
-                bt.logging.warning(f"[HL_FUNDING] Failed to fetch rates for {coin}: {e}")
+                logger.warning(f"[HL_FUNDING] Failed to fetch rates for {coin}: {e}")
 
         self._save_to_disk()
 

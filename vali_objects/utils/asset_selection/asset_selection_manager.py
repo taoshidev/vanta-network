@@ -13,14 +13,14 @@ Asset selections are persisted to disk and loaded on startup.
 import threading
 from typing import Dict
 
-import bittensor as bt
 
 import template.protocol
-from vali_objects.vali_config import TradePairSource, RPCConnectionMode
+from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
+from shared_objects.log import logger
 
 
 class AssetSelectionManager(ValidatorBroadcastBase):
@@ -60,7 +60,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         # This prevents wallet creation blocking in ValidatorBroadcastBase
         is_testnet = (config.netuid in (116, 171)) if (config and hasattr(config, 'netuid')) else False
         self.is_testnet = is_testnet
-        bt.logging.info("[ASSET_MGR] Wallet initialized")
+        logger.info("[ASSET_MGR] Wallet initialized")
 
         # Create MinerAccountClient to update cash balances when asset selection changes
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
@@ -86,7 +86,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             connection_mode=connection_mode
         )
 
-        bt.logging.info(f"[ASSET_MGR] AssetSelectionManager initialized with {len(self.asset_selections)} selections")
+        logger.info(f"[ASSET_MGR] AssetSelectionManager initialized with {len(self.asset_selections)} selections")
 
     @property
     def asset_selection_lock(self):
@@ -106,9 +106,9 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 self.asset_selections.clear()
                 self.asset_selections.update(parsed_selections)
 
-            bt.logging.info(f"[ASSET_MGR] Loaded {len(parsed_selections)} asset selections from disk")
+            logger.info(f"[ASSET_MGR] Loaded {len(parsed_selections)} asset selections from disk")
         except Exception as e:
-            bt.logging.error(f"[ASSET_MGR] Error loading asset selections from disk: {e}")
+            logger.error(f"[ASSET_MGR] Error loading asset selections from disk: {e}")
 
     def _save_asset_selections_to_disk(self) -> None:
         """
@@ -120,9 +120,9 @@ class AssetSelectionManager(ValidatorBroadcastBase):
         try:
             selections_data = self._to_dict()
             ValiBkpUtils.write_file(self.ASSET_SELECTIONS_FILE, selections_data)
-            bt.logging.debug(f"[ASSET_MGR] Saved {len(selections_data)} asset selections to disk")
+            logger.debug(f"[ASSET_MGR] Saved {len(selections_data)} asset selections to disk")
         except Exception as e:
-            bt.logging.error(f"[ASSET_MGR] Error saving asset selections to disk: {e}")
+            logger.error(f"[ASSET_MGR] Error saving asset selections to disk: {e}")
 
     def _to_dict(self) -> Dict:
         """
@@ -148,7 +148,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                     asset_class = MinerAssetClass(asset_class_str)
                     parsed_selections[hotkey] = asset_class
             except ValueError as e:
-                bt.logging.warning(f"[ASSET_MGR] Invalid asset selection for miner {hotkey}: {e}")
+                logger.warning(f"[ASSET_MGR] Invalid asset selection for miner {hotkey}: {e}")
                 continue
 
         return parsed_selections
@@ -213,7 +213,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 for hotkey, asset_class in selections_copy.items()
             }
         except Exception as e:
-            bt.logging.error(f"[ASSET_MGR] Error getting all miner selections: {e}")
+            logger.error(f"[ASSET_MGR] Error getting all miner selections: {e}")
             return {}
 
     # ==================== Mutation Methods ====================
@@ -266,7 +266,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 success_message = f'Miner {miner} successfully updated asset class from {current_value} to {asset_selection}'
             else:
                 success_message = f'Miner {miner} successfully selected asset class: {asset_selection}'
-            bt.logging.info(f"[ASSET_MGR] {success_message}")
+            logger.info(f"[ASSET_MGR] {success_message}")
 
             # Recalculate miner's cash balance based on the new asset selection multiplier
             self._recalculate_miner_cash_balance(miner, asset_class)
@@ -278,7 +278,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             }
 
         except Exception as e:
-            bt.logging.error(f"[ASSET_MGR] Error processing asset selection request for miner {miner}: {e}")
+            logger.error(f"[ASSET_MGR] Error processing asset selection request for miner {miner}: {e}")
             return {
                 'successfully_processed': False,
                 'error_message': 'Internal server error processing asset selection request'
@@ -315,7 +315,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 # Save to disk (MUST happen inside lock)
                 self._save_asset_selections_to_disk()
 
-            bt.logging.info(f"[ASSET_MGR] Deleted asset selection for miner {hotkey}")
+            logger.info(f"[ASSET_MGR] Deleted asset selection for miner {hotkey}")
 
             return {
                 'successfully_processed': True,
@@ -323,7 +323,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             }
 
         except Exception as e:
-            bt.logging.error(f"[ASSET_MGR] Error deleting asset selection for miner {hotkey}: {e}")
+            logger.error(f"[ASSET_MGR] Error deleting asset selection for miner {hotkey}: {e}")
             return {
                 'successfully_processed': False,
                 'error_message': 'Internal server error deleting asset selection'
@@ -337,7 +337,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             asset_selection_data: Dict mapping hotkey to asset class string
         """
         if not asset_selection_data:
-            bt.logging.warning("[ASSET_MGR] asset_selection_data appears empty or invalid")
+            logger.warning("[ASSET_MGR] asset_selection_data appears empty or invalid")
             return
         try:
             # Parse outside lock (can take time, doesn't need lock)
@@ -356,9 +356,9 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
                 self._save_asset_selections_to_disk()
 
-            bt.logging.info(f"[ASSET_MGR] Synced {len(synced_data)} miner asset selection records")
+            logger.info(f"[ASSET_MGR] Synced {len(synced_data)} miner asset selection records")
         except Exception as e:
-            bt.logging.error(f"[ASSET_MGR] Failed to sync miner asset selection data: {e}")
+            logger.error(f"[ASSET_MGR] Failed to sync miner asset selection data: {e}")
 
     def receive_asset_selection_update(self, asset_selection_data: dict, sender_hotkey: str = None) -> bool:
         """
@@ -380,10 +380,10 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 # Extract data from the synapse
                 hotkey = asset_selection_data.get("hotkey")
                 asset_selection = asset_selection_data.get("asset_selection")
-                bt.logging.info(f"[ASSET_MGR] Processing asset selection for miner {hotkey}")
+                logger.info(f"[ASSET_MGR] Processing asset selection for miner {hotkey}")
 
                 if not all([hotkey, asset_selection is not None]):
-                    bt.logging.warning(f"[ASSET_MGR] Invalid asset selection data received: {asset_selection_data}")
+                    logger.warning(f"[ASSET_MGR] Invalid asset selection data received: {asset_selection_data}")
                     return False
 
                 # Parse the asset selection string to MinerAssetClass
@@ -394,7 +394,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                         # Already a MinerAssetClass
                         asset_class = asset_selection
                 except ValueError as e:
-                    bt.logging.warning(f"[ASSET_MGR] Invalid asset class value: {asset_selection}: {e}")
+                    logger.warning(f"[ASSET_MGR] Invalid asset class value: {asset_selection}: {e}")
                     return False
 
                 # Skip only true duplicate broadcasts (same value already stored).
@@ -402,7 +402,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 # update) that must be applied so all validators stay consistent.
                 current_selection = self.asset_selections.get(hotkey)
                 if current_selection == asset_class:
-                    bt.logging.debug(f"[ASSET_MGR] Asset selection for {hotkey} already up to date")
+                    logger.debug(f"[ASSET_MGR] Asset selection for {hotkey} already up to date")
                     return True
 
                 # Add or update the record
@@ -412,7 +412,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 self._save_asset_selections_to_disk()
 
             current_value = current_selection.value if current_selection else None
-            bt.logging.info(
+            logger.info(
                 f"[ASSET_MGR] Updated miner asset selection for {hotkey}: {current_value} -> {asset_class.value}"
             )
 
@@ -422,9 +422,9 @@ class AssetSelectionManager(ValidatorBroadcastBase):
             return True
 
         except Exception as e:
-            bt.logging.error(f"[ASSET_MGR] Error processing asset selection update: {e}")
+            logger.error(f"[ASSET_MGR] Error processing asset selection update: {e}")
             import traceback
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return False
 
     def _recalculate_miner_cash_balance(self, hotkey: str, asset_selection: MinerAssetClass) -> None:
@@ -443,10 +443,10 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 hotkey, asset_selection
             )
             if success:
-                bt.logging.info(
+                logger.info(
                     f"[ASSET_MGR] Recalculated cash balance for {hotkey} after selecting {asset_selection.value}"
                 )
         except Exception as e:
-            bt.logging.warning(
+            logger.warning(
                 f"[ASSET_MGR] Failed to recalculate cash balance for {hotkey}: {e}"
             )

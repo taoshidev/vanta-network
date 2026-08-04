@@ -4,7 +4,6 @@ import os
 import traceback
 from pickle import UnpicklingError
 
-import bittensor as bt
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
@@ -16,15 +15,12 @@ from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMiss
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
-from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_source_enum import OrderSource
-from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.vali_records_misalignment_exception import ValiRecordsMisalignmentException
 from vali_objects.position_management.position_utils.position_splitter import PositionSplitter
 from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.position_management.position_utils.positions_to_snap import positions_to_snap
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
@@ -34,6 +30,7 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import is_synthetic_hotkey
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
+from shared_objects.log import logger
 
 TARGET_MS = 1782417600000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
@@ -199,7 +196,7 @@ class PositionManager:
                 if existing_open.position_uuid in self.hotkey_to_positions.get(hotkey, {}):
                     del self.hotkey_to_positions[hotkey][existing_open.position_uuid]
                 self._remove_from_open_index(existing_open)
-                bt.logging.info(
+                logger.info(
                     f"Deleted existing open position {existing_open.position_uuid} from memory for {hotkey}/{trade_pair_id}")
 
 
@@ -228,7 +225,7 @@ class PositionManager:
                     if existing_open.position_uuid in self.hotkey_to_positions.get(hotkey, {}):
                         del self.hotkey_to_positions[hotkey][existing_open.position_uuid]
                     self._remove_from_open_index(existing_open)
-                    bt.logging.info(f"Deleted existing open position {existing_open.position_uuid} from memory for {hotkey}/{trade_pair_id}")
+                    logger.info(f"Deleted existing open position {existing_open.position_uuid} from memory for {hotkey}/{trade_pair_id}")
 
         if hotkey not in self.hotkey_to_positions:
             self.hotkey_to_positions[hotkey] = {}
@@ -250,7 +247,7 @@ class PositionManager:
         else:
             self._add_to_open_index(position)
 
-        bt.logging.trace(f"Saved position {position_uuid} for {hotkey}")
+        logger.debug(f"Saved position {position_uuid} for {hotkey}")
 
     def delete_open_position_if_exists(self, position: Position) -> None:
         # See if we need to delete the open position file
@@ -297,7 +294,7 @@ class PositionManager:
             file_string = ValiBkpUtils.get_file(file)
             ans = Position.model_validate_json(file_string)
             if not ans.orders:
-                bt.logging.warning(f"Anomalous position has no orders: {ans.to_dict()}")
+                logger.warning(f"Anomalous position has no orders: {ans.to_dict()}")
             return ans
         except FileNotFoundError:
             raise ValiFileMissingException(f"Vali position file is missing {file}")
@@ -395,7 +392,7 @@ class PositionManager:
         self.hotkey_to_positions.clear()
         self.hotkey_to_open_positions.clear()
         self.split_stats.clear()
-        bt.logging.info("Cleared all positions, open index, and split statistics")
+        logger.info("Cleared all positions, open index, and split statistics")
 
     def clear_all_miner_positions_and_disk(self, hotkey=None):
         if not self.running_unit_tests:
@@ -406,7 +403,7 @@ class PositionManager:
             self.clear_all_miner_positions()
             # Clear disk directories
             ValiBkpUtils.clear_all_miner_directories(running_unit_tests=self.running_unit_tests)
-            bt.logging.info("Cleared all positions from memory and disk")
+            logger.info("Cleared all positions from memory and disk")
         else:
             if hotkey in self.hotkey_to_positions:
                 del self.hotkey_to_positions[hotkey]
@@ -431,19 +428,19 @@ class PositionManager:
         else:
             target_positions = positions or []
 
-        bt.logging.info(f"[POSITION ARCHIVE] Archiving {len(target_positions)} positions for {hotkey}")
+        logger.info(f"[POSITION ARCHIVE] Archiving {len(target_positions)} positions for {hotkey}")
 
         n_archived = 0
         for position in target_positions:
             if ValiBkpUtils.archive_position(hotkey, position, running_unit_tests=self.running_unit_tests):
                 n_archived += 1
-                bt.logging.info(f"[POSITION ARCHIVE] {position.position_uuid} archived successfully")
+                logger.info(f"[POSITION ARCHIVE] {position.position_uuid} archived successfully")
                 self.hotkey_to_archived_positions.setdefault(hotkey, {})[position.position_uuid] = position
                 self.delete_position(hotkey, position.position_uuid)
             else:
-                bt.logging.error(f"[POSITION ARCHIVE] {position.position_uuid} already archived or could not archive")
+                logger.error(f"[POSITION ARCHIVE] {position.position_uuid} already archived or could not archive")
 
-        bt.logging.info(f"[POSITION ARCHIVE] Archive complete")
+        logger.info("[POSITION ARCHIVE] Archive complete")
         return n_archived
 
     def delete_archived_positions_for_hotkey(self, hotkey: str) -> int:
@@ -464,12 +461,12 @@ class PositionManager:
                 if os.path.isfile(fpath):
                     try:
                         os.remove(fpath)
-                        bt.logging.info(f"Deleted archived position from disk: {fpath}")
+                        logger.info(f"Deleted archived position from disk: {fpath}")
                         n_deleted += 1
                     except Exception as e:
-                        bt.logging.error(f"Failed to delete archived position file {fpath}: {e}")
+                        logger.error(f"Failed to delete archived position file {fpath}: {e}")
 
-        bt.logging.info(f"Deleted {n_deleted} archived positions for {hotkey}")
+        logger.info(f"Deleted {n_deleted} archived positions for {hotkey}")
         return n_deleted
 
     def delete_position(self, hotkey: str, position_uuid: str):
@@ -490,7 +487,7 @@ class PositionManager:
             del positions_dict[position_uuid]
             if not self.is_backtesting:
                 self._delete_position_from_disk(position)
-            bt.logging.info(f"Deleted position {position_uuid} for {hotkey}")
+            logger.info(f"Deleted position {position_uuid} for {hotkey}")
             return True
 
         return False
@@ -728,25 +725,25 @@ class PositionManager:
                     self.save_miner_position(position, delete_open_position_if_exists=True, validate=False)
                     n_positions_closed += 1
                     affected_hotkeys.add(hotkey)
-                    bt.logging.info(
+                    logger.info(
                         f"Force-closed deprecated trade pair position {position.position_uuid} "
                         f"for {hotkey} ({position.trade_pair.trade_pair_id})"
                     )
                 except Exception as e:
-                    bt.logging.error(
+                    logger.error(
                         f"Failed to force-close position {position.position_uuid} for {hotkey}: {e}"
                     )
-                    bt.logging.error(traceback.format_exc())
+                    logger.error(traceback.format_exc())
 
         if affected_hotkeys and self._miner_account_client:
             for hotkey in affected_hotkeys:
                 try:
                     current_positions = self.get_positions_for_one_hotkey(hotkey)
                     self._miner_account_client.rebuild_account_state_from_positions(hotkey, current_positions)
-                    bt.logging.info(f"Rebuilt account state for {hotkey} after deprecated trade pair force-close")
+                    logger.info(f"Rebuilt account state for {hotkey} after deprecated trade pair force-close")
                 except Exception as e:
-                    bt.logging.error(f"Failed to rebuild account state for {hotkey}: {e}")
-                    bt.logging.error(traceback.format_exc())
+                    logger.error(f"Failed to rebuild account state for {hotkey}: {e}")
+                    logger.error(traceback.format_exc())
 
         return n_positions_closed
 
@@ -770,24 +767,24 @@ class PositionManager:
         # Get all positions for this hotkey
         open_positions = self.get_positions_for_one_hotkey(hotkey, only_open_positions=True, sort_positions=True)
         if not open_positions:
-            bt.logging.info(f"No open positions to close for {hotkey}")
+            logger.info(f"No open positions to close for {hotkey}")
             return 0
 
-        bt.logging.info(f"Closing {len(open_positions)} positions for {hotkey} with order source {order_source.name}")
+        logger.info(f"Closing {len(open_positions)} positions for {hotkey} with order source {order_source.name}")
 
         closed_count = 0
         for position in open_positions:
             try:
                 position.force_close_position(order_src=order_source, close_ms=close_time_ms)
                 self.save_miner_position(position)
-                bt.logging.info(f"Closed open {position.trade_pair.trade_pair_id} position {position.position_uuid} for {hotkey}")
+                logger.info(f"Closed open {position.trade_pair.trade_pair_id} position {position.position_uuid} for {hotkey}")
                 closed_count += 1
 
             except Exception as e:
-                bt.logging.error(f"Failed to close position {position.position_uuid} for {hotkey}: {e}")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"Failed to close position {position.position_uuid} for {hotkey}: {e}")
+                logger.error(traceback.format_exc())
 
-        bt.logging.info(f"Closed {closed_count}/{len(open_positions)} positions for {hotkey}")
+        logger.info(f"Closed {closed_count}/{len(open_positions)} positions for {hotkey}")
         return closed_count
 
     # ==================== Pre-run Setup Methods ====================
@@ -809,16 +806,16 @@ class PositionManager:
             try:
                 miners_to_wipe_perf_ledger = self._apply_order_corrections()
             except Exception as e:
-                bt.logging.error(f"Error applying order corrections: {e}")
+                logger.error(f"Error applying order corrections: {e}")
                 traceback.print_exc()
 
         # Wipe perf ledgers internally using PerfLedgerClient
         if miners_to_wipe_perf_ledger and self._perf_ledger_client:
             try:
                 self._perf_ledger_client.wipe_miners_perf_ledgers(miners_to_wipe_perf_ledger)
-                bt.logging.info(f"Wiped perf ledgers for {len(miners_to_wipe_perf_ledger)} miners")
+                logger.info(f"Wiped perf ledgers for {len(miners_to_wipe_perf_ledger)} miners")
             except Exception as e:
-                bt.logging.error(f"Error wiping perf ledgers: {e}")
+                logger.error(f"Error wiping perf ledgers: {e}")
                 traceback.print_exc()
 
         suspended_trade_pairs = [TradePair.XAUUSD, TradePair.XAGUSD, TradePair.BRENTOILUSDC, TradePair.PAXGUSDC]
@@ -873,14 +870,14 @@ class PositionManager:
             #                 if old_slippage != order.slippage:
             #                     needs_save = True
             #                     n_slippage_corrections += 1
-            #                     bt.logging.info(
+            #                     logger.info(
             #                         f"Updated forex slippage for order {order}: "
             #                         f"{old_slippage:.6f} -> {order.slippage:.6f}")
             #
             #         if needs_save:
             #             position.rebuild_position_with_updated_orders(self._live_price_client)
             #             self.save_miner_position(position, validate=False)
-            # bt.logging.info(f"Applied {n_slippage_corrections} forex slippage corrections")
+            # logger.info(f"Applied {n_slippage_corrections} forex slippage corrections")
 
             # Erroneously eliminated subaccount — restore positions, limit orders, and bucket.
             miners_to_wipe = [
@@ -902,7 +899,7 @@ class PositionManager:
                     hotkey = pos.miner_hotkey
                     # if this hotkey is eliminated, log an error and continue
                     if any(e['hotkey'] == hotkey for e in current_eliminations):
-                        bt.logging.error(f"Hotkey {hotkey} is eliminated. Skipping position {pos}.")
+                        logger.error(f"Hotkey {hotkey} is eliminated. Skipping position {pos}.")
                         continue
                     if pos.is_open_position:
                         self.delete_open_position_if_exists(pos)
@@ -946,7 +943,7 @@ class PositionManager:
             if miner_hotkey in miners_to_wipe:
                 update_perf_ledgers = True
                 miners_to_wipe_perf_ledger.append(miner_hotkey)
-                bt.logging.info(f"Resetting hotkey {miner_hotkey}")
+                logger.info(f"Resetting hotkey {miner_hotkey}")
                 n_corrections += 1
                 unique_corrections.update([p.position_uuid for p in positions])
                 for pos in positions:
@@ -989,7 +986,7 @@ class PositionManager:
                 current_positions = self.get_positions_for_one_hotkey(miner_hotkey)
                 self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, current_positions)
 
-        bt.logging.warning(
+        logger.warning(
             f"Applied {n_corrections} order corrections out of {n_attempts} attempts. unique positions corrected: {len(unique_corrections)}")
 
         return miners_to_wipe_perf_ledger
@@ -1080,9 +1077,9 @@ class PositionManager:
                 file_path = miner_dir + position.position_uuid
                 if os.path.exists(file_path):
                     os.remove(file_path)
-                    bt.logging.info(f"Deleted position from disk: {file_path}")
+                    logger.info(f"Deleted position from disk: {file_path}")
             except Exception as e:
-                bt.logging.error(f"Error deleting position {position.position_uuid} from disk: {e}")
+                logger.error(f"Error deleting position {position.position_uuid} from disk: {e}")
 
     def dedupe_positions(self, positions: List[Position], miner_hotkey: str) -> None:
         """Internal method to deduplicate positions for a miner."""
@@ -1128,7 +1125,7 @@ class PositionManager:
                     n_positions_rebuilt_with_new_orders += 1
 
         if n_positions_deleted or n_orders_deleted or n_positions_rebuilt_with_new_orders:
-            bt.logging.warning(
+            logger.warning(
                 f"Hotkey {miner_hotkey}: Deleted {n_positions_deleted} duplicate positions and {n_orders_deleted} "
                 f"duplicate orders across {n_positions_rebuilt_with_new_orders} positions.")
 
@@ -1158,7 +1155,7 @@ class PositionManager:
                     # Save to disk
                     self._write_position_to_disk(position)
 
-        bt.logging.info(f'Removed {n_price_sources_removed} price sources from old data.')
+        logger.info(f'Removed {n_price_sources_removed} price sources from old data.')
 
     def _get_hl_funding_rates(self, position, current_time_ms: int):
         if not position.is_hl:
@@ -1171,7 +1168,7 @@ class PositionManager:
                 coin, position.open_ms, current_time_ms
             )
         except Exception as e:
-            bt.logging.warning(f"[POSITION FEE] Failed to fetch HL funding rates for {coin}: {e}")
+            logger.warning(f"[POSITION FEE] Failed to fetch HL funding rates for {coin}: {e}")
             return None
 
     def refresh_position_fees(self, time_ms: Optional[int] = None) -> None:
@@ -1196,7 +1193,7 @@ class PositionManager:
                     fee = position.refresh_carry_fee_usd(time_ms, hl_funding_rates=hl_fr)
 
                 if fee > 0:
-                    bt.logging.info(
+                    logger.info(
                         f"[POSITION FEE] {hotkey} {position.trade_pair.trade_pair_id} ${fee:.6f}"
                     )
                     hotkey_fee += fee
@@ -1211,7 +1208,7 @@ class PositionManager:
             try:
                 self._miner_account_client.process_fees(hotkey_to_fee)
             except Exception as e:
-                bt.logging.error(f"Failed to charge position fees: {e}")
+                logger.error(f"Failed to charge position fees: {e}")
 
     def settle_dividend_payments(self, time_ms: Optional[int] = None):
         """Release pending long credits whose payment_date is today."""
@@ -1231,7 +1228,7 @@ class PositionManager:
 
         if hotkey_to_credit:
             self._miner_account_client.process_dividend_income(hotkey_to_credit)
-            bt.logging.info(f"[DIVIDEND PAYMENTS] Released credits for {len(hotkey_to_credit)} miners on {today_date_str}")
+            logger.info(f"[DIVIDEND PAYMENTS] Released credits for {len(hotkey_to_credit)} miners on {today_date_str}")
 
 
     # ==================== Index Management ====================
@@ -1259,7 +1256,7 @@ class PositionManager:
                     f"New position UUID: {position.position_uuid}. "
                     f"Please restore cache."
                 )
-                bt.logging.error(error_msg)
+                logger.error(error_msg)
                 raise ValiRecordsMisalignmentException(error_msg)
 
     def _add_to_open_index(self, position: Position):
@@ -1277,7 +1274,7 @@ class PositionManager:
             self.hotkey_to_open_positions[hotkey] = {}
 
         self.hotkey_to_open_positions[hotkey][trade_pair_id] = position
-        bt.logging.trace(f"Added to open index: {hotkey}/{trade_pair_id}")
+        logger.debug(f"Added to open index: {hotkey}/{trade_pair_id}")
 
     def _remove_from_open_index(self, position: Position):
         """
@@ -1294,7 +1291,7 @@ class PositionManager:
             # Only remove if it's the same position (by UUID)
             if self.hotkey_to_open_positions[hotkey][trade_pair_id].position_uuid == position.position_uuid:
                 del self.hotkey_to_open_positions[hotkey][trade_pair_id]
-                bt.logging.trace(f"Removed from open index: {hotkey}/{trade_pair_id}")
+                logger.debug(f"Removed from open index: {hotkey}/{trade_pair_id}")
 
                 # Cleanup empty dicts
                 if not self.hotkey_to_open_positions[hotkey]:
@@ -1315,7 +1312,7 @@ class PositionManager:
                     # Check for duplicate open positions
                     if hotkey in self.hotkey_to_open_positions and trade_pair_id in self.hotkey_to_open_positions[hotkey]:
                         existing_position = self.hotkey_to_open_positions[hotkey][trade_pair_id]
-                        bt.logging.error(
+                        logger.error(
                             f"Found duplicate open positions for miner {hotkey} and trade_pair {trade_pair_id}. "
                             f"Existing position UUID: {existing_position.position_uuid}, "
                             f"New position UUID: {position.position_uuid}. "
@@ -1324,7 +1321,7 @@ class PositionManager:
                     self._add_to_open_index(position)
 
         total_open = sum(len(d) for d in self.hotkey_to_open_positions.values())
-        bt.logging.debug(f"Rebuilt open index: {total_open} open positions across {len(self.hotkey_to_open_positions)} hotkeys")
+        logger.debug(f"Rebuilt open index: {total_open} open positions across {len(self.hotkey_to_open_positions)} hotkeys")
 
     # ==================== Disk I/O Methods ====================
 
@@ -1345,13 +1342,13 @@ class PositionManager:
             should_skip = True
 
         if should_skip:
-            bt.logging.debug("Skipping disk load in test/backtesting mode")
+            logger.debug("Skipping disk load in test/backtesting mode")
             return
 
         # Get base miner directory
         base_dir = Path(ValiBkpUtils.get_miner_dir(running_unit_tests=self.running_unit_tests))
         if not base_dir.exists():
-            bt.logging.info("No positions directory found, starting fresh")
+            logger.info("No positions directory found, starting fresh")
             return
 
         # Iterate through all miner hotkey directories
@@ -1377,14 +1374,14 @@ class PositionManager:
                     position = Position.model_validate_json(file_string)
                     positions_dict[position.position_uuid] = position
                 except Exception as e:
-                    bt.logging.error(f"Error loading position file {position_file} for {hotkey}: {e}")
+                    logger.error(f"Error loading position file {position_file} for {hotkey}: {e}")
 
             if positions_dict:
                 self.hotkey_to_positions[hotkey] = positions_dict
-                bt.logging.debug(f"Loaded {len(positions_dict)} positions for {hotkey}")
+                logger.debug(f"Loaded {len(positions_dict)} positions for {hotkey}")
 
         total_positions = sum(len(positions_dict) for positions_dict in self.hotkey_to_positions.values())
-        bt.logging.success(
+        logger.info(
             f"Loaded {total_positions} positions for {len(self.hotkey_to_positions)} hotkeys from disk"
         )
 
@@ -1412,14 +1409,14 @@ class PositionManager:
                     position = Position.model_validate_json(file_string)
                     archived_dict[position.position_uuid] = position
                 except Exception as e:
-                    bt.logging.error(f"Error loading archived position file {position_file} for {hotkey}: {e}")
+                    logger.error(f"Error loading archived position file {position_file} for {hotkey}: {e}")
 
             if archived_dict:
                 self.hotkey_to_archived_positions[hotkey] = archived_dict
-                bt.logging.debug(f"Loaded {len(archived_dict)} archived positions for {hotkey}")
+                logger.debug(f"Loaded {len(archived_dict)} archived positions for {hotkey}")
 
         total_archived = sum(len(d) for d in self.hotkey_to_archived_positions.values())
-        bt.logging.success(
+        logger.info(
             f"Loaded {total_archived} archived positions for {len(self.hotkey_to_archived_positions)} hotkeys from disk"
         )
 
@@ -1433,11 +1430,11 @@ class PositionManager:
         from vali_objects.price_fetcher.live_price_server import LivePriceFetcherServer
         from vali_objects.utils.vali_utils import ValiUtils
 
-        bt.logging.info("Applying position splitting on startup...")
+        logger.info("Applying position splitting on startup...")
 
         # Early exit if no positions to split (avoids loading secrets unnecessarily)
         if not self.hotkey_to_positions:
-            bt.logging.info("No positions to split")
+            logger.info("No positions to split")
             return
 
         # Create live_price_fetcher for splitting logic
@@ -1466,8 +1463,8 @@ class PositionManager:
                         positions_split_for_hotkey += 1
 
                 except Exception as e:
-                    bt.logging.error(f"Failed to split position {position.position_uuid} for hotkey {hotkey}: {e}")
-                    bt.logging.error(f"Position details: {len(position.orders)} orders, trade_pair={position.trade_pair}")
+                    logger.error(f"Failed to split position {position.position_uuid} for hotkey {hotkey}: {e}")
+                    logger.error(f"Position details: {len(position.orders)} orders, trade_pair={position.trade_pair}")
                     traceback.print_exc()
                     # Keep the original position if splitting fails
                     split_positions[position.position_uuid] = position
@@ -1479,7 +1476,7 @@ class PositionManager:
                 hotkeys_with_splits += 1
                 total_positions_split += positions_split_for_hotkey
 
-        bt.logging.info(
+        logger.info(
             f"Position splitting complete: {total_positions_split} positions split across "
             f"{hotkeys_with_splits}/{total_hotkeys} hotkeys"
         )
@@ -1547,7 +1544,7 @@ class PositionManager:
                 self._write_position_to_disk(open_position)
                 _cnt += 1
 
-        bt.logging.info(f"Applied {trade_pair_id} stock split (ratio: {stock_split_ratio}, date: {execution_date}) to {_cnt} positions")
+        logger.info(f"Applied {trade_pair_id} stock split (ratio: {stock_split_ratio}, date: {execution_date}) to {_cnt} positions")
 
     def process_dividend_ex_date(self, trade_pair_id: str, gross_dividend: float, payment_date_str: str, ex_date_str: str):
         """Apply dividend at ex-date: immediate fee for shorts, pending credit on longs."""
@@ -1566,7 +1563,7 @@ class PositionManager:
         if hotkey_to_debit:
             self._miner_account_client.process_fees(hotkey_to_debit)
 
-        bt.logging.info(f"[DIVIDEND EX-DATE] {trade_pair_id} ${gross_dividend}/share (pay: {payment_date_str}, ex: {ex_date_str})")
+        logger.info(f"[DIVIDEND EX-DATE] {trade_pair_id} ${gross_dividend}/share (pay: {payment_date_str}, ex: {ex_date_str})")
 
     # ==================== Bracket Order Attachment Methods ====================
 
@@ -1673,7 +1670,7 @@ class PositionManager:
             self._miner_account_client.rebuild_account_state_from_positions(hotkey, remaining_positions)
             log.append("Rebuilt account state")
 
-        bt.logging.info(f"wipe_hotkey({hotkey}): {'; '.join(log)}")
+        logger.info(f"wipe_hotkey({hotkey}): {'; '.join(log)}")
         return {'hotkey': hotkey, 'actions': log}
 
     # ==================== Disk I/O Methods ====================
@@ -1688,7 +1685,7 @@ class PositionManager:
                 running_unit_tests=self.running_unit_tests
             )
             ValiBkpUtils.write_file(miner_dir + position.position_uuid, position)
-            bt.logging.trace(f"Wrote position {position.position_uuid} for {position.miner_hotkey} to disk")
+            logger.debug(f"Wrote position {position.position_uuid} for {position.miner_hotkey} to disk")
 
         except Exception as e:
-            bt.logging.error(f"Error writing position {position.position_uuid} to disk: {e}")
+            logger.error(f"Error writing position {position.position_uuid} to disk: {e}")

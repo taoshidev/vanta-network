@@ -754,11 +754,11 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                 self.assertEqual(serial_order.leverage, parallel_order.leverage,
                                f"Position {i} order {j}: leverage should match")
         
-        print(f"✅ INPUT VERIFICATION PASSED: Both modes received identical inputs")
+        print("✅ INPUT VERIFICATION PASSED: Both modes received identical inputs")
         print(f"   - Update time: {serial_update_time}")
         print(f"   - Number of positions: {len(serial_miner_positions)}")
         print(f"   - Trade pairs: {[pos.trade_pair.trade_pair_id for pos in serial_miner_positions]}")
-        print(f"   Now comparing outputs...")
+        print("   Now comparing outputs...")
         
         # Compare results - document behavior differences if they exist
         serial_has_miner = self.test_hotkey in serial_bundles
@@ -770,8 +770,8 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             pass
         elif not serial_has_miner and parallel_has_miner:
             # Opposite case - less likely but worth documenting
-            self.fail(f"Multiprocessing mode created bundles but serial mode did not. "
-                     f"This is unexpected behavior.")
+            self.fail("Multiprocessing mode created bundles but serial mode did not. "
+                     "This is unexpected behavior.")
         else:
             self.fail(f"Neither serial nor multiprocessing modes created bundles for hotkey {self.test_hotkey}. ")
         
@@ -1149,13 +1149,13 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                 )
         except Exception as e:
             print(f"⚠️  NOTE: Multiprocessing API failed in stress test: {e}")
-            print(f"   This may be due to multiprocessing setup issues in test environment.")
+            print("   This may be due to multiprocessing setup issues in test environment.")
             return  # Skip validation if multiprocessing API fails
         
         # Validate results
         if self.test_hotkey not in bundles:
-            print(f"⚠️  NOTE: Multiprocessing mode did not create bundles in stress test.")
-            print(f"   This may be due to multiprocessing processing issues.")
+            print("⚠️  NOTE: Multiprocessing mode did not create bundles in stress test.")
+            print("   This may be due to multiprocessing processing issues.")
             return  # Skip validation if no bundles created
         
         bundle = bundles[self.test_hotkey]
@@ -1215,7 +1215,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         initial_checkpoint_count = len(initial_btc_ledger.cps)
         initial_last_update = initial_btc_ledger.cps[-1].last_update_ms if initial_btc_ledger.cps else 0
         
-        print(f"📊 INITIAL STATE:")
+        print("📊 INITIAL STATE:")
         print(f"   - Checkpoints: {initial_checkpoint_count}")
         print(f"   - Last update: {initial_last_update}")
         print(f"   - Last acked order time: {last_acked_time}")
@@ -1242,7 +1242,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         pre_trim_checkpoint_count = len(pre_trim_btc_ledger.cps)
         pre_trim_last_update = pre_trim_btc_ledger.cps[-1].last_update_ms
         
-        print(f"📈 PRE-TRIM STATE:")
+        print("📈 PRE-TRIM STATE:")
         print(f"   - Checkpoints: {pre_trim_checkpoint_count}")
         print(f"   - Last update: {pre_trim_last_update}")
         print(f"   - Second update time: {second_update_time}")
@@ -1273,7 +1273,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         )
         self.position_client.save_miner_position(conflict_position)
         
-        print(f"⚠️  RACE CONDITION SCENARIO:")
+        print("⚠️  RACE CONDITION SCENARIO:")
         print(f"   - Last acked order time: {current_last_acked}")
         print(f"   - Conflict order time: {conflict_order_time}")
         print(f"   - Current last update: {pre_trim_last_update}")
@@ -1284,7 +1284,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # We need to call it with existing bundles AND positions that include the conflict
         # This simulates what happens when an update runs with existing ledgers + conflicting orders
         
-        print(f"🔧 SIMULATING delta update with existing bundles containing race condition...")
+        print("🔧 SIMULATING delta update with existing bundles containing race condition...")
         
         # Get current positions (including the conflict position)
         all_current_positions = self.position_client.get_positions_for_all_miners()
@@ -1298,7 +1298,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         # Call update_all_perf_ledgers directly with the existing bundles
         # This should trigger the trimming logic if implemented correctly
-        print(f"   - Calling update_all_perf_ledgers with existing bundles...")
+        print("   - Calling update_all_perf_ledgers with existing bundles...")
         print(f"   - Existing bundles contain: {list(pre_trim_bundles.keys())}")
         print(f"   - Positions contain conflict order at: {conflict_order_time}")
         
@@ -1310,12 +1310,12 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         # If update_all_perf_ledgers returns None (error case), use get_perf_ledgers
         if result_bundles is None:
-            print(f"   ⚠️  update_all_perf_ledgers returned None, falling back to get_perf_ledgers")
+            print("   ⚠️  update_all_perf_ledgers returned None, falling back to get_perf_ledgers")
             # Fallback: call regular update and get ledgers
             plm.update(t_ms=trim_update_time)
             result_bundles = plm.get_perf_ledgers()
         else:
-            print(f"   ✅ update_all_perf_ledgers completed successfully")
+            print("   ✅ update_all_perf_ledgers completed successfully")
         
         # Step 5: VERIFY TRIMMING BEHAVIOR
         # Use the result bundles for analysis
@@ -1323,7 +1323,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         post_trim_checkpoint_count = len(post_trim_btc_ledger.cps)
         post_trim_last_update = post_trim_btc_ledger.cps[-1].last_update_ms if post_trim_btc_ledger.cps else 0
         
-        print(f"✂️  POST-TRIM STATE:")
+        print("✂️  POST-TRIM STATE:")
         print(f"   - Checkpoints: {post_trim_checkpoint_count}")
         print(f"   - Last update: {post_trim_last_update}")
         print(f"   - Trim update time: {trim_update_time}")
@@ -1333,7 +1333,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         # 2. Then update creates NEW checkpoints for the current update period
         # 3. Final result: old checkpoints after conflict should be gone, new ones created
         if current_last_acked < conflict_order_time < pre_trim_last_update:
-            print(f"🔍 RACE CONDITION DETECTED - Analyzing trimming behavior")
+            print("🔍 RACE CONDITION DETECTED - Analyzing trimming behavior")
             
             # Count checkpoints from PRE-TRIM state that should have been trimmed
             pre_trim_checkpoints_after_conflict = 0
@@ -1362,10 +1362,10 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
             # This indicates trimming worked: old checkpoints removed, new ones created
             if post_trim_latest_after_conflict > pre_trim_last_update:
                 print(f"   ✅ TRIMMING VERIFIED: Latest post-trim checkpoint ({post_trim_latest_after_conflict}) > pre-trim last update ({pre_trim_last_update})")
-                print(f"   ✅ This indicates old checkpoints were trimmed and new ones created during update")
+                print("   ✅ This indicates old checkpoints were trimmed and new ones created during update")
                 trimming_worked = True
             else:
-                print(f"   ⚠️  TRIMMING UNCLEAR: Latest timestamps suggest checkpoints may not have been properly trimmed")
+                print("   ⚠️  TRIMMING UNCLEAR: Latest timestamps suggest checkpoints may not have been properly trimmed")
                 trimming_worked = False
             
             # Additional validation: no checkpoint should exist between conflict_order_time and pre_trim_last_update
@@ -1377,26 +1377,26 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
                     print(f"   ⚠️  STALE CHECKPOINT FOUND: {cp.last_update_ms} (between conflict and pre-trim last update)")
             
             if stale_checkpoints == 0:
-                print(f"   ✅ NO STALE CHECKPOINTS: All checkpoints between conflict and pre-trim update were properly trimmed")
+                print("   ✅ NO STALE CHECKPOINTS: All checkpoints between conflict and pre-trim update were properly trimmed")
             else:
                 print(f"   ❌ FOUND {stale_checkpoints} STALE CHECKPOINTS: Trimming may not have worked correctly")
             
             # Final trimming assessment - FAIL the test if trimming doesn't work
             if trimming_worked and stale_checkpoints == 0:
-                print(f"   🎯 TRIMMING SUCCESS: Race condition properly handled")
+                print("   🎯 TRIMMING SUCCESS: Race condition properly handled")
             else:
-                print(f"   🐛 TRIMMING FAILED: Production bug detected")
+                print("   🐛 TRIMMING FAILED: Production bug detected")
                 if stale_checkpoints > 0:
                     self.fail(f"PRODUCTION BUG: Found {stale_checkpoints} stale checkpoints that should have been trimmed. "
                              f"Timestamps between conflict ({conflict_order_time}) and pre-trim update ({pre_trim_last_update}) "
                              f"should be removed by trim_checkpoints but weren't. This indicates the production "
                              f"trimming logic is incomplete.")
                 else:
-                    self.fail(f"TRIMMING BUG: Trimming appears to have not worked correctly - "
-                             f"latest checkpoint timestamp suggests issues with the trimming implementation.")
+                    self.fail("TRIMMING BUG: Trimming appears to have not worked correctly - "
+                             "latest checkpoint timestamp suggests issues with the trimming implementation.")
             
         else:
-            print(f"❌ RACE CONDITION NOT DETECTED - Normal processing")
+            print("❌ RACE CONDITION NOT DETECTED - Normal processing")
         
         # Verify the ledger is structurally valid regardless of trimming
         self.validate_perf_ledger(post_trim_btc_ledger, base_time)
@@ -1410,11 +1410,11 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         self.assertGreater(all_positions_processed, 0, 
                           "Ledger should show evidence of position processing")
         
-        print(f"✅ TRIMMING TEST COMPLETE:")
+        print("✅ TRIMMING TEST COMPLETE:")
         print(f"   - Pre-trim checkpoints: {pre_trim_checkpoint_count}")
         print(f"   - Post-trim checkpoints: {post_trim_checkpoint_count}")
         print(f"   - Updates processed: {all_positions_processed}")
-        print(f"   - Ledger structure: VALID")
+        print("   - Ledger structure: VALID")
         print(f"   - Race condition test: {'PASSED' if current_last_acked < conflict_order_time < pre_trim_last_update else 'SKIPPED'}")
 
     def _create_position(self, position_id: str, trade_pair: TradePair, 
@@ -1568,7 +1568,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
     
         # Now do incremental updates to build up to the target time
         # This avoids the large time jump validation error
-        print(f"\nDoing incremental updates from base_time to update_time_1")
+        print("\nDoing incremental updates from base_time to update_time_1")
         current_time = base_time
         step_size = 12 * 60 * 60 * 1000  # 12 hours - matches checkpoint duration
     
@@ -1698,7 +1698,7 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
 
         # After closing all ETHUSD positions, the cleanup logic should remove ETH from tracking
         # because there are no open positions for ETHUSD
-        print(f"\nAfter second update:")
+        print("\nAfter second update:")
         print(f"Portfolio ledger last_known_prices: {portfolio_ledger_2.last_known_prices}")
 
         # The system correctly cleaned up ETHUSD when all ETHUSD positions were closed

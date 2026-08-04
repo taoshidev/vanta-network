@@ -27,17 +27,17 @@ import re
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Set
 
-import bittensor as bt
 from flask import jsonify, request, Response
 
 from miner_config import MinerConfig
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vanta_api.miner_rest_server import MinerRestServer
+from shared_objects.log import logger
 
 try:
     import websockets
@@ -188,7 +188,7 @@ class EntityMinerRestServer(MinerRestServer):
                 del wallet_password
                 print(f"[ENTITY-GW-INIT] Wallet loaded: {self._hotkey.ss58_address}")
             else:
-                print(f"[ENTITY-GW-INIT] WARNING: Could not load wallet")
+                print("[ENTITY-GW-INIT] WARNING: Could not load wallet")
 
             # Derive mappings file path alongside the secrets file
             secrets_dir = os.path.dirname(MinerConfig.get_secrets_file_path())
@@ -203,9 +203,9 @@ class EntityMinerRestServer(MinerRestServer):
                     self._max_hl_traders = int(raw_max_hl)
                     print(f"[ENTITY-GW-INIT] Max HL traders limit set to {self._max_hl_traders}")
                 except (ValueError, TypeError):
-                    bt.logging.warning(f"[ENTITY-GW-INIT] Invalid max_hl_traders value: {raw_max_hl}, ignoring")
+                    logger.warning(f"[ENTITY-GW-INIT] Invalid max_hl_traders value: {raw_max_hl}, ignoring")
         except Exception as e:
-            bt.logging.error(f"[ENTITY-GW-INIT] Failed to load wallet secrets: {e}")
+            logger.error(f"[ENTITY-GW-INIT] Failed to load wallet secrets: {e}")
 
         # Load HL address mappings from local persistence file
         self._load_hl_mappings()
@@ -230,13 +230,13 @@ class EntityMinerRestServer(MinerRestServer):
                 or secrets.get("enable_auto_payouts", False)
             )
             if not enable_auto_payouts:
-                bt.logging.info("[ENTITY-GW] Auto payouts not enabled (set enable_auto_payouts in secrets)")
+                logger.info("[ENTITY-GW] Auto payouts not enabled (set enable_auto_payouts in secrets)")
                 return
 
             # Load required secrets
             usdc_private_key = os.environ.get("USDC_PRIVATE_KEY") or secrets.get("usdc_private_key")
             if not usdc_private_key:
-                bt.logging.warning("[ENTITY-GW] USDC_PRIVATE_KEY not configured, payment daemon disabled")
+                logger.warning("[ENTITY-GW] USDC_PRIVATE_KEY not configured, payment daemon disabled")
                 return
 
             usdc_rpc_url = (
@@ -249,11 +249,11 @@ class EntityMinerRestServer(MinerRestServer):
                 or secrets.get("validator_payout_api_key")
             )
             if not validator_payout_api_key:
-                bt.logging.warning("[ENTITY-GW] VALIDATOR_PAYOUT_API_KEY not configured, payment daemon disabled")
+                logger.warning("[ENTITY-GW] VALIDATOR_PAYOUT_API_KEY not configured, payment daemon disabled")
                 return
 
             if not self._validator_url:
-                bt.logging.warning("[ENTITY-GW] validator_url not configured, payment daemon disabled")
+                logger.warning("[ENTITY-GW] validator_url not configured, payment daemon disabled")
                 return
 
             from entity_management.payment_ledger import PaymentLedger
@@ -285,13 +285,13 @@ class EntityMinerRestServer(MinerRestServer):
             )
             self._payment_thread.start()
 
-            bt.logging.info(
+            logger.info(
                 f"[ENTITY-GW] Payment daemon started: "
                 f"wallet={self._payment_service.get_wallet_address()}, "
                 f"schedule={self._payout_schedule_day} {self._payout_schedule_hour:02d}:00 UTC"
             )
         except Exception as e:
-            bt.logging.error(f"[ENTITY-GW] Failed to initialize payment daemon: {e}")
+            logger.error(f"[ENTITY-GW] Failed to initialize payment daemon: {e}")
 
     def _payment_daemon_loop(self):
         """Main loop for the payment daemon thread."""
@@ -315,7 +315,7 @@ class EntityMinerRestServer(MinerRestServer):
                 ) + timedelta(days=days_ahead)
 
                 sleep_seconds = (next_run - now).total_seconds()
-                bt.logging.info(
+                logger.info(
                     f"[USDC_PAYMENT_DAEMON] Next payout run at {next_run.isoformat()} "
                     f"(in {sleep_seconds / 3600:.1f} hours)"
                 )
@@ -342,14 +342,14 @@ class EntityMinerRestServer(MinerRestServer):
                 start_ms = int(period_start.timestamp() * 1000)
                 end_ms = int(period_end.timestamp() * 1000)
 
-                bt.logging.info(
+                logger.info(
                     f"[USDC_PAYMENT_DAEMON] Running payout for period "
                     f"{period_start.isoformat()} to {period_end.isoformat()}"
                 )
 
                 entity_hotkey = self._hotkey.ss58_address if self._hotkey else None
                 if not entity_hotkey:
-                    bt.logging.error("[USDC_PAYMENT_DAEMON] No hotkey available, skipping payout run")
+                    logger.error("[USDC_PAYMENT_DAEMON] No hotkey available, skipping payout run")
                     continue
 
                 result = self._payment_service.process_payouts(
@@ -358,14 +358,14 @@ class EntityMinerRestServer(MinerRestServer):
                     end_time_ms=end_ms
                 )
 
-                bt.logging.info(
+                logger.info(
                     f"[USDC_PAYMENT_DAEMON] Payout run {result.run_id} complete: "
                     f"{result.successful_count} successful, {result.failed_count} failed, "
                     f"${result.total_usd_paid:.2f} paid"
                 )
 
             except Exception as e:
-                bt.logging.error(f"[USDC_PAYMENT_DAEMON] Error in payment daemon loop: {e}")
+                logger.error(f"[USDC_PAYMENT_DAEMON] Error in payment daemon loop: {e}")
                 # Sleep 5 minutes before retrying on error
                 self._payment_stop_event.wait(timeout=300)
 
@@ -388,7 +388,7 @@ class EntityMinerRestServer(MinerRestServer):
         self.app.route("/api/hl/<hl_address>/stream", methods=["GET"])(self.stream_endpoint)
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
-        print(f"[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
+        print("[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
 
     # ==================== HL Address Mapping ====================
 
@@ -399,7 +399,7 @@ class EntityMinerRestServer(MinerRestServer):
 
         try:
             if not os.path.exists(self._mappings_file):
-                bt.logging.info(f"[ENTITY-GW] No mappings file found at {self._mappings_file}, starting fresh")
+                logger.info(f"[ENTITY-GW] No mappings file found at {self._mappings_file}, starting fresh")
                 return
 
             with open(self._mappings_file, "r") as f:
@@ -426,9 +426,9 @@ class EntityMinerRestServer(MinerRestServer):
 
             self._hl_to_synthetic = normalized_hl_to_synthetic
             self._synthetic_to_hl = normalized_synthetic_to_hl
-            bt.logging.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings from disk")
+            logger.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings from disk")
         except Exception as e:
-            bt.logging.error(f"[ENTITY-GW] Error loading HL mappings: {e}")
+            logger.error(f"[ENTITY-GW] Error loading HL mappings: {e}")
 
     def _save_hl_mappings(self):
         """Persist HL address -> synthetic hotkey mappings to disk."""
@@ -442,7 +442,7 @@ class EntityMinerRestServer(MinerRestServer):
                     "synthetic_to_hl": self._synthetic_to_hl,
                 }, f, indent=2)
         except Exception as e:
-            bt.logging.error(f"[ENTITY-GW] Error saving HL mappings: {e}")
+            logger.error(f"[ENTITY-GW] Error saving HL mappings: {e}")
 
     def _apply_hl_mappings(self, hl_mappings: dict):
         """Apply HL address -> synthetic hotkey mappings received from validator (e.g. WS auth response)."""
@@ -454,7 +454,7 @@ class EntityMinerRestServer(MinerRestServer):
             mapping_changed = self._set_hl_mapping(normalized_hl, synthetic, source="ws_auth") or mapping_changed
         if mapping_changed:
             self._save_hl_mappings()
-        bt.logging.info(f"[ENTITY-GW] Applied {len(hl_mappings)} HL mappings from validator")
+        logger.info(f"[ENTITY-GW] Applied {len(hl_mappings)} HL mappings from validator")
 
     def _set_hl_mapping(self, hl_address: str, synthetic_hotkey: str, source: str = "unknown") -> bool:
         """Update HL<->synthetic mapping and evict stale dashboard on reassignment."""
@@ -472,14 +472,14 @@ class EntityMinerRestServer(MinerRestServer):
         if old_synthetic and old_synthetic != synthetic_hotkey:
             self._synthetic_to_hl.pop(old_synthetic, None)
             self._evict_dashboard_cache(hl_address)
-            bt.logging.info(
+            logger.info(
                 f"[ENTITY-GW] HL mapping reassigned ({source}): {hl_address} {old_synthetic} -> {synthetic_hotkey}"
             )
 
         if old_hl_for_synthetic and old_hl_for_synthetic != hl_address:
             self._hl_to_synthetic.pop(old_hl_for_synthetic, None)
             self._evict_dashboard_cache(old_hl_for_synthetic)
-            bt.logging.info(
+            logger.info(
                 f"[ENTITY-GW] Synthetic reassigned ({source}): {synthetic_hotkey} {old_hl_for_synthetic} -> {hl_address}"
             )
 
@@ -504,7 +504,7 @@ class EntityMinerRestServer(MinerRestServer):
                 return None
             return response.json()
         except Exception as e:
-            bt.logging.warning(f"[ENTITY-GW] Failed to fetch validator HL trader for {hl_address}: {e}")
+            logger.warning(f"[ENTITY-GW] Failed to fetch validator HL trader for {hl_address}: {e}")
             return None
 
     @staticmethod
@@ -594,11 +594,11 @@ class EntityMinerRestServer(MinerRestServer):
         endpoint_url = os.environ.get("ENTITY_MINER_ENDPOINT_URL") or secrets.get("entity_endpoint_url")
 
         if not endpoint_url:
-            bt.logging.info("[ENTITY-GW] No endpoint URL configured (set ENTITY_MINER_ENDPOINT_URL or entity_endpoint_url in secrets)")
+            logger.info("[ENTITY-GW] No endpoint URL configured (set ENTITY_MINER_ENDPOINT_URL or entity_endpoint_url in secrets)")
             return
 
         if not self._coldkey or not self._hotkey or not self._validator_url:
-            bt.logging.warning("[ENTITY-GW] Cannot send endpoint URL: wallet or validator_url not configured")
+            logger.warning("[ENTITY-GW] Cannot send endpoint URL: wallet or validator_url not configured")
             return
 
         try:
@@ -631,24 +631,24 @@ class EntityMinerRestServer(MinerRestServer):
             )
 
             if resp.status_code == 200:
-                bt.logging.info(f"[ENTITY-GW] Endpoint URL registered: {endpoint_url}")
+                logger.info(f"[ENTITY-GW] Endpoint URL registered: {endpoint_url}")
             else:
                 try:
                     error_data = resp.json()
                     error_msg = error_data.get('error', resp.text)
                 except json.JSONDecodeError:
                     error_msg = resp.text
-                bt.logging.warning(f"[ENTITY-GW] Failed to register endpoint URL ({resp.status_code}): {error_msg}")
+                logger.warning(f"[ENTITY-GW] Failed to register endpoint URL ({resp.status_code}): {error_msg}")
 
         except Exception as e:
-            bt.logging.error(f"[ENTITY-GW] Error sending endpoint URL: {e}")
+            logger.error(f"[ENTITY-GW] Error sending endpoint URL: {e}")
 
     # ==================== WebSocket Listener ====================
 
     def _start_ws_listener(self):
         """Start the WebSocket listener thread."""
         if not self._hotkey or not self._validator_ws_url:
-            bt.logging.warning("[ENTITY-GW] Cannot start WS listener: missing hotkey or ws url config")
+            logger.warning("[ENTITY-GW] Cannot start WS listener: missing hotkey or ws url config")
             return
 
         self._ws_stop_event.clear()
@@ -658,7 +658,7 @@ class EntityMinerRestServer(MinerRestServer):
             name="entity-gw-ws"
         )
         self._ws_thread.start()
-        bt.logging.info("[ENTITY-GW] WebSocket listener thread started")
+        logger.info("[ENTITY-GW] WebSocket listener thread started")
 
     def _run_ws_listener(self):
         """Entry point for the WS listener thread — runs its own event loop."""
@@ -667,14 +667,14 @@ class EntityMinerRestServer(MinerRestServer):
         try:
             loop.run_until_complete(self._ws_listen_loop())
         except Exception as e:
-            bt.logging.error(f"[ENTITY-GW] WS listener loop crashed: {e}")
+            logger.error(f"[ENTITY-GW] WS listener loop crashed: {e}")
         finally:
             loop.close()
 
     async def _ws_listen_loop(self):
         """Connect to validator WS, authenticate with entity hotkey, receive messages."""
         if websockets is None:
-            bt.logging.error("[ENTITY-GW] websockets library not installed")
+            logger.error("[ENTITY-GW] websockets library not installed")
             return
 
         backoff_s = 1.0
@@ -690,7 +690,7 @@ class EntityMinerRestServer(MinerRestServer):
                     # Wait for auth response (server sends it immediately after header validation)
                     auth_resp = json.loads(await ws.recv())
                     if auth_resp.get("status") != "success":
-                        bt.logging.error(f"[ENTITY-GW] WS auth failed: {auth_resp.get('message')}")
+                        logger.error(f"[ENTITY-GW] WS auth failed: {auth_resp.get('message')}")
                         await asyncio.sleep(backoff_s)
                         backoff_s = min(backoff_s * 2, 60.0)
                         continue
@@ -704,7 +704,7 @@ class EntityMinerRestServer(MinerRestServer):
                         loop_ref = asyncio.get_running_loop()
                         await loop_ref.run_in_executor(None, self._apply_hl_mappings, hl_mappings)
 
-                    bt.logging.info(
+                    logger.info(
                         f"[ENTITY-GW] WS connected and authenticated "
                         f"(subscribed to {auth_resp.get('subscribed_subaccounts', 0)} subaccounts, "
                         f"hl_mappings={len(hl_mappings)})")
@@ -724,14 +724,14 @@ class EntityMinerRestServer(MinerRestServer):
                             continue
 
             except Exception as e:
-                bt.logging.warning(f"[ENTITY-GW] WS connection error: {e}")
+                logger.warning(f"[ENTITY-GW] WS connection error: {e}")
             finally:
                 self._ws_connected = False
 
             if self._ws_stop_event.is_set():
                 break
 
-            bt.logging.info(f"[ENTITY-GW] WS reconnecting in {backoff_s:.1f}s...")
+            logger.info(f"[ENTITY-GW] WS reconnecting in {backoff_s:.1f}s...")
             await asyncio.sleep(backoff_s)
             backoff_s = min(backoff_s * 2, 60.0)
 
@@ -755,7 +755,7 @@ class EntityMinerRestServer(MinerRestServer):
         # Resolve HL address
         hl_address = self._synthetic_to_hl.get(synthetic_hotkey)
         if not hl_address:
-            bt.logging.debug(
+            logger.debug(
                 f"[ENTITY-GW] Dropping WS message for {synthetic_hotkey}: "
                 f"no HL mapping (known mappings={len(self._synthetic_to_hl)})"
             )
@@ -910,7 +910,7 @@ class EntityMinerRestServer(MinerRestServer):
                         yield f"data: {json.dumps(data)}\n\n"
                     except queue.Empty:
                         # Send keepalive heartbeat
-                        yield f": heartbeat\n\n"
+                        yield ": heartbeat\n\n"
             except GeneratorExit:
                 pass
             finally:
@@ -1022,7 +1022,7 @@ class EntityMinerRestServer(MinerRestServer):
                 if self._max_hl_traders is not None:
                     current_count = len(self._hl_to_synthetic)
                     if current_count >= self._max_hl_traders:
-                        bt.logging.warning(
+                        logger.warning(
                             f"[ENTITY-GW] HL trader limit reached: {current_count}/{self._max_hl_traders}"
                         )
                         return jsonify({
@@ -1032,7 +1032,7 @@ class EntityMinerRestServer(MinerRestServer):
                         }), 403
 
         except Exception as e:
-            bt.logging.error(f"Error parsing request body: {e}")
+            logger.error(f"Error parsing request body: {e}")
             return jsonify({'status': 'error', 'message': f'Invalid request: {str(e)}'}), 400
 
         # 3. Check wallet is configured
@@ -1056,7 +1056,7 @@ class EntityMinerRestServer(MinerRestServer):
             message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
         except Exception as e:
-            bt.logging.error(f"Error signing message: {e}")
+            logger.error(f"Error signing message: {e}")
             return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
 
         # 5. Send request to validator
@@ -1175,7 +1175,7 @@ class EntityMinerRestServer(MinerRestServer):
             return jsonify({'status': 'error', 'message': 'Could not connect to validator'}), 503
 
         except Exception as e:
-            bt.logging.error(f"Error communicating with validator: {e}")
+            logger.error(f"Error communicating with validator: {e}")
             if self.slack_notifier:
                 hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
                 self.slack_notifier.send_message(
@@ -1212,4 +1212,4 @@ class EntityMinerRestServer(MinerRestServer):
         if self._payment_thread and self._payment_thread.is_alive():
             self._payment_thread.join(timeout=5.0)
         self.stop_flask_server()
-        bt.logging.info("[ENTITY-GW] Shutdown complete")
+        logger.info("[ENTITY-GW] Shutdown complete")

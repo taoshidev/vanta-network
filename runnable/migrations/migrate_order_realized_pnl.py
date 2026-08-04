@@ -14,10 +14,10 @@ Usage:
 import argparse
 import traceback
 
-import bittensor as bt
 
 from runnable.migration_utils import MigrationUtils
 from vali_objects.vali_dataclasses.position import Position
+from shared_objects.log import logger
 
 
 def _log_pnl_diff(hotkey: str, position: Position, before: dict, after: dict) -> None:
@@ -101,7 +101,7 @@ def main(dry_run: bool = False) -> bool:
 
             except Exception as e:
                 failed += 1
-                bt.logging.error(
+                logger.error(
                     f"Failed to rebuild position {position.position_uuid} ({hotkey}): {e}\n"
                     f"{traceback.format_exc()}"
                 )

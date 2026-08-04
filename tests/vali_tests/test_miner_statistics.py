@@ -8,8 +8,8 @@ This test ensures that MinerStatisticsServer can:
 - Execute the same code paths used in production
 - Properly handle various parameter combinations
 """
+import logging
 import unittest
-import bittensor as bt
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
@@ -20,6 +20,7 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
+from shared_objects.log import logger
 
 
 class TestMinerStatistics(TestBase):
@@ -84,8 +85,8 @@ class TestMinerStatistics(TestBase):
 
     def setUp(self):
         """Per-test setup: Reset data state (fast - no server restarts)."""
-        # Enable debug logging to see bt.logging.info() statements
-        bt.logging.set_debug()
+        # Enable debug logging to see logger.info() statements
+        logger.setLevel(logging.DEBUG)
 
         # Clear all data for test isolation (both memory and disk)
         self.orchestrator.clear_all_test_data()

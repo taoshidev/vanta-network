@@ -16,7 +16,7 @@ import json
 import time
 import unittest
 from collections import defaultdict, deque
-from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from tests.vali_tests.base_objects.test_base import TestBase
 
@@ -169,8 +169,7 @@ class TestWebSocketEntityAuth(unittest.IsolatedAsyncioTestCase):
     def _make_server(self):
         """Create a minimal WebSocketServer-like object for testing auth methods."""
         from vanta_api.websocket_server import (
-            WebSocketServer, MAX_N_WS_PER_ENTITY,
-            ENTITY_AUTH_TIMESTAMP_TTL_MS, ENTITY_AUTH_MAX_NONCES
+            WebSocketServer
         )
 
         server = object.__new__(WebSocketServer)
@@ -1139,7 +1138,6 @@ class TestSSESubscription(TestBase):
 
     def test_push_full_queue_drops(self):
         """Full queues don't block push — events are silently dropped."""
-        import queue
 
         gw = self._make_gateway()
         q = gw._subscribe_sse("0xHL1")

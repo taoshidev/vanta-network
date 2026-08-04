@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from runnable.migrations import migrate_capital_used_by_class as mig
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.position import Position
 
 

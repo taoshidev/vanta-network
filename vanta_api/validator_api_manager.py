@@ -141,7 +141,7 @@ if __name__ == "__main__":
 
     # Note: Server endpoints are hardcoded in ValiConfig (well-known network endpoints)
     from vali_objects.vali_config import ValiConfig
-    print(f"API services will run on well-known network endpoints:")
+    print("API services will run on well-known network endpoints:")
     print(f"  REST API: http://{ValiConfig.REST_API_HOST}:{ValiConfig.REST_API_PORT}")
     print(f"  Vanta WebSocket: ws://{ValiConfig.VANTA_WEBSOCKET_HOST}:{ValiConfig.VANTA_WEBSOCKET_PORT}")
 

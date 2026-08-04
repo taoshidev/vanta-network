@@ -9,12 +9,12 @@ Runs a daemon that periodically refreshes the collateral cache from on-chain con
 Clients connect using EntityCollateralClient.
 """
 
-import bittensor as bt
 from typing import Optional, Tuple
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.utils.entity_collateral.entity_collateral_manager import EntityCollateralManager
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 class EntityCollateralServer(RPCServerBase):
@@ -52,7 +52,7 @@ class EntityCollateralServer(RPCServerBase):
             connection_mode=connection_mode,
         )
 
-        bt.logging.success("[ENTITY_COLLATERAL_SERVER] EntityCollateralManager initialized")
+        logger.info("[ENTITY_COLLATERAL_SERVER] EntityCollateralManager initialized")
 
         super().__init__(
             service_name=ValiConfig.RPC_ENTITY_COLLATERAL_SERVICE_NAME,
@@ -65,7 +65,7 @@ class EntityCollateralServer(RPCServerBase):
             connection_mode=connection_mode,
         )
 
-        bt.logging.success("[ENTITY_COLLATERAL_SERVER] EntityCollateralServer initialized")
+        logger.info("[ENTITY_COLLATERAL_SERVER] EntityCollateralServer initialized")
 
     # ==================== RPCServerBase Abstract Methods ====================
 
@@ -74,9 +74,9 @@ class EntityCollateralServer(RPCServerBase):
         Single daemon iteration: refresh the collateral cache from on-chain contracts.
         """
         slash_update_msg = self._manager.process_pending_slashes()
-        bt.logging.info(f"[ENTITY_COLLATERAL_SERVER] {slash_update_msg}")
+        logger.info(f"[ENTITY_COLLATERAL_SERVER] {slash_update_msg}")
         overview_msg = self._manager.refresh_collateral_cache()
-        bt.logging.info(f"[ENTITY_COLLATERAL_SERVER] {overview_msg}")
+        logger.info(f"[ENTITY_COLLATERAL_SERVER] {overview_msg}")
         if slash_update_msg:
             return "\n".join([slash_update_msg, overview_msg or ""])
 

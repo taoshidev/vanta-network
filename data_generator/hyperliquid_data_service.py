@@ -5,7 +5,6 @@ import time
 import traceback
 from typing import List
 
-import bittensor as bt
 import requests
 import websockets
 
@@ -15,6 +14,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
+from shared_objects.log import logger
 
 REST_TIMEOUT_S = 10
 RECV_TIMEOUT_S = 30
@@ -63,7 +63,7 @@ class _HyperliquidWebsocketClient:
                 await self._ws.send(json.dumps(subscribe_msg))
 
             precision = f"nSigFigs={self._n_sig_figs}" if self._n_sig_figs is not None else "full precision"
-            bt.logging.info(f"Subscribed to Hyperliquid l2Book ({precision}) for "
+            logger.info(f"Subscribed to Hyperliquid l2Book ({precision}) for "
                             f"{len(coins)} coins: {sorted(coins)}")
 
             # Receive loop
@@ -76,18 +76,18 @@ class _HyperliquidWebsocketClient:
                     try:
                         await self._ws.ping()
                     except Exception:
-                        bt.logging.warning("Hyperliquid websocket ping failed, reconnecting")
+                        logger.warning("Hyperliquid websocket ping failed, reconnecting")
                         break
                 except websockets.exceptions.ConnectionClosed as e:
                     if e.rcvd is not None:
-                        bt.logging.warning(f"Hyperliquid websocket closed: code={e.rcvd.code}, reason={e.rcvd.reason}")
+                        logger.warning(f"Hyperliquid websocket closed: code={e.rcvd.code}, reason={e.rcvd.reason}")
                     else:
-                        bt.logging.warning("Hyperliquid websocket closed abnormally (no close frame received)")
+                        logger.warning("Hyperliquid websocket closed abnormally (no close frame received)")
                     break
                 except Exception as e:
                     if self._should_close:
                         break
-                    bt.logging.error(f"Error receiving Hyperliquid message: {type(e).__name__}: {e}")
+                    logger.error(f"Error receiving Hyperliquid message: {type(e).__name__}: {e}")
                     continue
 
         finally:
@@ -133,10 +133,10 @@ class _MultiResolutionL2BookClient:
             try:
                 await client.connect(handle_msg)
             except Exception as e:
-                bt.logging.error(f"Hyperliquid websocket client ({label}) error: {type(e).__name__}: {e}")
+                logger.error(f"Hyperliquid websocket client ({label}) error: {type(e).__name__}: {e}")
             if client._should_close:
                 break
-            bt.logging.warning(f"Hyperliquid websocket client ({label}) disconnected, "
+            logger.warning(f"Hyperliquid websocket client ({label}) disconnected, "
                                f"reconnecting in {backoff:.1f}s")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.5, 30.0)
@@ -202,7 +202,7 @@ class HyperliquidDataService(BaseDataService):
             return
         client = _MultiResolutionL2BookClient(self, tpc)
         self.WEBSOCKET_OBJECTS[tpc] = client
-        bt.logging.info(f"Created {self.provider_name} dual-resolution websocket client for {tpc}")
+        logger.info(f"Created {self.provider_name} dual-resolution websocket client for {tpc}")
 
     def _subscribe_websockets(self, tpc):
         # Subscription happens inside connect()
@@ -275,7 +275,7 @@ class HyperliquidDataService(BaseDataService):
 
         except Exception as e:
             limited_traceback = traceback.format_exc()[-1000:]
-            bt.logging.error(
+            logger.error(
                 f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} full websocket message "
                 f"with error: {e}, type: {type(e).__name__}, traceback: {limited_traceback}"
             )
@@ -292,7 +292,7 @@ class HyperliquidDataService(BaseDataService):
             }
         except Exception as e:
             limited_traceback = traceback.format_exc()[-1000:]
-            bt.logging.error(
+            logger.error(
                 f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} coarse (nSigFigs={sig_figs}) websocket message "
                 f"with error: {e}, type: {type(e).__name__}, traceback: {limited_traceback}"
             )
@@ -316,7 +316,7 @@ class HyperliquidDataService(BaseDataService):
             resp.raise_for_status()
             result.update({coin: float(price) for coin, price in resp.json().items()})
         except Exception as e:
-            bt.logging.error(f"Hyperliquid REST allMids (default dex) failed: {type(e).__name__}: {e}")
+            logger.error(f"Hyperliquid REST allMids (default dex) failed: {type(e).__name__}: {e}")
 
         # Non-default dexes — derive names from prefixed hl_coin entries in the configured coin set
         non_default_dexes = {
@@ -334,7 +334,7 @@ class HyperliquidDataService(BaseDataService):
                 resp.raise_for_status()
                 result.update({coin: float(price) for coin, price in resp.json().items()})
             except Exception as e:
-                bt.logging.error(f"Hyperliquid REST allMids (dex={dex}) failed: {type(e).__name__}: {e}")
+                logger.error(f"Hyperliquid REST allMids (dex={dex}) failed: {type(e).__name__}: {e}")
 
         return result
 
@@ -355,7 +355,7 @@ class HyperliquidDataService(BaseDataService):
             best_ask = float(levels[1][0]["px"])
             return best_bid, best_ask
         except Exception as e:
-            bt.logging.error(f"Hyperliquid REST l2Book({coin}) failed: {type(e).__name__}: {e}")
+            logger.error(f"Hyperliquid REST l2Book({coin}) failed: {type(e).__name__}: {e}")
             return None
 
     def _fetch_candle_snapshot(self, hl_coin: str, target_ms: int) -> PriceSource | None:
@@ -386,7 +386,7 @@ class HyperliquidDataService(BaseDataService):
             resp.raise_for_status()
             candles = resp.json()
         except Exception as e:
-            bt.logging.error(f"Hyperliquid candleSnapshot({hl_coin}) failed: {type(e).__name__}: {e}")
+            logger.error(f"Hyperliquid candleSnapshot({hl_coin}) failed: {type(e).__name__}: {e}")
             return None
 
         if not candles:
@@ -577,7 +577,7 @@ class HyperliquidDataService(BaseDataService):
                 {"sig_figs": sig_figs, "price": px, "filled_coins": coins, "filled_usd": usd}
                 for sig_figs, px, coins, usd in fills
             ]
-            bt.logging.warning(
+            logger.warning(
                 f"[SLIPPAGE_AUDIT] order_uuid={order_uuid} {trade_pair.trade_pair_id} "
                 f"size_usd={size_usd:.2f} is_buy={is_buy} mid={mid} avg_price={avg_price} "
                 f"slippage_pct={slippage_pct:.6f} fills={fills_desc}"
@@ -681,7 +681,7 @@ class HyperliquidDataService(BaseDataService):
             if isinstance(mids, dict):
                 all_supported_keys.update(mids.keys())
         except Exception as e:
-            bt.logging.warning(f"[HL_DATA_SVC] Failed to fetch allMids (default dex) for coin filtering: {e}")
+            logger.warning(f"[HL_DATA_SVC] Failed to fetch allMids (default dex) for coin filtering: {e}")
 
         # Non-default dexes (e.g. HIP-3 equities/commodities/indices) aren't included
         # in the default-dex allMids response and must be queried separately.
@@ -698,11 +698,11 @@ class HyperliquidDataService(BaseDataService):
                 resp.raise_for_status()
                 all_supported_keys.update(resp.json().keys())
             except Exception as e:
-                bt.logging.warning(f"[HL_DATA_SVC] Failed to fetch allMids for dex={dex}: {e}")
+                logger.warning(f"[HL_DATA_SVC] Failed to fetch allMids for dex={dex}: {e}")
 
         if not all_supported_keys:
             # Every dex fetch failed outright — fail open rather than unsubscribing from everything.
-            bt.logging.warning(
+            logger.warning(
                 "[HL_DATA_SVC] Failed to fetch allMids for coin filtering. Falling back to configured coins."
             )
             return configured_coins
@@ -712,7 +712,7 @@ class HyperliquidDataService(BaseDataService):
             supported = configured_coins
         elif supported != configured_coins:
             skipped = sorted(configured_coins - supported)
-            bt.logging.info(
+            logger.info(
                 f"[HL_DATA_SVC] Skipping unsupported l2Book coins on current HL env: {skipped}"
             )
         return supported

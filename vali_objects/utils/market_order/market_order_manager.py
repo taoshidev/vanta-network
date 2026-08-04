@@ -11,7 +11,6 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
-import bittensor as bt
 
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -25,6 +24,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from shared_objects.locks.position_lock_client import PositionLockClient
+from shared_objects.log import logger
 
 
 class MarketOrderManager():
@@ -73,7 +73,7 @@ class MarketOrderManager():
         if not self._live_price_client.is_market_open(trade_pair):
             raise SignalException(f"The market for {trade_pair.trade_pair_id} is currently closed.")
 
-        bt.logging.info(
+        logger.info(
             f"[ORDER_EXECUTION] {hotkey} {order_uuid} {trade_pair.trade_pair_id} "
             f"{order_type} {execution_type} size={order_size} src={order_src}"
         )
@@ -95,14 +95,14 @@ class MarketOrderManager():
             usd_base_rate = self._live_price_client.get_usd_base_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
             quote_usd_rate = self._live_price_client.get_quote_usd_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
 
-            bt.logging.info(
+            logger.info(
                 f"[ORDER_EXECUTION] {hotkey} {order_uuid} pricing: fill={fill_price} usd_base={usd_base_rate:.6g} "
                 f"quote_usd={quote_usd_rate:.6g} source={price_sources[0].source} "
                 f"bid/ask={price_sources[0].bid}/{price_sources[0].ask}"
             )
 
             if position is not None and len(position.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
-                bt.logging.info(
+                logger.info(
                     f"[ORDER_EXECUTION] {hotkey} hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
                     f"Auto-closing {trade_pair.trade_pair_id} with {len(position.orders)} orders."
                 )
@@ -137,7 +137,7 @@ class MarketOrderManager():
                 fill_price, usd_base_rate, quote_usd_rate,
                 slippage, is_hl_taker
             )
-            bt.logging.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
+            logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
             return order, position
 
     def _apply_order(
@@ -179,7 +179,7 @@ class MarketOrderManager():
             use_nano_increment=use_nano_increment,
         )
 
-        bt.logging.info(
+        logger.info(
             f"[ORDER_EXECUTION] {hotkey} {order_uuid} sizing: qty={quantity:.6g} val=${value:.4f} (from {order_size})"
         )
 
@@ -196,7 +196,7 @@ class MarketOrderManager():
             sign = -1 if order_type == OrderType.SHORT else 1
             clamped_value = sign * min(abs(value), max_order_value)
             if abs(clamped_value) < abs(value):
-                bt.logging.info(
+                logger.info(
                     f"[ORDER_EXECUTION] {hotkey} {order_uuid} order value clamped from ${value:.4f} to ${clamped_value:.4f} by {binding_cap}"
                 )
             value = clamped_value
@@ -232,7 +232,7 @@ class MarketOrderManager():
             slippage = self._live_price_client.calculate_slippage(order.bid, order.ask, order)
         order.slippage = slippage
 
-        bt.logging.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} slippage={order.slippage:.6g}")
+        logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} slippage={order.slippage:.6g}")
 
         if not order.value or not order.quantity:
             raise SignalException(f"Order value and quantity must be set before applying order. value={order.value}, quantity={order.quantity}")
@@ -240,8 +240,8 @@ class MarketOrderManager():
         if is_buy:
             allowed, reason = self._entity_collateral_client.try_gate_position_open(hotkey, order.value)
             if not allowed:
-                bt.logging.error(f"{hotkey} {order_uuid} Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
-                raise SignalException(f"Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
+                logger.error(f"{hotkey} {order_uuid} Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
+                raise SignalException("Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
 
         if is_buy and trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA and miner_account.asset_class == MinerAssetClass.EQUITIES:
             cash_available = balance - (miner_account.capital_used - miner_account.total_borrowed_amount)
@@ -271,12 +271,12 @@ class MarketOrderManager():
         return order
 
     def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
-        bt.logging.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")
+        logger.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")
 
         open_positions = self._position_client.get_positions_for_hotkeys([hotkey], only_open_positions=True).get(hotkey)
 
         if not open_positions:
-            bt.logging.warning(f"No open positions found for miner [{hotkey}]")
+            logger.warning(f"No open positions found for miner [{hotkey}]")
             return
 
         if close_all:
@@ -285,13 +285,13 @@ class MarketOrderManager():
             target_uuids = set(position_uuids or [])
             positions_to_close = [p for p in open_positions if p.position_uuid in target_uuids]
             if not positions_to_close:
-                bt.logging.info(f"No matching positions found for UUIDs {position_uuids} for miner [{hotkey}]")
+                logger.info(f"No matching positions found for UUIDs {position_uuids} for miner [{hotkey}]")
                 return
 
         total_positions = len(positions_to_close)
         cnt_closed = 0
 
-        bt.logging.info(f"Found {total_positions} positions to close for miner [{hotkey}]")
+        logger.info(f"Found {total_positions} positions to close for miner [{hotkey}]")
 
         for i, position in enumerate(positions_to_close):
             position_close_uuid = f"{position.position_uuid}-flat-all"
@@ -309,13 +309,13 @@ class MarketOrderManager():
                 cnt_closed += 1
 
             except Exception as e:
-                bt.logging.error(
+                logger.error(
                     f"[FLAT_ALL] Failed to close position {i+1}/{total_positions} "
                     f"[{position.trade_pair.trade_pair_id}] for miner [{hotkey}]: {str(e)}"
                 )
                 continue
 
-        bt.logging.info(
+        logger.info(
             f"[FLAT_ALL] Completed for miner [{hotkey}]: "
             f"{cnt_closed}/{total_positions} positions closed"
         )
@@ -366,5 +366,5 @@ class MarketOrderManager():
         if not self.running_unit_tests:
             raise Exception('clear_order_cooldown_cache can only be called in unit test mode')
         self.last_order_time_cache.clear()
-        bt.logging.debug("Cleared market order cooldown cache")
+        logger.debug("Cleared market order cooldown cache")
 

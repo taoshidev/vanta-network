@@ -9,11 +9,11 @@ while maintaining its unique execution model (runs in main validator process).
 """
 
 import time
-import bittensor as bt
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 class SubtensorOpsServer(RPCServerBase):
@@ -133,7 +133,7 @@ class SubtensorOpsServer(RPCServerBase):
         Must be called after daemon starts.
         """
         # Wait for metagraph_client to be wired (happens after all servers start)
-        bt.logging.info("Waiting for metagraph_client to be wired...")
+        logger.info("Waiting for metagraph_client to be wired...")
         start_time = time.time()
         while self.manager._metagraph_client is None:
             if time.time() - start_time > max_wait_time:
@@ -142,7 +142,7 @@ class SubtensorOpsServer(RPCServerBase):
                 raise RuntimeError("Shutdown during metagraph_client wait")
             time.sleep(0.1)
 
-        bt.logging.info("Waiting for initial metagraph population...")
+        logger.info("Waiting for initial metagraph population...")
         start_time = time.time()
 
         while (not self.manager._metagraph_client.get_hotkeys() and
@@ -153,11 +153,11 @@ class SubtensorOpsServer(RPCServerBase):
 
         if not self.manager._metagraph_client.get_hotkeys():
             error_msg = f"Failed to populate metagraph within {max_wait_time}s"
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             if self.slack_notifier:
                 self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
             raise RuntimeError(error_msg)
 
-        bt.logging.success(
+        logger.info(
             f"Metagraph populated with {len(self.manager._metagraph_client.get_hotkeys())} hotkeys"
         )

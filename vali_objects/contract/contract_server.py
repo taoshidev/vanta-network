@@ -18,12 +18,12 @@ Usage:
     from vali_objects.utils.contract_server import ContractClient
     client = ContractClient()  # Uses ValiConfig.RPC_CONTRACTMANAGER_PORT
 """
-import bittensor as bt
 from typing import Dict, Any, Optional
 import time
 from setproctitle import setproctitle
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.log import logger
 
 
 # ==================== Server Implementation ====================
@@ -247,7 +247,7 @@ def start_contract_server(
         start_server=True,
     )
 
-    bt.logging.success(f"ContractServer ready on port {ValiConfig.RPC_CONTRACTMANAGER_PORT}")
+    logger.info(f"ContractServer ready on port {ValiConfig.RPC_CONTRACTMANAGER_PORT}")
 
     if server_ready:
         server_ready.set()
@@ -257,4 +257,4 @@ def start_contract_server(
         time.sleep(1)
 
     server_instance.shutdown()
-    bt.logging.info("ContractServer process exiting")
+    logger.info("ContractServer process exiting")

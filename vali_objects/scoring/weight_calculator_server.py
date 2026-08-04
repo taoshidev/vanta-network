@@ -26,7 +26,6 @@ from typing import List, Tuple
 
 from setproctitle import setproctitle
 
-import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
@@ -35,6 +34,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.scoring.weight_calculator_manager import WeightCalculatorManager
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+from shared_objects.log import logger
 
 
 class WeightCalculatorServer(RPCServerBase, CacheController):
@@ -91,7 +91,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
                 is_mainnet = False
 
         # Always create in-process - constructor NEVER spawns
-        bt.logging.info("[WC_SERVER] Creating WeightCalculatorServer in-process")
+        logger.info("[WC_SERVER] Creating WeightCalculatorServer in-process")
 
         # Initialize CacheController first (for cache file setup)
         CacheController.__init__(
@@ -114,7 +114,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             slack_notifier=slack_notifier
         )
 
-        bt.logging.info("[WC_SERVER] WeightCalculatorManager initialized")
+        logger.info("[WC_SERVER] WeightCalculatorManager initialized")
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -150,7 +150,7 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         if not self.refresh_allowed(ValiConfig.SET_WEIGHT_REFRESH_TIME_MS):
             return
 
-        bt.logging.info("Running weight calculator daemon iteration")
+        logger.info("Running weight calculator daemon iteration")
         current_time = TimeUtil.now_in_millis()
 
         try:
@@ -161,15 +161,15 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
                 self.set_last_update_time()
             else:
                 # No weights computed - likely debt ledgers not ready yet
-                bt.logging.warning(
+                logger.warning(
                     "No weights computed (debt ledgers may still be initializing). "
                     "Waiting 5 minutes before retry..."
                 )
                 time.sleep(300)
 
         except Exception as e:
-            bt.logging.error(f"Error in weight calculator daemon: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error in weight calculator daemon: {e}")
+            logger.error(traceback.format_exc())
 
             # Send error notification (manager also sends errors, but daemon errors are critical)
             if self._manager.slack_notifier:
@@ -269,7 +269,7 @@ def start_weight_calculator_server(
         connection_mode=RPCConnectionMode.RPC
     )
 
-    bt.logging.success(f"WeightCalculatorServer ready on port {ValiConfig.RPC_WEIGHT_CALCULATOR_PORT}")
+    logger.info(f"WeightCalculatorServer ready on port {ValiConfig.RPC_WEIGHT_CALCULATOR_PORT}")
 
     if server_ready:
         server_ready.set()
@@ -280,4 +280,4 @@ def start_weight_calculator_server(
 
     # Graceful shutdown
     server_instance.shutdown()
-    bt.logging.info("WeightCalculatorServer process exiting")
+    logger.info("WeightCalculatorServer process exiting")

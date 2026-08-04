@@ -8,7 +8,6 @@ Clients connect using ChallengePeriodClient.
 
 """
 import time
-import bittensor as bt
 from typing import Tuple
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
@@ -16,6 +15,7 @@ from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.log import logger
 
 
 class ChallengePeriodServer(RPCServerBase):
@@ -46,7 +46,7 @@ class ChallengePeriodServer(RPCServerBase):
         self.running_unit_tests = running_unit_tests
 
         # Always create in-process - constructor NEVER spawns
-        bt.logging.info("[CP_SERVER] Creating ChallengePeriodServer in-process")
+        logger.info("[CP_SERVER] Creating ChallengePeriodServer in-process")
 
         # Create own CommonDataClient (forward compatibility - no parameter passing)
         self._common_data_client = CommonDataClient(
@@ -63,7 +63,7 @@ class ChallengePeriodServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
-        bt.logging.info("[CP_SERVER] ChallengePeriodManager initialized")
+        logger.info("[CP_SERVER] ChallengePeriodManager initialized")
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -98,7 +98,7 @@ class ChallengePeriodServer(RPCServerBase):
         Checks for sync in progress, then refreshes challenge period.
         """
         if self.sync_in_progress:
-            bt.logging.warning("ChallengePeriodManager: Sync in progress, pausing...")
+            logger.warning("ChallengePeriodManager: Sync in progress, pausing...")
             time.sleep(1)
             return
 

@@ -8,7 +8,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from pathlib import Path
 
 
-import bittensor as bt
+from shared_objects.log import logger
 
 
 class CacheController:
@@ -44,7 +44,7 @@ class CacheController:
         delta_time_s = delta_time_ms / 1000
         delta_time_s_formatted_3_decimals = "{:.3f}".format(delta_time_s)
         if not skip_message:
-            bt.logging.success(f"Finished updating class {self.__class__.__name__} in {delta_time_s_formatted_3_decimals} seconds.")
+            logger.info(f"Finished updating class {self.__class__.__name__} in {delta_time_s_formatted_3_decimals} seconds.")
 
     @staticmethod
     def get_directory_names(query_dir):
@@ -68,7 +68,7 @@ class CacheController:
             ans['price_info'] = price_info
         if return_info:
             ans['return_info'] = return_info
-        bt.logging.info(f"Created elimination row: {ans}")
+        logger.info(f"Created elimination row: {ans}")
         return ans
 
     def refresh_allowed(self, refresh_interval_ms):

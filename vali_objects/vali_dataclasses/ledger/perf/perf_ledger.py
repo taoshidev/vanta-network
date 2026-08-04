@@ -2,12 +2,13 @@ import math
 
 from vali_objects.enums.misc import TradePairReturnStatus
 from typing import Dict, Tuple, Optional
-import bittensor as bt
 from shared_objects.sn8_multiprocessing import ParallelizationMode, get_spark_session, get_multiprocessing_pool
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+import logging
+from shared_objects.log import logger
 
 class PerfCheckpoint:
     def __init__(
@@ -185,7 +186,7 @@ class PerfLedger():
 
     def purge_old_cps(self):
         while self.get_total_ledger_duration_ms() > self.target_ledger_window_ms:
-            bt.logging.trace(
+            logger.debug(
                 f"Purging old perf cp {self.cps[0]}. Total ledger duration: {self.get_total_ledger_duration_ms()}. Target ledger window: {self.target_ledger_window_ms}")
             self.cps = self.cps[1:]  # Drop the first cp (oldest)
 
@@ -322,7 +323,7 @@ class PerfLedger():
             # Calculate time since this checkpoint's last update
             time_to_accumulate = now_ms - current_cp.last_update_ms
             if time_to_accumulate < 0:
-                bt.logging.error(f"Negative accumulated time: {time_to_accumulate} for miner {miner_hotkey}."
+                logger.error(f"Negative accumulated time: {time_to_accumulate} for miner {miner_hotkey}."
                                  f" start_time_ms: {self.start_time_ms}, now_ms: {now_ms}")
                 time_to_accumulate = 0
 
@@ -447,7 +448,7 @@ if __name__ == "__main__":
     from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
     from vali_objects.position_management.position_manager_client import PositionManagerClient
 
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
 
     # Configuration flags
     use_database_positions = True  # NEW: Enable database position loading
@@ -481,10 +482,10 @@ if __name__ == "__main__":
         # Determine source type
         if use_database_positions:
             source_type = PositionSource.DATABASE
-            bt.logging.info("Using database as position source")
+            logger.info("Using database as position source")
         else:  # use_test_positions
             source_type = PositionSource.TEST
-            bt.logging.info("Using test data as position source")
+            logger.info("Using test data as position source")
 
         # Load positions
         position_source_manager = PositionSourceManager(source_type)
@@ -495,7 +496,7 @@ if __name__ == "__main__":
         # Update hotkeys to process based on loaded positions
         if hk_to_positions:
             hotkeys_to_process = list(hk_to_positions.keys())
-            bt.logging.info(f"Loaded positions for {len(hotkeys_to_process)} miners from {source_type.value}")
+            logger.info(f"Loaded positions for {len(hotkeys_to_process)} miners from {source_type.value}")
 
     # Save loaded positions if using alternative source
     if hk_to_positions:
@@ -507,7 +508,7 @@ if __name__ == "__main__":
                     continue
                 position_manager_client.save_miner_position(pos)
                 position_count += 1
-        bt.logging.info(f"Saved {position_count} positions to position manager")
+        logger.info(f"Saved {position_count} positions to position manager")
 
     # PerfLedgerManager creates its own MetagraphClient and PositionManagerClient internally
     perf_ledger_manager = PerfLedgerManager(running_unit_tests=False,
@@ -517,10 +518,10 @@ if __name__ == "__main__":
     if parallel_mode == ParallelizationMode.SERIAL:
         # Use serial update like validators do
         if test_single_hotkey:
-            bt.logging.info(f"Running single-hotkey test for: {test_single_hotkey}")
+            logger.info(f"Running single-hotkey test for: {test_single_hotkey}")
             perf_ledger_manager.update(testing_one_hotkey=test_single_hotkey, t_ms=TimeUtil.now_in_millis())
         else:
-            bt.logging.info("Running standard sequential update for all hotkeys")
+            logger.info("Running standard sequential update for all hotkeys")
             perf_ledger_manager.update(regenerate_all_ledgers=regenerate_all)
     else:
         # Get positions and existing ledgers

@@ -3,7 +3,6 @@ import threading
 import traceback
 import json
 from datetime import timedelta
-from multiprocessing import Process
 
 import requests
 from typing import List
@@ -16,13 +15,13 @@ import time
 import websockets
 
 from vali_objects.utils.vali_utils import ValiUtils
-import bittensor as bt
 
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
 from tiingo import TiingoClient#, TiingoWebsocketClient
 
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
+from shared_objects.log import logger
 
 DEBUG = 0
 TIINGO_COINBASE_EXCHANGE_STR = 'gdax'
@@ -80,20 +79,20 @@ class _TiingoPseudoClient:
                         self._svc.tpc_to_n_events[trade_pair.trade_pair_category] += 1
 
             except Exception as e:
-                bt.logging.error(f"Error in {self._svc.provider_name} pseudo websocket for {self._cat}: {e}")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"Error in {self._svc.provider_name} pseudo websocket for {self._cat}: {e}")
+                logger.error(traceback.format_exc())
                 await asyncio.sleep(5)
 
 
     def unsubscribe_all(self):
         """Signal that the client should stop polling."""
         self._should_close = True
-        bt.logging.info(f"Unsubscribed {self._svc.provider_name} websocket client for {self._cat}")
+        logger.info(f"Unsubscribed {self._svc.provider_name} websocket client for {self._cat}")
 
     async def close(self):
         """Close the client."""
         self._should_close = True
-        bt.logging.info(f"Closed {self._svc.provider_name} websocket client for {self._cat}")
+        logger.info(f"Closed {self._svc.provider_name} websocket client for {self._cat}")
 
 
 class _TiingoWebsocketClient:
@@ -142,11 +141,11 @@ class _TiingoWebsocketClient:
                 }
             }
 
-            bt.logging.info(f"Subscribing to {self._cat} with tickers: {tickers}")
+            logger.info(f"Subscribing to {self._cat} with tickers: {tickers}")
 
             # Send subscription (async send)
             await self._ws.send(json.dumps(subscribe))
-            bt.logging.info(f"Subscribed to {len(tickers)} {self._cat} tickers")
+            logger.info(f"Subscribed to {len(tickers)} {self._cat} tickers")
 
             # Receive loop - keep running until closed or error
             while not self._should_close:
@@ -155,16 +154,16 @@ class _TiingoWebsocketClient:
                     await handle_msg(msg)
                 except websockets.exceptions.ConnectionClosed as e:
                     if e.rcvd is not None:
-                        bt.logging.warning(f"Tiingo {self._cat} websocket closed: code={e.rcvd.code}, reason={e.rcvd.reason}")
+                        logger.warning(f"Tiingo {self._cat} websocket closed: code={e.rcvd.code}, reason={e.rcvd.reason}")
                     else:
-                        bt.logging.warning(f"Tiingo {self._cat} websocket closed abnormally (no close frame received)")
+                        logger.warning(f"Tiingo {self._cat} websocket closed abnormally (no close frame received)")
                     break
                 except Exception as e:
                     if self._should_close:
                         break
-                    bt.logging.error(f"Error receiving/handling message for {self._cat}: {e}")
-                    bt.logging.error(f"Exception type: {type(e).__name__}")
-                    bt.logging.error(traceback.format_exc())
+                    logger.error(f"Error receiving/handling message for {self._cat}: {e}")
+                    logger.error(f"Exception type: {type(e).__name__}")
+                    logger.error(traceback.format_exc())
                     # Don't raise - continue receiving
                     continue
         finally:
@@ -230,9 +229,9 @@ class TiingoDataService(BaseDataService):
         # 1) trigger the forced‐exception in run_pseudo_websocket()
         try:
             client.unsubscribe_all()
-            bt.logging.info(f"Unsubscribed {self.provider_name} websocket for {tpc.name.lower()}")
+            logger.info(f"Unsubscribed {self.provider_name} websocket for {tpc.name.lower()}")
         except Exception:
-            bt.logging.warning(
+            logger.warning(
                 f"Failed to unsubscribe old {self.provider_name} websocket for {tpc.name.lower()}",
                 exc_info=True
             )
@@ -246,7 +245,7 @@ class TiingoDataService(BaseDataService):
 
         client = _TiingoWebsocketClient(self, tpc, self._api_key)
         # client = _TiingoPseudoClient(self, tpc)
-        bt.logging.info(f"Created {self.provider_name} pseudo-websocket (REST polling) for {tpc}")
+        logger.info(f"Created {self.provider_name} pseudo-websocket (REST polling) for {tpc}")
         self.WEBSOCKET_OBJECTS[tpc] = client
 
     def _subscribe_websockets(self, tpc):
@@ -254,7 +253,7 @@ class TiingoDataService(BaseDataService):
         For Tiingo we never actually tear down the polling thread, so this
         can just log and move on.
         """
-        #bt.logging.info(f"Subscribing {self.provider_name} for {tpc} is a noop.")
+        #logger.info(f"Subscribing {self.provider_name} for {tpc} is a noop.")
         pass
 
     def instantiate_not_pickleable_objects(self):
@@ -378,7 +377,7 @@ class TiingoDataService(BaseDataService):
             full_traceback = traceback.format_exc()
             # Slice the last 1000 characters of the traceback
             limited_traceback = full_traceback[-1000:]
-            bt.logging.error(f"Failed to handle {TIINGO_PROVIDER_NAME} websocket message with error: {e}, "
+            logger.error(f"Failed to handle {TIINGO_PROVIDER_NAME} websocket message with error: {e}, "
                              f"type: {type(e).__name__}, traceback: {limited_traceback}")
 
     def process_ps_from_websocket(self, tp: TradePair, ps1: PriceSource):
@@ -522,7 +521,7 @@ class TiingoDataService(BaseDataService):
                     if attempting_previous_close and tp_to_price[tp]:
                         self.closed_market_prices[tp] = tp_to_price[tp]
             else:
-                bt.logging.warning(f"Tiingo equities API request failed with status code {requestResponse.status_code}. "
+                logger.warning(f"Tiingo equities API request failed with status code {requestResponse.status_code}. "
                                  f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
                 continue
 
@@ -618,7 +617,7 @@ class TiingoDataService(BaseDataService):
                     if attempting_previous_close and tp_to_price[tp]:
                         self.closed_market_prices[tp] = tp_to_price[tp]
             else:
-                bt.logging.warning(f"Tiingo forex API request failed with status code {requestResponse.status_code}. "
+                logger.warning(f"Tiingo forex API request failed with status code {requestResponse.status_code}. "
                                  f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
                 continue
 
@@ -647,7 +646,7 @@ class TiingoDataService(BaseDataService):
             if requestResponse.status_code == 429:
                 continue
             if requestResponse.status_code != 200:
-                bt.logging.warning(f"Tiingo crypto API request failed with status code {requestResponse.status_code}. "
+                logger.warning(f"Tiingo crypto API request failed with status code {requestResponse.status_code}. "
                                  f"URL: {url[:100]}... Response: {requestResponse.text[:200]}")
                 continue
 
@@ -709,7 +708,7 @@ class TiingoDataService(BaseDataService):
         lag_s = time.time() - timestamp_ms / 1000.0
         is_stale = lag_s > max_allowed_lag_s
         if is_stale:
-            bt.logging.info(f"Found stale Tiingo websocket data for {trade_pair.trade_pair}. Lag_s: {lag_s} "
+            logger.info(f"Found stale Tiingo websocket data for {trade_pair.trade_pair}. Lag_s: {lag_s} "
                             f"seconds. Max allowed lag for category: {max_allowed_lag_s} seconds. Ignoring this data.")
         return cur_event
 

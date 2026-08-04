@@ -11,19 +11,17 @@ Tests end-to-end broadcast scenarios using real server infrastructure:
 Pattern follows test_challengeperiod_integration.py with ServerOrchestrator.
 """
 import unittest
-from copy import deepcopy
 from types import SimpleNamespace
-import bittensor as bt
 
 from time_util.time_util import TimeUtil
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.vali_config import ValiConfig, TradePairCategory, RPCConnectionMode
 from vali_objects.utils.vali_utils import ValiUtils
-from entity_management.entity_manager import EntityManager, EntityData, SubaccountInfo
+from entity_management.entity_manager import EntityManager
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
-from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager
+from shared_objects.log import logger
 
 
 class TestBroadcastIntegration(TestBase):
@@ -74,7 +72,7 @@ class TestBroadcastIntegration(TestBase):
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
         cls.subtensor_ops_client = cls.orchestrator.get_client('subtensor_ops')
 
-        bt.logging.info("[BROADCAST_INTEGRATION] Servers started and clients initialized")
+        logger.info("[BROADCAST_INTEGRATION] Servers started and clients initialized")
 
     @classmethod
     def tearDownClass(cls):
@@ -98,7 +96,7 @@ class TestBroadcastIntegration(TestBase):
             self.TEST_MINER_HOTKEY
         ])
 
-        bt.logging.info("[BROADCAST_INTEGRATION] Test setup complete")
+        logger.info("[BROADCAST_INTEGRATION] Test setup complete")
 
     def tearDown(self):
         """Per-test teardown: Clear data for next test."""
@@ -209,7 +207,7 @@ class TestBroadcastIntegration(TestBase):
             self.assertEqual(received_subaccount.asset_class, "crypto",
                            "Asset class should match broadcasted value")
 
-            bt.logging.success(
+            logger.info(
                 f"✓ SubaccountRegistration broadcast test passed:\n"
                 f"  - Mothership created subaccount: {subaccount_info.synthetic_hotkey}\n"
                 f"  - Non-mothership received and persisted subaccount\n"
@@ -267,7 +265,7 @@ class TestBroadcastIntegration(TestBase):
             entity_data = receiver_manager.get_entity_data(self.TEST_ENTITY_HOTKEY)
             self.assertIsNone(entity_data, "Entity should not exist after rejected broadcast")
 
-            bt.logging.success(
+            logger.info(
                 "✓ Unauthorized broadcast rejection test passed:\n"
                 f"  - Broadcast from {self.NON_MOTHERSHIP_HOTKEY} was rejected\n"
                 f"  - Expected mothership: {self.MOTHERSHIP_HOTKEY}"
@@ -345,7 +343,7 @@ class TestBroadcastIntegration(TestBase):
             self.assertIsNotNone(received_selection)
             self.assertEqual(received_selection, TradePairCategory.CRYPTO)
 
-            bt.logging.success(
+            logger.info(
                 f"✓ AssetSelection broadcast test passed:\n"
                 f"  - Mothership selected asset class: {asset_class.value}\n"
                 f"  - Non-mothership received and persisted selection\n"
@@ -395,7 +393,7 @@ class TestBroadcastIntegration(TestBase):
             selection = receiver_manager.get_asset_selection(self.TEST_MINER_HOTKEY)
             self.assertIsNone(selection, "Asset selection should not exist after rejected broadcast")
 
-            bt.logging.success("✓ Unauthorized AssetSelection broadcast rejected")
+            logger.info("✓ Unauthorized AssetSelection broadcast rejected")
         finally:
             ValiConfig.MOTHERSHIP_HOTKEY_TESTNET = original_mothership_hotkey
 
@@ -491,7 +489,7 @@ class TestBroadcastIntegration(TestBase):
             self.assertIsNotNone(received_account_size)
             self.assertEqual(received_account_size, expected_account_size)
 
-            bt.logging.success(
+            logger.info(
                 f"✓ CollateralRecord broadcast test passed:\n"
                 f"  - Mothership set account size: ${expected_account_size:,.2f}\n"
                 f"  - Non-mothership received and persisted record\n"
@@ -548,7 +546,7 @@ class TestBroadcastIntegration(TestBase):
             )
             self.assertIsNone(account_size, "Account size should not exist after rejected broadcast")
 
-            bt.logging.success("✓ Unauthorized CollateralRecord broadcast rejected")
+            logger.info("✓ Unauthorized CollateralRecord broadcast rejected")
         finally:
             ValiConfig.MOTHERSHIP_HOTKEY = original_mothership_hotkey
 
@@ -684,7 +682,7 @@ class TestBroadcastIntegration(TestBase):
             )
             self.assertEqual(received_account_size, account_size)
 
-            bt.logging.success(
+            logger.info(
                 "✓ All managers broadcast test passed:\n"
                 "  - EntityManager: SubaccountRegistration broadcast successful\n"
                 "  - AssetSelectionManager: AssetSelection broadcast successful\n"

@@ -21,10 +21,8 @@ import os
 import sys
 import traceback
 
-import bittensor as bt
 
 from runnable.migration_utils import MigrationUtils
-from vali_objects.enums.misc import OrderStatus
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import (
     TRADE_PAIR_ID_TO_TRADE_PAIR,
@@ -32,6 +30,7 @@ from vali_objects.vali_config import (
 )
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
+from shared_objects.log import logger
 
 
 def _resolve_dynamic_tp(dynamic_tp_id: str) -> TradePair | None:
@@ -106,7 +105,7 @@ def _migrate_positions(dry_run: bool, running_unit_tests: bool) -> tuple[int, in
                         migrated += 1
                     except Exception as e:
                         failed += 1
-                        bt.logging.error(
+                        logger.error(
                             f"Failed to process position {old_path}: {e}\n"
                             f"{traceback.format_exc()}"
                         )
@@ -174,7 +173,7 @@ def _migrate_limit_orders(dry_run: bool, running_unit_tests: bool) -> tuple[int,
                         migrated += 1
                     except Exception as e:
                         failed += 1
-                        bt.logging.error(
+                        logger.error(
                             f"Failed to process limit order {old_path}: {e}\n"
                             f"{traceback.format_exc()}"
                         )

@@ -18,6 +18,8 @@ from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from time_util.time_util import TimeUtil
 
 import bittensor as bt
+import logging
+from shared_objects.log import logger
 
 
 # Simple picklable data structures for unit testing (must be module-level to be picklable)
@@ -167,8 +169,8 @@ class SubtensorOpsManager(CacheController):
             try:
                 self.subtensor = bt.Subtensor(config=self.config)
             except (ConnectionRefusedError, ConnectionError, OSError) as e:
-                bt.logging.error(f"Failed to create initial subtensor connection: {e}")
-                bt.logging.warning("Will retry during first metagraph update loop iteration")
+                logger.error(f"Failed to create initial subtensor connection: {e}")
+                logger.warning("Will retry during first metagraph update loop iteration")
                 # Set to None - update loop will recreate it (using consecutive_failures > 0 logic)
                 self.subtensor = None
                 # Increment consecutive_failures so update loop tries to recreate immediately
@@ -202,11 +204,11 @@ class SubtensorOpsManager(CacheController):
                 f"wss://entrypoint-{n}.opentensor.ai:443" for n in self.round_robin_networks
             }
             if configured_endpoint in default_endpoints:
-                bt.logging.info(f"Using round-robin metagraph for network {self.config.subtensor.network}. ")
+                logger.info(f"Using round-robin metagraph for network {self.config.subtensor.network}. ")
                 self.round_robin_enabled = True
                 self.current_round_robin_index = self.round_robin_networks.index(self.config.subtensor.network)
             else:
-                bt.logging.info(
+                logger.info(
                     f"Custom chain_endpoint configured ({configured_endpoint}); "
                     f"round-robin rotation disabled to preserve it. Connection "
                     f"recreation on failure remains active."
@@ -244,7 +246,7 @@ class SubtensorOpsManager(CacheController):
 
         # Log mode
         mode = "miner" if is_miner else "validator"
-        bt.logging.info(f"SubtensorOpsManager initialized in {mode} mode, weight setting via RPC")
+        logger.info(f"SubtensorOpsManager initialized in {mode} mode, weight setting via RPC")
 
     def _create_mock_subtensor(self):
         """Create a mock subtensor for unit testing."""
@@ -402,11 +404,11 @@ class SubtensorOpsManager(CacheController):
         """
         try:
             if self.running_unit_tests:
-                bt.logging.debug("[BROADCAST RPC] Running unit tests, skipping broadcast")
+                logger.debug("[BROADCAST RPC] Running unit tests, skipping broadcast")
                 return {"success": True, "success_count": 0, "total_count": 0, "errors": []}
 
             if not validator_axons_list:
-                bt.logging.debug("[BROADCAST RPC] No validators to broadcast to")
+                logger.debug("[BROADCAST RPC] No validators to broadcast to")
                 return {"success": True, "success_count": 0, "total_count": 0, "errors": []}
 
             # Validate synapse object
@@ -419,7 +421,7 @@ class SubtensorOpsManager(CacheController):
             wallet = bt.Wallet(config=self.config)
 
             target_hotkeys = [a.hotkey for a in validator_axons_list]
-            bt.logging.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators: {target_hotkeys}")
+            logger.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators: {target_hotkeys}")
 
             async def do_broadcast():
                 async with bt.Dendrite(wallet=wallet) as dendrite:
@@ -440,7 +442,7 @@ class SubtensorOpsManager(CacheController):
 
             success_count, errors, successful_hotkeys = asyncio.run(do_broadcast())
 
-            bt.logging.info(
+            logger.info(
                 f"[BROADCAST RPC] Broadcast completed: {success_count}/{len(validator_axons_list)} validators updated. "
                 f"Successful: {successful_hotkeys}"
             )
@@ -454,8 +456,8 @@ class SubtensorOpsManager(CacheController):
 
         except Exception as e:
             error_msg = f"Error in broadcast_to_validators_rpc: {e}"
-            bt.logging.error(error_msg)
-            bt.logging.error(traceback.format_exc())
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
             return {"success": False, "success_count": 0, "total_count": 0, "errors": [str(e)]}
 
     def set_weights_rpc(self, uids, weights, version_key):
@@ -480,7 +482,7 @@ class SubtensorOpsManager(CacheController):
             else:
                 wallet = bt.Wallet(config=self.config)
 
-            bt.logging.info(f"[RPC] Processing weight setting request for {len(uids)} UIDs")
+            logger.info(f"[RPC] Processing weight setting request for {len(uids)} UIDs")
 
             # Set weights with retry logic
             success, error_msg = self._set_weights_with_retry(
@@ -493,7 +495,7 @@ class SubtensorOpsManager(CacheController):
 
             if success:
                 self.last_weight_set = time.time()
-                bt.logging.success("[RPC] Weight setting completed successfully")
+                logger.info("[RPC] Weight setting completed successfully")
 
                 # Track success and check for recovery alerts
                 if self.weight_failure_tracker:
@@ -503,7 +505,7 @@ class SubtensorOpsManager(CacheController):
 
                 return {"success": True, "error": None}
             else:
-                bt.logging.warning(f"[RPC] Weight setting failed: {error_msg}")
+                logger.warning(f"[RPC] Weight setting failed: {error_msg}")
 
                 # Track failure and send alerts
                 if self.weight_failure_tracker:
@@ -518,8 +520,8 @@ class SubtensorOpsManager(CacheController):
 
         except Exception as e:
             error_msg = f"Error in set_weights_rpc: {e}"
-            bt.logging.error(error_msg)
-            bt.logging.error(traceback.format_exc())
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
             return {"success": False, "error": error_msg}
 
     def _current_timestamp(self):
@@ -533,10 +535,10 @@ class SubtensorOpsManager(CacheController):
         if hasattr(self, 'subtensor') and self.subtensor:
             try:
                 if hasattr(self.subtensor, 'substrate') and self.subtensor.substrate:
-                    bt.logging.debug("Cleaning up substrate connection")
+                    logger.debug("Cleaning up substrate connection")
                     self.subtensor.substrate.close()
             except Exception as e:
-                bt.logging.warning(f"Error during substrate cleanup: {e}")
+                logger.warning(f"Error during substrate cleanup: {e}")
     
     def get_subtensor(self):
         """
@@ -570,19 +572,19 @@ class SubtensorOpsManager(CacheController):
         updater_thread.start()
         
         # Wait for initial metagraph population before proceeding
-        bt.logging.info("Waiting for initial metagraph population...")
+        logger.info("Waiting for initial metagraph population...")
         start_time = time.time()
         while not self._metagraph_client.get_hotkeys() and (time.time() - start_time) < max_wait_time:
             time.sleep(1)
 
         if not self._metagraph_client.get_hotkeys():
             error_msg = f"Failed to populate metagraph within {max_wait_time} seconds"
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             if slack_notifier:
                 slack_notifier.send_message(f"❌ {error_msg}", level="error")
             exit()
 
-        bt.logging.info(f"Metagraph populated with {len(self._metagraph_client.get_hotkeys())} hotkeys")
+        logger.info(f"Metagraph populated with {len(self._metagraph_client.get_hotkeys())} hotkeys")
         return updater_thread
 
     def estimate_number_of_validators(self):
@@ -597,7 +599,7 @@ class SubtensorOpsManager(CacheController):
     def run_update_loop(self):
         mode_name = "miner" if self.is_miner else "validator"
         setproctitle(f"metagraph_updater_{mode_name}_{self.hotkey}")
-        bt.logging.enable_info()
+        logger.setLevel(logging.INFO)
 
         while not ShutdownCoordinator.is_shutdown():
             try:
@@ -605,7 +607,7 @@ class SubtensorOpsManager(CacheController):
                 # Reset backoff on successful update
                 if self.consecutive_failures > 0:
                     rr_network = self.round_robin_networks[self.current_round_robin_index] if self.round_robin_enabled else "N/A"
-                    bt.logging.info(
+                    logger.info(
                         f"Metagraph update successful after {self.consecutive_failures} failures. Resetting backoff. "
                         f"round_robin_enabled: {self.round_robin_enabled}. rr_network: {rr_network}")
                     if self.slack_notifier:
@@ -628,8 +630,8 @@ class SubtensorOpsManager(CacheController):
                 error_msg = (f"Error during metagraph update (attempt #{self.consecutive_failures}): {e}. "
                              f"Next retry in {self.current_backoff} seconds. round_robin_enabled: {self.round_robin_enabled}"
                              f" rr_network {rr_network}\n")
-                bt.logging.error(error_msg)
-                bt.logging.error(traceback.format_exc())
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
 
                 if self.slack_notifier:
                     # Get compact traceback using shared utility
@@ -655,7 +657,7 @@ class SubtensorOpsManager(CacheController):
         # Check if subtensor is available before attempting weight setting
         if self.subtensor is None:
             error_msg = "Subtensor connection not available (initialization or reconnection in progress)"
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             return False, error_msg
 
         max_retries = len(self.round_robin_networks) if self.round_robin_enabled else 1
@@ -682,14 +684,14 @@ class SubtensorOpsManager(CacheController):
                     except TypeError:
                         response_details = repr(response)
                     error_msg = f"empty response from set_weights: {response_details}"
-                bt.logging.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
+                logger.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
                 return success, error_msg
 
             except Exception as e:
-                bt.logging.warning(f"Weight setting failed (attempt {attempt + 1}): {e}")
+                logger.warning(f"Weight setting failed (attempt {attempt + 1}): {e}")
                 # Let the metagraph updater handle round-robin switching to avoid potential race conditions and rate limit issues
                 #if self.round_robin_enabled and attempt < max_retries - 1:
-                #    bt.logging.info("Switching to next network for weight setting retry")
+                #    logger.info("Switching to next network for weight setting retry")
                 #    self._switch_to_next_network()
                 #else:
                 #    return False, str(e)
@@ -714,7 +716,7 @@ class SubtensorOpsManager(CacheController):
         self.current_round_robin_index = (self.current_round_robin_index + 1) % len(self.round_robin_networks)
         next_network = self.round_robin_networks[self.current_round_robin_index]
         
-        bt.logging.info(f"Switching to next network: {next_network}")
+        logger.info(f"Switching to next network: {next_network}")
         
         # Update config
         self.config.subtensor.network = next_network
@@ -743,11 +745,11 @@ class SubtensorOpsManager(CacheController):
                 if hasattr(wallet.hotkey, 'ss58_address'):
                     hotkey = wallet.hotkey.ss58_address
                 else:
-                    bt.logging.warning("Wallet hotkey missing ss58_address attribute")
+                    logger.warning("Wallet hotkey missing ss58_address attribute")
             else:
-                bt.logging.warning("Wallet missing hotkey attribute")
+                logger.warning("Wallet missing hotkey attribute")
         else:
-            bt.logging.warning("Wallet parameter is None in weight failure alert")
+            logger.warning("Wallet parameter is None in weight failure alert")
         
         netuid = "unknown"
         network = "unknown"
@@ -755,17 +757,17 @@ class SubtensorOpsManager(CacheController):
             if hasattr(self.config, 'netuid'):
                 netuid = self.config.netuid
             else:
-                bt.logging.warning("Config missing netuid attribute")
+                logger.warning("Config missing netuid attribute")
                 
             if hasattr(self.config, 'subtensor'):
                 if hasattr(self.config.subtensor, 'network'):
                     network = self.config.subtensor.network
                 else:
-                    bt.logging.warning("Config subtensor missing network attribute")
+                    logger.warning("Config subtensor missing network attribute")
             else:
-                bt.logging.warning("Config missing subtensor attribute")
+                logger.warning("Config missing subtensor attribute")
         else:
-            bt.logging.warning("Config is None - cannot determine network/netuid for alert")
+            logger.warning("Config is None - cannot determine network/netuid for alert")
             
         consecutive = self.weight_failure_tracker.consecutive_failures
         
@@ -823,11 +825,11 @@ class SubtensorOpsManager(CacheController):
                 if hasattr(wallet.hotkey, 'ss58_address'):
                     hotkey = wallet.hotkey.ss58_address
                 else:
-                    bt.logging.warning("Wallet hotkey missing ss58_address attribute in recovery alert")
+                    logger.warning("Wallet hotkey missing ss58_address attribute in recovery alert")
             else:
-                bt.logging.warning("Wallet missing hotkey attribute in recovery alert")
+                logger.warning("Wallet missing hotkey attribute in recovery alert")
         else:
-            bt.logging.warning("Wallet parameter is None in recovery alert")
+            logger.warning("Wallet parameter is None in recovery alert")
             
         network = "unknown"
         if self.config:
@@ -835,11 +837,11 @@ class SubtensorOpsManager(CacheController):
                 if hasattr(self.config.subtensor, 'network'):
                     network = self.config.subtensor.network
                 else:
-                    bt.logging.warning("Config subtensor missing network attribute in recovery alert")
+                    logger.warning("Config subtensor missing network attribute in recovery alert")
             else:
-                bt.logging.warning("Config missing subtensor attribute in recovery alert")
+                logger.warning("Config missing subtensor attribute in recovery alert")
         else:
-            bt.logging.warning("Config is None - cannot determine network for recovery alert")
+            logger.warning("Config is None - cannot determine network for recovery alert")
         
         message = f"✅ Weight setting recovered after failures\n" \
                  f"Network: {network}\n" \
@@ -921,7 +923,7 @@ class SubtensorOpsManager(CacheController):
         if alpha_reserve_rao == 0:
             raise ValueError("Alpha reserve is zero - cannot calculate conversion rate")
 
-        bt.logging.info(
+        logger.info(
             f"Got reserves from metagraph.pool: TAO={tao_reserve_rao / 1e9:.2f} TAO "
             f"({tao_reserve_rao:.0f} RAO), ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA "
             f"({alpha_reserve_rao:.0f} RAO)"
@@ -942,7 +944,7 @@ class SubtensorOpsManager(CacheController):
         """
         try:
             if not self._live_price_client:
-                bt.logging.warning(
+                logger.warning(
                     "_live_price_client not available - cannot query TAO/USD price. "
                     "Using existing price from metagraph (may be stale)."
                 )
@@ -958,7 +960,7 @@ class SubtensorOpsManager(CacheController):
             )
 
             if not price_source or not hasattr(price_source, 'close') or price_source.close is None:
-                bt.logging.warning(
+                logger.warning(
                     f"TAO/USD price unavailable at timestamp {current_time_ms}. "
                     f"Using existing price from metagraph (may be stale). "
                     f"price_source={price_source}"
@@ -969,24 +971,24 @@ class SubtensorOpsManager(CacheController):
 
             # Validate price is reasonable
             if tao_to_usd_rate <= 0:
-                bt.logging.warning(
+                logger.warning(
                     f"Invalid TAO/USD price: ${tao_to_usd_rate}. "
                     f"Using existing price from metagraph (may be stale)."
                 )
                 return None
 
-            bt.logging.info(
+            logger.info(
                 f"Got TAO/USD price: ${tao_to_usd_rate:.2f}/TAO "
                 f"(timestamp: {current_time_ms})"
             )
             return tao_to_usd_rate
 
         except Exception as e:
-            bt.logging.error(
+            logger.error(
                 f"Error fetching TAO/USD price: {e}. "
                 f"Using existing price from metagraph (may be stale)."
             )
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None
 
     def update_metagraph(self):
@@ -996,7 +998,7 @@ class SubtensorOpsManager(CacheController):
         if self.consecutive_failures > 0:
             if self.round_robin_enabled:
                 # Use modularized round-robin switching
-                bt.logging.warning(f"Switching to next network in round-robin due to consecutive failures")
+                logger.warning("Switching to next network in round-robin due to consecutive failures")
                 self._switch_to_next_network(cleanup_connection=False, create_new_subtensor=False)
 
             # Try to create new subtensor BEFORE cleaning up old one
@@ -1014,17 +1016,17 @@ class SubtensorOpsManager(CacheController):
                 with get_subtensor_lock():
                     self._cleanup_subtensor_connection()
                     self.subtensor = new_subtensor
-                bt.logging.info("Successfully recreated subtensor connection after previous failures")
+                logger.info("Successfully recreated subtensor connection after previous failures")
 
             except (ConnectionRefusedError, ConnectionError, OSError) as e:
                 # Connection errors during subtensor creation - keep old subtensor and re-raise
-                bt.logging.error(f"Failed to recreate subtensor connection (connection error): {e}")
+                logger.error(f"Failed to recreate subtensor connection (connection error): {e}")
                 # Don't cleanup old connection - let it stay alive for other components (weight setting, etc.)
                 # Re-raise so outer exception handler applies exponential backoff
                 raise
             except Exception as e:
                 # Other unexpected errors - still keep old subtensor but log differently
-                bt.logging.error(f"Failed to recreate subtensor connection (unexpected error): {e}")
+                logger.error(f"Failed to recreate subtensor connection (unexpected error): {e}")
                 # Don't cleanup old connection
                 raise
 
@@ -1039,17 +1041,17 @@ class SubtensorOpsManager(CacheController):
             metagraph_clone = self.subtensor.metagraph(self.config.netuid)
 
         assert hasattr(metagraph_clone, 'hotkeys'), "Metagraph clone does not have hotkeys attribute"
-        bt.logging.info("Updating metagraph...")
+        logger.info("Updating metagraph...")
         # metagraph_clone.sync(subtensor=self.subtensor) The call to subtensor.metagraph() already syncs the metagraph.
         hotkeys_after = set(metagraph_clone.hotkeys)
         lost_hotkeys = hotkeys_before - hotkeys_after
         gained_hotkeys = hotkeys_after - hotkeys_before
         if lost_hotkeys:
-            bt.logging.info(f"metagraph has lost hotkeys: {lost_hotkeys}")
+            logger.info(f"metagraph has lost hotkeys: {lost_hotkeys}")
         if gained_hotkeys:
-            bt.logging.info(f"metagraph has gained hotkeys: {gained_hotkeys}")
+            logger.info(f"metagraph has gained hotkeys: {gained_hotkeys}")
         if not lost_hotkeys and not gained_hotkeys:
-            bt.logging.info(f"metagraph hotkeys remain the same. n = {len(hotkeys_after)}")
+            logger.info(f"metagraph hotkeys remain the same. n = {len(hotkeys_after)}")
 
         # Use shared anomaly detection logic
         is_anomalous, percent_lost = is_anomalous_hotkey_loss(lost_hotkeys, len(hotkeys_before))
@@ -1057,7 +1059,7 @@ class SubtensorOpsManager(CacheController):
         if is_anomalous:
             error_msg = (f"Too many hotkeys lost in metagraph update: {len(lost_hotkeys)} hotkeys lost, "
                          f"{percent_lost:.2f}% of total hotkeys. Rejecting new metagraph. ALERT A TEAM MEMBER ASAP...")
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             if self.slack_notifier:
                 self.slack_notifier.send_message(
                     f"🚨 CRITICAL: {error_msg}",
@@ -1081,7 +1083,7 @@ class SubtensorOpsManager(CacheController):
                 for i, permit in enumerate(metagraph_clone.validator_permit)
                 if permit
             ]
-            bt.logging.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
+            logger.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
 
         # Single atomic RPC call to update all metagraph fields
         # Much faster than multiple calls - all fields updated together under one lock
@@ -1110,7 +1112,7 @@ class SubtensorOpsManager(CacheController):
         # counter is what arms the connection-recreation block at the top of
         # this method on the next call.
         if self.consecutive_failures > 0:
-            bt.logging.info(
+            logger.info(
                 f"Metagraph update recovered after {self.consecutive_failures} "
                 f"consecutive failures; resetting failure count."
             )

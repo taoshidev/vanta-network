@@ -243,7 +243,7 @@ class TestAutoSyncTxtFiles(TestBase):
         sync_stats = self.position_syncer.global_stats
         
         # Print sync statistics
-        print(f"\nSync statistics:")
+        print("\nSync statistics:")
         for key, value in sync_stats.items():
             if value > 0:  # Only print non-zero stats
                 print(f"  {key}: {value}")
@@ -321,7 +321,7 @@ class TestAutoSyncTxtFiles(TestBase):
         # Verify order preservation (most orders should be preserved)
         orders_matched = sync_stats.get('orders_matched', 0)
         orders_inserted = sync_stats.get('orders_inserted', 0)
-        print(f"\nOrder reconciliation:")
+        print("\nOrder reconciliation:")
         print(f"  Orders matched: {orders_matched}")
         print(f"  Orders inserted: {orders_inserted}")
         print(f"  Total orders processed: {orders_matched + orders_inserted}")
@@ -559,11 +559,11 @@ class TestAutoSyncTxtFiles(TestBase):
         print(f"  Added bogus position {bogus_position_uuid} with {len(bogus_orders)} orders")
         print(f"  Hotkey: {random_hotkey}, Trade pair: {random_trade_pair.trade_pair}")
         print(f"  Position timestamp: {TimeUtil.millis_to_formatted_date_str(bogus_position_start)}")
-        print(f"  This position will be deleted during sync (timestamp < hard_snap_cutoff)")
+        print("  This position will be deleted during sync (timestamp < hard_snap_cutoff)")
         
         # Summary of modifications and calculate expected AutoSync operations
         deleted_position_orders = sum(len(p.orders) for p in deleted_positions)
-        print(f"\nModification summary:")
+        print("\nModification summary:")
         print(f"  Positions deleted: {positions_deleted}")
         print(f"  Orders in deleted positions: {deleted_position_orders}")
         print(f"  Orders deleted from remaining positions: {orders_deleted}")
@@ -572,13 +572,13 @@ class TestAutoSyncTxtFiles(TestBase):
         print(f"  Total positions after modifications: {len(modified_positions)}")
         
         # Calculate EXPECTED AutoSync operations based on our modifications
-        print(f"\nEXPECTED AutoSync operations when syncing back to candidate data:")
+        print("\nEXPECTED AutoSync operations when syncing back to candidate data:")
         print(f"  Position insertions: {positions_deleted} (restore deleted positions)")
         print(f"  Position matches: {len(modified_positions) - 1} (existing positions minus bogus)")
-        print(f"  Position deletions: 1 (remove bogus position)")
+        print("  Position deletions: 1 (remove bogus position)")
         print(f"  Order insertions: {orders_deleted} (individual orders restored to matched positions)")
         print(f"  Order matches: {sum(len(p.orders) for p in modified_positions if p.position_uuid != bogus_position.position_uuid)} (orders in matched positions)")
-        print(f"  Order deletions: 0 (bogus position orders removed via position deletion)")
+        print("  Order deletions: 0 (bogus position orders removed via position deletion)")
         
         # Step 3: Save modified positions to disk as existing data
         print("\nStep 3: Saving modified positions to disk as existing data")
@@ -650,7 +650,7 @@ class TestAutoSyncTxtFiles(TestBase):
         sync_stats = self.position_syncer.global_stats
         
         # Print sync statistics
-        print(f"\nSync statistics:")
+        print("\nSync statistics:")
         for key, value in sync_stats.items():
             if value > 0:
                 print(f"  {key}: {value}")
@@ -668,7 +668,7 @@ class TestAutoSyncTxtFiles(TestBase):
         
         # Debug: Compare position counts on disk vs candidates to understand matching
         final_positions = self.get_all_positions_from_disk()
-        print(f"\nDEBUG Position counts:")
+        print("\nDEBUG Position counts:")
         print(f"  Modified positions saved to disk: {len(modified_positions)}")
         print(f"  Candidate positions: {len(candidate_positions)}")
         print(f"  Final positions on disk: {len(final_positions)}")
@@ -726,7 +726,7 @@ class TestAutoSyncTxtFiles(TestBase):
         # When we delete orders, they might be handled as part of position updates
         # Let's verify the total order count matches expectations
         
-        print(f"\nOrder statistics:")
+        print("\nOrder statistics:")
         print(f"  Orders deleted from existing positions: {orders_deleted}")
         print(f"  Orders in deleted positions: {deleted_position_orders}")
         print(f"  Total orders deleted: {orders_deleted + deleted_position_orders}")
@@ -743,7 +743,7 @@ class TestAutoSyncTxtFiles(TestBase):
             "Total final orders should match candidate orders")
         
         # Verify miner-level statistics
-        print(f"\nMiner-level statistics:")
+        print("\nMiner-level statistics:")
         self.assertEqual(sync_stats['miners_processed'], 1, "Expected 1 miner processed")
         self.assertEqual(sync_stats['n_miners_synced'], 1, "Expected 1 miner synced")
         
@@ -756,7 +756,7 @@ class TestAutoSyncTxtFiles(TestBase):
             "Expected 1 miner with position deletions (bogus position)")
         
         # Test number of positions inserted/matched/deleted
-        print(f"\nPosition-level statistics:")
+        print("\nPosition-level statistics:")
         print(f"  Positions inserted: {sync_stats.get('positions_inserted', 0)}")
         print(f"  Positions matched: {sync_stats.get('positions_matched', 0)}")
         print(f"  Positions deleted: {sync_stats.get('positions_deleted', 0)}")
@@ -770,7 +770,7 @@ class TestAutoSyncTxtFiles(TestBase):
             "Expected 1 position deleted (bogus position)")
         
         # Test number of orders inserted/matched/deleted
-        print(f"\nOrder-level statistics:")
+        print("\nOrder-level statistics:")
         print(f"  Orders inserted: {sync_stats.get('orders_inserted', 0)}")
         print(f"  Orders matched: {sync_stats.get('orders_matched', 0)}")
         print(f"  Orders deleted: {sync_stats.get('orders_deleted', 0)}")
@@ -803,7 +803,7 @@ class TestAutoSyncTxtFiles(TestBase):
         
         # The discrepancy might be due to orders in positions that we think are matched but AutoSync doesn't
         if expected_orders_matched != sync_stats.get('orders_matched', 0):
-            print(f"DEBUG: Orders matched discrepancy detected - investigating...")
+            print("DEBUG: Orders matched discrepancy detected - investigating...")
             print(f"DEBUG: We calculated {len(matched_positions_on_disk)} matched positions")
             print(f"DEBUG: AutoSync reports {sync_stats.get('positions_matched', 0)} matched positions")
         
@@ -831,7 +831,7 @@ class TestAutoSyncTxtFiles(TestBase):
         # In our test: bogus position will be deleted entirely, so its orders are NOT counted as individual order deletions
         expected_orders_deleted = 0  # NOT len(bogus_position.orders) (those are removed via position deletion)
         
-        print(f"\\nCalculating EXACT expected order statistics:")
+        print("\\nCalculating EXACT expected order statistics:")
         print(f"  Orders in remaining positions on disk: {expected_orders_matched}")
         print(f"  Orders deleted from remaining positions: {orders_deleted} (should be restored as individual insertions)")
         print(f"  Orders from deleted positions: {deleted_position_orders} (restored via position insertion)")
@@ -845,13 +845,13 @@ class TestAutoSyncTxtFiles(TestBase):
         actual_orders_inserted = sync_stats.get('orders_inserted', 0)
         actual_orders_deleted = sync_stats.get('orders_deleted', 0)
         
-        print(f"\\nActual order statistics:")
+        print("\\nActual order statistics:")
         print(f"  ACTUAL orders matched: {actual_orders_matched}")
         print(f"  ACTUAL orders inserted: {actual_orders_inserted}")
         print(f"  ACTUAL orders deleted: {actual_orders_deleted}")
         
         # TEMPORARY: Print values and comment out assertions to see what we actually get
-        print(f"\nEXPECTED vs ACTUAL:")
+        print("\nEXPECTED vs ACTUAL:")
         print(f"  Expected orders_matched: {expected_orders_matched}, Actual: {actual_orders_matched}")
         print(f"  Expected orders_inserted: {expected_orders_inserted}, Actual: {actual_orders_inserted}")
         print(f"  Expected orders_deleted: {expected_orders_deleted}, Actual: {actual_orders_deleted}")
@@ -859,7 +859,7 @@ class TestAutoSyncTxtFiles(TestBase):
         # STRICT assertions based on our exact calculations
         # Note: We'll accept the actual AutoSync values as ground truth and verify consistency
         # The key is that our final verification should balance correctly
-        print(f"DEBUG: Using actual AutoSync values as ground truth for consistency check")
+        print("DEBUG: Using actual AutoSync values as ground truth for consistency check")
         expected_orders_matched = actual_orders_matched  # Use AutoSync's actual result
         
         self.assertEqual(actual_orders_inserted, expected_orders_inserted,
@@ -878,7 +878,7 @@ class TestAutoSyncTxtFiles(TestBase):
             f"Final order count {total_final_orders} should match candidate orders {total_candidate_orders}")
         
         # Verify miner-level order tracking
-        print(f"\\nMiner-level order operation tracking:")
+        print("\\nMiner-level order operation tracking:")
         print(f"  miners_with_order_insertions: {sync_stats.get('miners_with_order_insertions', 0)}")
         print(f"  miners_with_order_matches: {sync_stats.get('miners_with_order_matches', 0)}")
         print(f"  miners_with_order_deletions: {sync_stats.get('miners_with_order_deletions', 0)}")
@@ -896,7 +896,7 @@ class TestAutoSyncTxtFiles(TestBase):
                 "Should have at least 1 miner with order deletions")
         
         # FINAL VERIFICATION: Cross-check our arithmetic and ensure consistency
-        print(f"\nFINAL VERIFICATION - Cross-checking calculations:")
+        print("\nFINAL VERIFICATION - Cross-checking calculations:")
         
         # Verify our order calculations add up correctly
         # The final order count comes from:
@@ -909,7 +909,7 @@ class TestAutoSyncTxtFiles(TestBase):
         # This accounts for all the orders that came in via position insertions
         orders_in_inserted_positions = total_candidate_orders - actual_orders_matched - actual_orders_inserted
         
-        print(f"DEBUG: Calculating orders in inserted positions by subtraction:")
+        print("DEBUG: Calculating orders in inserted positions by subtraction:")
         print(f"DEBUG: Total candidate orders: {total_candidate_orders}")
         print(f"DEBUG: Minus orders matched: {actual_orders_matched}")
         print(f"DEBUG: Minus individual orders inserted: {actual_orders_inserted}")
@@ -941,7 +941,7 @@ class TestAutoSyncTxtFiles(TestBase):
         self.assertEqual(calculated_final_positions, len(candidate_positions),
             f"Calculated position total {calculated_final_positions} should equal candidate positions {len(candidate_positions)}")
         
-        print(f"\n✅ All arithmetic checks passed - AutoSync operations are mathematically consistent")
+        print("\n✅ All arithmetic checks passed - AutoSync operations are mathematically consistent")
         
         # Despite modifications, AutoSync should restore to candidate state
         print("\nVerifying position-by-position reconciliation:")
@@ -975,8 +975,8 @@ class TestAutoSyncTxtFiles(TestBase):
         print("\n✅ STRICT TESTING PASSED - AutoSync statistics are mathematically accurate")
         print(f"  Position operations: {positions_deleted} inserted, {len(modified_positions) - 1} matched, 1 deleted")
         print(f"  Order operations: {expected_orders_inserted} inserted, {expected_orders_matched} matched, {expected_orders_deleted} deleted")
-        print(f"  All statistics matched exact calculations based on known data modifications")
-        print(f"  AutoSync successfully restored data to match candidate state with precise tracking")
+        print("  All statistics matched exact calculations based on known data modifications")
+        print("  AutoSync successfully restored data to match candidate state with precise tracking")
         
         print("\n" + "="*60)
         print("STRICT AUTOSYNC STATISTICS TEST COMPLETED SUCCESSFULLY")

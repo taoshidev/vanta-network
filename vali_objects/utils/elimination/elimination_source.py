@@ -2,13 +2,11 @@
 # Copyright (c) 2024 Taoshi Inc
 import os
 import asyncio
-import json
 from enum import Enum
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
-import bittensor as bt
-import traceback
 from time_util.time_util import TimeUtil
+from shared_objects.log import logger
 
 
 class EliminationSource(Enum):
@@ -52,7 +50,7 @@ class EliminationSourceManager:
         Returns:
             Dictionary mapping hotkeys to their elimination records
         """
-        bt.logging.info(f"Loading eliminations from source: {self.source_type.value}")
+        logger.info(f"Loading eliminations from source: {self.source_type.value}")
         
         if self.source_type == EliminationSource.DATABASE:
             return asyncio.run(self._load_from_database_async(start_time_ms, end_time_ms, hotkeys))
@@ -61,7 +59,7 @@ class EliminationSourceManager:
         else:  # DISK
             # For disk-based loading, return empty dict as eliminations are loaded
             # through existing elimination manager mechanisms
-            bt.logging.info("Disk source selected - eliminations will be loaded via existing elimination manager")
+            logger.info("Disk source selected - eliminations will be loaded via existing elimination manager")
             return {}
             
     async def _load_from_database_async(self, 
@@ -79,12 +77,12 @@ class EliminationSourceManager:
         Returns:
             Dictionary mapping hotkeys to their elimination records
         """
-        bt.logging.info(f"Loading eliminations from database for period "
+        logger.info(f"Loading eliminations from database for period "
                        f"{TimeUtil.millis_to_formatted_date_str(start_time_ms) if start_time_ms else 'beginning'} to "
                        f"{TimeUtil.millis_to_formatted_date_str(end_time_ms) if end_time_ms else 'now'}")
         
         if hotkeys:
-            bt.logging.info(f"Filtering for {len(hotkeys)} specific hotkeys")
+            logger.info(f"Filtering for {len(hotkeys)} specific hotkeys")
 
         # Import taoshi.ts.ptnhs.eliminationsdatabase locally to avoid circular import
         try:
@@ -108,7 +106,7 @@ class EliminationSourceManager:
         try:
             # Query all elimination records from the database
             elimination_records = session.query(EliminationModel).all()
-            bt.logging.info(f"Retrieved {len(elimination_records)} elimination records from database")
+            logger.info(f"Retrieved {len(elimination_records)} elimination records from database")
 
             # Convert SQLAlchemy objects to dictionaries
             api_data = []
@@ -146,7 +144,7 @@ class EliminationSourceManager:
 
                 filtered_api_data.append(elimination_record)
 
-            bt.logging.info(f"Time filtering: {len(filtered_api_data)}/{original_count} records within time range")
+            logger.info(f"Time filtering: {len(filtered_api_data)}/{original_count} records within time range")
 
         # Filter by hotkeys if specified
         if hotkeys:
@@ -156,7 +154,7 @@ class EliminationSourceManager:
                 record for record in filtered_api_data
                 if (record.get('miner_hotkey') in hotkey_set or record.get('hotkey') in hotkey_set)
             ]
-            bt.logging.info(f"Hotkey filtering: {len(filtered_api_data)}/{original_count} records match target hotkeys")
+            logger.info(f"Hotkey filtering: {len(filtered_api_data)}/{original_count} records match target hotkeys")
 
         # Group eliminations by hotkey
         hk_to_eliminations = defaultdict(list)
@@ -167,9 +165,9 @@ class EliminationSourceManager:
             if hotkey:
                 hk_to_eliminations[hotkey].append(elimination_record)
             else:
-                bt.logging.warning(f"Elimination record missing hotkey: {elimination_record}")
+                logger.warning(f"Elimination record missing hotkey: {elimination_record}")
 
-        bt.logging.info(f"Final result: {len(filtered_api_data)} elimination records for {len(hk_to_eliminations)} miners")
+        logger.info(f"Final result: {len(filtered_api_data)} elimination records for {len(hk_to_eliminations)} miners")
         return dict(hk_to_eliminations)
 
             
@@ -183,11 +181,11 @@ class EliminationSourceManager:
         try:
             from tests.test_data.backtest_test_eliminations import get_test_eliminations
         except ImportError as e:
-            bt.logging.error(f"Failed to import test eliminations: {e}")
+            logger.error(f"Failed to import test eliminations: {e}")
             # Create some basic test data if import fails
             return self._create_basic_test_eliminations()
             
-        bt.logging.info("Loading test eliminations")
+        logger.info("Loading test eliminations")
         
         test_eliminations = get_test_eliminations()
         hk_to_eliminations = defaultdict(list)
@@ -198,7 +196,7 @@ class EliminationSourceManager:
             if timestamps:
                 start_time_ms = min(timestamps)
                 end_time_ms = max(timestamps)
-                bt.logging.info(f"Test elimination data time range: "
+                logger.info(f"Test elimination data time range: "
                                f"{TimeUtil.millis_to_formatted_date_str(start_time_ms)} to "
                                f"{TimeUtil.millis_to_formatted_date_str(end_time_ms)}")
         
@@ -207,9 +205,9 @@ class EliminationSourceManager:
             if hotkey:
                 hk_to_eliminations[hotkey].append(elimination_record)
             else:
-                bt.logging.warning(f"Test elimination record missing hotkey: {elimination_record}")
+                logger.warning(f"Test elimination record missing hotkey: {elimination_record}")
                 
-        bt.logging.info(f"Loaded {sum(len(eliminations) for eliminations in hk_to_eliminations.values())} "
+        logger.info(f"Loaded {sum(len(eliminations) for eliminations in hk_to_eliminations.values())} "
                        f"test elimination records for {len(hk_to_eliminations)} miners")
         
         return dict(hk_to_eliminations)
@@ -221,7 +219,7 @@ class EliminationSourceManager:
         Returns:
             Dictionary with sample elimination data
         """
-        bt.logging.info("Creating basic test elimination data")
+        logger.info("Creating basic test elimination data")
         
         current_time_ms = TimeUtil.now_in_millis()
         one_day_ms = 24 * 60 * 60 * 1000
@@ -249,7 +247,7 @@ class EliminationSourceManager:
             ]
         }
         
-        bt.logging.info(f"Created {sum(len(eliminations) for eliminations in test_eliminations.values())} "
+        logger.info(f"Created {sum(len(eliminations) for eliminations in test_eliminations.values())} "
                        f"basic test elimination records for {len(test_eliminations)} miners")
         
         return test_eliminations
@@ -263,7 +261,7 @@ class EliminationSourceManager:
             hk_to_eliminations: Dictionary mapping hotkeys to elimination records
         """
         if not hk_to_eliminations:
-            bt.logging.warning("No eliminations to save to elimination manager")
+            logger.warning("No eliminations to save to elimination manager")
             return
             
         elimination_count = 0
@@ -278,10 +276,10 @@ class EliminationSourceManager:
                     elimination_manager.save_elimination(elimination_record)
                     elimination_count += 1
                 else:
-                    bt.logging.warning(f"Elimination manager does not have expected methods for saving eliminations")
+                    logger.warning("Elimination manager does not have expected methods for saving eliminations")
                     break
         
-        bt.logging.info(f"Saved {elimination_count} elimination records for {len(hk_to_eliminations)} miners to elimination manager")
+        logger.info(f"Saved {elimination_count} elimination records for {len(hk_to_eliminations)} miners to elimination manager")
 
     def get_eliminations_summary(self, hk_to_eliminations: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
         """

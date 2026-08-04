@@ -18,7 +18,6 @@ Usage:
     3. Run: python runnable/local_debt_ledger.py
 """
 
-import bittensor as bt
 from datetime import datetime, timezone
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -33,6 +32,8 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLe
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
+import logging
+from shared_objects.log import logger
 
 
 # ============================================================================
@@ -61,10 +62,10 @@ USE_DATABASE_POSITIONS = True
 def plot_penalties(debt_checkpoints, hotkey):
     """Plot penalty analysis over time"""
     if not debt_checkpoints:
-        bt.logging.warning(f"No debt checkpoints found for {hotkey}")
+        logger.warning(f"No debt checkpoints found for {hotkey}")
         return
 
-    bt.logging.info(f"Plotting penalties for {hotkey}")
+    logger.info(f"Plotting penalties for {hotkey}")
 
     # Extract data for plotting
     timestamps = [datetime.fromtimestamp(cp.timestamp_ms / 1000, tz=timezone.utc)
@@ -122,7 +123,7 @@ def plot_penalties(debt_checkpoints, hotkey):
     # Save plot
     plot_filename = f'runnable/debt_ledger_penalties_{hotkey}.png'
     plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
-    bt.logging.info(f"Penalties plot saved to: {plot_filename}")
+    logger.info(f"Penalties plot saved to: {plot_filename}")
 
 
 def plot_pnl_performance(debt_checkpoints, hotkey):
@@ -130,7 +131,7 @@ def plot_pnl_performance(debt_checkpoints, hotkey):
     if not debt_checkpoints:
         return
 
-    bt.logging.info(f"Plotting PnL performance for {hotkey}")
+    logger.info(f"Plotting PnL performance for {hotkey}")
 
     # Extract data
     timestamps = [datetime.fromtimestamp(cp.timestamp_ms / 1000, tz=timezone.utc)
@@ -173,7 +174,7 @@ def plot_pnl_performance(debt_checkpoints, hotkey):
     # Save plot
     plot_filename = f'runnable/debt_ledger_pnl_{hotkey}.png'
     plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
-    bt.logging.info(f"PnL plot saved to: {plot_filename}")
+    logger.info(f"PnL plot saved to: {plot_filename}")
 
 
 def plot_emissions(debt_checkpoints, hotkey):
@@ -181,7 +182,7 @@ def plot_emissions(debt_checkpoints, hotkey):
     if not debt_checkpoints:
         return
 
-    bt.logging.info(f"Plotting emissions for {hotkey}")
+    logger.info(f"Plotting emissions for {hotkey}")
 
     # Extract data
     timestamps = [datetime.fromtimestamp(cp.timestamp_ms / 1000, tz=timezone.utc)
@@ -230,7 +231,7 @@ def plot_emissions(debt_checkpoints, hotkey):
     # Save plot
     plot_filename = f'runnable/debt_ledger_emissions_{hotkey}.png'
     plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
-    bt.logging.info(f"Emissions plot saved to: {plot_filename}")
+    logger.info(f"Emissions plot saved to: {plot_filename}")
 
 
 def plot_portfolio_metrics(debt_checkpoints, hotkey):
@@ -238,7 +239,7 @@ def plot_portfolio_metrics(debt_checkpoints, hotkey):
     if not debt_checkpoints:
         return
 
-    bt.logging.info(f"Plotting portfolio metrics for {hotkey}")
+    logger.info(f"Plotting portfolio metrics for {hotkey}")
 
     # Extract data
     timestamps = [datetime.fromtimestamp(cp.timestamp_ms / 1000, tz=timezone.utc)
@@ -289,7 +290,7 @@ def plot_portfolio_metrics(debt_checkpoints, hotkey):
     # Save plot
     plot_filename = f'runnable/debt_ledger_portfolio_{hotkey}.png'
     plt.savefig(plot_filename, dpi=150, bbox_inches='tight')
-    bt.logging.info(f"Portfolio metrics plot saved to: {plot_filename}")
+    logger.info(f"Portfolio metrics plot saved to: {plot_filename}")
 
 
 # ============================================================================
@@ -299,13 +300,13 @@ def plot_portfolio_metrics(debt_checkpoints, hotkey):
 if __name__ == "__main__":
     # Enable logging
     if VERBOSE:
-        bt.logging.enable_debug()
+        logger.setLevel(logging.DEBUG)
     else:
-        bt.logging.enable_info()
+        logger.setLevel(logging.INFO)
 
     # Validate configuration
     if SHOULD_PLOT and not TEST_SINGLE_HOTKEY:
-        bt.logging.error("SHOULD_PLOT requires TEST_SINGLE_HOTKEY to be specified")
+        logger.error("SHOULD_PLOT requires TEST_SINGLE_HOTKEY to be specified")
         exit(1)
 
     # Initialize components
@@ -315,16 +316,16 @@ if __name__ == "__main__":
     # Determine which hotkeys to process
     if TEST_SINGLE_HOTKEY:
         hotkeys_to_process = [TEST_SINGLE_HOTKEY]
-        bt.logging.info(f"Processing single hotkey: {TEST_SINGLE_HOTKEY}")
+        logger.info(f"Processing single hotkey: {TEST_SINGLE_HOTKEY}")
     else:
         hotkeys_to_process = all_hotkeys_on_disk
-        bt.logging.info(f"Processing all {len(hotkeys_to_process)} hotkeys")
+        logger.info(f"Processing all {len(hotkeys_to_process)} hotkeys")
 
     # Load positions from database
     hk_to_positions = {}
     if USE_DATABASE_POSITIONS:
         source_type = PositionSource.DATABASE
-        bt.logging.info("Using database as position source")
+        logger.info("Using database as position source")
 
         position_source_manager = PositionSourceManager(source_type)
         hk_to_positions = position_source_manager.load_positions(
@@ -334,7 +335,7 @@ if __name__ == "__main__":
 
         if hk_to_positions:
             hotkeys_to_process = list(hk_to_positions.keys())
-            bt.logging.info(f"Loaded positions for {len(hotkeys_to_process)} miners from database")
+            logger.info(f"Loaded positions for {len(hotkeys_to_process)} miners from database")
 
     # Initialize metagraph and managers
     mmg = MockMetagraph(hotkeys=hotkeys_to_process)
@@ -354,10 +355,10 @@ if __name__ == "__main__":
             for pos in positions:
                 position_manager.save_miner_position(pos)
                 position_count += 1
-        bt.logging.info(f"Saved {position_count} positions to position manager")
+        logger.info(f"Saved {position_count} positions to position manager")
 
     # Create PerfLedgerManager
-    bt.logging.info("Creating PerfLedgerManager...")
+    logger.info("Creating PerfLedgerManager...")
     perf_ledger_manager = PerfLedgerManager(
         mmg,
         position_manager=position_manager,
@@ -366,16 +367,16 @@ if __name__ == "__main__":
     )
 
     # Build performance ledgers
-    bt.logging.info("Building performance ledgers...")
+    logger.info("Building performance ledgers...")
     if TEST_SINGLE_HOTKEY:
-        bt.logging.info(f"Building perf ledger for: {TEST_SINGLE_HOTKEY}")
+        logger.info(f"Building perf ledger for: {TEST_SINGLE_HOTKEY}")
         perf_ledger_manager.update(testing_one_hotkey=TEST_SINGLE_HOTKEY, t_ms=TimeUtil.now_in_millis())
     else:
-        bt.logging.info("Building perf ledgers for all hotkeys")
+        logger.info("Building perf ledgers for all hotkeys")
         perf_ledger_manager.update()
 
     # Create ValidatorContractManager (with mock data for standalone mode)
-    bt.logging.info("Creating ValidatorContractManager...")
+    logger.info("Creating ValidatorContractManager...")
     contract_manager = ValidatorContractManager(
         config=None,
         position_manager=position_manager,
@@ -385,13 +386,13 @@ if __name__ == "__main__":
     )
 
     # Create AssetSelectionClient
-    bt.logging.info("Creating AssetSelectionClient...")
+    logger.info("Creating AssetSelectionClient...")
     asset_selection_manager = AssetSelectionClient(
         running_unit_tests=True
     )
 
     # Create DebtLedgerManager in direct mode (no RPC overhead for local debugging)
-    bt.logging.info("Creating DebtLedgerManager...")
+    logger.info("Creating DebtLedgerManager...")
     debt_ledger_manager = DebtLedgerManager(
         perf_ledger_manager=perf_ledger_manager,
         position_manager=position_manager,
@@ -406,26 +407,26 @@ if __name__ == "__main__":
     )
 
     # Build debt ledgers manually via direct server access
-    bt.logging.info("Building debt ledgers...")
+    logger.info("Building debt ledgers...")
     debt_ledger_manager._server_proxy.build_debt_ledgers(verbose=VERBOSE)
 
     # Print summary
-    bt.logging.info("\n" + "="*60)
-    bt.logging.info("Debt Ledger Summary")
-    bt.logging.info("="*60)
+    logger.info("\n" + "="*60)
+    logger.info("Debt Ledger Summary")
+    logger.info("="*60)
     for hotkey, ledger in debt_ledger_manager._server_proxy.debt_ledgers.items():
         num_checkpoints = len(ledger.checkpoints) if ledger.checkpoints else 0
-        bt.logging.info(f"Miner {hotkey[:12]}...: {num_checkpoints} debt checkpoints")
+        logger.info(f"Miner {hotkey[:12]}...: {num_checkpoints} debt checkpoints")
 
     # Generate plots if requested and in single hotkey mode
     if SHOULD_PLOT and TEST_SINGLE_HOTKEY:
         ledger = debt_ledger_manager._server_proxy.debt_ledgers.get(TEST_SINGLE_HOTKEY)
 
         if not ledger or not ledger.checkpoints:
-            bt.logging.warning(f"No debt ledger found for {TEST_SINGLE_HOTKEY}")
+            logger.warning(f"No debt ledger found for {TEST_SINGLE_HOTKEY}")
         else:
-            bt.logging.info(f"\nGenerating visualizations for {TEST_SINGLE_HOTKEY}")
-            bt.logging.info(f"Total checkpoints: {len(ledger.checkpoints)}")
+            logger.info(f"\nGenerating visualizations for {TEST_SINGLE_HOTKEY}")
+            logger.info(f"Total checkpoints: {len(ledger.checkpoints)}")
 
             # Generate all plots
             plot_penalties(ledger.checkpoints, TEST_SINGLE_HOTKEY)
@@ -433,6 +434,6 @@ if __name__ == "__main__":
             plot_emissions(ledger.checkpoints, TEST_SINGLE_HOTKEY)
             plot_portfolio_metrics(ledger.checkpoints, TEST_SINGLE_HOTKEY)
 
-            bt.logging.info("\nAll plots generated successfully!")
+            logger.info("\nAll plots generated successfully!")
 
-    bt.logging.info("\nDebtLedger processing complete!")
+    logger.info("\nDebtLedger processing complete!")

@@ -8,7 +8,7 @@ Focuses on edge cases and regression tests for price fetching logic.
 """
 import unittest
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory
 from vali_objects.trade_pair import BLOCKED_TRADE_PAIR_IDS
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from data_generator.tiingo_data_service import TiingoDataService

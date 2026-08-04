@@ -1,7 +1,7 @@
-import bittensor as bt
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
+from shared_objects.log import logger
 
 
 class DebtLedgerClient(RPCClientBase):
@@ -56,7 +56,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_ledger_rpc(hotkey)
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get ledger failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get ledger failed: {e}")
             return None
 
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
@@ -72,7 +72,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_compressed_summaries_rpc()
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get compressed summaries failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get compressed summaries failed: {e}")
             return None
 
     def get_all_ledgers(self):
@@ -85,7 +85,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_all_ledgers_rpc()
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get all ledgers failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get all ledgers failed: {e}")
             return {}
 
     def get_all_debt_ledgers(self):
@@ -110,7 +110,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_ledger_summary_rpc(hotkey)
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get ledger summary failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get ledger summary failed: {e}")
             return None
 
 
@@ -124,7 +124,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_all_summaries_rpc()
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get all summaries failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get all summaries failed: {e}")
             return {}
 
     def get_compressed_summaries(self):
@@ -137,7 +137,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_compressed_summaries_rpc()
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get compressed summaries failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get compressed summaries failed: {e}")
             return None
 
     def health_check(self):
@@ -150,7 +150,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.health_check_rpc()
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Health check failed: {e}")
+            logger.debug(f"DebtLedgerClient: Health check failed: {e}")
             return None
 
     def delete_debt_ledger(self, hotkey: str) -> bool:
@@ -168,7 +168,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.delete_debt_ledger_rpc(hotkey)
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Delete debt ledger failed: {e}")
+            logger.debug(f"DebtLedgerClient: Delete debt ledger failed: {e}")
             return False
 
     def build_debt_ledgers(self, verbose: bool = False, delta_update: bool = True):
@@ -182,7 +182,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.build_debt_ledgers_rpc(verbose=verbose, delta_update=delta_update)
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Build debt ledgers failed: {e}")
+            logger.debug(f"DebtLedgerClient: Build debt ledgers failed: {e}")
             return None
 
     # ==================== Emissions Ledger Methods ====================
@@ -200,7 +200,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_emissions_ledger_rpc(hotkey)
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get emissions ledger failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get emissions ledger failed: {e}")
             return None
 
     def get_all_emissions_ledgers(self):
@@ -213,7 +213,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_all_emissions_ledgers_rpc()
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get all emissions ledgers failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get all emissions ledgers failed: {e}")
             return {}
 
     def set_emissions_ledger(self, hotkey: str, emissions_ledger):
@@ -227,7 +227,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.set_emissions_ledger_rpc(hotkey, emissions_ledger)
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Set emissions ledger failed: {e}")
+            logger.debug(f"DebtLedgerClient: Set emissions ledger failed: {e}")
             return None
 
     def build_emissions_ledgers(self, delta_update: bool = True):
@@ -246,7 +246,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.build_emissions_ledgers_rpc(delta_update=delta_update)
         except Exception as e:
-            bt.logging.error(f"DebtLedgerClient: Build emissions ledgers failed: {e}")
+            logger.error(f"DebtLedgerClient: Build emissions ledgers failed: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -266,7 +266,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_penalty_ledger_rpc(hotkey)
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get penalty ledger failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get penalty ledger failed: {e}")
             return None
 
     def get_all_penalty_ledgers(self):
@@ -279,7 +279,7 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.get_all_penalty_ledgers_rpc()
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Get all penalty ledgers failed: {e}")
+            logger.debug(f"DebtLedgerClient: Get all penalty ledgers failed: {e}")
             return {}
 
     def build_penalty_ledgers(self, verbose: bool = False, delta_update: bool = True):
@@ -293,5 +293,5 @@ class DebtLedgerClient(RPCClientBase):
         try:
             return self._server.build_penalty_ledgers_rpc(verbose=verbose, delta_update=delta_update)
         except Exception as e:
-            bt.logging.debug(f"DebtLedgerClient: Build penalty ledgers failed: {e}")
+            logger.debug(f"DebtLedgerClient: Build penalty ledgers failed: {e}")
             return None

@@ -10,11 +10,10 @@ Tests for Hyperliquid trade handling features:
 """
 
 import unittest
-from copy import deepcopy
 
 from time_util.time_util import TimeUtil, MS_IN_1_HOUR
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
 from entity_management.hl_orderbook_utils import simulate_fill

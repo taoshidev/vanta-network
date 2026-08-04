@@ -10,7 +10,6 @@ This file contains the essential tests for performance ledger functionality:
 Uses the newest client/server RPC architecture demonstrated in test_elimination_core.py.
 """
 
-import math
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS
@@ -437,7 +436,7 @@ class TestPerfLedgerCore(TestBase):
         checkpoint = btc_ledger.cps[0]
 
         # Verify the checkpoint properties
-        print(f"\n=== Single Checkpoint Test Results ===")
+        print("\n=== Single Checkpoint Test Results ===")
         print(f"Position open time: {position_open_time} ({TimeUtil.millis_to_formatted_date_str(position_open_time)})")
         print(f"Position close time: {position_close_time} ({TimeUtil.millis_to_formatted_date_str(position_close_time)})")
         print(f"Update time: {update_time} ({TimeUtil.millis_to_formatted_date_str(update_time)})")
@@ -530,7 +529,7 @@ class TestPerfLedgerCore(TestBase):
         expected_total_open_ms = (pos1_close - pos1_open) + (pos2_close - pos2_open)
         expected_total_hours = expected_total_open_ms / (60 * 60 * 1000)
 
-        print(f"\n=== Sequential Positions Test ===")
+        print("\n=== Sequential Positions Test ===")
         print(f"Position 1 open duration: {(pos1_close - pos1_open)/(60*60*1000):.2f} hours")
         print(f"Position 2 open duration: {(pos2_close - pos2_open)/(60*60*1000):.2f} hours")
         print(f"Expected total open_ms: {expected_total_hours:.2f} hours")

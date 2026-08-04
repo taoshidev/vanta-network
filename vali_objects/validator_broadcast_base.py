@@ -36,6 +36,7 @@ import bittensor as bt
 
 import template.protocol
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 class ValidatorBroadcastBase:
@@ -72,18 +73,18 @@ class ValidatorBroadcastBase:
 
         # Get hotkey for filtering out self from broadcasts and derive is_mothership
         if self.running_unit_tests:
-            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Test mode - skipping wallet creation (running_unit_tests={running_unit_tests})")
+            logger.info(f"[VALIDATOR_BROADCAST_BASE] Test mode - skipping wallet creation (running_unit_tests={running_unit_tests})")
             self._hotkey = None
             self.is_mothership = False
             self.wallet = None
         else:
-            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Production mode - creating wallet (running_unit_tests={running_unit_tests}, config={config})")
+            logger.info(f"[VALIDATOR_BROADCAST_BASE] Production mode - creating wallet (running_unit_tests={running_unit_tests}, config={config})")
             self.wallet = bt.Wallet(config=config)
             self._hotkey = self.wallet.hotkey.ss58_address
             # Derive is_mothership using centralized utility
             from vali_objects.utils.vali_utils import ValiUtils
             self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet, self.is_testnet)
-            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Wallet created successfully (hotkey={self._hotkey}...)")
+            logger.info(f"[VALIDATOR_BROADCAST_BASE] Wallet created successfully (hotkey={self._hotkey}...)")
 
         # Create metagraph client with connect_immediately=False to defer connection
         from shared_objects.rpc.metagraph_client import MetagraphClient
@@ -119,11 +120,11 @@ class ValidatorBroadcastBase:
             context: Optional dict with context info for logging (e.g., {"hotkey": "5..."})
         """
         if self.running_unit_tests:
-            bt.logging.debug(f"[BROADCAST] Running unit tests, skipping {broadcast_name} broadcast")
+            logger.debug(f"[BROADCAST] Running unit tests, skipping {broadcast_name} broadcast")
             return
 
         if not self.is_mothership:
-            bt.logging.debug(f"[BROADCAST] Not mothership, skipping {broadcast_name} broadcast")
+            logger.debug(f"[BROADCAST] Not mothership, skipping {broadcast_name} broadcast")
             return
 
         def run_broadcast():
@@ -135,9 +136,9 @@ class ValidatorBroadcastBase:
                 )
             except Exception as e:
                 context_str = f" ({context})" if context else ""
-                bt.logging.error(f"[BROADCAST] Failed to broadcast {broadcast_name}{context_str}: {e}")
+                logger.error(f"[BROADCAST] Failed to broadcast {broadcast_name}{context_str}: {e}")
                 import traceback
-                bt.logging.error(traceback.format_exc())
+                logger.error(traceback.format_exc())
 
         thread = threading.Thread(target=run_broadcast, daemon=True)
         thread.start()
@@ -162,14 +163,14 @@ class ValidatorBroadcastBase:
         """
         try:
             if not self._metagraph_client:
-                bt.logging.debug(f"[BROADCAST] No metagraph client configured, skipping {broadcast_name} broadcast")
+                logger.debug(f"[BROADCAST] No metagraph client configured, skipping {broadcast_name} broadcast")
                 return
 
             # Get other validators to broadcast to
             validator_axons = self._get_validator_axons()
 
             if not validator_axons:
-                bt.logging.debug(f"[BROADCAST] No other validators to broadcast {broadcast_name} to")
+                logger.debug(f"[BROADCAST] No other validators to broadcast {broadcast_name} to")
                 return
 
             # Create synapse using factory
@@ -179,7 +180,7 @@ class ValidatorBroadcastBase:
             synapse = self._serialize_synapse(synapse)
 
             context_str = f" for {context}" if context else ""
-            bt.logging.info(
+            logger.info(
                 f"[BROADCAST] Broadcasting {broadcast_name}{context_str} to {len(validator_axons)} validators via RPC"
             )
 
@@ -194,22 +195,22 @@ class ValidatorBroadcastBase:
                 total_count = result.get("total_count", 0)
                 errors = result.get("errors", [])
 
-                bt.logging.info(
+                logger.info(
                     f"[BROADCAST] {broadcast_name} broadcast completed: "
                     f"{success_count}/{total_count} validators updated"
                 )
 
                 # Log any errors
                 for error in errors:
-                    bt.logging.warning(f"[BROADCAST] Broadcast error: {error}")
+                    logger.warning(f"[BROADCAST] Broadcast error: {error}")
             else:
                 errors = result.get("errors", ["Unknown error"])
-                bt.logging.error(f"[BROADCAST] Broadcast failed: {errors}")
+                logger.error(f"[BROADCAST] Broadcast failed: {errors}")
 
         except Exception as e:
-            bt.logging.error(f"[BROADCAST] Error in RPC broadcast {broadcast_name}: {e}")
+            logger.error(f"[BROADCAST] Error in RPC broadcast {broadcast_name}: {e}")
             import traceback
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
 
     def _serialize_synapse(self, synapse: template.protocol.bt.Synapse) -> template.protocol.bt.Synapse:
         """
@@ -287,25 +288,25 @@ class ValidatorBroadcastBase:
         # SECURITY: Only process if receiver is not the mothership
         # (mothership doesn't process its own broadcasts)
         if self.is_mothership:
-            bt.logging.debug(f"[BROADCAST] Mothership ignoring own {broadcast_name} broadcast")
+            logger.debug(f"[BROADCAST] Mothership ignoring own {broadcast_name} broadcast")
             return False
 
         # SECURITY: Verify sender is the authorized mothership
         if not ValiConfig.MOTHERSHIP_HOTKEY:
-            bt.logging.warning(
+            logger.warning(
                 f"[SECURITY] MOTHERSHIP_HOTKEY not configured in ValiConfig. Cannot verify {broadcast_name} broadcast."
             )
             return False
 
         if not sender_hotkey:
-            bt.logging.warning(
+            logger.warning(
                 f"[SECURITY] No sender_hotkey provided for {broadcast_name} broadcast."
             )
             return False
 
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
         if sender_hotkey != mothership_hotkey:
-            bt.logging.warning(
+            logger.warning(
                 f"[SECURITY] Rejected {broadcast_name} broadcast from unauthorized validator: {sender_hotkey}. "
                 f"Only mothership ({mothership_hotkey}) can broadcast."
             )
@@ -370,13 +371,13 @@ class ValidatorBroadcastBase:
             # Call the update callback to modify local state
             update_callback(synapse_data)
 
-            bt.logging.info(
+            logger.info(
                 f"[{broadcast_name.upper()}] Successfully processed broadcast from {sender_hotkey}"
             )
             return True
 
         except Exception as e:
-            bt.logging.error(f"[{broadcast_name.upper()}] Error processing broadcast: {e}")
+            logger.error(f"[{broadcast_name.upper()}] Error processing broadcast: {e}")
             import traceback
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return False

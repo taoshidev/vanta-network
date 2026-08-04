@@ -10,7 +10,7 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from time_util.time_util import ForexHolidayCalendar
-import bittensor as bt
+from shared_objects.log import logger
 
 
 class LedgerUtils:
@@ -275,11 +275,11 @@ class LedgerUtils:
             bool - True if a valid forex day is found, False otherwise
         """
         if ledger is None:
-            bt.logging.info("ledger is None, returning False")
+            logger.info("ledger is None, returning False")
             return False
 
         if testing_date is None or not isinstance(testing_date, date):
-            bt.logging.info(f"testing_date is invalid, returning False: {testing_date}")
+            logger.info(f"testing_date is invalid, returning False: {testing_date}")
             return False
 
         if is_portfolio:
@@ -649,5 +649,5 @@ class LedgerUtils:
                 asset_class_min_days[asset_class] = bounded_minimum
             return asset_class_min_days
         except Exception as e:
-            bt.logging.warning(f"Error calculating dynamic minimum days: {e}")
+            logger.warning(f"Error calculating dynamic minimum days: {e}")
             return asset_class_min_days

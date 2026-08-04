@@ -6,9 +6,9 @@ Both PositionManager (client) and PositionManagerServer (server) use this module
 to avoid code duplication.
 """
 
-import bittensor as bt
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
+from shared_objects.log import logger
 
 
 class PositionSplitter:
@@ -216,7 +216,7 @@ class PositionSplitter:
             return positions, split_info
 
         except Exception as e:
-            bt.logging.error(f"Error during position splitting: {e}")
-            bt.logging.error(f"Position details: UUID={position.position_uuid}, Orders={len(position.orders)}, Trade Pair={position.trade_pair}")
+            logger.error(f"Error during position splitting: {e}")
+            logger.error(f"Position details: UUID={position.position_uuid}, Orders={len(position.orders)}, Trade Pair={position.trade_pair}")
             # Return original position on error
             return [position], {'implicit_flat_splits': 0, 'explicit_flat_splits': 0}

@@ -4,7 +4,7 @@ import uuid
 from typing import Optional
 
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.vali_config import TradePair
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from pydantic import BaseModel, model_validator, field_validator
 

@@ -44,6 +44,8 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, TradePair
 from shared_objects.slack_notifier import SlackNotifier
+import logging
+from shared_objects.log import logger
 
 
 @dataclass
@@ -299,7 +301,7 @@ class EmissionsLedger:
         print(f"{'='*80}")
         print(f"Total Checkpoints: {len(self.checkpoints)}")
         print(f"Total Emissions: {self.get_cumulative_emissions():.6f} alpha (~{self.get_cumulative_emissions_tao():.6f} TAO)")
-        print(f"\nFirst 5 Checkpoints:")
+        print("\nFirst 5 Checkpoints:")
         print(f"{'Chunk Start (UTC)':<25} {'Chunk End (UTC)':<25} {'Chunk Alpha':>15} {'Cumulative Alpha':>15}")
         print(f"{'-'*80}")
 
@@ -315,7 +317,7 @@ class EmissionsLedger:
 
         if len(self.checkpoints) > 10:
             print(f"{'...':<25} {'...':<25} {'...':>15} {'...':>15}")
-            print(f"\nLast 5 Checkpoints:")
+            print("\nLast 5 Checkpoints:")
             print(f"{'Chunk Start (UTC)':<25} {'Chunk End (UTC)':<25} {'Chunk Alpha':>15} {'Cumulative Alpha':>15}")
             print(f"{'-'*80}")
 
@@ -347,11 +349,11 @@ class EmissionsLedger:
             import matplotlib.pyplot as plt
             import matplotlib.dates as mdates
         except ImportError:
-            bt.logging.warning("matplotlib not installed, skipping plot. Install with: pip install matplotlib")
+            logger.warning("matplotlib not installed, skipping plot. Install with: pip install matplotlib")
             return
 
         if not self.checkpoints:
-            bt.logging.warning(f"No emissions data found for {self.hotkey}, skipping plot")
+            logger.warning(f"No emissions data found for {self.hotkey}, skipping plot")
             return
 
         # Extract data for plotting
@@ -457,7 +459,7 @@ class EmissionsLedger:
 
         if save_path:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
-            bt.logging.info(f"Plot saved to {save_path}")
+            logger.info(f"Plot saved to {save_path}")
         else:
             plt.show()
 
@@ -534,7 +536,7 @@ class EmissionsLedgerManager:
         self.live_price_fetcher = None
 
         self.load_from_disk()
-        bt.logging.info("EmissionsLedgerManager initialized (non-pickleable components will be lazy-initialized)")
+        logger.info("EmissionsLedgerManager initialized (non-pickleable components will be lazy-initialized)")
 
         # Start daemon process if requested
         if start_daemon:
@@ -575,10 +577,10 @@ class EmissionsLedgerManager:
             lag_time_ms: How far behind current time to stay (default: 12 hours)
         """
         if self.daemon_process is not None and self.daemon_process.is_alive():
-            bt.logging.warning("Daemon process already running")
+            logger.warning("Daemon process already running")
             return
 
-        bt.logging.info("Starting emissions ledger daemon process")
+        logger.info("Starting emissions ledger daemon process")
 
         # Create daemon process
         self.daemon_process = multiprocessing.Process(
@@ -594,7 +596,7 @@ class EmissionsLedgerManager:
         # Start the process
         self.daemon_process.start()
 
-        bt.logging.info(f"Daemon process started (Process ID: {self.daemon_process.pid})")
+        logger.info(f"Daemon process started (Process ID: {self.daemon_process.pid})")
 
     def _extract_block_timestamp(self, block_data: dict, block_number: int) -> int:
         """
@@ -663,7 +665,7 @@ class EmissionsLedgerManager:
 
         # If no match found — log structural info
         first_ext = extrinsics[0] if extrinsics else None
-        bt.logging.error(
+        logger.error(
             f"[extract_block_timestamp] Could not parse timestamp for block {block_number}. "
             f"First extrinsic: {type(first_ext)}, keys: {list(first_ext.keys()) if isinstance(first_ext, dict) else 'N/A'}"
         )
@@ -872,7 +874,7 @@ class EmissionsLedgerManager:
             # Update ledger with coldkey if ledger exists
             if hotkey_ss58 in self.emissions_ledgers:
                 self.emissions_ledgers[hotkey_ss58].coldkey = coldkey_str
-                bt.logging.debug(f"Updated ledger for {hotkey_ss58[:16]}... with coldkey {coldkey_str[:16]}...")
+                logger.debug(f"Updated ledger for {hotkey_ss58[:16]}... with coldkey {coldkey_str[:16]}...")
 
             return coldkey_str
 
@@ -944,10 +946,10 @@ class EmissionsLedgerManager:
         if self.subtensor is None:
             # Skip subtensor initialization in test mode (uses mock data instead)
             if self.running_unit_tests:
-                bt.logging.debug("Skipping subtensor initialization in test mode (uses mock data)")
+                logger.debug("Skipping subtensor initialization in test mode (uses mock data)")
                 return
 
-            bt.logging.info(f"Initializing subtensor connection to {self.archive_endpoint}, netuid: {self.netuid}")
+            logger.info(f"Initializing subtensor connection to {self.archive_endpoint}, netuid: {self.netuid}")
 
             parser = argparse.ArgumentParser()
             bt.Subtensor.add_args(parser)
@@ -960,11 +962,11 @@ class EmissionsLedgerManager:
             config.subtensor.network = None
 
             self.subtensor = bt.Subtensor(config=config)
-            bt.logging.info(f"Connected to: {self.subtensor.chain_endpoint}")
+            logger.info(f"Connected to: {self.subtensor.chain_endpoint}")
 
         # Initialize live price fetcher client if not already initialized
         if self.live_price_fetcher is None:
-            bt.logging.info("Initializing live price fetcher client")
+            logger.info("Initializing live price fetcher client")
             self.live_price_fetcher = LivePriceFetcherClient(running_unit_tests=self.running_unit_tests)
 
     def _query_rates_for_zero_emission_chunk(
@@ -991,8 +993,8 @@ class EmissionsLedgerManager:
             MOCK_TAO_TO_USD_RATE = 500.0
             return MOCK_ALPHA_TO_TAO_RATE, MOCK_TAO_TO_USD_RATE
 
-        bt.logging.debug(
-            f"No emissions found in chunk, querying rates directly for zero-emission checkpoints"
+        logger.debug(
+            "No emissions found in chunk, querying rates directly for zero-emission checkpoints"
         )
 
         # Query rates at a representative block (chunk midpoint)
@@ -1021,7 +1023,7 @@ class EmissionsLedgerManager:
                     )
                     return avg_alpha_to_tao_rate, avg_tao_to_usd_rate
         except Exception as e:
-            bt.logging.warning(
+            logger.warning(
                 f"Failed to query rates for zero-emission chunk: {e}. "
                 f"Using default rates (0.0)"
             )
@@ -1056,9 +1058,9 @@ class EmissionsLedgerManager:
             self.instantiate_non_pickleable_components()
 
         start_exec_time = time.time()
-        bt.logging.info("Building emissions ledgers for all hotkeys (aligned with perf ledgers)")
+        logger.info("Building emissions ledgers for all hotkeys (aligned with perf ledgers)")
         if self.rate_limit_per_second < 10:
-            bt.logging.warning(f"Emissions ledger network rate limit set to {self.rate_limit_per_second} req/sec - queries will be slow")
+            logger.warning(f"Emissions ledger network rate limit set to {self.rate_limit_per_second} req/sec - queries will be slow")
 
         # Get all perf ledgers to use as checkpoint reference
         all_perf_ledgers: dict[str, 'PerfLedger'] = self._perf_ledger_client.get_perf_ledgers()
@@ -1084,7 +1086,7 @@ class EmissionsLedgerManager:
         if not reference_portfolio_ledger:
             raise ValueError("No valid portfolio ledgers found with checkpoints")
 
-        bt.logging.info(
+        logger.info(
             f"Using portfolio ledger from {reference_hotkey[:16]}...{reference_hotkey[-8:]} "
             f"as reference ({len(reference_portfolio_ledger.cps)} checkpoints, "
             f"target_cp_duration_ms: {reference_portfolio_ledger.target_cp_duration_ms}ms)"
@@ -1133,7 +1135,7 @@ class EmissionsLedgerManager:
         if not self.running_unit_tests:
             min_allowed_end_time_ms = current_time_ms - self.DEFAULT_LAG_TIME_MS
             if end_time_ms > min_allowed_end_time_ms:
-                bt.logging.warning(
+                logger.warning(
                     f"Requested end_time_ms ({TimeUtil.millis_to_formatted_date_str(end_time_ms)}) "
                     f"is too recent (within {self.DEFAULT_LAG_TIME_MS / 1000 / 3600:.1f} hours of current time). "
                     f"Adjusting to enforce mandatory {self.DEFAULT_LAG_TIME_MS / 1000 / 3600:.1f}-hour lag: "
@@ -1169,10 +1171,10 @@ class EmissionsLedgerManager:
             checkpoints_to_process.append(checkpoint)
 
         if not checkpoints_to_process:
-            bt.logging.info("No new checkpoints to process")
+            logger.info("No new checkpoints to process")
             return
 
-        bt.logging.info(
+        logger.info(
             f"Processing {len(checkpoints_to_process)} checkpoints "
             f"(from {TimeUtil.millis_to_formatted_date_str(checkpoints_to_process[0].last_update_ms)} "
             f"to {TimeUtil.millis_to_formatted_date_str(checkpoints_to_process[-1].last_update_ms)})"
@@ -1200,7 +1202,7 @@ class EmissionsLedgerManager:
         all_hotkeys_seen = set(self.emissions_ledgers.keys()) if self.emissions_ledgers else set()
 
         if all_hotkeys_seen:
-            bt.logging.info(f"Resuming with {len(all_hotkeys_seen)} hotkeys from existing ledgers")
+            logger.info(f"Resuming with {len(all_hotkeys_seen)} hotkeys from existing ledgers")
 
         # Iterate over perf ledger checkpoints
         for checkpoint_idx, checkpoint in enumerate(checkpoints_to_process):
@@ -1235,7 +1237,7 @@ class EmissionsLedgerManager:
 
                     # Log warning if gap is significant (blocks are for reference only)
                     if block_gap > 100:
-                        bt.logging.debug(
+                        logger.debug(
                             f"Block estimation drift: previous chunk ended at block {previous_block_end}, "
                             f"new chunk starts at block {chunk_start_block} "
                             f"(gap: {block_gap} blocks). This is normal due to block time variance."
@@ -1364,7 +1366,7 @@ class EmissionsLedgerManager:
             date_range = f"{chunk_start_dt.strftime('%Y-%m-%d %H:%M')} - {chunk_end_dt.strftime('%Y-%m-%d %H:%M')} UTC"
 
             # Log progress for every chunk
-            bt.logging.info(
+            logger.info(
                 f"Chunk {chunk_count} ({date_range}): "
                 f"{blocks_in_chunk} blocks, "
                 f"{chunk_elapsed:.2f}s, "
@@ -1377,7 +1379,7 @@ class EmissionsLedgerManager:
 
         # Log completion (worked in-place on self.emissions_ledgers)
         elapsed_time = time.time() - start_exec_time
-        bt.logging.info(
+        logger.info(
             f"Built {chunk_count} checkpoints for {len(self.emissions_ledgers)} hotkeys in {elapsed_time:.2f} seconds "
             f"(aligned with perf ledger, target_cp_duration_ms: {target_cp_duration_ms}ms)"
         )
@@ -1387,7 +1389,7 @@ class EmissionsLedgerManager:
             if ledger.checkpoints:
                 total_alpha = ledger.get_cumulative_emissions()
                 total_tao = ledger.get_cumulative_emissions_tao()
-                bt.logging.info(f"  {hotkey[:16]}...{hotkey[-8:]}: {total_alpha:.6f} alpha (~{total_tao:.6f} TAO)")
+                logger.info(f"  {hotkey[:16]}...{hotkey[-8:]}: {total_alpha:.6f} alpha (~{total_tao:.6f} TAO)")
 
     def _get_uid_to_hotkey_at_block(self, block_hash: str) -> Dict[int, str]:
         """
@@ -1486,7 +1488,7 @@ class EmissionsLedgerManager:
                 MOCK_NUM_BLOCKS
             )
 
-        bt.logging.debug(f"Generated mock emissions for {len(result)} hotkeys in test mode")
+        logger.debug(f"Generated mock emissions for {len(result)} hotkeys in test mode")
         return result
 
     def _calculate_emissions_for_all_hotkeys(
@@ -1683,7 +1685,7 @@ class EmissionsLedgerManager:
             ValueError: If ledgers have mismatched final checkpoint times
         """
         if not self.emissions_ledgers:
-            bt.logging.warning("No ledgers to save")
+            logger.warning("No ledgers to save")
             return
 
         # Validate that all ledgers have the same final checkpoint time
@@ -1730,7 +1732,7 @@ class EmissionsLedgerManager:
         # Atomic write: temp file -> move
         self._write_compressed(ledger_path, data)
 
-        bt.logging.info(f"Saved {len(self.emissions_ledgers)} emissions ledgers to {ledger_path}")
+        logger.info(f"Saved {len(self.emissions_ledgers)} emissions ledgers to {ledger_path}")
 
     def load_from_disk(self) -> int:
         """
@@ -1742,7 +1744,7 @@ class EmissionsLedgerManager:
         ledger_path = self._get_ledger_path()
 
         if not os.path.exists(ledger_path):
-            bt.logging.info("No existing emissions ledger file found")
+            logger.info("No existing emissions ledger file found")
             return 0
 
         # Load data
@@ -1783,11 +1785,11 @@ class EmissionsLedgerManager:
             # Note: If coldkey is empty, it will be lazily queried from substrate when first needed
             # by _get_coldkey_for_hotkey() and then persisted on next save (one-time migration)
             if not coldkey:
-                bt.logging.debug(f"Coldkey missing for {hotkey[:16]}... in saved data - will be queried lazily when needed")
+                logger.debug(f"Coldkey missing for {hotkey[:16]}... in saved data - will be queried lazily when needed")
 
             self.emissions_ledgers[hotkey] = EmissionsLedger(hotkey=hotkey, coldkey=coldkey, checkpoints=checkpoints)
 
-        bt.logging.info(
+        logger.info(
             f"Loaded {len(self.emissions_ledgers)} emissions ledgers, "
             f"metadata: {metadata}, "
             f"last update: {TimeUtil.millis_to_formatted_date_str(metadata.get('last_update_ms', 0))}"
@@ -1807,9 +1809,9 @@ class EmissionsLedgerManager:
 
         try:
             shutil.copy2(ledger_path, backup_path)
-            bt.logging.info(f"Created backup: {backup_path}")
+            logger.info(f"Created backup: {backup_path}")
         except Exception as e:
-            bt.logging.warning(f"Failed to create backup: {e}")
+            logger.warning(f"Failed to create backup: {e}")
 
     def _write_compressed(self, path: str, data: dict):
         """Write JSON data compressed with gzip (atomic write via temp file)."""
@@ -1918,7 +1920,7 @@ class EmissionsLedgerManager:
             lag_time_ms = 0 if self.running_unit_tests else self.DEFAULT_LAG_TIME_MS
 
         if self.rate_limit_per_second < 10:
-            bt.logging.warning(f"Emissions ledger network rate limit set to {self.rate_limit_per_second} req/sec - queries will be slow")
+            logger.warning(f"Emissions ledger network rate limit set to {self.rate_limit_per_second} req/sec - queries will be slow")
 
         start_time = time.time()
 
@@ -1933,11 +1935,11 @@ class EmissionsLedgerManager:
         # Check if there are new chunks to compute
         if last_computed_chunk_end_ms == 0:
             # First run - perform full build
-            bt.logging.info("No existing checkpoint found - performing initial full build")
+            logger.info("No existing checkpoint found - performing initial full build")
             return self._build_full(end_time_ms)
 
         if last_computed_chunk_end_ms >= end_time_ms:
-            bt.logging.info(
+            logger.info(
                 f"No new chunks to compute. "
                 f"Last computed: {TimeUtil.millis_to_formatted_date_str(last_computed_chunk_end_ms)}, "
                 f"Target end: {TimeUtil.millis_to_formatted_date_str(end_time_ms)}"
@@ -1947,7 +1949,7 @@ class EmissionsLedgerManager:
         # Delta update: build from last checkpoint to end_time (NEVER clear existing ledgers!)
         start_time_ms = last_computed_chunk_end_ms
 
-        bt.logging.info(
+        logger.info(
             f"Delta update from {TimeUtil.millis_to_formatted_date_str(start_time_ms)} "
             f"to {TimeUtil.millis_to_formatted_date_str(end_time_ms)}"
         )
@@ -1963,7 +1965,7 @@ class EmissionsLedgerManager:
         chunks_built = chunks_built // ValiConfig.TARGET_CHECKPOINT_DURATION_MS if chunks_built > 0 else 0
 
         elapsed = time.time() - start_time
-        bt.logging.info(
+        logger.info(
             f"Delta update completed in {elapsed:.2f}s - "
             f"built {chunks_built} new chunks"
         )
@@ -1981,7 +1983,7 @@ class EmissionsLedgerManager:
         Returns:
             Number of chunks built
         """
-        bt.logging.info(f"Building full emissions ledgers ({lookback_days} day lookback)")
+        logger.info(f"Building full emissions ledgers ({lookback_days} day lookback)")
 
         # Clear existing ledgers for full rebuild
         self.emissions_ledgers.clear()
@@ -1998,7 +2000,7 @@ class EmissionsLedgerManager:
         )
 
         total_chunks = sum(len(ledger.checkpoints) for ledger in self.emissions_ledgers.values())
-        bt.logging.info(f"Full build complete - {total_chunks} total chunks")
+        logger.info(f"Full build complete - {total_chunks} total chunks")
 
         return total_chunks
 
@@ -2066,7 +2068,7 @@ class EmissionsLedgerManager:
         if ledger:
             ledger.plot_emissions(save_path)
         else:
-            bt.logging.warning(f"No emissions data found for {hotkey}, skipping plot")
+            logger.warning(f"No emissions data found for {hotkey}, skipping plot")
 
     # ============================================================================
     # DAEMON MODE
@@ -2109,38 +2111,38 @@ class EmissionsLedgerManager:
 
         # Register signal handlers for graceful shutdown
         def signal_handler(signum, frame):
-            bt.logging.info(f"Received signal {signum}, shutting down gracefully...")
+            logger.info(f"Received signal {signum}, shutting down gracefully...")
             self.running = False
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        bt.logging.info("=" * 80)
-        bt.logging.info("Emissions Ledger Manager - Daemon Mode")
-        bt.logging.info("=" * 80)
-        bt.logging.info(f"NetUID: {self.netuid}")
-        bt.logging.info(f"Archive Endpoint: {self.archive_endpoint}")
-        bt.logging.info(f"Rate Limit: {self.rate_limit_per_second} req/sec")
-        bt.logging.info(f"Check Interval: {check_interval_seconds}s ({check_interval_seconds / 3600:.1f} hours)")
-        bt.logging.info(f"Lag Time: {lag_time_ms / 1000 / 3600:.1f} hours behind current time")
-        bt.logging.info(f"Slack Notifications: {'Enabled' if self.slack_notifier.webhook_url else 'Disabled'}")
-        bt.logging.info("=" * 80)
+        logger.info("=" * 80)
+        logger.info("Emissions Ledger Manager - Daemon Mode")
+        logger.info("=" * 80)
+        logger.info(f"NetUID: {self.netuid}")
+        logger.info(f"Archive Endpoint: {self.archive_endpoint}")
+        logger.info(f"Rate Limit: {self.rate_limit_per_second} req/sec")
+        logger.info(f"Check Interval: {check_interval_seconds}s ({check_interval_seconds / 3600:.1f} hours)")
+        logger.info(f"Lag Time: {lag_time_ms / 1000 / 3600:.1f} hours behind current time")
+        logger.info(f"Slack Notifications: {'Enabled' if self.slack_notifier.webhook_url else 'Disabled'}")
+        logger.info("=" * 80)
 
         # Main loop (do-while pattern - executes immediately on first iteration)
         while self.running:
             try:
                 # Perform delta update (happens immediately on first iteration)
-                bt.logging.info("Checking for new chunks...")
+                logger.info("Checking for new chunks...")
                 chunks_added = self.build_delta_update(lag_time_ms=lag_time_ms)
 
                 if chunks_added > 0:
-                    bt.logging.info(f"Added {chunks_added} new chunks")
+                    logger.info(f"Added {chunks_added} new chunks")
                 else:
-                    bt.logging.info("No new chunks available")
+                    logger.info("No new chunks available")
 
                 # Success - reset failure counter
                 if consecutive_failures > 0:
-                    bt.logging.info(f"Recovered after {consecutive_failures} failure(s)")
+                    logger.info(f"Recovered after {consecutive_failures} failure(s)")
                     # Send recovery alert with VM/git/hotkey context
                     self.slack_notifier.send_ledger_recovery_alert("Emissions Ledger", consecutive_failures)
 
@@ -2155,7 +2157,7 @@ class EmissionsLedgerManager:
                     max_backoff_seconds
                 )
 
-                bt.logging.error(
+                logger.error(
                     f"Error in daemon loop (failure #{consecutive_failures}): {e}",
                     exc_info=True
                 )
@@ -2179,7 +2181,7 @@ class EmissionsLedgerManager:
                     next_check_time = time.time() + backoff_seconds
                     next_check_str = datetime.fromtimestamp(next_check_time, tz=timezone.utc).strftime(
                         '%Y-%m-%d %H:%M:%S UTC')
-                    bt.logging.warning(
+                    logger.warning(
                         f"Retrying after {consecutive_failures} failure(s). "
                         f"Backoff: {backoff_seconds}s. Next attempt at: {next_check_str}"
                     )
@@ -2188,13 +2190,13 @@ class EmissionsLedgerManager:
                     next_check_time = time.time() + check_interval_seconds
                     next_check_str = datetime.fromtimestamp(next_check_time, tz=timezone.utc).strftime(
                         '%Y-%m-%d %H:%M:%S UTC')
-                    bt.logging.info(f"Next check at: {next_check_str}")
+                    logger.info(f"Next check at: {next_check_str}")
 
                 # Sleep in small intervals to allow graceful shutdown
                 while self.running and time.time() < next_check_time:
                     time.sleep(10)
 
-        bt.logging.info("Emissions Ledger Manager daemon stopped")
+        logger.info("Emissions Ledger Manager daemon stopped")
 
 
 if __name__ == "__main__":
@@ -2213,13 +2215,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
     if args.verbose:
-        bt.logging.enable_debug()
+        logger.setLevel(logging.DEBUG)
 
     # Initialize emissions ledger manager
     # EmissionsLedgerManager creates its own PerfLedgerClient internally (forward compatibility)
-    bt.logging.info("Initializing emissions ledger manager...")
+    logger.info("Initializing emissions ledger manager...")
     emissions_ledger_manager = EmissionsLedgerManager(
         start_daemon=False
     )
@@ -2235,24 +2237,24 @@ if __name__ == "__main__":
     if last_computed_chunk_end_ms > 0:
         # Resume from existing data
         start_time_ms = last_computed_chunk_end_ms
-        bt.logging.info(f"Resuming from existing data at {TimeUtil.millis_to_formatted_date_str(last_computed_chunk_end_ms)}")
+        logger.info(f"Resuming from existing data at {TimeUtil.millis_to_formatted_date_str(last_computed_chunk_end_ms)}")
     else:
         # No existing data - use lookback period
         current_time = datetime.now(timezone.utc)
         start_time = current_time - timedelta(days=args.start_time_offset_days)
         start_time_ms = int(start_time.timestamp() * 1000)
-        bt.logging.info(f"No existing data - starting from {args.start_time_offset_days} days ago")
+        logger.info(f"No existing data - starting from {args.start_time_offset_days} days ago")
 
     # ALWAYS build ALL ledgers using optimized method
-    bt.logging.info("Building emissions ledgers for ALL hotkeys in subnet (optimized mode)")
-    bt.logging.info(f"Using {EmissionsLedgerManager.DEFAULT_LAG_TIME_MS / 1000 / 3600:.1f} hour lag time for data finality")
+    logger.info("Building emissions ledgers for ALL hotkeys in subnet (optimized mode)")
+    logger.info(f"Using {EmissionsLedgerManager.DEFAULT_LAG_TIME_MS / 1000 / 3600:.1f} hour lag time for data finality")
     emissions_ledger_manager.build_all_emissions_ledgers_optimized(
         start_time_ms=start_time_ms,
         end_time_ms=end_time_ms
     )
 
     if len(emissions_ledger_manager.emissions_ledgers) == 0:
-        bt.logging.error("No emissions ledgers were built")
+        logger.error("No emissions ledgers were built")
         exit(1)
 
     # Create emissions_ledger_plots directory
@@ -2262,18 +2264,18 @@ if __name__ == "__main__":
     plots_dir = os.path.join(project_root, "emissions_ledger_plots")
 
     os.makedirs(plots_dir, exist_ok=True)
-    bt.logging.info(f"Saving plots to: {plots_dir}")
+    logger.info(f"Saving plots to: {plots_dir}")
 
     # Save ALL plots to emissions_ledger_plots/{hotkey}.png
     for hotkey in emissions_ledger_manager.emissions_ledgers.keys():
         plot_path = os.path.join(plots_dir, f"{hotkey}.png")
         try:
             emissions_ledger_manager.plot_emissions(hotkey, save_path=plot_path)
-            bt.logging.info(f"Saved plot for {hotkey[:16]}...{hotkey[-8:]}")
+            logger.info(f"Saved plot for {hotkey[:16]}...{hotkey[-8:]}")
         except Exception as e:
-            bt.logging.error(f"Error saving plot for {hotkey}: {e}")
+            logger.error(f"Error saving plot for {hotkey}: {e}")
 
-    bt.logging.info(f"All plots saved to {plots_dir}")
+    logger.info(f"All plots saved to {plots_dir}")
 
     # Print summary for specified hotkey or all hotkeys
     if args.hotkey:
@@ -2282,12 +2284,12 @@ if __name__ == "__main__":
 
             # Optionally display the plot for this hotkey
             if args.show_plot:
-                bt.logging.info(f"Displaying plot for {args.hotkey}")
+                logger.info(f"Displaying plot for {args.hotkey}")
                 emissions_ledger_manager.plot_emissions(args.hotkey, save_path=None)
         else:
-            bt.logging.error(f"Hotkey {args.hotkey} not found in built ledgers")
+            logger.error(f"Hotkey {args.hotkey} not found in built ledgers")
     else:
         # Print summaries for all hotkeys
-        bt.logging.info("Printing summaries for all hotkeys")
+        logger.info("Printing summaries for all hotkeys")
         for hotkey in emissions_ledger_manager.emissions_ledgers.keys():
             emissions_ledger_manager.print_emissions_summary(hotkey)

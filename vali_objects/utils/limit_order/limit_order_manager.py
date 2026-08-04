@@ -2,7 +2,6 @@ import os
 import threading
 import traceback
 
-import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil
@@ -19,6 +18,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
+from shared_objects.log import logger
 
 
 class LimitOrderManager(CacheController):
@@ -205,7 +205,7 @@ class LimitOrderManager(CacheController):
         # Validate that at least one of SL, TP, or trailing_stop is set
         if order.stop_loss is None and order.take_profit is None and order.trailing_stop is None:
             raise SignalException(
-                f"BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set"
+                "BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set"
             )
 
         # Set order type based on open position, skip validation if there is no position.
@@ -213,7 +213,7 @@ class LimitOrderManager(CacheController):
             order.order_type = open_position.position_type
         else:
             raise SignalException(
-                f"BRACKET order must have an open position"
+                "BRACKET order must have an open position"
             )
 
         # Validate SL/TP against reference price if provided
@@ -242,7 +242,7 @@ class LimitOrderManager(CacheController):
             )
 
         if order.order_type == OrderType.FLAT:
-            raise SignalException(f"FLAT order is not supported for LIMIT orders")
+            raise SignalException("FLAT order is not supported for LIMIT orders")
 
         # Validate bracket_orders if provided
         if order.bracket_orders:
@@ -377,7 +377,7 @@ class LimitOrderManager(CacheController):
             elif order.execution_type == ExecutionType.STOP_LIMIT:
                 self._validate_stop_limit_order(order)
 
-            bt.logging.info(
+            logger.info(
                 f"{'EDIT' if is_edit else 'INCOMING'} {order.execution_type} ORDER | {trade_pair.trade_pair_id} | "
                 f"{order.order_type.name} | limit_price={order.limit_price} | stop_loss={order.stop_loss} | take_profit={order.take_profit}"
             )
@@ -404,7 +404,7 @@ class LimitOrderManager(CacheController):
             fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, is_market_order=True)
             if fill_error:
                 raise SignalException(fill_error)
-            bt.logging.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
+            logger.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
 
         else:
             self._write_to_disk(miner_hotkey, order)
@@ -509,8 +509,8 @@ class LimitOrderManager(CacheController):
             }
 
         except Exception as e:
-            bt.logging.error(f"Error cancelling limit order: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error cancelling limit order: {e}")
+            logger.error(traceback.format_exc())
             raise
 
     def get_limit_orders_for_hotkey_rpc(self, miner_hotkey):
@@ -527,7 +527,7 @@ class LimitOrderManager(CacheController):
                         orders.append(order.to_python_dict())
             return orders
         except Exception as e:
-            bt.logging.error(f"Error getting limit orders: {e}")
+            logger.error(f"Error getting limit orders: {e}")
             return []
 
     def get_limit_orders_for_trade_pair_rpc(self, trade_pair_id):
@@ -546,7 +546,7 @@ class LimitOrderManager(CacheController):
                 result[hotkey] = [order.to_python_dict() for order in orders]
             return result
         except Exception as e:
-            bt.logging.error(f"Error getting limit orders for trade pair: {e}")
+            logger.error(f"Error getting limit orders for trade pair: {e}")
             return {}
 
     def to_dashboard_dict_rpc(self, miner_hotkey, status_filter=None):
@@ -592,7 +592,7 @@ class LimitOrderManager(CacheController):
             return result if any(result.values()) else None
 
         except Exception as e:
-            bt.logging.error(f"Error creating dashboard dict: {e}")
+            logger.error(f"Error creating dashboard dict: {e}")
             return None
 
     def get_dashboard(self, miner_hotkey: str, limit_orders_time_ms: int) -> dict | None:
@@ -651,7 +651,7 @@ class LimitOrderManager(CacheController):
                     result[trade_pair_id][hotkey] = [order.to_python_dict() for order in orders]
             return result
         except Exception as e:
-            bt.logging.error(f"Error getting all limit orders: {e}")
+            logger.error(f"Error getting all limit orders: {e}")
             return {}
 
     def delete_all_limit_orders_for_hotkey(self, miner_hotkey):
@@ -696,13 +696,13 @@ class LimitOrderManager(CacheController):
                                 del self._last_fill_time[trade_pair]
 
             if deleted_count > 0:
-                bt.logging.info(f"Deleted {deleted_count} limit orders for eliminated miner [{miner_hotkey}]")
+                logger.info(f"Deleted {deleted_count} limit orders for eliminated miner [{miner_hotkey}]")
 
             return deleted_count
 
         except Exception as e:
-            bt.logging.error(f"Error deleting limit orders for hotkey {miner_hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error deleting limit orders for hotkey {miner_hotkey}: {e}")
+            logger.error(traceback.format_exc())
             raise
 
     def restore_cancelled_limit_orders(self, miner_hotkey: str) -> int:
@@ -748,7 +748,7 @@ class LimitOrderManager(CacheController):
             if miner_hotkey in self._limit_orders[trade_pair]:
                 self._limit_orders[trade_pair][miner_hotkey].sort(key=lambda o: o.processed_ms)
 
-        bt.logging.info(f"[RESTORE] Restored {restored} elimination-cancelled limit orders for {miner_hotkey}")
+        logger.info(f"[RESTORE] Restored {restored} elimination-cancelled limit orders for {miner_hotkey}")
         return restored
 
     # ============================================================================
@@ -783,7 +783,7 @@ class LimitOrderManager(CacheController):
         should_log = now_ms - self._last_print_time_ms > 60 * 1000
         if should_log:
             total_orders = sum(len(orders) for hotkey_dict in list(self._limit_orders.values()) for orders in list(hotkey_dict.values()))
-            bt.logging.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
+            logger.info(f"Checking {total_orders} limit orders across {len(self._limit_orders)} trade pairs")
 
         for trade_pair, hotkey_dict in list(self._limit_orders.items()):
             if trade_pair.is_blocked or not hotkey_dict:
@@ -793,7 +793,7 @@ class LimitOrderManager(CacheController):
             if not self.live_price_fetcher.is_market_open(trade_pair, now_ms):
                 if self.running_unit_tests:
                     print(f"[CHECK_ORDERS DEBUG] Market closed for {trade_pair.trade_pair_id}")
-                bt.logging.debug(f"Market closed for {trade_pair.trade_pair_id}, skipping")
+                logger.debug(f"Market closed for {trade_pair.trade_pair_id}, skipping")
                 continue
 
             # Get price sources for this trade pair
@@ -802,7 +802,7 @@ class LimitOrderManager(CacheController):
             if not price_sources:
                 if self.running_unit_tests:
                     print(f"[CHECK_ORDERS DEBUG] No price sources for {trade_pair.trade_pair_id}")
-                bt.logging.debug(f"No price sources for {trade_pair.trade_pair_id}, skipping")
+                logger.debug(f"No price sources for {trade_pair.trade_pair_id}, skipping")
                 continue
 
             # Iterate through all hotkeys for this trade pair
@@ -815,7 +815,7 @@ class LimitOrderManager(CacheController):
                 fill_allowed = time_since_last_fill >= ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS
 
                 if not fill_allowed:
-                    bt.logging.info(
+                    logger.info(
                         f"Fill interval not elapsed for {trade_pair.trade_pair_id}/{miner_hotkey}: "
                         f"{time_since_last_fill}ms since last fill (trailing best_price still updates)"
                     )
@@ -831,7 +831,7 @@ class LimitOrderManager(CacheController):
                     if order.src == OrderSource.BRACKET_UNFILLED:
                         position = self._get_open_position(miner_hotkey, order)
                         if not position or order.processed_ms < position.open_ms:
-                            bt.logging.info(f"[BRACKET CANCELLED] Invalid position for {order.order_uuid}, cancelling")
+                            logger.info(f"[BRACKET CANCELLED] Invalid position for {order.order_uuid}, cancelling")
                             self._close_limit_order(miner_hotkey, order, OrderSource.BRACKET_CANCELLED, now_ms)
                             continue
 
@@ -870,12 +870,12 @@ class LimitOrderManager(CacheController):
                             break
 
                     except Exception as e:
-                        bt.logging.error(f"Error attempting to fill limit order {order.order_uuid}: {e}")
-                        bt.logging.error(traceback.format_exc())
+                        logger.error(f"Error attempting to fill limit order {order.order_uuid}: {e}")
+                        logger.error(traceback.format_exc())
 
         elapsed_ms = TimeUtil.now_in_millis() - now_ms
         if should_log or total_filled > 0:
-            bt.logging.info(
+            logger.info(
                 f"Limit order check complete: checked={total_checked}, filled={total_filled}, elapsed={elapsed_ms}ms"
             )
             self._last_print_time_ms = TimeUtil.now_in_millis()
@@ -1026,7 +1026,7 @@ class LimitOrderManager(CacheController):
             return
 
         if new_best != order.price:
-            bt.logging.info(
+            logger.info(
                 f"[TRAILING] [{order.order_uuid}] {position_type.name} best_price updated: "
                 f"{order.price:.6f} -> {new_best:.6f} (observed={observed:.6f})"
             )
@@ -1043,7 +1043,7 @@ class LimitOrderManager(CacheController):
         3. Forward limit_price, bracket_orders, order_type, sizing from parent
         4. Call process_limit_order() for the child (reuses all existing limit order logic)
         """
-        bt.logging.info(
+        logger.info(
             f"[STOP_LIMIT] Converting stop-limit order {order.order_uuid} to limit order "
             f"(stop_price={order.stop_price}, limit_price={order.limit_price})"
         )
@@ -1071,11 +1071,11 @@ class LimitOrderManager(CacheController):
         # 3. Process the child limit order (reuses all existing limit order logic including immediate fill check)
         try:
             self.process_limit_order(miner_hotkey, child_order)
-            bt.logging.success(
+            logger.info(
                 f"[STOP_LIMIT] Created child limit order {child_uuid} from stop-limit {order.order_uuid}"
             )
         except SignalException as e:
-            bt.logging.error(
+            logger.error(
                 f"[STOP_LIMIT] Failed to create child limit order from {order.order_uuid}: {e}"
             )
 
@@ -1134,7 +1134,7 @@ class LimitOrderManager(CacheController):
             order.processed_ms = filled_order.processed_ms
 
             # Issue 3: Log success only after successful update
-            bt.logging.success(f"Filled limit order {order.order_uuid} at {order.price}")
+            logger.info(f"Filled limit order {order.order_uuid} at {order.price}")
 
             if trade_pair not in self._last_fill_time:
                 self._last_fill_time[trade_pair] = {}
@@ -1152,7 +1152,7 @@ class LimitOrderManager(CacheController):
                         execution_type=ExecutionType.BRACKET
                     )
                 except Exception as e:
-                    bt.logging.warning(f"Failed to cancel bracket orders after position close: {e}")
+                    logger.warning(f"Failed to cancel bracket orders after position close: {e}")
 
             if order.execution_type == ExecutionType.LIMIT:
                 if order.bracket_orders is not None and updated_position.is_open_position:
@@ -1160,11 +1160,11 @@ class LimitOrderManager(CacheController):
 
         except BracketOrderException as e:
             error_msg = f"Limit order [{order.order_uuid}] filled successfully, but bracket order creation failed: {e}"
-            bt.logging.warning(error_msg)
+            logger.warning(error_msg)
 
         except Exception as e:
             error_msg = f"Could not fill limit order [{miner_hotkey}] [{trade_pair.trade_pair_id}] [{order.order_uuid}]: {e}. Cancelling order"
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             new_src = OrderSource.get_cancel(order.src)
 
         finally:
@@ -1185,7 +1185,7 @@ class LimitOrderManager(CacheController):
             if os.path.exists(closed_filename):
                 os.remove(closed_filename)
             else:
-                bt.logging.warning(f"Closed unfilled limit order not found on disk [{order_uuid}]")
+                logger.warning(f"Closed unfilled limit order not found on disk [{order_uuid}]")
 
             order.src = src
             order.processed_ms = time_ms
@@ -1212,7 +1212,7 @@ class LimitOrderManager(CacheController):
                 )
                 self._last_trailing_attach_ms.pop(order_uuid, None)
 
-            bt.logging.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
+            logger.info(f"Successfully closed limit order [{order_uuid}] [{trade_pair_id}] for [{miner_hotkey}]")
 
     def create_sltp_order(self, miner_hotkey, parent_order, open_position=None):
         """
@@ -1321,14 +1321,14 @@ class LimitOrderManager(CacheController):
                     trailing_info = ""
                     if trailing_stop_dict:
                         trailing_info = f", trailing={trailing_stop_dict}"
-                    bt.logging.success(
+                    logger.info(
                         f"Created bracket order [{bracket_order.order_uuid}] "
                         f"with SL={bracket_data['stop_loss']}, TP={bracket_data['take_profit']}{trailing_info}"
                     )
 
         except Exception as e:
-            bt.logging.error(f"Error creating bracket order: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error creating bracket order: {e}")
+            logger.error(traceback.format_exc())
             raise BracketOrderException(f"Error creating bracket order: {e}")
 
     def _get_open_position(self, hotkey, order):
@@ -1348,7 +1348,7 @@ class LimitOrderManager(CacheController):
 
         order_uuid_to_delete = {}
 
-        bt.logging.info(f"[LIMIT ORDER DISK] Reading limit orders from disk for {len(hotkeys)} hotkeys...")
+        logger.info(f"[LIMIT ORDER DISK] Reading limit orders from disk for {len(hotkeys)} hotkeys...")
 
         now_ms = TimeUtil.now_in_millis()
         for hotkey in hotkeys:
@@ -1376,7 +1376,7 @@ class LimitOrderManager(CacheController):
                     self._last_fill_time[trade_pair][hotkey] = 0
 
                 except Exception as e:
-                    bt.logging.error(
+                    logger.error(
                         f"Error reading limit order from disk for hotkey {hotkey}: {e} | "
                         f"order_dict={order_dict}"
                     )
@@ -1387,7 +1387,7 @@ class LimitOrderManager(CacheController):
             for hotkey in self._limit_orders[trade_pair]:
                 self._limit_orders[trade_pair][hotkey].sort(key=lambda o: o.processed_ms)
 
-        bt.logging.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders (attachment deferred to first daemon iteration)")
+        logger.info(f"[LIMIT ORDER DISK] Finished reading limit orders: {total_orders_read} open orders, {total_bracket_orders} bracket orders (attachment deferred to first daemon iteration)")
 
     def _attach_order_to_position(self, miner_hotkey=None, order=None):
         """
@@ -1406,7 +1406,7 @@ class LimitOrderManager(CacheController):
                     miner_hotkey, order.trade_pair.trade_pair_id, order.to_python_dict()
                 )
             except Exception as e:
-                bt.logging.error(f"Error attaching bracket order {order.order_uuid} to position: {e}")
+                logger.error(f"Error attaching bracket order {order.order_uuid} to position: {e}")
             return
 
         # Startup: re-attach all bracket orders
@@ -1424,8 +1424,8 @@ class LimitOrderManager(CacheController):
                         ):
                             total_attached += 1
                     except Exception as e:
-                        bt.logging.error(f"Error attaching bracket order {o.order_uuid} to position: {e}")
-        bt.logging.info(f"[LIMIT ORDER INIT] Attached {total_attached}/{total_orders} bracket orders to positions")
+                        logger.error(f"Error attaching bracket order {o.order_uuid} to position: {e}")
+        logger.info(f"[LIMIT ORDER INIT] Attached {total_attached}/{total_orders} bracket orders to positions")
 
     def _write_to_disk(self, miner_hotkey, order):
         """Write unfilled or cancelled order to disk. Filled orders are not persisted."""
@@ -1447,7 +1447,7 @@ class LimitOrderManager(CacheController):
             filepath = order_dir + order.order_uuid
             ValiBkpUtils.write_file(filepath, order)
         except Exception as e:
-            bt.logging.error(f"Error writing limit order to disk: {e}")
+            logger.error(f"Error writing limit order to disk: {e}")
 
     def _delete_from_disk(self, miner_hotkey, order):
         """Delete order file from disk (both unfilled and closed directories)."""
@@ -1463,10 +1463,10 @@ class LimitOrderManager(CacheController):
 
                 if os.path.exists(filepath):
                     os.remove(filepath)
-                    bt.logging.debug(f"Deleted limit order file: {filepath}")
+                    logger.debug(f"Deleted limit order file: {filepath}")
 
         except Exception as e:
-            bt.logging.error(f"Error deleting limit order from disk: {e}")
+            logger.error(f"Error deleting limit order from disk: {e}")
 
     def _read_cancelled_orders_from_disk(self, miner_hotkey):
         """Read all cancelled orders from disk for a hotkey. Returns list of Order objects."""
@@ -1476,7 +1476,7 @@ class LimitOrderManager(CacheController):
             try:
                 orders.append(Order.from_dict(order_dict))
             except Exception as e:
-                bt.logging.error(f"Error deserializing cancelled order for {miner_hotkey}: {e}")
+                logger.error(f"Error deserializing cancelled order for {miner_hotkey}: {e}")
         return orders
 
     def sync_limit_orders(self, sync_data):
@@ -1497,7 +1497,7 @@ class LimitOrderManager(CacheController):
                         order = Order.from_dict(data)
                         self._write_to_disk(miner_hotkey, order)
                 except Exception as e:
-                    bt.logging.error(f"Could not sync limit orders for {miner_hotkey} on {trade_pair_id}: {e}")
+                    logger.error(f"Could not sync limit orders for {miner_hotkey} on {trade_pair_id}: {e}")
 
         self._read_limit_orders_from_disk()
 
@@ -1512,4 +1512,4 @@ class LimitOrderManager(CacheController):
         self._last_fill_time.clear()
         # Also clear market order manager's cooldown cache
         self.market_order_client.clear_order_cooldown_cache()
-        bt.logging.info("Cleared all limit orders from memory")
+        logger.info("Cleared all limit orders from memory")

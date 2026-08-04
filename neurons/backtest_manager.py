@@ -27,9 +27,9 @@ import logging
 import os
 import time
 
-import bittensor as bt
 
 # Set up logger for this module
+from shared_objects.log import logger
 logger = logging.getLogger(__name__)
 
 # Set environment variables for database access
@@ -175,7 +175,7 @@ def save_positions_to_manager(position_client, hk_to_positions):
             position_client.save_miner_position(p)
             position_count += 1
 
-    bt.logging.info(f"Saved {position_count} positions for {len(hk_to_positions)} miners to position manager")
+    logger.info(f"Saved {position_count} positions for {len(hk_to_positions)} miners to position manager")
 
 class BacktestManager:
 
@@ -329,7 +329,7 @@ class BacktestManager:
 
 
 if __name__ == '__main__':
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
     # ============= CONFIGURATION FLAGS =============
     use_test_positions = False         # Use hardcoded test positions
     use_database_positions = True     # NEW: Use positions from database via taoshi.ts.ptn
@@ -428,9 +428,9 @@ if __name__ == '__main__':
         btm.perf_ledger_client.debug_pl_plot(test_single_hotkey)
 
         tf = time.time()
-        bt.logging.success(f'Finished backtesting in {tf - t0} seconds')
+        logger.info(f'Finished backtesting in {tf - t0} seconds')
 
     finally:
         # Cleanup servers and clients
-        bt.logging.info("Cleaning up servers and clients...")
+        logger.info("Cleaning up servers and clients...")
         btm.cleanup()

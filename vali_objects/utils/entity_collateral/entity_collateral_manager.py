@@ -13,9 +13,7 @@ Manages:
 This manager is wrapped by EntityCollateralServer which exposes methods via RPC.
 """
 
-import json
 import threading
-import bittensor as bt
 from typing import Dict, Optional, Tuple
 
 from time_util.time_util import TimeUtil
@@ -26,6 +24,7 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 class EntityCollateralManager(CacheController):
@@ -97,7 +96,7 @@ class EntityCollateralManager(CacheController):
         self._collateral_cache = self._load_cache_from_disk()
         self._slash_tracking = self._load_slash_tracking_from_disk()
 
-        bt.logging.info(
+        logger.info(
             f"[ENTITY_COLLATERAL] Initialized with {len(self._collateral_cache)} cached entities, "
             f"{len(self._slash_tracking)} slash records"
         )
@@ -127,10 +126,10 @@ class EntityCollateralManager(CacheController):
                         self._collateral_cache[entity_hotkey] = balance_theta
                     refreshed += 1
             except Exception as e:
-                bt.logging.warning(f"[ENTITY_COLLATERAL] Failed to refresh collateral for {entity_hotkey}: {e}")
+                logger.warning(f"[ENTITY_COLLATERAL] Failed to refresh collateral for {entity_hotkey}: {e}")
 
         self._save_cache_to_disk()
-        bt.logging.info(f"[ENTITY_COLLATERAL] Refreshed collateral cache for {refreshed}/{len(all_entities)} entities")
+        logger.info(f"[ENTITY_COLLATERAL] Refreshed collateral cache for {refreshed}/{len(all_entities)} entities")
         return self._to_slack_message(self._collateral_cache)
 
     def get_cached_collateral(self, entity_hotkey: str) -> Optional[float]:
@@ -175,7 +174,7 @@ class EntityCollateralManager(CacheController):
             if isinstance(data, dict):
                 return {k: float(v) for k, v in data.items()}
         except Exception as e:
-            bt.logging.warning(f"[ENTITY_COLLATERAL] Failed to load cache from disk: {e}")
+            logger.warning(f"[ENTITY_COLLATERAL] Failed to load cache from disk: {e}")
         return {}
 
     def _save_cache_to_disk(self) -> None:
@@ -187,7 +186,7 @@ class EntityCollateralManager(CacheController):
         try:
             ValiBkpUtils.write_file(self._cache_file, data)
         except Exception as e:
-            bt.logging.error(f"[ENTITY_COLLATERAL] Failed to save cache to disk: {e}")
+            logger.error(f"[ENTITY_COLLATERAL] Failed to save cache to disk: {e}")
 
     def _load_slash_tracking_from_disk(self) -> Dict[str, Dict[str, float]]:
         """
@@ -215,7 +214,7 @@ class EntityCollateralManager(CacheController):
                         }
                 return result
         except Exception as e:
-            bt.logging.warning(f"[ENTITY_COLLATERAL] Failed to load slash tracking from disk: {e}")
+            logger.warning(f"[ENTITY_COLLATERAL] Failed to load slash tracking from disk: {e}")
         return {}
 
     def _save_slash_tracking_to_disk(self) -> None:
@@ -227,7 +226,7 @@ class EntityCollateralManager(CacheController):
         try:
             ValiBkpUtils.write_file(self._slash_file, data)
         except Exception as e:
-            bt.logging.error(f"[ENTITY_COLLATERAL] Failed to save slash tracking to disk: {e}")
+            logger.error(f"[ENTITY_COLLATERAL] Failed to save slash tracking to disk: {e}")
 
     # ==================== Cross-Margin Calculation ====================
 
@@ -418,7 +417,7 @@ class EntityCollateralManager(CacheController):
 
         max_slash = self.get_max_slash(synthetic_hotkey)
         if max_slash <= 0:
-            bt.logging.warning(
+            logger.warning(
                 f"[ENTITY_COLLATERAL] Cannot compute max slash for {synthetic_hotkey}, skipping"
             )
             return 0.0
@@ -438,7 +437,7 @@ class EntityCollateralManager(CacheController):
             # cumulative_slashed yet — process_pending_slashes will mark-then-slash atomically.
             slash_usd = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, self.get_max_slash(synthetic_hotkey))
 
-            bt.logging.info(
+            logger.info(
                 f"[ENTITY_COLLATERAL] Queued ({slash_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK:.4f} theta) "
                 f"loss slash for entity {entity_hotkey} subaccount {synthetic_hotkey}. "
                 f"cumulative_loss=${cumulative_realized_loss:.2f}, cumulative_slashed=${cumulative_slashed:.2f}"
@@ -562,7 +561,7 @@ class EntityCollateralManager(CacheController):
                         f"({total_pending_reg_theta:.4f} reg fees + {total_pending_loss_theta:.4f} loss theta) "
                         f"from entity {entity_hotkey} for subaccounts {list(pending_reg_theta.keys())}"
                     )
-                    bt.logging.info(msg)
+                    logger.info(msg)
                 else:
                     # Revert both marks so the slash is retried on the next iteration.
                     for subaccount_id in pending_reg_theta:
@@ -575,7 +574,7 @@ class EntityCollateralManager(CacheController):
                         f"[ENTITY_COLLATERAL] slash_pending_fees: on-chain slash failed for entity {entity_hotkey} "
                         f"({theta_slash:.4f} theta, subaccounts: {list(pending_reg_theta.keys())}); marks reverted"
                     )
-                    bt.logging.error(msg)
+                    logger.error(msg)
 
                 # Refresh collateral cache is called before slash pending
                 # need to offset cache until on-chain value is read in next daemon cycle
@@ -584,9 +583,9 @@ class EntityCollateralManager(CacheController):
                     self.offset_collateral_cache(entity_hotkey, -theta_slash)
 
             except Exception as e:
-                bt.logging.warning(f"[ENTITY_COLLATERAL] slash_pending_fees: failed to process entity {entity_hotkey}: {e}")
+                logger.warning(f"[ENTITY_COLLATERAL] slash_pending_fees: failed to process entity {entity_hotkey}: {e}")
 
-        bt.logging.info(
+        logger.info(
             f"[ENTITY_COLLATERAL] slash_pending_fees: {refreshed}/{len(all_entities)} entities slashed, "
             f"{total_theta_slashed:.4f} theta total"
         )

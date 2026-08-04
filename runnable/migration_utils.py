@@ -31,12 +31,12 @@ import json
 import os
 from typing import Dict, List
 
-import bittensor as bt
 
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.position import Position
+from shared_objects.log import logger
 
 
 class MigrationUtils:
@@ -56,7 +56,7 @@ class MigrationUtils:
 
         base_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)
         if not os.path.exists(base_dir):
-            bt.logging.error(f"Positions directory not found: {base_dir}")
+            logger.error(f"Positions directory not found: {base_dir}")
             return all_positions
 
         for hotkey in os.listdir(base_dir):
@@ -81,7 +81,7 @@ class MigrationUtils:
                             position = Position.model_validate_json(file_string)
                             all_positions[hotkey].append(position)
                         except Exception as e:
-                            bt.logging.warning(f"Failed to load {filepath}: {e}")
+                            logger.warning(f"Failed to load {filepath}: {e}")
 
         total = sum(len(v) for v in all_positions.values())
         print(f"Loaded {total} positions from {len(all_positions)} hotkeys")
@@ -110,7 +110,7 @@ class MigrationUtils:
             try:
                 return json.load(f)
             except json.JSONDecodeError:
-                bt.logging.warning(f"Failed to decode JSON at {path}; returning empty dict.")
+                logger.warning(f"Failed to decode JSON at {path}; returning empty dict.")
                 return {}
 
     @staticmethod

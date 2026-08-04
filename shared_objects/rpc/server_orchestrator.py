@@ -96,7 +96,6 @@ import atexit
 import sys
 import time
 import inspect
-import bittensor as bt
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -106,6 +105,7 @@ from shared_objects.rpc.port_manager import PortManager
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import RPCConnectionMode
+from shared_objects.log import logger
 
 
 class ServerMode(Enum):
@@ -528,12 +528,12 @@ class ServerOrchestrator:
             self._shutting_down = True
 
             signal_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
-            bt.logging.info(f"\n{signal_name} received, shutting down servers gracefully...")
+            logger.info(f"\n{signal_name} received, shutting down servers gracefully...")
 
             try:
                 self.shutdown_all_servers()
             except Exception as e:
-                bt.logging.error(f"Error during signal cleanup: {e}")
+                logger.error(f"Error during signal cleanup: {e}")
             finally:
                 # Re-raise to allow default signal handling
                 sys.exit(0)
@@ -544,7 +544,7 @@ class ServerOrchestrator:
             signal.signal(signal.SIGTERM, signal_handler)
         except (ValueError, OSError):
             # Signal registration may fail in some contexts (e.g., threads)
-            bt.logging.debug("Could not register signal handlers (not in main thread?)")
+            logger.debug("Could not register signal handlers (not in main thread?)")
 
     def _cleanup_on_exit(self):
         """Cleanup handler called by atexit on normal exit."""
@@ -593,17 +593,17 @@ class ServerOrchestrator:
         """
         with self._init_lock:
             if self._started and self._mode == mode:
-                bt.logging.debug(f"Servers already started in {mode.value} mode")
+                logger.debug(f"Servers already started in {mode.value} mode")
                 return
 
             if self._started and self._mode != mode:
-                bt.logging.warning(
+                logger.warning(
                     f"Servers already started in {self._mode.value} mode, "
                     f"but {mode.value} mode requested. Shutting down and restarting..."
                 )
                 self.shutdown_all_servers()
 
-            bt.logging.info(f"Starting servers in {mode.value} mode...")
+            logger.info(f"Starting servers in {mode.value} mode...")
             self._mode = mode
             self._load_classes()
 
@@ -633,7 +633,7 @@ class ServerOrchestrator:
             assert len(start_order) == len(set(start_order)), "Duplicate servers in start order"
 
             total_servers = len(start_order)
-            bt.logging.info(f"Starting {total_servers} servers in parallel...")
+            logger.info(f"Starting {total_servers} servers in parallel...")
 
             # Track progress and errors
             completed_count = 0
@@ -653,10 +653,10 @@ class ServerOrchestrator:
                     try:
                         future.result()  # Raises exception if startup failed
                         completed_count += 1
-                        bt.logging.debug(f"[{completed_count}/{total_servers}] {server_name} started successfully")
+                        logger.debug(f"[{completed_count}/{total_servers}] {server_name} started successfully")
                     except Exception as e:
                         errors.append((server_name, e))
-                        bt.logging.error(f"Failed to start {server_name}: {e}")
+                        logger.error(f"Failed to start {server_name}: {e}")
 
             # Check for errors
             if errors:
@@ -666,14 +666,14 @@ class ServerOrchestrator:
                 )
 
             self._started = True
-            bt.logging.success(f"All {total_servers} servers started in {mode.value} mode (parallel startup)")
+            logger.info(f"All {total_servers} servers started in {mode.value} mode (parallel startup)")
 
             # Wire metagraph_client for subtensor_ops now that all servers are ready
             if 'subtensor_ops' in self._servers and 'metagraph' in self._servers:
                 subtensor_ops = self._servers['subtensor_ops']
                 metagraph_client = self.get_client('metagraph')
                 subtensor_ops.manager._metagraph_client = metagraph_client
-                bt.logging.info(f"Wired metagraph_client to subtensor_ops")
+                logger.info("Wired metagraph_client to subtensor_ops")
 
     def _get_start_order(self, server_names: list) -> list:
         """
@@ -700,7 +700,7 @@ class ServerOrchestrator:
     ) -> None:
         """Start a single server with context-aware configuration."""
         if server_name in self._servers:
-            bt.logging.debug(f"{server_name} server already started")
+            logger.debug(f"{server_name} server already started")
             return
 
         config = self.SERVERS[server_name]
@@ -813,18 +813,18 @@ class ServerOrchestrator:
             # Debug: Log filtered out parameters if any were removed
             removed_params = set(spawn_kwargs.keys()) - set(filtered_kwargs.keys())
             if removed_params:
-                bt.logging.trace(
+                logger.debug(
                     f"[{server_name}] Filtered out unsupported parameters: {removed_params}"
                 )
 
-            bt.logging.info(f"Starting {server_name} (LOCAL mode - in-process for miner)...")
+            logger.info(f"Starting {server_name} (LOCAL mode - in-process for miner)...")
             instance = server_class(**filtered_kwargs)
 
             # THREAD-SAFE: Store server instance with lock
             with self._servers_lock:
                 self._servers[server_name] = instance
 
-            bt.logging.success(f"{server_name} started (LOCAL mode)")
+            logger.info(f"{server_name} started (LOCAL mode)")
             return
 
         # VALIDATOR/TESTING/BACKTESTING: Normal RPC mode (separate processes)
@@ -855,18 +855,18 @@ class ServerOrchestrator:
             # Debug: Log filtered out parameters if any were removed
             removed_params = set(spawn_kwargs.keys()) - set(filtered_kwargs.keys())
             if removed_params:
-                bt.logging.trace(
+                logger.debug(
                     f"[subtensor_ops] Filtered out unsupported parameters: {removed_params}"
                 )
 
-            bt.logging.info(f"Starting {server_name} (LOCAL mode - in main validator process)...")
+            logger.info(f"Starting {server_name} (LOCAL mode - in main validator process)...")
             instance = server_class(**filtered_kwargs)
 
             # THREAD-SAFE: Store server instance with lock
             with self._servers_lock:
                 self._servers[server_name] = instance
 
-            bt.logging.success(f"{server_name} started (LOCAL mode)")
+            logger.info(f"{server_name} started (LOCAL mode)")
             return
 
         # All other servers: spawn as separate process with RPC
@@ -876,7 +876,7 @@ class ServerOrchestrator:
         with self._servers_lock:
             self._servers[server_name] = handle
 
-        bt.logging.success(f"{server_name} server started (RPC mode)")
+        logger.info(f"{server_name} server started (RPC mode)")
 
     def get_client(self, server_name: str) -> Any:
         """
@@ -914,7 +914,7 @@ class ServerOrchestrator:
         if client_class is None:
             raise RuntimeError(f"Client class not loaded for {server_name}")
 
-        bt.logging.debug(f"Creating client for {server_name}")
+        logger.debug(f"Creating client for {server_name}")
 
         # Create client (will connect to running server)
         # Special handling for clients with local cache support - enable for fast lookups without RPC
@@ -940,7 +940,7 @@ class ServerOrchestrator:
         if self._mode == ServerMode.MINER:
             server_instance = self._servers[server_name]
             client.set_direct_server(server_instance)
-            bt.logging.debug(f"Client for {server_name} using LOCAL mode (direct server connection)")
+            logger.debug(f"Client for {server_name} using LOCAL mode (direct server connection)")
 
         self._clients[server_name] = client
 
@@ -997,10 +997,10 @@ class ServerOrchestrator:
                 self._create_test_data()
         """
         if not self._started:
-            bt.logging.warning("Servers not started, cannot clear test data")
+            logger.warning("Servers not started, cannot clear test data")
             return
 
-        bt.logging.debug("Clearing all test data...")
+        logger.debug("Clearing all test data...")
 
         # Helper to get client (creates if doesn't exist)
         def get_client_safe(server_name: str):
@@ -1020,12 +1020,12 @@ class ServerOrchestrator:
             try:
                 clear_func()
             except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
-                bt.logging.warning(
+                logger.warning(
                     f"Failed to clear {server_name} (server may have crashed): {type(e).__name__}: {e}. "
                     f"Continuing with other servers..."
                 )
             except Exception as e:
-                bt.logging.error(
+                logger.error(
                     f"Unexpected error clearing {server_name}: {type(e).__name__}: {e}. "
                     f"Continuing with other servers..."
                 )
@@ -1112,7 +1112,7 @@ class ServerOrchestrator:
         # Clear entity data (entities and subaccounts)
         self.get_client('entity').clear_all_entities()
 
-        bt.logging.debug("All test data cleared")
+        logger.debug("All test data cleared")
 
     def is_running(self) -> bool:
         """Check if servers are running."""
@@ -1138,13 +1138,13 @@ class ServerOrchestrator:
             orchestrator.start_individual_server('weight_calculator')
         """
         if server_name in self._servers:
-            bt.logging.debug(f"{server_name} server already started")
+            logger.debug(f"{server_name} server already started")
             return
 
         if server_name not in self.SERVERS:
             raise ValueError(f"Unknown server: {server_name}")
 
-        bt.logging.info(f"Starting individual server: {server_name}")
+        logger.info(f"Starting individual server: {server_name}")
         self._start_server(server_name, secrets=None, mode=self._mode, **kwargs)
 
     def start_server_daemons(self, server_names: list = None, warmup_caches: bool = True) -> None:
@@ -1179,7 +1179,7 @@ class ServerOrchestrator:
             orchestrator.start_server_daemons()
         """
         if not self._started:
-            bt.logging.warning("Servers not started, cannot start daemons")
+            logger.warning("Servers not started, cannot start daemons")
             return
 
         # If no list provided, auto-detect servers with deferred daemon startup
@@ -1190,22 +1190,22 @@ class ServerOrchestrator:
                 if (name in self._servers and  # Server is running
                     config.spawn_kwargs.get('start_daemon') is False):  # Daemon deferred
                     server_names.append(name)
-            bt.logging.info(f"Auto-detected {len(server_names)} servers with deferred daemons: {server_names}")
+            logger.info(f"Auto-detected {len(server_names)} servers with deferred daemons: {server_names}")
 
         for server_name in server_names:
             # Skip servers that don't have a client class (e.g., weight_calculator)
             config = self.SERVERS.get(server_name)
             if not config or config.client_class is None:
-                bt.logging.debug(f"Skipping {server_name} daemon start (no client class - server manages its own daemon)")
+                logger.debug(f"Skipping {server_name} daemon start (no client class - server manages its own daemon)")
                 continue
 
             client = self.get_client(server_name)
             if hasattr(client, 'start_daemon'):
-                bt.logging.info(f"Starting daemon for {server_name}...")
+                logger.info(f"Starting daemon for {server_name}...")
                 client.start_daemon()
-                bt.logging.success(f"{server_name} daemon started")
+                logger.info(f"{server_name} daemon started")
             else:
-                bt.logging.warning(f"{server_name} client has no start_daemon method")
+                logger.warning(f"{server_name} client has no start_daemon method")
 
         # Warm up caches now that daemons are running
         # This ensures caches are populated before validator starts accepting orders
@@ -1230,7 +1230,7 @@ class ServerOrchestrator:
         if not self._started:
             return
 
-        bt.logging.debug("Stopping all daemons...")
+        logger.debug("Stopping all daemons...")
 
         # Dynamically find all servers with daemon support by checking clients
         # This eliminates the need to maintain a hardcoded list
@@ -1242,20 +1242,20 @@ class ServerOrchestrator:
 
             try:
                 client.stop_daemon()
-                bt.logging.debug(f"Stopped daemon for {server_name}")
+                logger.debug(f"Stopped daemon for {server_name}")
                 stopped_count += 1
             except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
-                bt.logging.debug(
+                logger.debug(
                     f"Failed to stop {server_name} daemon (server may have crashed): {type(e).__name__}. "
                     f"Continuing..."
                 )
             except Exception as e:
-                bt.logging.warning(
+                logger.warning(
                     f"Error stopping {server_name} daemon: {type(e).__name__}: {e}. "
                     f"Continuing..."
                 )
 
-        bt.logging.debug(f"All daemons stopped ({stopped_count} servers with daemon support)")
+        logger.debug(f"All daemons stopped ({stopped_count} servers with daemon support)")
 
     def call_pre_run_setup(self, perform_order_corrections: bool = True) -> None:
         """
@@ -1272,11 +1272,11 @@ class ServerOrchestrator:
         if not self._started:
             raise Exception("Servers not started, cannot run pre_run_setup")
 
-        bt.logging.info("Running pre_run_setup on PositionManagerClient...")
+        logger.info("Running pre_run_setup on PositionManagerClient...")
         self._clients['position_manager'].pre_run_setup(
             perform_order_corrections=perform_order_corrections
         )
-        bt.logging.success("pre_run_setup completed")
+        logger.info("pre_run_setup completed")
 
     def warmup_client_caches(self, timeout_per_client_s: float = 10.0) -> None:
         """
@@ -1305,7 +1305,7 @@ class ServerOrchestrator:
             # Now safe to start axon (ValidatorBase.__init__)
         """
         if not self._started:
-            bt.logging.warning("Servers not started, cannot warm up caches")
+            logger.warning("Servers not started, cannot warm up caches")
             return
 
         # Dynamically discover which clients have local cache enabled
@@ -1329,10 +1329,10 @@ class ServerOrchestrator:
                 cacheable_clients.append(server_name)
 
         if not cacheable_clients:
-            bt.logging.debug("No clients with local cache found - skipping warmup")
+            logger.debug("No clients with local cache found - skipping warmup")
             return
 
-        bt.logging.info(f"Warming up caches for {len(cacheable_clients)} clients: {cacheable_clients}")
+        logger.info(f"Warming up caches for {len(cacheable_clients)} clients: {cacheable_clients}")
 
         for server_name in cacheable_clients:
             client = self._clients[server_name]
@@ -1340,7 +1340,7 @@ class ServerOrchestrator:
             # Force immediate synchronous population
             start_time = time.time()
             try:
-                bt.logging.debug(f"Populating {server_name} cache...")
+                logger.debug(f"Populating {server_name} cache...")
                 cache_data = client.populate_cache()
                 elapsed_ms = (time.time() - start_time) * 1000
 
@@ -1349,18 +1349,18 @@ class ServerOrchestrator:
                     client._local_cache = cache_data
 
                 cache_size = len(cache_data) if isinstance(cache_data, dict) else 'N/A'
-                bt.logging.success(
+                logger.info(
                     f"{server_name} cache warmed up in {elapsed_ms:.0f}ms ({cache_size} entries)"
                 )
 
             except Exception as e:
-                bt.logging.error(f"Failed to warm up {server_name} cache: {e}")
+                logger.error(f"Failed to warm up {server_name} cache: {e}")
                 raise RuntimeError(
                     f"Cache warmup failed for {server_name}. "
                     f"Cannot safely start validator without populated caches."
                 ) from e
 
-        bt.logging.success(f"All {len(cacheable_clients)} client caches warmed up and ready")
+        logger.info(f"All {len(cacheable_clients)} client caches warmed up and ready")
 
 
     def start_neuron_servers(
@@ -1411,7 +1411,7 @@ class ServerOrchestrator:
         self.start_all_servers(mode=mode, context=context)
 
         # Critical synchronization: Wait for metagraph population
-        bt.logging.info(f"[INIT] Starting SubtensorOps daemon for {neuron_type}, waiting for metagraph...")
+        logger.info(f"[INIT] Starting SubtensorOps daemon for {neuron_type}, waiting for metagraph...")
 
         subtensor_ops = self.get_server('subtensor_ops')
 
@@ -1421,8 +1421,8 @@ class ServerOrchestrator:
         # Block until metagraph populated (critical for dependent operations)
         subtensor_ops.wait_for_initial_update(max_wait_time=metagraph_timeout)
 
-        bt.logging.success(f"[INIT] Metagraph populated, ready for other daemons")
-        bt.logging.success(f"All {neuron_type} servers started and initialized")
+        logger.info("[INIT] Metagraph populated, ready for other daemons")
+        logger.info(f"All {neuron_type} servers started and initialized")
 
     def start_validator_servers(
         self,
@@ -1461,7 +1461,7 @@ class ServerOrchestrator:
         """
         if not self._started:
             try:
-                bt.logging.debug("No servers to shutdown")
+                logger.debug("No servers to shutdown")
             except (ValueError, OSError):
                 pass  # Logging stream already closed (pytest teardown)
             return
@@ -1473,7 +1473,7 @@ class ServerOrchestrator:
             self._shutting_down = True
 
         try:
-            bt.logging.info("Shutting down all servers...")
+            logger.info("Shutting down all servers...")
         except (ValueError, OSError):
             pass  # Logging stream already closed (pytest teardown)
 
@@ -1493,7 +1493,7 @@ class ServerOrchestrator:
         self._mode = None
 
         try:
-            bt.logging.success("All servers shutdown complete")
+            logger.info("All servers shutdown complete")
         except (ValueError, OSError):
             pass  # Logging stream already closed (pytest teardown)
 

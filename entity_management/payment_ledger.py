@@ -10,12 +10,10 @@ Persistence follows the same pattern as entities.json via ValiBkpUtils.
 import json
 import os
 import threading
-import time
-import uuid
 from typing import Dict, List, Optional
 
-import bittensor as bt
 from pydantic import BaseModel, Field
+from shared_objects.log import logger
 
 
 class PaymentRecord(BaseModel):
@@ -84,9 +82,9 @@ class PaymentLedger:
             for payment_id, record_dict in data.get("payments", {}).items():
                 self._payments[payment_id] = PaymentRecord(**record_dict)
 
-            bt.logging.info(f"[PAYMENT_LEDGER] Loaded {len(self._payments)} payment records from disk")
+            logger.info(f"[PAYMENT_LEDGER] Loaded {len(self._payments)} payment records from disk")
         except Exception as e:
-            bt.logging.error(f"[PAYMENT_LEDGER] Error loading ledger from {self._file_path}: {e}")
+            logger.error(f"[PAYMENT_LEDGER] Error loading ledger from {self._file_path}: {e}")
 
     def _save(self):
         """Persist payment records to disk."""
@@ -100,7 +98,7 @@ class PaymentLedger:
             with open(self._file_path, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            bt.logging.error(f"[PAYMENT_LEDGER] Error saving ledger to {self._file_path}: {e}")
+            logger.error(f"[PAYMENT_LEDGER] Error saving ledger to {self._file_path}: {e}")
 
     def add_payment(self, record: PaymentRecord) -> None:
         """Add a new payment record and persist."""

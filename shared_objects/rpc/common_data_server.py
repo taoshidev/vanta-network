@@ -46,11 +46,11 @@ Usage in consumers:
 """
 import threading
 import time
-import bittensor as bt
 
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.log import logger
 
 
 class CommonDataServer(RPCServerBase):
@@ -129,10 +129,10 @@ class CommonDataServer(RPCServerBase):
         with self._state_lock:
             if value:
                 self._shutdown_dict[True] = True
-                bt.logging.warning("[COMMON_DATA] Shutdown flag set")
+                logger.warning("[COMMON_DATA] Shutdown flag set")
             else:
                 self._shutdown_dict.clear()
-                bt.logging.info("[COMMON_DATA] Shutdown flag cleared")
+                logger.info("[COMMON_DATA] Shutdown flag cleared")
 
     # ==================== Sync In Progress RPC Methods ====================
 
@@ -147,7 +147,7 @@ class CommonDataServer(RPCServerBase):
             old_value = self._sync_in_progress
             self._sync_in_progress = value
             if old_value != value:
-                bt.logging.info(f"[COMMON_DATA] sync_in_progress: {old_value} -> {value}")
+                logger.info(f"[COMMON_DATA] sync_in_progress: {old_value} -> {value}")
 
     # ==================== Sync Epoch RPC Methods ====================
 
@@ -166,7 +166,7 @@ class CommonDataServer(RPCServerBase):
         with self._state_lock:
             old_epoch = self._sync_epoch
             self._sync_epoch += 1
-            bt.logging.info(f"[COMMON_DATA] Incrementing sync epoch {old_epoch} -> {self._sync_epoch}")
+            logger.info(f"[COMMON_DATA] Incrementing sync epoch {old_epoch} -> {self._sync_epoch}")
             return self._sync_epoch
 
     def set_sync_epoch_rpc(self, value: int) -> None:
@@ -192,7 +192,7 @@ class CommonDataServer(RPCServerBase):
             self._shutdown_dict.clear()
             self._sync_in_progress = False
             self._sync_epoch = 0
-            bt.logging.debug("[COMMON_DATA] Test state cleared (shutdown, sync_in_progress, sync_epoch reset)")
+            logger.debug("[COMMON_DATA] Test state cleared (shutdown, sync_in_progress, sync_epoch reset)")
 
     # ==================== Combined State RPC Methods ====================
 
@@ -244,7 +244,7 @@ def start_common_data_server(
         connection_mode=RPCConnectionMode.RPC
     )
 
-    bt.logging.success(f"CommonDataServer ready on port {ValiConfig.RPC_COMMONDATA_PORT}")
+    logger.info(f"CommonDataServer ready on port {ValiConfig.RPC_COMMONDATA_PORT}")
 
     if server_ready:
         server_ready.set()
@@ -254,4 +254,4 @@ def start_common_data_server(
         time.sleep(1)
 
     server.shutdown()
-    bt.logging.info("CommonDataServer process exiting")
+    logger.info("CommonDataServer process exiting")

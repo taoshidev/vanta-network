@@ -22,7 +22,6 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from collections import defaultdict
 
-import bittensor as bt
 from sqlalchemy import create_engine, text
 
 from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
@@ -30,6 +29,8 @@ from vali_objects.position_management.position_utils.position_source import Posi
 # Add project root to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from time_util.time_util import TimeUtil
+import logging
+from shared_objects.log import logger
 
 
 @dataclass
@@ -68,7 +69,7 @@ class EliminationTimingValidator:
         
     def load_positions(self, hotkeys: Optional[List[str]] = None) -> bool:
         """Load positions using the position source manager."""
-        bt.logging.info("Loading position data...")
+        logger.info("Loading position data...")
         try:
             position_source_manager = PositionSourceManager(source_type=PositionSource.DATABASE)
             self.all_positions = position_source_manager.load_positions(
@@ -76,16 +77,16 @@ class EliminationTimingValidator:
                 end_time_ms=None,
                 hotkeys=hotkeys
             )
-            bt.logging.info(f"Loaded positions for {len(self.all_positions)} miners")
+            logger.info(f"Loaded positions for {len(self.all_positions)} miners")
             return True
             
         except Exception as e:
-            bt.logging.error(f"Failed to load position data: {e}")
+            logger.error(f"Failed to load position data: {e}")
             return False
     
     def load_eliminations(self, hotkeys: Optional[List[str]] = None) -> bool:
         """Load elimination data directly from database."""
-        bt.logging.info("Loading elimination data from database...")
+        logger.info("Loading elimination data from database...")
         try:
             with self.engine.connect() as conn:
                 # Query elimination table with correct column names
@@ -101,7 +102,7 @@ class EliminationTimingValidator:
                 result = conn.execute(text(query), params)
                 eliminations = result.fetchall()
                 
-                bt.logging.info(f"Loaded {len(eliminations)} elimination records")
+                logger.info(f"Loaded {len(eliminations)} elimination records")
                 
                 # Process elimination data
                 for elim in eliminations:
@@ -117,12 +118,12 @@ class EliminationTimingValidator:
                 return True
                 
         except Exception as e:
-            bt.logging.error(f"Failed to load elimination data: {e}")
+            logger.error(f"Failed to load elimination data: {e}")
             return False
     
     def load_portfolio_data(self, hotkeys: Optional[List[str]] = None) -> bool:
         """Load portfolio return dates from miner_port_values table."""
-        bt.logging.info("Loading portfolio return data from database...")
+        logger.info("Loading portfolio return data from database...")
         try:
             with self.engine.connect() as conn:
                 # Query miner_port_values table for dates
@@ -138,7 +139,7 @@ class EliminationTimingValidator:
                 result = conn.execute(text(query), params)
                 portfolio_records = result.fetchall()
                 
-                bt.logging.info(f"Loaded {len(portfolio_records)} portfolio return records")
+                logger.info(f"Loaded {len(portfolio_records)} portfolio return records")
                 
                 # Process portfolio data
                 for record in portfolio_records:
@@ -155,7 +156,7 @@ class EliminationTimingValidator:
                 return True
                 
         except Exception as e:
-            bt.logging.error(f"Failed to load portfolio data: {e}")
+            logger.error(f"Failed to load portfolio data: {e}")
             return False
     
     def get_first_order_timestamp(self, positions: List[Any]) -> Optional[int]:
@@ -287,10 +288,10 @@ class EliminationTimingValidator:
                         existing_portfolio_data[hotkey].add(date)
                     
                     if len(hotkey_list) > batch_size:
-                        bt.logging.info(f"Processed portfolio data for {min(i + batch_size, len(hotkey_list))}/{len(hotkey_list)} miners...")
+                        logger.info(f"Processed portfolio data for {min(i + batch_size, len(hotkey_list))}/{len(hotkey_list)} miners...")
                     
         except Exception as e:
-            bt.logging.error(f"Error checking portfolio rows: {e}")
+            logger.error(f"Error checking portfolio rows: {e}")
             return {}
         
         # Now analyze each miner
@@ -430,11 +431,11 @@ class EliminationTimingValidator:
         if hotkeys:
             all_miners = all_miners.intersection(set(hotkeys))
         
-        bt.logging.info(f"Checking portfolio value coverage for {len(all_miners)} miners...")
+        logger.info(f"Checking portfolio value coverage for {len(all_miners)} miners...")
         
         # First, collect all miners with their order timestamps
         miners_with_orders = {}
-        bt.logging.info("Analyzing order data for all miners...")
+        logger.info("Analyzing order data for all miners...")
         
         for hotkey in all_miners:
             positions = self.all_positions.get(hotkey, [])
@@ -451,7 +452,7 @@ class EliminationTimingValidator:
                     'last_order_ms': last_order_ms
                 }
         
-        bt.logging.info(f"Found {len(miners_with_orders)} miners with orders. Fetching portfolio coverage...")
+        logger.info(f"Found {len(miners_with_orders)} miners with orders. Fetching portfolio coverage...")
         
         # Use optimized single-query method
         coverage_results = self.check_all_portfolio_rows_optimized(miners_with_orders)
@@ -487,7 +488,7 @@ class EliminationTimingValidator:
         # Sort by number of missing days (worst first)
         miners_with_missing_data.sort(key=lambda x: x['missing_days'], reverse=True)
         
-        bt.logging.info(f"Coverage analysis complete: {len(perfect_coverage_miners)} perfect, {len(miners_with_missing_data)} missing data, {len(no_portfolio_data_miners)} no data, {len(miners_no_orders)} no orders")
+        logger.info(f"Coverage analysis complete: {len(perfect_coverage_miners)} perfect, {len(miners_with_missing_data)} missing data, {len(no_portfolio_data_miners)} no data, {len(miners_no_orders)} no orders")
         
         return {
             'total_miners': len(all_miners),
@@ -507,12 +508,12 @@ class EliminationTimingValidator:
         if hotkeys:
             all_miners = all_miners.intersection(set(hotkeys))
         
-        bt.logging.info(f"Validating elimination timing for {len(all_miners)} miners...")
+        logger.info(f"Validating elimination timing for {len(all_miners)} miners...")
         
         results = []
         for i, hotkey in enumerate(sorted(all_miners), 1):
             if i % 100 == 0:
-                bt.logging.info(f"Processed {i}/{len(all_miners)} miners...")
+                logger.info(f"Processed {i}/{len(all_miners)} miners...")
             
             result = self.validate_miner(hotkey)
             results.append(result)
@@ -595,65 +596,65 @@ class EliminationTimingValidator:
     
     def print_portfolio_coverage_report(self, coverage_report: Dict[str, Any]):
         """Print portfolio value coverage report."""
-        bt.logging.info("=" * 80)
-        bt.logging.info("PORTFOLIO VALUE COVERAGE REPORT")
-        bt.logging.info("=" * 80)
-        bt.logging.info(f"Total Miners Analyzed: {coverage_report['total_miners']}")
-        bt.logging.info("")
+        logger.info("=" * 80)
+        logger.info("PORTFOLIO VALUE COVERAGE REPORT")
+        logger.info("=" * 80)
+        logger.info(f"Total Miners Analyzed: {coverage_report['total_miners']}")
+        logger.info("")
         
-        bt.logging.info("COVERAGE SUMMARY:")
-        bt.logging.info(f"  ✅ Perfect Coverage: {coverage_report['perfect_coverage']} miners")
-        bt.logging.info(f"  ⚠️  Missing Data: {coverage_report['missing_data']} miners")
-        bt.logging.info(f"  ❌ No Portfolio Data: {coverage_report['no_data']} miners")
-        bt.logging.info("")
+        logger.info("COVERAGE SUMMARY:")
+        logger.info(f"  ✅ Perfect Coverage: {coverage_report['perfect_coverage']} miners")
+        logger.info(f"  ⚠️  Missing Data: {coverage_report['missing_data']} miners")
+        logger.info(f"  ❌ No Portfolio Data: {coverage_report['no_data']} miners")
+        logger.info("")
         
         if coverage_report['miners_with_missing_data']:
-            bt.logging.info(f"🚨 MINERS WITH MISSING PORTFOLIO DATA ({coverage_report['missing_data']}):")
-            bt.logging.info("")
+            logger.info(f"🚨 MINERS WITH MISSING PORTFOLIO DATA ({coverage_report['missing_data']}):")
+            logger.info("")
             
             for i, miner in enumerate(coverage_report['miners_with_missing_data'][:20]):  # Show top 20
-                bt.logging.info(f"  {i+1}. {miner['hotkey']}")
-                bt.logging.info(f"     Period: {miner['first_order_date']} to {miner['last_order_date']}")
-                bt.logging.info(f"     Expected Days: {miner['expected_days']}")
-                bt.logging.info(f"     Existing Days: {miner['existing_days']}")
-                bt.logging.info(f"     Missing Days: {miner['missing_days']} ({100 - miner['coverage_pct']:.1f}% missing)")
+                logger.info(f"  {i+1}. {miner['hotkey']}")
+                logger.info(f"     Period: {miner['first_order_date']} to {miner['last_order_date']}")
+                logger.info(f"     Expected Days: {miner['expected_days']}")
+                logger.info(f"     Existing Days: {miner['existing_days']}")
+                logger.info(f"     Missing Days: {miner['missing_days']} ({100 - miner['coverage_pct']:.1f}% missing)")
                 
                 if miner['missing_dates']:
                     dates_to_show = miner['missing_dates']
                     if miner['total_missing_dates'] > 10:
-                        bt.logging.info(f"     Sample Missing Dates: {', '.join(dates_to_show[:5])}... ({miner['total_missing_dates']} total)")
+                        logger.info(f"     Sample Missing Dates: {', '.join(dates_to_show[:5])}... ({miner['total_missing_dates']} total)")
                     else:
-                        bt.logging.info(f"     Missing Dates: {', '.join(dates_to_show)}")
-                bt.logging.info("")
+                        logger.info(f"     Missing Dates: {', '.join(dates_to_show)}")
+                logger.info("")
             
             if len(coverage_report['miners_with_missing_data']) > 20:
-                bt.logging.info(f"     ... and {len(coverage_report['miners_with_missing_data']) - 20} more miners with missing data")
+                logger.info(f"     ... and {len(coverage_report['miners_with_missing_data']) - 20} more miners with missing data")
         else:
-            bt.logging.info("✅ All miners have complete portfolio value coverage!")
+            logger.info("✅ All miners have complete portfolio value coverage!")
         
-        bt.logging.info("=" * 80)
+        logger.info("=" * 80)
     
     def print_report(self, report: Dict[str, Any]):
         """Print a formatted report to console."""
-        bt.logging.info("=" * 80)
-        bt.logging.info("ELIMINATION TIMING VALIDATION REPORT")
-        bt.logging.info("=" * 80)
-        bt.logging.info(f"Validation Time: {report['validation_timestamp']}")
-        bt.logging.info(f"Total Miners Analyzed: {report['total_miners']}")
-        bt.logging.info("")
+        logger.info("=" * 80)
+        logger.info("ELIMINATION TIMING VALIDATION REPORT")
+        logger.info("=" * 80)
+        logger.info(f"Validation Time: {report['validation_timestamp']}")
+        logger.info(f"Total Miners Analyzed: {report['total_miners']}")
+        logger.info("")
         
-        bt.logging.info("STATUS SUMMARY:")
+        logger.info("STATUS SUMMARY:")
         for status, count in report['summary'].items():
             percentage = (count / report['total_miners']) * 100 if report['total_miners'] > 0 else 0
-            bt.logging.info(f"  {status}: {count} ({percentage:.1f}%)")
-        bt.logging.info("")
+            logger.info(f"  {status}: {count} ({percentage:.1f}%)")
+        logger.info("")
         
         # Show invalid miners (the main concern)
         invalid_count = len(report['invalid_miners'])
         if invalid_count > 0:
-            bt.logging.info(f"🚨 INVALID MINERS ({invalid_count}):")
-            bt.logging.info("These miners have violations after their elimination date:")
-            bt.logging.info("")
+            logger.info(f"🚨 INVALID MINERS ({invalid_count}):")
+            logger.info("These miners have violations after their elimination date:")
+            logger.info("")
             
             order_violations = []
             portfolio_violations = []
@@ -673,70 +674,70 @@ class EliminationTimingValidator:
             
             # Display categorized violations
             if both_violations:
-                bt.logging.info(f"📋 MINERS WITH BOTH ORDER & PORTFOLIO VIOLATIONS ({len(both_violations)}):")
+                logger.info(f"📋 MINERS WITH BOTH ORDER & PORTFOLIO VIOLATIONS ({len(both_violations)}):")
                 for i, miner in enumerate(both_violations):
-                    bt.logging.info(f"  {i+1}. {miner['hotkey']}")
-                    bt.logging.info(f"     Elimination: {miner['elimination_date']} ({miner['elimination_reason']})")
-                    bt.logging.info(f"     Final Order: {miner['final_order_date']} ({miner['days_between']} days after)")
-                    bt.logging.info(f"     Orders After: {miner['orders_after_elimination']}")
-                    bt.logging.info(f"     Portfolio Final: {miner.get('final_portfolio_date', 'N/A')} ({miner.get('portfolio_days_after_elimination', 0)} days after)")
-                    bt.logging.info(f"     Portfolio Rows After: {miner.get('portfolio_rows_after_elimination', 0)}")
-                    bt.logging.info("")
+                    logger.info(f"  {i+1}. {miner['hotkey']}")
+                    logger.info(f"     Elimination: {miner['elimination_date']} ({miner['elimination_reason']})")
+                    logger.info(f"     Final Order: {miner['final_order_date']} ({miner['days_between']} days after)")
+                    logger.info(f"     Orders After: {miner['orders_after_elimination']}")
+                    logger.info(f"     Portfolio Final: {miner.get('final_portfolio_date', 'N/A')} ({miner.get('portfolio_days_after_elimination', 0)} days after)")
+                    logger.info(f"     Portfolio Rows After: {miner.get('portfolio_rows_after_elimination', 0)}")
+                    logger.info("")
             
             if order_violations:
-                bt.logging.info(f"📊 MINERS WITH ORDER VIOLATIONS ONLY ({len(order_violations)}):")
+                logger.info(f"📊 MINERS WITH ORDER VIOLATIONS ONLY ({len(order_violations)}):")
                 for i, miner in enumerate(order_violations):
-                    bt.logging.info(f"  {i+1}. {miner['hotkey']}")
-                    bt.logging.info(f"     Elimination: {miner['elimination_date']} ({miner['elimination_reason']})")
-                    bt.logging.info(f"     Final Order: {miner['final_order_date']} ({miner['days_between']} days after)")
-                    bt.logging.info(f"     Orders After: {miner['orders_after_elimination']}")
-                    bt.logging.info("")
+                    logger.info(f"  {i+1}. {miner['hotkey']}")
+                    logger.info(f"     Elimination: {miner['elimination_date']} ({miner['elimination_reason']})")
+                    logger.info(f"     Final Order: {miner['final_order_date']} ({miner['days_between']} days after)")
+                    logger.info(f"     Orders After: {miner['orders_after_elimination']}")
+                    logger.info("")
             
             if portfolio_violations:
-                bt.logging.info(f"💼 MINERS WITH PORTFOLIO VIOLATIONS ONLY ({len(portfolio_violations)}):")
+                logger.info(f"💼 MINERS WITH PORTFOLIO VIOLATIONS ONLY ({len(portfolio_violations)}):")
                 for i, miner in enumerate(portfolio_violations):
-                    bt.logging.info(f"  {i+1}. {miner['hotkey']}")
-                    bt.logging.info(f"     Elimination: {miner['elimination_date']} ({miner['elimination_reason']})")
-                    bt.logging.info(f"     Expected Final Portfolio: elimination day + 1")
-                    bt.logging.info(f"     Actual Final Portfolio: {miner.get('final_portfolio_date', 'N/A')} ({miner.get('portfolio_days_after_elimination', 0)} days after)")
-                    bt.logging.info(f"     Extra Portfolio Rows: {miner.get('portfolio_rows_after_elimination', 0)}")
-                    bt.logging.info("")
+                    logger.info(f"  {i+1}. {miner['hotkey']}")
+                    logger.info(f"     Elimination: {miner['elimination_date']} ({miner['elimination_reason']})")
+                    logger.info("     Expected Final Portfolio: elimination day + 1")
+                    logger.info(f"     Actual Final Portfolio: {miner.get('final_portfolio_date', 'N/A')} ({miner.get('portfolio_days_after_elimination', 0)} days after)")
+                    logger.info(f"     Extra Portfolio Rows: {miner.get('portfolio_rows_after_elimination', 0)}")
+                    logger.info("")
                 
-            bt.logging.info("🔍 RECOMMENDATION:")
-            bt.logging.info("   These violations suggest data pipeline issues:")
+            logger.info("🔍 RECOMMENDATION:")
+            logger.info("   These violations suggest data pipeline issues:")
             if order_violations or both_violations:
-                bt.logging.info("   • Review position/order elimination timing logic")
+                logger.info("   • Review position/order elimination timing logic")
             if portfolio_violations or both_violations:
-                bt.logging.info("   • Review portfolio return calculation cutoff logic")
-            bt.logging.info("   • Investigate data integrity and elimination timing implementation")
-            bt.logging.info("")
+                logger.info("   • Review portfolio return calculation cutoff logic")
+            logger.info("   • Investigate data integrity and elimination timing implementation")
+            logger.info("")
             
             # Generate SQL fix queries
-            bt.logging.info("💾 SQL FIX QUERIES:")
-            bt.logging.info("   Run these queries to fix elimination timing issues:")
-            bt.logging.info("")
+            logger.info("💾 SQL FIX QUERIES:")
+            logger.info("   Run these queries to fix elimination timing issues:")
+            logger.info("")
             
             for i, miner in enumerate(report['invalid_miners']):
                 # Calculate new elimination time = final order time + 1ms
                 new_elimination_ms = miner['final_order_timestamp'] + 1 if miner['final_order_timestamp'] else None
                 
                 if new_elimination_ms:
-                    bt.logging.info(f"-- Fix #{i+1}: {miner['hotkey']}")
-                    bt.logging.info(f"UPDATE eliminations SET elimination_ms = {new_elimination_ms}")
-                    bt.logging.info(f"WHERE miner_hotkey = '{miner['hotkey']}';")
-                    bt.logging.info("")
+                    logger.info(f"-- Fix #{i+1}: {miner['hotkey']}")
+                    logger.info(f"UPDATE eliminations SET elimination_ms = {new_elimination_ms}")
+                    logger.info(f"WHERE miner_hotkey = '{miner['hotkey']}';")
+                    logger.info("")
             
-            bt.logging.info("⚠️  WARNING: Review these queries carefully before execution!")
-            bt.logging.info("   Test in a development environment first.")
+            logger.info("⚠️  WARNING: Review these queries carefully before execution!")
+            logger.info("   Test in a development environment first.")
         else:
-            bt.logging.info("✅ No invalid miners found!")
-            bt.logging.info("   All miners show consistent elimination timing.")
+            logger.info("✅ No invalid miners found!")
+            logger.info("   All miners show consistent elimination timing.")
         
-        bt.logging.info("=" * 80)
+        logger.info("=" * 80)
     
     def save_csv_report(self, results: List[MinerValidationResult], filename: str):
         """Save detailed results to CSV file."""
-        bt.logging.info(f"Saving detailed results to {filename}...")
+        logger.info(f"Saving detailed results to {filename}...")
         
         with open(filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
@@ -760,17 +761,17 @@ class EliminationTimingValidator:
                     result.elimination_reason, result.issue_description
                 ])
         
-        bt.logging.info(f"✅ CSV report saved to {filename}")
+        logger.info(f"✅ CSV report saved to {filename}")
     
     def save_sql_fix_queries(self, report: Dict[str, Any], filename: str):
         """Save SQL fix queries to a file."""
         invalid_miners = report.get('invalid_miners', [])
         
         if not invalid_miners:
-            bt.logging.info("No invalid miners found, no SQL fixes needed.")
+            logger.info("No invalid miners found, no SQL fixes needed.")
             return
             
-        bt.logging.info(f"Saving SQL fix queries to {filename}...")
+        logger.info(f"Saving SQL fix queries to {filename}...")
         
         with open(filename, 'w') as sqlfile:
             sqlfile.write("-- SQL Queries to Fix Elimination Timing Issues\n")
@@ -795,7 +796,7 @@ class EliminationTimingValidator:
                     sqlfile.write(f"WHERE miner_hotkey = '{miner['hotkey']}';\n")
                     sqlfile.write("\n")
         
-        bt.logging.info(f"✅ SQL fix queries saved to {filename}")
+        logger.info(f"✅ SQL fix queries saved to {filename}")
     
 
 
@@ -809,7 +810,7 @@ def get_database_url_from_config() -> Optional[str]:
                 config = json.load(f)
             return config.get('secrets', {}).get('db_ptn_editor_url')
     except Exception as e:
-        bt.logging.error(f"Error reading {config_file}: {e}")
+        logger.error(f"Error reading {config_file}: {e}")
     
     return None
 
@@ -857,8 +858,8 @@ def main():
     args = parse_args()
     
     # Configure logging
-    bt.logging.set_trace(args.log_level == "DEBUG")
-    bt.logging.set_debug(args.log_level == "DEBUG")
+    logger.setLevel(logging.DEBUG if (args.log_level == "DEBUG") else logging.INFO)
+    logger.setLevel(logging.DEBUG if (args.log_level == "DEBUG") else logging.INFO)
     
     # Get database URL
     database_url = args.database_url
@@ -866,26 +867,26 @@ def main():
         database_url = get_database_url_from_config()
     
     if not database_url:
-        bt.logging.error("No database URL provided. Use --database-url or config file.")
+        logger.error("No database URL provided. Use --database-url or config file.")
         return
     
     # Parse hotkeys
     hotkeys = None
     if args.hotkeys:
         hotkeys = [hk.strip() for hk in args.hotkeys.split(',')]
-        bt.logging.info(f"Filtering for {len(hotkeys)} specific hotkeys")
+        logger.info(f"Filtering for {len(hotkeys)} specific hotkeys")
     
     # Initialize validator
     validator = EliminationTimingValidator(database_url)
     
     # Load position data (always needed)
     if not validator.load_positions(hotkeys):
-        bt.logging.error("Failed to load position data. Exiting.")
+        logger.error("Failed to load position data. Exiting.")
         return
     
     if args.check_portfolio_coverage or args.auto_backfill:
         # Check portfolio value coverage
-        bt.logging.info("Running portfolio value coverage check...")
+        logger.info("Running portfolio value coverage check...")
         coverage_report = validator.check_all_miners_portfolio_coverage(hotkeys)
         
         # Show the coverage report
@@ -893,32 +894,32 @@ def main():
         
         # Show summary with manual command suggestions
         if coverage_report['missing_data'] > 0:
-            bt.logging.info("")
-            bt.logging.info(f"⚠️  Found {coverage_report['missing_data']} miners with missing portfolio value rows!")
-            bt.logging.info("   Use daily_portfolio_returns.py --auto-backfill to automatically fix all missing data.")
+            logger.info("")
+            logger.info(f"⚠️  Found {coverage_report['missing_data']} miners with missing portfolio value rows!")
+            logger.info("   Use daily_portfolio_returns.py --auto-backfill to automatically fix all missing data.")
             
             # Generate backfill commands for miners with missing data
             if coverage_report['miners_with_missing_data']:
-                bt.logging.info("")
-                bt.logging.info("📝 MANUAL COMMANDS (if preferred):")
+                logger.info("")
+                logger.info("📝 MANUAL COMMANDS (if preferred):")
                 for miner in coverage_report['miners_with_missing_data'][:5]:
-                    bt.logging.info(f"   python daily_portfolio_returns.py --hotkeys {miner['hotkey']}")
+                    logger.info(f"   python daily_portfolio_returns.py --hotkeys {miner['hotkey']}")
                 if len(coverage_report['miners_with_missing_data']) > 5:
-                    bt.logging.info(f"   ... and {len(coverage_report['miners_with_missing_data']) - 5} more miners")
-                bt.logging.info("")
-                bt.logging.info("💡 TIP: Use daily_portfolio_returns.py --auto-backfill for automated processing!")
+                    logger.info(f"   ... and {len(coverage_report['miners_with_missing_data']) - 5} more miners")
+                logger.info("")
+                logger.info("💡 TIP: Use daily_portfolio_returns.py --auto-backfill for automated processing!")
         else:
-            bt.logging.info("")
-            bt.logging.info("✅ All miners have complete portfolio value coverage!")
+            logger.info("")
+            logger.info("✅ All miners have complete portfolio value coverage!")
     else:
         # Original elimination timing validation
         if not validator.load_eliminations(hotkeys):
-            bt.logging.error("Failed to load elimination data. Exiting.")
+            logger.error("Failed to load elimination data. Exiting.")
             return
         
         # Load portfolio data for enhanced validation
         if not validator.load_portfolio_data(hotkeys):
-            bt.logging.warning("Failed to load portfolio data. Portfolio validation will be skipped.")
+            logger.warning("Failed to load portfolio data. Portfolio validation will be skipped.")
         
         # Validate all miners
         results = validator.validate_all_miners(hotkeys)
@@ -938,15 +939,15 @@ def main():
         # Show summary of critical issues
         invalid_count = report['summary']['INVALID']
         if invalid_count > 0:
-            bt.logging.info("")
-            bt.logging.info(f"⚠️  CRITICAL: Found {invalid_count} miners with orders after elimination!")
-            bt.logging.info("   This indicates serious data consistency issues.")
-            bt.logging.info("   Investigate elimination timing and position data integrity.")
+            logger.info("")
+            logger.info(f"⚠️  CRITICAL: Found {invalid_count} miners with orders after elimination!")
+            logger.info("   This indicates serious data consistency issues.")
+            logger.info("   Investigate elimination timing and position data integrity.")
         else:
-            bt.logging.info("")
-            bt.logging.info("✅ VALIDATION PASSED: All miners show consistent elimination timing.")
+            logger.info("")
+            logger.info("✅ VALIDATION PASSED: All miners show consistent elimination timing.")
 
 
 if __name__ == "__main__":
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
     main()

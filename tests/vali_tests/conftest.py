@@ -5,8 +5,8 @@ This module provides session-scoped fixtures for managing ServerOrchestrator
 lifecycle across all tests, ensuring clean shutdown to prevent CI hangs.
 """
 import pytest
-import bittensor as bt
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator
+from shared_objects.log import logger
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -28,7 +28,7 @@ def orchestrator_cleanup():
     try:
         orchestrator = ServerOrchestrator.get_instance()
         orchestrator.shutdown_all_servers()
-        bt.logging.info("Session cleanup: All servers shut down successfully")
+        logger.info("Session cleanup: All servers shut down successfully")
     except Exception as e:
         # Use print as fallback since logging stream may be closed
         print(f"Session cleanup: Error during shutdown: {e}")

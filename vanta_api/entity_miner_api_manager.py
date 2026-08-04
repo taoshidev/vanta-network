@@ -9,11 +9,10 @@ handles shutdown.
 import json
 import os
 import time
-import bittensor as bt
 
-from miner_config import MinerConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vanta_api.entity_miner_rest_server import EntityMinerRestServer
+from shared_objects.log import logger
 
 
 class EntityMinerAPIManager:
@@ -56,7 +55,7 @@ class EntityMinerAPIManager:
         Main entry point - creates REST server and keeps alive.
         This method blocks until KeyboardInterrupt.
         """
-        bt.logging.info("Starting Entity Miner Gateway server...")
+        logger.info("Starting Entity Miner Gateway server...")
 
         try:
             self.rest_server = EntityMinerRestServer(
@@ -67,21 +66,21 @@ class EntityMinerAPIManager:
                 prop_net_order_placer=self.prop_net_order_placer
             )
 
-            bt.logging.success(
+            logger.info(
                 f"Entity Miner Gateway started at http://{self.api_host}:{self.api_port}"
             )
-            bt.logging.info(f"Endpoints available:")
-            bt.logging.info(f"  POST   /api/submit-order         - Synchronous order submission (inherited)")
-            bt.logging.info(f"  GET    /api/order-status/<uuid>   - Query order status (inherited)")
-            bt.logging.info(f"  GET    /api/hl/<addr>/dashboard   - Cached dashboard")
-            bt.logging.info(f"  GET    /api/hl/<addr>/events      - Order events")
-            bt.logging.info(f"  GET    /api/hl/<addr>/stream      - SSE stream")
-            bt.logging.info(f"  POST   /api/create-subaccount     - Create subaccount")
-            bt.logging.info(f"  POST   /api/create-hl-subaccount  - Create HL subaccount")
-            bt.logging.info(f"  GET    /api/health                - Health check")
+            logger.info("Endpoints available:")
+            logger.info("  POST   /api/submit-order         - Synchronous order submission (inherited)")
+            logger.info("  GET    /api/order-status/<uuid>   - Query order status (inherited)")
+            logger.info("  GET    /api/hl/<addr>/dashboard   - Cached dashboard")
+            logger.info("  GET    /api/hl/<addr>/events      - Order events")
+            logger.info("  GET    /api/hl/<addr>/stream      - SSE stream")
+            logger.info("  POST   /api/create-subaccount     - Create subaccount")
+            logger.info("  POST   /api/create-hl-subaccount  - Create HL subaccount")
+            logger.info("  GET    /api/health                - Health check")
 
         except Exception as e:
-            bt.logging.error(f"Failed to start Entity Miner Gateway: {e}")
+            logger.error(f"Failed to start Entity Miner Gateway: {e}")
             raise
 
         # Keep alive
@@ -89,12 +88,12 @@ class EntityMinerAPIManager:
             while True:
                 time.sleep(60)
         except KeyboardInterrupt:
-            bt.logging.info("Shutting down Entity Miner Gateway...")
+            logger.info("Shutting down Entity Miner Gateway...")
             self.shutdown()
 
     def shutdown(self):
         """Gracefully shutdown the gateway server."""
         if self.rest_server:
-            bt.logging.info("Stopping Entity Miner Gateway...")
+            logger.info("Stopping Entity Miner Gateway...")
             self.rest_server.shutdown()
-            bt.logging.info("Entity Miner Gateway stopped")
+            logger.info("Entity Miner Gateway stopped")

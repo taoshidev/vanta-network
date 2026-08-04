@@ -1158,7 +1158,7 @@ class TestDebtBasedScoring(TestBase):
         self.assertGreater(weights_dict["miner_2"], weights_dict["miner_3"])
 
         # Log for debugging
-        print(f"\nSurplus Emissions Test Results:")
+        print("\nSurplus Emissions Test Results:")
         print(f"  miner_1 weight: {weights_dict['miner_1']:.6f}")
         print(f"  miner_2 weight: {weights_dict['miner_2']:.6f}")
         print(f"  miner_3 weight: {weights_dict['miner_3']:.6f}")

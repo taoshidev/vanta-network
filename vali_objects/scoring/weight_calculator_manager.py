@@ -13,7 +13,6 @@ import traceback
 import threading
 from typing import List, Tuple
 
-import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
@@ -23,6 +22,7 @@ from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
+from shared_objects.log import logger
 
 
 class WeightCalculatorManager(CacheController):
@@ -113,7 +113,6 @@ class WeightCalculatorManager(CacheController):
             connection_mode=connection_mode
         )
 
-        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
         self._debt_ledger_client = DebtLedgerClient(
             running_unit_tests=running_unit_tests,
             connect_immediately=False,
@@ -138,7 +137,7 @@ class WeightCalculatorManager(CacheController):
         self.transformed_list: List[Tuple[int, float]] = []
         self._results_lock = threading.Lock()
 
-        bt.logging.info("[WC_MANAGER] WeightCalculatorManager initialized")
+        logger.info("[WC_MANAGER] WeightCalculatorManager initialized")
 
     # ==================== Properties ====================
 
@@ -176,7 +175,7 @@ class WeightCalculatorManager(CacheController):
         if current_time is None:
             current_time = TimeUtil.now_in_millis()
 
-        bt.logging.info("Computing weights for all miners")
+        logger.info("Computing weights for all miners")
 
         try:
             # Compute weights
@@ -191,7 +190,7 @@ class WeightCalculatorManager(CacheController):
                 # Send weight setting request via RPC
                 self._send_weight_request(transformed_list)
             else:
-                bt.logging.warning(
+                logger.warning(
                     "No weights computed (debt ledgers may still be initializing). "
                     "Will retry later..."
                 )
@@ -199,8 +198,8 @@ class WeightCalculatorManager(CacheController):
             return checkpoint_results, transformed_list
 
         except Exception as e:
-            bt.logging.error(f"Error computing weights: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error computing weights: {e}")
+            logger.error(traceback.format_exc())
 
             if self.slack_notifier:
                 compact_trace = ErrorUtils.get_compact_stacktrace(e)
@@ -243,9 +242,9 @@ class WeightCalculatorManager(CacheController):
         zombies_filtered = all_hotkeys_before_filter - len(all_hotkeys)
 
         if zombies_filtered > 0:
-            bt.logging.info(f"Filtered out {zombies_filtered} zombie miners (not in metagraph)")
+            logger.info(f"Filtered out {zombies_filtered} zombie miners (not in metagraph)")
 
-        bt.logging.info(
+        logger.info(
             f"Computing weights for {len(all_hotkeys)} miners: "
             f"({zombies_filtered} zombies filtered)"
         )
@@ -256,11 +255,11 @@ class WeightCalculatorManager(CacheController):
         )
 
         if checkpoint_netuid_weights is None or len(checkpoint_netuid_weights) == 0:
-            bt.logging.info("No weights computed. Do nothing for now.")
+            logger.info("No weights computed. Do nothing for now.")
             return [], []
 
         transformed_list = checkpoint_netuid_weights
-        bt.logging.info(f"transformed list: {transformed_list}")
+        logger.info(f"transformed list: {transformed_list}")
 
         return checkpoint_results, transformed_list
 
@@ -284,7 +283,7 @@ class WeightCalculatorManager(CacheController):
         if len(hotkeys_to_compute_weights_for) == 0:
             return [], []
 
-        bt.logging.info("Calculating new subtensor weights using debt-based scoring...")
+        logger.info("Calculating new subtensor weights using debt-based scoring...")
 
         # Get debt ledgers for the specified miners via RPC
         all_debt_ledgers = self._debt_ledger_client.get_all_debt_ledgers()
@@ -297,14 +296,14 @@ class WeightCalculatorManager(CacheController):
         if len(filtered_debt_ledgers) == 0:
             total_ledgers = len(all_debt_ledgers)
             if total_ledgers == 0:
-                bt.logging.info(
+                logger.info(
                     f"No debt ledgers loaded yet. "
                     f"Requested {len(hotkeys_to_compute_weights_for)} hotkeys. "
                     f"Debt ledger daemon likely still building initial data (120s delay + build time). "
                     f"Will retry in 5 minutes."
                 )
             else:
-                bt.logging.warning(
+                logger.warning(
                     f"No debt ledgers found. "
                     f"Requested {len(hotkeys_to_compute_weights_for)} hotkeys, "
                     f"debt_ledger_client has {total_ledgers} ledgers loaded."
@@ -321,7 +320,7 @@ class WeightCalculatorManager(CacheController):
         current_dt = TimeUtil.millis_to_datetime(current_time_ms)
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"Computing debt-based weights for {current_dt.strftime('%B %Y')} "
                 f"({len(filtered_debt_ledgers)} miners)"
             )
@@ -419,7 +418,7 @@ class WeightCalculatorManager(CacheController):
         total_actual_payout_usd = sum(all_emissions_cumulative.values())
         total_needed_payout_usd = total_remaining_payout_usd
         # total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
-        bt.logging.info(
+        logger.info(
             f"[PAYOUT] SUMMARY ({len(miner_remaining_payouts_usd)} miners): "
             f"remaining_payouts=${total_remaining_payout_usd:.2f}, "
             f"required_payouts=${total_needed_payout_usd:.2f}, "
@@ -446,7 +445,7 @@ class WeightCalculatorManager(CacheController):
                     week_range = f" ({first_week} - {last_week})"
                 else:
                     week_range = ""
-                bt.logging.info(
+                logger.info(
                     f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, "
                     f"payout_penalized=${payout_penalized:.2f}, payout_raw=${payout_raw:.2f}{week_range}, all_time_emissions=${all_time:.2f}"
                 )
@@ -465,7 +464,7 @@ class WeightCalculatorManager(CacheController):
         )
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"[PAYOUT_DEBUG] PROJECTED EMISSIONS: {projected_alpha_available:.2f} ALPHA = "
                 f"${projected_usd_available:.2f} USD over {days_until_target} days "
                 f"(${projected_usd_available / days_until_target:.2f}/day)"
@@ -500,7 +499,7 @@ class WeightCalculatorManager(CacheController):
         )
 
         if verbose:
-            bt.logging.info(
+            logger.info(
                 f"[PAYOUT_DEBUG] WEIGHT SUMMARY: {len(miner_weights_with_minimums)} miners, "
                 f"total_remaining=${total_remaining_payout_usd:.2f}, "
                 f"projected_daily_emissions=${projected_daily_usd:.2f}, "
@@ -509,7 +508,7 @@ class WeightCalculatorManager(CacheController):
             for hk, w in sorted(miner_weights_with_minimums.items(), key=lambda x: -x[1]):
                 daily_target = miner_daily_target_payouts_usd.get(hk, 0.0)
                 if daily_target > 0:
-                    bt.logging.info(
+                    logger.info(
                         f"[PAYOUT_DEBUG] TOP WEIGHT [{hk}]: weight={w:.8f}, "
                         f"daily_target=${daily_target:.2f}"
                     )
@@ -522,7 +521,7 @@ class WeightCalculatorManager(CacheController):
             verbose=verbose
         )
 
-        bt.logging.info(f"Debt-based scoring results: [{checkpoint_results}]")
+        logger.info(f"Debt-based scoring results: [{checkpoint_results}]")
 
         checkpoint_netuid_weights = []
         for miner, score in checkpoint_results:
@@ -532,7 +531,7 @@ class WeightCalculatorManager(CacheController):
                     score
                 ))
             else:
-                bt.logging.error(f"Miner {miner} not found in the metagraph.")
+                logger.error(f"Miner {miner} not found in the metagraph.")
 
         return checkpoint_netuid_weights, checkpoint_results
 
@@ -555,17 +554,17 @@ class WeightCalculatorManager(CacheController):
             )
 
             if result.get('success'):
-                bt.logging.info(f"Weight request succeeded: {len(uids)} UIDs via RPC")
+                logger.info(f"Weight request succeeded: {len(uids)} UIDs via RPC")
             else:
                 error = result.get('error', 'Unknown error')
-                bt.logging.error(f"Weight request failed: {error}")
+                logger.error(f"Weight request failed: {error}")
 
                 # NOTE: Don't send Slack alert here - SubtensorOpsManager handles alerting
                 # with proper benign error filtering (e.g., "too soon to commit weights").
 
         except Exception as e:
-            bt.logging.error(f"Error sending weight request via RPC: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error sending weight request via RPC: {e}")
+            logger.error(traceback.format_exc())
 
             if self.slack_notifier:
                 compact_trace = ErrorUtils.get_compact_stacktrace(e)

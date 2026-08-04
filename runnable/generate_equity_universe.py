@@ -38,7 +38,6 @@ import argparse
 import csv
 import os
 import re
-import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(REPO_ROOT, "vali_objects", "trade_pair.py")

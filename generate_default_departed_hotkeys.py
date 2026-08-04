@@ -31,7 +31,6 @@ def main():
         description='Generate default_departed_hotkeys.json file from historical database',
         add_help=True
     )
-    bt.logging.add_args(parser)
     parser.add_argument(
         '--netuid',
         type=int,
@@ -72,7 +71,7 @@ def main():
         if not os.path.exists(config_file):
             print(f"✗ Error: {config_file} not found in current directory")
             print(f"  Current directory: {os.getcwd()}")
-            print(f"  Please run this script from the repo root directory")
+            print("  Please run this script from the repo root directory")
             return 1
 
         with open(config_file, 'r') as f:
@@ -236,7 +235,7 @@ def main():
     print(f"Currently in metagraph:         {len(current_hotkeys)}")
     print(f"Departed (not in metagraph):    {len(departed_hotkeys)}")
     print()
-    print(f"✓ Default departed_hotkeys.json created successfully!")
+    print("✓ Default departed_hotkeys.json created successfully!")
     print(f"  File: {output_path}")
     print()
     print("This file should be committed to the repository.")

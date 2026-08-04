@@ -1,13 +1,12 @@
 import socket
 
-import bittensor as bt
 import uvicorn
-import template.protocol
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from miner_config import MinerConfig
 from shared_objects.rate_limiter import RateLimiter
+from shared_objects.log import logger
 # Note: Using async with bt.dendrite() for automatic cleanup - no need for manual DendriteUtils
 
 origins = [
@@ -52,12 +51,12 @@ class Dashboard:
         async def get_miner_data():
             allowed, wait_time = self.dash_rate_limiter.is_allowed(self.wallet.hotkey.ss58_address)
             if not allowed:
-                bt.logging.info(f"Rate limited. Please wait {wait_time} seconds before refreshing.")
+                logger.info(f"Rate limited. Please wait {wait_time} seconds before refreshing.")
                 return self.miner_data
 
             success = await self.refresh_validator_dash_data()
             if not success:
-                bt.logging.info("No data received from validator. Setting and returning empty data.")
+                logger.info("No data received from validator. Setting and returning empty data.")
 
             return self.miner_data
 

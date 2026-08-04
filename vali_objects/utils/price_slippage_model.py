@@ -9,16 +9,15 @@ from zoneinfo import ZoneInfo
 import holidays
 import numpy as np
 import pandas as pd
-import bittensor as bt
 
 from time_util.time_util import TimeUtil
-from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vali_objects.trade_pair import TradePair, ForexSubcategory, NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePairSource
 from vali_objects.vali_dataclasses.order import Order
+from shared_objects.log import logger
 
 SLIPPAGE_V2_TIME_MS = 1759431540000
 HL_CRYPTO_TIME_MS = 1774655999000
@@ -67,7 +66,7 @@ class PriceSlippageModel:
 
         trade_pair = order.trade_pair
         if bid * ask == 0:
-            bt.logging.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
+            logger.warning(f'Tried to calculate slippage with bid: {bid} and ask: {ask}. order: {order}. Returning 0')
             return 0
 
         size = abs(order.value)
@@ -126,7 +125,7 @@ class PriceSlippageModel:
             return cls.live_price_fetcher.simulate_slippage(order.trade_pair, size_usd, is_buy,
                                                               order_uuid=order.order_uuid)
         except Exception as e:
-            bt.logging.warning(f"[SLIPPAGE] HL simulate_slippage failed for {order.trade_pair.trade_pair_id}: {e}")
+            logger.warning(f"[SLIPPAGE] HL simulate_slippage failed for {order.trade_pair.trade_pair_id}: {e}")
             return None
 
     @classmethod
@@ -142,20 +141,20 @@ class PriceSlippageModel:
 
         # Check if features are available for this date
         if order_date not in cls.features:
-            bt.logging.error(f"Features not found for date {order_date} in equities slippage calculation")
+            logger.error(f"Features not found for date {order_date} in equities slippage calculation")
             return 0.0001  # Return minimal slippage as fallback
 
         # Check if volatility and volume data exist for this trade pair
         if (order.trade_pair.trade_pair_id not in cls.features[order_date].get("vol", {}) or
             order.trade_pair.trade_pair_id not in cls.features[order_date].get("adv", {})):
-            bt.logging.error(f"Features not found for trade pair {order.trade_pair.trade_pair_id} on {order_date}")
+            logger.error(f"Features not found for trade pair {order.trade_pair.trade_pair_id} on {order_date}")
             return 0.0001  # Return minimal slippage as fallback
 
         annualized_volatility = cls.features[order_date]["vol"][order.trade_pair.trade_pair_id]
         avg_daily_volume = cls.features[order_date]["adv"][order.trade_pair.trade_pair_id]
 
         if annualized_volatility is None or avg_daily_volume is None:
-            bt.logging.error(f"None volatility or volume for {order.trade_pair.trade_pair_id} on {order_date}")
+            logger.error(f"None volatility or volume for {order.trade_pair.trade_pair_id} on {order_date}")
             return 0.0001
 
         spread = ask - bid
@@ -201,13 +200,13 @@ class PriceSlippageModel:
 
         # Check if features are available for this date
         if order_date not in cls.features:
-            bt.logging.error(f"Features not found for date {order_date} in forex slippage calculation")
+            logger.error(f"Features not found for date {order_date} in forex slippage calculation")
             return 0.0002  # Return 2 bps slippage as fallback
 
         # Check if volatility and volume data exist for this trade pair
         if (order.trade_pair.trade_pair_id not in cls.features[order_date].get("vol", {}) or
             order.trade_pair.trade_pair_id not in cls.features[order_date].get("adv", {})):
-            bt.logging.error(f"Features not found for trade pair {order.trade_pair.trade_pair_id} on {order_date}")
+            logger.error(f"Features not found for trade pair {order.trade_pair.trade_pair_id} on {order_date}")
             return 0.0002  # Return 2 bps slippage as fallback
 
         annualized_volatility = cls.features[order_date]["vol"][order.trade_pair.trade_pair_id]
@@ -215,14 +214,14 @@ class PriceSlippageModel:
         spread = ask - bid
         mid_price = (bid + ask) / 2
 
-        # bt.logging.info(f"bid: {bid}, ask: {ask}, adv: {avg_daily_volume}, vol: {annualized_volatility}")
+        # logger.info(f"bid: {bid}, ask: {ask}, adv: {avg_daily_volume}, vol: {annualized_volatility}")
 
         size = abs(order.value)
         base, _ = order.trade_pair.trade_pair.split("/")
         if base != "USD":
             base_to_usd_conversion = cls.live_price_fetcher.get_currency_conversion(base=base, quote="USD")
             if base_to_usd_conversion is None or base_to_usd_conversion == 0:
-                bt.logging.error(f"Invalid currency conversion for {base}/USD (returned {base_to_usd_conversion})")
+                logger.error(f"Invalid currency conversion for {base}/USD (returned {base_to_usd_conversion})")
                 return 0.0002  # Return 2 bps slippage as fallback
         else:
             base_to_usd_conversion = 1
@@ -233,7 +232,7 @@ class PriceSlippageModel:
         term2 = 0.335 * math.sqrt(annualized_volatility ** 2 / 3 / 250)
         term3 = math.sqrt(volume_standard_lots / (0.3 * avg_daily_volume))
         slippage_pct = term1 + term2 * term3
-        # bt.logging.info(f"slippage_pct: {slippage_pct}")
+        # logger.info(f"slippage_pct: {slippage_pct}")
         return slippage_pct
 
     @classmethod
@@ -260,16 +259,16 @@ class PriceSlippageModel:
 
             # Check if slippage estimates are loaded
             if "crypto" not in cls.slippage_estimates:
-                bt.logging.error(f"Crypto slippage estimates not loaded")
+                logger.error("Crypto slippage estimates not loaded")
                 return 0.0001  # Return minimal slippage as fallback
 
             trade_pair_key = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(order.trade_pair, order.trade_pair).trade_pair_id
             if trade_pair_key not in cls.slippage_estimates["crypto"]:
-                bt.logging.error(f"Slippage estimates not found for crypto trade pair {trade_pair_key}")
+                logger.error(f"Slippage estimates not found for crypto trade pair {trade_pair_key}")
                 return 0.0001  # Return minimal slippage as fallback
 
             if side not in cls.slippage_estimates["crypto"][trade_pair_key]:
-                bt.logging.error(f"Slippage estimates not found for side {side} on trade pair {trade_pair_key}")
+                logger.error(f"Slippage estimates not found for side {side} on trade pair {trade_pair_key}")
                 return 0.0001  # Return minimal slippage as fallback
 
             slippage_size_buckets = cls.slippage_estimates["crypto"][trade_pair_key][side]
@@ -322,11 +321,11 @@ class PriceSlippageModel:
         if cls._refresh_in_progress and cls._refresh_current_date == current_date:
             if allow_blocking:
                 # Background daemon path: skip this cycle, will retry in 10 minutes
-                bt.logging.debug(f"Refresh already in progress for {current_date}, daemon will retry later")
+                logger.debug(f"Refresh already in progress for {current_date}, daemon will retry later")
                 return current_date in cls.features
             else:
                 # Order filling path: don't block, use fallback from previous day
-                bt.logging.warning(
+                logger.warning(
                     f"Refresh in progress for {current_date}, using fallback to avoid blocking order fill"
                 )
                 return cls._get_fallback_features(current_date)
@@ -334,7 +333,7 @@ class PriceSlippageModel:
         # CRITICAL: If allow_blocking=False and features missing, use fallback
         # This should NEVER happen with pre-population, but serves as safety net
         if not allow_blocking:
-            bt.logging.error(
+            logger.error(
                 f"[FEATURE_MISSING] Features not available for {current_date} and allow_blocking=False! "
                 f"Pre-population failed. Using fallback. THIS SHOULD NOT HAPPEN - investigate daemon!"
             )
@@ -370,19 +369,19 @@ class PriceSlippageModel:
 
         # Check if tomorrow's features already exist
         if tomorrow_date in cls.features:
-            bt.logging.debug(
+            logger.debug(
                 f"[FEATURE_PREPOP] Features for {tomorrow_date} already exist, skipping"
             )
             return True
 
         # Check if another process is already pre-populating
         if cls._refresh_in_progress and cls._refresh_current_date == tomorrow_date:
-            bt.logging.debug(
+            logger.debug(
                 f"[FEATURE_PREPOP] Pre-population already in progress for {tomorrow_date}"
             )
             return False
 
-        bt.logging.info(
+        logger.info(
             f"[FEATURE_PREPOP] Pre-populating features for {tomorrow_date} "
             f"(current date: {current_date})"
         )
@@ -410,7 +409,7 @@ class PriceSlippageModel:
         cls._refresh_current_date = target_date
 
         try:
-            bt.logging.info(
+            logger.info(
                 f"Calculating avg daily volume and annualized volatility for {target_date}"
             )
             trade_pairs = [tp for tp in TradePair if tp.is_forex or tp.is_equities]
@@ -426,23 +425,23 @@ class PriceSlippageModel:
                 if write_to_disk:
                     cls.write_features_from_memory_to_disk()
 
-                bt.logging.success(
+                logger.info(
                     f"✅ Successfully calculated features for {target_date}. "
                     f"Features now available for {len(cls.features)} dates."
                 )
                 cls.last_refresh_time_ms = TimeUtil.now_in_millis()
                 return True
             else:
-                bt.logging.warning(
+                logger.warning(
                     f"Failed to calculate features for {target_date}. "
                     f"tp_to_adv: {bool(tp_to_adv)}, tp_to_vol: {bool(tp_to_vol)}"
                 )
                 return False
 
         except Exception as e:
-            bt.logging.error(f"Error calculating features for {target_date}: {e}")
+            logger.error(f"Error calculating features for {target_date}: {e}")
             import traceback
-            bt.logging.error(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return False
 
         finally:
@@ -460,13 +459,13 @@ class PriceSlippageModel:
         """
         # Try to find most recent cached features
         if not cls.features:
-            bt.logging.error(f"No cached features available for fallback on {current_date}")
+            logger.error(f"No cached features available for fallback on {current_date}")
             return False
 
         # Get most recent date from cache
         most_recent_date = max(cls.features.keys())
 
-        bt.logging.warning(
+        logger.warning(
             f"Using fallback features from {most_recent_date} for date {current_date} "
             f"(refresh in progress)"
         )
@@ -489,7 +488,7 @@ class PriceSlippageModel:
             try:
                 bars_df = cls.get_bars_with_features(trade_pair, processed_ms, adv_lookback_window, calc_vol_window)
                 if bars_df.empty:
-                    bt.logging.warning(f"Empty DataFrame returned for trade pair {trade_pair.trade_pair_id}, skipping")
+                    logger.warning(f"Empty DataFrame returned for trade pair {trade_pair.trade_pair_id}, skipping")
                     continue
                 row_selected = bars_df.iloc[-1]
                 annualized_volatility = row_selected['annualized_vol'] # recalculate slippage false
@@ -498,7 +497,7 @@ class PriceSlippageModel:
                 tp_to_vol[trade_pair.trade_pair_id] = float(annualized_volatility)
                 tp_to_adv[trade_pair.trade_pair_id] = float(avg_daily_volume)
             except Exception as e:
-                bt.logging.info(f"Unable to calculate slippage model features for trade pair {trade_pair.trade_pair_id} with exception {e}")
+                logger.info(f"Unable to calculate slippage model features for trade pair {trade_pair.trade_pair_id} with exception {e}")
         return tp_to_adv, tp_to_vol
 
     @classmethod
@@ -520,7 +519,7 @@ class PriceSlippageModel:
 
         bars_pd = pd.DataFrame(aggs)
         if bars_pd.empty:
-            bt.logging.warning(f"No data returned for trade pair {trade_pair.trade_pair_id} from {start_date} to {order_date}")
+            logger.warning(f"No data returned for trade pair {trade_pair.trade_pair_id} from {start_date} to {order_date}")
             return bars_pd  # Return empty DataFrame
         bars_pd['datetime'] = pd.to_datetime(bars_pd['timestamp'], unit='ms').dt.strftime('%Y-%m-%d')
         bars_pd[f'adv_last_{adv_lookback_window}_days'] = (bars_pd['volume'].rolling(window=adv_lookback_window + 1).sum() - bars_pd['volume']) / adv_lookback_window  # excluding the current day when calculating adv
@@ -568,20 +567,20 @@ class PriceSlippageModel:
     def update_historical_slippage(self, positions_at_t_f):
         assert self.is_backtesting, "This method is only for backtesting"
         #mutates the original orders
-        bt.logging.info("Starting slippage order pre-processing.")
+        logger.info("Starting slippage order pre-processing.")
         for hk, positions in positions_at_t_f.items():
             for position in positions:
                 order_updated = False
                 for o in position.orders:
                     #Check if orders need to have slippage calculations
                     if o.bid == 0 and o.ask == 0 and o.slippage == 0 and not (self.recalculate_slippage or self.fetch_slippage_data):
-                        bt.logging.info(f"Not recalculating slippage, but order doesn't have these attributes set: {o}")
+                        logger.info(f"Not recalculating slippage, but order doesn't have these attributes set: {o}")
                         break
 
                     if not (self.recalculate_slippage or self.fetch_slippage_data):
                         break
 
-                    bt.logging.info(f"updating order attributes {o}")
+                    logger.info(f"updating order attributes {o}")
 
                     bid = o.bid
                     ask = o.ask
@@ -600,7 +599,7 @@ class PriceSlippageModel:
                     o.bid = bid
                     o.ask = ask
                     o.slippage = slippage
-                    bt.logging.info(f"updated order attributes {o}")
+                    logger.info(f"updated order attributes {o}")
                     order_updated = True
                 if order_updated:
                     position.rebuild_position_with_updated_orders(self.live_price_fetcher)
@@ -614,11 +613,11 @@ class PriceSlippageModel:
 
         def run_update_loop(self):
             setproctitle("vali_SlippageRefresher")
-            bt.logging.info("PriceSlippageFeatureRefresher daemon started")
+            logger.info("PriceSlippageFeatureRefresher daemon started")
 
             # Load persisted features from disk on startup
             try:
-                bt.logging.info("Loading persisted slippage features from disk...")
+                logger.info("Loading persisted slippage features from disk...")
                 features_file = ValiBkpUtils.get_slippage_model_features_file()
                 persisted_features = ValiUtils.get_vali_json_file_dict(features_file)
 
@@ -630,7 +629,7 @@ class PriceSlippageModel:
                     dates_loaded = sorted(persisted_features.keys())
                     most_recent = dates_loaded[-1] if dates_loaded else None
 
-                    bt.logging.success(
+                    logger.info(
                         f"✅ Loaded {len(dates_loaded)} days of slippage features from disk. "
                         f"Date range: {dates_loaded[0] if dates_loaded else 'N/A'} to {most_recent or 'N/A'}"
                     )
@@ -639,31 +638,31 @@ class PriceSlippageModel:
                         # Show sample of most recent data
                         recent_data = persisted_features[most_recent]
                         trade_pairs_count = len(recent_data.get('adv', {}))
-                        bt.logging.info(
+                        logger.info(
                             f"Most recent date ({most_recent}) has features for {trade_pairs_count} trade pairs"
                         )
                 else:
-                    bt.logging.warning("⚠️  No persisted slippage features found on disk - starting fresh")
+                    logger.warning("⚠️  No persisted slippage features found on disk - starting fresh")
             except FileNotFoundError:
-                bt.logging.warning("⚠️  Slippage features file not found - starting fresh")
+                logger.warning("⚠️  Slippage features file not found - starting fresh")
             except Exception as e:
-                bt.logging.error(f"❌ Error loading persisted slippage features: {e}")
+                logger.error(f"❌ Error loading persisted slippage features: {e}")
                 # Continue with empty features - will be populated by refresh
 
             # Pre-warm cache on startup to ensure features available for today
             try:
-                bt.logging.info("Pre-warming slippage feature cache for current date...")
+                logger.info("Pre-warming slippage feature cache for current date...")
                 success = self.price_slippage_model.refresh_features_daily(allow_blocking=True)
 
                 if success:
                     current_date = TimeUtil.millis_to_short_date_str(TimeUtil.now_in_millis())
-                    bt.logging.success(f"✅ Slippage feature cache pre-warmed successfully for {current_date}")
+                    logger.info(f"✅ Slippage feature cache pre-warmed successfully for {current_date}")
                 else:
-                    bt.logging.warning("⚠️  Pre-warming completed but features may not be available")
+                    logger.warning("⚠️  Pre-warming completed but features may not be available")
             except Exception as e:
-                bt.logging.error(f"❌ Failed to pre-warm slippage feature cache: {e}")
+                logger.error(f"❌ Failed to pre-warm slippage feature cache: {e}")
                 import traceback as tb
-                bt.logging.error(tb.format_exc())
+                logger.error(tb.format_exc())
                 # Continue anyway - will retry in main loop
 
             # Run indefinitely - process will terminate when main process exits (daemon=True)
@@ -680,15 +679,15 @@ class PriceSlippageModel:
 
                     if current_hour_utc == 22:
                         # Pre-population window: 22:00-22:59 UTC
-                        bt.logging.info("[FEATURE_PREPOP] Entering pre-population window (22:00 UTC)")
+                        logger.info("[FEATURE_PREPOP] Entering pre-population window (22:00 UTC)")
                         success = PriceSlippageModel.pre_populate_next_day(write_to_disk=True)
 
                         if success:
-                            bt.logging.success(
+                            logger.info(
                                 "[FEATURE_PREPOP] Tomorrow's features pre-populated successfully"
                             )
                         else:
-                            bt.logging.warning(
+                            logger.warning(
                                 "[FEATURE_PREPOP] Failed to pre-populate tomorrow's features, "
                                 "will retry in next cycle"
                             )
@@ -707,8 +706,8 @@ class PriceSlippageModel:
 
                 except Exception as e:
                     error_traceback = traceback.format_exc()
-                    bt.logging.error(f"Error in PriceSlippageFeatureRefresher: {e}")
-                    bt.logging.error(error_traceback)
+                    logger.error(f"Error in PriceSlippageFeatureRefresher: {e}")
+                    logger.error(error_traceback)
 
                     # Send Slack notification
                     if self.slack_notifier:

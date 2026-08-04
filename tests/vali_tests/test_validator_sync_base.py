@@ -269,7 +269,7 @@ class TestValidatorSyncBase(TestBase):
         )
 
         print(f"✅ Newest position {p1.position_uuid}... kept")
-        print(f"✅ Two older positions closed")
+        print("✅ Two older positions closed")
 
     def test_same_uuid_in_batch_deduplication(self):
         """Test 5: Same UUID in batch - p1 and p2 have same UUID (deduplication)."""
@@ -299,7 +299,7 @@ class TestValidatorSyncBase(TestBase):
             0
         )
 
-        print(f"✅ Deduplication worked - only one position, nothing closed")
+        print("✅ Deduplication worked - only one position, nothing closed")
 
     def test_same_uuid_memory_and_batch_deduplication(self):
         """Test 6: Same UUID memory and batch - existing_in_memory and p1 same UUID (deduplication)."""
@@ -332,7 +332,7 @@ class TestValidatorSyncBase(TestBase):
             0
         )
 
-        print(f"✅ Deduplication worked - same position in memory and batch")
+        print("✅ Deduplication worked - same position in memory and batch")
 
     def test_timestamps_determine_which_position_kept(self):
         """Test 7: Timestamps matter - verify newest by open_ms is kept."""
@@ -444,8 +444,8 @@ class TestValidatorSyncBase(TestBase):
         self.assertEqual(closed_position_on_disk.orders[-1].order_type, OrderType.FLAT)
 
         print(f"✅ Closed position {p2_uuid}... found on disk")
-        print(f"✅ Position correctly marked as closed")
-        print(f"✅ FLAT order preserved in disk storage")
+        print("✅ Position correctly marked as closed")
+        print("✅ FLAT order preserved in disk storage")
 
     def test_complex_scenario_production_bug_reproduction(self):
         """
@@ -514,10 +514,10 @@ class TestValidatorSyncBase(TestBase):
         # Open position should be the newer one
         self.assertEqual(open_positions[0].position_uuid, memory_position_uuid)
 
-        print(f"✅ Production bug scenario handled correctly")
+        print("✅ Production bug scenario handled correctly")
         print(f"✅ Newer position {memory_position_uuid}... kept open")
         print(f"✅ Older position {backup_position_uuid}... closed")
-        print(f"✅ No ValiRecordsMisalignmentException raised")
+        print("✅ No ValiRecordsMisalignmentException raised")
 
 
 if __name__ == '__main__':

@@ -23,12 +23,12 @@ Usage:
         # Critical section
         pass
 """
-import bittensor as bt
 import threading
 from typing import Tuple, Dict
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig
+from shared_objects.log import logger
 
 
 class PositionLockServer(RPCServerBase):
@@ -82,7 +82,7 @@ class PositionLockServer(RPCServerBase):
             hang_timeout_s=hang_timeout_s
         )
 
-        bt.logging.info("PositionLockServer initialized")
+        logger.info("PositionLockServer initialized")
 
     # ==================== RPCServerBase Abstract Methods ====================
 
@@ -133,7 +133,7 @@ class PositionLockServer(RPCServerBase):
             lock = threading.Lock()
             self.locks[lock_key] = lock
 
-            bt.logging.trace(
+            logger.debug(
                 f"[LOCK_SERVER] Created lock for {miner_hotkey}.../{trade_pair_id}"
             )
 
@@ -155,7 +155,7 @@ class PositionLockServer(RPCServerBase):
         acquired = lock.acquire(timeout=timeout)
 
         if not acquired:
-            bt.logging.warning(
+            logger.warning(
                 f"[LOCK_SERVER] Failed to acquire lock for {miner_hotkey}.../{trade_pair_id} after {timeout}s"
             )
 
@@ -176,7 +176,7 @@ class PositionLockServer(RPCServerBase):
         lock = self.locks.get(lock_key)
 
         if lock is None:
-            bt.logging.warning(
+            logger.warning(
                 f"[LOCK_SERVER] Attempted to release non-existent lock for {miner_hotkey}.../{trade_pair_id}"
             )
             return False
@@ -186,7 +186,7 @@ class PositionLockServer(RPCServerBase):
             return True
         except RuntimeError as e:
             # Lock was not held (already released)
-            bt.logging.warning(
+            logger.warning(
                 f"[LOCK_SERVER] Error releasing lock for {miner_hotkey}.../{trade_pair_id}: {e}"
             )
             return False

@@ -20,7 +20,7 @@ import threading
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Any
 from collections import defaultdict
-import bittensor as bt
+from shared_objects.log import logger
 
 # Try to use requests library, fall back to urllib if not available
 try:
@@ -119,7 +119,7 @@ class SlackNotifier:
             self.vm_ip = None
 
         if not self.webhook_url:
-            bt.logging.warning("No Slack webhook URL configured. Notifications disabled.")
+            logger.warning("No Slack webhook URL configured. Notifications disabled.")
 
     # ========== Core Messaging Methods ==========
 
@@ -144,7 +144,7 @@ class SlackNotifier:
             bool: True if sent successfully, False otherwise
         """
         if not self.webhook_url:
-            bt.logging.info(f"[Slack] Would send (no webhook): {message}")
+            logger.info(f"[Slack] Would send (no webhook): {message}")
             return False
 
         # Rate limiting
@@ -153,7 +153,7 @@ class SlackNotifier:
             with self.message_cooldown_lock:
                 last_time = self.last_alert_time.get(alert_key, 0)
                 if now - last_time < self.min_interval:
-                    bt.logging.debug(f"[Slack] Skipping '{alert_key}' (rate limited)")
+                    logger.debug(f"[Slack] Skipping '{alert_key}' (rate limited)")
                     return False
                 self.last_alert_time[alert_key] = now
 
@@ -194,7 +194,7 @@ class SlackNotifier:
                 current_time = time.time()
                 last_time = self.last_alert_time.get(message_key, 0)
                 if current_time - last_time < self.min_interval:
-                    bt.logging.debug(f"[Slack] Message suppressed (cooldown): {message_key}")
+                    logger.debug(f"[Slack] Message suppressed (cooldown): {message_key}")
                     return False
                 self.last_alert_time[message_key] = current_time
 
@@ -537,7 +537,7 @@ class SlackNotifier:
             return self._send_payload(webhook_url, payload)
 
         except Exception as e:
-            bt.logging.error(f"Failed to send Slack summary: {e}")
+            logger.error(f"Failed to send Slack summary: {e}")
             return False
 
     def send_plagiarism_demotion_notification(self, target_hotkey: str) -> bool:
@@ -663,7 +663,7 @@ class SlackNotifier:
             return self._send_payload(webhook_url, payload)
 
         except Exception as e:
-            bt.logging.error(f"[Slack] Error sending simple message: {e}")
+            logger.error(f"[Slack] Error sending simple message: {e}")
             return False
 
     def _send_rich_message(self, message: str, level: str, webhook_url: str) -> bool:
@@ -731,7 +731,7 @@ class SlackNotifier:
             return self._send_payload(webhook_url, payload)
 
         except Exception as e:
-            bt.logging.error(f"[Slack] Error sending rich message: {e}")
+            logger.error(f"[Slack] Error sending rich message: {e}")
             return False
 
     def _send_payload(self, webhook_url: str, payload: Dict[str, Any]) -> bool:
@@ -762,11 +762,11 @@ class SlackNotifier:
                     success = response.status == 200
 
             if success:
-                bt.logging.info(f"[Slack] Message sent successfully")
+                logger.info("[Slack] Message sent successfully")
             return success
 
         except Exception as e:
-            bt.logging.error(f"[Slack] Error sending payload: {e}")
+            logger.error(f"[Slack] Error sending payload: {e}")
             return False
 
     def _format_server_alert(self, title: str, pid: int, exit_code: int, endpoint: str) -> str:
@@ -842,7 +842,7 @@ class SlackNotifier:
         try:
             return socket.gethostname()
         except Exception as e:
-            bt.logging.error(f"Failed to get hostname: {e}")
+            logger.error(f"Failed to get hostname: {e}")
             return "Unknown Hostname"
 
     def _get_vm_ip(self) -> str:
@@ -871,7 +871,7 @@ class SlackNotifier:
             branch = result.stdout.strip()
             return branch if branch else "Unknown Branch"
         except Exception as e:
-            bt.logging.error(f"Failed to get git branch: {e}")
+            logger.error(f"Failed to get git branch: {e}")
             return "Unknown Branch"
 
     def _load_lifetime_metrics(self) -> Dict[str, Any]:
@@ -886,7 +886,7 @@ class SlackNotifier:
                 with open(self.metrics_file, 'r') as f:
                     return json.load(f)
         except Exception as e:
-            bt.logging.warning(f"Failed to load lifetime metrics: {e}")
+            logger.warning(f"Failed to load lifetime metrics: {e}")
 
         # Default metrics
         return {
@@ -909,7 +909,7 @@ class SlackNotifier:
             with open(self.metrics_file, 'w') as f:
                 json.dump(self.lifetime_metrics, f)
         except Exception as e:
-            bt.logging.error(f"Failed to save lifetime metrics: {e}")
+            logger.error(f"Failed to save lifetime metrics: {e}")
 
     def _reset_daily_metrics(self) -> Dict[str, Any]:
         """
@@ -1062,7 +1062,7 @@ class SlackNotifier:
                 self.daily_metrics = self._reset_daily_metrics()
 
             except Exception as e:
-                bt.logging.error(f"Failed to send daily summary: {e}")
+                logger.error(f"Failed to send daily summary: {e}")
 
     def _start_daily_summary_thread(self):
         """Start the daily summary background thread."""
@@ -1085,7 +1085,7 @@ class SlackNotifier:
                     self._send_daily_summary()
 
                 except Exception as e:
-                    bt.logging.error(f"Error in daily summary thread: {e}")
+                    logger.error(f"Error in daily summary thread: {e}")
                     time.sleep(3600)  # Sleep 1 hour on error
 
         summary_thread = threading.Thread(target=daily_summary_loop, daemon=True)
@@ -1097,7 +1097,7 @@ class SlackNotifier:
             try:
                 self._save_lifetime_metrics()
             except Exception as e:
-                bt.logging.error(f"Error during shutdown: {e}")
+                logger.error(f"Error during shutdown: {e}")
 
     def __getstate__(self):
         """Prepare object for pickling - exclude unpicklable threading.Lock."""

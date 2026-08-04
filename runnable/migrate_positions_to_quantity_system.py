@@ -30,7 +30,6 @@ import time
 import traceback
 from multiprocessing import Pool, cpu_count
 
-import bittensor as bt
 from collections import defaultdict
 
 from vali_objects.enums.order_type_enum import OrderType
@@ -41,6 +40,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_config import ValiConfig, TradePair
+from shared_objects.log import logger
 
 # Configuration
 DRY_RUN = False
@@ -119,7 +119,7 @@ def migrate_order_quantities(position: Position, price_fetcher) -> tuple[int, in
                 usd_rate_migrated += 1
             except Exception as e:
                 traceback.print_exc()
-                bt.logging.warning(
+                logger.warning(
                     f"Failed to migrate USD rates for order {order}: {e}"
                 )
 
@@ -161,7 +161,7 @@ def load_all_positions() -> dict[str, list[Position]]:
     try:
         import os
         if not os.path.exists(base_dir):
-            bt.logging.error(f"Positions directory not found: {base_dir}")
+            logger.error(f"Positions directory not found: {base_dir}")
             return all_positions
 
         # Walk through all hotkey directories
@@ -185,7 +185,7 @@ def load_all_positions() -> dict[str, list[Position]]:
                             position = Position.model_validate_json(file_string)
                             all_positions[hotkey].append(position)
                         except Exception as e:
-                            bt.logging.warning(f"Failed to load {filepath}: {e}")
+                            logger.warning(f"Failed to load {filepath}: {e}")
 
                 # Load closed positions
                 closed_dir = ValiBkpUtils.get_partitioned_miner_positions_dir(
@@ -201,7 +201,7 @@ def load_all_positions() -> dict[str, list[Position]]:
                             position = Position.model_validate_json(file_string)
                             all_positions[hotkey].append(position)
                         except Exception as e:
-                            bt.logging.warning(f"Failed to load {filepath}: {e}")
+                            logger.warning(f"Failed to load {filepath}: {e}")
 
         total_positions = sum(len(positions) for positions in all_positions.values())
         print(
@@ -209,7 +209,7 @@ def load_all_positions() -> dict[str, list[Position]]:
         )
 
     except Exception as e:
-        bt.logging.error(f"Error loading positions: {e}")
+        logger.error(f"Error loading positions: {e}")
 
     return all_positions
 
@@ -277,7 +277,7 @@ def process_hotkey(args):
                 )
 
             if not position.orders:
-                bt.logging.warning(
+                logger.warning(
                     f"Skipping position {position.position_uuid} - no orders"
                 )
                 continue
@@ -295,7 +295,7 @@ def process_hotkey(args):
                     hotkey, position.orders[0].processed_ms, miner_account_sizes_cache, miner_account_client
                 )
                 stats['account_size_migrations'] += 1
-                bt.logging.debug(
+                logger.debug(
                     f"Migrated account_size for {position.position_uuid}: "
                     f"{old_account_size} → ${position.account_size:,.2f}"
                 )
@@ -309,7 +309,7 @@ def process_hotkey(args):
                 stats['order_usd_rate_migrations'] += usd_rate_migrated
 
                 if quantity_migrated > 0:
-                    bt.logging.debug(
+                    logger.debug(
                         f"Migrated {quantity_migrated} orders for position "
                         f"{position.position_uuid}: "
                         f"leverage={position.orders[0].leverage} → "
@@ -331,7 +331,7 @@ def process_hotkey(args):
         except Exception as e:
             stats['failed'] += 1
             error_msg = f"Failed to migrate position {position.position_uuid}: {e}"
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             stats['errors'].append(error_msg)
             continue
 
@@ -355,7 +355,7 @@ all_positions = load_all_positions()
 stats['total_positions'] = sum(len(positions) for positions in all_positions.values())
 
 if stats['total_positions'] == 0:
-    bt.logging.error("No positions found. Exiting.")
+    logger.error("No positions found. Exiting.")
     sys.exit(1)
 
 print(f"\nStarting migration of {stats['total_positions']} positions...")
@@ -375,7 +375,7 @@ process_args = [
 ]
 
 # Process hotkeys in parallel
-print(f"Starting parallel migration...")
+print("Starting parallel migration...")
 if NUM_PROCESSES > 1:
     with Pool(processes=NUM_PROCESSES) as pool:
         hotkey_results = pool.map(process_hotkey, process_args)

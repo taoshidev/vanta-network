@@ -6,7 +6,6 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -549,7 +548,7 @@ class TestLimitOrders(TestBase):
 
         # Verify the filled order has correct attributes
         position = positions[0]
-        self.assertEqual(len(position.orders), 1, f"Position should have exactly one order")
+        self.assertEqual(len(position.orders), 1, "Position should have exactly one order")
         filled_order = position.orders[0]  # The filled limit order
         # The filled order should have exact values from the fill
         # For a LONG limit order, when ask <= limit_price, the order fills at limit_price (50000)

@@ -16,13 +16,13 @@ class CommonDataClient(RPCClientBase):
 
         # Check sync state
         if client.get_sync_in_progress():
-            bt.logging.debug("Sync in progress, pausing...")
+            logger.debug("Sync in progress, pausing...")
 
         # Get sync epoch for stale data detection
         epoch = client.get_sync_epoch()
         # ... do work ...
         if client.get_sync_epoch() != epoch:
-            bt.logging.warning("Sync occurred, data may be stale")
+            logger.warning("Sync occurred, data may be stale")
 
     Test Mode:
         # For unit tests, use direct server reference

@@ -10,13 +10,13 @@ Architecture:
 
 The server maintains self._manager and delegates all business logic to it.
 """
-import bittensor as bt
 import time
 from typing import Dict, Optional
 
 from time_util.time_util import MS_IN_1_HOUR
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.log import logger
 
 
 class DebtLedgerServer(RPCServerBase):
@@ -123,38 +123,38 @@ class DebtLedgerServer(RPCServerBase):
         if self._is_shutdown():
             return
 
-        bt.logging.info("="*80)
-        bt.logging.info("Starting coordinated ledger update cycle...")
-        bt.logging.info("="*80)
+        logger.info("="*80)
+        logger.info("Starting coordinated ledger update cycle...")
+        logger.info("="*80)
         start_time = time.time()
 
         # IMPORTANT: Update sub-ledgers FIRST in correct order before building debt ledgers
         # This ensures debt ledgers have the latest data from all sources
 
         # Step 1: Update penalty ledgers
-        bt.logging.info("Step 1/3: Updating penalty ledgers...")
+        logger.info("Step 1/3: Updating penalty ledgers...")
         penalty_start = time.time()
         self._penalty_delta_update = True
         self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=self._penalty_delta_update)
-        bt.logging.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
+        logger.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
         # self._penalty_delta_update = True
 
         # Step 2: Update emissions ledgers
-        bt.logging.info("Step 2/3: Updating emissions ledgers...")
+        logger.info("Step 2/3: Updating emissions ledgers...")
         emissions_start = time.time()
         self._manager.emissions_ledger_manager.build_delta_update()
-        bt.logging.info(f"Emissions ledgers updated in {time.time() - emissions_start:.2f}s")
+        logger.info(f"Emissions ledgers updated in {time.time() - emissions_start:.2f}s")
 
         # Step 3: Build debt ledgers (full rebuild)
-        bt.logging.info("Step 3/3: Building debt ledgers (full rebuild)...")
+        logger.info("Step 3/3: Building debt ledgers (full rebuild)...")
         debt_start = time.time()
         self._manager.build_debt_ledgers(verbose=True, delta_update=False)
-        bt.logging.info(f"Debt ledgers built in {time.time() - debt_start:.2f}s")
+        logger.info(f"Debt ledgers built in {time.time() - debt_start:.2f}s")
 
         elapsed = time.time() - start_time
-        bt.logging.info("="*80)
-        bt.logging.info(f"Complete update cycle finished in {elapsed:.2f}s")
-        bt.logging.info("="*80)
+        logger.info("="*80)
+        logger.info(f"Complete update cycle finished in {elapsed:.2f}s")
+        logger.info("="*80)
 
         # Run at the next checkpoint aligned time interval
         # + delay for autosync (midnight utc) and perf ledger checkpoint regen
@@ -163,7 +163,7 @@ class DebtLedgerServer(RPCServerBase):
         next_checkpoint_timestamp_s = (int(now) // checkpoint_duration_s + 1) * checkpoint_duration_s + (MS_IN_1_HOUR/2) // 1000
         self.daemon_interval_s = next_checkpoint_timestamp_s - now
 
-        bt.logging.info(f"DebtLedger daemon next iteration in {self.daemon_interval_s} seconds")
+        logger.info(f"DebtLedger daemon next iteration in {self.daemon_interval_s} seconds")
 
     # ========================================================================
     # RPC METHODS (delegate to manager)

@@ -28,14 +28,13 @@ Usage:
 import json
 import gzip
 import copy
-import bittensor as bt
 
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
 
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils, CustomEncoder
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.position_management.position_utils.position_penalties import PositionPenalties
@@ -45,6 +44,7 @@ from vali_objects.utils.metrics import Metrics
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.utils.risk_profiling import RiskProfiling
 from vali_objects.vali_dataclasses.position import Position
+from shared_objects.log import logger
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +720,7 @@ class MinerStatisticsManager:
         asset_class_min_days = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             maincomp_ledger, asset_classes
         )
-        bt.logging.info(f"generate_minerstats asset_class_min_days: {asset_class_min_days}")
+        logger.info(f"generate_minerstats asset_class_min_days: {asset_class_min_days}")
         all_miner_account_sizes = self._miner_account_client.get_all_miner_account_sizes(timestamp_ms=time_now)
 
         # Get cached scores from ChallengePeriodManager (computed in evaluate_promotions)

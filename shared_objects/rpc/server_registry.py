@@ -8,9 +8,9 @@ for test cleanup and duplicate detection.
 """
 import threading
 from typing import Dict, List, TYPE_CHECKING
-import bittensor as bt
 from shared_objects.rpc.port_manager import PortManager
 from vali_objects.vali_config import RPCConnectionMode
+from shared_objects.log import logger
 
 if TYPE_CHECKING:
     from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -79,7 +79,7 @@ class ServerRegistry:
             if instance.connection_mode == RPCConnectionMode.RPC:
                 cls._active_by_port[instance.port] = instance
 
-            bt.logging.debug(
+            logger.debug(
                 f"Registered {instance.service_name} "
                 f"(total servers: {len(cls._active_instances)})"
             )
@@ -106,7 +106,7 @@ class ServerRegistry:
                 if cls._active_by_port[instance.port] is instance:
                     del cls._active_by_port[instance.port]
 
-            bt.logging.debug(
+            logger.debug(
                 f"Unregistered {instance.service_name} "
                 f"(remaining servers: {len(cls._active_instances)})"
             )
@@ -138,13 +138,13 @@ class ServerRegistry:
             try:
                 instance.shutdown()
             except Exception as e:
-                bt.logging.trace(f"Error shutting down {instance.service_name}: {e}")
+                logger.debug(f"Error shutting down {instance.service_name}: {e}")
 
         # Force kill any remaining processes on these ports
         if force_kill_ports and ports_to_clean:
             cls.force_kill_ports(ports_to_clean)
 
-        bt.logging.debug(f"Shutdown {len(instances)} RPC server instances")
+        logger.debug(f"Shutdown {len(instances)} RPC server instances")
 
     @classmethod
     def force_kill_ports(cls, ports: list) -> None:

@@ -16,6 +16,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.position import Position
+from shared_objects.log import logger
 
 
 class TestAutoSync(TestBase):
@@ -121,8 +122,7 @@ class TestAutoSync(TestBase):
             self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
         except (BrokenPipeError, ConnectionRefusedError, ConnectionError, EOFError) as e:
             # Server may have crashed - log and skip (tests that need metagraph will fail anyway)
-            import bittensor as bt
-            bt.logging.warning(f"Failed to set metagraph hotkeys in setUp (server may have crashed): {e}")
+            logger.warning(f"Failed to set metagraph hotkeys in setUp (server may have crashed): {e}")
 
         # Create default test data
         self.default_order = Order(
@@ -2478,8 +2478,8 @@ class TestAutoSync(TestBase):
         }
         
         print(f"\nSyncing position with {len(position.orders)} orders")
-        print(f"Expected: 2 positions (LONG closed, SHORT open)")
-        print(f"Actual: Position should be split correctly after bug fix")
+        print("Expected: 2 positions (LONG closed, SHORT open)")
+        print("Actual: Position should be split correctly after bug fix")
         
         self.position_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
                                            disk_positions=disk_positions)
@@ -2500,7 +2500,7 @@ class TestAutoSync(TestBase):
         assert len(miner_positions) >= 2, \
             f"Should have split into 2+ positions. Found: {len(miner_positions)} positions"
         
-        print(f"\nBUG FIXED: Position with FLAT order correctly split during sync")
+        print("\nBUG FIXED: Position with FLAT order correctly split during sync")
         print(f"Stats: {stats}")
         print(f"Final positions: {len(miner_positions)}")
 

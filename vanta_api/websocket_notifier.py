@@ -16,11 +16,11 @@ Client Usage:
 """
 from typing import Optional
 
-import bittensor as bt
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 # ==================== Client Implementation ====================
@@ -78,7 +78,7 @@ class WebSocketNotifierClient(RPCClientBase):
         try:
             self._server.broadcast_position_update_rpc(position, miner_repo_version)
         except Exception as e:
-            bt.logging.debug(f"WebSocketNotifierClient: Broadcast failed: {e}")
+            logger.debug(f"WebSocketNotifierClient: Broadcast failed: {e}")
 
     def broadcast_subaccount_dashboard(self, synthetic_hotkey: str) -> None:
         """
@@ -94,7 +94,7 @@ class WebSocketNotifierClient(RPCClientBase):
         try:
             self._server.broadcast_subaccount_dashboard_rpc(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"WebSocketNotifierClient: Dashboard broadcast failed: {e}")
+            logger.debug(f"WebSocketNotifierClient: Dashboard broadcast failed: {e}")
 
     def notify_new_subaccount(self, entity_hotkey: str, synthetic_hotkey: str) -> bool:
         """
@@ -111,7 +111,7 @@ class WebSocketNotifierClient(RPCClientBase):
         try:
             return self._server.notify_new_subaccount_rpc(entity_hotkey, synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"WebSocketNotifierClient: New subaccount notification failed: {e}")
+            logger.debug(f"WebSocketNotifierClient: New subaccount notification failed: {e}")
             return False
 
     def health_check(self) -> Optional[dict]:
@@ -124,7 +124,7 @@ class WebSocketNotifierClient(RPCClientBase):
         try:
             return self._server.health_check_rpc()
         except Exception as e:
-            bt.logging.debug(f"WebSocketNotifierClient: Health check failed: {e}")
+            logger.debug(f"WebSocketNotifierClient: Health check failed: {e}")
             return None
 
     def get_queued_messages(self, max_messages: int = None) -> list:
@@ -140,7 +140,7 @@ class WebSocketNotifierClient(RPCClientBase):
         try:
             return self._server.get_queued_messages_rpc(max_messages)
         except Exception as e:
-            bt.logging.debug(f"WebSocketNotifierClient: Get queued messages failed: {e}")
+            logger.debug(f"WebSocketNotifierClient: Get queued messages failed: {e}")
             return []
 
     def clear_queue(self) -> int:
@@ -153,7 +153,7 @@ class WebSocketNotifierClient(RPCClientBase):
         try:
             return self._server.clear_queue_rpc()
         except Exception as e:
-            bt.logging.debug(f"WebSocketNotifierClient: Clear queue failed: {e}")
+            logger.debug(f"WebSocketNotifierClient: Clear queue failed: {e}")
             return 0
 
 

@@ -25,7 +25,6 @@ Usage:
 """
 from typing import Optional, Tuple, Dict, List
 
-import template.protocol
 from template.protocol import SubaccountRegistration, EntityEndpointUpdate
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode

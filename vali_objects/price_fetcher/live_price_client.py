@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, Dict
+from typing import List, Tuple, Dict
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from time_util.time_util import UnifiedMarketCalendar, TimeUtil

@@ -23,13 +23,13 @@ import os
 import sys
 import traceback
 
-import bittensor as bt
 
 from runnable.migration_utils import MigrationUtils
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
 from vali_objects.vali_dataclasses.order import Order
+from shared_objects.log import logger
 
 
 _ID_MAP: dict[str, TradePair] = {
@@ -123,7 +123,7 @@ def _resolve_collisions(collisions, dry_run: bool, running_unit_tests: bool) -> 
             resolved += 1
         except Exception as e:
             failed += 1
-            bt.logging.error(
+            logger.error(
                 f"Failed to merge collision for hotkey={hotkey} "
                 f"native={native_pos.position_uuid} hl={hl_pos.position_uuid}: {e}\n"
                 f"{traceback.format_exc()}"
@@ -175,7 +175,7 @@ def _migrate_positions(dry_run: bool, running_unit_tests: bool) -> tuple[int, in
                 migrated += 1
             except Exception as e:
                 failed += 1
-                bt.logging.error(
+                logger.error(
                     f"Failed to migrate position {getattr(position, 'position_uuid', '?')} "
                     f"({hotkey}): {e}\n{traceback.format_exc()}"
                 )
@@ -237,7 +237,7 @@ def _migrate_limit_orders(dry_run: bool, running_unit_tests: bool) -> tuple[int,
                         migrated += 1
                     except Exception as e:
                         failed += 1
-                        bt.logging.error(
+                        logger.error(
                             f"Failed to migrate limit order {old_path}: {e}\n"
                             f"{traceback.format_exc()}"
                         )

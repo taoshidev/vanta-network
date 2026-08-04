@@ -31,13 +31,13 @@ Usage:
 
 import traceback
 
-import bittensor as bt
 
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.data_export.core_outputs_manager import CoreOutputsManager
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.log import logger
 
 
 class CoreOutputsServer(RPCServerBase):
@@ -94,7 +94,7 @@ class CoreOutputsServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
-        bt.logging.info(f"[COREOUTPUTS_SERVER] CoreOutputsManager initialized")
+        logger.info("[COREOUTPUTS_SERVER] CoreOutputsManager initialized")
 
         # Start daemon if requested (deferred until all initialization complete)
         if start_daemon:
@@ -114,7 +114,7 @@ class CoreOutputsServer(RPCServerBase):
         """
         try:
             time_now = TimeUtil.now_in_millis()
-            bt.logging.debug(f"CoreOutputsServer daemon: generating checkpoint cache...")
+            logger.debug("CoreOutputsServer daemon: generating checkpoint cache...")
 
             # Ensure upload occurs at least once per hour, after the 24 minute mark
             datetime_now = TimeUtil.generate_start_timestamp(0)
@@ -132,11 +132,11 @@ class CoreOutputsServer(RPCServerBase):
             )
 
             elapsed_ms = TimeUtil.now_in_millis() - time_now
-            bt.logging.info(f"CoreOutputsServer daemon: checkpoint cache refreshed in {elapsed_ms}ms")
+            logger.info(f"CoreOutputsServer daemon: checkpoint cache refreshed in {elapsed_ms}ms")
 
         except Exception as e:
-            bt.logging.error(f"CoreOutputsServer daemon error: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"CoreOutputsServer daemon error: {e}")
+            logger.error(traceback.format_exc())
             # Don't re-raise - let daemon continue on next iteration
 
     # ==================== Properties (Forward Compatibility) ====================

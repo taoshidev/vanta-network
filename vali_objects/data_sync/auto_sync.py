@@ -16,10 +16,11 @@ from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.position_management.position_manager_server import PositionManagerServer
 from vali_objects.data_sync.validator_sync_base import ValidatorSyncBase
 from entity_management.entity_server import EntityServer
-import bittensor as bt
 
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer
+import logging
+from shared_objects.log import logger
 
 
 #from restore_validator_from_backup import regenerate_miner_positions
@@ -82,13 +83,13 @@ class PositionSyncer(ValidatorSyncBase):
                 return json_data
 
         except requests.HTTPError as e:
-            bt.logging.error(f"HTTP Error: {e}")
+            logger.error(f"HTTP Error: {e}")
         except zipfile.BadZipFile:
-            bt.logging.error("The downloaded file is not a zip file or it is corrupted.")
+            logger.error("The downloaded file is not a zip file or it is corrupted.")
         except json.JSONDecodeError:
-            bt.logging.error("Error decoding JSON from the file.")
+            logger.error("Error decoding JSON from the file.")
         except Exception as e:
-            bt.logging.error(f"An unexpected error occurred: {e}")
+            logger.error(f"An unexpected error occurred: {e}")
         return None
 
     def perform_sync(self):
@@ -105,16 +106,16 @@ class PositionSyncer(ValidatorSyncBase):
                 # This ensures no new iteration can start with the new epoch before sync completes
                 old_epoch = self.sync_epoch
                 new_epoch = self._common_data_client.increment_sync_epoch()
-                bt.logging.info(f"Incrementing sync epoch {old_epoch} -> {new_epoch}")
+                logger.info(f"Incrementing sync epoch {old_epoch} -> {new_epoch}")
 
                 candidate_data = self.read_validator_checkpoint_from_gcloud_zip()
                 if not candidate_data:
-                    bt.logging.error("Unable to read validator checkpoint file. Sync canceled")
+                    logger.error("Unable to read validator checkpoint file. Sync canceled")
                 else:
                     self.sync_positions(False, candidate_data=candidate_data)
             except Exception as e:
-                bt.logging.error(f"Error syncing positions: {e}")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"Error syncing positions: {e}")
+                logger.error(traceback.format_exc())
             finally:
                 # CRITICAL: Always clear sync_in_progress flag to prevent deadlock
                 # This executes even if exception occurs before sync starts
@@ -146,7 +147,7 @@ class PositionSyncer(ValidatorSyncBase):
 
 
 if __name__ == "__main__":
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
     # EliminationServer creates its own RPC clients internally (forward compatibility pattern)
     cds = CommonDataServer()
     ms = MetagraphServer()

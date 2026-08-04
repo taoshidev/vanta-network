@@ -20,10 +20,8 @@ Usage:
     python runnable/test_usdc_payment.py --history
 """
 import argparse
-import json
 import os
 import sys
-import time
 from datetime import datetime, timezone, timedelta
 
 # Add project root to path
@@ -138,7 +136,7 @@ def cmd_dry_run(config, start_ms, end_ms):
         dry_run=True
     )
 
-    print(f"\nDry Run Results:")
+    print("\nDry Run Results:")
     print(f"  Total subaccounts:  {result.total_subaccounts}")
     print(f"  Eligible:           {result.eligible_count}")
     print(f"  Skipped:            {result.skipped_count}")
@@ -183,7 +181,7 @@ def cmd_execute(config, start_ms, end_ms):
         dry_run=False
     )
 
-    print(f"\nExecution Results:")
+    print("\nExecution Results:")
     print(f"  Total subaccounts:  {result.total_subaccounts}")
     print(f"  Eligible:           {result.eligible_count}")
     print(f"  Successful:         {result.successful_count}")
@@ -266,7 +264,7 @@ def main():
             start_ms, end_ms = args.start_ms, args.end_ms
         else:
             start_ms, end_ms = get_previous_week_period()
-            print(f"Using previous week period (default)")
+            print("Using previous week period (default)")
 
         if args.dry_run:
             cmd_dry_run(config, start_ms, end_ms)

@@ -43,12 +43,11 @@ import os
 import time
 import socket
 import threading
-import bittensor as bt
 from multiprocessing.managers import BaseManager
 from typing import Optional, Any, Dict
-from abc import abstractmethod
 
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+from shared_objects.log import logger
 
 
 # Store original socket class for restoration
@@ -97,7 +96,7 @@ def _patch_socket_for_nodelay():
     # Replace socket.socket globally
     socket.socket = TCPNodeDelaySocket
     _socket_patched = True
-    bt.logging.debug("Socket patched to enable TCP_NODELAY for all RPC connections")
+    logger.debug("Socket patched to enable TCP_NODELAY for all RPC connections")
 
 
 class RPCClientBase:
@@ -160,9 +159,9 @@ class RPCClientBase:
             try:
                 instance.disconnect()
             except Exception as e:
-                bt.logging.trace(f"Error disconnecting {instance.service_name}Client: {e}")
+                logger.debug(f"Error disconnecting {instance.service_name}Client: {e}")
 
-        bt.logging.debug(f"Disconnected {len(instances)} RPC client instances")
+        logger.debug(f"Disconnected {len(instances)} RPC client instances")
 
     @classmethod
     def get_instance_counts(cls) -> Dict[str, int]:
@@ -195,7 +194,7 @@ class RPCClientBase:
             cls._instance_counts[service_name] += 1
             instance_id = cls._instance_counts[service_name]
 
-        bt.logging.debug(
+        logger.debug(
             f"{service_name}Client #{instance_id} registered (port={instance.port})"
         )
         return instance_id
@@ -359,13 +358,13 @@ class RPCClientBase:
                 proxy_ms = (t3 - t2) * 1000
 
                 if attempt > 1:
-                    bt.logging.success(
+                    logger.info(
                         f"{self.service_name}Client #{self._instance_id} connected to server at {self._address} "
                         f"after {attempt} attempts ({elapsed_ms:.0f}ms) "
                         f"[create={manager_create_ms:.0f}ms, connect={connect_ms:.0f}ms, proxy={proxy_ms:.0f}ms]"
                     )
                 else:
-                    bt.logging.success(
+                    logger.info(
                         f"{self.service_name}Client #{self._instance_id} connected to server at {self._address} ({elapsed_ms:.0f}ms) "
                         f"[create={manager_create_ms:.0f}ms, connect={connect_ms:.0f}ms, proxy={proxy_ms:.0f}ms]"
                     )
@@ -376,18 +375,18 @@ class RPCClientBase:
                 if attempt < max_retries:
                     # Log based on threshold to reduce noise during startup
                     if attempt >= self._warning_threshold:
-                        bt.logging.warning(
+                        logger.warning(
                             f"{self.service_name}Client connection failed (attempt {attempt}/"
                             f"{max_retries}): {e}. Retrying in {retry_delay}s..."
                         )
                     else:
-                        bt.logging.trace(
+                        logger.debug(
                             f"{self.service_name}Client connection failed (attempt {attempt}/"
                             f"{max_retries}): {e}. Retrying in {retry_delay}s..."
                         )
                     time.sleep(retry_delay)
                 else:
-                    bt.logging.error(
+                    logger.error(
                         f"{self.service_name}Client failed to connect after "
                         f"{max_retries} attempts: {e}"
                     )
@@ -419,12 +418,12 @@ class RPCClientBase:
             result = client.some_method()  # calls server_instance.some_method_rpc()
         """
         if self.connection_mode != RPCConnectionMode.LOCAL:
-            bt.logging.warning(
+            logger.warning(
                 f"{self.service_name}Client.set_direct_server() called but connection_mode is {self.connection_mode}, "
                 f"not LOCAL. This may cause unexpected behavior."
             )
         self._direct_server = server_instance
-        bt.logging.trace(f"{self.service_name}Client: Direct server reference set (LOCAL mode)")
+        logger.debug(f"{self.service_name}Client: Direct server reference set (LOCAL mode)")
 
     def call(self, method_name: str, *args, **kwargs) -> Any:
         """
@@ -452,19 +451,19 @@ class RPCClientBase:
             method = getattr(self._server, method_name)
             result = method(*args, **kwargs)
 
-            bt.logging.trace(
+            logger.debug(
                 f"{self.service_name}Client.{method_name}(*{args}, **{kwargs}) -> {type(result)}"
             )
 
             return result
 
         except AttributeError as e:
-            bt.logging.error(
+            logger.error(
                 f"{self.service_name}Client method '{method_name}' not found: {e}"
             )
             raise
         except Exception as e:
-            bt.logging.error(
+            logger.error(
                 f"{self.service_name}Client RPC call failed: {method_name}: {e}"
             )
             raise
@@ -540,7 +539,7 @@ class RPCClientBase:
                     except Exception:
                         pass
             except Exception as e:
-                bt.logging.trace(f"{self.service_name}Client error during manager cleanup: {e}")
+                logger.debug(f"{self.service_name}Client error during manager cleanup: {e}")
 
         self._manager = None
         self._proxy = None
@@ -551,7 +550,7 @@ class RPCClientBase:
         RPCClientBase._unregister_instance(self)
         # Skip logging disconnect to avoid race condition with pytest closing stdout/stderr
         # elapsed_ms = (time.time() - start_time) * 1000
-        # bt.logging.debug(f"{self.service_name}Client disconnected ({elapsed_ms:.0f}ms)")
+        # logger.debug(f"{self.service_name}Client disconnected ({elapsed_ms:.0f}ms)")
 
     # ==================== Local Cache Support ====================
 
@@ -567,7 +566,7 @@ class RPCClientBase:
             name=f"{self.service_name}CacheRefresh"
         )
         self._cache_refresh_thread.start()
-        bt.logging.info(
+        logger.info(
             f"[{self.service_name}] Local cache refresh daemon started "
             f"(interval: {self._local_cache_refresh_period_ms}ms)"
         )
@@ -592,19 +591,19 @@ class RPCClientBase:
                 with self._local_cache_lock:
                     self._local_cache = new_cache
 
-                bt.logging.debug(
+                logger.debug(
                     f"[{self.service_name}] Local cache refreshed in {refresh_ms:.2f}ms "
                     f"({len(new_cache) if isinstance(new_cache, dict) else 'N/A'} entries)"
                 )
 
             except Exception as e:
-                bt.logging.error(f"[{self.service_name}] Error refreshing local cache: {e}")
+                logger.error(f"[{self.service_name}] Error refreshing local cache: {e}")
 
             # Wait for next refresh cycle (interruptible)
             self._cache_refresh_shutdown.wait(timeout=refresh_interval_s)
 
         # Skip logging to avoid race condition with pytest closing stdout/stderr
-        # bt.logging.info(f"[{self.service_name}] Local cache refresh daemon stopped")
+        # logger.info(f"[{self.service_name}] Local cache refresh daemon stopped")
 
     def populate_cache(self) -> Dict[str, Any]:
         """
@@ -662,7 +661,7 @@ class RPCClientBase:
         Subclasses can override _prepare_state_for_pickle() to add service-specific
         attributes that need special handling.
         """
-        bt.logging.debug(
+        logger.debug(
             f"[{self.service_name}_PICKLE] __getstate__ called in PID {os.getpid()}"
         )
 
@@ -708,7 +707,7 @@ class RPCClientBase:
         Subclasses can override _restore_unpicklable_state() to restore
         service-specific attributes that couldn't be pickled.
         """
-        bt.logging.debug(
+        logger.debug(
             f"[{state.get('service_name', 'RPC')}_UNPICKLE] __setstate__ called in PID {os.getpid()}"
         )
 
@@ -719,12 +718,12 @@ class RPCClientBase:
 
         # In LOCAL mode, nothing to reconnect
         if self.connection_mode == RPCConnectionMode.LOCAL:
-            bt.logging.debug(f"[{self.service_name}_UNPICKLE] LOCAL mode - no reconnection needed")
+            logger.debug(f"[{self.service_name}_UNPICKLE] LOCAL mode - no reconnection needed")
             return
 
         # Reconnect to existing RPC server (RPC mode)
         if state.get('_needs_reconnect', False):
-            bt.logging.debug(
+            logger.debug(
                 f"[{self.service_name}_UNPICKLE] Reconnecting to RPC server on port {self.port}"
             )
 
@@ -736,7 +735,7 @@ class RPCClientBase:
 
             try:
                 self.connect()
-                bt.logging.success(
+                logger.info(
                     f"[{self.service_name}_UNPICKLE] Reconnected to RPC server at {self._address}"
                 )
             except Exception as e:

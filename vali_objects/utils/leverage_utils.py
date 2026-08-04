@@ -1,4 +1,3 @@
-from typing import Optional
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass

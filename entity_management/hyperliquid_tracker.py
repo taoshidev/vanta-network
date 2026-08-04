@@ -26,7 +26,6 @@ import uuid
 from collections import OrderedDict
 from typing import Dict, List, Optional, Set
 
-import bittensor as bt
 import requests
 
 import ssl
@@ -58,6 +57,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePair, TradePairSource
 from vali_objects.trade_pair import HL_COIN_TO_TRADE_PAIR
 from vanta_api.websocket_notifier import WebSocketNotifierClient
+from shared_objects.log import logger
 
 
 class _PortHealthRecord:
@@ -192,7 +192,7 @@ class HyperliquidTracker:
                     ws_ctx = await self._open_ws_connection()
                     ws = await ws_ctx
 
-                    bt.logging.info(
+                    logger.info(
                         f"[HL_{self.label}] Connected to {ValiConfig.hl_ws_url()}"
                         + (f" via {self.proxy_url}" if self.proxy_url else " (direct)")
                     )
@@ -220,12 +220,12 @@ class HyperliquidTracker:
                                 continue
                             except websockets.exceptions.ConnectionClosed as e:
                                 if e.rcvd is not None:
-                                    bt.logging.warning(
+                                    logger.warning(
                                         f"[HL_{self.label}] WebSocket closed: code={e.rcvd.code} "
                                         f"reason={e.rcvd.reason!r}"
                                     )
                                 else:
-                                    bt.logging.warning(
+                                    logger.warning(
                                         f"[HL_{self.label}] WebSocket closed abnormally (no close frame received)"
                                     )
                                 break
@@ -240,11 +240,11 @@ class HyperliquidTracker:
 
                 except Exception as e:
                     self._consecutive_failures += 1
-                    bt.logging.warning(
+                    logger.warning(
                         f"[HL_{self.label}] Connection failed ({self._consecutive_failures}x): {e!r}"
                     )
                     if self._consecutive_failures >= ValiConfig.HL_SHARD_MAX_CONSECUTIVE_FAILURES:
-                        bt.logging.error(
+                        logger.error(
                             f"[HL_{self.label}] Marked UNHEALTHY after "
                             f"{self._consecutive_failures} consecutive failures"
                         )
@@ -275,7 +275,7 @@ class HyperliquidTracker:
                 if self.tracker._stop_event.is_set():
                     break
 
-                bt.logging.info(f"[HL_{self.label}] Reconnecting in {backoff_s:.1f}s...")
+                logger.info(f"[HL_{self.label}] Reconnecting in {backoff_s:.1f}s...")
                 await asyncio.sleep(backoff_s)
                 backoff_s = min(backoff_s * 2.0, ValiConfig.HL_WS_RECONNECT_BACKOFF_MAX_S)
 
@@ -300,9 +300,9 @@ class HyperliquidTracker:
                 }
                 try:
                     await ws.send(json.dumps(msg))
-                    bt.logging.info(f"[HL_{self.label}] Subscribed to userFills for {addr}")
+                    logger.info(f"[HL_{self.label}] Subscribed to userFills for {addr}")
                 except Exception as e:
-                    bt.logging.error(f"[HL_{self.label}] Failed to subscribe for {addr}: {e}")
+                    logger.error(f"[HL_{self.label}] Failed to subscribe for {addr}: {e}")
 
             # Unsubscribe from removed
             for addr in self.subscribed_addresses - new_addresses:
@@ -312,9 +312,9 @@ class HyperliquidTracker:
                 }
                 try:
                     await ws.send(json.dumps(msg))
-                    bt.logging.info(f"[HL_{self.label}] Unsubscribed from userFills for {addr}")
+                    logger.info(f"[HL_{self.label}] Unsubscribed from userFills for {addr}")
                 except Exception as e:
-                    bt.logging.warning(f"[HL_{self.label}] Failed to unsubscribe for {addr}: {e}")
+                    logger.warning(f"[HL_{self.label}] Failed to unsubscribe for {addr}: {e}")
 
             self.subscribed_addresses = new_addresses
 
@@ -325,7 +325,7 @@ class HyperliquidTracker:
                 try:
                     await self._sync_subscriptions(ws)
                 except Exception as e:
-                    bt.logging.error(f"[HL_{self.label}] Periodic refresh error: {e}")
+                    logger.error(f"[HL_{self.label}] Periodic refresh error: {e}")
 
     # ==================== HyperliquidTracker ====================
 
@@ -399,17 +399,17 @@ class HyperliquidTracker:
     def start(self):
         """Start the tracker in a daemon thread."""
         if websockets is None:
-            bt.logging.warning("[HL_TRACKER] websockets library not installed - HL tracking disabled")
+            logger.warning("[HL_TRACKER] websockets library not installed - HL tracking disabled")
             return
 
         if self._thread and self._thread.is_alive():
-            bt.logging.warning("[HL_TRACKER] Already running")
+            logger.warning("[HL_TRACKER] Already running")
             return
 
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="hl-tracker")
         self._thread.start()
-        bt.logging.info("[HL_TRACKER] Started daemon thread")
+        logger.info("[HL_TRACKER] Started daemon thread")
 
     def stop(self):
         """Signal the tracker to stop."""
@@ -419,7 +419,7 @@ class HyperliquidTracker:
         # "Event loop is closed" warnings on shutdown.
         if self._thread:
             self._thread.join(timeout=5.0)
-        bt.logging.info("[HL_TRACKER] Stopped")
+        logger.info("[HL_TRACKER] Stopped")
 
     def get_status(self) -> dict:
         """Get tracker status for health monitoring."""
@@ -472,8 +472,8 @@ class HyperliquidTracker:
         try:
             self._loop.run_until_complete(self._run_stream())
         except Exception as e:
-            bt.logging.error(f"[HL_TRACKER] Event loop crashed: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"[HL_TRACKER] Event loop crashed: {e}")
+            logger.error(traceback.format_exc())
         finally:
             pending = asyncio.all_tasks(self._loop)
             if pending:
@@ -500,13 +500,13 @@ class HyperliquidTracker:
         ports_str = secrets.get(ValiConfig.HL_PROXY_PORTS_SECRET_KEY)
 
         if not proxy_url or not ports_str:
-            bt.logging.info("[HL_TRACKER] No proxy config found - using direct connection (max 10 addresses)")
+            logger.info("[HL_TRACKER] No proxy config found - using direct connection (max 10 addresses)")
             self._proxy_base_url = None
             self._available_ports = []
             return
 
         if SocksProxy is None:
-            bt.logging.error(
+            logger.error(
                 "[HL_TRACKER] Proxy config found but python-socks is not installed! "
                 "Run: pip install python-socks  — falling back to direct connection"
             )
@@ -519,14 +519,14 @@ class HyperliquidTracker:
 
         # Cap to safety limit
         if len(self._available_ports) > ValiConfig.HL_MAX_PROXY_SHARDS:
-            bt.logging.warning(
+            logger.warning(
                 f"[HL_TRACKER] Capping proxy ports from {len(self._available_ports)} to {ValiConfig.HL_MAX_PROXY_SHARDS}"
             )
             self._available_ports = self._available_ports[:ValiConfig.HL_MAX_PROXY_SHARDS]
 
         self._port_health = {port: _PortHealthRecord(port) for port in self._available_ports}
 
-        bt.logging.info(
+        logger.info(
             f"[HL_TRACKER] Proxy configured: {len(self._available_ports)} ports available "
             f"(max {len(self._available_ports) * ValiConfig.HL_MAX_TRACKED_ADDRESSES_PER_IP} addresses)"
         )
@@ -542,12 +542,12 @@ class HyperliquidTracker:
                     start, end = part.split("-", 1)
                     ports.extend(range(int(start.strip()), int(end.strip()) + 1))
                 except ValueError:
-                    bt.logging.warning(f"[HL_TRACKER] Invalid port range: {part}")
+                    logger.warning(f"[HL_TRACKER] Invalid port range: {part}")
             else:
                 try:
                     ports.append(int(part))
                 except ValueError:
-                    bt.logging.warning(f"[HL_TRACKER] Invalid port: {part}")
+                    logger.warning(f"[HL_TRACKER] Invalid port: {part}")
         return ports
 
     def _make_shard_proxy_url(self, port: int) -> str:
@@ -576,8 +576,8 @@ class HyperliquidTracker:
                     self._ensure_shard_tasks()
                     self._probe_unhealthy_ports()
                 except Exception as e:
-                    bt.logging.error(f"[HL_TRACKER] Orchestrator error: {e}")
-                    bt.logging.error(traceback.format_exc())
+                    logger.error(f"[HL_TRACKER] Orchestrator error: {e}")
+                    logger.error(traceback.format_exc())
 
                 # Wait before next refresh cycle
                 for _ in range(int(self.ADDRESS_REFRESH_INTERVAL_S)):
@@ -606,7 +606,7 @@ class HyperliquidTracker:
         try:
             hl_subaccounts = self._entity_client.get_all_active_hl_subaccounts()
         except Exception as e:
-            bt.logging.error(f"[HL_TRACKER] Failed to get HL subaccounts: {e}")
+            logger.error(f"[HL_TRACKER] Failed to get HL subaccounts: {e}")
             return
 
         active_addresses = {addr for addr, _info in hl_subaccounts}
@@ -635,7 +635,7 @@ class HyperliquidTracker:
             if shard.task and not shard.task.done():
                 shard.task.cancel()
             del self._shards[sid]
-            bt.logging.warning(f"[HL_TRACKER] Removed unhealthy shard {shard.label}, {len(orphaned)} addresses to redistribute")
+            logger.warning(f"[HL_TRACKER] Removed unhealthy shard {shard.label}, {len(orphaned)} addresses to redistribute")
 
         # 3. Addresses that need assignment (new + orphaned)
         already_assigned = set(self._address_to_shard.keys())
@@ -683,7 +683,7 @@ class HyperliquidTracker:
                     assigned = True
 
             # if not assigned:
-            #     bt.logging.warning(
+            #     logger.warning(
             #         f"[HL_TRACKER] Cannot assign address {addr} - all ports exhausted or unhealthy"
             #     )
 
@@ -694,7 +694,7 @@ class HyperliquidTracker:
 
         # Log summary
         total = len(self._address_to_shard)
-        bt.logging.info(
+        logger.info(
             f"[HL_TRACKER] Address assignment: {total} addresses across {len(self._shards)} shard(s)"
         )
 
@@ -715,7 +715,7 @@ class HyperliquidTracker:
         self._next_shard_id += 1
         shard = HyperliquidTracker._WebSocketShard(sid, proxy_url, self)
         self._shards[sid] = shard
-        bt.logging.info(f"[HL_TRACKER] Created {shard.label}")
+        logger.info(f"[HL_TRACKER] Created {shard.label}")
         return shard
 
     def _teardown_empty_shards(self):
@@ -729,7 +729,7 @@ class HyperliquidTracker:
             port = shard.port
             if port is not None and port not in self._unhealthy_ports:
                 self._available_ports.append(port)
-            bt.logging.info(f"[HL_TRACKER] Tore down empty {shard.label}")
+            logger.info(f"[HL_TRACKER] Tore down empty {shard.label}")
 
     def _ensure_shard_tasks(self):
         """Ensure all shards with addresses have a running asyncio task."""
@@ -756,10 +756,10 @@ class HyperliquidTracker:
                 rec.mark_healthy()
                 if port not in self._available_ports:
                     self._available_ports.append(port)
-                bt.logging.info(f"[HL_TRACKER] Port {port} probe succeeded, restored")
+                logger.info(f"[HL_TRACKER] Port {port} probe succeeded, restored")
             except Exception as e:
                 rec.consecutive_probe_failures += 1
-                bt.logging.debug(
+                logger.debug(
                     f"[HL_TRACKER] Port {port} probe failed "
                     f"(attempt={rec.consecutive_probe_failures}, cooldown={rec.cooldown_seconds():.0f}s): {e}"
                 )
@@ -804,8 +804,8 @@ class HyperliquidTracker:
             try:
                 self._process_fill(user, fill)
             except Exception as e:
-                bt.logging.error(f"[HL_TRACKER] Error processing fill for {user}: {e}")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"[HL_TRACKER] Error processing fill for {user}: {e}")
+                logger.error(traceback.format_exc())
 
     def _record_hash(self, fill_hash: str):
         """Record a fill hash in the bounded dedup set."""
@@ -818,15 +818,15 @@ class HyperliquidTracker:
 
     def _broadcast_rejection(self, synthetic_hotkey: str, error_msg: str) -> None:
         """Broadcast a rejection/error message to WebSocket subscribers for a subaccount."""
-        bt.logging.info(f"[HL_TRACKER] Broadcasting rejection for {synthetic_hotkey}: {error_msg}")
+        logger.info(f"[HL_TRACKER] Broadcasting rejection for {synthetic_hotkey}: {error_msg}")
         if not self._ws_notifier_client:
-            bt.logging.debug(f"[HL_TRACKER] No WS notifier client, skipping rejection broadcast")
+            logger.debug("[HL_TRACKER] No WS notifier client, skipping rejection broadcast")
             return
         try:
             self._ws_notifier_client.broadcast_subaccount_dashboard(synthetic_hotkey)
-            bt.logging.debug(f"[HL_TRACKER] Rejection broadcast sent for {synthetic_hotkey}")
+            logger.debug(f"[HL_TRACKER] Rejection broadcast sent for {synthetic_hotkey}")
         except Exception as e:
-            bt.logging.debug(f"[HL_TRACKER] Rejection broadcast failed for {synthetic_hotkey}: {e}")
+            logger.debug(f"[HL_TRACKER] Rejection broadcast failed for {synthetic_hotkey}: {e}")
 
     def _broadcast_accepted_fill(
         self,
@@ -841,7 +841,7 @@ class HyperliquidTracker:
         try:
             self._ws_notifier_client.broadcast_subaccount_dashboard(synthetic_hotkey)
         except Exception as e:
-            bt.logging.debug(f"[HL_TRACKER] Accepted event broadcast failed for {synthetic_hotkey}: {e}")
+            logger.debug(f"[HL_TRACKER] Accepted event broadcast failed for {synthetic_hotkey}: {e}")
 
     # ==================== HL Account State ====================
 
@@ -864,7 +864,7 @@ class HyperliquidTracker:
         healthy_ports = [p for p in all_ports if p not in self._unhealthy_ports]
         if not healthy_ports:
             if all_ports:
-                bt.logging.warning("[HL_BACKUP] All proxy ports unhealthy; falling back to direct REST")
+                logger.warning("[HL_BACKUP] All proxy ports unhealthy; falling back to direct REST")
             return session
 
         port = healthy_ports[self._proxy_index_rest % len(healthy_ports)]
@@ -885,7 +885,7 @@ class HyperliquidTracker:
         record.rest_consecutive_failures += 1
         if record.rest_consecutive_failures >= ValiConfig.HL_PORT_REST_FAILURE_THRESHOLD:
             record.mark_unhealthy()
-            bt.logging.warning(
+            logger.warning(
                 f"[HL_BACKUP] Port {port} marked unhealthy after "
                 f"{record.rest_consecutive_failures} REST failures"
             )
@@ -927,14 +927,14 @@ class HyperliquidTracker:
             all_mids = session.post(api_url, json={"type": "allMids"}, timeout=10).json()
             self._report_rest_proxy_success(proxy_port)
         except Exception as e:
-            bt.logging.error(f"[HL_TRACKER] REST error fetching account state for {hl_address}: {e}")
+            logger.error(f"[HL_TRACKER] REST error fetching account state for {hl_address}: {e}")
             self._report_rest_proxy_failure(proxy_port)
             return None
         finally:
             session.close()
 
         if not isinstance(perp_native, dict):
-            bt.logging.info(f"[HL_TRACKER] No perp account for {hl_address}")
+            logger.info(f"[HL_TRACKER] No perp account for {hl_address}")
             return None
         if not isinstance(spot, dict):
             spot = {}
@@ -1026,11 +1026,11 @@ class HyperliquidTracker:
                     continue
             self._last_poll_time_ms = loaded
             if loaded:
-                bt.logging.info(
+                logger.info(
                     f"[HL_BACKUP] Loaded {len(loaded)} persisted watermark(s)"
                 )
         except Exception as e:
-            bt.logging.warning(f"[HL_BACKUP] Failed to load watermarks: {e}")
+            logger.warning(f"[HL_BACKUP] Failed to load watermarks: {e}")
 
     def _save_backup_poll_watermarks(self):
         """Persist HL backup watermarks for restart continuity."""
@@ -1038,7 +1038,7 @@ class HyperliquidTracker:
             serializable = {k: int(v) for k, v in self._last_poll_time_ms.items()}
             ValiBkpUtils.write_file(ValiBkpUtils.get_hl_backup_watermarks_path(), serializable)
         except Exception as e:
-            bt.logging.warning(f"[HL_BACKUP] Failed to persist watermarks: {e}")
+            logger.warning(f"[HL_BACKUP] Failed to persist watermarks: {e}")
 
     def _load_observed_szi(self):
         """Load persisted per-address szi snapshot for restart continuity."""
@@ -1062,11 +1062,11 @@ class HyperliquidTracker:
                 loaded[addr] = parsed
             self._last_observed_szi = loaded
             if loaded:
-                bt.logging.info(
+                logger.info(
                     f"[HL_BACKUP] Loaded szi snapshot for {len(loaded)} address(es)"
                 )
         except Exception as e:
-            bt.logging.warning(f"[HL_BACKUP] Failed to load observed szi: {e}")
+            logger.warning(f"[HL_BACKUP] Failed to load observed szi: {e}")
 
     def _save_observed_szi(self):
         """Persist per-address szi snapshot so reconcile gate survives restart."""
@@ -1077,7 +1077,7 @@ class HyperliquidTracker:
             }
             ValiBkpUtils.write_file(ValiBkpUtils.get_hl_observed_szi_path(), serializable)
         except Exception as e:
-            bt.logging.warning(f"[HL_BACKUP] Failed to persist observed szi: {e}")
+            logger.warning(f"[HL_BACKUP] Failed to persist observed szi: {e}")
 
     async def _fetch_fills_by_time(self, hl_address: str, start_time_ms: int) -> Optional[List[dict]]:
         """Fetch fills for a tracked address via userFillsByTime REST endpoint."""
@@ -1096,7 +1096,7 @@ class HyperliquidTracker:
                         return resp.json()
                     except Exception:
                         body_preview = (resp.text or "")[:400]
-                        bt.logging.warning(
+                        logger.warning(
                             f"[HL_BACKUP] Non-JSON response for address={hl_address} "
                             f"status={resp.status_code} body_preview={body_preview!r}"
                         )
@@ -1110,14 +1110,14 @@ class HyperliquidTracker:
             if isinstance(result, list):
                 return result
 
-            bt.logging.warning(
+            logger.warning(
                 f"[HL_BACKUP] Unexpected non-list userFillsByTime response "
                 f"address={hl_address} type={type(result).__name__} "
                 f"response_preview={json.dumps(result, default=str)[:400] if result is not None else 'None'}"
             )
             return []
         except Exception as e:
-            bt.logging.warning(
+            logger.warning(
                 f"[HL_BACKUP] userFillsByTime failed address={hl_address} "
                 f"start_ms={start_time_ms} url={api_url} "
                 f"hl_use_testnet={ValiConfig.HL_USE_TESTNET} proxy_port={proxy_port} error={e}"
@@ -1129,7 +1129,7 @@ class HyperliquidTracker:
     async def _backup_poll_cycle(self):
         """Periodic background poll for fills missed by websocket downtime."""
         await asyncio.sleep(10.0)
-        bt.logging.info("[HL_BACKUP] Backup REST polling started")
+        logger.info("[HL_BACKUP] Backup REST polling started")
 
         while not self._stop_event.is_set():
             try:
@@ -1162,13 +1162,13 @@ class HyperliquidTracker:
                                 self._process_fill(hl_address, fill)
                                 catches_this_cycle += 1
                                 self._backup_fills_caught += 1
-                                bt.logging.info(
+                                logger.info(
                                     f"[HL_BACKUP] Caught missed fill: {fill_hash} "
                                     f"address={hl_address} coin={fill.get('coin')}"
                                 )
                             except Exception as e:
-                                bt.logging.error(f"[HL_BACKUP] Error processing fill {fill_hash}: {e}")
-                                bt.logging.error(traceback.format_exc())
+                                logger.error(f"[HL_BACKUP] Error processing fill {fill_hash}: {e}")
+                                logger.error(traceback.format_exc())
 
                         # Advance only on successful fetch to avoid skipping gaps.
                         self._last_poll_time_ms[hl_address] = int(time.time() * 1000)
@@ -1189,13 +1189,13 @@ class HyperliquidTracker:
                     self._save_backup_poll_watermarks()
 
                 if catches_this_cycle > 0:
-                    bt.logging.info(
+                    logger.info(
                         f"[HL_BACKUP] Cycle caught {catches_this_cycle} missed fill(s). "
                         f"total={self._backup_fills_caught}"
                     )
             except Exception as e:
-                bt.logging.error(f"[HL_BACKUP] Poll cycle error: {e}")
-                bt.logging.error(traceback.format_exc())
+                logger.error(f"[HL_BACKUP] Poll cycle error: {e}")
+                logger.error(traceback.format_exc())
 
             await asyncio.sleep(ValiConfig.HL_BACKUP_POLL_INTERVAL_S)
 
@@ -1238,7 +1238,7 @@ class HyperliquidTracker:
                 synthetic_hotkey, only_open_positions=True
             )
         except Exception as e:
-            bt.logging.debug(f"[HL_BACKUP] Failed to fetch open positions for reconcile {synthetic_hotkey}: {e}")
+            logger.debug(f"[HL_BACKUP] Failed to fetch open positions for reconcile {synthetic_hotkey}: {e}")
             open_positions = []
         # Coins Vanta has open but HL no longer lists must always be reconciled,
         # even when prev_szi is empty (e.g., first cycle after restart), so the
@@ -1261,7 +1261,7 @@ class HyperliquidTracker:
         if not coins_to_reconcile:
             return  # pure PnL / funding drift — nothing to do
 
-        bt.logging.info(
+        logger.info(
             f"[HL_BACKUP] Reconciling {len(coins_to_reconcile)} coin(s) for {hl_address} "
             f"with szi changes: {coins_to_reconcile}"
         )
@@ -1273,7 +1273,7 @@ class HyperliquidTracker:
                     account_state=account_state,
                 )
             except Exception as e:
-                bt.logging.debug(f"[HL_BACKUP] Reconcile failed address={hl_address} coin={coin}: {e}")
+                logger.debug(f"[HL_BACKUP] Reconcile failed address={hl_address} coin={coin}: {e}")
 
     # ==================== Fill Processing ====================
 
@@ -1329,11 +1329,11 @@ class HyperliquidTracker:
             )
             return True
         except SignalException as e:
-            bt.logging.warning(f"[HL_TRACKER] Signal rejected for {synthetic_hotkey}: {e}")
+            logger.warning(f"[HL_TRACKER] Signal rejected for {synthetic_hotkey}: {e}")
             self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
         except Exception as e:
-            bt.logging.error(f"[HL_TRACKER] Order processing error for {synthetic_hotkey}: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"[HL_TRACKER] Order processing error for {synthetic_hotkey}: {e}")
+            logger.error(traceback.format_exc())
             self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
             if on_failure_clear_szi:
                 addr, coin = on_failure_clear_szi
@@ -1360,7 +1360,7 @@ class HyperliquidTracker:
 
         trade_pair = HL_COIN_TO_TRADE_PAIR.get(coin)
         if trade_pair is None:
-            bt.logging.debug(f"[HL_TRACKER] Unknown coin: {coin}")
+            logger.debug(f"[HL_TRACKER] Unknown coin: {coin}")
             return
         trade_pair_id = trade_pair.trade_pair_id
 
@@ -1369,25 +1369,25 @@ class HyperliquidTracker:
             hl_address.lower() if isinstance(hl_address, str) else hl_address
         )
         if not synthetic_hotkey:
-            bt.logging.warning(f"[HL_TRACKER] No synthetic hotkey for HL address {hl_address}")
+            logger.warning(f"[HL_TRACKER] No synthetic hotkey for HL address {hl_address}")
             return
 
         # Rate limiting (entry-point specific)
         allowed, wait_time = self._rate_limiter.is_allowed(synthetic_hotkey)
         if not allowed:
-            bt.logging.info(f"[HL_TRACKER] Rate limited: {synthetic_hotkey} {coin}, wait {wait_time:.1f}s")
+            logger.info(f"[HL_TRACKER] Rate limited: {synthetic_hotkey} {coin}, wait {wait_time:.1f}s")
             self._broadcast_rejection(synthetic_hotkey, f"Rate limited. Please wait {wait_time:.0f}s.")
             return
 
         # Get subaccount info for account_size
         subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
         if not subaccount_info:
-            bt.logging.warning(f"[HL_TRACKER] No subaccount info for {synthetic_hotkey}")
+            logger.warning(f"[HL_TRACKER] No subaccount info for {synthetic_hotkey}")
             return
 
         account_size = subaccount_info.get("account_size", 0)
         if account_size <= 0:
-            bt.logging.warning(f"[HL_TRACKER] Invalid account size for {synthetic_hotkey}")
+            logger.warning(f"[HL_TRACKER] Invalid account size for {synthetic_hotkey}")
             return
 
         now_ms = TimeUtil.now_in_millis()
@@ -1397,7 +1397,7 @@ class HyperliquidTracker:
         if account_state is None:
             account_state = self._fetch_hl_account_state(hl_address)
         if not account_state or account_state["total_portfolio_value"] <= 0:
-            bt.logging.warning(f"[HL_TRACKER] Zero/missing portfolio value for {hl_address}")
+            logger.warning(f"[HL_TRACKER] Zero/missing portfolio value for {hl_address}")
             return
 
         pos_info = account_state["positions"].get(coin)
@@ -1435,7 +1435,7 @@ class HyperliquidTracker:
         current_signed_weight = (current_position.net_quantity * current_price) / vanta_balance if current_position else 0
         delta = target_signed_weight - current_signed_weight
         if abs(delta) < min_lev:
-            bt.logging.info(
+            logger.info(
                 f"[HL_TRACKER] Skipping fill: {coin} delta={delta:+.4f} below min leverage {min_lev} "
                 f"target={target_signed_weight:+.4f} current={current_signed_weight:+.4f} -> {synthetic_hotkey}"
             )
@@ -1455,7 +1455,7 @@ class HyperliquidTracker:
             synthetic_hotkey, ExecutionType.MARKET, trade_pair, order_type
         )
         if not ok:
-            bt.logging.info(f"[HL_TRACKER] Order rejected for {synthetic_hotkey} {coin}: {error_msg}")
+            logger.info(f"[HL_TRACKER] Order rejected for {synthetic_hotkey} {coin}: {error_msg}")
             self._broadcast_rejection(synthetic_hotkey, error_msg)
             return
 
@@ -1484,7 +1484,7 @@ class HyperliquidTracker:
 
         on_failure_clear_szi = None
         if is_flip and current_position:
-            bt.logging.info(
+            logger.info(
                 f"[HL_TRACKER] Flip detected: {coin} "
                 f"current={current_signed_weight:+.4f} target={target_signed_weight:+.4f} "
                 f"-> {synthetic_hotkey}"
@@ -1512,7 +1512,7 @@ class HyperliquidTracker:
         is_buying = fill_quantity > 0
         hl_fill_price = self._compute_fill_price(trade_pair, is_taker, raw_fill_price, size_usd, is_buying)
 
-        bt.logging.info(
+        logger.info(
             f"[HL_TRACKER] Attempting order: {coin} {order_type} "
             f"target_weight={target_signed_weight:+.4f} current_weight={current_signed_weight:+.4f} "
             f"delta={delta:+.4f} qty={order_quantity} fill_px={hl_fill_price} "

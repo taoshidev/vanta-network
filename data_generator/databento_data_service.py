@@ -3,14 +3,13 @@ import time
 from datetime import datetime, timedelta
 from typing import List
 from zoneinfo import ZoneInfo
-import bittensor as bt
 import databento as db
 
 from data_generator.base_data_service import BaseDataService
-from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
 from vali_objects.vali_dataclasses.corporate_actions import CorporateActions, DividendEvent
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from shared_objects.log import logger
 
 DATABENTO_PROVIDER_NAME = "Databento"
 
@@ -45,7 +44,7 @@ class DatabentoWebSocketClient:
         # has the same target so the library can start it again.
         if hasattr(db.Live, '_thread') and db.Live._thread is not None:
             if not db.Live._thread.is_alive():
-                bt.logging.info("Replacing dead Databento singleton thread")
+                logger.info("Replacing dead Databento singleton thread")
                 # Recreate with same target as original: _loop.run_forever
                 db.Live._thread = threading.Thread(
                     target=db.Live._loop.run_forever,
@@ -55,14 +54,14 @@ class DatabentoWebSocketClient:
 
         # Create fresh client each time - the old one can't be reused after stop()
         self._client = db.Live(key=self._api_key)
-        bt.logging.info("Created new Databento Live client")
+        logger.info("Created new Databento Live client")
         self._client.subscribe(
             dataset=self.DATASET,
             schema=self.SCHEMA,
             symbols=self._symbols
         )
 
-        bt.logging.info(f"Databento websocket connected, subscribed to {len(self._symbols)} symbols")
+        logger.info(f"Databento websocket connected, subscribed to {len(self._symbols)} symbols")
 
         # Translate async iteration to callback pattern
         async for msg in self._client:
@@ -87,7 +86,7 @@ class DatabentoWebSocketClient:
             try:
                 self._client.stop()
             except Exception as e:
-                bt.logging.warning(f"Error stopping Databento client: {e}")
+                logger.warning(f"Error stopping Databento client: {e}")
             # Set to None so a fresh client is created on reconnect.
             # db.Live's singleton thread can't be restarted, so we need a new instance.
             self._client = None
@@ -141,12 +140,12 @@ class DatabentoDataService(BaseDataService):
         # Reuse existing client - db.Live uses singleton thread that can't restart
         existing = self.WEBSOCKET_OBJECTS.get(tpc)
         if existing is not None:
-            bt.logging.info(f"Reusing existing {self.provider_name} websocket client for {tpc}")
+            logger.info(f"Reusing existing {self.provider_name} websocket client for {tpc}")
             return
 
         client = DatabentoWebSocketClient(api_key=self._api_key)
         self.WEBSOCKET_OBJECTS[tpc] = client
-        bt.logging.info(f"Created {self.provider_name} websocket client for {tpc}")
+        logger.info(f"Created {self.provider_name} websocket client for {tpc}")
 
     def _subscribe_websockets(self, tpc: TradePairCategory):
         """Subscribe to all equity symbols."""
@@ -155,17 +154,17 @@ class DatabentoDataService(BaseDataService):
 
         symbols = self._get_equity_symbols()
         if not symbols:
-            bt.logging.warning("No equity symbols to subscribe to")
+            logger.warning("No equity symbols to subscribe to")
             return
 
         client = self.WEBSOCKET_OBJECTS.get(tpc)
         if client is None:
-            bt.logging.error(f"No client available for {tpc}")
+            logger.error(f"No client available for {tpc}")
             return
 
         for symbol in symbols:
             client.subscribe(symbol)
-        bt.logging.info(f"{self.provider_name} queued {len(symbols)} symbols for subscription")
+        logger.info(f"{self.provider_name} queued {len(symbols)} symbols for subscription")
 
     async def handle_msg(self, msg):
         """Convert Databento TBBO message to PriceSource and update state."""
@@ -228,9 +227,9 @@ class DatabentoDataService(BaseDataService):
             try:
                 client.unsubscribe_all()
                 client.stop()
-                bt.logging.info(f"Cleaned up {self.provider_name}[{tpc}] websocket (keeping client)")
+                logger.info(f"Cleaned up {self.provider_name}[{tpc}] websocket (keeping client)")
             except Exception as e:
-                bt.logging.error(f"Cleanup error for {tpc}: {e}")
+                logger.error(f"Cleanup error for {tpc}: {e}")
             # Don't set to None - we want to reuse the client
 
     def instantiate_not_pickleable_objects(self):
@@ -303,7 +302,7 @@ class DatabentoDataService(BaseDataService):
                 )
                 df = store.to_df(pretty_px=True)
                 if df.empty:
-                    bt.logging.warning(f"Databento: no ohlcv-1d data for {tp.trade_pair} on {start_dt.date()}")
+                    logger.warning(f"Databento: no ohlcv-1d data for {tp.trade_pair} on {start_dt.date()}")
                     continue
 
                 row = df.iloc[-1]
@@ -330,7 +329,7 @@ class DatabentoDataService(BaseDataService):
                     ask=0,
                 )
             except Exception as e:
-                bt.logging.error(f"Databento historical REST failed for {tp.trade_pair}: {e}")
+                logger.error(f"Databento historical REST failed for {tp.trade_pair}: {e}")
 
         return tp_to_price
 
@@ -394,7 +393,7 @@ class DatabentoDataService(BaseDataService):
                             result[date_str] = CorporateActions(splits={}, dividends={})
                         result[date_str].splits[symbol] = ratio_new / ratio_old
         except Exception as e:
-            bt.logging.error(f"Failed to fetch stock splits from Databento: {e}")
+            logger.error(f"Failed to fetch stock splits from Databento: {e}")
 
         # Fetch dividends
         try:
@@ -422,7 +421,7 @@ class DatabentoDataService(BaseDataService):
                             payment_date=str(payment_date) if payment_date else "",
                         )
         except Exception as e:
-            bt.logging.error(f"Failed to fetch dividend events from Databento: {e}")
+            logger.error(f"Failed to fetch dividend events from Databento: {e}")
 
         # Cache each date individually (including empty dates so we don't re-fetch)
         for d in dates_in_range:
@@ -431,7 +430,7 @@ class DatabentoDataService(BaseDataService):
         actions_in_range = {d: self._corporate_actions_cache[d] for d in self._corporate_actions_cache
                 if start_date_str <= d < end_date_str}
 
-        bt.logging.info(f"Databento corporate actions in range ({start_date_str} - {end_date_str}) {actions_in_range}")
+        logger.info(f"Databento corporate actions in range ({start_date_str} - {end_date_str}) {actions_in_range}")
 
         return actions_in_range
 

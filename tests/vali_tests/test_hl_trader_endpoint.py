@@ -12,11 +12,9 @@ isolate endpoint logic from the full RPC stack.
 """
 import json
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
-from flask import Flask, jsonify, Response
-from time_util.time_util import TimeUtil
-from vali_objects.utils.vali_bkp_utils import CustomEncoder
+from flask import Flask
 from vali_objects.vali_config import ValiConfig, TradePairCategory
 
 

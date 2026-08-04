@@ -21,6 +21,8 @@ from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vanta_api.miner_api_manager import MinerAPIManager
 from vanta_api.entity_miner_api_manager import EntityMinerAPIManager
+import logging
+from shared_objects.log import logger
 
 
 class Miner:
@@ -58,7 +60,7 @@ class Miner:
 
         # Start required servers using ServerOrchestrator (fixes connection errors)
         # This ensures servers are fully started before clients try to connect
-        bt.logging.info("Initializing miner servers...")
+        logger.info("Initializing miner servers...")
         self.orchestrator = ServerOrchestrator.get_instance()
 
         # Start servers if not already started
@@ -121,15 +123,15 @@ class Miner:
 
         self.check_miner_registration()
         self.my_subnet_uid = self.metagraph_client.hotkeys.index(self.wallet.hotkey.ss58_address)
-        bt.logging.info(f"Running miner on netuid {self.config.netuid} with uid: {self.my_subnet_uid}")
+        logger.info(f"Running miner on netuid {self.config.netuid} with uid: {self.my_subnet_uid}")
 
         # Log available validators on startup
         from vali_objects.vali_config import ValiConfig
         validators = self.position_inspector.get_possible_validators()
         validator_hotkeys = [v.hotkey for v in validators]
-        bt.logging.info(f"Found {len(validators)} validators on startup: {validator_hotkeys}")
+        logger.info(f"Found {len(validators)} validators on startup: {validator_hotkeys}")
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
-        bt.logging.info(f"Mothership hotkey {mothership_hotkey} in validator list: {mothership_hotkey in validator_hotkeys}")
+        logger.info(f"Mothership hotkey {mothership_hotkey} in validator list: {mothership_hotkey in validator_hotkeys}")
 
         # Start REST API server(s).
         # In entity-miner mode, only start the EntityMinerAPIManager and bind it to
@@ -144,7 +146,7 @@ class Miner:
             is_entity_miner = getattr(self.config, 'entity_miner', False)
 
             if is_entity_miner:
-                bt.logging.info("Starting Entity Miner Gateway...")
+                logger.info("Starting Entity Miner Gateway...")
                 self.entity_api_manager = EntityMinerAPIManager(
                     api_host=api_host,
                     api_port=api_rest_port,
@@ -157,18 +159,18 @@ class Miner:
                 self.entity_api_thread.start()
                 time.sleep(0.5)
                 if self.entity_api_thread.is_alive():
-                    bt.logging.success(f"Entity Miner Gateway started on port {api_rest_port}")
+                    logger.info(f"Entity Miner Gateway started on port {api_rest_port}")
                     self.slack_notifier.send_message(
                         f"🌐 Entity Miner Gateway enabled on port {api_rest_port}",
                         level="info"
                     )
                 else:
                     error_msg = "Entity Miner Gateway thread failed to start"
-                    bt.logging.error(error_msg)
+                    logger.error(error_msg)
                     self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
                     raise RuntimeError(error_msg)
             else:
-                bt.logging.info("Starting Miner REST API server...")
+                logger.info("Starting Miner REST API server...")
                 self.api_manager = MinerAPIManager(
                     prop_net_order_placer=self.prop_net_order_placer,
                     miner_hotkey=self.wallet.hotkey.ss58_address,
@@ -186,11 +188,11 @@ class Miner:
                 # Verify thread is alive
                 if not self.api_thread.is_alive():
                     error_msg = "API server thread failed to start"
-                    bt.logging.error(error_msg)
+                    logger.error(error_msg)
                     self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
                     raise RuntimeError(error_msg)
 
-                bt.logging.success(f"Miner REST API server started on http://{api_host}:{api_rest_port}")
+                logger.info(f"Miner REST API server started on http://{api_host}:{api_rest_port}")
                 self.slack_notifier.send_message(
                     f"🌐 REST API enabled on port {api_rest_port}",
                     level="info"
@@ -211,7 +213,7 @@ class Miner:
                 self.dashboard_api_thread = threading.Thread(target=self.dashboard.run, daemon=True)
                 self.dashboard_api_thread.start()
             except OSError as e:
-                bt.logging.info(
+                logger.info(
                     f"Unable to start miner dashboard with error {e}. Restart miner and specify a new port if desired.")
                 self.slack_notifier.send_message(
                     f"⚠️ Failed to start dashboard: {str(e)}",
@@ -241,7 +243,7 @@ class Miner:
     def check_miner_registration(self):
         if self.wallet.hotkey.ss58_address not in self.metagraph_client.hotkeys:
             error_msg = "Your miner is not registered. Please register and try again."
-            bt.logging.error(error_msg)
+            logger.error(error_msg)
             self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
             exit()
 
@@ -251,7 +253,7 @@ class Miner:
             data = ValiBkpUtils.get_file(signal_file_path)
             return json.loads(data, cls=GeneralizedJSONDecoder)
         except json.JSONDecodeError as e:
-            bt.logging.error(f"Failed to decode JSON from {signal_file_path}: {e}")
+            logger.error(f"Failed to decode JSON from {signal_file_path}: {e}")
             self.slack_notifier.send_message(
                 f"❌ Failed to decode signal file: {os.path.basename(signal_file_path)}\nError: {str(e)}",
                 level="error"
@@ -265,7 +267,7 @@ class Miner:
         files_to_delete = []
         for f_name in all_files:
             try:
-                bt.logging.info(f"Reading signal file {f_name}")
+                logger.info(f"Reading signal file {f_name}")
                 signal = self.load_signal_data(f_name)
                 if signal:
                     trade_pair_id = signal['trade_pair']['trade_pair_id']
@@ -275,11 +277,11 @@ class Miner:
                     # Always add to files_to_delete, even if this is a duplicate (older) signal
                     files_to_delete.append(f_name)
             except json.JSONDecodeError as e:
-                bt.logging.error(f"Error decoding JSON from file {f_name}: {e}")
+                logger.error(f"Error decoding JSON from file {f_name}: {e}")
 
         # Delete files to prevent duplicate reading and conflicts
         for f_name in files_to_delete:
-            bt.logging.info(f"Deleting signal file {f_name}")
+            logger.info(f"Deleting signal file {f_name}")
             os.remove(f_name)
 
         # Return all signals as a list
@@ -292,8 +294,13 @@ class Miner:
         parser.add_argument("--netuid", type=int, default=8, help="The chain subnet uid.")
         # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
         bt.Subtensor.add_args(parser)
-        # Adds logging specific arguments i.e. --logging.debug ..., --logging.trace .. or --logging.logging_dir ...
-        bt.logging.add_args(parser)
+        # Logging arguments (--logging.debug, --logging.trace, --logging.logging_dir)
+        parser.add_argument("--logging.debug", action="store_true", default=False,
+                            help="Turn on debugging information")
+        parser.add_argument("--logging.trace", action="store_true", default=False,
+                            help="Turn on trace level information")
+        parser.add_argument("--logging.logging_dir", type=str, default=os.path.expanduser("~/.bittensor/miners"),
+                            help="Logging default root directory.")
         # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
         bt.Wallet.add_args(parser)
         # Adds an argument to allow setting write_failed_signal_logs from the command line
@@ -346,11 +353,11 @@ class Miner:
 
         # Parse the config (will take command-line arguments if provided)
         config = bt.Config(parser)
-        bt.logging.enable_info()
+        logger.setLevel(logging.INFO)
         if config.logging.debug:
-            bt.logging.enable_debug()
+            logger.setLevel(logging.DEBUG)
         if config.logging.trace:
-            bt.logging.enable_trace()
+            logger.setLevel(logging.DEBUG)
 
         # Determine the default value for write_failed_signal_logs based on the subtensor.network
         if config.write_failed_signal_logs is None:
@@ -382,34 +389,33 @@ class Miner:
                     break
 
             if not package_manager:
-                bt.logging.error("No package manager found. Please install npm, yarn, or pnpm.")
+                logger.error("No package manager found. Please install npm, yarn, or pnpm.")
                 return
 
             # Run 'install' command for the identified package manager
             subprocess.run([package_manager, "install"], cwd=dashboard_dir, check=True)
-            bt.logging.info(f"Install completed using {package_manager}.")
+            logger.info(f"Install completed using {package_manager}.")
 
             # Start the dashboard process
             if package_manager == 'npm':
                 self.dashboard_frontend_process = subprocess.Popen(['npm', 'run', 'dev'], cwd=dashboard_dir)
             else:
                 self.dashboard_frontend_process = subprocess.Popen([package_manager, 'dev'], cwd=dashboard_dir)
-            bt.logging.info("Dashboard started.")
+            logger.info("Dashboard started.")
         except subprocess.CalledProcessError as e:
-            bt.logging.error(f"Command '{e.cmd}' failed with return code {e.returncode}.")
+            logger.error(f"Command '{e.cmd}' failed with return code {e.returncode}.")
         except Exception as e:
-            bt.logging.error(f"Failed to start dashboard: {e}")
+            logger.error(f"Failed to start dashboard: {e}")
 
     def run(self):
-        bt.logging(config=self.config, logging_dir=self.config.full_path)
-        bt.logging.info("Starting miner loop.")
+        logger.info("Starting miner loop.")
 
         # Start the dashboard if the flag is set
         if self.config.start_dashboard:
-            bt.logging.info("Starting miner dashboard.")
+            logger.info("Starting miner dashboard.")
             self.start_dashboard_frontend()
 
-        bt.logging.info("Waiting for signals...")
+        logger.info("Waiting for signals...")
         while True:
             try:
                 signals, signal_file_names = self.get_all_files_in_dir_no_duplicate_trade_pairs()
@@ -420,34 +426,34 @@ class Miner:
             # If someone intentionally stops the miner, it'll safely terminate operations.
             except KeyboardInterrupt:
                 self.slack_notifier.send_message("🛑 Miner shutting down (keyboard interrupt)", level="warning")
-                bt.logging.success("Miner killed by keyboard interrupt.")
+                logger.info("Miner killed by keyboard interrupt.")
 
                 #self.slack_notifier.shutdown()
 
                 # Shutdown the order placer's thread pool
-                bt.logging.info("Shutting down order placer thread pool...")
+                logger.info("Shutting down order placer thread pool...")
                 self.prop_net_order_placer.shutdown()
 
                 # Shutdown the API manager if running
                 if self.api_manager is not None:
-                    bt.logging.info("Shutting down API manager...")
+                    logger.info("Shutting down API manager...")
                     self.api_manager.shutdown()
                     if self.api_thread is not None and self.api_thread.is_alive():
                         self.api_thread.join(timeout=5.0)
-                    bt.logging.info("API manager shutdown complete.")
+                    logger.info("API manager shutdown complete.")
 
                 # Shutdown entity miner gateway if running
                 if self.entity_api_manager is not None:
-                    bt.logging.info("Shutting down Entity Miner Gateway...")
+                    logger.info("Shutting down Entity Miner Gateway...")
                     self.entity_api_manager.shutdown()
                     if self.entity_api_thread is not None and self.entity_api_thread.is_alive():
                         self.entity_api_thread.join(timeout=5.0)
-                    bt.logging.info("Entity Miner Gateway shutdown complete.")
+                    logger.info("Entity Miner Gateway shutdown complete.")
 
                 if self.dashboard_frontend_process:
                     self.dashboard_frontend_process.terminate()
                     self.dashboard_frontend_process.wait()
-                    bt.logging.info("Dashboard terminated.")
+                    logger.info("Dashboard terminated.")
                 # SubtensorOpsServer shuts down automatically via orchestrator
                 self.position_inspector.stop_update_loop()
                 if self.position_inspector_thread:
@@ -459,7 +465,7 @@ class Miner:
             # In case of unforeseen errors, the miner will log the error and continue operations.
             except Exception as e:
                 error_trace = traceback.format_exc()
-                bt.logging.error(error_trace)
+                logger.error(error_trace)
                 self.slack_notifier.send_message(
                     f"❌ Unexpected error for hotkey in main loop:\n{str(e)}\n\nTraceback:\n{error_trace[:500]}",
                     level="error"

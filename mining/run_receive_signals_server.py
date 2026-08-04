@@ -7,7 +7,6 @@ from flask import Flask, request, jsonify
 
 import waitress
 import requests
-import bittensor as bt
 from bittensor_wallet import Wallet
 
 from miner_config import MinerConfig
@@ -256,7 +255,7 @@ def create_subaccount_endpoint():
 
         # Sign message with coldkey
         signature = coldkey.sign(message).hex()
-        print(f"Message signed with coldkey")
+        print("Message signed with coldkey")
 
         # Build request payload for validator
         payload = {

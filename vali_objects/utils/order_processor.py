@@ -3,7 +3,6 @@ import json
 from dataclasses import dataclass
 from typing import Optional
 
-import bittensor as bt
 
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
@@ -19,6 +18,7 @@ from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.limit_order.order_utils import OrderSize
+from shared_objects.log import logger
 
 def _validate_required(value, field_type: type):
     if not value:
@@ -90,7 +90,7 @@ class OrderProcessor:
         # Native crypto remapping
         if trade_pair is not None and trade_pair in NATIVE_CRYPTO_TO_HL_TRADE_PAIR:
             trade_pair = NATIVE_CRYPTO_TO_HL_TRADE_PAIR[trade_pair]
-            bt.logging.info(f"Remapped native trade pair {trade_pair.trade_pair_id}")
+            logger.info(f"Remapped native trade pair {trade_pair.trade_pair_id}")
 
         # Trade pair checks
         if execution_type not in (ExecutionType.LIMIT_CANCEL, ExecutionType.LIMIT_EDIT, ExecutionType.FLAT_ALL):
@@ -106,7 +106,7 @@ class OrderProcessor:
         miner_account = self.miner_account_client.get_account(hotkey)
         if not miner_account:
             msg = f"Miner account for hotkey [{hotkey}] is not yet initialized. Please try again shortly."
-            bt.logging.warning(msg)
+            logger.warning(msg)
             return False, msg, trade_pair
 
         # Elimination check
@@ -115,12 +115,12 @@ class OrderProcessor:
                 f"This miner hotkey {hotkey} has been eliminated and cannot participate in this subnet. "
                 f"Try again after re-registering."
             )
-            bt.logging.warning(msg)
+            logger.warning(msg)
             return False, msg, None
         elif miner_account.miner_bucket == MinerBucket.ENTITY:
             msg = (f"Entity hotkey {hotkey} cannot place orders directly. "
                    f"Please use a subaccount (synthetic hotkey) to place orders.")
-            bt.logging.warning(msg)
+            logger.warning(msg)
             return False, msg, None
 
 
@@ -313,7 +313,7 @@ class OrderProcessor:
             order.limit_price = None
 
         self.limit_order_client.process_limit_order(hotkey, order, is_edit=is_edit)
-        bt.logging.info(
+        logger.info(
             f"[ORDER_PROCESSOR] Processed {execution_type.name} order{'(EDIT)' if is_edit else ''}: "
             f"{order.order_uuid} for {hotkey}"
         )
@@ -334,7 +334,7 @@ class OrderProcessor:
             now_ms,
             execution_type,
         )
-        bt.logging.debug(f"Cancelled LIMIT order(s) for {hotkey}: {order_uuid or 'all'}")
+        logger.debug(f"Cancelled LIMIT order(s) for {hotkey}: {order_uuid or 'all'}")
         return result
 
     def process_limit_edit(
@@ -404,7 +404,7 @@ class OrderProcessor:
             )
             processed_orders.append(order)
 
-        bt.logging.info(f"[ORDER_PROCESSOR] Processed bulk bracket update for {hotkey}: {len(processed_orders)} orders")
+        logger.info(f"[ORDER_PROCESSOR] Processed bulk bracket update for {hotkey}: {len(processed_orders)} orders")
         return None
 
     @staticmethod

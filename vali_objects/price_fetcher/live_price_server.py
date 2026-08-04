@@ -21,15 +21,15 @@ Usage in validator.py:
     price = client.get_latest_price(trade_pair)
 """
 import time
-from typing import List, Optional, Tuple, Dict
+from typing import List, Tuple, Dict
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-import bittensor as bt
 from vali_objects.vali_config import RPCConnectionMode
 
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.price_fetcher.live_price_fetcher import LivePriceFetcher
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from shared_objects.log import logger
 
 
 class LivePriceFetcherServer(RPCServerBase):
@@ -118,7 +118,7 @@ class LivePriceFetcherServer(RPCServerBase):
 
     def shutdown(self):
         """Override shutdown to clean up data service threads."""
-        bt.logging.info("LivePriceFetcherServer shutting down data services...")
+        logger.info("LivePriceFetcherServer shutting down data services...")
         self.stop_all_threads()
         super().shutdown()
 
