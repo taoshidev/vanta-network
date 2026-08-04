@@ -910,6 +910,26 @@ class EntityManager(ValidatorBroadcastBase):
         bt.logging.info(f"[ENTITY_MANAGER] Asset selection updated to '{asset_class}' for {synthetic_hotkey}")
         return True, f"Asset selection updated to '{asset_class}' for {synthetic_hotkey}"
 
+    def update_subaccount_drawdown_criteria(self, synthetic_hotkey: str, criteria: str) -> Tuple[bool, str]:
+        """Update drawdown_criteria for a subaccount in EntityManager."""
+        if not is_synthetic_hotkey(synthetic_hotkey):
+            return False, f"{synthetic_hotkey} is not a synthetic hotkey"
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found"
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False, f"Subaccount {subaccount_id} not found for entity {entity_hotkey}"
+            subaccount.drawdown_criteria = criteria
+            self._write_entities_from_memory_to_disk()
+
+        bt.logging.info(f"[ENTITY_MANAGER] drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}")
+        return True, f"drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}"
+
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
         """
         Get the status of a subaccount by synthetic hotkey.

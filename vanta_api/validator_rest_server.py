@@ -45,6 +45,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLed
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.order import Order
 from vanta_api.base_rest_server import BaseRestServer
@@ -282,6 +283,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
+        self.app.route("/admin/drawdown-criteria", methods=["POST"])(self.update_drawdown_criteria)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -1540,6 +1542,55 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', **result})
         except Exception as e:
             bt.logging.error(f"Error resetting hotkey {hotkey}: {e}")
+            bt.logging.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def update_drawdown_criteria(self):
+        """
+        Bulk update drawdown criteria for one or more synthetic hotkeys.
+        Requires tier 500 access.
+
+        Example:
+        curl -X POST http://localhost:48888/admin/drawdown-criteria \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"<hotkey1>": "static", "<hotkey2>": "trailing"}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Update drawdown criteria endpoint requires tier 500 access'}), 403
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
+            return jsonify({'error': 'Body must be a non-empty JSON object mapping hotkey to criteria'}), 400
+
+        results = {}
+        try:
+            for hotkey, criteria in data.items():
+                if criteria not in ('trailing', 'static'):
+                    results[hotkey] = {'success': False, 'error': f'criteria must be "trailing" or "static", got "{criteria}"'}
+                    continue
+
+                entry = {'success': True, 'criteria': criteria}
+
+                if is_synthetic_hotkey(hotkey) and self._entity_client:
+                    success, msg = self._entity_client.update_subaccount_drawdown_criteria(hotkey, criteria)
+                    if not success:
+                        results[hotkey] = {'success': False, 'error': msg}
+                        continue
+
+                cp_success, cp_msg = self._challenge_period_client.update_drawdown_criteria(
+                    hotkey, DrawdownCriteria(criteria)
+                )
+                if not cp_success:
+                    entry['warning'] = f"challenge period: {cp_msg}"
+                results[hotkey] = entry
+
+            return jsonify({'status': 'success', 'results': results}), 200
+        except Exception as e:
+            bt.logging.error(f"Error updating drawdown criteria: {e}")
             bt.logging.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 

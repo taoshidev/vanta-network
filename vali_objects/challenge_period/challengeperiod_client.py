@@ -20,6 +20,7 @@ Usage:
         client = ChallengePeriodClient()
         client.get_testing_miners()
 """
+from typing import Tuple
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
@@ -97,6 +98,10 @@ class ChallengePeriodClient(RPCClientBase):
     ) -> bool:
         """Set or update a miner's bucket information."""
         return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms, drawdown_criteria)
+
+    def update_drawdown_criteria(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
+        """Update drawdown_criteria for an existing miner state."""
+        return self._server.update_drawdown_criteria_rpc(hotkey, criteria)
 
     def remove_miners(self, hotkeys: str) -> bool:
         """Remove a miner from active_miners."""

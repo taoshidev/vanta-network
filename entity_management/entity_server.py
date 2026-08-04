@@ -277,6 +277,10 @@ class EntityServer(RPCServerBase):
         """Update asset class selection for a subaccount in both AssetSelectionManager and EntityManager."""
         return self._manager.update_subaccount_asset_selection(synthetic_hotkey, asset_class)
 
+    def update_subaccount_drawdown_criteria_rpc(self, synthetic_hotkey: str, criteria: str) -> Tuple[bool, str]:
+        """Update drawdown_criteria for a subaccount in EntityManager."""
+        return self._manager.update_subaccount_drawdown_criteria(synthetic_hotkey, criteria)
+
     # ==================== Query RPC Methods ====================
 
     def get_subaccount_status_rpc(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
