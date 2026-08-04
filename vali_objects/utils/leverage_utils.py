@@ -79,16 +79,20 @@ def get_max_order_size(
       - overall_room:    overall portfolio cap minus total exposure           (subaccounts only)
     """
     trade_pair = position.trade_pair
-    _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
-    if account.miner_bucket in _subaccount_buckets:
+    if account.miner_bucket and account.miner_bucket.is_subaccount:
         tier = get_leverage_tier(account.miner_bucket, account.account_size)
         max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
     else:
         max_position_leverage = trade_pair.max_leverage
 
     per_pair_room = account.balance * max_position_leverage - abs(position.net_value)
+    portfolio_room = account.buying_power
+    limits = [
+        (per_pair_room,  f"per pair cap {max_position_leverage}x"),
+        (portfolio_room, f"overall portfolio cap {account.multiplier}x"),
+    ]
 
-    if account.miner_bucket in _subaccount_buckets:
+    if account.miner_bucket and account.miner_bucket.is_subaccount:
         if not account.asset_class:
             raise ValueError("asset_class must be selected for trading")
         per_class_cap, overall_cap = get_portfolio_caps(
@@ -96,20 +100,9 @@ def get_max_order_size(
         )
         per_class_used = account.capital_used_by_class.get(trade_pair.trade_pair_category, 0.0)
         per_class_room = account.balance * per_class_cap - per_class_used
-        overall_room = account.balance * overall_cap - account.capital_used
-        portfolio_room = min(per_class_room, overall_room)
-        max_value = min(per_pair_room, per_class_room, overall_room)
-        if max_value == per_pair_room:
-            binding_cap = f"per pair cap ({max_position_leverage}x)"
-        elif max_value == per_class_room:
-            binding_cap = f"per class cap ({trade_pair.trade_pair_category})"
-        else:
-            binding_cap = "overall portfolio cap"
-    else:
-        per_class_used = per_class_cap = per_class_room = overall_cap = overall_room = None
-        portfolio_room = account.buying_power
-        max_value = min(per_pair_room, account.buying_power)
-        binding_cap = f"per pair cap ({max_position_leverage}x)" if max_value == per_pair_room else "overall portfolio cap"
+        limits.append((per_class_room, f"per class cap {trade_pair.trade_pair_category.value} {per_class_cap}x"))
+
+    max_value, binding_cap = min(limits, key=lambda x: x[0])
 
     transaction_fee_rate = trade_pair.transaction_fee_rate()
     if max_value * (1 + transaction_fee_rate * account.multiplier) > portfolio_room:
