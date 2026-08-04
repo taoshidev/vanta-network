@@ -191,8 +191,11 @@ class MarketOrderManager():
         is_buy = order_type == position.position_type
         if is_buy:
             max_order_value, binding_cap = get_max_order_size(miner_account, position)
+            bt.logging.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} max_order_value=${max_order_value:.4f}")
             if max_order_value <= 0:
-                raise SignalException(f"{hotkey} {order_uuid} No buying power remaining for {trade_pair.trade_pair_id} (capped by {binding_cap})")
+                msg = "No buying power remaining for {trade_pair.trade_pair_id} (capped by {binding_cap})"
+                bt.logging.eror(f"[ORDER_EXECUTION] {hotkey} {order_uuid} {msg}")
+                raise SignalException(msg)
             sign = -1 if order_type == OrderType.SHORT else 1
             clamped_value = sign * min(abs(value), max_order_value)
             if abs(clamped_value) < abs(value):

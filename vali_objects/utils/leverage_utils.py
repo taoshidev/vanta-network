@@ -71,15 +71,12 @@ def get_max_order_size(
     account: MinerAccount,
     position: Position,
 ) -> tuple[float, str]:
-    """Return (max_usd_value, max_value_reason) for this position.
+    """Return (max_usd_value, binding_cap_label) for this position.
 
-    Three-dimensional cap:
-      1. Per-pair positional leverage cap × balance
-      2. Per-asset-class portfolio cap (subaccounts only)
-      3. Overall portfolio cap (subaccounts only)
-
-    Returns the remaining room after subtracting current exposure:
-      max(0, min(position_cap, effective_buying_power) - abs(position.net_value))
+    Computes remaining room as min across all applicable caps:
+      - per_pair_room:   max position size for this pair minus current exposure
+      - per_class_room:  per-asset-class portfolio cap minus class exposure  (subaccounts only)
+      - overall_room:    overall portfolio cap minus total exposure           (subaccounts only)
     """
     trade_pair = position.trade_pair
     _subaccount_buckets = {MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA}
@@ -88,10 +85,9 @@ def get_max_order_size(
         max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
     else:
         max_position_leverage = trade_pair.max_leverage
-    max_position_value = account.balance * max_position_leverage
 
-    effective_buying_power = account.buying_power
-    max_value_reason = "overall portfolio cap"
+    per_pair_room = account.balance * max_position_leverage - abs(position.net_value)
+
     if account.miner_bucket in _subaccount_buckets:
         if not account.asset_class:
             raise ValueError("asset_class must be selected for trading")
@@ -101,22 +97,25 @@ def get_max_order_size(
         per_class_used = account.capital_used_by_class.get(trade_pair.trade_pair_category, 0.0)
         per_class_room = account.balance * per_class_cap - per_class_used
         overall_room = account.balance * overall_cap - account.capital_used
-        effective_buying_power = min(account.buying_power, per_class_room, overall_room)
-        if effective_buying_power == per_class_room:
-            max_value_reason = f"per class cap ({trade_pair.trade_pair_category})"
-        elif effective_buying_power == overall_room:
-            max_value_reason = "overall portfolio cap"
-
-    combined = min(max_position_value, effective_buying_power)
-    if combined == max_position_value:
-        max_value_reason = f"per pair cap ({max_position_leverage}x)"
-    max_value = combined - abs(position.net_value)
+        portfolio_room = min(per_class_room, overall_room)
+        max_value = min(per_pair_room, per_class_room, overall_room)
+        if max_value == per_pair_room:
+            binding_cap = f"per pair cap ({max_position_leverage}x)"
+        elif max_value == per_class_room:
+            binding_cap = f"per class cap ({trade_pair.trade_pair_category})"
+        else:
+            binding_cap = "overall portfolio cap"
+    else:
+        per_class_used = per_class_cap = per_class_room = overall_cap = overall_room = None
+        portfolio_room = account.buying_power
+        max_value = min(per_pair_room, account.buying_power)
+        binding_cap = f"per pair cap ({max_position_leverage}x)" if max_value == per_pair_room else "overall portfolio cap"
 
     transaction_fee_rate = trade_pair.transaction_fee_rate()
-    if max_value * (1 + transaction_fee_rate * account.multiplier) > effective_buying_power:
+    if max_value * (1 + transaction_fee_rate * account.multiplier) > portfolio_room:
         max_value = max_value / (1 + transaction_fee_rate * account.multiplier)
 
-    return max(0.0, max_value), max_value_reason
+    return max(0.0, max_value), binding_cap
 
 
 def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
