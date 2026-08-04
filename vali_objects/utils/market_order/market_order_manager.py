@@ -202,12 +202,12 @@ class MarketOrderManager():
                 logger.info(
                     f"[ORDER_EXECUTION] {hotkey} {order_uuid} order value clamped from ${value:.4f} to ${clamped_value:.4f} by {binding_cap}"
                 )
-            value = clamped_value
-            quantity, leverage, value = convert_order_sizes(
-                OrderSize(value=value), usd_base_rate, trade_pair, balance,
-                round_qty=True,
-                use_nano_increment=use_nano_increment,
-            )
+                quantity, leverage, value = convert_order_sizes(
+                    OrderSize(value=clamped_value), usd_base_rate, trade_pair, balance,
+                    round_qty=True,
+                    use_floor=True,
+                    use_nano_increment=use_nano_increment,
+                )
 
         if abs(value) < 1e-9 or abs(quantity) < 1e-9:
             raise SignalException("Error processing order: 0 order size after clamping")
