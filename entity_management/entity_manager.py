@@ -576,7 +576,7 @@ class EntityManager(ValidatorBroadcastBase):
                     drawdown_criteria=DrawdownCriteria(drawdown_criteria),
                 )
             except Exception as e:
-                bt.logging.error(
+                logger.error(
                     f"[ENTITY_MANAGER] Failed to register {synthetic_hotkey} with challenge period: {e}"
                 )
 
@@ -928,7 +928,7 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount.drawdown_criteria = criteria
             self._write_entities_from_memory_to_disk()
 
-        bt.logging.info(f"[ENTITY_MANAGER] drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}")
+        logger.info(f"[ENTITY_MANAGER] drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}")
         return True, f"drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}"
 
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
@@ -1868,7 +1868,7 @@ class EntityManager(ValidatorBroadcastBase):
                 try:
                     subaccount_info = SubaccountInfo(**subaccount_info_data)
                 except Exception as parse_err:
-                    bt.logging.warning(
+                    logger.warning(
                         f"[ENTITY_MANAGER] Invalid subaccount registration data: {parse_err}"
                     )
                     return False
@@ -1960,7 +1960,7 @@ class EntityManager(ValidatorBroadcastBase):
                     miner=synthetic_hotkey
                 )
                 if not asset_selection_result.get('successfully_processed', False):
-                    bt.logging.warning(
+                    logger.warning(
                         f"[ENTITY_MANAGER] Failed to set asset selection for {synthetic_hotkey} via broadcast: "
                         f"{asset_selection_result.get('error_message', 'Unknown error')}"
                     )
@@ -2011,7 +2011,7 @@ class EntityManager(ValidatorBroadcastBase):
                         f"[ENTITY_MANAGER] Failed to register {synthetic_hotkey} with challenge period via broadcast: {e}"
                     )
 
-                bt.logging.info(
+                logger.info(
                     f"[ENTITY_MANAGER] Registered subaccount {synthetic_hotkey} via broadcast"
                 )
                 return True

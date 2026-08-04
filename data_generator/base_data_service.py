@@ -29,7 +29,7 @@ def exception_handler_decorator():
     """
     Decorator to handle exceptions, log them, and return a default value.
 
-    Uses a global logger (bt.logging.error) for logging.
+    Uses a global logger (logger.error) for logging.
     """
 
     def decorator(func):

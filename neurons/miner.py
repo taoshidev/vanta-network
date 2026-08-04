@@ -294,7 +294,13 @@ class Miner:
         parser.add_argument("--netuid", type=int, default=8, help="The chain subnet uid.")
         # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
         bt.Subtensor.add_args(parser)
-        # Adds logging specific arguments i.e. --logging.debug ..., --logging.trace .. or --logging.logging_dir ...
+        # Logging arguments (--logging.debug, --logging.trace, --logging.logging_dir)
+        parser.add_argument("--logging.debug", action="store_true", default=False,
+                            help="Turn on debugging information")
+        parser.add_argument("--logging.trace", action="store_true", default=False,
+                            help="Turn on trace level information")
+        parser.add_argument("--logging.logging_dir", type=str, default=os.path.expanduser("~/.bittensor/miners"),
+                            help="Logging default root directory.")
         # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
         bt.Wallet.add_args(parser)
         # Adds an argument to allow setting write_failed_signal_logs from the command line
@@ -402,7 +408,6 @@ class Miner:
             logger.error(f"Failed to start dashboard: {e}")
 
     def run(self):
-        bt.logging(config=self.config, logging_dir=self.config.full_path)
         logger.info("Starting miner loop.")
 
         # Start the dashboard if the flag is set

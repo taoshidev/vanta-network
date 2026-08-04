@@ -79,7 +79,7 @@ class Validator(ValidatorBase):
     def __init__(self):
         setproctitle(f"vali_{self.__class__.__name__}")
         # Try to read the file meta/meta.json and print it out
-        # Note: Use print() instead of bt.logging before bt.logging is configured
+        # Note: Use print() here since self.config (and its logging level) isn't parsed yet
         try:
             with open("meta/meta.json", "r") as f:
                 meta_content = f.read()
@@ -117,8 +117,6 @@ class Validator(ValidatorBase):
 
         # Initialize Bittensor wallet objects FIRST (needed for SlackNotifier)
         # Wallet holds cryptographic information, ensuring secure transactions and communication.
-        # Activating Bittensor's logging with the set configurations.
-        bt.logging(config=self.config, logging_dir=self.config.full_path)
 
         # Initialize Bittensor miner objects
         # These classes are vital to interact and function within the Bittensor network.

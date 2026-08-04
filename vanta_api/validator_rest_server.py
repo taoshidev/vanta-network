@@ -1592,8 +1592,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             return jsonify({'status': 'success', 'results': results}), 200
         except Exception as e:
-            bt.logging.error(f"Error updating drawdown criteria: {e}")
-            bt.logging.error(traceback.format_exc())
+            logger.error(f"Error updating drawdown criteria: {e}")
+            logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def force_deposit(self, hotkey: str):

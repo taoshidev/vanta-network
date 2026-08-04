@@ -451,26 +451,26 @@ class ChallengePeriodManager(CacheController):
     def _check_static_drawdown(state: MinerBucketState) -> EliminationReason | None:
         threshold_pct = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
         if state.drawdown.static_drawdown_pct > threshold_pct:
-            btlogging.warning(f"[CHALLENGE] ELIMINATION static drawdown {threshold_pct}%: {state}")
+            logger.warning(f"[CHALLENGE] ELIMINATION static drawdown {threshold_pct}%: {state}")
             if state.current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN
         elif state.drawdown.static_drawdown_pct > threshold_pct * 0.75:
-            btlogging.info(f"[CHALLENGE] near static drawdown {threshold_pct}%: {state}")
+            logger.info(f"[CHALLENGE] near static drawdown {threshold_pct}%: {state}")
         return None
 
     @staticmethod
     def _check_static_eod_drawdown(state: MinerBucketState) -> EliminationReason | None:
         threshold_pct = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
         if state.drawdown.static_eod_drawdown_pct > threshold_pct:
-            btlogging.warning(f"[CHALLENGE] ELIMINATION static EOD drawdown {threshold_pct}%: {state}")
+            logger.warning(f"[CHALLENGE] ELIMINATION static EOD drawdown {threshold_pct}%: {state}")
             if state.current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN
         elif state.drawdown.static_eod_drawdown_pct > threshold_pct * 0.75:
-            btlogging.info(f"[CHALLENGE] near static EOD drawdown {threshold_pct}%: {state}")
+            logger.info(f"[CHALLENGE] near static EOD drawdown {threshold_pct}%: {state}")
         return None
 
     @staticmethod
