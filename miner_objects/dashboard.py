@@ -1,8 +1,6 @@
 import socket
 
-import bittensor as bt
 import uvicorn
-import template.protocol
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

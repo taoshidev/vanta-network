@@ -34,7 +34,6 @@ import os
 import sys
 import traceback
 
-import bittensor as bt
 
 from runnable.migration_utils import MigrationUtils
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager

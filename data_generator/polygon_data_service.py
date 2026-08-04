@@ -3,7 +3,7 @@ import traceback
 
 import requests
 
-from typing import List, Optional
+from typing import List
 
 from vali_objects.vali_dataclasses.order import Order
 from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
@@ -16,7 +16,6 @@ from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSour
 import time
 
 from vali_objects.utils.vali_utils import ValiUtils
-import bittensor as bt
 from polygon import RESTClient
 
 from vali_objects.vali_dataclasses.price_source import PriceSource
@@ -290,7 +289,6 @@ class PolygonDataService(BaseDataService):
         # This ensures test price sources are visible to daemon code paths like check_and_fill_limit_orders()
         # IMPORTANT: Preserve the original timestamp so mdd_check() can find the price source
         # when querying for the exact order timestamp
-        from time_util.time_util import TimeUtil
         updated_price_source = PriceSource(
             source=price_source.source,
             timespan_ms=price_source.timespan_ms,

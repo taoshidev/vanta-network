@@ -9,10 +9,8 @@ from zoneinfo import ZoneInfo
 import holidays
 import numpy as np
 import pandas as pd
-import bittensor as bt
 
 from time_util.time_util import TimeUtil
-from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
@@ -261,7 +259,7 @@ class PriceSlippageModel:
 
             # Check if slippage estimates are loaded
             if "crypto" not in cls.slippage_estimates:
-                logger.error(f"Crypto slippage estimates not loaded")
+                logger.error("Crypto slippage estimates not loaded")
                 return 0.0001  # Return minimal slippage as fallback
 
             trade_pair_key = NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(order.trade_pair, order.trade_pair).trade_pair_id

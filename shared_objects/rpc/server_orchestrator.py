@@ -96,7 +96,6 @@ import atexit
 import sys
 import time
 import inspect
-import bittensor as bt
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -674,7 +673,7 @@ class ServerOrchestrator:
                 subtensor_ops = self._servers['subtensor_ops']
                 metagraph_client = self.get_client('metagraph')
                 subtensor_ops.manager._metagraph_client = metagraph_client
-                logger.info(f"Wired metagraph_client to subtensor_ops")
+                logger.info("Wired metagraph_client to subtensor_ops")
 
     def _get_start_order(self, server_names: list) -> list:
         """
@@ -1422,7 +1421,7 @@ class ServerOrchestrator:
         # Block until metagraph populated (critical for dependent operations)
         subtensor_ops.wait_for_initial_update(max_wait_time=metagraph_timeout)
 
-        logger.info(f"[INIT] Metagraph populated, ready for other daemons")
+        logger.info("[INIT] Metagraph populated, ready for other daemons")
         logger.info(f"All {neuron_type} servers started and initialized")
 
     def start_validator_servers(

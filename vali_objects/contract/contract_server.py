@@ -18,7 +18,6 @@ Usage:
     from vali_objects.utils.contract_server import ContractClient
     client = ContractClient()  # Uses ValiConfig.RPC_CONTRACTMANAGER_PORT
 """
-import bittensor as bt
 from typing import Dict, Any, Optional
 import time
 from setproctitle import setproctitle

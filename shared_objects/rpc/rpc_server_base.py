@@ -67,7 +67,6 @@ import socket
 import inspect
 import threading
 import traceback
-import bittensor as bt
 from abc import ABC, abstractmethod
 from multiprocessing import Process, Event
 from multiprocessing.managers import BaseManager

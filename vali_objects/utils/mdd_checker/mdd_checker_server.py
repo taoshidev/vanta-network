@@ -22,7 +22,6 @@ Usage:
         start_daemon=True
     )
 """
-import bittensor as bt
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.utils.mdd_checker.mdd_checker import MDDChecker

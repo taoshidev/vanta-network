@@ -27,11 +27,10 @@ import re
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Set
 
-import bittensor as bt
 from flask import jsonify, request, Response
 
 from miner_config import MinerConfig
@@ -189,7 +188,7 @@ class EntityMinerRestServer(MinerRestServer):
                 del wallet_password
                 print(f"[ENTITY-GW-INIT] Wallet loaded: {self._hotkey.ss58_address}")
             else:
-                print(f"[ENTITY-GW-INIT] WARNING: Could not load wallet")
+                print("[ENTITY-GW-INIT] WARNING: Could not load wallet")
 
             # Derive mappings file path alongside the secrets file
             secrets_dir = os.path.dirname(MinerConfig.get_secrets_file_path())
@@ -389,7 +388,7 @@ class EntityMinerRestServer(MinerRestServer):
         self.app.route("/api/hl/<hl_address>/stream", methods=["GET"])(self.stream_endpoint)
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
-        print(f"[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
+        print("[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
 
     # ==================== HL Address Mapping ====================
 
@@ -911,7 +910,7 @@ class EntityMinerRestServer(MinerRestServer):
                         yield f"data: {json.dumps(data)}\n\n"
                     except queue.Empty:
                         # Send keepalive heartbeat
-                        yield f": heartbeat\n\n"
+                        yield ": heartbeat\n\n"
             except GeneratorExit:
                 pass
             finally:

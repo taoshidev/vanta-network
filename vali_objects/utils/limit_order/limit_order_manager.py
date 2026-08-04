@@ -2,7 +2,6 @@ import os
 import threading
 import traceback
 
-import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil
@@ -206,7 +205,7 @@ class LimitOrderManager(CacheController):
         # Validate that at least one of SL, TP, or trailing_stop is set
         if order.stop_loss is None and order.take_profit is None and order.trailing_stop is None:
             raise SignalException(
-                f"BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set"
+                "BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set"
             )
 
         # Set order type based on open position, skip validation if there is no position.
@@ -214,7 +213,7 @@ class LimitOrderManager(CacheController):
             order.order_type = open_position.position_type
         else:
             raise SignalException(
-                f"BRACKET order must have an open position"
+                "BRACKET order must have an open position"
             )
 
         # Validate SL/TP against reference price if provided
@@ -243,7 +242,7 @@ class LimitOrderManager(CacheController):
             )
 
         if order.order_type == OrderType.FLAT:
-            raise SignalException(f"FLAT order is not supported for LIMIT orders")
+            raise SignalException("FLAT order is not supported for LIMIT orders")
 
         # Validate bracket_orders if provided
         if order.bracket_orders:

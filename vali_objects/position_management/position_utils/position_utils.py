@@ -3,7 +3,6 @@
 import numpy as np
 import copy
 
-from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position, Order
 from vali_objects.vali_config import ValiConfig
 from vali_objects.enums.order_type_enum import OrderType

@@ -30,7 +30,6 @@ hotkey is the stake address being burned from).
 import argparse
 import sys
 
-import bittensor as bt
 from bittensor_wallet import Wallet
 from collateral_sdk import CollateralManager, Network
 

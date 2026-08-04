@@ -42,7 +42,6 @@ Important Notes:
 """
 
 from dataclasses import dataclass, field
-import bittensor as bt
 from datetime import datetime, timedelta, timezone
 from typing import List, Tuple
 
@@ -1339,7 +1338,7 @@ class DebtBasedScoring:
             for hotkey in pnl_scores.keys():
                 weights[hotkey] = floor
             if verbose:
-                logger.debug(f"  All miners have 0 PnL, assigning floor weight")
+                logger.debug("  All miners have 0 PnL, assigning floor weight")
 
         return weights
 

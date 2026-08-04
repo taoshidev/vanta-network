@@ -30,7 +30,7 @@ class MinerConfig:
 
     @staticmethod
     def get_position_file_location() -> str:
-        return ValiConfig.BASE_DIR + f"/mining/positions.json"
+        return ValiConfig.BASE_DIR + "/mining/positions.json"
 
     @staticmethod
     def get_secrets_file_path() -> str:

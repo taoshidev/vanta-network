@@ -9,7 +9,6 @@ while maintaining its unique execution model (runs in main validator process).
 """
 
 import time
-import bittensor as bt
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager

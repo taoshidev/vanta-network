@@ -8,7 +8,6 @@ import struct
 import time
 from multiprocessing import shared_memory
 from typing import Optional
-import bittensor as bt
 from time_util.time_util import TimeUtil
 from shared_objects.log import logger
 

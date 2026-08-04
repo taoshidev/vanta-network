@@ -22,15 +22,14 @@ Usage:
     positions = client.get_positions_for_one_hotkey(hotkey)
 """
 import time
-import bittensor as bt
 import traceback
 from typing import List, Dict, Optional
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from time_util.time_util import MS_IN_24_HOURS, S_IN_24_HOURS, TimeUtil, timeme
+from time_util.time_util import timeme
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.vali_config import TradePair, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.log import logger
 
 
@@ -128,17 +127,17 @@ class PositionManagerServer(RPCServerBase):
                 self._manager.compact_price_sources()
                 logger.info(f'Compacted price sources in {time.time() - t0:.2f} seconds')
                 self._last_compact_time_s = now
-            except Exception as e:
+            except Exception:
                 logger.error(f"Error in compaction daemon iteration: {traceback.format_exc()}")
 
         try:
             self._manager.settle_dividend_payments()
-        except Exception as e:
+        except Exception:
             logger.error(f"Error settling dividend payments: {traceback.format_exc()}")
 
         try:
             self._manager.refresh_position_fees()
-        except Exception as e:
+        except Exception:
             logger.error(f"Error in carry fee daemon iteration: {traceback.format_exc()}")
 
         # Align next daemon iteration to UTC hour boundary

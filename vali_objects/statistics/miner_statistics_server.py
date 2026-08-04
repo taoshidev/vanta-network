@@ -30,7 +30,6 @@ Usage:
 """
 import traceback
 
-import bittensor as bt
 
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -97,7 +96,7 @@ class MinerStatisticsServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
-        logger.info(f"[MINERSTATS_SERVER] MinerStatisticsManager initialized")
+        logger.info("[MINERSTATS_SERVER] MinerStatisticsManager initialized")
 
         # Start daemon if requested (deferred until all initialization complete)
         if start_daemon:
@@ -118,7 +117,7 @@ class MinerStatisticsServer(RPCServerBase):
         """
         try:
             time_now = TimeUtil.now_in_millis()
-            logger.debug(f"MinerStatisticsServer daemon: generating statistics cache...")
+            logger.debug("MinerStatisticsServer daemon: generating statistics cache...")
 
             # Delegate to manager for statistics generation
             self._manager.generate_request_minerstatistics(

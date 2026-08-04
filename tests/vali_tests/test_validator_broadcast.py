@@ -14,12 +14,11 @@ transmitted via RPC between processes.
 """
 import unittest
 import pickle
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from types import SimpleNamespace
 
 import template.protocol
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
-from vali_objects.vali_config import RPCConnectionMode
 from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 
 

@@ -1,12 +1,11 @@
 # developer: jbonilla
-import datetime
 import json
 from copy import deepcopy
 
 from data_generator.polygon_data_service import PolygonDataService
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from time_util.time_util import MS_IN_8_HOURS, MS_IN_24_HOURS
+from time_util.time_util import MS_IN_8_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import (
     Position,

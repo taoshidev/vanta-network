@@ -6,9 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-import bittensor as bt
 
-from tests.shared_objects.test_utilities import ledger_generator
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder
 from vali_objects.vali_config import RPCConnectionMode

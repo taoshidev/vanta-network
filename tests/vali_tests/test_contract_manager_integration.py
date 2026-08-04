@@ -8,7 +8,6 @@ operations work correctly with the new architecture. Uses running_unit_tests fla
 logic on network calls (similar to miner.py / test_miner_integration.py pattern).
 """
 import time
-from unittest.mock import MagicMock, patch, Mock
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase

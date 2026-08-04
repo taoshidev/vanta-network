@@ -20,7 +20,6 @@ import threading
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Any
 from collections import defaultdict
-import bittensor as bt
 from shared_objects.log import logger
 
 # Try to use requests library, fall back to urllib if not available
@@ -763,7 +762,7 @@ class SlackNotifier:
                     success = response.status == 200
 
             if success:
-                logger.info(f"[Slack] Message sent successfully")
+                logger.info("[Slack] Message sent successfully")
             return success
 
         except Exception as e:

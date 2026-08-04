@@ -46,7 +46,6 @@ Usage in consumers:
 """
 import threading
 import time
-import bittensor as bt
 
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode

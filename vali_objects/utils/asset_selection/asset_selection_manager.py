@@ -13,10 +13,9 @@ Asset selections are persisted to disk and loaded on startup.
 import threading
 from typing import Dict
 
-import bittensor as bt
 
 import template.protocol
-from vali_objects.vali_config import TradePairSource, RPCConnectionMode
+from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils

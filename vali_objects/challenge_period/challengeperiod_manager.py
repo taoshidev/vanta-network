@@ -739,7 +739,7 @@ class ChallengePeriodManager(CacheController):
     def sync_challenge_period_data(self, miner_states_data: dict):
         """Sync challenge period data from another validator."""
         if not miner_states_data:
-            logger.error(f'challenge_period_data appears invalid')
+            logger.error('challenge_period_data appears invalid')
 
         logger.info("syncing challenge period data")
         with self._buckets_lock:

@@ -1,6 +1,5 @@
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
-from shared_objects.log import logger
 
 
 class CommonDataClient(RPCClientBase):

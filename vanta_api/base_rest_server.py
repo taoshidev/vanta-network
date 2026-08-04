@@ -18,11 +18,10 @@ import time
 import json
 import traceback
 import threading
-import bittensor as bt
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Deque, Tuple
 from collections import defaultdict, deque
-from flask import Flask, jsonify, request, Response, g
+from flask import Flask, jsonify, request, g
 from waitress import serve
 from setproctitle import setproctitle
 from multiprocessing import current_process
@@ -328,25 +327,25 @@ class BaseRestServer(APIKeyMixin, ABC):
         # Store service name for logging
         self.service_name = service_name
 
-        print(f"[REST-INIT] Step 1/9: Initializing API key handling...")
+        print("[REST-INIT] Step 1/9: Initializing API key handling...")
         # Initialize API key handling
         APIKeyMixin.__init__(self, api_keys_file, refresh_interval)
-        print(f"[REST-INIT] Step 1/9: API key handling initialized ✓")
+        print("[REST-INIT] Step 1/9: API key handling initialized ✓")
 
-        print(f"[REST-INIT] Step 3/9: Setting REST server configuration...")
+        print("[REST-INIT] Step 3/9: Setting REST server configuration...")
         # Flask configuration
         self.flask_host = flask_host or "0.0.0.0"
         self.flask_port = flask_port or 8088
-        print(f"[REST-INIT] Step 3/9: Configuration set ✓")
+        print("[REST-INIT] Step 3/9: Configuration set ✓")
 
-        print(f"[REST-INIT] Step 4/9: Creating Flask app...")
+        print("[REST-INIT] Step 4/9: Creating Flask app...")
         # Create Flask app
         self.app = Flask(__name__)
         self.app.config['MAX_CONTENT_LENGTH'] = 256 * 1024  # 256 KB
         self.app.json_provider_class.sort_keys = False
-        print(f"[REST-INIT] Step 4/9: Flask app created ✓")
+        print("[REST-INIT] Step 4/9: Flask app created ✓")
 
-        print(f"[REST-INIT] Step 5/9: Contract owner loaded ✓")
+        print("[REST-INIT] Step 5/9: Contract owner loaded ✓")
 
         from flask_compress import Compress
         Compress(self.app)
@@ -354,28 +353,28 @@ class BaseRestServer(APIKeyMixin, ABC):
         # Audit logger for tier-500 admin endpoints
         self.audit_logger = AuditLogger()
 
-        print(f"[REST-INIT] Step 6/9: Setting up metrics tracking...")
+        print("[REST-INIT] Step 6/9: Setting up metrics tracking...")
         # Setup metrics tracking
         self._setup_metrics(metrics_interval_minutes)
-        print(f"[REST-INIT] Step 6/9: Metrics tracking initialized ✓")
+        print("[REST-INIT] Step 6/9: Metrics tracking initialized ✓")
 
         # Let subclass initialize clients/references (Step 2 happens in subclass)
         self._initialize_clients(**kwargs)
 
-        print(f"[REST-INIT] Step 7/9: Registering routes...")
+        print("[REST-INIT] Step 7/9: Registering routes...")
         # Let subclass register routes
         self._register_routes()
-        print(f"[REST-INIT] Step 7/9: Routes registered ✓")
+        print("[REST-INIT] Step 7/9: Routes registered ✓")
 
-        print(f"[REST-INIT] Step 8/9: Registering error handlers...")
+        print("[REST-INIT] Step 8/9: Registering error handlers...")
         # Register error handlers
         self._register_error_handlers()
-        print(f"[REST-INIT] Step 8/9: Error handlers registered ✓")
+        print("[REST-INIT] Step 8/9: Error handlers registered ✓")
 
-        print(f"[REST-INIT] Step 9/9: Starting API key refresh thread...")
+        print("[REST-INIT] Step 9/9: Starting API key refresh thread...")
         # Start API key refresh thread
         self.start_refresh_thread()
-        print(f"[REST-INIT] Step 9/9: API key refresh thread started ✓")
+        print("[REST-INIT] Step 9/9: API key refresh thread started ✓")
 
         # Flask server state
         self._flask_thread: Optional[threading.Thread] = None

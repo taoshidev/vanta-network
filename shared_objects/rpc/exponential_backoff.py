@@ -6,7 +6,6 @@ Exponential Backoff Strategy for Daemon Error Handling.
 This module provides a reusable exponential backoff strategy for handling
 daemon failures with smart defaults based on daemon execution frequency.
 """
-import bittensor as bt
 from shared_objects.log import logger
 
 

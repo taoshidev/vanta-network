@@ -29,7 +29,6 @@ from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey
 from shared_objects.slack_notifier import SlackNotifier
-import bittensor as bt
 from shared_objects.log import logger
 
 
@@ -547,8 +546,8 @@ class PenaltyLedgerManager:
         logger.info("[PENALTY_LEDGER] Penalty Ledger Manager - Daemon Mode (UTC-Aligned)")
         logger.info("[PENALTY_LEDGER] " + "=" * 80)
         logger.info("[PENALTY_LEDGER] Refresh Schedule: 00:00 UTC and 12:00 UTC (12-hour intervals)")
-        logger.info(f"[PENALTY_LEDGER] Delta Update Mode: Enabled (resumes from last checkpoint)")
-        logger.info(f"[PENALTY_LEDGER] Full Rebuild: Enabled after 48 hours of accumulated runtime")
+        logger.info("[PENALTY_LEDGER] Delta Update Mode: Enabled (resumes from last checkpoint)")
+        logger.info("[PENALTY_LEDGER] Full Rebuild: Enabled after 48 hours of accumulated runtime")
         logger.info(f"[PENALTY_LEDGER] Accumulated Runtime: {self.accumulated_runtime_seconds / 3600:.1f} hours")
         logger.info(f"[PENALTY_LEDGER] Slack Notifications: {'Enabled' if self.slack_notifier.webhook_url else 'Disabled'}")
         logger.info("[PENALTY_LEDGER] " + "=" * 80)

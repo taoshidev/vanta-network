@@ -5,7 +5,6 @@ Entity utility functions for synthetic hotkey parsing and validation.
 
 These are static utility functions that can be called without RPC overhead.
 """
-import bittensor as bt
 from typing import Tuple, Optional
 from shared_objects.log import logger
 

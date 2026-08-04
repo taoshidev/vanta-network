@@ -27,7 +27,6 @@ import logging
 import os
 import time
 
-import bittensor as bt
 
 # Set up logger for this module
 from shared_objects.log import logger

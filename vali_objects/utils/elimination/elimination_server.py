@@ -35,7 +35,6 @@ from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import RPCConnectionMode
 
-import bittensor as bt
 from shared_objects.log import logger
 
 
@@ -93,7 +92,7 @@ class EliminationServer(RPCServerBase):
             serve=serve
         )
 
-        logger.info(f"[ELIM_SERVER] EliminationManager initialized")
+        logger.info("[ELIM_SERVER] EliminationManager initialized")
 
         # Cache for fast fail-early checks (auto-refreshed by daemon)
         self._eliminations_cache = {}  # {hotkey: elimination_dict}

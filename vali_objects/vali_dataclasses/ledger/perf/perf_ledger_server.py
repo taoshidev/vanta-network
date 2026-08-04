@@ -18,7 +18,6 @@ Usage:
     client = PerfLedgerClient()
     ledgers = client.get_perf_ledgers()
 """
-import bittensor as bt
 from typing import List
 from shared_objects.rpc.common_data_client import CommonDataClient
 
@@ -87,7 +86,7 @@ class PerfLedgerServer(RPCServerBase):
             parallel_mode=parallel_mode
         )
 
-        logger.info(f"[PERFLEDGER_SERVER] PerfLedgerManager initialized")
+        logger.info("[PERFLEDGER_SERVER] PerfLedgerManager initialized")
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail

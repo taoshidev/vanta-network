@@ -14,7 +14,6 @@ Usage:
 import argparse
 import traceback
 
-import bittensor as bt
 
 from runnable.migration_utils import MigrationUtils
 from vali_objects.vali_dataclasses.position import Position

@@ -2,7 +2,6 @@ import math
 
 from vali_objects.enums.misc import TradePairReturnStatus
 from typing import Dict, Tuple, Optional
-import bittensor as bt
 from shared_objects.sn8_multiprocessing import ParallelizationMode, get_spark_session, get_multiprocessing_pool
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil

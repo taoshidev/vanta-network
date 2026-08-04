@@ -8,7 +8,6 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from pathlib import Path
 
 
-import bittensor as bt
 from shared_objects.log import logger
 
 

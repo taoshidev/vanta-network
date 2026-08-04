@@ -998,7 +998,7 @@ class SubtensorOpsManager(CacheController):
         if self.consecutive_failures > 0:
             if self.round_robin_enabled:
                 # Use modularized round-robin switching
-                logger.warning(f"Switching to next network in round-robin due to consecutive failures")
+                logger.warning("Switching to next network in round-robin due to consecutive failures")
                 self._switch_to_next_network(cleanup_connection=False, create_new_subtensor=False)
 
             # Try to create new subtensor BEFORE cleaning up old one

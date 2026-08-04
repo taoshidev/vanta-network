@@ -11,7 +11,6 @@ import threading
 import traceback
 from typing import Callable, Optional
 from multiprocessing import Process
-import bittensor as bt
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from shared_objects.log import logger
 

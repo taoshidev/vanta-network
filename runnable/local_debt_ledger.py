@@ -18,7 +18,6 @@ Usage:
     3. Run: python runnable/local_debt_ledger.py
 """
 
-import bittensor as bt
 from datetime import datetime, timezone
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates

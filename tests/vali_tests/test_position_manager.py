@@ -19,7 +19,6 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint
 
 
 class TestPositionManager(TestBase):
@@ -839,7 +838,7 @@ class TestPositionManager(TestBase):
 
         # Check for index desync
         if race_detected:
-            self.fail(f"INDEX DESYNC DETECTED:\n" + "\n".join(race_detected[:5]))
+            self.fail("INDEX DESYNC DETECTED:\n" + "\n".join(race_detected[:5]))
 
         # Final consistency check via client
         all_positions = self.position_client.get_positions_for_one_hotkey(miner_hotkey)

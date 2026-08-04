@@ -7,7 +7,6 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.position_management.position_manager import PositionManager
-import bittensor as bt
 import logging
 from shared_objects.log import logger
 

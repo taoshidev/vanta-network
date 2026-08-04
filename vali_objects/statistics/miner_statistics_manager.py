@@ -28,14 +28,13 @@ Usage:
 import json
 import gzip
 import copy
-import bittensor as bt
 
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
 
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils, CustomEncoder
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.position_management.position_utils.position_penalties import PositionPenalties

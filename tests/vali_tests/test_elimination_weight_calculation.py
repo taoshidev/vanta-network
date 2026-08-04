@@ -6,7 +6,6 @@ Combines weight calculation behavior and elimination weight tests.
 """
 from datetime import datetime, timezone
 
-import bittensor as bt
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.shared_objects.test_utilities import (

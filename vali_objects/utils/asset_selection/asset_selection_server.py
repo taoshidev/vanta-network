@@ -24,12 +24,11 @@ Usage:
     client = AssetSelectionClient()  # Uses ValiConfig.RPC_ASSETSELECTION_PORT
 """
 
-import bittensor as bt
 from typing import Dict
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
-from vali_objects.vali_config import TradePairSource, ValiConfig, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 import template.protocol
 from shared_objects.log import logger

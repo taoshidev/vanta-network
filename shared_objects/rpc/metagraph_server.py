@@ -21,8 +21,7 @@ Usage:
 
 Thread-safe: All RPC methods are atomic (lock-free via atomic tuple assignment).
 """
-import bittensor as bt
-from typing import Set, List, Optional, Tuple
+from typing import Set, List
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode

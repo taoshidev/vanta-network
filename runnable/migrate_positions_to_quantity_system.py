@@ -30,7 +30,6 @@ import time
 import traceback
 from multiprocessing import Pool, cpu_count
 
-import bittensor as bt
 from collections import defaultdict
 
 from vali_objects.enums.order_type_enum import OrderType
@@ -376,7 +375,7 @@ process_args = [
 ]
 
 # Process hotkeys in parallel
-print(f"Starting parallel migration...")
+print("Starting parallel migration...")
 if NUM_PROCESSES > 1:
     with Pool(processes=NUM_PROCESSES) as pool:
         hotkey_results = pool.map(process_hotkey, process_args)

@@ -3,11 +3,9 @@ import time
 from datetime import datetime, timedelta
 from typing import List
 from zoneinfo import ZoneInfo
-import bittensor as bt
 import databento as db
 
 from data_generator.base_data_service import BaseDataService
-from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
 from vali_objects.vali_dataclasses.corporate_actions import CorporateActions, DividendEvent
 from vali_objects.vali_dataclasses.price_source import PriceSource

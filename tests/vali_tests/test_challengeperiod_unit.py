@@ -15,7 +15,6 @@ from vali_objects.challenge_period.challengeperiod_manager import (
     MinerBucketState,
 )
 from vali_objects.enums.elimination_reason_enum import EliminationReason
-from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import TradePairCategory, ValiConfig
 

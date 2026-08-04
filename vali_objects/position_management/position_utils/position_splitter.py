@@ -6,7 +6,6 @@ Both PositionManager (client) and PositionManagerServer (server) use this module
 to avoid code duplication.
 """
 
-import bittensor as bt
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from shared_objects.log import logger

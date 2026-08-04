@@ -22,8 +22,6 @@ from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.position_management.position_manager_server import PositionManagerServer
-from vali_objects.contract.contract_server import ContractServer
-from vali_objects.contract.contract_client import ContractClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -31,7 +29,6 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
 from entity_management.entity_server import EntityServer
 from entity_management.entity_client import EntityClient
-import bittensor as bt
 
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -298,12 +295,12 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
         total_positions_in_backup = sum(len(json_positions['positions']) for json_positions in data['positions'].values())
         num_hotkeys = len(data['positions'].keys())
 
-        logger.info(f"=" * 80)
-        logger.info(f"RESTORE SUMMARY:")
+        logger.info("=" * 80)
+        logger.info("RESTORE SUMMARY:")
         logger.info(f"  Total hotkeys: {num_hotkeys}")
         logger.info(f"  Total positions: {total_positions_in_backup}")
         logger.info(f"  Average positions per hotkey: {total_positions_in_backup / num_hotkeys:.1f}")
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
 
         # CRITICAL: Clear both memory AND disk to avoid stale positions from previous runs
         # Without this, old positions on disk can trigger deletion logic during restore
@@ -383,7 +380,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
 
                 if extra_uuids:
                     logger.error(f"  Found {len(extra_uuids)} unexpected positions on disk:")
-                    logger.error(f"  POSSIBLE CAUSE: Position splitting may have occurred during save operations")
+                    logger.error("  POSSIBLE CAUSE: Position splitting may have occurred during save operations")
                     for uuid in list(extra_uuids)[:5]:  # Limit to first 5 for brevity
                         extra_pos = next((p for p in disk_positions if p.position_uuid == uuid), None)
                         if extra_pos:
@@ -403,22 +400,22 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
             total_saved += n_memory_positions
 
         # Log final global statistics and validate - fail fast on mismatch
-        logger.info(f"=" * 80)
-        logger.info(f"POSITION RESTORE COMPLETE:")
+        logger.info("=" * 80)
+        logger.info("POSITION RESTORE COMPLETE:")
         logger.info(f"  Expected to save: {total_positions_in_backup} positions")
         logger.info(f"  Actually saved: {total_saved} positions")
         if total_skipped:
             logger.warning(f"  Skipped: {total_skipped} positions (unresolvable dynamic trade pairs)")
         expected_saved = total_positions_in_backup - total_skipped
         if total_saved == expected_saved:
-            logger.info(f"  ✓ All resolvable positions successfully restored!")
+            logger.info("  ✓ All resolvable positions successfully restored!")
         else:
             logger.error(f"  ✗ Mismatch: {expected_saved - total_saved} positions missing")
             raise AssertionError(
                 f"GLOBAL POSITION COUNT MISMATCH: Expected {expected_saved} positions, "
                 f"but saved {total_saved}. Missing {expected_saved - total_saved} positions."
             )
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
 
         logger.info(f"regenerating {len(data['eliminations'])} eliminations")
         elimination_client.write_eliminations_to_disk(data['eliminations'])

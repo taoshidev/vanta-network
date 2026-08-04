@@ -2,14 +2,12 @@
 # Copyright (c) 2024 Yuma Rao
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
-import json
 import os
 import sys
 import threading
 import signal
 
 from vali_objects.enums.misc import SynapseMethod
-from vali_objects.enums.order_type_enum import OrderType
 from vanta_api.validator_api_manager import ValidatorAPIManager
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronContext
 from entity_management.entity_utils import is_synthetic_hotkey
@@ -30,12 +28,9 @@ from vali_objects.data_sync.order_sync_state import OrderSyncState
 from shared_objects.rate_limiter import RateLimiter
 from vali_objects.uuid_tracker import UUIDTracker
 from time_util.time_util import TimeUtil, timeme
-from vali_objects.exceptions.signal_exception import SignalException
-from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 from shared_objects.error_utils import ErrorUtils
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.utils.order_processor import OrderProcessor

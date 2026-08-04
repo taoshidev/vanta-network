@@ -8,7 +8,6 @@ for test cleanup and duplicate detection.
 """
 import threading
 from typing import Dict, List, TYPE_CHECKING
-import bittensor as bt
 from shared_objects.rpc.port_manager import PortManager
 from vali_objects.vali_config import RPCConnectionMode
 from shared_objects.log import logger

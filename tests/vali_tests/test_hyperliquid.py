@@ -10,9 +10,7 @@ Hyperliquid integration tests covering:
 - HyperliquidTracker fill processing, dedup, coin mapping, leverage calculation
 - Sync entity data with HL addresses
 """
-import re
 import unittest
-from collections import OrderedDict
 from unittest.mock import MagicMock, patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
@@ -20,9 +18,8 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 import os
 from vali_objects.vali_config import ValiConfig, TradePair, TradePairSource
-from vali_objects.trade_pair import HL_COIN_TO_TRADE_PAIR, HS_MAX_LEVERAGE
+from vali_objects.trade_pair import HS_MAX_LEVERAGE
 from time_util.time_util import TimeUtil
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from entity_management.hyperliquid_tracker import HyperliquidTracker
 
 
@@ -1422,7 +1419,8 @@ class TestHLTickerCoverage(unittest.TestCase):
 
     def test_all_hl_tradepairs_have_funding_rate(self):
         """Every HL-sourced TradePair.hl_coin must return at least one funding rate record in the last 48h."""
-        import requests, time
+        import requests
+        import time
         url = ValiConfig.hl_info_url()
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - 48 * 3600 * 1000

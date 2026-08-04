@@ -301,7 +301,7 @@ class EmissionsLedger:
         print(f"{'='*80}")
         print(f"Total Checkpoints: {len(self.checkpoints)}")
         print(f"Total Emissions: {self.get_cumulative_emissions():.6f} alpha (~{self.get_cumulative_emissions_tao():.6f} TAO)")
-        print(f"\nFirst 5 Checkpoints:")
+        print("\nFirst 5 Checkpoints:")
         print(f"{'Chunk Start (UTC)':<25} {'Chunk End (UTC)':<25} {'Chunk Alpha':>15} {'Cumulative Alpha':>15}")
         print(f"{'-'*80}")
 
@@ -317,7 +317,7 @@ class EmissionsLedger:
 
         if len(self.checkpoints) > 10:
             print(f"{'...':<25} {'...':<25} {'...':>15} {'...':>15}")
-            print(f"\nLast 5 Checkpoints:")
+            print("\nLast 5 Checkpoints:")
             print(f"{'Chunk Start (UTC)':<25} {'Chunk End (UTC)':<25} {'Chunk Alpha':>15} {'Cumulative Alpha':>15}")
             print(f"{'-'*80}")
 
@@ -994,7 +994,7 @@ class EmissionsLedgerManager:
             return MOCK_ALPHA_TO_TAO_RATE, MOCK_TAO_TO_USD_RATE
 
         logger.debug(
-            f"No emissions found in chunk, querying rates directly for zero-emission checkpoints"
+            "No emissions found in chunk, querying rates directly for zero-emission checkpoints"
         )
 
         # Query rates at a representative block (chunk midpoint)

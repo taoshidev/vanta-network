@@ -25,7 +25,6 @@ import copy
 import json
 import os
 import hashlib
-import bittensor as bt
 
 from google.cloud import storage
 
@@ -90,7 +89,7 @@ class CoreOutputsManager:
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
         self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
 
-        logger.info(f"[COREOUTPUTS_MANAGER] CoreOutputsManager initialized")
+        logger.info("[COREOUTPUTS_MANAGER] CoreOutputsManager initialized")
 
     # ==================== Properties (Forward Compatibility) ====================
 

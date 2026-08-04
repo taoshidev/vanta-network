@@ -13,9 +13,7 @@ Manages:
 This manager is wrapped by EntityCollateralServer which exposes methods via RPC.
 """
 
-import json
 import threading
-import bittensor as bt
 from typing import Dict, Optional, Tuple
 
 from time_util.time_util import TimeUtil

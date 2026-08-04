@@ -16,7 +16,6 @@ Client Usage:
 """
 from typing import Optional
 
-import bittensor as bt
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_dataclasses.position import Position

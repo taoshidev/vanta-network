@@ -4,7 +4,6 @@ HLFundingRateServer - RPC server for HL funding rate management.
 Follows the EntityServer pattern. Runs a daemon that periodically fetches
 recent funding rates from the HL API.
 """
-import bittensor as bt
 from typing import Dict, List, Optional
 
 from time_util.time_util import TimeUtil

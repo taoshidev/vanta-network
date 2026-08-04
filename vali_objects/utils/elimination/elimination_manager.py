@@ -22,30 +22,26 @@ from dataclasses import dataclass
 import shutil
 import threading
 
-import bittensor as bt
 
 from vali_objects.enums.order_source_enum import OrderSource
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from time_util.time_util import TimeUtil
-from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.cache_controller import CacheController
 from shared_objects.subtensor_ops.metagraph_utils import is_anomalous_hotkey_loss
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.vali_dataclasses.price_source import PriceSource
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
-from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_utils.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
@@ -143,7 +139,7 @@ class EliminationRow:
             lines.append(f"> Elimination drawdown: {self.elimination_drawdown_pct:.2f}%")
 
         if not self.collateral_slashed:
-            lines.append(f"> Collateral slashing failed!")
+            lines.append("> Collateral slashing failed!")
 
         return "\n".join(lines) + "\n"
 

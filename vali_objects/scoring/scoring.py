@@ -22,7 +22,6 @@ from vali_objects.utils.metrics import Metrics
 from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from entity_management.entity_utils import is_synthetic_hotkey
-import bittensor as bt
 from shared_objects.log import logger
 
 

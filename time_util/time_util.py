@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo  # Make sure to use Python 3.9 or later
 import pandas as pd
 
 from vali_objects.vali_config import TradePair, TradePairSource
-import bittensor as bt
 
 pd.set_option('future.no_silent_downcasting', True)
 from pandas.tseries.holiday import USFederalHolidayCalendar  # noqa: E402

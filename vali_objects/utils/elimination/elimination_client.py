@@ -18,13 +18,11 @@ Usage:
 """
 from typing import Dict, Set, List, Optional
 
-import bittensor as bt
 
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
-from time_util.time_util import TimeUtil
 from shared_objects.log import logger
 
 

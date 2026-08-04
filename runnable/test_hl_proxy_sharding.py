@@ -495,7 +495,7 @@ async def run_test(
         print(f"\n  {C_GREEN}SUCCESS: HyperliquidTracker processed live fills across shards!{C_RESET}")
     else:
         print(f"\n  {C_YELLOW}NO FILLS: Tracker ran but processed no fills in this window.{C_RESET}")
-        print(f"  This is normal if discovered wallets were inactive during the watch period.")
+        print("  This is normal if discovered wallets were inactive during the watch period.")
 
 
 def main():

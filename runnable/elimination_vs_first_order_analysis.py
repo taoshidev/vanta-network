@@ -18,7 +18,6 @@ from typing import Dict, List, Any
 from collections import defaultdict
 
 from daily_portfolio_returns import SharedDataManager, get_database_url_from_config, EliminationTracker
-import bittensor as bt
 from sqlalchemy import Column, String, Float, Integer, DateTime
 from sqlalchemy.orm import declarative_base
 
@@ -426,7 +425,7 @@ def main():
     only_eliminated = elim_hotkeys - order_hotkeys
     only_orders = order_hotkeys - elim_hotkeys
     
-    logger.info(f"Data summary:")
+    logger.info("Data summary:")
     logger.info(f"  - {len(common_miners)} miners with both elimination and first order data")
     logger.info(f"  - {len(only_eliminated)} miners with only elimination data (no src = 1 orders)")
     logger.info(f"  - {len(only_orders)} miners with only first order data (not eliminated)")
@@ -514,26 +513,26 @@ def main():
             
             # Create bulk UPDATE with CASE statements
             print("UPDATE eliminations SET")
-            print(f"  elimination_ms = CASE miner_hotkey")
+            print("  elimination_ms = CASE miner_hotkey")
             for hotkey, first_order_ms, current_elimination_ms, expected_elimination_ms in mismatched_miners:
                 print(f"    WHEN '{hotkey}' THEN {expected_elimination_ms}")
-            print(f"    ELSE elimination_ms")
-            print(f"  END,")
+            print("    ELSE elimination_ms")
+            print("  END,")
             print(f"  updated_ms = {current_time_ms}")
-            print(f"WHERE miner_hotkey IN (")
+            print("WHERE miner_hotkey IN (")
             hotkey_list = [f"'{hotkey}'" for hotkey, _, _, _ in mismatched_miners]
             print(f"  {', '.join(hotkey_list)}")
-            print(f");")
+            print(");")
             
             print("-"*140)
             print(f"-- Total: {len(mismatched_miners)} miners will be updated in single bulk command")
-            print(f"-- These will set elimination_ms = first_order_ms for mismatched miners")
+            print("-- These will set elimination_ms = first_order_ms for mismatched miners")
         else:
-            print(f"\n1a. NO ELIMINATION TIME UPDATES NEEDED")
+            print("\n1a. NO ELIMINATION TIME UPDATES NEEDED")
             print("All miners already have elimination_ms = first_order_ms")
             
     else:
-        print(f"\n1. MINERS WITH BOTH ELIMINATION AND FIRST ORDER DATA (0 miners)")
+        print("\n1. MINERS WITH BOTH ELIMINATION AND FIRST ORDER DATA (0 miners)")
         print("No miners found with both elimination data and first order data with src = 1")
     
     # Section 2: Miners with only elimination data (no src = 1 orders)
@@ -552,7 +551,7 @@ def main():
         print("-"*140)
         print(f"Total: {len(only_eliminated)} eliminated miners without qualifying orders")
     else:
-        print(f"\n2. ELIMINATED MINERS WITHOUT SRC = 1 ORDERS (0 miners)")
+        print("\n2. ELIMINATED MINERS WITHOUT SRC = 1 ORDERS (0 miners)")
         print("All eliminated miners have at least one order with src = 1")
     
     # Section 3: Miners with only first order data (not eliminated) - Generate SQL for these
@@ -585,7 +584,7 @@ def main():
         print(f"Total: {len(only_orders)} non-eliminated miners with qualifying orders")
         
         # Print SQL statements section
-        print(f"\n4. BULK SQL TO RECONCILE NON-ELIMINATED MINERS")
+        print("\n4. BULK SQL TO RECONCILE NON-ELIMINATED MINERS")
         print("-"*140)
         print("-- Execute this bulk INSERT to add elimination records for miners with src = 1 orders but no elimination:")
         print("-- Elimination time is set to first_order_ms, reason = 'RECONCILE_ORDER_SRC', max_drawdown = NULL")
@@ -610,12 +609,12 @@ def main():
         print(f"-- Total: {len(only_orders)} miners will be inserted in single bulk command")
         
     else:
-        print(f"\n3. NON-ELIMINATED MINERS WITH SRC = 1 ORDERS (0 miners)")
+        print("\n3. NON-ELIMINATED MINERS WITH SRC = 1 ORDERS (0 miners)")
         print("All miners with src = 1 orders have been eliminated")
     
     # Section 5: Generate SQL to delete invalid portfolio records
     if elimination_timestamps:
-        print(f"\n5. BULK SQL TO DELETE INVALID PORTFOLIO RECORDS")
+        print("\n5. BULK SQL TO DELETE INVALID PORTFOLIO RECORDS")
         print("-" * 140)
         print("-- Delete portfolio records beyond elimination_date + 1 day")
         print("-- Only affects eliminated miners with portfolio data after their elimination")
@@ -637,14 +636,14 @@ def main():
         print(f"-- Total: {len(elimination_timestamps)} eliminated miners checked")
         print("-- Records with dates beyond elimination_date + 1 day will be deleted")
     else:
-        print(f"\n5. NO PORTFOLIO CLEANUP NEEDED")
+        print("\n5. NO PORTFOLIO CLEANUP NEEDED")
         print("No elimination data available - no portfolio records to clean up")
     
     print("="*140)
     
     # Summary statistics
     total_unique_miners = len(elim_hotkeys | order_hotkeys)
-    logger.info(f"Analysis summary:")
+    logger.info("Analysis summary:")
     logger.info(f"  - Total unique miners: {total_unique_miners}")
     logger.info(f"  - Miners with both data: {len(both_data_results)}")
     logger.info(f"  - Eliminated only: {len(only_eliminated)}")

@@ -2,7 +2,6 @@ import requests
 
 from shared_objects.slack_notifier import SlackNotifier
 from vali_objects.vali_config import ValiConfig
-import bittensor as bt
 from shared_objects.log import logger
 
 

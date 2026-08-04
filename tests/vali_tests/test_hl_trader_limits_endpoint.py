@@ -273,7 +273,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
 
     def test_hl_all_per_class_values_match_table(self):
         """Each per-class entry matches TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY for the right tier."""
-        from vali_objects.vali_config import TradePairCategory, ValiConfig
+        from vali_objects.vali_config import ValiConfig
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             asset_class="hl_all",
             challenge_bucket=MinerBucket.SUBACCOUNT_FUNDED.value,

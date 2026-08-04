@@ -9,7 +9,6 @@ Runs a daemon that periodically refreshes the collateral cache from on-chain con
 Clients connect using EntityCollateralClient.
 """
 
-import bittensor as bt
 from typing import Optional, Tuple
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase

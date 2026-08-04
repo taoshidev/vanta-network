@@ -5,12 +5,10 @@ USDCPaymentService - Core logic for sending USDC payments to subaccount payout a
 Queries the validator API for payout amounts, then executes ERC-20 transfers on Base chain.
 Uses PaymentLedger for double-payment prevention and audit trail.
 """
-import json
 import time
 import uuid
 from typing import Optional
 
-import bittensor as bt
 import requests as http_requests
 
 from entity_management.payment_ledger import PaymentLedger, PaymentRecord, PayoutRunResult

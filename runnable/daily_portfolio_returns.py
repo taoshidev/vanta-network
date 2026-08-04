@@ -20,7 +20,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 
-import bittensor as bt
 import pandas as pd
 from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, text, inspect, tuple_
 from sqlalchemy.orm import declarative_base, sessionmaker
@@ -108,7 +107,7 @@ class SharedDataManager:
             logger.info(f"   📊 Portfolio data: {len(self.db_manager.all_portfolio_data)} miners, {total_portfolio_records} records")
         if self.elimination_tracker and self.elimination_tracker.loaded:
             logger.info(f"   📊 Eliminations: {len(self.elimination_tracker.elimination_timestamps)} eliminated miners")
-        logger.info(f"   📊 Price cache: Ready (0 cached prices)")
+        logger.info("   📊 Price cache: Ready (0 cached prices)")
         
     def _load_all_positions(self):
         """Load all positions using PositionSourceManager."""
@@ -340,7 +339,7 @@ def process_miner_with_main_logic(
     all_daily_returns_flattened = []  # Collect all return records for single bulk insert
     dates_processed = []
     
-    logger.info(f"📊 Calculating returns for all days...")
+    logger.info("📊 Calculating returns for all days...")
     while current_ms >= start_ms:
         day_counter += 1
         current_date = datetime.fromtimestamp(current_ms / 1000, tz=timezone.utc)
@@ -424,7 +423,7 @@ def process_miner_with_main_logic(
         logger.info(f"✅ [DRY RUN] Miner {hotkey}: Would bulk insert {len(all_daily_returns_flattened)} records across {len(dates_processed)} days "
                        f"(price fetching: {price_stats['cache_hits']} days cached, {price_stats['live_fetches']} days live-fetched, {price_stats['total_days']} days needed prices)")
     else:
-        logger.info(f"⚠️  No returns to insert")
+        logger.info("⚠️  No returns to insert")
     
     logger.info(f"✨ Completed! Processed {day_counter} days, batch inserted {days_inserted} records")
     return days_inserted
@@ -2028,7 +2027,7 @@ def main():
         logger.info(f"📅 Total days in range: {total_days}")
         logger.info(f"⏭️  Skipped existing: {len(existing_dates)}")
         logger.info(f"✅ Processed new days: {processed_days}")
-        logger.info(f"💾 Database: daily_portfolio_returns table updated")
+        logger.info("💾 Database: daily_portfolio_returns table updated")
         logger.info("=" * 80)
 
 

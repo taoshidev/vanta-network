@@ -10,11 +10,8 @@ Persistence follows the same pattern as entities.json via ValiBkpUtils.
 import json
 import os
 import threading
-import time
-import uuid
 from typing import Dict, List, Optional
 
-import bittensor as bt
 from pydantic import BaseModel, Field
 from shared_objects.log import logger
 

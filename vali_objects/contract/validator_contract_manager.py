@@ -12,9 +12,8 @@ The manager contains NO RPC infrastructure - that lives in ContractServer.
 This is pure business logic that can be tested independently.
 """
 import threading
-import bittensor as bt
 from collateral_sdk import CollateralManager, Network
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import time
 from time_util.time_util import TimeUtil
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient

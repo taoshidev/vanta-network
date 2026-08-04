@@ -9,9 +9,7 @@ handles shutdown.
 import json
 import os
 import time
-import bittensor as bt
 
-from miner_config import MinerConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vanta_api.entity_miner_rest_server import EntityMinerRestServer
 from shared_objects.log import logger
@@ -71,15 +69,15 @@ class EntityMinerAPIManager:
             logger.info(
                 f"Entity Miner Gateway started at http://{self.api_host}:{self.api_port}"
             )
-            logger.info(f"Endpoints available:")
-            logger.info(f"  POST   /api/submit-order         - Synchronous order submission (inherited)")
-            logger.info(f"  GET    /api/order-status/<uuid>   - Query order status (inherited)")
-            logger.info(f"  GET    /api/hl/<addr>/dashboard   - Cached dashboard")
-            logger.info(f"  GET    /api/hl/<addr>/events      - Order events")
-            logger.info(f"  GET    /api/hl/<addr>/stream      - SSE stream")
-            logger.info(f"  POST   /api/create-subaccount     - Create subaccount")
-            logger.info(f"  POST   /api/create-hl-subaccount  - Create HL subaccount")
-            logger.info(f"  GET    /api/health                - Health check")
+            logger.info("Endpoints available:")
+            logger.info("  POST   /api/submit-order         - Synchronous order submission (inherited)")
+            logger.info("  GET    /api/order-status/<uuid>   - Query order status (inherited)")
+            logger.info("  GET    /api/hl/<addr>/dashboard   - Cached dashboard")
+            logger.info("  GET    /api/hl/<addr>/events      - Order events")
+            logger.info("  GET    /api/hl/<addr>/stream      - SSE stream")
+            logger.info("  POST   /api/create-subaccount     - Create subaccount")
+            logger.info("  POST   /api/create-hl-subaccount  - Create HL subaccount")
+            logger.info("  GET    /api/health                - Health check")
 
         except Exception as e:
             logger.error(f"Failed to start Entity Miner Gateway: {e}")

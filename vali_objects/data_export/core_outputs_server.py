@@ -31,7 +31,6 @@ Usage:
 
 import traceback
 
-import bittensor as bt
 
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -95,7 +94,7 @@ class CoreOutputsServer(RPCServerBase):
             connection_mode=connection_mode
         )
 
-        logger.info(f"[COREOUTPUTS_SERVER] CoreOutputsManager initialized")
+        logger.info("[COREOUTPUTS_SERVER] CoreOutputsManager initialized")
 
         # Start daemon if requested (deferred until all initialization complete)
         if start_daemon:
@@ -115,7 +114,7 @@ class CoreOutputsServer(RPCServerBase):
         """
         try:
             time_now = TimeUtil.now_in_millis()
-            logger.debug(f"CoreOutputsServer daemon: generating checkpoint cache...")
+            logger.debug("CoreOutputsServer daemon: generating checkpoint cache...")
 
             # Ensure upload occurs at least once per hour, after the 24 minute mark
             datetime_now = TimeUtil.generate_start_timestamp(0)

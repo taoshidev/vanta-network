@@ -9,17 +9,13 @@ from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.position_management.position_utils.position_splitter import PositionSplitter
 from vali_objects.vali_dataclasses.position import Position
-import bittensor as bt
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 
-from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.position_management.position_manager import PositionManager
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient

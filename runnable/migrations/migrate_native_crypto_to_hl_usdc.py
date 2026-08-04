@@ -23,7 +23,6 @@ import os
 import sys
 import traceback
 
-import bittensor as bt
 
 from runnable.migration_utils import MigrationUtils
 from vali_objects.enums.misc import OrderStatus

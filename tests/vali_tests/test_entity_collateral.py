@@ -18,9 +18,8 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig, TradePair
+from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 
 
 class TestEntityCollateral(TestBase):
@@ -713,7 +712,6 @@ class TestEntityCollateral(TestBase):
 
     def test_elimination_manager_has_entity_collateral_client(self):
         """Test that EliminationManager creates an EntityCollateralClient."""
-        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 
         # Access the elimination server's manager through the orchestrator
         elim_server = self.orchestrator._servers.get('elimination')
@@ -751,7 +749,6 @@ class TestEntityCollateral(TestBase):
 
     def test_validator_py_retrieves_entity_collateral_client(self):
         """Test that validator.py has the entity_collateral_client retrieval line."""
-        import inspect
         # Read the validator module source to verify wiring
         with open("neurons/validator.py", "r") as f:
             source = f.read()

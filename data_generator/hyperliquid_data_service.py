@@ -5,7 +5,6 @@ import time
 import traceback
 from typing import List
 
-import bittensor as bt
 import requests
 import websockets
 

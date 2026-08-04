@@ -8,7 +8,6 @@ and sends alerts when a daemon appears to be hung.
 """
 import time
 import threading
-import bittensor as bt
 from time_util.time_util import TimeUtil
 from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from shared_objects.log import logger

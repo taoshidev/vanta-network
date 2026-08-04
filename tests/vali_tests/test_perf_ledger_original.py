@@ -1,4 +1,3 @@
-import bittensor as bt
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase

@@ -21,7 +21,6 @@ import socket
 import subprocess
 import time
 
-import bittensor as bt
 from shared_objects.log import logger
 
 

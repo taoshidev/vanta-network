@@ -8,11 +8,10 @@ Clients connect using EntityClient.
 
 Follows the same pattern as ChallengePeriodServer.
 """
-import bittensor as bt
 from typing import Optional, Tuple, Dict, List
 
 import template.protocol
-from entity_management.entity_manager import EntityManager, SubaccountInfo, EntityData
+from entity_management.entity_manager import EntityManager
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from shared_objects.log import logger

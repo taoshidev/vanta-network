@@ -26,7 +26,6 @@ import uuid
 from collections import OrderedDict
 from typing import Dict, List, Optional, Set
 
-import bittensor as bt
 import requests
 
 import ssl
@@ -821,7 +820,7 @@ class HyperliquidTracker:
         """Broadcast a rejection/error message to WebSocket subscribers for a subaccount."""
         logger.info(f"[HL_TRACKER] Broadcasting rejection for {synthetic_hotkey}: {error_msg}")
         if not self._ws_notifier_client:
-            logger.debug(f"[HL_TRACKER] No WS notifier client, skipping rejection broadcast")
+            logger.debug("[HL_TRACKER] No WS notifier client, skipping rejection broadcast")
             return
         try:
             self._ws_notifier_client.broadcast_subaccount_dashboard(synthetic_hotkey)

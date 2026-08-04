@@ -4,7 +4,6 @@ import os
 import traceback
 from pickle import UnpicklingError
 
-import bittensor as bt
 from collections import defaultdict
 from copy import deepcopy
 from pathlib import Path
@@ -16,15 +15,12 @@ from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMiss
 from vali_objects.position_management.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig, TradePair, RPCConnectionMode
-from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.enums.order_source_enum import OrderSource
-from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.vali_records_misalignment_exception import ValiRecordsMisalignmentException
 from vali_objects.position_management.position_utils.position_splitter import PositionSplitter
 from vali_objects.position_management.position_utils.position_filtering import PositionFiltering
-from vali_objects.utils.price_slippage_model import PriceSlippageModel
 from vali_objects.position_management.position_utils.positions_to_snap import positions_to_snap
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
@@ -444,7 +440,7 @@ class PositionManager:
             else:
                 logger.error(f"[POSITION ARCHIVE] {position.position_uuid} already archived or could not archive")
 
-        logger.info(f"[POSITION ARCHIVE] Archive complete")
+        logger.info("[POSITION ARCHIVE] Archive complete")
         return n_archived
 
     def delete_archived_positions_for_hotkey(self, hotkey: str) -> int:

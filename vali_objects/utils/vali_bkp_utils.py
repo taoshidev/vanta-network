@@ -8,7 +8,6 @@ import shutil
 from tempfile import NamedTemporaryFile
 from multiprocessing.managers import DictProxy
 
-import bittensor as bt
 import numpy as np
 import orjson
 from pydantic import BaseModel
@@ -98,7 +97,6 @@ class ValiBkpUtils:
         if os.path.exists(vanta_path):
             return vanta_path
         elif os.path.exists(ptn_path):
-            import bittensor as bt
             logger.warning(
                 "⚠️  Using api_keys.json from ptn_api/ (deprecated). "
                 "Please run vanta_api/migrate_from_ptn.sh to migrate your files."

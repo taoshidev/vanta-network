@@ -4,7 +4,6 @@ import os
 from enum import Enum
 from typing import Dict, List, Optional
 from collections import defaultdict
-import bittensor as bt
 import traceback
 from vali_objects.vali_dataclasses.position import Position
 from time_util.time_util import TimeUtil

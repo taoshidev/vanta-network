@@ -1,7 +1,6 @@
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
 
-import bittensor as bt
 from dataclasses import dataclass
 from typing import Optional
 from time_util.time_util import TimeUtil

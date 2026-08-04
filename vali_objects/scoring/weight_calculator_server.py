@@ -26,7 +26,6 @@ from typing import List, Tuple
 
 from setproctitle import setproctitle
 
-import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils

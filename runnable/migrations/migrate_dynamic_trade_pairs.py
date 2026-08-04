@@ -21,10 +21,8 @@ import os
 import sys
 import traceback
 
-import bittensor as bt
 
 from runnable.migration_utils import MigrationUtils
-from vali_objects.enums.misc import OrderStatus
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import (
     TRADE_PAIR_ID_TO_TRADE_PAIR,

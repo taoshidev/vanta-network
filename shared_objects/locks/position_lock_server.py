@@ -23,7 +23,6 @@ Usage:
         # Critical section
         pass
 """
-import bittensor as bt
 import threading
 from typing import Tuple, Dict
 

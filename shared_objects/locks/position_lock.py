@@ -1,5 +1,4 @@
 from threading import Lock
-import bittensor as bt
 from typing import Tuple, Optional, Dict
 from shared_objects.log import logger
 

@@ -5,7 +5,6 @@ This module provides session-scoped fixtures for managing ServerOrchestrator
 lifecycle across all tests, ensuring clean shutdown to prevent CI hangs.
 """
 import pytest
-import bittensor as bt
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator
 from shared_objects.log import logger
 

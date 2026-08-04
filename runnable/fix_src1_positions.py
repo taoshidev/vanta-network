@@ -18,7 +18,6 @@ import argparse
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
-import bittensor as bt
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
 from vali_objects.price_fetcher import LivePriceFetcherServer
@@ -275,12 +274,12 @@ WHERE order_uuid = '{order_data['order_uuid']}';
             print(f"   Hotkey: {comp['hotkey'][:16]}...")
             print(f"   Position UUID: {comp['position_uuid']}")
             print(f"   Trade Pair: {comp['trade_pair']}")
-            print(f"   " + "-"*80)
+            print("   " + "-"*80)
             
             update_data = comp['update_data']
             
             # Show return comparisons
-            print(f"   RETURNS:")
+            print("   RETURNS:")
             print(f"     return_at_close: {update_data['old_return_at_close']:.8f} → {update_data['new_return_at_close']:.8f}")
             
             diff_at_close = update_data['new_return_at_close'] - update_data['old_return_at_close']
@@ -434,7 +433,7 @@ WHERE order_uuid = '{order_data['order_uuid']}';
             sql_parts.append("")
         
         # Add summary
-        sql_parts.append(f"-- SUMMARY:")
+        sql_parts.append("-- SUMMARY:")
         sql_parts.append(f"-- Positions updated: {len(position_updates)}")
         sql_parts.append(f"-- Orders updated: {len(order_updates)}")
         
@@ -530,7 +529,7 @@ def main():
     fixer.output_sql_statements(args.output_file)
 
     # Summary
-    logger.info(f"🎯 SUMMARY:")
+    logger.info("🎯 SUMMARY:")
     logger.info(f"  📊 Positions found: {fixer.positions_found}")
     logger.info(f"  ✅ Positions fixed: {fixer.positions_fixed}")
     logger.info(f"  ❌ Positions failed: {fixer.positions_failed}")

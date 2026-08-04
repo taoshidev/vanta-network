@@ -3,7 +3,6 @@ import threading
 import traceback
 import json
 from datetime import timedelta
-from multiprocessing import Process
 
 import requests
 from typing import List
@@ -16,7 +15,6 @@ import time
 import websockets
 
 from vali_objects.utils.vali_utils import ValiUtils
-import bittensor as bt
 
 from vali_objects.vali_dataclasses.price_source import PriceSource
 

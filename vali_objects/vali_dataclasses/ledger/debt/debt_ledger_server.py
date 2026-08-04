@@ -10,7 +10,6 @@ Architecture:
 
 The server maintains self._manager and delegates all business logic to it.
 """
-import bittensor as bt
 import time
 from typing import Dict, Optional
 

@@ -23,7 +23,6 @@ Usage:
 from typing import Dict, Optional
 
 import requests
-import bittensor as bt
 
 from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.rpc.rpc_server_base import RPCServerBase

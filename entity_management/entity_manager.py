@@ -21,24 +21,18 @@ import re
 import uuid
 import time
 import threading
-import asyncio
-import bittensor as bt
 from typing import Dict, Optional, Tuple, List
-from collections import defaultdict
 from pydantic import BaseModel, Field
 
 import template.protocol
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from vali_objects.miner_account import MinerAccountClient
-from vali_objects.position_management.position_utils.position_utils import PositionUtils
-from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from datetime import datetime, timezone
-from vali_objects.vali_config import ValiConfig, RPCConnectionMode, TradePairCategory
+from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-from shared_objects.cache_controller import CacheController
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
@@ -420,7 +414,6 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
         """
-        import time
         t_start = time.time()
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)

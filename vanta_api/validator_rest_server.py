@@ -3,7 +3,6 @@ import re
 import secrets
 from string import hexdigits
 
-import bittensor as bt
 from typing import Optional
 
 from flask import jsonify, request, Response, send_file, make_response
@@ -115,11 +114,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Store connection_mode for use in _initialize_clients
         self._connection_mode = connection_mode
 
-        print(f"[REST-INIT] Initializing VantaRestServer with multiple inheritance...")
+        print("[REST-INIT] Initializing VantaRestServer with multiple inheritance...")
 
         # Initialize BaseRestServer first (Flask, metrics, error handlers)
         # This will call _initialize_clients() and _register_routes()
-        print(f"[REST-INIT] Initializing BaseRestServer (Flask)...")
+        print("[REST-INIT] Initializing BaseRestServer (Flask)...")
         BaseRestServer.__init__(
             self,
             api_keys_file=api_keys_file,
@@ -132,10 +131,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             connection_mode=connection_mode,
             running_unit_tests=running_unit_tests
         )
-        print(f"[REST-INIT] BaseRestServer initialized ✓")
+        print("[REST-INIT] BaseRestServer initialized ✓")
 
         # Initialize RPCServerBase (health monitoring)
-        print(f"[REST-INIT] Initializing RPCServerBase (health monitoring)...")
+        print("[REST-INIT] Initializing RPCServerBase (health monitoring)...")
         RPCServerBase.__init__(
             self,
             service_name=self.service_name,
@@ -246,7 +245,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     def _register_routes(self):
         """Register all API routes."""
-        print(f"[REST-INIT] Registering validator endpoints...")
+        print("[REST-INIT] Registering validator endpoints...")
 
         # Miner position endpoints
         self.app.route("/miner-positions", methods=["GET"])(self.get_miner_positions)
@@ -315,7 +314,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Public HL leaderboard (no auth required)
         self.app.route("/hl-leaderboard", methods=["GET"])(self.get_hl_leaderboard)
 
-        print(f"[REST-INIT] Validator endpoints registered ✓")
+        print("[REST-INIT] Validator endpoints registered ✓")
 
     # ============================================================================
     # MINER POSITION ENDPOINTS

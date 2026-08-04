@@ -2,12 +2,9 @@
 # Copyright (c) 2024 Taoshi Inc
 import os
 import asyncio
-import json
 from enum import Enum
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
-import bittensor as bt
-import traceback
 from time_util.time_util import TimeUtil
 from shared_objects.log import logger
 
@@ -279,7 +276,7 @@ class EliminationSourceManager:
                     elimination_manager.save_elimination(elimination_record)
                     elimination_count += 1
                 else:
-                    logger.warning(f"Elimination manager does not have expected methods for saving eliminations")
+                    logger.warning("Elimination manager does not have expected methods for saving eliminations")
                     break
         
         logger.info(f"Saved {elimination_count} elimination records for {len(hk_to_eliminations)} miners to elimination manager")

@@ -4,7 +4,6 @@
 import json
 
 from typing import Dict, List, Optional
-import bittensor as bt
 from google.cloud import secretmanager
 
 from vali_objects.exceptions.vali_bkp_file_missing_exception import (

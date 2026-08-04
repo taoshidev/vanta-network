@@ -31,7 +31,6 @@ import json
 import os
 from typing import Dict, List
 
-import bittensor as bt
 
 from vali_objects.enums.misc import OrderStatus
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils

@@ -43,10 +43,8 @@ import os
 import time
 import socket
 import threading
-import bittensor as bt
 from multiprocessing.managers import BaseManager
 from typing import Optional, Any, Dict
-from abc import abstractmethod
 
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.log import logger

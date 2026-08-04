@@ -22,7 +22,6 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from collections import defaultdict
 
-import bittensor as bt
 from sqlalchemy import create_engine, text
 
 from vali_objects.position_management.position_utils.position_source import PositionSourceManager, PositionSource
@@ -699,7 +698,7 @@ class EliminationTimingValidator:
                 for i, miner in enumerate(portfolio_violations):
                     logger.info(f"  {i+1}. {miner['hotkey']}")
                     logger.info(f"     Elimination: {miner['elimination_date']} ({miner['elimination_reason']})")
-                    logger.info(f"     Expected Final Portfolio: elimination day + 1")
+                    logger.info("     Expected Final Portfolio: elimination day + 1")
                     logger.info(f"     Actual Final Portfolio: {miner.get('final_portfolio_date', 'N/A')} ({miner.get('portfolio_days_after_elimination', 0)} days after)")
                     logger.info(f"     Extra Portfolio Rows: {miner.get('portfolio_rows_after_elimination', 0)}")
                     logger.info("")

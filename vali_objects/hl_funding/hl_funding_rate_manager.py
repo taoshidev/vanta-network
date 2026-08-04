@@ -10,7 +10,6 @@ import threading
 from bisect import bisect_left, bisect_right
 from typing import Dict, List, Optional
 
-import bittensor as bt
 import requests
 
 from vali_objects.vali_config import ValiConfig

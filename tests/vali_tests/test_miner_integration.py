@@ -10,7 +10,7 @@ import json
 import time
 import tempfile
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import bittensor as bt
 
 from neurons.miner import Miner
@@ -18,8 +18,6 @@ from miner_config import MinerConfig
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePair
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from dataclasses import dataclass
 
 

@@ -21,10 +21,9 @@ Usage in validator.py:
     price = client.get_latest_price(trade_pair)
 """
 import time
-from typing import List, Optional, Tuple, Dict
+from typing import List, Tuple, Dict
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-import bittensor as bt
 from vali_objects.vali_config import RPCConnectionMode
 
 from vali_objects.vali_config import TradePair, ValiConfig

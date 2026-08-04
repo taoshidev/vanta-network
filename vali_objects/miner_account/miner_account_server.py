@@ -16,10 +16,8 @@ Usage:
     from vali_objects.miner_account.miner_account_client import MinerAccountClient
     client = MinerAccountClient()
 """
-import time
 from datetime import datetime, timezone, timedelta
 
-import bittensor as bt
 from typing import Optional, Dict, List, Any
 
 import template.protocol

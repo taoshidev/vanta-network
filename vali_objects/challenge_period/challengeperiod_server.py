@@ -8,7 +8,6 @@ Clients connect using ChallengePeriodClient.
 
 """
 import time
-import bittensor as bt
 from typing import Tuple
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager

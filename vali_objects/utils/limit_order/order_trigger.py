@@ -10,7 +10,6 @@ this module reads but does not retain state.
 """
 from typing import NamedTuple
 
-import bittensor as bt
 
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType, StopCondition

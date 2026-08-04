@@ -1,7 +1,6 @@
 import copy
 
 import numpy as np
-import bittensor as bt
 
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
@@ -94,14 +93,14 @@ class RiskProfiling:
         # Build tabulated message
         msg_lines = [
             f"\n{'='*100}",
-            f"MONOTONIC POSITIONS: Zero Aggregate Leverage Detected",
+            "MONOTONIC POSITIONS: Zero Aggregate Leverage Detected",
             f"{'='*100}",
             f"Hotkey: {position.miner_hotkey}",
             f"Position: {position.position_uuid}",
             f"Type: {'LONG' if is_long else 'SHORT'}",
             f"Opened: {TimeUtil.millis_to_formatted_date_str(position.open_ms)}",
             f"{'='*100}",
-            f"COMPLETE ORDER HISTORY:",
+            "COMPLETE ORDER HISTORY:",
             f"{'-'*100}"
         ]
         

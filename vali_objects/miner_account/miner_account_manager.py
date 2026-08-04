@@ -15,7 +15,6 @@ import threading
 from dataclasses import dataclass, field
 from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
-import bittensor as bt
 
 from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil

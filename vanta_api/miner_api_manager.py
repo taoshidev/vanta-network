@@ -16,9 +16,7 @@ Much simpler than validator's APIManager:
 import json
 import os
 import time
-import bittensor as bt
 
-from miner_config import MinerConfig
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vanta_api.miner_rest_server import MinerRestServer
 from shared_objects.log import logger
@@ -91,10 +89,10 @@ class MinerAPIManager:
             logger.info(
                 f"Miner REST API server started at http://{self.api_host}:{self.api_rest_port}"
             )
-            logger.info(f"Endpoints available:")
-            logger.info(f"  POST   /api/submit-order        - Synchronous order submission")
-            logger.info(f"  GET    /api/order-status/<uuid>  - Query order status")
-            logger.info(f"  GET    /api/health              - Health check")
+            logger.info("Endpoints available:")
+            logger.info("  POST   /api/submit-order        - Synchronous order submission")
+            logger.info("  GET    /api/order-status/<uuid>  - Query order status")
+            logger.info("  GET    /api/health              - Health check")
 
         except Exception as e:
             logger.error(f"Failed to start Miner REST API server: {e}")

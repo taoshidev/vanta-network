@@ -18,7 +18,6 @@ from websockets.protocol import State
 from websockets.legacy.server import WebSocketServerProtocol
 from urllib.parse import urlsplit, parse_qs
 
-import bittensor as bt
 
 from entity_management.entity_client import EntityClient
 from entity_management.entity_utils import (
@@ -308,7 +307,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 # Queue it for processing
                 await self._broadcast_message_queue.put(self._create_test_position(current_time))
 
-                logger.info(f"WebSocketServer: Generated test position")
+                logger.info("WebSocketServer: Generated test position")
 
                 # Wait before generating the next order
                 await asyncio.sleep(self.test_positions_interval)
@@ -989,7 +988,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
         # Start test order generator if enabled
         if self.send_test_positions:
-            logger.info(f"WebSocketServer: Starting test order generator")
+            logger.info("WebSocketServer: Starting test order generator")
             self.test_positions_task = asyncio.create_task(self._generate_test_ws_positions())
 
         attempts = 0
@@ -1020,7 +1019,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         reuse_address=True,  # Allow reuse of the address
                         reuse_port=True  # Allow reuse of the port (on platforms that support it)
                     )
-                    logger.info(f"WebSocketServer: websockets.serve() completed successfully")
+                    logger.info("WebSocketServer: websockets.serve() completed successfully")
                 except Exception as serve_error:
                     logger.error(f"WebSocketServer: ERROR: websockets.serve() raised exception: {type(serve_error).__name__}: {serve_error}")
                     raise
@@ -1028,7 +1027,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 logger.info(f"WebSocketServer: WebSocket server started at ws://{self.host}:{self.port}")
 
                 # Keep the server running indefinitely
-                logger.info(f"WebSocketServer: Entering main event loop (await asyncio.Future())...")
+                logger.info("WebSocketServer: Entering main event loop (await asyncio.Future())...")
                 await asyncio.Future()
 
             except OSError as e:
@@ -1041,7 +1040,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                     logger.info(f"WebSocketServer: Retrying in {self.reconnect_interval} seconds...")
                     await asyncio.sleep(self.reconnect_interval)
                 else:
-                    logger.error(f"WebSocketServer: Maximum retry attempts reached. Giving up.")
+                    logger.error("WebSocketServer: Maximum retry attempts reached. Giving up.")
                     raise
             except asyncio.CancelledError:
                 if self._broadcast_message_queue_task:
@@ -1061,13 +1060,13 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
             except Exception as e:
                 logger.error(f"WebSocketServer: Unexpected error starting WebSocket server: {type(e).__name__}: {e}")
-                logger.error(f"WebSocketServer: Full traceback:")
+                logger.error("WebSocketServer: Full traceback:")
                 logger.error(f"WebSocketServer: {traceback.format_exc()}")
                 raise
 
     async def shutdown(self) -> None:
         """Gracefully shut down the WebSocket server."""
-        logger.info(f"WebSocketServer: Shutting down WebSocket server...")
+        logger.info("WebSocketServer: Shutting down WebSocket server...")
 
         # Signal the shutdown to all tasks
         if self.shutdown_event:
@@ -1120,7 +1119,7 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 except Exception as e:
                     logger.error(f"WebSocketServer: Error cancelling task: {e}")
 
-        logger.info(f"WebSocketServer: WebSocket server shutdown complete")
+        logger.info("WebSocketServer: WebSocket server shutdown complete")
 
     @classmethod
     def entry_point_start_server(cls, **kwargs):
@@ -1181,33 +1180,33 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
 
     def run(self):
         """Start the server in the current process."""
-        logger.info(f"WebSocketServer: Starting WebSocket server...")
+        logger.info("WebSocketServer: Starting WebSocket server...")
         setproctitle(f"vali_{self.__class__.__name__}")
         try:
-            logger.info(f"WebSocketServer: Creating new event loop...")
+            logger.info("WebSocketServer: Creating new event loop...")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
             self.shutdown_event = asyncio.Event()
 
-            logger.info(f"WebSocketServer: Creating main task for start()...")
+            logger.info("WebSocketServer: Creating main task for start()...")
             main_task = loop.create_task(self.start())
 
-            logger.info(f"WebSocketServer: Creating thread for dashboard updates...")
+            logger.info("WebSocketServer: Creating thread for dashboard updates...")
             dashboard_update_thread = Thread(target=self._process_dashboard_update_queue, daemon=True)
             dashboard_update_thread.start()
 
-            logger.info(f"WebSocketServer: Creating thread for dashboard refreshes...")
+            logger.info("WebSocketServer: Creating thread for dashboard refreshes...")
             dashboard_refresh_thread = Thread(target=self._process_dashboard_refresh, daemon=True)
             dashboard_refresh_thread.start()
 
             # Run the loop until keyboard interrupt
-            logger.info(f"WebSocketServer: Running event loop with run_until_complete()...")
+            logger.info("WebSocketServer: Running event loop with run_until_complete()...")
             try:
                 loop.run_until_complete(main_task)
-                logger.info(f"WebSocketServer: Event loop completed (this shouldn't happen unless shutting down)")
+                logger.info("WebSocketServer: Event loop completed (this shouldn't happen unless shutting down)")
             except KeyboardInterrupt:
-                logger.info(f"WebSocketServer: Keyboard interrupt detected! Shutting down...")
+                logger.info("WebSocketServer: Keyboard interrupt detected! Shutting down...")
                 # Set shutdown event - this will signal all tasks to stop
                 self.shutdown_event.set()
 
@@ -1225,16 +1224,16 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
 
-                logger.info(f"WebSocketServer: All tasks have been stopped.")
+                logger.info("WebSocketServer: All tasks have been stopped.")
             finally:
                 # Close the loop
                 loop.close()
 
         except Exception as e:
             logger.error(f"WebSocketServer: FATAL ERROR in WebSocket server run(): {type(e).__name__}: {e}")
-            logger.error(f"WebSocketServer: Full traceback:")
+            logger.error("WebSocketServer: Full traceback:")
             logger.error(f"{traceback.format_exc()}")
-            logger.error(f"WebSocketServer: WebSocket server process exiting due to error")
+            logger.error("WebSocketServer: WebSocket server process exiting due to error")
             raise
 
 

@@ -11,7 +11,6 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
-import bittensor as bt
 
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -242,7 +241,7 @@ class MarketOrderManager():
             allowed, reason = self._entity_collateral_client.try_gate_position_open(hotkey, order.value)
             if not allowed:
                 logger.error(f"{hotkey} {order_uuid} Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
-                raise SignalException(f"Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
+                raise SignalException("Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
 
         if is_buy and trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA and miner_account.asset_class == MinerAssetClass.EQUITIES:
             cash_available = balance - (miner_account.capital_used - miner_account.total_borrowed_amount)

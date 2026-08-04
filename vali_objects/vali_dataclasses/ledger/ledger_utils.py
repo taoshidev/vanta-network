@@ -10,7 +10,6 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from time_util.time_util import ForexHolidayCalendar
-import bittensor as bt
 from shared_objects.log import logger
 
 

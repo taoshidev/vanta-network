@@ -1,5 +1,4 @@
 import datetime
-import json
 import os
 import time
 import traceback
@@ -7,7 +6,6 @@ from collections import defaultdict, Counter
 from copy import deepcopy
 from typing import List
 
-import bittensor as bt
 from setproctitle import setproctitle
 
 from data_generator.polygon_data_service import PolygonDataService
@@ -247,7 +245,7 @@ class PerfLedgerManager(CacheController):
     @staticmethod
     def print_bundle(hk: str, ledger: PerfLedger):
         logger.info(f'Hotkey: {hk}. Max return: {ledger.max_return}. Initialization time: {TimeUtil.millis_to_timestamp(ledger.initialization_time_ms)}')
-        logger.info(f'  --portfolio-- ')
+        logger.info('  --portfolio-- ')
         for idx, x in enumerate(ledger.cps):
             last_update_formatted = TimeUtil.millis_to_timestamp(x.last_update_ms)
             if 1:  # idx == 0 or idx == len(ledger.cps) - 1:
@@ -1035,8 +1033,8 @@ class PerfLedgerManager(CacheController):
             # A negative gap means we're re-processing old data (regeneration)
             # A positive gap means start_time is in the future - this is a bug
             if gap != 0:
-                logger.error(f"BUG DETECTED: Attempting to build ledger starting from future time")
-                logger.error(f"  Ledger ID: portfolio")
+                logger.error("BUG DETECTED: Attempting to build ledger starting from future time")
+                logger.error("  Ledger ID: portfolio")
                 logger.error(f"  Ledger last_update_ms: {expected_start} ({TimeUtil.millis_to_formatted_date_str(expected_start)})")
                 logger.error(f"  Requested start_time_ms: {start_time_ms} ({TimeUtil.millis_to_formatted_date_str(start_time_ms)})")
                 logger.error(f"  Gap: {gap/1000/60:.2f} minutes into the future")
@@ -1055,7 +1053,7 @@ class PerfLedgerManager(CacheController):
         if not is_ledger_first_update:
             gap_from_last_update = start_time_ms - portfolio_pl.last_update_ms
             if gap_from_last_update != 1:
-                logger.error(f"Gap validation failed for portfolio:")
+                logger.error("Gap validation failed for portfolio:")
                 logger.error(f"  perf_ledger.last_update_ms: {portfolio_pl.last_update_ms}")
                 logger.error(f"  start_time_ms: {start_time_ms}")
                 logger.error(f"  gap: {gap_from_last_update}")
@@ -1509,7 +1507,7 @@ class PerfLedgerManager(CacheController):
                         logger.error(f"    order_types: {[o.order_type.value for o in p.orders]}")
                         logger.error(f"    order_sources: {[o.src for o in p.orders]}")
                         if not has_flat_order:
-                            logger.error(f"    THEORY CONFIRMED: Open position WITHOUT FLAT order but likely manually closed!")
+                            logger.error("    THEORY CONFIRMED: Open position WITHOUT FLAT order but likely manually closed!")
 
                 assert n_open_positions == 0 or n_open_positions == 1, (n_open_positions, n_closed_positions, [p for p in tp_to_historical_positions[symbol] if p.is_open_position])
                 if n_open_positions == 1:

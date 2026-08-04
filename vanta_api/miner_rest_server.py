@@ -21,7 +21,6 @@ import os
 import json
 import time
 import uuid
-import bittensor as bt
 from flask import jsonify, request
 
 from vanta_api.base_rest_server import BaseRestServer
@@ -94,11 +93,11 @@ class MinerRestServer(BaseRestServer):
 
         Called by BaseRestServer.__init__() but miner doesn't need RPC clients.
         """
-        print(f"[MINER-REST-INIT] No RPC clients needed (direct PropNetOrderPlacer reference)")
+        print("[MINER-REST-INIT] No RPC clients needed (direct PropNetOrderPlacer reference)")
 
     def _register_routes(self):
         """Register miner-specific endpoints."""
-        print(f"[MINER-REST-INIT] Registering miner endpoints...")
+        print("[MINER-REST-INIT] Registering miner endpoints...")
 
         # Synchronous order submission (new primary endpoint)
         self.app.route("/api/submit-order", methods=["POST"])(self.submit_order_endpoint)
@@ -109,7 +108,7 @@ class MinerRestServer(BaseRestServer):
         # Health check
         self.app.route("/api/health", methods=["GET"])(self.health_endpoint)
 
-        print(f"[MINER-REST-INIT] 3 miner endpoints registered")
+        print("[MINER-REST-INIT] 3 miner endpoints registered")
 
     # ============================================================================
     # ENDPOINT HANDLERS

@@ -8,10 +8,7 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import List
 
-import bittensor as bt
-from polygon import WebSocketClient
 from setproctitle import setproctitle
-from tiingo import TiingoWebsocketClient
 
 from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar

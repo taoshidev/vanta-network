@@ -13,7 +13,6 @@ Architecture:
 - DebtLedgerServer wraps manager with RPC infrastructure
 - Tests verify production integration of all three data sources
 """
-import bittensor as bt
 import time
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode

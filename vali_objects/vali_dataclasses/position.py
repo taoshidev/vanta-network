@@ -3,16 +3,14 @@ from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
-from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource, DAILY_STOCK_BORROW_RATE, DAILY_MARGIN_INTEREST_RATE
+from vali_objects.trade_pair import TradePair, TradePairSource, DAILY_STOCK_BORROW_RATE, DAILY_MARGIN_INTEREST_RATE
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
-import bittensor as bt
 import re
-import math
 from shared_objects.log import logger
 
 

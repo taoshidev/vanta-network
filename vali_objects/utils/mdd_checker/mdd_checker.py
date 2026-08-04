@@ -14,7 +14,6 @@ import time
 import traceback
 from typing import List, Dict
 
-import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
 from shared_objects.rpc.common_data_client import CommonDataClient

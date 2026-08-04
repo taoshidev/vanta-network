@@ -16,7 +16,6 @@ from vali_objects.utils.elimination.elimination_server import EliminationServer
 from vali_objects.position_management.position_manager_server import PositionManagerServer
 from vali_objects.data_sync.validator_sync_base import ValidatorSyncBase
 from entity_management.entity_server import EntityServer
-import bittensor as bt
 
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer

@@ -13,7 +13,6 @@ import traceback
 import threading
 from typing import List, Tuple
 
-import bittensor as bt
 
 from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
@@ -114,7 +113,6 @@ class WeightCalculatorManager(CacheController):
             connection_mode=connection_mode
         )
 
-        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
         self._debt_ledger_client = DebtLedgerClient(
             running_unit_tests=running_unit_tests,
             connect_immediately=False,
