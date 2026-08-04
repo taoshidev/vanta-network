@@ -256,6 +256,7 @@ class MinerAccount:
             'max_return': self.max_return,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
+            'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
         }
 
 
