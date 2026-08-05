@@ -250,7 +250,7 @@ class MinerAccountClient(RPCClientBase):
         """
         self._server.process_order_buy(hotkey, order_value_usd, borrowed_amount, fee_usd, trade_pair_category)
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0) -> None:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -262,8 +262,10 @@ class MinerAccountClient(RPCClientBase):
             fee_usd: Transaction fee in USD
             trade_pair_category: Asset class of the position being closed, for capital_used_by_class
                 tracking. Optional for backward compat with callers that haven't been updated.
+            unrealized_pnl_released: The portion of account.unrealized_pnl attributable to the
+                closed quantity (prev position unrealized_pnl minus remaining after close).
         """
-        self._server.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd, trade_pair_category)
+        self._server.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd, trade_pair_category, unrealized_pnl_released)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""
