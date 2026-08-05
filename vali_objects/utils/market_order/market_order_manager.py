@@ -183,6 +183,7 @@ class MarketOrderManager():
             f"[ORDER_EXECUTION] {hotkey} {order_uuid} sizing: qty={quantity:.6g} val=${value:.4f} (from {order_size})"
         )
 
+        prev_unrealized_pnl = position.unrealized_pnl
         position.set_returns(fill_price, quote_usd_conversion=quote_usd_rate)
         if self._is_effective_close(position, order_type, quantity, value):
             order_type = OrderType.FLAT
@@ -259,8 +260,10 @@ class MarketOrderManager():
             )
         else:
             entry_value = abs(order.quantity) * trade_pair.lot_size * position.average_entry_price * order.quote_usd_rate
+            unrealized_pnl_released = prev_unrealized_pnl - position.unrealized_pnl
             self._miner_account_client.process_order_sell(
-                hotkey, entry_value, realized_pnl, loan_repaid, transaction_fee, trade_pair.trade_pair_category
+                hotkey, entry_value, realized_pnl, loan_repaid, transaction_fee, trade_pair.trade_pair_category,
+                unrealized_pnl_released=unrealized_pnl_released,
             )
             self._entity_collateral_client.try_slash_on_position_close(hotkey, realized_pnl)
 

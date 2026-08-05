@@ -874,7 +874,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0) -> None:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -887,6 +887,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
             trade_pair_category: Asset class of the position being closed. Required to maintain
                 capital_used_by_class. Optional for backward compat; if None, the per-class
                 bookkeeping is not adjusted for this close.
+            unrealized_pnl_released: The portion of account.unrealized_pnl attributable to the
+                closed quantity (prev position unrealized_pnl minus remaining after close).
         """
         account = self.get_or_create(hotkey)
         entry_value_usd = abs(entry_value_usd)
@@ -897,6 +899,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.capital_used = max(0.0, account.capital_used - entry_value_usd)
             account.total_realized_pnl += realized_pnl
             account.total_fees_paid += fee_usd
+            account.unrealized_pnl -= unrealized_pnl_released
             if trade_pair_category is not None:
                 account.capital_used_by_class[trade_pair_category] = max(
                     0.0, account.capital_used_by_class.get(trade_pair_category, 0.0) - entry_value_usd
