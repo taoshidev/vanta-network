@@ -597,7 +597,7 @@ class ValiConfig:
     HL_WS_RECONNECT_BACKOFF_MAX_S = 30.0
     HL_PROXY_SECRET_KEY = "hl_proxy_url"  # key in secrets.json for base proxy URL (without port)
     HL_PROXY_PORTS_SECRET_KEY = "hl_proxy_ports"  # key in secrets.json for port list/range
-    HL_MAX_PROXY_SHARDS = 50  # safety cap on proxy connections (500 addresses max)
+    HL_MAX_PROXY_SHARDS = 100  # safety cap on proxy connections (500 addresses max)
     HL_SHARD_MAX_CONSECUTIVE_FAILURES = 5  # failures before marking a proxy IP as unhealthy
     HL_PORT_REST_FAILURE_THRESHOLD = 3
     HL_PORT_HEALTH_PROBE_INTERVAL_S = 30.0
