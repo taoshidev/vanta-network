@@ -191,20 +191,23 @@ class MarketOrderManager():
         is_buy = order_type == position.position_type
         if is_buy:
             max_order_value, binding_cap = get_max_order_size(miner_account, position)
+            logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} max_order_value=${max_order_value:.4f}")
             if max_order_value <= 0:
-                raise SignalException(f"{hotkey} {order_uuid} No buying power remaining for {trade_pair.trade_pair_id} (capped by {binding_cap})")
+                msg = f"No buying power remaining for {trade_pair.trade_pair_id} (capped by {binding_cap})"
+                logger.error(f"[ORDER_EXECUTION] {hotkey} {order_uuid} {msg}")
+                raise SignalException(msg)
             sign = -1 if order_type == OrderType.SHORT else 1
             clamped_value = sign * min(abs(value), max_order_value)
             if abs(clamped_value) < abs(value):
                 logger.info(
                     f"[ORDER_EXECUTION] {hotkey} {order_uuid} order value clamped from ${value:.4f} to ${clamped_value:.4f} by {binding_cap}"
                 )
-            value = clamped_value
-            quantity, leverage, value = convert_order_sizes(
-                OrderSize(value=value), usd_base_rate, trade_pair, balance,
-                round_qty=True,
-                use_nano_increment=use_nano_increment,
-            )
+                quantity, leverage, value = convert_order_sizes(
+                    OrderSize(value=clamped_value), usd_base_rate, trade_pair, balance,
+                    round_qty=True,
+                    use_floor=True,
+                    use_nano_increment=use_nano_increment,
+                )
 
         if abs(value) < 1e-9 or abs(quantity) < 1e-9:
             raise SignalException("Error processing order: 0 order size after clamping")

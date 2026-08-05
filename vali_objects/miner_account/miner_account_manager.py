@@ -256,6 +256,7 @@ class MinerAccount:
             'max_return': self.max_return,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
+            'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
         }
 
 
@@ -853,7 +854,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             tolerance = 0.001  # floating point errors
             if order_value_usd + fee_usd * account.multiplier > account.buying_power + tolerance:
                 raise SignalException(
-                    f"Insufficient buying power. Need ${order_value_usd + fee_usd:.2f}, have ${account.buying_power:.2f}"
+                    f"Insufficient buying power. Need ${order_value_usd + fee_usd * account.multiplier:.2f}, have ${account.buying_power:.2f}"
                 )
 
             if account.asset_class == MinerAssetClass.EQUITIES and borrowed_amount > 0:
