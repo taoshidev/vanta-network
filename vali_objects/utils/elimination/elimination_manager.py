@@ -619,7 +619,7 @@ class EliminationManager(CacheController):
         )
 
         idle_threshold_ms = ValiConfig.IDLE_MINER_MAXIMUM_MS
-        near_idle_threshold_ms = idle_threshold_ms * 0.9
+        near_idle_threshold_ms = idle_threshold_ms * 0.98
         idle_hotkeys = {}
         near_idle_hotkeys = {}
 

@@ -441,9 +441,7 @@ class ChallengePeriodManager(CacheController):
                 return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
 
         if 1 - state.drawdown.current_equity / state.drawdown.eod_hwm > state.eod_drawdown_threshold:
-            logger.info(f"[CHALLENGE] near ELIMINATION with current equity at EOD {state.eod_drawdown_threshold_pct}%: {state}")
-        elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
-            logger.info(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
+            logger.info(f"[CHALLENGE] near trailing EOD with current equity at EOD {state.eod_drawdown_threshold_pct}%: {state}")
 
         return None
 
@@ -469,8 +467,10 @@ class ChallengePeriodManager(CacheController):
                 return EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN
             else:
                 return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN
-        elif state.drawdown.static_eod_drawdown_pct > threshold_pct * 0.75:
-            logger.info(f"[CHALLENGE] near static EOD drawdown {threshold_pct}%: {state}")
+
+        if (1.0 - state.drawdown.current_equity) * 100.0 > threshold_pct:
+            logger.info(f"[CHALLENGE] near static EOD with current equity {threshold_pct}%: {state}")
+
         return None
 
     @staticmethod
@@ -655,7 +655,11 @@ class ChallengePeriodManager(CacheController):
             current_equity = account.equity / account.account_size
             current_balance = account.balance / account.account_size
             if current_equity is None or current_balance is None:
-                logger.warning(f"[CHALLENGE] {hotkey} invalid account or has no positions, skipping evaluation")
+                logger.error(f"[CHALLENGE] {hotkey} invalid account, skipping evaluation")
+                continue
+
+            if not positions.get(hotkey):
+                # skip log: no positions mean new account or recently promoted, no ledger
                 continue
 
             ledger = ledgers.get(hotkey)
