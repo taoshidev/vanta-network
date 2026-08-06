@@ -198,6 +198,7 @@ class Validator(ValidatorBase):
         # orchestrator.call_pre_run_setup(perform_order_corrections=True)
 
         # Start remaining server daemons
+        time.sleep(1)  # Stagger for servers to finish initailizing
         orchestrator.start_server_daemons([
             'perf_ledger',
             'miner_account',
