@@ -100,16 +100,20 @@ COMMODITIES_MAX_LEVERAGE = 2
 HS_MIN_LEVERAGE = 0.01
 HS_MAX_LEVERAGE = 1.0
 
-# HL fee constants. Applied to HL-sourced pairs, priced at or below HL's own schedule
-# (0.045% taker / 0.015% maker) by design.
-HL_TAKER_FEE = 0.0003   # 0.03%
-HL_MAKER_FEE = 0.00015  # 0.015%
+# (taker, maker) for HL-sourced pairs. Priced below HL's own schedule
+HL_FEE_BY_CATEGORY = {
+    TradePairCategory.CRYPTO:      (0.0003,  0.0003),   # 3 bps
+    TradePairCategory.EQUITIES:    (0.0001,  0.0001),   # 1 bp
+    TradePairCategory.COMMODITIES: (0.00005, 0.00005),  # 0.5 bps
+    TradePairCategory.INDICES:     (0, 0),
+    TradePairCategory.FOREX:       (0, 0),
+}
 
 # Vanta fee constants
 TRANSACTION_FEE_RATE = {
-    TradePairCategory.CRYPTO:      0.0005,   # 0.05%
-    TradePairCategory.EQUITIES:    0.0005,   # 0.05%
-    TradePairCategory.COMMODITIES: 0.00045,  # 0.045%
+    TradePairCategory.CRYPTO:      0.0003,   # 3 bps
+    TradePairCategory.EQUITIES:    0.0001,   # 1 bp
+    TradePairCategory.COMMODITIES: 0.00005,  # 0.5 bps
     TradePairCategory.FOREX:       0,
     TradePairCategory.INDICES:     0,
 }
@@ -1396,7 +1400,8 @@ class TradePair(Enum):
         """Maker rate only when the fill added liquidity; taker when it took or is unknown."""
         if self.src != TradePairSource.HYPERLIQUID:
             return TRANSACTION_FEE_RATE.get(self.trade_pair_category, 0)
-        return HL_MAKER_FEE if is_hl_taker is False else HL_TAKER_FEE
+        taker, maker = HL_FEE_BY_CATEGORY[self.trade_pair_category]
+        return maker if is_hl_taker is False else taker
 
     @property
     def carry_fee_rate_per_interval(self) -> float:
