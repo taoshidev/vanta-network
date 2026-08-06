@@ -247,6 +247,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """Register all API routes."""
         print("[REST-INIT] Registering validator endpoints...")
 
+        # Health check
+        self.app.route("/api/health", methods=["GET"])(self.health_endpoint)
+
         # Miner position endpoints
         self.app.route("/miner-positions", methods=["GET"])(self.get_miner_positions)
         self.app.route("/miner-positions/<minerid>", methods=["GET"])(self.get_miner_positions_single)
@@ -337,6 +340,23 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({"error": "Entity management not available"}), HTTPStatus.SERVICE_UNAVAILABLE
 
         return None
+
+    def health_endpoint(self):
+        """
+        GET /api/health - Server health check.
+
+        Response (200 OK):
+        {
+            "status": "healthy",
+            "service": "ValidatorRestServer",
+            "timestamp": 1234567890.123
+        }
+        """
+        return jsonify({
+            'status': 'healthy',
+            'service': 'ValidatorRestServer',
+            'timestamp': time.time()
+        }), 200
 
     def get_miner_positions(self):
         api_key = self._get_api_key_safe()
