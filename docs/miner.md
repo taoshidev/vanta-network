@@ -381,11 +381,12 @@ Hyperliquid-linked entity positions (subaccounts mirroring a real Hyperliquid ac
 | Market      | Spread Fee Rate       | Applied To           |
 |-------------|-----------------------|----------------------|
 | Forex       | None                  | N/A                  |
-| Crypto      | 0.05% \* order value  | Each order placed    |
-| Commodities | 0.045% \* order value | Each order placed    |
-| Equities    | 0.05% \* order value  | Each order placed    |
+| Indices     | None                  | N/A                  |
+| Crypto      | 0.03% \* order value  | Each order placed    |
+| Equities    | 0.01% \* order value  | Each order placed    |
+| Commodities | 0.005% \* order value | Each order placed    |
 
-Hyperliquid-sourced pairs use Hyperliquid's own fee schedule instead of the category rate above, regardless of asset class: **0.03% (taker)** or **0.015% (maker)** of order value. The maker rate applies to fills that rested on the book — a resting limit order, or the take-profit leg of a bracket order. Everything else — market orders, immediate limit/bracket fills, and the stop-loss leg of a bracket — is priced as taker.
+The rate depends only on asset class — market and limit orders, and both legs of a bracket order, are all charged the same.
 
 ### Leverage Limits
 
