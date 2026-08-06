@@ -224,8 +224,8 @@ class LivePriceFetcher:
         if trade_pair.src == TradePairSource.HYPERLIQUID:
             return hl_sources
 
+        databento_sources = []
         # NOTE re-enable after resolving databento spread
-        # databento_sources = []
         # if self.databento_data_service and trade_pair.is_equities:
         #     databento_sources = self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
 
