@@ -194,7 +194,8 @@ class Validator(ValidatorBase):
         self.subtensor_ops_manager = subtensor_ops_server.manager  # For blacklist_fn
 
         # Run pre-run setup (safe - metagraph already populated)
-        orchestrator.call_pre_run_setup(perform_order_corrections=True)
+        # NOTE re-enable if needed
+        # orchestrator.call_pre_run_setup(perform_order_corrections=True)
 
         # Start remaining server daemons
         orchestrator.start_server_daemons([
