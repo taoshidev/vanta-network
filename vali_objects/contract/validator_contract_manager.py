@@ -572,7 +572,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         Slash miner's collateral by a proportion (1.0 for 100%)
         """
         if not self.is_mothership:
-            return False
+            return True
 
         if not (0.0 <= slash_proportion <= 1.0):
             logger.error(f"Invalid collateral slash proportion: {slash_proportion}")
@@ -594,7 +594,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             miner_hotkey: miner hotkey to slash from
         """
         if not self.is_mothership:
-            return False
+            return True
 
         if slash_amount is None or slash_amount < 0:
             logger.error(f"Invalid collateral slash amount: {slash_amount}")
