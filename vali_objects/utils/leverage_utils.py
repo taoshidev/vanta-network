@@ -27,12 +27,12 @@ def get_position_leverage_bounds(trade_pair: TradePair) -> tuple[float, float]:
 def get_leverage_tier(miner_bucket, account_size: float) -> int:
     """Return leverage tier (1-4) for an entity subaccount.
 
-    Tier 1: SUBACCOUNT_CHALLENGE (any size)
+    Tier 1: SUBACCOUNT_CHALLENGE / SUBACCOUNT_PRO_CHALLENGE (any size)
     Tier 2: non-challenge, account_size < $200K
     Tier 3: non-challenge, $200K <= account_size < $1M
     Tier 4: non-challenge, account_size >= $1M
     """
-    if miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+    if miner_bucket and miner_bucket.is_subaccount_challenge:
         return 1
     if account_size >= ValiConfig.LEVERAGE_TIER4_MIN_ACCOUNT_SIZE:
         return 4
@@ -104,7 +104,9 @@ def get_max_order_size(
 
     max_value, binding_cap = min(limits, key=lambda x: x[0])
 
-    transaction_fee_rate = trade_pair.transaction_fee_rate()
+    transaction_fee_rate = trade_pair.transaction_fee_rate(
+        is_pro=bool(account.miner_bucket and account.miner_bucket.is_pro)
+    )
     if max_value * (1 + transaction_fee_rate * account.multiplier) > portfolio_room:
         max_value = max_value / (1 + transaction_fee_rate * account.multiplier)
 

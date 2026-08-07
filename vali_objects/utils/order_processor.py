@@ -133,7 +133,8 @@ class OrderProcessor:
                     f"https://github.com/taoshidev/vanta-cli"
                 )
                 return False, msg, trade_pair
-            if not miner_account.asset_class.can_trade(trade_pair):
+            is_pro = bool(miner_account.miner_bucket and miner_account.miner_bucket.is_pro)
+            if not miner_account.asset_class.can_trade(trade_pair, is_pro):
                 msg = f"Selected asset class [{miner_account.asset_class}] cannot submit orders for trade pair [{trade_pair.trade_pair}]."
                 return False, msg, trade_pair
 
