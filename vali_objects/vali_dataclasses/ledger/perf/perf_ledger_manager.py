@@ -1700,7 +1700,7 @@ class PerfLedgerManager(CacheController):
 
         # Freeze funded subaccount perf ledgers (move to separate frozen storage)
         frozen_ledger_hotkeys = self._elimination_client.get_eliminated_hotkeys_by_bucket(
-            [MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA]
+            [MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA, MinerBucket.SUBACCOUNT_PRO_FUNDED]
         )
 
         # Move frozen ledgers from active to frozen storage
