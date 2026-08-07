@@ -224,6 +224,54 @@ class PortManager:
             pass
 
     @staticmethod
+    def wait_for_ports_free(
+        ports: list,
+        host: str = 'localhost',
+        timeout: float = 5.0,
+        initial_delay: float = 0.01
+    ) -> list:
+        """
+        Wait for a set of ports to all become free, polling with exponential backoff.
+
+        Returns the list of ports still held when the timeout expires (empty on success).
+        """
+        if not ports:
+            return []
+
+        deadline = time.time() + timeout
+        backoff = initial_delay
+        remaining = [p for p in ports if not PortManager.is_port_free(p, host)]
+
+        while remaining and time.time() < deadline:
+            time_left = deadline - time.time()
+            time.sleep(min(backoff, max(time_left, 0)))
+            backoff *= 2
+            remaining = [p for p in remaining if not PortManager.is_port_free(p, host)]
+
+        return remaining
+
+    @staticmethod
+    def pids_holding_ports(ports: list) -> dict:
+        """Return {port: [pid, ...]} for any process still holding the given ports."""
+        if os.name != 'posix' or not ports:
+            return {}
+
+        holders: dict = {}
+        try:
+            for port in ports:
+                result = subprocess.run(
+                    ['lsof', '-ti', f':{port}'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    holders[port] = result.stdout.strip().split('\n')
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        return holders
+
+    @staticmethod
     def force_kill_all_rpc_ports() -> None:
         """
         Force-kill any processes using any known RPC port.

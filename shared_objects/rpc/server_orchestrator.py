@@ -617,6 +617,25 @@ class ServerOrchestrator:
             # Kill any stale servers from previous runs
             PortManager.force_kill_all_rpc_ports()
 
+            # Wait for the kernel to actually release the sockets before we
+            # start binding new listeners. SIGKILL returns before socket teardown
+            # completes, and the multiprocessing BaseManager listener does not set
+            # SO_REUSEADDR, so racing into bind() causes EADDRINUSE on restart.
+            from vali_objects.vali_config import ValiConfig
+            rpc_ports = sorted({
+                getattr(ValiConfig, name)
+                for name in dir(ValiConfig)
+                if name.startswith('RPC_') and name.endswith('_PORT')
+                and isinstance(getattr(ValiConfig, name, None), int)
+            })
+            still_held = PortManager.wait_for_ports_free(rpc_ports, timeout=5.0)
+            if still_held:
+                holders = PortManager.pids_holding_ports(still_held)
+                raise RuntimeError(
+                    f"RPC ports still in use after cleanup: {holders or still_held}. "
+                    f"Kill the holding process(es) manually and restart."
+                )
+
             # Determine which servers to start based on mode
             servers_to_start = []
             for server_name, server_config in self.SERVERS.items():
