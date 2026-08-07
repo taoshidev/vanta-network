@@ -71,6 +71,12 @@ class EliminationRow:
         if self.reason in (EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
                            EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN.value):
             self.bucket_at_elimination = MinerBucket.SUBACCOUNT_FUNDED
+        elif self.reason in (EliminationReason.FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
+                             EliminationReason.FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN.value):
+            self.bucket_at_elimination = MinerBucket.SUBACCOUNT_PRO_FUNDED
+        elif self.reason in (EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
+                             EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_EOD_DRAWDOWN.value):
+            self.bucket_at_elimination = MinerBucket.SUBACCOUNT_PRO_CHALLENGE
         elif self.reason in (EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
                            EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value):
             self.bucket_at_elimination = MinerBucket.SUBACCOUNT_CHALLENGE
@@ -513,7 +519,7 @@ class EliminationManager(CacheController):
             if not collateral_slashed:
                 logger.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}")
 
-        if is_subaccount and bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+        if is_subaccount and bucket_at_elimination is not None and bucket_at_elimination.is_subaccount_earning:
             # Assume succes (slashed on entity collateral daemon)
             # Also collateral slashed not relevant for subaccounts
             self._entity_collateral_client.try_slash_on_elimination(hotkey)
@@ -606,7 +612,8 @@ class EliminationManager(CacheController):
         logger.info("checking all active buckets for inactive miner eliminations.")
 
         active_buckets = [MinerBucket.MAINCOMP, MinerBucket.CHALLENGE, MinerBucket.PROBATION,
-                          MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA]
+                          MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA,
+                          MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED]
 
         candidate_hotkeys = set()
         candidate_hotkeys.update(self._challenge_period_client.get_hotkeys_by_bucket(active_buckets))
@@ -712,7 +719,8 @@ class EliminationManager(CacheController):
         """Delete position files and miner directory after the retention window expires.
         Skips funded subaccounts to preserve accrued realized pnl.
         """
-        if elimination_data.bucket_at_elimination in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+        bucket = elimination_data.bucket_at_elimination
+        if bucket is not None and bucket.is_subaccount_earning:
             return
 
         is_expired = now_ms - elimination_data.elimination_initiated_time_ms >= ValiConfig.ELIMINATION_FILE_DELETION_DELAY_MS

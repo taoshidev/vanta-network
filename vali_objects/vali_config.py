@@ -432,6 +432,24 @@ class ValiConfig:
     SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # retired rule, no longer enforced — kept for dashboard/API payload compatibility
     SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: flat intraday-drawdown threshold for static accounts, regardless of bucket entry time
 
+    # Pro account (entity subaccount) rules. Values currently mirror the standard subaccount
+    # rules above so pro behaves identically until real values are set.
+    PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = 0.1
+    PRO_CHALLENGE_RETURNS_THRESHOLD = {
+        MinerAssetClass.CRYPTO: 0.1,
+        MinerAssetClass.FOREX: 0.08,
+        MinerAssetClass.EQUITIES: 0.1,
+        MinerAssetClass.HL_ALL: 0.1,
+        MinerAssetClass.ALL_MARKETS: 0.1,
+        MinerAssetClass.COMMODITIES: 0.1,
+    }
+    PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
+    PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.05
+    PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
+    PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
+    PRO_STATIC_DRAWDOWN_THRESHOLD = 0.05
+    PRO_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05
+
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
 

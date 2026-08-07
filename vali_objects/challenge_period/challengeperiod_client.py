@@ -120,11 +120,13 @@ class ChallengePeriodClient(RPCClientBase):
 
     def get_testing_miners(self) -> dict[str, int]:
         """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_miners_rpc([MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE])
+        return self._server.get_miners_rpc([MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE,
+                                            MinerBucket.SUBACCOUNT_PRO_CHALLENGE])
 
     def get_success_miners(self) -> dict[str, int]:
         """Get all MAINCOMP bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_miners_rpc([MinerBucket.MAINCOMP, MinerBucket.SUBACCOUNT_FUNDED])
+        return self._server.get_miners_rpc([MinerBucket.MAINCOMP, MinerBucket.SUBACCOUNT_FUNDED,
+                                            MinerBucket.SUBACCOUNT_PRO_FUNDED])
 
     def get_probation_miners(self) -> dict[str, int]:
         """Get all PROBATION bucket miners as dict {hotkey: start_time}."""

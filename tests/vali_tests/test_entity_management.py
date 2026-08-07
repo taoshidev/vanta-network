@@ -17,6 +17,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
 class TestEntityManagement(TestBase):
@@ -35,6 +36,7 @@ class TestEntityManagement(TestBase):
     orchestrator = None
     entity_client = None
     metagraph_client = None
+    challenge_period_client = None
 
     @classmethod
     def setUpClass(cls):
@@ -52,6 +54,7 @@ class TestEntityManagement(TestBase):
         # Get clients from orchestrator (servers guaranteed ready, no connection delays)
         cls.entity_client = cls.orchestrator.get_client('entity')
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.challenge_period_client = cls.orchestrator.get_client('challenge_period')
 
     @classmethod
     def tearDownClass(cls):
@@ -146,6 +149,52 @@ class TestEntityManagement(TestBase):
         # Verify synthetic hotkey format
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
         self.assertEqual(synthetic_hotkey, f"{self.ENTITY_HOTKEY_1}_0")
+
+    def test_create_subaccount_defaults_to_standard_account_type(self):
+        """Omitting account_type keeps the standard track."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto"
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertEqual(subaccount_info['account_type'], 'standard')
+        bucket = self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(bucket, MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    def test_create_pro_subaccount_lands_in_pro_challenge_bucket(self):
+        """account_type='pro' puts the subaccount on the pro bucket track."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto",
+            account_type="pro"
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertEqual(subaccount_info['account_type'], 'pro')
+        bucket = self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(bucket, MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+
+    def test_create_subaccount_rejects_invalid_account_type(self):
+        """An unrecognized account_type is rejected before any state is written."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto",
+            account_type="platinum"
+        )
+
+        self.assertFalse(success)
+        self.assertIsNone(subaccount_info)
+        self.assertIn("account_type", message)
 
     def test_create_multiple_subaccounts(self):
         """Test creating multiple subaccounts for an entity."""
