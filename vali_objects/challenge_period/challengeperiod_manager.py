@@ -390,7 +390,8 @@ class ChallengePeriodManager(CacheController):
 
         if state_changed:
             self._sync_buckets_to_accounts(hotkeys=list({*eliminations, *demotions, *promotions}))
-            self._save_to_disk()
+
+        self._save_to_disk()
 
         counts = {}
         for state in self.miner_states.values():
@@ -446,7 +447,7 @@ class ChallengePeriodManager(CacheController):
                 return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
 
         if 1 - state.drawdown.current_equity / state.drawdown.eod_hwm > state.eod_drawdown_threshold:
-            logger.info(f"[CHALLENGE] near trailing EOD with current equity at EOD {state.eod_drawdown_threshold_pct}%: {state}")
+            logger.info(f"[CHALLENGE] near trailing EOD with current equity {state.eod_drawdown_threshold_pct}%: {state}")
 
         return None
 
@@ -689,19 +690,18 @@ class ChallengePeriodManager(CacheController):
                 logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
                 continue
 
-            last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
+            last_eod_equity, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
 
             # Use daily open snapshot from miner account for intraday drawdown baseline; fall back to ledger
             snapshot = account.daily_open_snapshot
             if snapshot and TimeUtil.get_start_of_day_ms(snapshot.snapshot_ms) == current_day_open_ms:
-                last_eod = snapshot.equity_return
-                daily_open_equity = snapshot.equity_return
+                last_eod_equity = daily_open_equity = snapshot.equity_return
                 last_eod_checked_ms = current_day_open_ms
 
             if last_eod_checked_ms == current_day_open_ms:
                 existing.daily_open_equity = daily_open_equity
-                existing.eod_hwm = eod_hwm
-                existing.last_eod_equity = last_eod
+                existing.eod_hwm = max(eod_hwm, last_eod_equity)
+                existing.last_eod_equity = last_eod_equity
                 existing.last_eod_checked_ms = last_eod_checked_ms
 
     def _refresh_rank_cache(
