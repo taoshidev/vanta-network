@@ -16,14 +16,24 @@ class MinerBucket(Enum):
     SUBACCOUNT_CHALLENGE = "SUBACCOUNT_CHALLENGE"
     SUBACCOUNT_FUNDED = "SUBACCOUNT_FUNDED"
     SUBACCOUNT_ALPHA = "SUBACCOUNT_ALPHA"
+    # Pro account buckets - parallel track to the standard subaccount buckets above
+    SUBACCOUNT_PRO_CHALLENGE = "SUBACCOUNT_PRO_CHALLENGE"
+    SUBACCOUNT_PRO_FUNDED = "SUBACCOUNT_PRO_FUNDED"
 
 
     def intraday_drawdown_threshold(self, time_ms: int | None = None) -> float:
         """
         Returns the intraday drawdown threshold for this bucket from ValiConfig.
         For SUBACCOUNT_FUNDED, time_ms is the miner's SUBACCOUNT_CHALLENGE registration
-        timestamp and determines which versioned threshold applies.
+        timestamp and determines which versioned threshold applies. Pro buckets are not
+        versioned - they have no legacy tier.
         """
+        if self == MinerBucket.SUBACCOUNT_PRO_CHALLENGE:
+            return ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
+
+        if self == MinerBucket.SUBACCOUNT_PRO_FUNDED:
+            return ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+
         if self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.CHALLENGE):
             return ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
 
@@ -43,8 +53,15 @@ class MinerBucket(Enum):
         """
         Returns the intraday drawdown threshold for this bucket from ValiConfig.
         For SUBACCOUNT_FUNDED, time_ms is the miner's SUBACCOUNT_CHALLENGE registration
-        timestamp and determines which versioned threshold applies.
+        timestamp and determines which versioned threshold applies. Pro buckets are not
+        versioned - they have no legacy tier.
         """
+        if self == MinerBucket.SUBACCOUNT_PRO_CHALLENGE:
+            return ValiConfig.PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD
+
+        if self == MinerBucket.SUBACCOUNT_PRO_FUNDED:
+            return ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD
+
         if self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.CHALLENGE):
             return ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD
 
@@ -64,7 +81,28 @@ class MinerBucket(Enum):
 
     @property
     def is_subaccount(self) -> bool:
-        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA)
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA,
+                        MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED)
+
+    @property
+    def is_pro(self) -> bool:
+        return self in (MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED)
+
+    @property
+    def is_subaccount_challenge(self) -> bool:
+        """True for either subaccount track's challenge bucket."""
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+
+    @property
+    def is_subaccount_funded(self) -> bool:
+        """True for either subaccount track's funded bucket (the promotion target)."""
+        return self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_PRO_FUNDED)
+
+    @property
+    def is_subaccount_earning(self) -> bool:
+        """True for subaccount buckets that earn payouts, carry margin requirements, and are
+        subject to entity collateral slashing."""
+        return self.is_subaccount_funded or self == MinerBucket.SUBACCOUNT_ALPHA
 
     @property
     def next_bucket(self) -> "MinerBucket | None":
@@ -74,6 +112,8 @@ class MinerBucket(Enum):
             return MinerBucket.MAINCOMP
         elif self == MinerBucket.SUBACCOUNT_CHALLENGE:
             return MinerBucket.SUBACCOUNT_FUNDED
+        elif self == MinerBucket.SUBACCOUNT_PRO_CHALLENGE:
+            return MinerBucket.SUBACCOUNT_PRO_FUNDED
         # TODO determine if we need alpha or keep subaccounts as funded
         # elif self == MinerBucket.SUBACCOUNT_FUNDED:
         #     return MinerBucket.SUBACCOUNT_ALPHA
@@ -108,7 +148,9 @@ class MinerBucket(Enum):
                 MinerBucket.PLAGIARISM,
                 MinerBucket.SUBACCOUNT_CHALLENGE,
                 MinerBucket.SUBACCOUNT_FUNDED,
-                MinerBucket.SUBACCOUNT_ALPHA
+                MinerBucket.SUBACCOUNT_ALPHA,
+                MinerBucket.SUBACCOUNT_PRO_CHALLENGE,
+                MinerBucket.SUBACCOUNT_PRO_FUNDED
                 )
 
 @dataclass

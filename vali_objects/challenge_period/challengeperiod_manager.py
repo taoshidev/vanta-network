@@ -64,7 +64,7 @@ class DrawdownStats:
 
     @property
     def static_drawdown_pct(self) -> float:
-        return (1.0 - self.current_equity) * 100.0
+        return (1.0 - self.current_balance) * 100.0
 
     @property
     def static_eod_drawdown_pct(self) -> float:
@@ -194,9 +194,6 @@ class MinerBucketState:
 
     @property
     def intraday_drawdown_threshold(self):
-        if self.drawdown_criteria == DrawdownCriteria.STATIC:
-            # 5% for static accounts, regardless of bucket or registration time
-            return ValiConfig.SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD
         if self.current_bucket == MinerBucket.ELIMINATED:
             if len(self.entries) >= 2:
                 prev_entry = self.entries[-2]
@@ -344,24 +341,27 @@ class ChallengePeriodManager(CacheController):
                 eliminations[hotkey] = reason
                 continue
 
-            is_static = state.drawdown_criteria == DrawdownCriteria.STATIC
-            if is_static:
-                # Static rules (Hyperscaled excluded)
-                # Rule 1: Static drawdown — equity (incl. unrealized PnL) cannot drop more than 5% below starting balance
+            if state.drawdown_criteria == DrawdownCriteria.STATIC:
+                # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
+                # both measured against starting balance
+                # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
                     eliminations[hotkey] = reason
                     continue
 
-            # Legacy rules: pre-effective subaccounts eliminate immediately; regular miners only after activation
-            # Rule: Intraday drawdown — current equity cannot drop below today's opening equity by more than the
-            # applicable threshold (flat 5% for static accounts, bucket/registration-time-dependent for trailing)
-            if reason := self._check_intraday_drawdown(state):
-                if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                # Rule 2: Static EOD drawdown — equity at the 00:00 UTC check cannot be more than 5% below starting balance
+                if reason := self._check_static_eod_drawdown(state):
                     eliminations[hotkey] = reason
-                continue
+                    continue
+            else:
+                # Legacy rules: pre-effective subaccounts eliminate immediately; regular miners only after activation
+                # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
+                if reason := self._check_intraday_drawdown(state):
+                    if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                        eliminations[hotkey] = reason
+                    continue
 
-            if not is_static:
-                # Rule: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
+                # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
                 if reason := self._check_eod_drawdown(state):
                     if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
                         eliminations[hotkey] = reason

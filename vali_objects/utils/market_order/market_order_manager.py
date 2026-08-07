@@ -126,6 +126,7 @@ class MarketOrderManager():
                     position_type=order_type,
                     account_size=miner_account.account_size,
                     is_hl=is_hl,
+                    is_pro=bool(miner_account.miner_bucket and miner_account.miner_bucket.is_pro),
                 )
 
             order = self._apply_order(

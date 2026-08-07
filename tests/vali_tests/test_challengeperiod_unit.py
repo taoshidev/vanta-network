@@ -14,6 +14,7 @@ from vali_objects.challenge_period.challengeperiod_manager import (
     DrawdownStats,
     MinerBucketState,
 )
+from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import TradePairCategory, ValiConfig
@@ -313,6 +314,125 @@ def test_check_static_ignores_legacy_drawdown_pcts():
     state.drawdown = DrawdownStats(intraday_drawdown_pct=12.0, eod_drawdown_pct=9.0)
     assert ChallengePeriodManager._check_static_drawdown(state) is None
     assert ChallengePeriodManager._check_static_eod_drawdown(state) is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 3c — Pro account buckets
+# ═══════════════════════════════════════════════════════════════════════════════
+
+PRO_STATIC_DD_PCT = ValiConfig.PRO_STATIC_DRAWDOWN_THRESHOLD * 100
+PRO_STATIC_EOD_DD_PCT = ValiConfig.PRO_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
+
+
+@pytest.mark.parametrize("bucket", [MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED])
+def test_pro_buckets_classified_as_subaccounts(bucket):
+    assert bucket.is_pro is True
+    assert bucket.is_subaccount is True
+    assert bucket.is_active is True
+    assert bucket.is_rank_based is False
+    assert bucket.max_time_ms is None
+
+
+def test_pro_challenge_promotes_to_pro_funded():
+    assert MinerBucket.SUBACCOUNT_PRO_CHALLENGE.next_bucket is MinerBucket.SUBACCOUNT_PRO_FUNDED
+    assert MinerBucket.SUBACCOUNT_PRO_FUNDED.next_bucket is None
+
+
+def test_pro_bucket_drawdown_thresholds_resolve():
+    for bucket in (MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED):
+        assert bucket.intraday_drawdown_threshold() > 0
+        assert bucket.eod_drawdown_threshold() > 0
+
+
+def test_pro_funded_is_earning_but_pro_challenge_is_not():
+    assert MinerBucket.SUBACCOUNT_PRO_FUNDED.is_subaccount_earning is True
+    assert MinerBucket.SUBACCOUNT_PRO_CHALLENGE.is_subaccount_earning is False
+
+
+def test_pro_challenge_promotion_has_no_minimum_time_gate():
+    """Like SUBACCOUNT_CHALLENGE, pro challenge promotes on returns alone."""
+    state = _state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE, NOW_MS)
+    state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD + 0.01, current_balance=1.0 + THRESHOLD + 0.01)
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
+
+
+def _breaching_static_drawdown(threshold_pct: float) -> DrawdownStats:
+    """static_drawdown_pct = (1 - current_balance) * 100, so drop balance past the threshold."""
+    return DrawdownStats(current_balance=1.0 - (threshold_pct / 100.0) - 0.001)
+
+
+def _breaching_static_eod_drawdown(threshold_pct: float) -> DrawdownStats:
+    """static_eod_drawdown_pct = (1 - last_eod_equity) * 100."""
+    return DrawdownStats(last_eod_equity=1.0 - (threshold_pct / 100.0) - 0.001)
+
+
+def test_pro_static_drawdown_reasons():
+    challenge = _state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+    challenge.drawdown = _breaching_static_drawdown(PRO_STATIC_DD_PCT)
+    assert (ChallengePeriodManager._check_static_drawdown(challenge)
+            == EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_STATIC_DRAWDOWN)
+
+    funded = _state(MinerBucket.SUBACCOUNT_PRO_FUNDED)
+    funded.drawdown = _breaching_static_drawdown(PRO_STATIC_DD_PCT)
+    assert (ChallengePeriodManager._check_static_drawdown(funded)
+            == EliminationReason.FAILED_PRO_FUNDED_PERIOD_STATIC_DRAWDOWN)
+
+
+def test_pro_static_eod_drawdown_reasons():
+    challenge = _state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+    challenge.drawdown = _breaching_static_eod_drawdown(PRO_STATIC_EOD_DD_PCT)
+    assert (ChallengePeriodManager._check_static_eod_drawdown(challenge)
+            == EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN)
+
+    funded = _state(MinerBucket.SUBACCOUNT_PRO_FUNDED)
+    funded.drawdown = _breaching_static_eod_drawdown(PRO_STATIC_EOD_DD_PCT)
+    assert (ChallengePeriodManager._check_static_eod_drawdown(funded)
+            == EliminationReason.FAILED_PRO_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN)
+
+
+def _breaching_legacy_drawdown() -> DrawdownStats:
+    """Breaches both intraday (vs daily_open_equity) and EOD (vs eod_hwm) by a wide margin."""
+    return DrawdownStats(current_equity=0.5, daily_open_equity=1.0, eod_hwm=1.0, last_eod_equity=0.5)
+
+
+def test_pro_intraday_and_eod_drawdown_reasons():
+    challenge = _state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+    challenge.drawdown = _breaching_legacy_drawdown()
+    assert (ChallengePeriodManager._check_intraday_drawdown(challenge)
+            == EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN)
+    assert (ChallengePeriodManager._check_eod_drawdown(challenge)
+            == EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_EOD_DRAWDOWN)
+
+    funded = _state(MinerBucket.SUBACCOUNT_PRO_FUNDED)
+    funded.drawdown = _breaching_legacy_drawdown()
+    assert (ChallengePeriodManager._check_intraday_drawdown(funded)
+            == EliminationReason.FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
+    assert (ChallengePeriodManager._check_eod_drawdown(funded)
+            == EliminationReason.FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN)
+
+
+def test_pro_bucket_state_round_trips_through_checkpoint():
+    state = _state(MinerBucket.SUBACCOUNT_PRO_FUNDED)
+    restored = MinerBucketState.from_checkpoint_dict("test_hk", state.to_checkpoint_dict())
+    assert restored.current_bucket is MinerBucket.SUBACCOUNT_PRO_FUNDED
+
+
+def test_account_type_selects_challenge_bucket():
+    assert AccountType.STANDARD.challenge_bucket is MinerBucket.SUBACCOUNT_CHALLENGE
+    assert AccountType.PRO.challenge_bucket is MinerBucket.SUBACCOUNT_PRO_CHALLENGE
+    assert AccountType.is_valid("pro") is True
+    assert AccountType.is_valid("nonsense") is False
+
+
+def test_pro_rules_currently_match_standard_rules():
+    """The base commit is scaffolding only: pro values mirror standard values."""
+    assert (MinerBucket.SUBACCOUNT_PRO_CHALLENGE.intraday_drawdown_threshold()
+            == MinerBucket.SUBACCOUNT_CHALLENGE.intraday_drawdown_threshold())
+    assert (MinerBucket.SUBACCOUNT_PRO_CHALLENGE.eod_drawdown_threshold()
+            == MinerBucket.SUBACCOUNT_CHALLENGE.eod_drawdown_threshold())
+    assert ValiConfig.PRO_STATIC_DRAWDOWN_THRESHOLD == ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD
+    assert ValiConfig.PRO_STATIC_EOD_DRAWDOWN_THRESHOLD == ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD
+    assert ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD == ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
 
 
 

@@ -813,6 +813,8 @@ class DebtLedgerManager():
                         timestamp_ms=cp.last_update_ms,
                         realized_pnl=cp.realized_pnl,
                         cumulative_fees_usd=cp.cumulative_fees_usd,
+                        # Ledgers are only frozen for earning buckets, so stamp the canonical
+                        # earning status here rather than looking up the pro/standard track
                         challenge_period_status=MinerBucket.SUBACCOUNT_FUNDED.value,
                         max_portfolio_value=cp.mpv,
                         max_drawdown=cp.mdd,
@@ -845,7 +847,7 @@ class DebtLedgerManager():
                     continue
 
                 # Get debt ledgers for all active subaccounts
-                _earning_statuses = {MinerBucket.SUBACCOUNT_FUNDED.value, MinerBucket.SUBACCOUNT_ALPHA.value}
+                _earning_statuses = {b.value for b in MinerBucket if b.is_subaccount_earning}
                 subaccount_ledgers = []
                 for subaccount in active_subaccounts:
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')

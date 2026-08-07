@@ -132,6 +132,15 @@ DAILY_STOCK_BORROW_RATE     = ANNUAL_STOCK_BORROW_RATE / 365
 ANNUAL_MARGIN_INTEREST_RATE = 0.066  # 6.6% — long equity margin interest
 DAILY_MARGIN_INTEREST_RATE  = ANNUAL_MARGIN_INTEREST_RATE / 365
 
+# Pro account fee schedule. Currently mirrors the standard schedule above so pro accounts
+# are priced identically until real values are set.
+PRO_HL_TAKER_FEE = HL_TAKER_FEE
+PRO_HL_MAKER_FEE = HL_MAKER_FEE
+PRO_TRANSACTION_FEE_RATE = dict(TRANSACTION_FEE_RATE)
+PRO_CARRY_FEE_RATE_PER_INTERVAL = dict(CARRY_FEE_RATE_PER_INTERVAL)
+PRO_DAILY_STOCK_BORROW_RATE = DAILY_STOCK_BORROW_RATE
+PRO_DAILY_MARGIN_INTEREST_RATE = DAILY_MARGIN_INTEREST_RATE
+
 # Trade-pair id sets used by TradePair.is_blocked / is_flat_only.
 FLAT_ONLY_TRADE_PAIR_IDS = {}
 BLOCKED_TRADE_PAIR_IDS = {
@@ -150,6 +159,10 @@ BLOCKED_TRADE_PAIR_IDS = {
     
     'NSA'  # de-listed on 2026-07-22 NOTE could potentially delete trade pair
 }
+
+# Trade pairs a pro account may trade, on top of its asset class. None means no pro-specific
+# restriction — pro accounts trade whatever their asset class permits.
+PRO_ALLOWED_TRADE_PAIR_IDS = None
 
 
 class TradePair(Enum):
@@ -1397,18 +1410,18 @@ class TradePair(Enum):
                 return v.value
         raise ValueError(f"TradePair {self.trade_pair_id} is missing subaccount_tier_base_leverage")
 
-    def transaction_fee_rate(self, is_hl_taker: bool | None = True) -> float:
+    def transaction_fee_rate(self, is_hl_taker: bool | None = True, is_pro=False) -> float:
         """Maker rate only when the fill added liquidity; taker when it took or is unknown."""
         if self.src != TradePairSource.HYPERLIQUID:
             return TRANSACTION_FEE_RATE.get(self.trade_pair_category, 0)
         taker, maker = HL_FEE_BY_CATEGORY[self.trade_pair_category]
         return maker if is_hl_taker is False else taker
 
-    @property
-    def carry_fee_rate_per_interval(self) -> float:
+    def carry_fee_rate_per_interval(self, is_pro=False) -> float:
         if self.src == TradePairSource.HYPERLIQUID:
             return 0
-        return CARRY_FEE_RATE_PER_INTERVAL.get(self.trade_pair_category, 0)
+        rates = PRO_CARRY_FEE_RATE_PER_INTERVAL if is_pro else CARRY_FEE_RATE_PER_INTERVAL
+        return rates.get(self.trade_pair_category, 0)
 
     @property
     def is_crypto(self):
