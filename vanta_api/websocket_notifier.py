@@ -79,15 +79,17 @@ class WebSocketNotifierClient(RPCClientBase):
         if self.connection_mode == RPCConnectionMode.LOCAL:
             return getattr(self._server, method_name)(*args, **kwargs)
 
-        # Own every connect on this path so each is bounded to one quick try. Falling through to
-        # the lazy `_server` property instead would use the class-default 5x1s retry and add ~5s
-        # per broadcast whenever the client is left disconnected (e.g. after a failed reconnect).
+        # Call the RAW proxy directly, NOT self._server. In RPC mode self._server returns the
+        # base class's resilient wrapper, which would run its own multi-cycle reconnect+retry
+        # self-heal (~seconds) before raising — defeating this method's whole point. This path is
+        # on the HL order latency budget, so it owns its own single quick reconnect and must fail
+        # fast; the next broadcast after WS returns reconnects and re-broadcasts RESUME.
         if self._proxy is None or not self._connected:
             with self._reconnect_lock:
                 self.connect(max_retries=1, retry_delay=0.25)
 
         try:
-            return getattr(self._server, method_name)(*args, **kwargs)
+            return getattr(self._proxy, method_name)(*args, **kwargs)
         except Exception as first_error:
             with self._reconnect_lock:
                 try:
@@ -99,7 +101,7 @@ class WebSocketNotifierClient(RPCClientBase):
                 self.connect(max_retries=1, retry_delay=0.25)
                 # Retry inside the lock so a concurrent failer can't tear down the proxy we just
                 # rebuilt before we use it (which would punt us onto the slow default-connect path).
-                result = getattr(self._server, method_name)(*args, **kwargs)
+                result = getattr(self._proxy, method_name)(*args, **kwargs)
             logger.info(
                 f"WebSocketNotifierClient: reconnected to WS notifier and resumed after: {first_error}"
             )
