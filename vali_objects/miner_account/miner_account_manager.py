@@ -971,8 +971,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 )
                 stored = account.daily_open_snapshot
                 stored_day_open_ms = TimeUtil.get_start_of_day_ms(stored.snapshot_ms) if stored else None
-                day_open_ms = TimeUtil.get_start_of_day_ms(timestamp_ms)
-                if reset_snapshot or (update_daily_open and (stored_day_open_ms is None or day_open_ms > stored_day_open_ms)):
+                current_day_open_ms = TimeUtil.get_start_of_day_ms(timestamp_ms)
+                if reset_snapshot or (update_daily_open and (stored_day_open_ms is None or current_day_open_ms > stored_day_open_ms)):
                     account.daily_open_snapshot = snapshot
                 to_log.append((account.miner_hotkey, snapshot.to_dict()))
 
@@ -983,7 +983,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         count = len(to_log)
         elapsed_ms = TimeUtil.now_in_millis() - start_ms
-        bt.logging.info(f"Recorded snapshots for {count} miners at {timestamp_ms} in {elapsed_ms}ms")
+        logger.info(f"Recorded snapshots for {count} miners at {timestamp_ms} in {elapsed_ms}ms")
         return count
 
     # ==================== Asset Selection / Withdrawal Methods ====================

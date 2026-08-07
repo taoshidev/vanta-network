@@ -80,10 +80,8 @@ class MinerAccountServer(RPCServerBase):
         self._is_mothership = False
         self._first_snapshot_iteration = True
 
-        # Daemon configuration: align first run to the top of the next UTC hour
         daemon_interval_s = 3600   # 1 hour
-        hang_timeout_s = 3600 * 2  # 2 hours
-        # daemon_stagger_s = MinerAccountServer._seconds_until_next_utc_hour()
+        hang_timeout_s = daemon_interval_s * 2  # 2 hours
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
@@ -97,7 +95,6 @@ class MinerAccountServer(RPCServerBase):
             start_daemon=False,  # Daemon started later via orchestrator
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
-            # daemon_stagger_s=daemon_stagger_s,
         )
 
     # ==================== RPCServerBase Abstract Methods ====================
@@ -112,7 +109,7 @@ class MinerAccountServer(RPCServerBase):
         if self._first_snapshot_iteration:
             self._first_snapshot_iteration = False
             self.daemon_interval_s = MinerAccountServer._seconds_until_next_utc_hour()
-            bt.logging.info(f"Next MinerAccount daemon in {self.daemon_interval_s:.0f}s")
+            logger.info(f"Next MinerAccount daemon in {self.daemon_interval_s:.0f}s")
             return None
         now = datetime.now(tz=timezone.utc)
         update_daily_open = (now.hour == 0)

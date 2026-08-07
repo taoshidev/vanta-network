@@ -669,31 +669,36 @@ class ChallengePeriodManager(CacheController):
                 logger.warning(f"[CHALLENGE] {hotkey} invalid account or has no positions, skipping evaluation")
                 continue
 
-            ledger = ledgers.get(hotkey)
-            if ledger is None:
-                logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
+            now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
+            current_day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
+            existing = self.miner_states[hotkey].drawdown
+
+            existing.current_equity = current_equity
+            existing.current_balance = current_balance
+
+            # EOD fields are locked in for today (snapshot already captured); only update live equity
+            if existing.last_eod_checked_ms == current_day_open_ms:
                 continue
 
-            now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
+            ledger = ledgers.get(hotkey)
+            if ledger is None:
+                # logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
+                continue
+
             last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
 
             # Use daily open snapshot from miner account for intraday drawdown baseline; fall back to ledger
-            day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
             snapshot = account.daily_open_snapshot
-            if snapshot and TimeUtil.get_start_of_day_ms(snapshot.snapshot_ms) == day_open_ms:
+            if snapshot and TimeUtil.get_start_of_day_ms(snapshot.snapshot_ms) == current_day_open_ms:
                 last_eod = snapshot.equity_return
                 daily_open_equity = snapshot.equity_return
-                last_eod_checked_ms = day_open_ms
+                last_eod_checked_ms = current_day_open_ms
 
-            # Cache stats before rule checks so dashboard reflects what triggered elimination
-            self.miner_states[hotkey].drawdown = DrawdownStats(
-                current_equity=current_equity,
-                current_balance=current_balance,
-                daily_open_equity=daily_open_equity,
-                eod_hwm=eod_hwm,
-                last_eod_equity=last_eod,
-                last_eod_checked_ms=last_eod_checked_ms,
-            )
+            if last_eod_checked_ms == current_day_open_ms:
+                existing.daily_open_equity = daily_open_equity
+                existing.eod_hwm = eod_hwm
+                existing.last_eod_equity = last_eod
+                existing.last_eod_checked_ms = last_eod_checked_ms
 
     def _refresh_rank_cache(
         self,
