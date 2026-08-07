@@ -4,7 +4,6 @@ import secrets
 from string import hexdigits
 
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import jsonify, request, Response, send_file, make_response
 from http import HTTPStatus
@@ -20,30 +19,19 @@ from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from entity_management.entity_utils import create_subaccount_dashboard
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
-from shared_objects.rpc.common_data_client import CommonDataClient
-from shared_objects.rpc.metagraph_client import MetagraphClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from shared_objects.subtensor_ops.subtensor_ops_client import SubtensorOpsClient
-from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
-from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
-from vali_objects.scoring.weight_calculator_client import WeightCalculatorClient
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
-from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
-from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
 from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, CollateralRecord
 from vali_objects.utils.order_processor import OrderProcessor
@@ -58,7 +46,6 @@ from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.vali_dataclasses.fee_event import FeeType
 from vali_objects.vali_dataclasses.order import Order
 from vanta_api.base_rest_server import BaseRestServer
 from vanta_api.nonce_manager import NonceManager
@@ -196,47 +183,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             miner_account_client=self._miner_account_client,
         )
 
-        # Clients for RPC services this REST server doesn't otherwise call directly.
-        # Only used by /api/health/rpc, so they're created lazily (connect_immediately=False)
-        # to avoid blocking REST server startup on services that may not be up yet.
-        self._common_data_client = CommonDataClient(connect_immediately=False, connection_mode=connection_mode)
-        self._metagraph_client = MetagraphClient(connect_immediately=False, connection_mode=connection_mode)
-        self._subtensor_ops_client = SubtensorOpsClient(running_unit_tests=running_unit_tests, connect_immediately=False)
-        self._position_lock_client = PositionLockClient()
-        self._plagiarism_client = PlagiarismClient(connection_mode=connection_mode, connect_immediately=False)
-        self._live_price_client = LivePriceFetcherClient(connection_mode=connection_mode)
-        self._mdd_checker_client = MDDCheckerClient(connect_immediately=False, connection_mode=connection_mode)
-        self._weight_calculator_client = WeightCalculatorClient(connect_immediately=False)
-        self._entity_collateral_client = EntityCollateralClient(connect_immediately=False, connection_mode=connection_mode)
-        self._hl_funding_client = HLFundingRateClient(connect_immediately=False, connection_mode=connection_mode)
-
-        # Aggregate map of all RPC services for the /api/health/rpc fan-out check.
-        self._rpc_health_clients = {
-            'position_manager': self._position_client,
-            'debt_ledger': self._debt_ledger_client,
-            'perf_ledger': self._perf_ledger_client,
-            'asset_selection': self._asset_selection_client,
-            'limit_order': self._limit_order_client,
-            'contract': self._contract_client,
-            'miner_account': self._miner_account_client,
-            'core_outputs': self._core_outputs_client,
-            'miner_statistics': self._statistics_client,
-            'entity': self._entity_client,
-            'challenge_period': self._challenge_period_client,
-            'elimination': self._elimination_client,
-            'market_order': self.market_order_client,
-            'common_data': self._common_data_client,
-            'metagraph': self._metagraph_client,
-            'subtensor_ops': self._subtensor_ops_client,
-            'position_lock': self._position_lock_client,
-            'plagiarism': self._plagiarism_client,
-            'live_price_fetcher': self._live_price_client,
-            'mdd_checker': self._mdd_checker_client,
-            'weight_calculator': self._weight_calculator_client,
-            'entity_collateral': self._entity_collateral_client,
-            'hl_funding': self._hl_funding_client,
-        }
-
     # ============================================================================
     # LIFECYCLE MANAGEMENT (multiple inheritance coordination)
     # ============================================================================
@@ -301,21 +247,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """Register all API routes."""
         print("[REST-INIT] Registering validator endpoints...")
 
-        # Health check
-        self.app.route("/api/health", methods=["GET"])(self.health_endpoint)
-        self.app.route("/api/health/rpc", methods=["GET"])(self.rpc_health_endpoint)
-
         # Miner position endpoints
         self.app.route("/miner-positions", methods=["GET"])(self.get_miner_positions)
         self.app.route("/miner-positions/<minerid>", methods=["GET"])(self.get_miner_positions_single)
         self.app.route("/miner-hotkeys", methods=["GET"])(self.get_miner_hotkeys)
-        self.app.route("/miner/<hotkey>", methods=["GET"])(self.get_miner_dashboard)
 
         # Ledger endpoints
         self.app.route("/emissions-ledger/<minerid>", methods=["GET"])(self.get_emissions_ledger)
         self.app.route("/debt-ledger/<minerid>", methods=["GET"])(self.get_miner_debt_ledger)
         self.app.route("/perf-ledger/<minerid>", methods=["GET"])(self.get_perf_ledger)
-        self.app.route("/account-snapshots/<minerid>", methods=["GET"])(self.get_account_snapshots)
         self.app.route("/debt-ledger", methods=["GET"])(self.get_debt_ledger)
         self.app.route("/penalty-ledger/<minerid>", methods=["GET"])(self.get_penalty_ledger)
 
@@ -324,7 +264,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/statistics", methods=["GET"])(self.get_validator_checkpoint_statistics)
         self.app.route("/statistics/<minerid>/", methods=["GET"])(self.get_validator_checkpoint_statistics_unique)
         self.app.route("/eliminations", methods=["GET"])(self.get_eliminations)
-        self.app.route("/challenge-period/<minerid>", methods=["GET"])(self.get_challenge_period)
 
         # Trading endpoints
         self.app.route("/limit-orders/<minerid>", methods=["GET"])(self.get_limit_orders_unique)
@@ -399,76 +338,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({"error": "Entity management not available"}), HTTPStatus.SERVICE_UNAVAILABLE
 
         return None
-
-    def health_endpoint(self):
-        """
-        GET /api/health - Server health check.
-
-        Response (200 OK):
-        {
-            "status": "healthy",
-            "service": "ValidatorRestServer",
-            "timestamp_ms": 1234567890123
-        }
-        """
-        return jsonify({
-            'status': 'healthy',
-            'service': 'ValidatorRestServer',
-            'timestamp_ms': TimeUtil.now_in_millis()
-        }), 200
-
-    def rpc_health_endpoint(self):
-        """
-        GET /api/health/rpc - Fan-out liveness check across every RPC service.
-
-        Checks all services concurrently so one down/wedged service can't stall
-        the rest. Each check uses a single short-retry connect attempt (not the
-        default 5x/1s retry) to keep the endpoint responsive when a service is
-        down, and disconnects on failure so a dead client reconnects cleanly
-        once that service comes back.
-
-        Response:
-        {
-            "status": "healthy" | "degraded",
-            "timestamp_ms": 1234567890123,
-            "services": {
-                "position_manager": {"status": "ok", "detail": {...}},
-                "metagraph": {"status": "unreachable", "error": "..."},
-                ...
-            }
-        }
-        Returns 200 if every service is healthy, 503 if any are not.
-        """
-        def check_one(name, client):
-            try:
-                client.connect(max_retries=1, retry_delay=0.2)
-                detail = client.health_check()
-                return name, {"status": "ok", "detail": detail}
-            except Exception as e:
-                try:
-                    client.disconnect()
-                except Exception:
-                    pass
-                return name, {"status": "unreachable", "error": str(e)}
-
-        services = {}
-        with ThreadPoolExecutor(max_workers=len(self._rpc_health_clients)) as executor:
-            futures = [
-                executor.submit(check_one, name, client)
-                for name, client in self._rpc_health_clients.items()
-            ]
-            for future in as_completed(futures):
-                name, result = future.result()
-                services[name] = result
-
-        overall_status = "healthy" if all(r["status"] == "ok" for r in services.values()) else "degraded"
-        status_code = 200 if overall_status == "healthy" else 503
-
-        return jsonify({
-            "status": overall_status,
-            "timestamp_ms": TimeUtil.now_in_millis(),
-            "services": services
-        }), status_code
 
     def get_miner_positions(self):
         api_key = self._get_api_key_safe()
@@ -554,61 +423,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         else:
             return jsonify(miner_hotkeys)
 
-    def get_miner_dashboard(self, hotkey):
-        """
-        Comprehensive dashboard for a regular (non-entity) miner hotkey — the
-        same aggregated view as the entity subaccount dashboard (challenge
-        period, drawdown, elimination, account size, positions, limit orders,
-        ledger, statistics), minus subaccount-specific info.
-
-        Requires tier 100 API access.
-
-        Example:
-        curl -H "Authorization: Bearer YOUR_TIER_100_API_KEY" \
-             http://localhost:48888/miner/YOUR_HOTKEY
-        """
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
-        if not self.can_access_tier(api_key, 100):
-            return jsonify({'error': 'Your API key does not have access to tier 100 data'}), 403
-
-        query_args = request.args
-        positions_time_ms = int(query_args.get("positions_time_ms", 0))
-        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
-        checkpoints_time_ms = int(query_args.get("checkpoints_time_ms", 0))
-        daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
-
-        try:
-            dashboard = create_subaccount_dashboard(
-                hotkey,
-                None,
-                self._challenge_period_client,
-                self._elimination_client,
-                self._miner_account_client,
-                self._position_client,
-                self._limit_order_client,
-                self._debt_ledger_client,
-                self._statistics_client,
-                positions_time_ms,
-                limit_orders_time_ms,
-                checkpoints_time_ms,
-                daily_returns_time_ms,
-            )
-        except Exception as e:
-            logger.error(f"Error retrieving dashboard for {hotkey}: {e}")
-            return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
-
-        if not dashboard:
-            return jsonify({'error': f'Miner {hotkey} not found'}), 404
-
-        return jsonify({
-            'status': 'success',
-            'dashboard': dashboard,
-            'timestamp': TimeUtil.now_in_millis(),
-        })
-
     # ============================================================================
     # LEDGER ENDPOINTS
     # ============================================================================
@@ -665,30 +479,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error retrieving perf ledger for {minerid}: {e}")
             return jsonify({'error': 'Internal server error retrieving perf ledger data'}), 500
-
-    def get_account_snapshots(self, minerid):
-        api_key = self._get_api_key_safe()
-
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
-        try:
-            limit = int(request.args.get('limit', DEFAULT_SNAPSHOT_LIMIT))
-        except (TypeError, ValueError):
-            return jsonify({'error': 'limit must be an integer'}), 400
-        if limit < 1:
-            return jsonify({'error': 'limit must be >= 1'}), 400
-        limit = min(limit, MAX_SNAPSHOT_LIMIT)
-
-        snapshots = read_last_n(minerid, n=limit)
-        if not snapshots:
-            return jsonify({'error': f'No snapshots found for miner {minerid}'}), 404
-
-        return self._jsonify_with_custom_encoder({
-            'hotkey': minerid,
-            'count': len(snapshots),
-            'snapshots': [s.to_dict() for s in snapshots],
-        })
 
     def get_debt_ledger(self):
         api_key = self._get_api_key_safe()
@@ -820,54 +610,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify(element)
 
         return jsonify({'error': f'Miner ID {minerid} not found'}), 404
-
-    def get_challenge_period(self, minerid):
-        """
-        Challenge-period status for a miner or subaccount hotkey.
-
-        By default returns only the current bucket + start_time_ms (same shape
-        as the challenge_period section of the dashboard endpoints). Pass
-        ?history=true to instead get the full ordered bucket transition history
-        (e.g. CHALLENGE -> MAINCOMP -> PROBATION -> ELIMINATED), each with a
-        start_time_ms. If the miner is eliminated, the elimination reason is
-        attached to that entry.
-        """
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-
-        full_history = request.args.get('history', 'false').lower() == 'true'
-
-        try:
-            if full_history:
-                data = self._challenge_period_client.get_bucket_history(minerid)
-            else:
-                data = self._challenge_period_client.get_dashboard(minerid)
-        except Exception as e:
-            logger.error(f"Error retrieving challenge period data for {minerid}: {e}")
-            return jsonify({'error': 'Internal server error retrieving challenge period data'}), 500
-
-        if data is None:
-            return jsonify({'error': f'Miner ID {minerid} not found'}), 404
-
-        entries = data if full_history else [data]
-        for entry in entries:
-            if entry.get('bucket') == MinerBucket.ELIMINATED.value:
-                try:
-                    elimination = self._elimination_client.get_elimination(minerid)
-                except Exception as e:
-                    logger.error(f"Error retrieving elimination reason for {minerid}: {e}")
-                    elimination = None
-                if elimination:
-                    entry['reason'] = elimination.get('reason')
-
-        response = {
-            'status': 'success',
-            'hotkey': minerid,
-            'timestamp': TimeUtil.now_in_millis(),
-        }
-        response['history' if full_history else 'challenge_period'] = data
-        return jsonify(response)
 
     def get_eliminations(self):
         api_key = self._get_api_key_safe()
@@ -1703,16 +1445,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             if preview:
                 computed = MinerAccountManager.compute_account_state_from_positions(positions, hotkey)
-                account_size = original_account.get_account_size()
+                account_size = original_account.get('account_size', ValiConfig.MIN_CAPITAL)
                 computed.collateral_records = [CollateralRecord(
                     account_size=account_size,
                     account_size_theta=account_size / ValiConfig.COST_PER_THETA,
                     update_time_ms=0,
                     is_first_record=True,
                 )]
-                computed.asset_class = original_account.asset_class
-                computed.miner_bucket = original_account.miner_bucket
-                computed.hl_address = original_account.hl_address
+                computed.asset_class = MinerAssetClass(original_account['asset_class']) if original_account.get('asset_class') else None
+                computed.miner_bucket = MinerBucket(original_account['miner_bucket']) if original_account.get('miner_bucket') else None
+                computed.hl_address = original_account.get('hl_address')
                 rebuilt_account = computed.to_dict()
             else:
                 # Actual rebuild - persists to disk, preserving bucket and max_return
@@ -1791,11 +1533,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         try:
             result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
+            self._miner_account_client.reset_account_fields(hotkey)
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
             self._elimination_client.remove_elimination(hotkey)
-            self._challenge_period_client.revert_elimination(hotkey)
-            self._miner_account_client.reset_account(hotkey)
 
             if is_synthetic_hotkey(hotkey) and self._entity_client:
                 self._entity_client.restore_subaccount(hotkey)
@@ -2054,14 +1795,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': f"Order {edit['order_uuid']} not found in position"}), 404
 
             # Validate all fee_history edits before applying any
-            fee_index = {(f.time_ms, f.fee_type): i for i, f in enumerate(position.fee_history)}
+            fee_index = {(f['time_ms'], f['fee_type']): i for i, f in enumerate(position.fee_history)}
             for fee_edit in fee_edits:
                 if 'time_ms' not in fee_edit or 'fee_type' not in fee_edit or 'amount' not in fee_edit:
                     return jsonify({'error': 'Each fee_history entry must have time_ms, fee_type, and amount'}), 400
-                try:
-                    fee_edit['fee_type'] = FeeType(fee_edit['fee_type'])
-                except ValueError:
-                    return jsonify({'error': f"Invalid fee_type: {fee_edit['fee_type']}"}), 400
                 key = (fee_edit['time_ms'], fee_edit['fee_type'])
                 if key not in fee_index:
                     return jsonify({'error': f"Fee not found: time_ms={fee_edit['time_ms']}, fee_type={fee_edit['fee_type']}"}), 404
@@ -2103,7 +1840,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Apply fee_history edits (zero out amount, preserve timestamp anchor)
             for fee_edit in fee_edits:
                 key = (fee_edit['time_ms'], fee_edit['fee_type'])
-                position.fee_history[fee_index[key]].amount = fee_edit['amount']
+                position.fee_history[fee_index[key]]['amount'] = fee_edit['amount']
 
             position.rebuild_position_with_updated_orders()
 
@@ -2377,11 +2114,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             entity_hotkey = data['entity_hotkey']
             account_size = data['account_size']
             asset_class = data['asset_class']
-            collateral_exempt = data.get('collateral_exempt')
+            admin = data.get('admin')
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
 
-            if collateral_exempt is not None and not isinstance(collateral_exempt, bool):
-                return jsonify({'error': 'collateral_exempt must be a boolean'}), 400
+            # Validate admin flag type early
+            if admin is not None and not isinstance(admin, bool):
+                return jsonify({'error': 'admin must be a boolean'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -2421,8 +2159,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey,
             }
-            if collateral_exempt:
-                sig_dict["collateral_exempt"] = collateral_exempt
+            if admin is not None:
+                sig_dict["admin"] = admin
             if is_hl:
                 sig_dict["hl_address"] = hl_address
                 if payout_address is not None:
@@ -2433,8 +2171,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             timings['verify_signature'] = int((time.time() - t0) * 1000)
             if not is_valid:
                 return jsonify({'error': 'Invalid signature. Subaccount creation unauthorized'}), 401
-
-            collateral_exempt = bool(collateral_exempt)
 
             # Verify coldkey-hotkey ownership using subtensor
             t0 = time.time()
@@ -2447,11 +2183,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             t0 = time.time()
             if is_hl:
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
-                    entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address
+                    entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address, account_type=account_type
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria
+                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria, account_type=account_type
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
@@ -2634,8 +2370,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         reopen_orders = str(request.args.get('reopen_orders', 'false')).strip().lower() == 'true'
 
         try:
-            self._elimination_client.remove_elimination(hotkey)
-            self._challenge_period_client.revert_elimination(hotkey)
+            success = self._elimination_client.remove_elimination(hotkey)
+            if not success:
+                return jsonify({'error': f'No elimination entry found for hotkey {hotkey}'}), 404
 
             if is_synthetic_hotkey(hotkey):
                 self._entity_client.restore_subaccount(hotkey)
@@ -2704,8 +2441,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     logger.warning(f"Entity client eliminate_subaccount failed for {hotkey}: {message}")
 
             self._elimination_client.append_elimination_row(hotkey, reason)
-            self._challenge_period_client.set_miner_bucket(hotkey, MinerBucket.ELIMINATED, TimeUtil.now_in_millis())
-            self._miner_account_client.set_miner_bucket(hotkey, MinerBucket.ELIMINATED)
 
             return jsonify({
                 'status': 'success',

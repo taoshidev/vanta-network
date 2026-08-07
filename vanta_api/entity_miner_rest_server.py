@@ -990,6 +990,10 @@ class EntityMinerRestServer(MinerRestServer):
                 return jsonify({'status': 'error', 'message': 'collateral_exempt must be a boolean'}), 400
             collateral_exempt = raw
 
+            account_type = request_data.get("account_type", "standard")
+            if account_type not in ("standard", "pro"):
+                return jsonify({'status': 'error', 'message': 'account_type must be "standard" or "pro"'}), 400
+
             try:
                 account_size = float(request_data["account_size"])
             except (ValueError, TypeError):

@@ -53,8 +53,7 @@ class MinerBucket(Enum):
         """
         Returns the intraday drawdown threshold for this bucket from ValiConfig.
         For SUBACCOUNT_FUNDED, time_ms is the miner's SUBACCOUNT_CHALLENGE registration
-        timestamp and determines which versioned threshold applies. Pro buckets are not
-        versioned - they have no legacy tier.
+        timestamp and determines which versioned threshold applies.
         """
         if self == MinerBucket.SUBACCOUNT_PRO_CHALLENGE:
             return ValiConfig.PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD
