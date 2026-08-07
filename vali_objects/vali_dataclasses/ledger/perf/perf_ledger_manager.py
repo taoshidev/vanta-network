@@ -250,7 +250,7 @@ class PerfLedgerManager(CacheController):
             last_update_formatted = TimeUtil.millis_to_timestamp(x.last_update_ms)
             if 1:  # idx == 0 or idx == len(ledger.cps) - 1:
                 logger.info(f'    {idx} {last_update_formatted} {x}')
-        logger.info('portfolio', f'max_perf_ledger_return: {ledger.max_return}')
+        logger.info(f'portfolio max_perf_ledger_return: {ledger.max_return}')
 
     def get_perf_ledgers(self, from_disk=False) -> dict[str, PerfLedger]:
         ret = {}
@@ -1661,7 +1661,7 @@ class PerfLedgerManager(CacheController):
                     hotkeys_with_no_positions.add(k)
             for k in hotkeys_with_no_positions:
                 del hotkey_to_positions[k]
-            logger.info('PERF LEDGERS TOTAL N POSITIONS IN MEMORY: ' + str(n_positions_total), 'TOTAL N HOTKEYS IN MEMORY: ' + str(n_hotkeys_total))
+            logger.info('PERF LEDGERS TOTAL N POSITIONS IN MEMORY: ' + str(n_positions_total) + 'TOTAL N HOTKEYS IN MEMORY: ' + str(n_hotkeys_total))
 
         return hotkey_to_positions, hotkeys_with_no_positions
 
