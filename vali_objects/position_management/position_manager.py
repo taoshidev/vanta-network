@@ -1611,7 +1611,7 @@ class PositionManager:
         reopen_force_closed_orders: bool = False,
     ) -> dict:
         """
-        Wipe a miner's state: positions, challenge period bucket, perf/debt ledgers, and account.
+        Wipe a miner's state: positions and account.
 
         Args:
             hotkey: The miner hotkey to wipe.
@@ -1626,14 +1626,6 @@ class PositionManager:
         uuids_to_delete = set(position_uuids_to_delete or [])
         uuids_to_archive = set(position_uuids_to_archive or [])
         log = []
-
-        # Remove any active elimination for this hotkey
-        if self._elimination_client:
-            eliminations = self._elimination_client.get_eliminations_from_memory()
-            if any(e['hotkey'] == hotkey for e in eliminations):
-                self._elimination_client.delete_eliminations([hotkey])
-                self._elimination_client.save_eliminations()
-                log.append(f"Removed elimination for {hotkey}")
 
         # Wipe positions
         positions = self.get_positions_for_one_hotkey(hotkey, sort_positions=True)
@@ -1663,12 +1655,6 @@ class PositionManager:
         if wipe_positions:
             n_archived_deleted = self.delete_archived_positions_for_hotkey(hotkey)
             log.append(f"Archived positions deleted={n_archived_deleted}")
-
-        # Rebuild account state from remaining positions
-        remaining_positions = self.get_positions_for_one_hotkey(hotkey)
-        if self._miner_account_client:
-            self._miner_account_client.rebuild_account_state_from_positions(hotkey, remaining_positions)
-            log.append("Rebuilt account state")
 
         logger.info(f"wipe_hotkey({hotkey}): {'; '.join(log)}")
         return {'hotkey': hotkey, 'actions': log}
