@@ -955,6 +955,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         start_ms = TimeUtil.now_in_millis()
         if timestamp_ms is None:
             timestamp_ms = start_ms
+        timestamp_ms = round(timestamp_ms / 1000) * 1000
 
         to_log: list[tuple[str, dict]] = []
         with self._accounts_lock:
