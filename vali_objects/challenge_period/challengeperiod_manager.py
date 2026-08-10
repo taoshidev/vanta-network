@@ -407,7 +407,12 @@ class ChallengePeriodManager(CacheController):
         bucket = state.current_bucket_entry.bucket
         if bucket.max_time_ms is None:
             return None
-        if current_time_ms - state.current_bucket_entry.start_time_ms > bucket.max_time_ms:
+        if bucket == MinerBucket.CHALLENGE:
+            first_challenge_entry = next((e for e in state.entries if e.bucket == MinerBucket.CHALLENGE), state.current_bucket_entry)
+            bucket_start_ms = first_challenge_entry.start_time_ms
+        else:
+            bucket_start_ms = state.current_bucket_entry.start_time_ms
+        if current_time_ms - bucket_start_ms > bucket.max_time_ms:
             reason_map = {
                 MinerBucket.CHALLENGE: EliminationReason.FAILED_CHALLENGE_PERIOD_TIME,
                 MinerBucket.PROBATION: EliminationReason.FAILED_PROBATION_TIME,
@@ -611,9 +616,15 @@ class ChallengePeriodManager(CacheController):
             return False
 
         with self._buckets_lock:
-            popped_bucket = miner_state.pop_bucket_entry(MinerBucket.ELIMINATED)
-            if not popped_bucket:
+            if miner_state.current_bucket != MinerBucket.ELIMINATED:
                 return False
+
+            if len(miner_state.entries) < 2:
+                return False
+
+            prev_bucket = miner_state.entries[-2].bucket
+
+            miner_state.add_bucket_entry(prev_bucket, miner_state.entries[-2].start_time_ms)
 
         self._reset_drawdown_stats_cache(hotkey)
         self._sync_buckets_to_accounts(hotkeys=[hotkey])
