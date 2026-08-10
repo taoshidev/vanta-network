@@ -684,23 +684,23 @@ class ChallengePeriodManager(CacheController):
                 existing.current_balance = current_balance
                 continue
 
-            ledger = ledgers.get(hotkey)
-            if ledger is None:
-                logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
-                continue
-
-            last_eod_equity, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
-
-            # Use daily open snapshot from miner account for intraday drawdown baseline; fall back to ledger
+            # Use daily open snapshot from miner account as default and fallback to perf ledgers
             snapshot = account.daily_open_snapshot
             if snapshot and TimeUtil.get_start_of_day_ms(snapshot.snapshot_ms) == current_day_open_ms:
                 last_eod_equity = daily_open_equity = snapshot.equity_return
+                eod_hwm = max(existing.eod_hwm, daily_open_equity)
                 last_eod_checked_ms = current_day_open_ms
+            else:
+                ledger = ledgers.get(hotkey)
+                if ledger is None:
+                    logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
+                    continue
+                last_eod_equity, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
 
             if last_eod_checked_ms == current_day_open_ms:
-                existing.daily_open_equity = daily_open_equity
-                existing.eod_hwm = max(eod_hwm, last_eod_equity)
                 existing.last_eod_equity = last_eod_equity
+                existing.daily_open_equity = daily_open_equity
+                existing.eod_hwm = max(existing.eod_hwm, last_eod_equity, eod_hwm)
                 existing.last_eod_checked_ms = last_eod_checked_ms
 
     def _refresh_rank_cache(
