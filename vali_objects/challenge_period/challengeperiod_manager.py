@@ -678,11 +678,10 @@ class ChallengePeriodManager(CacheController):
             current_day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
             existing = self.miner_states[hotkey].drawdown
 
-            existing.current_equity = current_equity
-            existing.current_balance = current_balance
-
             # EOD fields are locked in for today (snapshot already captured); only update live equity
             if existing.last_eod_checked_ms == current_day_open_ms:
+                existing.current_equity = current_equity
+                existing.current_balance = current_balance
                 continue
 
             ledger = ledgers.get(hotkey)
