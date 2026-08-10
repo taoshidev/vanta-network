@@ -30,6 +30,7 @@ from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
+from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
@@ -313,6 +314,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/emissions-ledger/<minerid>", methods=["GET"])(self.get_emissions_ledger)
         self.app.route("/debt-ledger/<minerid>", methods=["GET"])(self.get_miner_debt_ledger)
         self.app.route("/perf-ledger/<minerid>", methods=["GET"])(self.get_perf_ledger)
+        self.app.route("/account-snapshots/<minerid>", methods=["GET"])(self.get_account_snapshots)
         self.app.route("/debt-ledger", methods=["GET"])(self.get_debt_ledger)
         self.app.route("/penalty-ledger/<minerid>", methods=["GET"])(self.get_penalty_ledger)
 
@@ -661,6 +663,30 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error retrieving perf ledger for {minerid}: {e}")
             return jsonify({'error': 'Internal server error retrieving perf ledger data'}), 500
+
+    def get_account_snapshots(self, minerid):
+        api_key = self._get_api_key_safe()
+
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        try:
+            limit = int(request.args.get('limit', DEFAULT_SNAPSHOT_LIMIT))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'limit must be an integer'}), 400
+        if limit < 1:
+            return jsonify({'error': 'limit must be >= 1'}), 400
+        limit = min(limit, MAX_SNAPSHOT_LIMIT)
+
+        snapshots = read_last_n(minerid, n=limit)
+        if not snapshots:
+            return jsonify({'error': f'No snapshots found for miner {minerid}'}), 404
+
+        return self._jsonify_with_custom_encoder({
+            'hotkey': minerid,
+            'count': len(snapshots),
+            'snapshots': [s.to_dict() for s in snapshots],
+        })
 
     def get_debt_ledger(self):
         api_key = self._get_api_key_safe()

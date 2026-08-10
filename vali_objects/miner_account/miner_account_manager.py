@@ -20,6 +20,7 @@ from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.miner_account.account_snapshot import AccountSnapshot
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
@@ -31,41 +32,6 @@ from shared_objects.log import logger
 
 
 # ==================== Data Classes ====================
-
-
-@dataclass
-class AccountSnapshot:
-    """Account state captured at a point in time for a single miner."""
-    snapshot_ms: int           # Unix ms of this snapshot
-    account_size: float
-    balance: float
-    equity: float
-
-    @property
-    def equity_return(self) -> float:
-        """equity / account_size — return relative to deposited capital."""
-        if not self.account_size:
-            return 1.0
-        return self.equity / self.account_size
-
-    def to_dict(self) -> dict:
-        return {
-            'snapshot_ms': self.snapshot_ms,
-            'snapshot_date': TimeUtil.millis_to_formatted_date_str(self.snapshot_ms),
-            'account_size': self.account_size,
-            'balance': self.balance,
-            'equity': self.equity,
-            'equity_return': self.equity_return,
-        }
-
-    @staticmethod
-    def from_dict(d: dict) -> 'AccountSnapshot':
-        return AccountSnapshot(
-            snapshot_ms=d.get('snapshot_ms') or d['day_open_ms'],
-            account_size=d['account_size'],
-            balance=d['balance'],
-            equity=d['equity'],
-        )
 
 
 class CollateralRecord:
