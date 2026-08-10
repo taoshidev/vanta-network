@@ -2413,6 +2413,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     logger.warning(f"Entity client eliminate_subaccount failed for {hotkey}: {message}")
 
             self._elimination_client.append_elimination_row(hotkey, reason)
+            self._challenge_period_client.set_miner_bucket(hotkey, MinerBucket.ELIMINATED, TimeUtil.now_in_millis())
+            self._miner_account_client.set_miner_bucket(hotkey, MinerBucket.ELIMINATED)
 
             return jsonify({
                 'status': 'success',
