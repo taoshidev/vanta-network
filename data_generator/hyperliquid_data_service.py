@@ -375,7 +375,7 @@ class HyperliquidDataService(BaseDataService):
             resp.raise_for_status()
             candles = resp.json()
         except Exception as e:
-            bt.logging.error(f"Hyperliquid candleSnapshot range({coin}) failed: {type(e).__name__}: {e}")
+            logger.error(f"Hyperliquid candleSnapshot range({coin}) failed: {type(e).__name__}: {e}")
             return []
 
         class _Candle:
