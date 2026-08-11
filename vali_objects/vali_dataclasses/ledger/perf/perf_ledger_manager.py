@@ -646,7 +646,8 @@ class PerfLedgerManager(CacheController):
         if tp.src == TradePairSource.HYPERLIQUID:
             if self.hds is None:
                 self.hds = HyperliquidDataService(disable_ws=True, running_unit_tests=self.running_unit_tests)
-            hl_candles = self.hds.fetch_candle_range(tp, start_time_ms, end_time_ms)
+            hl_candles = self.hds.fetch_candle_range(tp, start_time_ms, end_time_ms,
+                                                      min_interval_span_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS)
             self.n_api_calls += 1
             # Forward-fill each candle across its actual span (may be coarser than 1 minute for
             # long windows), rather than assuming 1-minute candles.

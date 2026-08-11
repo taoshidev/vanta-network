@@ -398,12 +398,20 @@ class HyperliquidDataService(BaseDataService):
                 time.sleep(backoff_s)
         return None
 
-    def fetch_candle_range(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> list:
+    def fetch_candle_range(self, trade_pair: TradePair, start_ms: int, end_ms: int,
+                           min_interval_span_ms: int = 0) -> list:
         """Fetch candles for a time range for use in the perf ledger.
 
         Picks the coarsest resolution from HL_CANDLE_INTERVALS that keeps a single request
         under HL's per-request candle cap, then paginates with sequential requests at that
         resolution if the requested range still doesn't fit in one request.
+
+        min_interval_span_ms sets a floor on candle resolution: intervals finer than this are
+        skipped even if they'd otherwise fit under the cap. The perf ledger only ever reports
+        one checkpoint's worth of unrealized PnL every target_cp_duration_ms, so sampling HL
+        pairs any finer than that buys no additional accuracy in the persisted output while
+        costing far more HL API requests over an account's lifetime - passing the checkpoint
+        duration here caps resolution at exactly what the ledger can actually make use of.
 
         Returns a list of objects with .timestamp (interval-aligned ms), .close, and .span_ms
         (the candle's duration in ms) attributes, compatible with PolygonDataService candle
@@ -414,6 +422,8 @@ class HyperliquidDataService(BaseDataService):
 
         interval, candle_span_ms = HL_CANDLE_INTERVALS[-1]
         for _interval, span_ms in HL_CANDLE_INTERVALS:
+            if span_ms < min_interval_span_ms:
+                continue
             if total_span_ms <= span_ms * HL_MAX_CANDLES_PER_REQUEST:
                 interval, candle_span_ms = _interval, span_ms
                 break

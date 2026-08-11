@@ -351,6 +351,27 @@ class TestHyperliquidDataService(unittest.TestCase):
         self.assertEqual(candles[0].span_ms, 60_000)
 
     @patch("data_generator.hyperliquid_data_service.requests.post")
+    def test_fetch_candle_range_respects_min_interval_floor(self, mock_post):
+        """A short window with a 12h min_interval_span_ms floor should resolve to '12h',
+        not '1m', so short live-daemon gaps don't need a fresh HL request every time."""
+        svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
+        start_ms = 0
+        end_ms = 30 * 60 * 1000  # 30 minutes - would resolve to '1m' with no floor
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = [self._candle(start_ms, 100.0)]
+        mock_post.return_value = resp
+
+        twelve_hours_ms = 12 * 60 * 60 * 1000
+        candles = svc.fetch_candle_range(TradePair.BTCUSDC, start_ms, end_ms,
+                                          min_interval_span_ms=twelve_hours_ms)
+
+        sent_req = mock_post.call_args.kwargs["json"]["req"]
+        self.assertEqual(sent_req["interval"], "12h")
+        self.assertEqual(candles[0].span_ms, twelve_hours_ms)
+
+    @patch("data_generator.hyperliquid_data_service.requests.post")
     def test_fetch_candle_range_long_window_uses_coarser_interval(self, mock_post):
         """A 34-day window would need ~49000 1m candles; should pick a coarser interval
         that fits in one request instead of exceeding HL's per-request cap."""
