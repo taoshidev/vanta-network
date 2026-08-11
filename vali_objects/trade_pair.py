@@ -1396,7 +1396,7 @@ class TradePair(Enum):
                 return v.value
         raise ValueError(f"TradePair {self.trade_pair_id} is missing subaccount_tier_base_leverage")
 
-    def transaction_fee_rate(self, is_hl_taker=True) -> float:
+    def transaction_fee_rate(self, is_hl_taker: bool | None = True) -> float:
         """Maker rate only when the fill added liquidity; taker when it took or is unknown."""
         if self.src != TradePairSource.HYPERLIQUID:
             return TRANSACTION_FEE_RATE.get(self.trade_pair_category, 0)

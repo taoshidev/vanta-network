@@ -89,9 +89,12 @@ class Position(BaseModel):
         values['trade_pair'] = trade_pair
         return values
 
-    def refresh_carry_fee_usd(self, current_time_ms: int, hl_funding_rates: Optional[dict] = None) -> float:
-        if self.is_closed_position:
+    def refresh_position_fee_usd(self, current_time_ms: int, hl_funding_rates: Optional[dict] = None) -> float:
+        if self.is_closed_position and self.close_ms:
             current_time_ms = self.close_ms
+
+        if self.trade_pair.src == TradePairSource.VANTA and self.trade_pair.is_equities:
+            return self._refresh_equities_fee_usd(current_time_ms)
 
         market_value = abs(self.net_value) + self.unrealized_pnl
         if market_value <= 0:
@@ -140,7 +143,7 @@ class Position(BaseModel):
 
         return carry_fee
 
-    def refresh_equities_fee_usd(self, current_time_ms: int) -> float:
+    def _refresh_equities_fee_usd(self, current_time_ms: int) -> float:
         """
         Calculate and record equity-specific fees accruing at UTC midnight:
           - SHORT positions: stock borrow fee (3% annual / 365) on position market value.
