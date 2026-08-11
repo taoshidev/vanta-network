@@ -148,43 +148,17 @@ class ValiBkpUtils:
         return True
 
     @staticmethod
-    def get_miner_transactions_path(miner_hotkey: str, running_unit_tests=False) -> str:
+    def get_miner_snapshot_path(miner_hotkey: str, running_unit_tests=False) -> str:
         """Get path to miner's transactions.jsonl file."""
-        return f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}{miner_hotkey}/transactions.jsonl"
+        return f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}{miner_hotkey}/snapshots.jsonl"
 
     @staticmethod
-    def append_transaction(file_path: str, transaction: dict) -> None:
-        """Atomically append a transaction to NDJSON file with file locking."""
-        import fcntl
+    def log_snapshot(miner_hotkey: str, entry: dict, running_unit_tests=False) -> None:
+        """Append a JSON Lines entry to a .jsonl file."""
+        file_path = ValiBkpUtils.get_miner_snapshot_path(miner_hotkey, running_unit_tests)
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        json_line = json.dumps(transaction, separators=(',', ':')) + '\n'
         with open(file_path, 'a') as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            try:
-                f.write(json_line)
-                f.flush()
-                os.fsync(f.fileno())
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-    @staticmethod
-    def read_transactions(file_path: str) -> list:
-        """Read all transactions from NDJSON file. Returns [] if not exists."""
-        if not os.path.exists(file_path):
-            return []
-        transactions = []
-        with open(file_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    transactions.append(json.loads(line))
-        return transactions
-
-    @staticmethod
-    def clear_transactions(file_path: str) -> None:
-        """Remove transactions file if it exists."""
-        if os.path.exists(file_path):
-            os.remove(file_path)
+            f.write(json.dumps(entry, default=str) + '\n')
 
     @staticmethod
     def get_eliminations_dir(running_unit_tests=False) -> str:

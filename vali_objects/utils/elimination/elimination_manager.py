@@ -619,7 +619,7 @@ class EliminationManager(CacheController):
         )
 
         idle_threshold_ms = ValiConfig.IDLE_MINER_MAXIMUM_MS
-        near_idle_threshold_ms = idle_threshold_ms * 0.9
+        near_idle_threshold_ms = idle_threshold_ms * 0.98
         idle_hotkeys = {}
         near_idle_hotkeys = {}
 
@@ -728,7 +728,7 @@ class EliminationManager(CacheController):
         for p in positions:
             self._position_client.delete_position(p.miner_hotkey, p.position_uuid)
 
-        self._miner_account_client.reset_account_fields(hotkey)
+        self._miner_account_client.reset_account(hotkey)
 
         try:
             shutil.rmtree(miner_dir)

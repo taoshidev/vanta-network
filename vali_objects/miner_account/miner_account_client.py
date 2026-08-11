@@ -112,9 +112,9 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.delete_miner_account_size(hotkey)
 
-    def reset_account_fields(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
+    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         """Reset all position-derived computed state for a miner."""
-        return self._server.reset_account_fields(hotkey, miner_bucket)
+        return self._server.reset_account(hotkey, miner_bucket)
 
     def get_miner_account_size(
         self,

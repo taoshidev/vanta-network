@@ -1444,16 +1444,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             if preview:
                 computed = MinerAccountManager.compute_account_state_from_positions(positions, hotkey)
-                account_size = original_account.get('account_size', ValiConfig.MIN_CAPITAL)
+                account_size = original_account.get_account_size()
                 computed.collateral_records = [CollateralRecord(
                     account_size=account_size,
                     account_size_theta=account_size / ValiConfig.COST_PER_THETA,
                     update_time_ms=0,
                     is_first_record=True,
                 )]
-                computed.asset_class = MinerAssetClass(original_account['asset_class']) if original_account.get('asset_class') else None
-                computed.miner_bucket = MinerBucket(original_account['miner_bucket']) if original_account.get('miner_bucket') else None
-                computed.hl_address = original_account.get('hl_address')
+                computed.asset_class = original_account.asset_class
+                computed.miner_bucket = original_account.miner_bucket
+                computed.hl_address = original_account.hl_address
                 rebuilt_account = computed.to_dict()
             else:
                 # Actual rebuild - persists to disk, preserving bucket and max_return
@@ -1532,10 +1532,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         try:
             result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
-            self._miner_account_client.reset_account_fields(hotkey)
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
             self._elimination_client.remove_elimination(hotkey)
+            self._miner_account_client.reset_account(hotkey)
 
             if is_synthetic_hotkey(hotkey) and self._entity_client:
                 self._entity_client.restore_subaccount(hotkey)
