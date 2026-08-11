@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import threading
 import time
 import traceback
@@ -24,6 +25,9 @@ RECV_TIMEOUT_S = 30
 # per-resolution reconnect backoff cap (30s) plus resubscribe time.
 L2_BOOK_STALENESS_MS = 60_000
 
+# Hyperliquid's candleSnapshot endpoint caps out around this many candles per request.
+HL_MAX_CANDLES_PER_REQUEST = 5000
+
 # (interval, candle_span_ms) - sorted by span ascending, threshold is span * 5000 candles
 HL_CANDLE_INTERVALS = [
     ("1m", 60 * 1000),
@@ -33,6 +37,14 @@ HL_CANDLE_INTERVALS = [
     ("12h", 12 * 60 * 60 * 1000),
     ("1d", 24 * 60 * 60 * 1000),
 ]
+
+
+class _Candle:
+    __slots__ = ('timestamp', 'close', 'span_ms')
+    def __init__(self, t, c, span_ms):
+        self.timestamp = t
+        self.close = c
+        self.span_ms = span_ms
 
 
 class _HyperliquidWebsocketClient:
@@ -358,33 +370,70 @@ class HyperliquidDataService(BaseDataService):
             logger.error(f"Hyperliquid REST l2Book({coin}) failed: {type(e).__name__}: {e}")
             return None
 
-    def fetch_candle_range(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> list:
-        """Fetch 1-minute candles for a time range for use in the perf ledger.
+    def _fetch_candle_snapshot_chunk(self, coin: str, interval: str, start_ms: int, end_ms: int) -> list | None:
+        """POST a single candleSnapshot request, retrying on transient failures.
 
-        Returns a list of objects with .timestamp (minute-aligned ms) and .close attributes,
-        compatible with PolygonDataService candle output format.
+        Returns the raw list of candle dicts from HL, or None once retries are exhausted.
+        """
+        req = {"coin": coin, "interval": interval, "startTime": start_ms, "endTime": end_ms}
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                resp = requests.post(
+                    ValiConfig.hl_info_url(),
+                    json={"type": "candleSnapshot", "req": req},
+                    timeout=REST_TIMEOUT_S,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:
+                status_code = getattr(getattr(e, 'response', None), 'status_code', None)
+                retryable = isinstance(e, requests.exceptions.RequestException) and (status_code is None or status_code == 429 or status_code >= 500)
+                is_last_attempt = attempt == max_attempts - 1
+                if is_last_attempt or not retryable:
+                    logger.error(f"Hyperliquid candleSnapshot chunk({coin}, {interval}) failed after {attempt + 1} attempt(s): {type(e).__name__}: {e}")
+                    return None
+                backoff_s = (2 ** attempt) + random.uniform(0, 0.5)
+                logger.warning(f"Hyperliquid candleSnapshot chunk({coin}, {interval}) failed (attempt {attempt + 1}/{max_attempts}): {type(e).__name__}: {e}. Retrying in {backoff_s:.1f}s")
+                time.sleep(backoff_s)
+        return None
+
+    def fetch_candle_range(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> list:
+        """Fetch candles for a time range for use in the perf ledger.
+
+        Picks the coarsest resolution from HL_CANDLE_INTERVALS that keeps a single request
+        under HL's per-request candle cap, then paginates with sequential requests at that
+        resolution if the requested range still doesn't fit in one request.
+
+        Returns a list of objects with .timestamp (interval-aligned ms), .close, and .span_ms
+        (the candle's duration in ms) attributes, compatible with PolygonDataService candle
+        output plus the extra .span_ms needed to forward-fill coarser-than-source-resolution data.
         """
         coin = trade_pair.hl_coin
-        req = {"coin": coin, "interval": "1m", "startTime": start_ms, "endTime": end_ms}
-        try:
-            resp = requests.post(
-                ValiConfig.hl_info_url(),
-                json={"type": "candleSnapshot", "req": req},
-                timeout=REST_TIMEOUT_S,
-            )
-            resp.raise_for_status()
-            candles = resp.json()
-        except Exception as e:
-            logger.error(f"Hyperliquid candleSnapshot range({coin}) failed: {type(e).__name__}: {e}")
-            return []
+        total_span_ms = max(end_ms - start_ms, 1)
 
-        class _Candle:
-            __slots__ = ('timestamp', 'close')
-            def __init__(self, t, c):
-                self.timestamp = t
-                self.close = c
+        interval, candle_span_ms = HL_CANDLE_INTERVALS[-1]
+        for _interval, span_ms in HL_CANDLE_INTERVALS:
+            if total_span_ms <= span_ms * HL_MAX_CANDLES_PER_REQUEST:
+                interval, candle_span_ms = _interval, span_ms
+                break
 
-        return [_Candle(int(c["t"]), float(c["c"])) for c in candles]
+        chunk_span_ms = candle_span_ms * HL_MAX_CANDLES_PER_REQUEST
+        candles = []
+        chunk_start = start_ms
+        while chunk_start < end_ms:
+            chunk_end = min(chunk_start + chunk_span_ms, end_ms)
+            raw = self._fetch_candle_snapshot_chunk(coin, interval, chunk_start, chunk_end)
+            if not raw:
+                break  # Give up; caller will treat whatever we've gathered so far as the covered range.
+            for c in raw:
+                candles.append(_Candle(int(c["t"]), float(c["c"]), candle_span_ms))
+            last_ts = int(raw[-1]["t"])
+            if last_ts < chunk_start:  # Safety: no forward progress, avoid looping forever.
+                break
+            chunk_start = last_ts + candle_span_ms
+
+        return candles
 
     def _fetch_candle_snapshot(self, hl_coin: str, target_ms: int) -> PriceSource | None:
         """

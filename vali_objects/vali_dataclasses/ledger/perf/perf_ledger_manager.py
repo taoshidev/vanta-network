@@ -646,18 +646,20 @@ class PerfLedgerManager(CacheController):
         if tp.src == TradePairSource.HYPERLIQUID:
             if self.hds is None:
                 self.hds = HyperliquidDataService(disable_ws=True, running_unit_tests=self.running_unit_tests)
-            minute_candles = self.hds.fetch_candle_range(tp, start_time_ms, end_time_ms)
+            hl_candles = self.hds.fetch_candle_range(tp, start_time_ms, end_time_ms)
             self.n_api_calls += 1
-            # Build price_info directly to avoid creating throwaway objects for second expansion
+            # Forward-fill each candle across its actual span (may be coarser than 1 minute for
+            # long windows), rather than assuming 1-minute candles.
             hl_price_info = {}
-            for candle in minute_candles:
-                if mode == 'second':
-                    for s in range(60):
-                        hl_price_info[candle.timestamp + s * 1000] = candle.close
-                else:
-                    hl_price_info[candle.timestamp] = candle.close
+            step_ms = 1000 if mode == 'second' else 60000
+            for candle in hl_candles:
+                for filled_ms in range(candle.timestamp, candle.timestamp + candle.span_ms, step_ms):
+                    hl_price_info[filled_ms] = candle.close
             hl_price_info['lb_ms'] = start_time_ms
-            hl_price_info['ub_ms'] = end_time_ms
+            # Only claim coverage up through what was actually fetched, so a partial failure
+            # (rate limit, timeout, etc.) leaves the uncovered tail eligible for a real retry
+            # on the next call instead of being silently treated as cached.
+            hl_price_info['ub_ms'] = max((c.timestamp + c.span_ms for c in hl_candles), default=start_time_ms)
             self.trade_pair_to_price_info[mode][tp.trade_pair_id] = hl_price_info
             return
         elif self.pds is None:

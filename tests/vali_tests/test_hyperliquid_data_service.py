@@ -3,6 +3,8 @@ import json
 import unittest
 from unittest.mock import patch, MagicMock
 
+import requests
+
 from data_generator.hyperliquid_data_service import HyperliquidDataService, HYPERLIQUID_PROVIDER_NAME
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory
@@ -322,6 +324,128 @@ class TestHyperliquidDataService(unittest.TestCase):
 
         results = svc.get_price_rest([TradePair.BTCUSD], TimeUtil.now_in_millis())
         self.assertEqual(len(results), 0)
+
+    # -- fetch_candle_range tests --
+
+    def _candle(self, t_ms, close):
+        return {"t": t_ms, "T": t_ms, "o": close, "h": close, "l": close, "c": close, "v": "0"}
+
+    @patch("data_generator.hyperliquid_data_service.requests.post")
+    def test_fetch_candle_range_short_window_uses_1m_single_request(self, mock_post):
+        """A window well under 5000 minutes should resolve to '1m' and make exactly one request."""
+        svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
+        start_ms = 0
+        end_ms = 30 * 60 * 1000  # 30 minutes
+
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = [self._candle(start_ms + i * 60_000, 100.0 + i) for i in range(30)]
+        mock_post.return_value = resp
+
+        candles = svc.fetch_candle_range(TradePair.BTCUSDC, start_ms, end_ms)
+
+        self.assertEqual(mock_post.call_count, 1)
+        sent_req = mock_post.call_args.kwargs["json"]["req"]
+        self.assertEqual(sent_req["interval"], "1m")
+        self.assertEqual(len(candles), 30)
+        self.assertEqual(candles[0].span_ms, 60_000)
+
+    @patch("data_generator.hyperliquid_data_service.requests.post")
+    def test_fetch_candle_range_long_window_uses_coarser_interval(self, mock_post):
+        """A 34-day window would need ~49000 1m candles; should pick a coarser interval
+        that fits in one request instead of exceeding HL's per-request cap."""
+        svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
+        interval_span_ms = {"1m": 60_000, "5m": 300_000, "15m": 900_000,
+                             "1h": 3_600_000, "12h": 43_200_000, "1d": 86_400_000}
+        start_ms = 0
+        end_ms = 34 * 24 * 60 * 60 * 1000  # ~34 days
+
+        def side_effect(url, json=None, timeout=None):
+            req = json["req"]
+            span_ms = interval_span_ms[req["interval"]]
+            n = (req["endTime"] - req["startTime"]) // span_ms
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = [self._candle(req["startTime"] + i * span_ms, 100.0) for i in range(max(n, 1))]
+            return resp
+
+        mock_post.side_effect = side_effect
+
+        candles = svc.fetch_candle_range(TradePair.BTCUSDC, start_ms, end_ms)
+
+        self.assertEqual(mock_post.call_count, 1)
+        sent_req = mock_post.call_args.kwargs["json"]["req"]
+        self.assertNotEqual(sent_req["interval"], "1m")
+        self.assertGreater(len(candles), 0)
+
+    @patch("data_generator.hyperliquid_data_service.requests.post")
+    def test_fetch_candle_range_paginates_when_even_coarsest_interval_overflows(self, mock_post):
+        """A window so long that even '1d' candles exceed the per-request cap should page
+        across multiple sequential requests instead of silently truncating."""
+        svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
+        day_ms = 24 * 60 * 60 * 1000
+        start_ms = 0
+        end_ms = 6000 * day_ms  # 6000 days of '1d' candles > 5000 per-request cap
+
+        call_windows = []
+
+        def side_effect(url, json=None, timeout=None):
+            req = json["req"]
+            call_windows.append((req["startTime"], req["endTime"]))
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            chunk_start, chunk_end = req["startTime"], req["endTime"]
+            n = (chunk_end - chunk_start) // day_ms
+            resp.json.return_value = [self._candle(chunk_start + i * day_ms, 100.0) for i in range(max(n, 1))]
+            return resp
+
+        mock_post.side_effect = side_effect
+
+        candles = svc.fetch_candle_range(TradePair.BTCUSDC, start_ms, end_ms)
+
+        self.assertGreater(mock_post.call_count, 1)
+        self.assertGreater(len(candles), 5000)
+        # Chunks should advance forward, not repeat/overlap.
+        for (s1, _), (s2, _) in zip(call_windows, call_windows[1:]):
+            self.assertGreater(s2, s1)
+
+    @patch("data_generator.hyperliquid_data_service.time.sleep")
+    @patch("data_generator.hyperliquid_data_service.requests.post")
+    def test_fetch_candle_range_retries_on_failure_then_succeeds(self, mock_post, mock_sleep):
+        """A transient failure should be retried before giving up."""
+        svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
+        start_ms = 0
+        end_ms = 10 * 60 * 1000
+
+        ok_resp = MagicMock()
+        ok_resp.raise_for_status = MagicMock()
+        # Cover the full requested window so the pagination loop stops after this one chunk.
+        ok_resp.json.return_value = [self._candle(start_ms + i * 60_000, 100.0) for i in range(10)]
+
+        mock_post.side_effect = [requests.exceptions.ConnectionError("timeout"),
+                                  requests.exceptions.ConnectionError("timeout"), ok_resp]
+
+        candles = svc.fetch_candle_range(TradePair.BTCUSDC, start_ms, end_ms)
+
+        self.assertEqual(mock_post.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)
+        self.assertEqual(len(candles), 10)
+
+    @patch("data_generator.hyperliquid_data_service.time.sleep")
+    @patch("data_generator.hyperliquid_data_service.requests.post")
+    def test_fetch_candle_range_returns_partial_data_on_persistent_failure(self, mock_post, mock_sleep):
+        """After retries are exhausted, should return an empty list for that chunk rather
+        than raising, so the caller can treat the gap as not-yet-covered."""
+        svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
+        start_ms = 0
+        end_ms = 10 * 60 * 1000
+
+        mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
+
+        candles = svc.fetch_candle_range(TradePair.BTCUSDC, start_ms, end_ms)
+
+        self.assertEqual(candles, [])
+        self.assertEqual(mock_post.call_count, 3)
 
 
 if __name__ == "__main__":
