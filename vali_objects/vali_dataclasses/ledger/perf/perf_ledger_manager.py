@@ -1164,7 +1164,7 @@ class PerfLedgerManager(CacheController):
             for positions_list in tp_to_historical_positions.values():
                 for pos in positions_list:
                     _all_fee_events.extend(pos.fee_history)
-            _all_fee_events.sort(key=lambda e: e["time_ms"])
+            _all_fee_events.sort(key=lambda e: e.time_ms)
 
         # Check if the while loop will execute at all
         if start_time_ms + accumulated_time_ms >= end_time_ms:
@@ -1239,8 +1239,8 @@ class PerfLedgerManager(CacheController):
             )
 
             if account_size is not None:
-                while _fee_cursor < len(_all_fee_events) and _all_fee_events[_fee_cursor]["time_ms"] <= t_ms:
-                    _cumulative_fees += _all_fee_events[_fee_cursor]["amount"]
+                while _fee_cursor < len(_all_fee_events) and _all_fee_events[_fee_cursor].time_ms <= t_ms:
+                    _cumulative_fees += _all_fee_events[_fee_cursor].amount
                     _fee_cursor += 1
                 _tp_cumulative_fees = _cumulative_fees
             else:

@@ -6,6 +6,7 @@ from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.trade_pair import TradePair, TradePairSource, DAILY_STOCK_BORROW_RATE, DAILY_MARGIN_INTEREST_RATE
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
+from vali_objects.vali_dataclasses.fee_event import FeeEvent
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
@@ -53,7 +54,7 @@ class Position(BaseModel):
     unrealized_pnl: float = 0.0             # USD
     # TODO: Replace this with a property that checks if close_ms is None
     is_closed_position: bool = False
-    fee_history: List[Dict] = Field(default_factory=list) # [{"fee_type": "carry", "amount": 123, "time_ms": 123}]
+    fee_history: List[FeeEvent] = Field(default_factory=list)
     is_hl: bool = False  # True for Hyperliquid entity miner positions
     last_stock_split_date: Optional[str] = None  # Only set for equities
     dividend_history: List[DividendHistoryEntry] = Field(default_factory=list)  # Audit log of dividend events
@@ -182,25 +183,25 @@ class Position(BaseModel):
 
     def _last_fee_time_ms(self, fee_type: str) -> int:
         for fee_event in reversed(self.fee_history):
-            if fee_event["fee_type"] == fee_type:
-                return fee_event["time_ms"]
+            if fee_event.fee_type == fee_type:
+                return fee_event.time_ms
         return self.open_ms
 
     def record_fee_event(self, fee_type: str, amount: float, time_ms: int):
         if amount <= 0:
             return
 
-        self.fee_history.append({
-            "fee_type": fee_type,
-            "amount": amount,
-            "time_ms": time_ms
-        })
-        self.fee_history.sort(key=lambda fee: fee["time_ms"])
+        self.fee_history.append(FeeEvent(
+            fee_type=fee_type,
+            amount=amount,
+            time_ms=time_ms,
+        ))
+        self.fee_history.sort(key=lambda fee: fee.time_ms)
 
 
     @property
     def total_fees(self) -> float:
-        return sum(fee["amount"] for fee in self.fee_history)
+        return sum(fee.amount for fee in self.fee_history)
 
     @property
     def initial_entry_price(self) -> float:
@@ -281,11 +282,11 @@ class Position(BaseModel):
 
         dashboard_fee_history = {}
         for fee_event in self.fee_history:
-            fee_time_ms = fee_event["time_ms"]
+            fee_time_ms = fee_event.time_ms
             if fee_time_ms > positions_time_ms:
                 dashboard_fee_history[str(fee_time_ms)] = {
-                    "t": fee_event["fee_type"],
-                    "a": fee_event["amount"]
+                    "t": fee_event.fee_type,
+                    "a": fee_event.amount
                 }
 
         if dashboard_fee_history:
