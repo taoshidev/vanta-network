@@ -7,41 +7,62 @@ import typing
 import uuid
 
 import bittensor as bt
-import bittensor.utils.networking
+import pydantic
 from pydantic import Field
 
-from typing import List
+from typing import List, Any, Optional
 from shared_objects.log import logger
 
+try:
+    import bittensor.utils.networking
+    _original_get_external_ip = bittensor.utils.networking.get_external_ip
+    _external_ip = None
 
-original_Synapse_get_required_fields = bt.Synapse.get_required_fields
+    def _get_external_ip() -> str:
+        global _external_ip
+        if _external_ip is None:
+            _external_ip = _original_get_external_ip()
+        return _external_ip
 
-# Monkey patch to improve Bittensor Synapse performance
-def synapse_get_required_fields(self):
-    _REQUIRED_FIELDS_ATTR = "__required_fields"
-    required_fields = getattr(self.__class__, _REQUIRED_FIELDS_ATTR, None)
-    if required_fields is None:
-        required_fields = original_Synapse_get_required_fields(self)
-        setattr(self.__class__, _REQUIRED_FIELDS_ATTR, required_fields)
-    return required_fields
-
-bt.Synapse.get_required_fields = synapse_get_required_fields
-
-
-original_get_external_ip = bittensor.utils.networking.get_external_ip
-external_ip = None
-
-# Monkey patch to improve Bittensor performance
-def get_external_ip() -> str:
-    global external_ip
-    if external_ip is None:
-        external_ip = original_get_external_ip()
-    return external_ip
-
-bittensor.utils.networking.get_external_ip = get_external_ip
+    bittensor.utils.networking.get_external_ip = _get_external_ip
+except (AttributeError, ImportError):
+    pass
 
 
-class SendSignal(bt.Synapse):
+class _DendriteInfo:
+    """Minimal dendrite-compatible namespace for bt11 migration.
+
+    In bt10 this was set by bt.Axon from the verified caller signature.
+    In bt11 it is set by our Flask-based axon replacement after verifying
+    the request with bt.http_auth.verify.
+    """
+    def __init__(self, hotkey: str = ""):
+        self.hotkey = hotkey
+
+    def __repr__(self):
+        return f"_DendriteInfo(hotkey={self.hotkey!r})"
+
+
+class Synapse(pydantic.BaseModel):
+    """Local Synapse base class replacing bt.Synapse for bt11 compatibility.
+
+    The `dendrite` field is a transient, non-serialized attribute that carries
+    the verified caller hotkey.  It is set by the server after verifying the
+    incoming request signature and must NOT be included in serialization or
+    RPC transmission.
+    """
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
+
+    # exclude=True keeps this field out of model_dump() / JSON serialization.
+    # It IS preserved by pickle (Pydantic v2 __getstate__ includes __dict__).
+    dendrite: Any = Field(default=None, exclude=True)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.dendrite is None:
+            object.__setattr__(self, 'dendrite', _DendriteInfo())
+
+
+class SendSignal(Synapse):
     signal: typing.Dict = Field(default_factory=dict, title="Signal", frozen=False, max_length=4096)
     repo_version: str = Field("N/A", title="Repo version (use the same meta.json file as validator)", frozen=False, max_length=256)
     successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
@@ -65,7 +86,7 @@ class SendSignal(bt.Synapse):
 
 SendSignal.required_hash_fields = ["signal"]
 
-class GetPositions(bt.Synapse):
+class GetPositions(Synapse):
     positions: List[typing.Dict] = Field(default_factory=list, title="Positions", frozen=False)
     successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
     error_message: str = Field("", title="Error Message", frozen=False)
@@ -74,7 +95,7 @@ class GetPositions(bt.Synapse):
 
 GetPositions.required_hash_fields = ["positions"]
 
-class ValidatorCheckpoint(bt.Synapse):
+class ValidatorCheckpoint(Synapse):
     checkpoint: str = Field("", title="Checkpoint", frozen=False)
     successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
     error_message: str = Field("", title="Error Message", frozen=False)
@@ -83,28 +104,28 @@ class ValidatorCheckpoint(bt.Synapse):
 ValidatorCheckpoint.required_hash_fields = ["checkpoint"]
 
 
-class CollateralRecord(bt.Synapse):
+class CollateralRecord(Synapse):
     collateral_record: typing.Dict = Field(default_factory=dict, title="Collateral Record", frozen=False, max_length=4096)
     successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
     error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 CollateralRecord.required_hash_fields = ["collateral_record"]
 
-class AssetSelection(bt.Synapse):
+class AssetSelection(Synapse):
     asset_selection: typing.Dict = Field(default_factory=dict, title="Asset Selection", frozen=False, max_length=4096)
     successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
     error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 AssetSelection.required_hash_fields = ["asset_selection"]
 
-class SubaccountRegistration(bt.Synapse):
+class SubaccountRegistration(Synapse):
     subaccount_data: typing.Dict = Field(default_factory=dict, title="Subaccount Registration Data", frozen=False, max_length=4096)
     successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
     error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 SubaccountRegistration.required_hash_fields = ["subaccount_data"]
 
-class EntityEndpointUpdate(bt.Synapse):
+class EntityEndpointUpdate(Synapse):
     endpoint_data: typing.Dict = Field(default_factory=dict, title="Entity Endpoint Update Data", frozen=False, max_length=4096)
     successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
     error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)

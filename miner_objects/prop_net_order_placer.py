@@ -286,43 +286,54 @@ class PropNetOrderPlacer:
         if self.running_unit_tests:
             return self._send_order_test_mode(synapse)
 
-        dendrite = bt.Dendrite(wallet=self.wallet)
-        try:
-            for attempt in range(self.MAX_NETWORK_RETRIES):
-                try:
-                    # Fire-and-forget to other validators on first attempt only
-                    if attempt == 0 and other_axons:
-                        thread = threading.Thread(
-                            target=self._query_validators_sync,
-                            args=(other_axons, synapse),
-                            daemon=True
-                        )
-                        thread.start()
+        import httpx
+        synapse_class_name = synapse.__class__.__name__
+        body = synapse.model_dump_json().encode()
+        path = f"/axon/{synapse_class_name}"
 
-                    # Await mothership response only
-                    responses = await dendrite.aquery([mothership_axon], synapse)
-                    response = responses[0]
+        for attempt in range(self.MAX_NETWORK_RETRIES):
+            try:
+                # Fire-and-forget to other validators on first attempt only
+                if attempt == 0 and other_axons:
+                    thread = threading.Thread(
+                        target=self._query_validators_sync,
+                        args=(other_axons, synapse),
+                        daemon=True
+                    )
+                    thread.start()
 
-                    if response.successfully_processed:
-                        return {"success": True, "order_json": response.order_json, "error_message": ""}
+                # Await mothership response only (fresh nonce per attempt)
+                url = f"http://{mothership_axon.ip}:{mothership_axon.port}{path}"
+                headers = bt.http_auth.sign(
+                    self.wallet,
+                    method="POST",
+                    path=path,
+                    body=body,
+                    receiver_ss58=mothership_axon.hotkey,
+                )
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(url, content=body, headers=headers)
+                resp.raise_for_status()
+                response = synapse.__class__.model_validate_json(resp.content)
 
-                    # Mothership rejected -- check should_retry
-                    if not response.should_retry:
-                        return {"success": False, "order_json": "", "error_message": response.error_message}
+                if response.successfully_processed:
+                    return {"success": True, "order_json": response.order_json, "error_message": ""}
 
-                    # should_retry=True but failed -- transient issue, retry with delay
-                    logger.warning(f"Mothership retryable error (attempt {attempt + 1}): {response.error_message}")
-                    if attempt < self.MAX_NETWORK_RETRIES - 1:
-                        await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
+                # Mothership rejected -- check should_retry
+                if not response.should_retry:
+                    return {"success": False, "order_json": "", "error_message": response.error_message}
 
-                except Exception as e:
-                    logger.warning(f"Network error to mothership (attempt {attempt + 1}/{self.MAX_NETWORK_RETRIES}): {e}")
-                    if attempt < self.MAX_NETWORK_RETRIES - 1:
-                        await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
+                # should_retry=True but failed -- transient issue, retry with delay
+                logger.warning(f"Mothership retryable error (attempt {attempt + 1}): {response.error_message}")
+                if attempt < self.MAX_NETWORK_RETRIES - 1:
+                    await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
 
-            return {"success": False, "order_json": "", "error_message": CONNECTION_ERROR_MSG}
-        finally:
-            await dendrite.aclose_session()
+            except Exception as e:
+                logger.warning(f"Network error to mothership (attempt {attempt + 1}/{self.MAX_NETWORK_RETRIES}): {e}")
+                if attempt < self.MAX_NETWORK_RETRIES - 1:
+                    await asyncio.sleep(self.NETWORK_RETRY_DELAY_SECONDS)
+
+        return {"success": False, "order_json": "", "error_message": CONNECTION_ERROR_MSG}
 
     def _send_order_test_mode(self, synapse) -> dict:
         """Mock successful response for unit tests."""
@@ -509,11 +520,24 @@ class PropNetOrderPlacer:
 
         async def _query_validators_async(axons, send_signal_request):
             """Async helper for background validator queries."""
-            dendrite = bt.Dendrite(wallet=self.wallet)
-            try:
-                await dendrite.aquery(axons, send_signal_request)
-            finally:
-                await dendrite.aclose_session()
+            import httpx
+            synapse_class_name = send_signal_request.__class__.__name__
+            body = send_signal_request.model_dump_json().encode()
+            path = f"/axon/{synapse_class_name}"
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for axon in axons:
+                    try:
+                        headers = bt.http_auth.sign(
+                            self.wallet,
+                            method="POST",
+                            path=path,
+                            body=body,
+                            receiver_ss58=axon.hotkey,
+                        )
+                        url = f"http://{axon.ip}:{axon.port}{path}"
+                        await client.post(url, content=body, headers=headers)
+                    except Exception as e:
+                        logger.debug(f"Background query to {axon.hotkey} failed (non-critical): {e}")
 
         try:
             asyncio.run(_query_validators_async(axons, send_signal_request))

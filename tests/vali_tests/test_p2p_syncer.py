@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-from bittensor import Balance
+from bittensor.balance import Balance
 
 from shared_objects.subtensor_ops.mock_metagraph import MockNeuron, MockAxonInfo, MockMetagraph
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode

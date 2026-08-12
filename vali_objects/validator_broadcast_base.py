@@ -79,7 +79,8 @@ class ValidatorBroadcastBase:
             self.wallet = None
         else:
             logger.info(f"[VALIDATOR_BROADCAST_BASE] Production mode - creating wallet (running_unit_tests={running_unit_tests}, config={config})")
-            self.wallet = bt.Wallet(config=config)
+            from shared_objects.bt_config import make_wallet
+            self.wallet = make_wallet(config)
             self._hotkey = self.wallet.hotkey.ss58_address
             # Derive is_mothership using centralized utility
             from vali_objects.utils.vali_utils import ValiUtils
@@ -104,7 +105,7 @@ class ValidatorBroadcastBase:
 
     def _broadcast_to_validators(
         self,
-        synapse_factory: Callable[[], template.protocol.bt.Synapse],
+        synapse_factory: Callable[[], template.protocol.Synapse],
         broadcast_name: str,
         context: Optional[dict] = None
     ) -> None:
@@ -145,7 +146,7 @@ class ValidatorBroadcastBase:
 
     def _do_broadcast_via_rpc(
         self,
-        synapse_factory: Callable[[], template.protocol.bt.Synapse],
+        synapse_factory: Callable[[], template.protocol.Synapse],
         broadcast_name: str,
         context: Optional[dict] = None
     ) -> None:
@@ -212,7 +213,7 @@ class ValidatorBroadcastBase:
             import traceback
             logger.error(traceback.format_exc())
 
-    def _serialize_synapse(self, synapse: template.protocol.bt.Synapse) -> template.protocol.bt.Synapse:
+    def _serialize_synapse(self, synapse: template.protocol.Synapse) -> template.protocol.Synapse:
         """
         Validate that synapse is picklable for RPC transmission.
 
