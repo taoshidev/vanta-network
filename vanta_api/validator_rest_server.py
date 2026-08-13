@@ -2086,12 +2086,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             entity_hotkey = data['entity_hotkey']
             account_size = data['account_size']
             asset_class = data['asset_class']
-            admin = data.get('admin')
+            collateral_exempt = data.get('collateral_exempt')
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
 
-            # Validate admin flag type early
-            if admin is not None and not isinstance(admin, bool):
-                return jsonify({'error': 'admin must be a boolean'}), 400
+            if collateral_exempt is not None and not isinstance(collateral_exempt, bool):
+                return jsonify({'error': 'collateral_exempt must be a boolean'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -2131,8 +2130,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey,
             }
-            if admin is not None:
-                sig_dict["admin"] = admin
+            if collateral_exempt is not None:
+                sig_dict["collateral_exempt"] = collateral_exempt
             if is_hl:
                 sig_dict["hl_address"] = hl_address
                 if payout_address is not None:
@@ -2143,6 +2142,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             timings['verify_signature'] = int((time.time() - t0) * 1000)
             if not is_valid:
                 return jsonify({'error': 'Invalid signature. Subaccount creation unauthorized'}), 401
+
+            collateral_exempt = bool(collateral_exempt)
 
             # Verify coldkey-hotkey ownership using subtensor
             t0 = time.time()
@@ -2155,11 +2156,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             t0 = time.time()
             if is_hl:
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
-                    entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=bool(admin), payout_address=payout_address
+                    entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, admin=bool(admin), drawdown_criteria=drawdown_criteria
+                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 

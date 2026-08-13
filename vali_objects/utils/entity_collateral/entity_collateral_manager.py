@@ -256,7 +256,7 @@ class EntityCollateralManager(CacheController):
         total_required_theta = 0.0
 
         for sa_id, sa_info in subaccounts.items():
-            if sa_info.get("status") not in ("active", "admin"):
+            if sa_info.get("status") != "active" or sa_info.get("reg_fee_theta", 0) == 0:
                 continue
 
             synthetic_hotkey = sa_info.get("synthetic_hotkey")
@@ -415,6 +415,16 @@ class EntityCollateralManager(CacheController):
         if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
             return 0.0
 
+        # Collateral-exempt subaccounts (reg_fee_theta == 0) are never slashed on losses
+        entity_data = self._entity_client.get_entity_data(entity_hotkey)
+        if entity_data:
+            subaccounts = entity_data.get("subaccounts", {})
+            for sa in subaccounts.values():
+                if isinstance(sa, dict) and sa.get("synthetic_hotkey") == synthetic_hotkey:
+                    if sa.get("reg_fee_theta", 0) == 0:
+                        return 0.0
+                    break
+
         max_slash = self.get_max_slash(synthetic_hotkey)
         if max_slash <= 0:
             logger.warning(
@@ -534,10 +544,17 @@ class EntityCollateralManager(CacheController):
                 # Recompute realized loss per subaccount from position state (source of truth).
                 # Tracked cumulative_realized_loss (from try_slash_on_elimination or test
                 # injection) is used as a floor so those paths still work without positions.
+                exempt_hotkeys = {
+                    s.get("synthetic_hotkey")
+                    for s in subaccounts.values()
+                    if isinstance(s, dict) and s.get("reg_fee_theta", 0) == 0
+                }
                 pending_loss_usd: Dict[str, float] = {}  # synthetic hotkey -> USD
                 with self._slash_lock:
                     for synthetic_hotkey in synthetic_hotkeys:
                         if not synthetic_hotkey:
+                            continue
+                        if synthetic_hotkey in exempt_hotkeys:
                             continue
                         max_slash = self.get_max_slash(synthetic_hotkey)
                         if max_slash <= 0:

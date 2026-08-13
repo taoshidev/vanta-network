@@ -937,7 +937,7 @@ class EntityMinerRestServer(MinerRestServer):
         {
             "asset_class": "crypto" | "forex" | "equities",  // Required
             "account_size": float,                           // Required, must be > 0
-            "admin": bool                                    // Optional, default false
+            "collateral_exempt": bool                        // Optional, default false
         }
 
         Request body (JSON) — HL-linked:
@@ -945,7 +945,7 @@ class EntityMinerRestServer(MinerRestServer):
             "hl_address": "0x...",     // Required, 0x + 40 hex chars
             "account_size": float,     // Required, must be > 0
             "payout_address": "0x...", // Optional, EVM address for USDC payouts
-            "admin": bool              // Optional, default false
+            "collateral_exempt": bool  // Optional, default false
         }
         """
         import requests as http_requests
@@ -985,15 +985,15 @@ class EntityMinerRestServer(MinerRestServer):
                 if drawdown_criteria not in ("trailing", "static"):
                     return jsonify({'status': 'error', 'message': 'drawdown_criteria must be "trailing" or "static"'}), 400
 
-            admin = request_data.get("admin")
+            raw = request_data.get("collateral_exempt", request_data.get("admin", False))
+            if not isinstance(raw, bool):
+                return jsonify({'status': 'error', 'message': 'collateral_exempt must be a boolean'}), 400
+            collateral_exempt = raw
 
             try:
                 account_size = float(request_data["account_size"])
             except (ValueError, TypeError):
                 return jsonify({'status': 'error', 'message': 'account_size must be a number'}), 400
-
-            if admin is not None and not isinstance(admin, bool):
-                return jsonify({'status': 'error', 'message': 'admin must be a boolean'}), 400
 
             if asset_class not in ["crypto", "forex", "equities", "commodities", "hl_all", "all_markets"]:
                 return jsonify({
@@ -1047,8 +1047,8 @@ class EntityMinerRestServer(MinerRestServer):
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address,
             }
-            if admin is not None:
-                message_dict["admin"] = admin
+            if collateral_exempt:
+                message_dict["collateral_exempt"] = collateral_exempt
             if is_hl:
                 message_dict["hl_address"] = hl_address
                 if payout_address is not None:
@@ -1070,8 +1070,8 @@ class EntityMinerRestServer(MinerRestServer):
                 "signature": signature,
                 "version": "2.2.1"
             }
-            if admin is not None:
-                payload["admin"] = admin
+            if collateral_exempt:
+                payload["collateral_exempt"] = collateral_exempt
             if is_hl:
                 payload["hl_address"] = hl_address
                 if payout_address is not None:

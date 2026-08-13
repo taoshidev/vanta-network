@@ -836,7 +836,7 @@ class DebtLedgerManager():
             for entity_hotkey, entity_data in all_entities.items():
                 # Get active subaccounts for this entity
                 active_subaccounts = [sa for sa in entity_data.get('subaccounts', {}).values()
-                                     if sa.get('status') == 'active']
+                                     if sa.get('status') == 'active' and sa.get('reg_fee_theta', 0) > 0]
 
                 has_frozen_ledgers = entity_hotkey in entity_to_frozen_debt_ledgers
                 if not active_subaccounts and not has_frozen_ledgers:

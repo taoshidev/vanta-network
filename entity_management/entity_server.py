@@ -150,7 +150,7 @@ class EntityServer(RPCServerBase):
         entity_hotkey: str,
         account_size: float,
         asset_class: str,
-        admin: bool = False,
+        collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
     ) -> Tuple[bool, Optional[dict], str]:
         """
@@ -160,14 +160,14 @@ class EntityServer(RPCServerBase):
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD
             asset_class: Asset class selection
-            admin: If True, skip collateral slashing and exclude from payouts
+            collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         success, subaccount_info, message = self._manager.create_subaccount(
-            entity_hotkey, account_size, asset_class, admin=admin, drawdown_criteria=drawdown_criteria
+            entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria
         )
 
         # Convert SubaccountInfo to dict for RPC serialization
@@ -181,7 +181,7 @@ class EntityServer(RPCServerBase):
         account_size: float,
         hl_address: str,
         asset_class: str = "hl_all",
-        admin: bool = False,
+        collateral_exempt: bool = False,
         payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[dict], str]:
         """
@@ -192,14 +192,14 @@ class EntityServer(RPCServerBase):
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             asset_class: Asset class selection (default: "hl_all")
-            admin: If True, skip collateral slashing
+            collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         success, subaccount_info, message = self._manager.create_hl_subaccount(
-            entity_hotkey, account_size, hl_address, asset_class=asset_class, admin=admin, payout_address=payout_address
+            entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address
         )
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
         return success, subaccount_dict, message
@@ -423,7 +423,7 @@ class EntityServer(RPCServerBase):
             synthetic_hotkey: The synthetic hotkey
             account_size: Account size in USD
             asset_class: Asset class selection
-            status: Subaccount status (active, admin, etc.)
+            status: Subaccount status (active, eliminated, unknown)
             hl_address: Optional Hyperliquid address for HL-linked subaccounts
             payout_address: Optional EVM address for USDC payouts
         """
