@@ -945,6 +945,10 @@ class ChallengePeriodManager(CacheController):
             return None
         return self.miner_states[hotkey].bucket(timestamp_ms)
 
+    def get_miner_buckets(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, MinerBucket | None]:
+        """Get buckets for multiple miners in one call."""
+        return {hotkey: self.get_miner_bucket(hotkey, timestamp_ms) for hotkey in hotkeys}
+
     def get_miner_start_time(self, hotkey: str) -> int | None:
         """Get the start time of a miner's current bucket."""
         if hotkey not in self.miner_states:

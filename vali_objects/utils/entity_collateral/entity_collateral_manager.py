@@ -550,11 +550,12 @@ class EntityCollateralManager(CacheController):
                     if isinstance(s, dict) and s.get("reg_fee_theta", 0) == 0
                 }
                 pending_loss_usd: Dict[str, float] = {}  # synthetic hotkey -> USD
+                eligible_hotkeys = {hk for hk in synthetic_hotkeys if hk and hk not in exempt_hotkeys}
+                buckets = self._challenge_period_client.get_miner_buckets(list(eligible_hotkeys))
                 with self._slash_lock:
-                    for synthetic_hotkey in synthetic_hotkeys:
-                        if not synthetic_hotkey:
-                            continue
-                        if synthetic_hotkey in exempt_hotkeys:
+                    for synthetic_hotkey in eligible_hotkeys:
+                        bucket = buckets.get(synthetic_hotkey)
+                        if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
                             continue
                         max_slash = self.get_max_slash(synthetic_hotkey)
                         if max_slash <= 0:
