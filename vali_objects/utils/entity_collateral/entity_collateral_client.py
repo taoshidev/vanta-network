@@ -7,7 +7,11 @@ Connects to EntityCollateralServer via RPC. Can be created in ANY process.
 
 Primary consumers:
 - MarketOrderManager: calls can_open_position() before accepting orders from subaccounts.
-- MarketOrderManager: calls slash_on_realized_loss() when subaccount positions close with loss.
+- EliminationManager: calls try_slash_on_elimination() when funded subaccounts are eliminated.
+
+Realized-loss slashing on position close is derived from position state by the
+EntityCollateral daemon in process_pending_slashes(); no client-side call is made
+by the order path.
 """
 
 from typing import Optional, Tuple

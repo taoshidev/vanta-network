@@ -485,6 +485,22 @@ class EntityCollateralManager(CacheController):
 
         return self.slash_on_realized_loss(entity_hotkey, hotkey, remaining)
 
+    def _compute_realized_loss_from_positions(self, synthetic_hotkey: str) -> float:
+        """
+        Sum realized losses across every position (open + closed) for a subaccount.
+
+        Realized loss is defined as max(0, -position.realized_pnl); wins do not
+        offset losses. Returns 0.0 if the subaccount has no positions.
+        """
+        try:
+            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey)
+        except Exception as e:
+            logger.warning(f"[ENTITY_COLLATERAL] Failed to fetch positions for {synthetic_hotkey}: {e}")
+            return 0.0
+        if not positions:
+            return 0.0
+        return sum(max(0.0, -p.realized_pnl) for p in positions)
+
     def get_cumulative_slashed(self, synthetic_hotkey: str) -> float:
         """
         Get the cumulative amount slashed for a subaccount.
@@ -515,15 +531,30 @@ class EntityCollateralManager(CacheController):
                 subaccounts = entity_data.get("subaccounts", {}) if isinstance(entity_data, dict) else {}
                 synthetic_hotkeys = {s.get("synthetic_hotkey") for s in subaccounts.values() if isinstance(s, dict)}
 
-                pending_loss_usd: Dict[str, float] = {} # synthetic hotkey -> USD
+                # Recompute realized loss per subaccount from position state (source of truth).
+                # Tracked cumulative_realized_loss (from try_slash_on_elimination or test
+                # injection) is used as a floor so those paths still work without positions.
+                pending_loss_usd: Dict[str, float] = {}  # synthetic hotkey -> USD
                 with self._slash_lock:
-                    for synthetic_hotkey, tracking in self._slash_tracking.items():
-                        if synthetic_hotkey not in synthetic_hotkeys:
+                    for synthetic_hotkey in synthetic_hotkeys:
+                        if not synthetic_hotkey:
                             continue
-                        cumulative_realized_loss = tracking["cumulative_realized_loss"]
-                        cumulative_slashed = tracking["cumulative_slashed"]
                         max_slash = self.get_max_slash(synthetic_hotkey)
-                        pending_loss_usd[synthetic_hotkey] = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, max_slash)
+                        if max_slash <= 0:
+                            continue
+                        tracking = self._slash_tracking.setdefault(synthetic_hotkey, {
+                            "cumulative_realized_loss": 0.0,
+                            "cumulative_slashed": 0.0,
+                        })
+
+                        computed_loss = self._compute_realized_loss_from_positions(synthetic_hotkey)
+                        cumulative_realized_loss = max(tracking["cumulative_realized_loss"], computed_loss)
+                        cumulative_slashed = tracking["cumulative_slashed"]
+                        tracking["cumulative_realized_loss"] = cumulative_realized_loss
+
+                        slash_usd = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, max_slash)
+                        if slash_usd > 0:
+                            pending_loss_usd[synthetic_hotkey] = slash_usd
                 total_pending_loss_theta = sum(pending_loss_usd.values()) / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
 
                 pending_reg_theta: Dict[int, float] = {} # subaccount id -> theta
