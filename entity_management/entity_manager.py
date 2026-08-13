@@ -468,10 +468,7 @@ class EntityManager(ValidatorBroadcastBase):
 
                     if current_balance - required_theta < required_min_theta:
                         logger.warning(
-                            f"[ENTITY_MANAGER] {entity_hotkey} collateral after fee {current_balance - required_theta:.2f} < required {required_min_theta:.2f} theta"
-                        )
-                        return False, None, (
-                            f"Insufficient collateral: {current_balance - required_theta:.2f} theta after fee < {required_min_theta:.2f} theta required"
+                            f"[ENTITY_MANAGER] {entity_hotkey} collateral after fee {current_balance - required_theta:.2f} < required {required_min_theta:.2f} theta (non-blocking)"
                         )
 
                 # Decrement collateral cache immediately to prevent double-spend before daemon slashes on-chain
