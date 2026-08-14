@@ -2130,7 +2130,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey,
             }
-            if collateral_exempt is not None:
+            if collateral_exempt:
                 sig_dict["collateral_exempt"] = collateral_exempt
             if is_hl:
                 sig_dict["hl_address"] = hl_address

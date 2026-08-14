@@ -583,7 +583,7 @@ class EntityManager(ValidatorBroadcastBase):
             logger.info(
                 f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
                 f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
-                f"status={initial_status} ({total_ms} ms)"
+                f"status=active ({total_ms} ms)"
             )
             remaining_theta = (current_balance - required_theta) if current_balance else 0.0
             return True, subaccount_info, f"Slashing {required_theta} theta, {remaining_theta:.2f} theta remaining"
