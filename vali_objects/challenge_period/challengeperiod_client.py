@@ -171,6 +171,10 @@ class ChallengePeriodClient(RPCClientBase):
         """Get drawdown statistics for a synthetic hotkey for dashboard display."""
         return self._server.get_drawdown_stats_rpc(synthetic_hotkey)
 
+    def get_pro_stats(self, synthetic_hotkey: str) -> dict | None:
+        """Get pro promotion criteria for a synthetic hotkey for dashboard display."""
+        return self._server.get_pro_stats_rpc(synthetic_hotkey)
+
     def get_miner_scores(self) -> tuple:
         """ Get cached miner scores for MinerStatisticsManager. """
         return self._server.get_miner_scores_rpc()

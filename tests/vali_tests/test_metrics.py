@@ -126,6 +126,23 @@ class TestMetrics(TestBase):
         self.assertGreater(sharpe, 0.0)
         self.assertLess(sharpe, 10)
 
+    def test_daily_consistency_evenly_distributed(self):
+        """Test that evenly distributed gains give each day an equal share of the profit"""
+        log_returns = [0.01] * 4
+
+        self.assertAlmostEqual(Metrics.daily_consistency(log_returns), 0.25)
+
+    def test_daily_consistency_single_spike(self):
+        """Test that a single outsized day dominates the profit share"""
+        log_returns = [0.1, 0.001, -0.05]
+
+        self.assertGreater(Metrics.daily_consistency(log_returns), 0.9)
+
+    def test_daily_consistency_no_profit(self):
+        """Test that the daily consistency function fails closed with no positive returns"""
+        self.assertEqual(Metrics.daily_consistency([]), 1.0)
+        self.assertEqual(Metrics.daily_consistency([-0.1, -0.2]), 1.0)
+
     def test_sortino_no_returns(self):
         """Test that the Sortino function returns 0.0 when there are no returns"""
         log_returns = []

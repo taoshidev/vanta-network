@@ -171,6 +171,9 @@ class ChallengePeriodServer(RPCServerBase):
     def get_drawdown_stats_rpc(self, hotkey: str) -> dict | None:
         return self._manager.get_drawdown_stats(hotkey)
 
+    def get_pro_stats_rpc(self, hotkey: str) -> dict | None:
+        return self._manager.get_pro_stats(hotkey)
+
     def to_checkpoint_dict_rpc(self) -> dict:
         return self._manager.to_checkpoint_dict()
 
