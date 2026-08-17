@@ -1115,9 +1115,18 @@ class EntityManager(ValidatorBroadcastBase):
             if not orders:
                 return EMPTY_RESPONSE
 
+            # Weekly-scope penalties
+            week_penalties = {}
+            for cp in (debt_ledger.checkpoints if debt_ledger else []):
+                cp_week_start = TimeUtil.ms_at_start_of_week(cp.timestamp_ms - 1)
+                week_penalties[cp_week_start] = min(
+                    week_penalties.get(cp_week_start, 1.0), cp.weekly_penalty
+                )
+
             weekly_settlements = []
             def _record_week(start_ms, end_ms, balance, eow_unrealized, week_orders):
                 previous_payouts = sum(s['payout'] for s in weekly_settlements)
+                week_penalty = week_penalties.get(start_ms, 1.0)
                 payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
                 weekly_settlements.append({
                     'start_ms': start_ms,
@@ -1125,6 +1134,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
                     'payout': payout,
+                    'weekly_penalty': week_penalty,
                     'orders': [o.to_python_dict() for o in week_orders],
                 })
 
@@ -1171,9 +1181,7 @@ class EntityManager(ValidatorBroadcastBase):
                         snapshot = snapshots[j]
                         best_delta = delta
                     j += 1
-                if end_time == end_time_ms and realtime:
-                    unrealized_pnl = realtime_unrealized
-                elif snapshot is not None:
+                if snapshot is not None:
                     unrealized_pnl = snapshot.equity - snapshot.balance
                 else:
                     cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
@@ -1182,7 +1190,10 @@ class EntityManager(ValidatorBroadcastBase):
                         f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
                         f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
                     )
-                _record_week(week_start, end_time, running_balance, unrealized_pnl, week_orders)
+                if end_time == end_time_ms and realtime:
+                    unrealized_pnl = realtime_unrealized
+                _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)
+                eow_hwm = max(eow_hwm, running_balance)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
 
             # Only sum weeks that fall within the requested period.
