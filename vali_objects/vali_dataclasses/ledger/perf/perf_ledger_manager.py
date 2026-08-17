@@ -8,6 +8,7 @@ from typing import List
 
 from setproctitle import setproctitle
 
+from data_generator.hyperliquid_data_service import HyperliquidDataService
 from data_generator.polygon_data_service import PolygonDataService
 from shared_objects.cache_controller import CacheController
 from shared_objects.rpc.common_data_client import CommonDataClient
@@ -22,6 +23,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.trade_pair import TradePairSource
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 
@@ -91,6 +93,7 @@ class PerfLedgerManager(CacheController):
         self.cached_miner_account_sizes = {}  # Deepcopy of contract_manager.miner_account_sizes
         self.cache_last_refreshed_date = None  # 'YYYY-MM-DD' format, refresh daily
         self.pds = None  # Load it later once the process starts so ipc works.
+        self.hds = None  # HyperliquidDataService, lazily created for HL candle fetching.
 
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
@@ -640,7 +643,27 @@ class PerfLedgerManager(CacheController):
 
         #t0 = time.time()
         #print(f"Starting #{requested_seconds} candle fetch for {tp.trade_pair}")
-        if self.pds is None:
+        if tp.src == TradePairSource.HYPERLIQUID:
+            if self.hds is None:
+                self.hds = HyperliquidDataService(disable_ws=True, running_unit_tests=self.running_unit_tests)
+            hl_candles = self.hds.fetch_candle_range(tp, start_time_ms, end_time_ms,
+                                                      min_interval_span_ms=ValiConfig.TARGET_CHECKPOINT_DURATION_MS)
+            self.n_api_calls += 1
+            # Forward-fill each candle across its actual span (may be coarser than 1 minute for
+            # long windows), rather than assuming 1-minute candles.
+            hl_price_info = {}
+            step_ms = 1000 if mode == 'second' else 60000
+            for candle in hl_candles:
+                for filled_ms in range(candle.timestamp, candle.timestamp + candle.span_ms, step_ms):
+                    hl_price_info[filled_ms] = candle.close
+            hl_price_info['lb_ms'] = start_time_ms
+            # Only claim coverage up through what was actually fetched, so a partial failure
+            # (rate limit, timeout, etc.) leaves the uncovered tail eligible for a real retry
+            # on the next call instead of being silently treated as cached.
+            hl_price_info['ub_ms'] = max((c.timestamp + c.span_ms for c in hl_candles), default=start_time_ms)
+            self.trade_pair_to_price_info[mode][tp.trade_pair_id] = hl_price_info
+            return
+        elif self.pds is None:
             if self.running_unit_tests:
                 # Use LivePriceFetcherClient in test mode to support RPC test data injection
                 # (e.g., via set_test_candle_data() RPC method)
