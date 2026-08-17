@@ -88,6 +88,16 @@ class MinerBucket(Enum):
         return self in (MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED)
 
     @property
+    def sharpe_threshold(self) -> float | None:
+        """Minimum sharpe required for promotion. None for buckets with no sharpe requirement."""
+        return ValiConfig.PRO_CHALLENGE_SHARPE_THRESHOLD if self.is_pro else None
+
+    @property
+    def daily_consistency_threshold(self) -> float | None:
+        """Maximum daily consistency allowed for promotion. None for buckets with no consistency requirement."""
+        return ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD if self.is_pro else None
+
+    @property
     def is_subaccount_challenge(self) -> bool:
         """True for either subaccount track's challenge bucket."""
         return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
