@@ -26,6 +26,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.scoring import Scoring
+from vali_objects.utils.metrics import Metrics
 from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
@@ -92,12 +93,29 @@ class DrawdownStats:
 
 
 @dataclass
+class ProStats:
+    sharpe: float = 0.0
+    daily_consistency: float = 1.0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> 'ProStats':
+        if not d:
+            return cls()
+        valid_keys = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid_keys and v is not None})
+
+
+@dataclass
 class MinerBucketState:
     hotkey: str
     entries: list[BucketEntry]
     drawdown: DrawdownStats = field(default_factory=DrawdownStats)
     drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING
     rank: int | None = None
+    pro_stats: ProStats = field(default_factory=ProStats)
 
     def __post_init__(self):
         if not self.entries:
@@ -132,12 +150,13 @@ class MinerBucketState:
         return [entry.to_dict() for entry in self.entries]
 
     def to_checkpoint_dict(self) -> dict:
-        """Serialize full state (entries + drawdown + drawdown_criteria + rank) for on-disk checkpoint."""
+        """Serialize full state (entries + drawdown + drawdown_criteria + rank + pro_stats) for on-disk checkpoint."""
         return {
             "entries": [entry.to_dict() for entry in self.entries],
             "drawdown": self.drawdown.to_dict(),
             "drawdown_criteria": self.drawdown_criteria.value,
             "rank": self.rank,
+            "pro_stats": self.pro_stats.to_dict(),
         }
 
     @classmethod
@@ -151,6 +170,7 @@ class MinerBucketState:
             drawdown=DrawdownStats.from_dict(data.get("drawdown")),
             drawdown_criteria=criteria,
             rank=data.get("rank"),
+            pro_stats=ProStats.from_dict(data.get("pro_stats")),
         )
 
     def __str__(self) -> str:
@@ -163,7 +183,8 @@ class MinerBucketState:
             f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={f'{dd.daily_open_equity:.4f}' if dd.daily_open_equity is not None else 'None'} | "
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
             f"static_dd={dd.static_drawdown_pct:.2f}% static_eod_dd={dd.static_eod_drawdown_pct:.2f}% "
-            f"eod_hwm={dd.eod_hwm:.4f}"
+            f"eod_hwm={dd.eod_hwm:.4f} | "
+            f"sharpe={self.pro_stats.sharpe:.2f} consistency={self.pro_stats.daily_consistency:.2f}"
         )
 
     @property
@@ -327,6 +348,8 @@ class ChallengePeriodManager(CacheController):
         ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
         positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
         self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
+        # TODO: should this only recompute when perf ledgers are rebuilt, in case of retroactive ledger changes? If retroactive changes can't happen, reduce this to once a day.
+        self._refresh_pro_stats(evaluation_hotkeys, ledgers, asset_selections)
         self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
 
         eliminations = {}
@@ -481,7 +504,19 @@ class ChallengePeriodManager(CacheController):
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
                 return False
 
+        if state.current_bucket == MinerBucket.SUBACCOUNT_PRO_CHALLENGE:
+            if current_time_ms - state.current_bucket_start_ms < ValiConfig.PRO_CHALLENGE_MINIMUM_MS:
+                return False
+
         if state.current_bucket.next_bucket is None:
+            return False
+
+        sharpe_threshold = state.current_bucket.sharpe_threshold
+        if sharpe_threshold is not None and state.pro_stats.sharpe < sharpe_threshold:
+            return False
+
+        consistency_threshold = state.current_bucket.daily_consistency_threshold
+        if consistency_threshold is not None and state.pro_stats.daily_consistency > consistency_threshold:
             return False
 
         if state.drawdown.current_return > returns_threshold:
@@ -690,6 +725,34 @@ class ChallengePeriodManager(CacheController):
                 existing.daily_open_equity = daily_open_equity
                 existing.eod_hwm = max(existing.eod_hwm, last_eod_equity, eod_hwm)
                 existing.last_eod_checked_ms = last_eod_checked_ms
+
+    def _refresh_pro_stats(
+        self,
+        hotkeys: list[str],
+        ledgers: dict[str, PerfLedger],
+        asset_selections: dict[str, MinerAssetClass]
+    ) -> None:
+        for hotkey in hotkeys:
+            state = self.miner_states[hotkey]
+            if not state.current_bucket.is_pro:
+                continue
+
+            ledger = ledgers.get(hotkey)
+            if ledger is None:
+                logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping pro stats")
+                continue
+
+            _asset = asset_selections.get(hotkey)
+            if _asset is None:
+                logger.warning(f"[CHALLENGE] {hotkey} no asset selection, skipping pro stats")
+                continue
+
+            days_in_year = ValiConfig.MINER_ASSET_CLASS_DAYS_IN_YEAR[MinerAssetClass(_asset)]
+            log_returns = LedgerUtils.daily_return_log(ledger)
+            state.pro_stats = ProStats(
+                sharpe=Metrics.sharpe(log_returns, days_in_year=days_in_year),
+                daily_consistency=Metrics.daily_consistency(log_returns),
+            )
 
     def _refresh_rank_cache(
         self,
@@ -1014,6 +1077,22 @@ class ChallengePeriodManager(CacheController):
             "static_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD,
             "static_eod_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD,
             "drawdown_criteria": criteria.value,
+        }
+
+    def get_pro_stats(self, synthetic_hotkey: str) -> dict | None:
+        """
+        Return pro promotion criteria for a synthetic hotkey for dashboard display.
+
+        Returns None if the hotkey is not a pro account or has not been evaluated yet.
+        """
+        state = self.miner_states.get(synthetic_hotkey)
+        if not state or not state.current_bucket.is_pro:
+            return None
+
+        return {
+            **state.pro_stats.to_dict(),
+            "sharpe_threshold": state.current_bucket.sharpe_threshold,
+            "daily_consistency_threshold": state.current_bucket.daily_consistency_threshold,
         }
 
     # ==================== Disk I/O ====================

@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
+from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.elimination_reason_enum import EliminationReason
@@ -35,6 +36,7 @@ from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
     DrawdownStats,
     MinerBucketState,
+    ProStats,
 )
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePairCategory, ValiConfig
@@ -854,6 +856,41 @@ class TestChallengePeriodManagerLogic(TestBase):
             dd = mgr.miner_states[hk].drawdown
             self.assertAlmostEqual(dd.static_drawdown_pct, 4.0, delta=1e-6)
             self.assertAlmostEqual(dd.static_eod_drawdown_pct, 7.0, delta=1e-6)
+
+    def test_refresh_pro_stats_only_computes_for_pro_buckets(self):
+        """_refresh_pro_stats derives sharpe and consistency for pro miners and skips the rest."""
+        now = TimeUtil.now_in_millis()
+        pro_hk, standard_hk = "hk_pro_stats", "hk_standard_stats"
+        ledger = create_daily_checkpoints_with_pnl([0.0] * 4, [0.0] * 4)
+
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(pro_hk, MinerBucket.SUBACCOUNT_PRO_CHALLENGE, now - DAILY_MS * 5)
+            mgr.set_miner_bucket(standard_hk, MinerBucket.SUBACCOUNT_CHALLENGE, now - DAILY_MS * 5)
+            asset_selections = {pro_hk: MinerAssetClass.CRYPTO, standard_hk: MinerAssetClass.CRYPTO}
+            mgr._refresh_pro_stats([pro_hk, standard_hk], {pro_hk: ledger, standard_hk: ledger}, asset_selections)
+
+            # Four evenly distributed profitable days, sharpe has no confidence at this sample size
+            self.assertAlmostEqual(mgr.miner_states[pro_hk].pro_stats.daily_consistency, 0.25, delta=1e-6)
+            self.assertEqual(mgr.miner_states[pro_hk].pro_stats.sharpe, ValiConfig.SHARPE_NOCONFIDENCE_VALUE)
+            self.assertEqual(mgr.miner_states[standard_hk].pro_stats, ProStats())
+
+    def test_get_pro_stats_includes_thresholds(self):
+        """Dashboard payload carries the pro criteria and thresholds, and is absent for standard accounts."""
+        now = TimeUtil.now_in_millis()
+        pro_hk, standard_hk = "hk_pro_dash", "hk_standard_dash"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(pro_hk, MinerBucket.SUBACCOUNT_PRO_CHALLENGE, now)
+            mgr.set_miner_bucket(standard_hk, MinerBucket.SUBACCOUNT_CHALLENGE, now)
+            mgr.miner_states[pro_hk].pro_stats = ProStats(sharpe=1.25, daily_consistency=0.3)
+
+            stats = mgr.get_pro_stats(pro_hk)
+            self.assertEqual(stats["sharpe"], 1.25)
+            self.assertEqual(stats["daily_consistency"], 0.3)
+            self.assertEqual(stats["sharpe_threshold"], ValiConfig.PRO_CHALLENGE_SHARPE_THRESHOLD)
+            self.assertEqual(stats["daily_consistency_threshold"], ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD)
+            self.assertIsNone(mgr.get_pro_stats(standard_hk))
 
     def test_get_drawdown_stats_includes_static_fields(self):
         """Dashboard payload carries the static percentages and thresholds."""

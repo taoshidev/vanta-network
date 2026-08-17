@@ -269,6 +269,21 @@ class Metrics:
         return float(excess_return / max(volatility, min_std_dev))
 
     @staticmethod
+    def daily_consistency(log_returns: list[float]) -> float:
+        """
+        Args:
+            log_returns: list of daily log returns from the miner
+        """
+        positive_returns = [log_return for log_return in log_returns if log_return > 0]
+        total_positive_return = sum(positive_returns)
+
+        # No profit to distribute across days - fail closed
+        if total_positive_return <= 0:
+            return 1.0
+
+        return float(max(positive_returns) / total_positive_return)
+
+    @staticmethod
     def omega(log_returns: list[float], bypass_confidence: bool = False, weighting: bool = False, min_days: int = None, **kwargs) -> float:
         """
         Args:
