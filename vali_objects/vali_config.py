@@ -234,6 +234,17 @@ class ValiConfig:
         },
     }
 
+    # Annualization factor per miner asset class (ASSET_CLASS_BREAKDOWN is keyed by trade pair category)
+    #TODO might be unnecessary
+    MINER_ASSET_CLASS_DAYS_IN_YEAR = {
+        MinerAssetClass.CRYPTO: DAYS_IN_YEAR_CRYPTO,
+        MinerAssetClass.FOREX: DAYS_IN_YEAR_FOREX,
+        MinerAssetClass.EQUITIES: DAYS_IN_YEAR_CRYPTO,
+        MinerAssetClass.COMMODITIES: DAYS_IN_YEAR_CRYPTO,
+        MinerAssetClass.HL_ALL: DAYS_IN_YEAR_CRYPTO,
+        MinerAssetClass.ALL_MARKETS: DAYS_IN_YEAR_CRYPTO,
+    }
+
     # Time Configurations
     TARGET_CHECKPOINT_DURATION_MS = 1000 * 60 * 60 * 12  # 12 hours
     DAILY_MS = 1000 * 60 * 60 * 24  # 1 day
@@ -449,6 +460,12 @@ class ValiConfig:
     PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
     PRO_STATIC_DRAWDOWN_THRESHOLD = 0.05
     PRO_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05
+
+    # Pro promotion criteria. Placeholder values until real thresholds are set.
+    PRO_CHALLENGE_MINIMUM_DAYS = 90
+    PRO_CHALLENGE_MINIMUM_MS = PRO_CHALLENGE_MINIMUM_DAYS * DAILY_MS
+    PRO_CHALLENGE_SHARPE_THRESHOLD = 1.0
+    PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = 0.4  # Best day must be at most this share of total profit
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
