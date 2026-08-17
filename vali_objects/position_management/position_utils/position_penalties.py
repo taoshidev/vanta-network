@@ -168,6 +168,26 @@ class PositionPenalties:
         }
 
     @staticmethod
+    def min_sharpe_penalty(ledger: PerfLedger, days_in_year: int) -> float:
+        """
+        Binary penalty: 0 if the ledger's sharpe is below the pro threshold, else 1.
+
+        Mirrors the pro promotion gate, so a short history (sharpe no-confidence) fails closed.
+        """
+        log_returns = LedgerUtils.daily_return_log(ledger)
+        sharpe = Metrics.sharpe(log_returns, days_in_year=days_in_year)
+        return 0.0 if sharpe < ValiConfig.PRO_CHALLENGE_SHARPE_THRESHOLD else 1.0
+
+    @staticmethod
+    def daily_consistency_penalty(ledger: PerfLedger) -> float:
+        """
+        Binary penalty: 0 if a single day accounts for too much of total profit, else 1.
+        """
+        log_returns = LedgerUtils.daily_return_log(ledger)
+        consistency = Metrics.daily_consistency(log_returns)
+        return 0.0 if consistency > ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD else 1.0
+
+    @staticmethod
     def risk_adjusted_performance_penalty(
         ledger: PerfLedger,
         asset_class: TradePairCategory
