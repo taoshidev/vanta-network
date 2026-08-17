@@ -465,7 +465,7 @@ class ValiConfig:
     PRO_CHALLENGE_MINIMUM_DAYS = 90
     PRO_CHALLENGE_MINIMUM_MS = PRO_CHALLENGE_MINIMUM_DAYS * DAILY_MS
     PRO_CHALLENGE_SHARPE_THRESHOLD = 1.0
-    PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = 0.4  # Best day must be at most this share of total profit
+    PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = 0.2  # Best day must be at most this share of total profit
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
