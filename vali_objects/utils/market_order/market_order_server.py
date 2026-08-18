@@ -37,6 +37,14 @@ class MarketOrderServer(RPCServerBase):
     def run_daemon_iteration(self):
         return None
 
+    def get_health_check_details(self) -> dict:
+        """Add service-specific health check details."""
+        cache = self._manager.last_order_time_cache
+        return {
+            "tracked_pairs": len(cache),
+            "last_order_time_ms": max(cache.values(), default=0),
+        }
+
     # ==================== RPC Methods ====================
 
     def execute_order_rpc(

@@ -105,7 +105,7 @@ Basic liveness check for the REST server process itself. Does not check any down
 {
   "status": "healthy",
   "service": "ValidatorRestServer",
-  "timestamp": 1234567890.123
+  "timestamp_ms": 1234567890123
 }
 ```
 
@@ -121,7 +121,7 @@ Fan-out liveness check across every RPC service the validator depends on (positi
 ```json
 {
   "status": "healthy",
-  "timestamp": 1234567890.123,
+  "timestamp_ms": 1234567890123,
   "services": {
     "position_manager": {"status": "ok", "detail": {"...": "..."}},
     "metagraph": {"status": "unreachable", "error": "Connection refused"}

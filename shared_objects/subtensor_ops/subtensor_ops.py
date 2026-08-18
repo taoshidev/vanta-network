@@ -383,6 +383,22 @@ class SubtensorOpsManager(CacheController):
 
     # ==================== RPC Methods (exposed to clients) ====================
 
+    def health_check_rpc(self) -> dict:
+        """
+        RPC method for health checks (called from SubtensorOpsClient.health_check()).
+
+        SubtensorOpsManager doesn't inherit from RPCServerBase — it runs its own
+        ad-hoc WeightSetterRPC BaseManager (see _start_weight_setter_rpc_server)
+        exposing this instance directly, so it needs its own health_check_rpc
+        rather than getting one for free.
+        """
+        return {
+            "status": "ok",
+            "service": ValiConfig.RPC_WEIGHT_SETTER_SERVICE_NAME,
+            "timestamp_ms": TimeUtil.now_in_millis(),
+            "consecutive_failures": self.consecutive_failures,
+        }
+
     def broadcast_to_validators_rpc(self, synapse, validator_axons_list):
         """
         RPC method to broadcast a synapse to validators (called from ValidatorBroadcastBase).

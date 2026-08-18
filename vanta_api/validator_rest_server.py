@@ -404,13 +404,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         {
             "status": "healthy",
             "service": "ValidatorRestServer",
-            "timestamp": 1234567890.123
+            "timestamp_ms": 1234567890123
         }
         """
         return jsonify({
             'status': 'healthy',
             'service': 'ValidatorRestServer',
-            'timestamp': time.time()
+            'timestamp_ms': TimeUtil.now_in_millis()
         }), 200
 
     def rpc_health_endpoint(self):
@@ -426,7 +426,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Response:
         {
             "status": "healthy" | "degraded",
-            "timestamp": 1234567890.123,
+            "timestamp_ms": 1234567890123,
             "services": {
                 "position_manager": {"status": "ok", "detail": {...}},
                 "metagraph": {"status": "unreachable", "error": "..."},
@@ -462,7 +462,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         return jsonify({
             "status": overall_status,
-            "timestamp": time.time(),
+            "timestamp_ms": TimeUtil.now_in_millis(),
             "services": services
         }), status_code
 
