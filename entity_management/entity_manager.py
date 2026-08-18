@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 import template.protocol
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from vali_objects.miner_account import MinerAccountClient
+from vali_objects.miner_account.account_snapshot import get_snapshot_at
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
@@ -1143,9 +1144,14 @@ class EntityManager(ValidatorBroadcastBase):
                     running_balance -= fees[idx_fee]["amount"]
                     idx_fee += 1
 
-                # Use perf ledger instead of delayed debt ledger
-                cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
-                unrealized_pnl = cp.unrealized_pnl if cp else 0.0
+                # Prefer the end-of-week account snapshot (equity - balance) when available;
+                # fall back to the perf ledger checkpoint if no snapshot exists near end_time.
+                snapshot = get_snapshot_at(synthetic_hotkey, end_time)
+                if snapshot is not None:
+                    unrealized_pnl = snapshot.equity - snapshot.balance
+                else:
+                    cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
+                    unrealized_pnl = cp.unrealized_pnl if cp else 0.0
                 if end_time == end_time_ms and realtime:
                     unrealized_pnl = realtime_unrealized
                 _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)

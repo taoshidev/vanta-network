@@ -17,7 +17,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 DEFAULT_SNAPSHOT_LIMIT = 720           # 30 days at hourly cadence
 MAX_SNAPSHOT_LIMIT = 2160              # 90 days
-DEFAULT_TOLERANCE_MS = 5 * 60 * 1000   # 5 minutes
+DEFAULT_TOLERANCE_MS = 1 * 60 * 1000   # 1 minute
 
 
 @dataclass
@@ -85,7 +85,7 @@ def read_last_n(
     return snapshots[-n:]
 
 
-def get_snapshot_near(
+def get_snapshot_at(
     hotkey: str,
     target_ms: int,
     tolerance_ms: int = DEFAULT_TOLERANCE_MS,
