@@ -14,11 +14,11 @@ class WeightCalculatorClient(RPCClientBase):
         results = client.get_checkpoint_results_rpc()
     """
 
-    def __init__(self, running_unit_tests=False):
+    def __init__(self, running_unit_tests=False, connect_immediately=True):
         super().__init__(
             service_name=ValiConfig.RPC_WEIGHT_CALCULATOR_SERVICE_NAME,
             port=ValiConfig.RPC_WEIGHT_CALCULATOR_PORT,
-            connect_immediately=True
+            connect_immediately=connect_immediately
         )
         self.running_unit_tests = running_unit_tests
 
