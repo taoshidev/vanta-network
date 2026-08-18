@@ -989,6 +989,16 @@ class ChallengePeriodManager(CacheController):
             return None
         return state.current_bucket_entry.to_dict()
 
+    def get_bucket_history(self, hotkey) -> list[dict] | None:
+        """
+        Full ordered history of bucket transitions for a miner, e.g.
+        [{"bucket": "CHALLENGE", "start_time_ms": ...}, {"bucket": "MAINCOMP", "start_time_ms": ...}, ...]
+        """
+        state = self.miner_states.get(hotkey)
+        if not state:
+            return None
+        return [entry.to_dict() for entry in state.entries]
+
     def get_drawdown_stats(self, synthetic_hotkey: str) -> dict | None:
         """
         Return drawdown statistics for a synthetic hotkey for dashboard display.

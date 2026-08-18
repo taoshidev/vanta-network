@@ -89,6 +89,9 @@ class ChallengePeriodClient(RPCClientBase):
     def get_dashboard(self, hotkey) -> dict | None:
         return self._server.get_dashboard_rpc(hotkey)
 
+    def get_bucket_history(self, hotkey) -> list[dict] | None:
+        return self._server.get_bucket_history_rpc(hotkey)
+
     def set_miner_bucket(
         self,
         hotkey: str,

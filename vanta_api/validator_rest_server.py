@@ -320,6 +320,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/statistics", methods=["GET"])(self.get_validator_checkpoint_statistics)
         self.app.route("/statistics/<minerid>/", methods=["GET"])(self.get_validator_checkpoint_statistics_unique)
         self.app.route("/eliminations", methods=["GET"])(self.get_eliminations)
+        self.app.route("/challenge-period/<minerid>", methods=["GET"])(self.get_challenge_period)
 
         # Trading endpoints
         self.app.route("/limit-orders/<minerid>", methods=["GET"])(self.get_limit_orders_unique)
@@ -735,6 +736,52 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify(element)
 
         return jsonify({'error': f'Miner ID {minerid} not found'}), 404
+
+    def get_challenge_period(self, minerid):
+        """
+        Challenge-period status for a miner or subaccount hotkey.
+
+        By default returns only the current bucket + start_time_ms (same shape
+        as the challenge_period section of the dashboard endpoints). Pass
+        ?history=true to instead get the full ordered bucket transition history
+        (e.g. CHALLENGE -> MAINCOMP -> PROBATION -> ELIMINATED), each with a
+        start_time_ms. If the miner is eliminated, the elimination reason is
+        attached to that entry.
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        full_history = request.args.get('history', 'false').lower() == 'true'
+
+        try:
+            if full_history:
+                data = self._challenge_period_client.get_bucket_history(minerid)
+            else:
+                data = self._challenge_period_client.get_dashboard(minerid)
+        except Exception as e:
+            logger.error(f"Error retrieving challenge period data for {minerid}: {e}")
+            return jsonify({'error': 'Internal server error retrieving challenge period data'}), 500
+
+        if data is None:
+            return jsonify({'error': f'Miner ID {minerid} not found'}), 404
+
+        entries = data if full_history else [data]
+        for entry in entries:
+            if entry.get('bucket') == MinerBucket.ELIMINATED.value:
+                try:
+                    elimination = self._elimination_client.get_elimination(minerid)
+                except Exception as e:
+                    logger.error(f"Error retrieving elimination reason for {minerid}: {e}")
+                    elimination = None
+                if elimination:
+                    entry['reason'] = elimination.get('reason')
+
+        response = {'status': 'success',
+                    'hotkey': minerid,
+                    'timestamp': TimeUtil.now_in_millis(),
+                    'bucket': data}
+        return jsonify(response)
 
     def get_eliminations(self):
         api_key = self._get_api_key_safe()
