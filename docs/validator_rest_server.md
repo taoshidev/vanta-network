@@ -92,6 +92,53 @@ python main.py --serve --api-host 0.0.0.0
 
 ## REST API Endpoints
 
+### Health Check
+
+`GET /api/health`
+
+Basic liveness check for the REST server process itself. Does not check any downstream RPC services.
+
+**Authentication:** None required. Public endpoint.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "service": "ValidatorRestServer",
+  "timestamp_ms": 1234567890123
+}
+```
+
+### RPC Health Check
+
+`GET /api/health/rpc`
+
+Fan-out liveness check across every RPC service the validator depends on (position manager, debt ledger, perf ledger, challenge period, elimination, entity, metagraph, weight calculator, etc.). Each service is checked concurrently with a single short-retry connect attempt, so one down or wedged service can't stall the rest of the check.
+
+**Authentication:** None required. Public endpoint.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "timestamp_ms": 1234567890123,
+  "services": {
+    "position_manager": {"status": "ok", "detail": {"...": "..."}},
+    "metagraph": {"status": "unreachable", "error": "Connection refused"}
+  }
+}
+```
+
+**Response Fields:**
+- `status`: `"healthy"` if every service reports `"ok"`, otherwise `"degraded"`
+- `services.<name>.status`: `"ok"` or `"unreachable"` per service
+- `services.<name>.detail`: Service-specific health payload (only present when `status` is `"ok"`)
+- `services.<name>.error`: Exception message (only present when `status` is `"unreachable"`)
+
+**Status Codes:**
+- `200` — all services healthy
+- `503` — one or more services unreachable
+
 ### All Miners Positions 
 
 `GET /miner-positions`
@@ -199,6 +246,63 @@ Returns position data for a specific miner identified by their hotkey.
 `GET /miner-hotkeys`
 
 Returns all the hotkeys as seen in the metagraph from the validator's perspective.
+
+### Miner Dashboard
+
+`GET /miner/<hotkey>`
+
+Comprehensive dashboard for a regular (non-entity) miner hotkey. Aggregates the same per-section data as the [Subaccount Dashboard](#get-subaccount-dashboard-version-2) endpoint (challenge period, drawdown, elimination, account size, positions, limit orders, ledger, statistics), minus the entity-specific `subaccount_info` section. Uses the same `create_subaccount_dashboard` aggregation logic — see that endpoint's docs for the full section-by-section response schema.
+
+**Authentication:** Requires **tier 100 API access**.
+
+**Query Parameters:**
+- `positions_time_ms` (int, optional): Only include positions after this timestamp (milliseconds, exclusive)
+- `limit_orders_time_ms` (int, optional): Only include limit orders after this timestamp (milliseconds, exclusive)
+- `checkpoints_time_ms` (int, optional): Only include ledger checkpoints after this timestamp (milliseconds, exclusive)
+- `daily_returns_time_ms` (int, optional): Only include daily returns after this timestamp (milliseconds, exclusive)
+
+**Response:**
+```json
+{
+  "status": "success",
+  "dashboard": {
+    "challenge_period": {
+      "bucket": "MAINCOMP",
+      "start_time_ms": 1702345678901
+    },
+    "drawdown": { "...": "..." },
+    "account_size_data": { "...": "..." },
+    "positions": { "...": "..." },
+    "limit_orders": { "...": "..." },
+    "ledger": { "...": "..." },
+    "statistics": { "...": "..." }
+  },
+  "timestamp": 1702345690000
+}
+```
+
+Each section is omitted if its underlying manager returns no data (same fail-gracefully behavior as the subaccount dashboard). If every section is empty, the endpoint returns `404`.
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer YOUR_TIER_100_API_KEY" \
+     http://localhost:48888/miner/5GhDr3xy...abc
+```
+
+**Error Responses:**
+```json
+// 401 - missing/invalid API key
+{ "error": "Unauthorized access" }
+
+// 403 - insufficient tier access
+{ "error": "Your API key does not have access to tier 100 data" }
+
+// 404 - hotkey has no data in any section
+{ "error": "Miner 5GhDr3xy...abc not found" }
+
+// 500 - internal error building the dashboard
+{ "error": "Internal server error retrieving dashboard" }
+```
 
 ### Allowed Trade Pairs
 
@@ -330,6 +434,66 @@ e.x:
       "reason": "PLAGIARISM"
     },
     {
+```
+
+### Challenge Period Status
+
+`GET /challenge-period/<minerid>`
+
+Challenge-period status for a miner or subaccount hotkey. By default returns only the current bucket; pass `?history=true` to get the full ordered history of bucket transitions instead.
+
+**Query Parameters:**
+- `history` (optional, default `false`): When `true`, returns the full ordered list of bucket transitions instead of just the current one.
+
+**Response — default (current bucket only):**
+```json
+{
+  "status": "success",
+  "hotkey": "5GhDr3xy...abc",
+  "challenge_period": {
+    "bucket": "MAINCOMP",
+    "start_time_ms": 1702345678901
+  },
+  "timestamp": 1702345690000
+}
+```
+
+**Response — `?history=true`:**
+```json
+{
+  "status": "success",
+  "hotkey": "5GhDr3xy...abc",
+  "history": [
+    {"bucket": "CHALLENGE", "start_time_ms": 1690000000000},
+    {"bucket": "MAINCOMP", "start_time_ms": 1695000000000},
+    {"bucket": "PROBATION", "start_time_ms": 1700000000000},
+    {"bucket": "ELIMINATED", "start_time_ms": 1702345678901, "reason": "FAILED_PROBATION_TIME"}
+  ],
+  "timestamp": 1702345690000
+}
+```
+
+Any bucket entry with `bucket: "ELIMINATED"` has a `reason` field joined in from the elimination record.
+
+**Examples:**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     http://localhost:48888/challenge-period/5GhDr3xy...abc
+
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "http://localhost:48888/challenge-period/5GhDr3xy...abc?history=true"
+```
+
+**Error Responses:**
+```json
+// 401 - missing/invalid API key
+{ "error": "Unauthorized access" }
+
+// 404 - hotkey not found
+{ "error": "Miner ID 5GhDr3xy...abc not found" }
+
+// 500 - internal error retrieving challenge period data
+{ "error": "Internal server error retrieving challenge period data" }
 ```
 
 ### Validator Checkpoint 

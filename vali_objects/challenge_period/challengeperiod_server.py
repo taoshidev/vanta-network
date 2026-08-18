@@ -162,6 +162,9 @@ class ChallengePeriodServer(RPCServerBase):
     def get_dashboard_rpc(self, hotkey: str) -> dict | None:
         return self._manager.get_dashboard(hotkey)
 
+    def get_bucket_history_rpc(self, hotkey: str) -> list[dict] | None:
+        return self._manager.get_bucket_history(hotkey)
+
     def get_drawdown_stats_rpc(self, hotkey: str) -> dict | None:
         return self._manager.get_drawdown_stats(hotkey)
 

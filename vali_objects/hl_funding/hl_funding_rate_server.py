@@ -81,6 +81,18 @@ class HLFundingRateServer(RPCServerBase):
             return
         self._manager.fetch_and_store_rates(coins, start_ms, now_ms)
 
+    def get_health_check_details(self) -> dict:
+        """Add service-specific health check details."""
+        rates = self._manager._rates
+        last_update_ms = max(
+            (coin_rates[-1]["time_ms"] for coin_rates in rates.values() if coin_rates),
+            default=0,
+        )
+        return {
+            "num_coins_tracked": len(rates),
+            "last_update_ms": last_update_ms,
+        }
+
     # === RPC methods ===
 
     def get_rates_for_position_rpc(self, coin: str, open_ms: int, current_ms: int) -> Dict[int, float]:
