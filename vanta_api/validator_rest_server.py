@@ -557,13 +557,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         period, drawdown, elimination, account size, positions, limit orders,
         ledger, statistics), minus subaccount-specific info.
 
+        Requires tier 100 API access.
+
         Example:
-        curl -H "Authorization: Bearer YOUR_API_KEY" \
+        curl -H "Authorization: Bearer YOUR_TIER_100_API_KEY" \
              http://localhost:48888/miner/YOUR_HOTKEY
         """
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
             return jsonify({'error': 'Unauthorized access'}), 401
+
+        if not self.can_access_tier(api_key, 100):
+            return jsonify({'error': 'Your API key does not have access to tier 100 data'}), 403
 
         query_args = request.args
         positions_time_ms = int(query_args.get("positions_time_ms", 0))
@@ -828,10 +833,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if elimination:
                     entry['reason'] = elimination.get('reason')
 
-        response = {'status': 'success',
-                    'hotkey': minerid,
-                    'timestamp': TimeUtil.now_in_millis(),
-                    'bucket': data}
+        response = {
+            'status': 'success',
+            'hotkey': minerid,
+            'timestamp': TimeUtil.now_in_millis(),
+        }
+        response['history' if full_history else 'challenge_period'] = data
         return jsonify(response)
 
     def get_eliminations(self):
