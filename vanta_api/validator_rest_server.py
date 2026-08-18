@@ -307,6 +307,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/miner-positions", methods=["GET"])(self.get_miner_positions)
         self.app.route("/miner-positions/<minerid>", methods=["GET"])(self.get_miner_positions_single)
         self.app.route("/miner-hotkeys", methods=["GET"])(self.get_miner_hotkeys)
+        self.app.route("/miner/<hotkey>", methods=["GET"])(self.get_miner_dashboard)
 
         # Ledger endpoints
         self.app.route("/emissions-ledger/<minerid>", methods=["GET"])(self.get_emissions_ledger)
@@ -548,6 +549,56 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'error': 'No miner hotkeys found'}), 404
         else:
             return jsonify(miner_hotkeys)
+
+    def get_miner_dashboard(self, hotkey):
+        """
+        Comprehensive dashboard for a regular (non-entity) miner hotkey — the
+        same aggregated view as the entity subaccount dashboard (challenge
+        period, drawdown, elimination, account size, positions, limit orders,
+        ledger, statistics), minus subaccount-specific info.
+
+        Example:
+        curl -H "Authorization: Bearer YOUR_API_KEY" \
+             http://localhost:48888/miner/YOUR_HOTKEY
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        query_args = request.args
+        positions_time_ms = int(query_args.get("positions_time_ms", 0))
+        limit_orders_time_ms = int(query_args.get("limit_orders_time_ms", 0))
+        checkpoints_time_ms = int(query_args.get("checkpoints_time_ms", 0))
+        daily_returns_time_ms = int(query_args.get("daily_returns_time_ms", 0))
+
+        try:
+            dashboard = create_subaccount_dashboard(
+                hotkey,
+                None,
+                self._challenge_period_client,
+                self._elimination_client,
+                self._miner_account_client,
+                self._position_client,
+                self._limit_order_client,
+                self._debt_ledger_client,
+                self._statistics_client,
+                positions_time_ms,
+                limit_orders_time_ms,
+                checkpoints_time_ms,
+                daily_returns_time_ms,
+            )
+        except Exception as e:
+            logger.error(f"Error retrieving dashboard for {hotkey}: {e}")
+            return jsonify({'error': 'Internal server error retrieving dashboard'}), 500
+
+        if not dashboard:
+            return jsonify({'error': f'Miner {hotkey} not found'}), 404
+
+        return jsonify({
+            'status': 'success',
+            'dashboard': dashboard,
+            'timestamp': TimeUtil.now_in_millis(),
+        })
 
     # ============================================================================
     # LEDGER ENDPOINTS

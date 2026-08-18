@@ -91,7 +91,7 @@ def parse_synthetic_hotkey(synthetic_hotkey: str) -> Tuple[Optional[str], Option
 
 def create_subaccount_dashboard(
     synthetic_hotkey: str,
-    subaccount_dashboard: dict,
+    subaccount_dashboard: dict | None,
     challenge_period_client,
     elimination_client,
     miner_account_client,
@@ -104,7 +104,12 @@ def create_subaccount_dashboard(
     checkpoints_time_ms: int,
     daily_returns_time_ms: int,
 ) -> dict:
-    dashboard = {"subaccount_info": subaccount_dashboard}
+    """
+    Aggregates the per-section dashboards for a hotkey. `subaccount_dashboard`
+    is entity/subaccount-specific info; pass None for a regular miner hotkey
+    to omit the "subaccount_info" section.
+    """
+    dashboard = {} if subaccount_dashboard is None else {"subaccount_info": subaccount_dashboard}
 
     # Fail gracefully if other services are not available
     def add_to_dashboard(section, function, *args, **kwargs):
