@@ -817,7 +817,6 @@ class EliminationManager(CacheController):
         if hotkey in self.eliminations:
             with self.eliminations_lock:
                 del self.eliminations[hotkey]
-            self._challenge_period_client.revert_elimination(hotkey)
             self.save_eliminations()
             return True
         return False

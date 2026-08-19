@@ -1766,6 +1766,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
             self._elimination_client.remove_elimination(hotkey)
+            self._challenge_period_client.revert_elimination(hotkey)
             self._miner_account_client.reset_account(hotkey)
 
             if is_synthetic_hotkey(hotkey) and self._entity_client:
@@ -2573,9 +2574,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         reopen_orders = str(request.args.get('reopen_orders', 'false')).strip().lower() == 'true'
 
         try:
-            success = self._elimination_client.remove_elimination(hotkey)
-            if not success:
-                return jsonify({'error': f'No elimination entry found for hotkey {hotkey}'}), 404
+            self._elimination_client.remove_elimination(hotkey)
+            self._challenge_period_client.revert_elimination(hotkey)
 
             if is_synthetic_hotkey(hotkey):
                 self._entity_client.restore_subaccount(hotkey)
