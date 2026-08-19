@@ -6,6 +6,14 @@ import unittest
 
 from vali_objects.vali_config import ValiConfig
 
+# Ensure the repo root is importable. This script's sys.path[0] is the tests/
+# dir, and the editable install only exposes packages (dirs with __init__.py),
+# not top-level modules like miner_config.py — so tests that import code which
+# does `from miner_config import MinerConfig` (e.g. the entity-miner gateway)
+# otherwise fail with ModuleNotFoundError under this runner.
+if ValiConfig.BASE_DIR not in sys.path:
+    sys.path.insert(0, ValiConfig.BASE_DIR)
+
 if __name__ == '__main__':
     # Create a test loader
     loader = unittest.TestLoader()
