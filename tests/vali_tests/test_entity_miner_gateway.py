@@ -5,11 +5,15 @@ Tests for Entity Miner Gateway implementation.
 
 Covers:
 - OrderEvent / OrderEventStore (ring buffer)
-- WebSocket Server entity auth (signature, nonce, scope enforcement)
-- HyperliquidTracker rejection broadcasts
-- EntityMinerRestServer WS message handling
-- Dynamic subaccount subscription
-- _remove_client entity cleanup
+- Synthetic-hotkey scope enforcement
+- WebSocket Server client removal + new-subaccount dashboard subscription
+- HyperliquidTracker rejection/acceptance broadcasts
+- EntityMinerRestServer WS message handling + dashboard cache reconciliation
+- EntityManager new-subaccount WS notification
+
+(WS-level entity signature auth and nonce replay protection were removed in the
+Dashboard-v2 refactor; nonce handling now lives in NonceManager — see
+test_nonce_manager.py.)
 """
 import asyncio
 import json
