@@ -86,6 +86,38 @@ class TestHyperliquidSubaccounts(TestBase):
         # Asset class should be auto-set to "crypto" for HL subaccounts
         self.assertEqual(subaccount_info['asset_class'], 'crypto')
 
+    def test_hl_client_ref_dedupe_does_not_rebind_address(self):
+        """A reused client_ref with a NEW hl_address must return the existing
+        subaccount (duplicate=True) WITHOUT repointing the HL reverse index at
+        the new address — otherwise HL routing gets corrupted."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        ok1, s1, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=50_000,
+            hl_address=VALID_HL_ADDRESS, client_ref="hl-ref-1")
+        self.assertTrue(ok1)
+
+        # Reuse the ref with a DIFFERENT address.
+        ok2, s2, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=50_000,
+            hl_address=VALID_HL_ADDRESS_2, client_ref="hl-ref-1")
+        self.assertTrue(ok2)
+        self.assertTrue(s2.get("duplicate"), "HL retry must surface duplicate=True")
+        self.assertEqual(s2["subaccount_id"], s1["subaccount_id"])
+
+        # Only one subaccount exists.
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 1)
+
+        # The NEW address must NOT have been bound to the existing subaccount.
+        self.assertIsNone(
+            self.entity_client.get_synthetic_hotkey_for_hl_address(VALID_HL_ADDRESS_2),
+            "reused client_ref must not repoint the HL index at the new address")
+        # The original address still resolves.
+        self.assertEqual(
+            self.entity_client.get_synthetic_hotkey_for_hl_address(VALID_HL_ADDRESS),
+            s1["synthetic_hotkey"])
+
     def test_create_hl_subaccount_invalid_address_format(self):
         """Test HL subaccount creation fails with invalid address formats."""
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)

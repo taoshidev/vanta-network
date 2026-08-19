@@ -50,6 +50,10 @@ from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from shared_objects.log import logger
 
+# Allowed characters for a client-supplied idempotency key. A prop_accounts
+# uuid (hex + hyphens) is a strict subset of this.
+_CLIENT_REF_RE = re.compile(r'^[a-z0-9_.:-]{1,64}$')
+
 
 class SubaccountInfo(BaseModel):
     """Data structure for a single subaccount."""
@@ -66,6 +70,7 @@ class SubaccountInfo(BaseModel):
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
+    client_ref: Optional[str] = Field(default=None, description="Caller-supplied idempotency key, unique per (entity_hotkey, client_ref). Normalized lowercase, <=64 chars.")
 
     # Note: Challenge period tracking has been migrated to ChallengePeriodManager
     # Synthetic hotkeys are added to challenge period bucket and evaluated via inspect()
@@ -286,6 +291,37 @@ class EntityManager(ValidatorBroadcastBase):
             return None
         return hl_address.lower()
 
+    @staticmethod
+    def _normalize_client_ref(client_ref: Optional[str]) -> Optional[str]:
+        """Canonical key form for client_ref idempotency lookups.
+
+        Returns None for anything not matching ^[a-z0-9_.:-]{1,64}$ after
+        stripping and lowercasing, so a malformed/absent ref simply disables
+        dedupe (fail-open to today's behavior) rather than claiming a slot.
+        A prop_accounts uuid (36 chars) fits comfortably.
+        """
+        if not isinstance(client_ref, str):
+            return None
+        v = client_ref.strip().lower()
+        if 1 <= len(v) <= 64 and _CLIENT_REF_RE.match(v):
+            return v
+        return None
+
+    @staticmethod
+    def _find_by_client_ref(entity_data, client_ref: str) -> Optional[SubaccountInfo]:
+        """Linear scan for an existing subaccount with this (normalized) client_ref.
+
+        Deliberately a scan over the entity's own subaccounts rather than a
+        separate index: the data IS the index, so there is no rebuild-on-load
+        path to forget and no elimination-pop that could wrongly release a
+        claim. Matches ANY status (including eliminated) so a retry can never
+        re-mint under a ref that was already consumed.
+        """
+        for sub in entity_data.subaccounts.values():
+            if sub.client_ref is not None and sub.client_ref == client_ref:
+                return sub
+        return None
+
     def _get_entity_lock(self, entity_hotkey: str) -> threading.RLock:
         """
         Get or create a lock for a specific entity.
@@ -399,12 +435,41 @@ class EntityManager(ValidatorBroadcastBase):
         hl_address: Optional[str] = None,
         payout_address: Optional[str] = None,
         drawdown_criteria: str = "trailing",
+        client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
+        """Backward-compatible 3-tuple wrapper around create_subaccount_ex.
+
+        Preserves the (success, info, message) contract that 25+ call sites and
+        create_hl_subaccount already unpack. New callers that need the
+        idempotency-duplicate flag should call create_subaccount_ex directly.
+        """
+        success, info, message, _duplicate = self.create_subaccount_ex(
+            entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
+            hl_address=hl_address, payout_address=payout_address,
+            drawdown_criteria=drawdown_criteria, client_ref=client_ref,
+        )
+        return success, info, message
+
+    def create_subaccount_ex(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        asset_class: str,
+        collateral_exempt: bool = False,
+        hl_address: Optional[str] = None,
+        payout_address: Optional[str] = None,
+        drawdown_criteria: str = "trailing",
+        client_ref: Optional[str] = None,
+    ) -> Tuple[bool, Optional[SubaccountInfo], str, bool]:
         """
         Create a new subaccount for an entity.
 
         Verifies entity has sufficient collateral for the requested account size
         and slashes the required amount as a subaccount registration fee.
+
+        Returns a 4-tuple whose 4th element is `duplicate`: True when an existing
+        subaccount was returned because `client_ref` matched a prior creation
+        (no new subaccount, no slot, no theta consumed).
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
@@ -423,7 +488,7 @@ class EntityManager(ValidatorBroadcastBase):
             return False, None, (
                 f"Account size ${account_size} exceeds maximum allowed "
                 f"${ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE}"
-            )
+            ), False
 
         current_balance = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
         required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
@@ -432,17 +497,35 @@ class EntityManager(ValidatorBroadcastBase):
         if asset_class == "hl_all" and not hl_address:
             asset_class = "all_markets"
 
+        normalized_client_ref = self._normalize_client_ref(client_ref)
+
         # Use per-entity lock: only operates on single entity
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
             entity_data = self.entities.get(entity_hotkey)
             if not entity_data:
-                return False, None, f"Entity {entity_hotkey} not registered"
+                return False, None, f"Entity {entity_hotkey} not registered", False
+
+            # Idempotency: a repeat with the same (entity_hotkey, client_ref)
+            # returns the already-created subaccount, charging nothing. Checked
+            # under the same lock as id allocation below, and BEFORE the slot
+            # check / collateral decrement / id allocation, so a duplicate
+            # consumes no slot, no theta, and no id. No TOCTOU: the check and
+            # the write at entity_data.subaccounts[...] = info happen inside the
+            # one lock acquisition, unlike the HL index which checks and writes
+            # under separate acquisitions.
+            if normalized_client_ref is not None:
+                existing = self._find_by_client_ref(entity_data, normalized_client_ref)
+                if existing is not None:
+                    return True, existing, (
+                        f"Duplicate client_ref {normalized_client_ref}: returning existing "
+                        f"subaccount {existing.subaccount_id} ({existing.synthetic_hotkey})"
+                    ), True
 
             # Check slot allowance
             active_count = len(entity_data.get_active_subaccounts())
             if active_count >= ValiConfig.ENTITY_MAX_SUBACCOUNTS:
-                return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({ValiConfig.ENTITY_MAX_SUBACCOUNTS})"
+                return False, None, f"Entity {entity_hotkey} has reached maximum subaccounts ({ValiConfig.ENTITY_MAX_SUBACCOUNTS})", False
 
             # Calculate required collateral: account_size / ENTITY_COST_PER_THETA (lower rate for <=10k accounts)
             cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
@@ -455,7 +538,7 @@ class EntityManager(ValidatorBroadcastBase):
 
                     if current_balance is None:
                         logger.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
-                        return False, None, "Unable to verify collateral balance"
+                        return False, None, "Unable to verify collateral balance", False
 
                     if current_balance < required_theta:
                         logger.warning(
@@ -466,7 +549,7 @@ class EntityManager(ValidatorBroadcastBase):
                         return False, None, (
                             f"Insufficient collateral: has {current_balance} theta, needs {required_theta} theta "
                             f"to create new subaccount with ${account_size} account size"
-                        )
+                        ), False
 
                     if current_balance - required_theta < required_min_theta:
                         logger.warning(
@@ -499,7 +582,7 @@ class EntityManager(ValidatorBroadcastBase):
                     )
                     entity_data.next_subaccount_id -= 1
                     self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
-                    return False, None, f"Failed to set asset selection {asset_class}"
+                    return False, None, f"Failed to set asset selection {asset_class}", False
                 logger.info(
                     f"[ENTITY_MANAGER] Asset selection '{asset_class}' set for {synthetic_hotkey}"
                 )
@@ -522,7 +605,7 @@ class EntityManager(ValidatorBroadcastBase):
                     entity_data.next_subaccount_id -= 1
                     self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
                     self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
-                    return False, None, "Failed to set account size for subaccount creation"
+                    return False, None, "Failed to set account size for subaccount creation", False
                 logger.info(
                     f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
                 )
@@ -533,7 +616,7 @@ class EntityManager(ValidatorBroadcastBase):
                 entity_data.next_subaccount_id -= 1
                 self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
                 self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
-                return False, None, f"Error creating subaccount: {str(e)}"
+                return False, None, f"Error creating subaccount: {str(e)}", False
 
             # Create subaccount info
             now_ms = TimeUtil.now_in_millis()
@@ -550,6 +633,7 @@ class EntityManager(ValidatorBroadcastBase):
                 drawdown_criteria=drawdown_criteria,
                 hl_address=hl_address,
                 payout_address=payout_address,
+                client_ref=normalized_client_ref,
             )
 
             entity_data.subaccounts[subaccount_id] = subaccount_info
@@ -587,7 +671,7 @@ class EntityManager(ValidatorBroadcastBase):
                 f"status=active ({total_ms} ms)"
             )
             remaining_theta = (current_balance - required_theta) if current_balance else 0.0
-            return True, subaccount_info, f"Slashing {required_theta} theta, {remaining_theta:.2f} theta remaining"
+            return True, subaccount_info, f"Slashing {required_theta} theta, {remaining_theta:.2f} theta remaining", False
 
     def _get_hl_max_addresses(self) -> int:
         """
@@ -620,13 +704,32 @@ class EntityManager(ValidatorBroadcastBase):
         hl_address: str,
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
-        payout_address: Optional[str] = None
+        payout_address: Optional[str] = None,
+        client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
+        """Backward-compatible 3-tuple wrapper around create_hl_subaccount_ex."""
+        success, info, message, _duplicate = self.create_hl_subaccount_ex(
+            entity_hotkey, account_size, hl_address, asset_class=asset_class,
+            collateral_exempt=collateral_exempt, payout_address=payout_address, client_ref=client_ref,
+        )
+        return success, info, message
+
+    def create_hl_subaccount_ex(
+        self,
+        entity_hotkey: str,
+        account_size: float,
+        hl_address: str,
+        asset_class: str = "hl_all",
+        collateral_exempt: bool = False,
+        payout_address: Optional[str] = None,
+        client_ref: Optional[str] = None,
+    ) -> Tuple[bool, Optional[SubaccountInfo], str, bool]:
         """
         Create a new subaccount linked to a Hyperliquid address.
 
         Validates the HL address format, checks for duplicates and the max tracked
-        addresses limit, then delegates to create_subaccount() for standard validation.
+        addresses limit, then delegates to create_subaccount_ex() for standard
+        validation.
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
@@ -635,25 +738,34 @@ class EntityManager(ValidatorBroadcastBase):
             asset_class: Asset class selection (default: "hl_all")
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
+            client_ref: Optional idempotency key (see NOTE below).
+
+        NOTE on idempotency: for HL subaccounts the natural idempotency key is the
+        hl_address itself (a repeat with the SAME address is rejected by the guard
+        below). client_ref is threaded through for the corruption-safety it buys:
+        if a client_ref matches a prior subaccount, we return that subaccount and
+        DO NOT rebind the HL reverse index — otherwise a reused ref with a new
+        address would silently repoint an existing subaccount at a second address.
 
         Returns:
-            (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
+            (success, subaccount_info, message, duplicate) — duplicate is True when
+            client_ref matched a prior creation.
         """
         # Validate HL address format
         if not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
-            return False, None, f"Invalid Hyperliquid address format: {hl_address}. Must be 0x followed by 40 hex characters."
+            return False, None, f"Invalid Hyperliquid address format: {hl_address}. Must be 0x followed by 40 hex characters.", False
         normalized_hl_address = self._normalize_hl_address(hl_address)
 
         # Validate payout_address format if provided
         if payout_address is not None:
             if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
-                return False, None, f"Invalid payout_address format: {payout_address}. Must be a valid EVM address (0x followed by 40 hex characters)."
+                return False, None, f"Invalid payout_address format: {payout_address}. Must be a valid EVM address (0x followed by 40 hex characters).", False
 
         # Check for duplicate HL address across all entities
         with self._entities_lock:
             if normalized_hl_address in self._hl_address_to_synthetic:
                 existing = self._hl_address_to_synthetic[normalized_hl_address]
-                return False, None, f"Hyperliquid address {hl_address} is already registered to subaccount {existing}"
+                return False, None, f"Hyperliquid address {hl_address} is already registered to subaccount {existing}", False
 
             # Check total active HL subaccounts < max limit
             active_hl_count = len(self._hl_address_to_synthetic)
@@ -662,25 +774,33 @@ class EntityManager(ValidatorBroadcastBase):
                 return False, None, (
                     f"Maximum number of tracked Hyperliquid addresses ({max_addresses}) reached. "
                     f"Cannot register more HL subaccounts."
-                )
+                ), False
 
-        # Delegate to standard create_subaccount for all existing validation
-        success, subaccount_info, message = self.create_subaccount(
+        # Delegate to standard create_subaccount_ex for all existing validation.
+        success, subaccount_info, message, duplicate = self.create_subaccount_ex(
             entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
             hl_address=hl_address, payout_address=payout_address,
-            drawdown_criteria="trailing"
+            drawdown_criteria="trailing", client_ref=client_ref,
         )
 
         if not success:
-            return False, None, message
+            return False, None, message, False
 
-        # Update HL reverse index and persist hl_address on MinerAccount
+        if duplicate:
+            # client_ref matched a pre-existing subaccount. Do NOT touch the HL
+            # reverse index or MinerAccount.hl_address — rebinding would repoint
+            # that existing subaccount at this new address (leaving the old
+            # mapping dangling and diverging MinerAccount.hl_address from
+            # SubaccountInfo.hl_address). Return the existing subaccount as-is.
+            return True, subaccount_info, message, True
+
+        # Fresh create: update HL reverse index and persist hl_address on MinerAccount
         with self._entities_lock:
             self._hl_address_to_synthetic[normalized_hl_address] = subaccount_info.synthetic_hotkey
         if self._miner_account_client:
             self._miner_account_client.set_hl_address(subaccount_info.synthetic_hotkey, hl_address)
 
-        return True, subaccount_info, message
+        return True, subaccount_info, message, False
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """
@@ -1796,6 +1916,13 @@ class EntityManager(ValidatorBroadcastBase):
                                 # Update payout_address if added
                                 if incoming_sub.payout_address and not local_sub.payout_address:
                                     local_sub.payout_address = incoming_sub.payout_address
+                                    stats['subaccounts_updated'] += 1
+
+                                # Backfill client_ref set-once: a claim must not
+                                # be reassignable by a peer, so only fill when we
+                                # have none and never overwrite an existing one.
+                                if incoming_sub.client_ref and not local_sub.client_ref:
+                                    local_sub.client_ref = incoming_sub.client_ref
                                     stats['subaccounts_updated'] += 1
 
                         # Update next_subaccount_id to prevent ID collisions

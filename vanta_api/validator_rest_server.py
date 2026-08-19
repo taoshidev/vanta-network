@@ -2351,6 +2351,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             asset_class = data['asset_class']
             collateral_exempt = data.get('collateral_exempt')
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
+            # Optional idempotency key. Deliberately NOT part of the signed
+            # payload (sig_dict below is frozen) so that a new gateway signing
+            # the legacy field set still verifies against an older validator,
+            # and vice versa. Absent/None => today's behavior (no dedupe).
+            # required_fields must NEVER gain 'client_ref' — it stays optional.
+            client_ref = data.get('client_ref')
+            if client_ref is not None:
+                if not isinstance(client_ref, str) or not re.match(r'^[A-Za-z0-9_.:-]{1,64}\Z', client_ref):
+                    return jsonify({'error': 'client_ref must be 1-64 chars of [A-Za-z0-9_.:-]'}), 400
 
             if collateral_exempt is not None and not isinstance(collateral_exempt, bool):
                 return jsonify({'error': 'collateral_exempt must be a boolean'}), 400
@@ -2419,21 +2428,30 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             t0 = time.time()
             if is_hl:
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
-                    entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address
+                    entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
+                    payout_address=payout_address, client_ref=client_ref,
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria
+                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
+                    drawdown_criteria=drawdown_criteria, client_ref=client_ref,
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
             if success:
                 total_ms = int((time.time() - t_start) * 1000)
                 logger.info(f"[REST_API] create_subaccount completed ({total_ms} ms) | timings: {timings}")
+                # Hoist the idempotency-duplicate flag to the top level and keep
+                # the `subaccount` object shaped exactly as documented. Popping
+                # it is harmless when absent (old manager) — defaults to False.
+                duplicate = False
+                if isinstance(subaccount_info, dict):
+                    duplicate = bool(subaccount_info.pop('duplicate', False))
                 return jsonify({
                     'status': 'success',
                     'message': message,
-                    'subaccount': subaccount_info
+                    'subaccount': subaccount_info,
+                    'duplicate': duplicate
                 }), 200
             else:
                 return jsonify({'error': message}), 400

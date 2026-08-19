@@ -94,6 +94,7 @@ class EntityClient(RPCClientBase):
         asset_class: str,
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
+        client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -104,11 +105,19 @@ class EntityClient(RPCClientBase):
             asset_class: Asset class selection
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
+            client_ref: Optional idempotency key; the returned dict carries
+                "duplicate": True when it matched a prior creation.
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria)
+        # Forward client_ref only when present so an older EntityServer whose
+        # create_subaccount_rpc has no client_ref kwarg still receives a
+        # byte-identical call (no unexpected-keyword TypeError).
+        kwargs = dict(collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria)
+        if client_ref is not None:
+            kwargs["client_ref"] = client_ref
+        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, **kwargs)
 
     def create_hl_subaccount(
         self,
@@ -117,7 +126,8 @@ class EntityClient(RPCClientBase):
         hl_address: str,
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
-        payout_address: Optional[str] = None
+        payout_address: Optional[str] = None,
+        client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -133,7 +143,10 @@ class EntityClient(RPCClientBase):
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address)
+        kwargs = dict(asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address)
+        if client_ref is not None:
+            kwargs["client_ref"] = client_ref
+        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, **kwargs)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """
