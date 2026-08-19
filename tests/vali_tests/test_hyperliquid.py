@@ -83,8 +83,11 @@ class TestHyperliquidSubaccounts(TestBase):
         self.assertTrue(success, f"HL subaccount creation failed: {message}")
         self.assertIsNotNone(subaccount_info)
         self.assertEqual(subaccount_info['subaccount_id'], 0)
-        # Asset class should be auto-set to "crypto" for HL subaccounts
-        self.assertEqual(subaccount_info['asset_class'], 'crypto')
+        # HL-linked subaccounts keep asset_class "hl_all": the hl_all->all_markets
+        # remap only fires when there is NO hl_address (entity_manager.py:495),
+        # and HL subaccounts always carry one. (The old "crypto" expectation was
+        # stale — it never matched create_hl_subaccount's behavior.)
+        self.assertEqual(subaccount_info['asset_class'], 'hl_all')
 
     def test_hl_client_ref_dedupe_does_not_rebind_address(self):
         """A reused client_ref with a NEW hl_address must return the existing
