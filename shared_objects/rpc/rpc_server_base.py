@@ -271,6 +271,7 @@ class RPCServerBase(ABC):
         start_daemon: bool = True,
         daemon_interval_s: float = 1.0,
         hang_timeout_s: float = 60.0,
+        daemon_required: bool = False,
         process_health_check_interval_s: float = 30.0,
         enable_process_auto_restart: bool = True,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
@@ -289,6 +290,10 @@ class RPCServerBase(ABC):
             start_daemon: Whether to start daemon immediately
             daemon_interval_s: Seconds between daemon iterations (default: 1.0)
             hang_timeout_s: Seconds before watchdog alerts on hang (default: 60.0)
+            daemon_required: If True, health_check_rpc() reports "status": "degraded" once
+                the watchdog heartbeat is older than hang_timeout_s (default: False, meaning
+                a stale/never-started daemon doesn't affect health status - use this for
+                services with no periodic daemon or where the daemon is best-effort)
             process_health_check_interval_s: Seconds between process health checks (default: 30.0)
             enable_process_auto_restart: Whether to auto-restart dead processes (default: True)
             connection_mode: RPCConnectionMode enum specifying connection behavior:
@@ -316,6 +321,7 @@ class RPCServerBase(ABC):
         self.slack_notifier = slack_notifier
         self.daemon_interval_s = daemon_interval_s
         self.hang_timeout_s = hang_timeout_s
+        self.daemon_required = daemon_required
         self.process_health_check_interval_s = process_health_check_interval_s
         self.enable_process_auto_restart = enable_process_auto_restart
         self.daemon_stagger_s = daemon_stagger_s
@@ -874,8 +880,12 @@ class RPCServerBase(ABC):
         Subclasses should NOT override this method - override get_health_check_details() instead.
         """
         watchdog_status = self._watchdog.get_status()
+        is_stale = (
+            self.daemon_required
+            and watchdog_status["elapsed_since_heartbeat_ms"] > watchdog_status["hang_timeout_s"] * 1000
+        )
         base_health = {
-            "status": "ok",
+            "status": "degraded" if is_stale else "ok",
             "service": self.service_name,
             "timestamp_ms": TimeUtil.now_in_millis(),
             "daemon_running": self._daemon_started,

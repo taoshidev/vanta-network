@@ -309,6 +309,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
         # Unified MinerAccount storage - single source of truth
         self.accounts: Dict[str, MinerAccount] = {}
 
+        # Timestamp of the last successfully completed take_account_snapshot() call,
+        # used by health_check() to detect a dead/never-started snapshot daemon.
+        self.last_snapshot_success_ms: Optional[int] = None
+
         # Locking strategy - EAGER initialization (not lazy!)
         # RLock allows same thread to acquire lock multiple times (needed for nested calls)
         self._accounts_lock = threading.RLock()
@@ -816,7 +820,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
             "status": "ok",
             "timestamp_ms": TimeUtil.now_in_millis(),
             "num_accounts": len(self.accounts),
-            "num_collateral_records": total_collateral_records
+            "num_collateral_records": total_collateral_records,
+            "last_snapshot_success_ms": self.last_snapshot_success_ms
         }
 
     # ==================== Margin/Cash Processing Methods ====================
@@ -985,6 +990,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         count = len(to_log)
         elapsed_ms = TimeUtil.now_in_millis() - start_ms
         logger.info(f"Recorded snapshots for {count} miners at {timestamp_ms} in {elapsed_ms}ms")
+        self.last_snapshot_success_ms = TimeUtil.now_in_millis()
         return count
 
     # ==================== Asset Selection / Withdrawal Methods ====================

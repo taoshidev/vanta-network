@@ -230,7 +230,7 @@ class MinerAccountClient(RPCClientBase):
         return self._server.get_balance(hotkey)
 
     def health_check(self) -> dict:
-        return self._server.health_check()
+        return self._server.health_check_rpc()
 
     # ==================== Margin/Cash Processing Methods ====================
 
