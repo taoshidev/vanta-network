@@ -9,7 +9,7 @@ from typing import List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from data_generator.base_data_service import BaseDataService, TIINGO_PROVIDER_NAME, exception_handler_decorator
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
 
 import time
 import websockets
@@ -127,7 +127,8 @@ class _TiingoWebsocketClient:
             trade_pairs_to_query = self._svc.get_tradeable_pairs(
                 category=self._cat,
                 include_blocked=False,
-                market_open_only=False  # Subscribe to all pairs, filter on receipt
+                market_open_only=False,  # Subscribe to all pairs, filter on receipt
+                src=TradePairSource.VANTA
             )
 
             tickers = [tp.trade_pair_id.lower() for tp in trade_pairs_to_query]
@@ -190,10 +191,17 @@ class TiingoDataService(BaseDataService):
         self.disable_ws = disable_ws
         self.running_unit_tests = running_unit_tests
 
+        # Only open a websocket for categories where Tiingo actually has a VANTA-sourced pair to
+        # subscribe to. Crypto is fully Hyperliquid-sourced today, so its connection would sit idle.
+        enabled_websocket_categories = {
+            tpc for tpc in (TradePairCategory.CRYPTO, TradePairCategory.FOREX)
+            if self.get_tradeable_pairs(category=tpc, include_blocked=False, src=TradePairSource.VANTA)
+        }
+
         super().__init__(
             provider_name=TIINGO_PROVIDER_NAME,
             running_unit_tests=running_unit_tests,
-            enabled_websocket_categories={TradePairCategory.CRYPTO, TradePairCategory.FOREX}
+            enabled_websocket_categories=enabled_websocket_categories
         )
 
         self.MARKET_STATUS = None

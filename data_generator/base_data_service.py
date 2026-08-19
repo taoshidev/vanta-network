@@ -12,7 +12,7 @@ from setproctitle import setproctitle
 
 from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
-from vali_objects.trade_pair import TradePair, TradePairCategory
+from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 from vali_objects.vali_dataclasses.price_source import PriceSource
 import logging
@@ -148,7 +148,8 @@ class BaseDataService(ABC):
         self,
         category: TradePairCategory = None,
         include_blocked: bool = False,
-        market_open_only: bool = False
+        market_open_only: bool = False,
+        src: TradePairSource = None
     ) -> List[TradePair]:
         """
         Get list of tradeable trade pairs with configurable filtering.
@@ -157,6 +158,7 @@ class BaseDataService(ABC):
             category: Filter by category (None = all categories)
             include_blocked: If False, exclude blocked pairs
             market_open_only: If True, only return pairs with open markets
+            src: Filter by trade pair source (None = all sources)
 
         Returns:
             List of TradePair objects that meet the criteria
@@ -165,6 +167,10 @@ class BaseDataService(ABC):
         for tp in TradePair:
             # Filter by category if specified
             if category and tp.trade_pair_category != category:
+                continue
+
+            # Filter by source if specified
+            if src is not None and tp.src != src:
                 continue
 
             # Filter blocked pairs unless explicitly requested
