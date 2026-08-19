@@ -6,7 +6,7 @@ from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
 from vali_objects.trade_pair import TradePair, TradePairSource, DAILY_STOCK_BORROW_RATE, DAILY_MARGIN_INTEREST_RATE
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
-from vali_objects.vali_dataclasses.fee_event import FeeEvent
+from vali_objects.vali_dataclasses.fee_event import FeeEvent, FeeType
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
@@ -105,7 +105,7 @@ class Position(BaseModel):
             if not hl_funding_rates:
                 return 0
 
-            last_accrual_ms = max(self._last_fee_time_ms("hl_funding"), self._last_fee_time_ms("carry"))
+            last_accrual_ms = max(self._last_fee_time_ms(FeeType.HL_FUNDING), self._last_fee_time_ms(FeeType.CARRY))
             sign = 1.0 if self.position_type == OrderType.LONG else -1.0
             total_fee = 0.0
             last_settlement_ms = last_accrual_ms
@@ -117,11 +117,11 @@ class Position(BaseModel):
                 total_fee += market_value * rate * sign
                 last_settlement_ms = settlement_ms
             if total_fee > 0:
-                self.record_fee_event("hl_funding", total_fee, last_settlement_ms)
+                self.record_fee_event(FeeType.HL_FUNDING, total_fee, last_settlement_ms)
 
             return total_fee
 
-        last_accrual_ms = self._last_fee_time_ms("carry")
+        last_accrual_ms = self._last_fee_time_ms(FeeType.CARRY)
 
         if self.trade_pair.is_crypto:
             interval_ms = MS_IN_8_HOURS
@@ -140,7 +140,7 @@ class Position(BaseModel):
         carry_fee = market_value * rate * intervals
         record_time_ms = last_accrual_ms + intervals * interval_ms
         if carry_fee > 0:
-            self.record_fee_event("carry", carry_fee, record_time_ms)
+            self.record_fee_event(FeeType.CARRY, carry_fee, record_time_ms)
 
         return carry_fee
 
@@ -160,34 +160,34 @@ class Position(BaseModel):
         if self.position_type == OrderType.SHORT:
             short_position_value = abs(self.net_value) + self.unrealized_pnl
             if short_position_value > 0:
-                last_borrow_accrual_ms = self._last_fee_time_ms("borrow")
+                last_borrow_accrual_ms = self._last_fee_time_ms(FeeType.BORROW)
                 intervals = (most_recent_midnight_ms - last_borrow_accrual_ms) // MS_IN_24_HOURS
                 if intervals > 0:
                     borrow_fee = short_position_value * DAILY_STOCK_BORROW_RATE * intervals
                     if borrow_fee > 0:
-                        self.record_fee_event("borrow", borrow_fee, most_recent_midnight_ms)
+                        self.record_fee_event(FeeType.BORROW, borrow_fee, most_recent_midnight_ms)
                         total_fee += borrow_fee
 
         elif self.position_type == OrderType.LONG:
             borrowed = self.margin_loan
             if borrowed > 0:
-                last_interest_accrual_ms = self._last_fee_time_ms("interest")
+                last_interest_accrual_ms = self._last_fee_time_ms(FeeType.INTEREST)
                 intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
                 if intervals > 0:
                     interest_fee = borrowed * DAILY_MARGIN_INTEREST_RATE * intervals
                     if interest_fee > 0:
-                        self.record_fee_event("interest", interest_fee, most_recent_midnight_ms)
+                        self.record_fee_event(FeeType.INTEREST, interest_fee, most_recent_midnight_ms)
                         total_fee += interest_fee
 
         return total_fee
 
-    def _last_fee_time_ms(self, fee_type: str) -> int:
+    def _last_fee_time_ms(self, fee_type: FeeType) -> int:
         for fee_event in reversed(self.fee_history):
             if fee_event.fee_type == fee_type:
                 return fee_event.time_ms
         return self.open_ms
 
-    def record_fee_event(self, fee_type: str, amount: float, time_ms: int):
+    def record_fee_event(self, fee_type: FeeType, amount: float, time_ms: int):
         if amount <= 0:
             return
 
@@ -436,7 +436,7 @@ class Position(BaseModel):
             transaction_fee = abs(order.value) * transaction_fee_rate
 
         if transaction_fee:
-            self.record_fee_event("transaction", transaction_fee, order.processed_ms)
+            self.record_fee_event(FeeType.TRANSACTION, transaction_fee, order.processed_ms)
 
         return order.realized_pnl, transaction_fee, loan_repaid
 
@@ -694,7 +694,7 @@ class Position(BaseModel):
                 time_ms=time_ms,
                 applied=True,
             ))
-            self.record_fee_event("dividend_liability", amount, time_ms)
+            self.record_fee_event(FeeType.DIVIDEND_LIABILITY, amount, time_ms)
             return -amount
 
     def settle_pending_dividends(self, current_date_str: str) -> float:
