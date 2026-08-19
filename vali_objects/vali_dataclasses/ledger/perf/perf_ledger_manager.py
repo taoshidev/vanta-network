@@ -1684,7 +1684,7 @@ class PerfLedgerManager(CacheController):
                     hotkeys_with_no_positions.add(k)
             for k in hotkeys_with_no_positions:
                 del hotkey_to_positions[k]
-            logger.info('PERF LEDGERS TOTAL N POSITIONS IN MEMORY: ' + str(n_positions_total), 'TOTAL N HOTKEYS IN MEMORY: ' + str(n_hotkeys_total))
+            logger.info('PERF LEDGERS TOTAL N POSITIONS IN MEMORY: ' + str(n_positions_total) + ', TOTAL N HOTKEYS IN MEMORY: ' + str(n_hotkeys_total))
 
         return hotkey_to_positions, hotkeys_with_no_positions
 
