@@ -464,6 +464,7 @@ class TestEntityMinerRestServerMessageHandling(TestBase):
         gw._mapping_last_refresh_ms = {}
         gw._sse_subscribers = {}
         gw._sse_lock = __import__('threading').Lock()
+        gw._mapping_lock = __import__('threading').RLock()
         gw._validator_url = None
         gw._hotkey = None
         return gw
@@ -593,6 +594,7 @@ class TestEntityMinerDashboardCacheReconciliation(TestBase):
         gw._mapping_last_refresh_ms = {}
         gw._sse_subscribers = {}
         gw._sse_lock = threading.Lock()
+        gw._mapping_lock = threading.RLock()
         gw._validator_url = "http://validator"
         gw.DASHBOARD_CACHE_TTL_MS = 10_000
         gw.MAPPING_REFRESH_TTL_MS = 5_000
@@ -818,3 +820,124 @@ class TestEntityManagerNotification(TestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ==================== Mapping/Dashboard Concurrency Tests ====================
+
+class TestEntityMinerMappingConcurrency(TestBase):
+    """Regression tests: the shared HL-mapping/dashboard dicts are safe under
+    concurrent access (guarded by _mapping_lock).
+
+    Before the guard, _save_hl_mappings json-dumped the live dicts while request/WS
+    threads mutated them (RuntimeError: dictionary changed size during iteration),
+    and _set_hl_mapping's multi-dict pop+set could be observed half-applied.
+    """
+
+    def _make_gateway(self, mappings_file=None):
+        from vanta_api.entity_miner_rest_server import EntityMinerRestServer, OrderEventStore
+        import threading
+
+        gw = object.__new__(EntityMinerRestServer)
+        gw._event_store = OrderEventStore()
+        gw._dashboard_cache = {}
+        gw._dashboard_cache_updated_ms = {}
+        gw._hl_to_synthetic = {}
+        gw._synthetic_to_hl = {}
+        gw._mapping_last_refresh_ms = {}
+        gw._sse_subscribers = {}
+        gw._sse_lock = threading.Lock()
+        gw._mapping_lock = threading.RLock()
+        gw._validator_url = None
+        gw._mappings_file = mappings_file
+        return gw
+
+    def test_concurrent_set_and_save_does_not_crash(self):
+        """Writers adding mappings while _save_hl_mappings serializes must not raise
+        (pre-fix: json.dump over the live dict -> dictionary changed size during iteration)."""
+        import os
+        import tempfile
+        import threading
+
+        with tempfile.TemporaryDirectory() as d:
+            gw = self._make_gateway(mappings_file=os.path.join(d, "hl_mappings.json"))
+            errors = []
+            stop = threading.Event()
+
+            def writer(tid):
+                try:
+                    i = 0
+                    while not stop.is_set():
+                        gw._set_hl_mapping(f"0x{tid}_{i}", f"entity_{tid}_{i}", source="test")
+                        i += 1
+                except Exception as e:
+                    errors.append(e)
+
+            def saver():
+                try:
+                    while not stop.is_set():
+                        gw._save_hl_mappings()
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=writer, args=(t,)) for t in range(4)]
+            threads.append(threading.Thread(target=saver))
+            for t in threads:
+                t.start()
+            time.sleep(1.0)
+            stop.set()
+            for t in threads:
+                t.join(timeout=10)
+
+            self.assertEqual(errors, [], f"concurrent set/save raised: {errors!r}")
+            # The file must hold valid JSON (no torn writes of the snapshot).
+            with open(gw._mappings_file) as f:
+                saved = json.load(f)
+            self.assertIn("hl_to_synthetic", saved)
+
+    def test_concurrent_reassignment_keeps_mappings_inverse(self):
+        """Racing reassignments over a small key space never leave the forward and
+        reverse mapping dicts inconsistent (they must stay exact inverses)."""
+        import threading
+
+        gw = self._make_gateway()
+        errors = []
+        stop = threading.Event()
+        hl_addrs = [f"0xaddr{i}" for i in range(8)]
+        synthetics = [f"entity_{i}" for i in range(8)]
+
+        def churn(tid):
+            try:
+                i = 0
+                while not stop.is_set():
+                    hl = hl_addrs[(tid + i) % len(hl_addrs)]
+                    syn = synthetics[(tid * 3 + i) % len(synthetics)]
+                    gw._set_hl_mapping(hl, syn, source="test")
+                    i += 1
+            except Exception as e:
+                errors.append(e)
+
+        def checker():
+            try:
+                while not stop.is_set():
+                    with gw._mapping_lock:
+                        fwd = dict(gw._hl_to_synthetic)
+                        rev = dict(gw._synthetic_to_hl)
+                    for hl, syn in fwd.items():
+                        if rev.get(syn) != hl:
+                            raise AssertionError(f"inconsistent: {hl}->{syn} but reverse says {rev.get(syn)}")
+                    for syn, hl in rev.items():
+                        if fwd.get(hl) != syn:
+                            raise AssertionError(f"inconsistent: {syn}->{hl} but forward says {fwd.get(hl)}")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=churn, args=(t,)) for t in range(4)]
+        threads.append(threading.Thread(target=checker))
+        for t in threads:
+            t.start()
+        time.sleep(1.0)
+        stop.set()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(errors, [], f"concurrent reassignment broke invariants: {errors!r}")

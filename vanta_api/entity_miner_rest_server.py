@@ -130,6 +130,13 @@ class EntityMinerRestServer(MinerRestServer):
         self._synthetic_to_hl: Dict[str, str] = {}  # synthetic_hotkey -> hl_address
         self._dashboard_cache_updated_ms: Dict[str, int] = {}  # hl_address -> cache write time
         self._mapping_last_refresh_ms: Dict[str, int] = {}  # hl_address -> last validator mapping refresh time
+        # Guards the five dicts above. They are mutated by request threads, the WS
+        # listener, its executor callbacks, and the payment daemon; unguarded, a
+        # json.dump over a live dict raises "dictionary changed size during iteration"
+        # and readers can observe half-reassigned HL<->synthetic mappings.
+        # RLock: _refresh_dashboard_from_validator -> _set_hl_mapping -> _evict_dashboard_cache nest.
+        # Never held across I/O (snapshot-then-write / fetch-then-lock).
+        self._mapping_lock = threading.RLock()
 
         # SSE subscriber tracking: hl_address -> set of Queue objects
         self._sse_subscribers: Dict[str, Set[queue.Queue]] = {}
@@ -424,8 +431,9 @@ class EntityMinerRestServer(MinerRestServer):
                     normalized_synthetic_to_hl[synthetic] = normalized_hl
                     normalized_hl_to_synthetic[normalized_hl] = synthetic
 
-            self._hl_to_synthetic = normalized_hl_to_synthetic
-            self._synthetic_to_hl = normalized_synthetic_to_hl
+            with self._mapping_lock:
+                self._hl_to_synthetic = normalized_hl_to_synthetic
+                self._synthetic_to_hl = normalized_synthetic_to_hl
             logger.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings from disk")
         except Exception as e:
             logger.error(f"[ENTITY-GW] Error loading HL mappings: {e}")
@@ -435,12 +443,17 @@ class EntityMinerRestServer(MinerRestServer):
         if not self._mappings_file:
             return
 
+        # Snapshot under the lock, write outside it: json.dump over the live dicts
+        # races concurrent writers (RuntimeError: dictionary changed size during
+        # iteration), and holding the lock during disk I/O would stall other threads.
+        with self._mapping_lock:
+            snapshot = {
+                "hl_to_synthetic": dict(self._hl_to_synthetic),
+                "synthetic_to_hl": dict(self._synthetic_to_hl),
+            }
         try:
             with open(self._mappings_file, "w") as f:
-                json.dump({
-                    "hl_to_synthetic": self._hl_to_synthetic,
-                    "synthetic_to_hl": self._synthetic_to_hl,
-                }, f, indent=2)
+                json.dump(snapshot, f, indent=2)
         except Exception as e:
             logger.error(f"[ENTITY-GW] Error saving HL mappings: {e}")
 
@@ -461,36 +474,38 @@ class EntityMinerRestServer(MinerRestServer):
         if not hl_address or not synthetic_hotkey:
             return False
 
-        old_synthetic = self._hl_to_synthetic.get(hl_address)
-        old_hl_for_synthetic = self._synthetic_to_hl.get(synthetic_hotkey)
-        mapping_changed = (
-            old_synthetic is not None and old_synthetic != synthetic_hotkey
-        ) or (
-            old_hl_for_synthetic is not None and old_hl_for_synthetic != hl_address
-        )
-
-        if old_synthetic and old_synthetic != synthetic_hotkey:
-            self._synthetic_to_hl.pop(old_synthetic, None)
-            self._evict_dashboard_cache(hl_address)
-            logger.info(
-                f"[ENTITY-GW] HL mapping reassigned ({source}): {hl_address} {old_synthetic} -> {synthetic_hotkey}"
+        with self._mapping_lock:
+            old_synthetic = self._hl_to_synthetic.get(hl_address)
+            old_hl_for_synthetic = self._synthetic_to_hl.get(synthetic_hotkey)
+            mapping_changed = (
+                old_synthetic is not None and old_synthetic != synthetic_hotkey
+            ) or (
+                old_hl_for_synthetic is not None and old_hl_for_synthetic != hl_address
             )
 
-        if old_hl_for_synthetic and old_hl_for_synthetic != hl_address:
-            self._hl_to_synthetic.pop(old_hl_for_synthetic, None)
-            self._evict_dashboard_cache(old_hl_for_synthetic)
-            logger.info(
-                f"[ENTITY-GW] Synthetic reassigned ({source}): {synthetic_hotkey} {old_hl_for_synthetic} -> {hl_address}"
-            )
+            if old_synthetic and old_synthetic != synthetic_hotkey:
+                self._synthetic_to_hl.pop(old_synthetic, None)
+                self._evict_dashboard_cache(hl_address)
+                logger.info(
+                    f"[ENTITY-GW] HL mapping reassigned ({source}): {hl_address} {old_synthetic} -> {synthetic_hotkey}"
+                )
 
-        self._hl_to_synthetic[hl_address] = synthetic_hotkey
-        self._synthetic_to_hl[synthetic_hotkey] = hl_address
-        return mapping_changed
+            if old_hl_for_synthetic and old_hl_for_synthetic != hl_address:
+                self._hl_to_synthetic.pop(old_hl_for_synthetic, None)
+                self._evict_dashboard_cache(old_hl_for_synthetic)
+                logger.info(
+                    f"[ENTITY-GW] Synthetic reassigned ({source}): {synthetic_hotkey} {old_hl_for_synthetic} -> {hl_address}"
+                )
+
+            self._hl_to_synthetic[hl_address] = synthetic_hotkey
+            self._synthetic_to_hl[synthetic_hotkey] = hl_address
+            return mapping_changed
 
     def _evict_dashboard_cache(self, hl_address: str):
         """Remove any cached dashboard payload for an HL address."""
-        self._dashboard_cache.pop(hl_address, None)
-        self._dashboard_cache_updated_ms.pop(hl_address, None)
+        with self._mapping_lock:
+            self._dashboard_cache.pop(hl_address, None)
+            self._dashboard_cache_updated_ms.pop(hl_address, None)
 
     def _fetch_validator_hl_trader(self, hl_address: str) -> Optional[dict]:
         """Fetch canonical HL trader snapshot from validator."""
@@ -530,7 +545,9 @@ class EntityMinerRestServer(MinerRestServer):
         """
         payload = self._fetch_validator_hl_trader(hl_address)
         now_ms = int(time.time() * 1000)
-        self._mapping_last_refresh_ms[hl_address] = now_ms
+        # Lock taken only after the (slow) HTTP fetch above.
+        with self._mapping_lock:
+            self._mapping_last_refresh_ms[hl_address] = now_ms
         if not payload:
             return None
 
@@ -560,16 +577,18 @@ class EntityMinerRestServer(MinerRestServer):
                 }
 
         if normalized_payload:
-            self._dashboard_cache[hl_address] = normalized_payload
-            self._dashboard_cache_updated_ms[hl_address] = now_ms
+            with self._mapping_lock:
+                self._dashboard_cache[hl_address] = normalized_payload
+                self._dashboard_cache_updated_ms[hl_address] = now_ms
 
         return normalized_payload
 
     def _resolve_active_synthetic_hotkey(self, hl_address: str) -> Optional[str]:
         """Resolve active synthetic hotkey, refreshing from validator periodically."""
         now_ms = int(time.time() * 1000)
-        cached_synthetic = self._hl_to_synthetic.get(hl_address)
-        last_refresh_ms = self._mapping_last_refresh_ms.get(hl_address, 0)
+        with self._mapping_lock:
+            cached_synthetic = self._hl_to_synthetic.get(hl_address)
+            last_refresh_ms = self._mapping_last_refresh_ms.get(hl_address, 0)
 
         if cached_synthetic and (now_ms - last_refresh_ms) < self.MAPPING_REFRESH_TTL_MS:
             return cached_synthetic
@@ -781,15 +800,17 @@ class EntityMinerRestServer(MinerRestServer):
                 return
 
             # Update dashboard cache
-            self._dashboard_cache[hl_address] = {
+            dashboard_payload = {
                 "timestamp_ms": msg.get("timestamp", int(time.time() * 1000)),
                 "synthetic_hotkey": synthetic_hotkey,
                 "hl_address": hl_address,
                 **data
             }
-            self._dashboard_cache_updated_ms[hl_address] = int(time.time() * 1000)
-            # Push to SSE
-            self._push_sse(hl_address, {"type": "dashboard", "data": self._dashboard_cache[hl_address]})
+            with self._mapping_lock:
+                self._dashboard_cache[hl_address] = dashboard_payload
+                self._dashboard_cache_updated_ms[hl_address] = int(time.time() * 1000)
+            # Push to SSE (outside the lock; payload is a local reference)
+            self._push_sse(hl_address, {"type": "dashboard", "data": dashboard_payload})
 
         elif msg_type == "error":
             data = msg.get("data", {})
@@ -854,8 +875,9 @@ class EntityMinerRestServer(MinerRestServer):
         normalized_hl = self._normalize_hl_address(hl_address)
         now_ms = int(time.time() * 1000)
         active_synthetic = self._resolve_active_synthetic_hotkey(normalized_hl)
-        dashboard = self._dashboard_cache.get(normalized_hl)
-        cache_updated_ms = self._dashboard_cache_updated_ms.get(normalized_hl, 0)
+        with self._mapping_lock:
+            dashboard = self._dashboard_cache.get(normalized_hl)
+            cache_updated_ms = self._dashboard_cache_updated_ms.get(normalized_hl, 0)
         cache_is_fresh = dashboard is not None and (now_ms - cache_updated_ms) <= self.DASHBOARD_CACHE_TTL_MS
         cache_matches_mapping = (
             dashboard is not None and (
