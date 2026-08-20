@@ -2858,12 +2858,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     # Per-category positional leverage stand-in for the /hl-traders limits endpoint.
     # The endpoint only knows a subaccount's asset class, not a specific pair, so it
     # cannot use the per-pair source of truth (leverage_utils.get_tier_positional_leverage,
-    # which is pair.subaccount_tier_base_leverage × tier). This table mirrors that result
-    # for one canonical pair per class. Keep in sync with the order-entry path; once
-    # per-pair bases diverge inside a class, switch this endpoint to per-pair reporting.
+    # pair.subaccount_tier_base_leverage × SUBACCOUNT_TIER_LEVERAGE_MULTIPLIER[tier]).
+    # Per-pair bases diverge widely inside HL_ALL (0.5 equity/commodity perps up to 10.0
+    # indices), so this reports the minimum active base per tier — it never overstates a
+    # cap. Keep in sync with the order-entry path; clients needing exact caps must use
+    # /trade-pairs.
     _ENDPOINT_TIER_POSITIONAL_LEVERAGE = {
         1: {MinerAssetClass.HL_ALL: 0.5},
-        2: {MinerAssetClass.HL_ALL: 1.0},
+        2: {MinerAssetClass.HL_ALL: 0.5},
         3: {MinerAssetClass.HL_ALL: 1.5},
         4: {MinerAssetClass.HL_ALL: 2.0},
     }

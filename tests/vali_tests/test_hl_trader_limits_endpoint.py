@@ -31,18 +31,18 @@ VALID_HL_ADDRESS_2 = "0x" + "1234567890abcdef" * 2 + "12345678"
 ACCOUNT_SIZE = 50_000.0  # Tier 2 (<$200K)
 
 # Expected limits — Tier 2 (SUBACCOUNT_FUNDED, account_size < $200K), HL_ALL
-TIER2_POSITIONAL = ValidatorRestServer._ENDPOINT_TIER_POSITIONAL_LEVERAGE[2][MinerAssetClass.HL_ALL]   # 1.0x
-TIER2_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL]   # 7.0x
+TIER2_POSITIONAL = ValidatorRestServer._ENDPOINT_TIER_POSITIONAL_LEVERAGE[2][MinerAssetClass.HL_ALL]   # 0.5x
+TIER2_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL]   # 10.0x
 
-EXPECTED_MAX_POSITION = ACCOUNT_SIZE * TIER2_POSITIONAL   # 50_000
-EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER2_PORTFOLIO   # 350_000
+EXPECTED_MAX_POSITION = ACCOUNT_SIZE * TIER2_POSITIONAL   # 25_000
+EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER2_PORTFOLIO   # 500_000
 
 # Expected limits — Tier 1 (SUBACCOUNT_CHALLENGE), HL_ALL
 TIER1_POSITIONAL = ValidatorRestServer._ENDPOINT_TIER_POSITIONAL_LEVERAGE[1][MinerAssetClass.HL_ALL]   # 0.5x
-TIER1_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL]   # 4.0x
+TIER1_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL]   # 10.0x
 
 EXPECTED_CHALLENGE_MAX_POSITION = ACCOUNT_SIZE * TIER1_POSITIONAL  # 25_000
-EXPECTED_CHALLENGE_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER1_PORTFOLIO   # 200_000
+EXPECTED_CHALLENGE_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER1_PORTFOLIO   # 500_000
 
 
 def _build_limits_data(
@@ -354,9 +354,9 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
     # ==================== Deprecated per-pair field ====================
 
     def test_deprecated_max_position_uses_canonical_base_not_raised_pairs(self):
-        """max_position_per_pair_usd reports the canonical HL_ALL base (0.5 × tier).
+        """max_position_per_pair_usd reports the minimum active HL_ALL base per tier.
 
-        Pairs with a raised subaccount_tier_base_leverage (e.g. GOLDUSDC at 1.0)
+        Pairs with a higher subaccount_tier_base_leverage (e.g. GOLDUSDC at 3.0)
         intentionally diverge from this deprecated class-level stand-in — clients
         must resolve per-pair caps from /trade-pairs instead.
         """
