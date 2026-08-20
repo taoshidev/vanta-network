@@ -978,7 +978,10 @@ class TestSSEStreamCaps(TestBase):
             with gw.app.test_request_context("/api/hl/0xabc/stream"):
                 resp, status = gw.stream_endpoint("0xabc")
                 self.assertEqual(status, 503)
-                self.assertEqual(resp.headers["Retry-After"], "5")
+                from vanta_api.entity_miner_rest_server import EntityMinerRestServer
+                self.assertEqual(
+                    resp.headers["Retry-After"],
+                    str(EntityMinerRestServer.SSE_RETRY_AFTER_S))
         finally:
             gw._sse_stream_slots.release()
 

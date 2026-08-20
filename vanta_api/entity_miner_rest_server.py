@@ -128,8 +128,12 @@ class EntityMinerRestServer(MinerRestServer):
     # transparently after either cutoff.
     SSE_MAX_CONCURRENT_STREAMS = 8
     SSE_HEARTBEAT_S = 30
+    # Keep SSE_MAX_IDLE_S >= SSE_HEARTBEAT_S: the idle check only runs between
+    # queue waits, so an idle window smaller than one heartbeat would close
+    # every stream on its first pass.
     SSE_MAX_LIFETIME_S = 15 * 60
     SSE_MAX_IDLE_S = 5 * 60
+    SSE_RETRY_AFTER_S = 5  # advertised to rejected clients (503 Retry-After)
 
     def __init__(self, api_keys_file, flask_host="0.0.0.0", flask_port=8088,
                  slack_notifier=None, prop_net_order_placer=None, **kwargs):
@@ -942,38 +946,34 @@ class EntityMinerRestServer(MinerRestServer):
         # thread indefinitely, and ~32 open streams would stall the whole REST
         # surface (see SSE_MAX_CONCURRENT_STREAMS).
         if not self._sse_stream_slots.acquire(blocking=False):
+            logger.warning(
+                f"[ENTITY-GW] SSE stream rejected for {hl_address}: "
+                f"all {self.SSE_MAX_CONCURRENT_STREAMS} slots in use"
+            )
             response = jsonify({
                 'status': 'error',
                 'message': f'Too many concurrent streams (max {self.SSE_MAX_CONCURRENT_STREAMS}). Retry shortly.'
             })
-            response.headers['Retry-After'] = '5'
+            response.headers['Retry-After'] = str(self.SSE_RETRY_AFTER_S)
             return response, 503
-
-        try:
-            normalized_hl = self._normalize_hl_address(hl_address)
-            subscriber_queue = self._subscribe_sse(normalized_hl)
-        except Exception:
-            # Slot must not leak if setup fails before the generator owns it.
-            self._sse_stream_slots.release()
-            raise
 
         def event_stream():
             try:
                 started = time.monotonic()
-                last_event = started
+                last_event_time = started
                 while True:
                     now = time.monotonic()
                     if now - started > self.SSE_MAX_LIFETIME_S:
                         # Rotate long-lived streams so slots (and worker threads) recycle.
                         yield ": max stream lifetime reached, reconnect\n\n"
                         return
-                    if now - last_event > self.SSE_MAX_IDLE_S:
+                    if now - last_event_time > self.SSE_MAX_IDLE_S:
                         # No events for a while: free the slot; the client reconnects on demand.
                         yield ": idle stream closed, reconnect\n\n"
                         return
                     try:
                         data = subscriber_queue.get(timeout=self.SSE_HEARTBEAT_S)
-                        last_event = time.monotonic()
+                        last_event_time = time.monotonic()
                         yield f"data: {json.dumps(data)}\n\n"
                     except queue.Empty:
                         # Send keepalive heartbeat
@@ -981,18 +981,32 @@ class EntityMinerRestServer(MinerRestServer):
             except GeneratorExit:
                 pass
             finally:
-                self._unsubscribe_sse(normalized_hl, subscriber_queue)
-                self._sse_stream_slots.release()
+                # Nested so the slot is returned even if unsubscribe raises.
+                try:
+                    self._unsubscribe_sse(normalized_hl, subscriber_queue)
+                finally:
+                    self._sse_stream_slots.release()
 
-        return Response(
-            event_stream(),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'X-Accel-Buffering': 'no',
-                'Connection': 'keep-alive'
-            }
-        )
+        try:
+            normalized_hl = self._normalize_hl_address(hl_address)
+            subscriber_queue = self._subscribe_sse(normalized_hl)
+            return Response(
+                event_stream(),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'X-Accel-Buffering': 'no',
+                    'Connection': 'keep-alive'
+                }
+            )
+        except Exception:
+            # Slot must not leak if setup (or Response construction) fails before
+            # the response owns the generator. No double-release is possible: an
+            # exception here means the generator body never started, so its
+            # finally block never runs — the discarded generator object is
+            # simply garbage-collected without executing.
+            self._sse_stream_slots.release()
+            raise
 
     def create_subaccount_endpoint(self):
         """
