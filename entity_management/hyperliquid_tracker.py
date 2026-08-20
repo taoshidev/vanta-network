@@ -51,6 +51,7 @@ from vali_objects.utils.limit_order.order_utils import OrderSize
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.utils.leverage_utils import get_tier_positional_leverage
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.order_processor import OrderProcessor
 from vali_objects.utils.vali_utils import ValiUtils
@@ -1408,8 +1409,10 @@ class HyperliquidTracker:
         else:
             target_signed_weight = 0.0  # position closed on HL side
 
-        # Clip to per-asset Vanta limits (signed)
-        max_lev = trade_pair.max_leverage
+        # Clip to the per-pair subaccount tier limit (signed) — same limit the Vanta
+        # Trading order path enforces. Tier 1 == Tier 2 and tiers 3/4 are unreachable
+        # at the current max subaccount size, so tier 1 is used without a bucket lookup.
+        max_lev = get_tier_positional_leverage(1, trade_pair)
         min_lev = trade_pair.min_leverage
         if abs(target_signed_weight) < min_lev:
             target_signed_weight = 0.0  # below minimum -> treat as flat
