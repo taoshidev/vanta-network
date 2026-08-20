@@ -355,76 +355,65 @@ class WeightCalculatorManager(CacheController):
             start_time_ms=payout_activation_start_ms,
             end_time_ms=prev_target_end_ms
         )
+        # Weekly target is this week's own settlement only (not summed across history):
+        # each PayoutSettlement.payout_penalized is already the balance-above-personal-HWM
+        # for that single week, so taking the latest one directly (rather than summing all
+        # settlements since activation) is what keeps a miner's weight tied to recent
+        # performance instead of re-paying every historical high-water week forever.
         miner_required_payouts = {
-            hotkey: sum(payout.payout_penalized for payout in payouts)
+            hotkey: payouts[-1].payout_penalized if payouts else 0.0
             for hotkey, payouts in miner_required_payout_settlements.items()
         }
         miner_required_payouts_raw = {
-            hotkey: sum(payout.payout_raw for payout in payouts)
-            for hotkey, payouts in miner_required_payout_settlements.items()
-        }
-        miner_required_payouts_raw = {
-            hotkey: sum(payout.payout_raw for payout in payouts)
+            hotkey: payouts[-1].payout_raw if payouts else 0.0
             for hotkey, payouts in miner_required_payout_settlements.items()
         }
 
-        # Emissions should be calculated starting from the full week after the first weekly settlement
-        miner_emissions_cumulative = {}
-        for hotkey, weekly_settlements in miner_required_payout_settlements.items():
-            if not weekly_settlements:
-                miner_emissions_cumulative[hotkey] = 0
-                continue
-
-            debt_ledger = all_debt_ledgers.get(hotkey)
-            if not debt_ledger:
-                miner_emissions_cumulative[hotkey] = 0
-                continue
-
-            emissions_start_ms = weekly_settlements[0].end_ms
-            emissions_end_ms = weekly_settlements[-1].end_ms + MS_IN_WEEK
-            miner_emissions_cumulative[hotkey] = sum(
-                cp.chunk_emissions_usd
-                for cp in debt_ledger.checkpoints
-                if emissions_start_ms <= cp.timestamp_ms <= emissions_end_ms
+        # Entity miners have no per-week PayoutSettlement (calculate_payout_from_checkpoints
+        # only produces an all-time cumulative HWM total from aggregated subaccount checkpoints).
+        # Reproduce a week-scoped target the same way: take the cumulative total through this
+        # week and through the prior week, and use the difference.
+        entity_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.ENTITY)
+        entity_miner_required_payouts = {}
+        for hotkey in entity_hotkeys:
+            entity_checkpoints = all_debt_ledgers[hotkey].checkpoints if hotkey in all_debt_ledgers else []
+            checkpoints_through_this_week = [
+                cp for cp in entity_checkpoints if cp.timestamp_ms <= prev_target_end_ms
+            ]
+            checkpoints_through_prior_week = [
+                cp for cp in entity_checkpoints if cp.timestamp_ms <= prev_target_end_ms - MS_IN_WEEK
+            ]
+            cumulative_through_this_week = DebtBasedScoring.calculate_payout_from_checkpoints(
+                checkpoints_through_this_week
+            )
+            cumulative_through_prior_week = DebtBasedScoring.calculate_payout_from_checkpoints(
+                checkpoints_through_prior_week
+            )
+            entity_miner_required_payouts[hotkey] = max(
+                0.0, cumulative_through_this_week - cumulative_through_prior_week
             )
 
-        # Use regular checkopint calculations for entity miners for frozen ledgers
-        # Means we have to use the full cumulative emissions of the debt ledger
-        # Debt ledger of entity miners should have full history from first funded miner's perf ledger
-        entity_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(MinerBucket.ENTITY)
-        entity_miner_required_payouts = {
-            hotkey: DebtBasedScoring.calculate_payout_from_checkpoints(
-                all_debt_ledgers[hotkey].checkpoints if hotkey in all_debt_ledgers else [])
-            for hotkey in entity_hotkeys
-        }
-        entity_miner_emissions_cumulative = {
-            hotkey: sum(cp.chunk_emissions_usd for cp in all_emissions_ledgers[hotkey].checkpoints)
-            for hotkey in entity_hotkeys if hotkey in all_emissions_ledgers
-        }
-
-        # Combine miner and entity payouts/emissions into unified dicts
+        # Combine miner and entity weekly targets into a unified dict
         all_required_payouts = {**miner_required_payouts, **entity_miner_required_payouts}
-        all_emissions_cumulative = {**miner_emissions_cumulative, **entity_miner_emissions_cumulative}
 
-        # Calculate remaining payouts: needed minus already paid, clamped to zero
-        miner_remaining_payouts_usd = {}
-        for hotkey in all_required_payouts:
-            payout_penalized = all_required_payouts.get(hotkey, 0.0)
-            actual = all_emissions_cumulative.get(hotkey, 0.0)
-            miner_remaining_payouts_usd[hotkey] = max(0.0, payout_penalized)
-            # miner_remaining_payouts_usd[hotkey] = max(0.0, payout_penalized - actual)
+        # Weekly payout targets are already HWM-gated and floored at zero per-settlement;
+        # no further "already paid" subtraction is needed or wanted here (see #862/#865:
+        # emissions are distributed pro-rata with no burn, so nothing needs to be trued up
+        # against actual on-chain payments).
+        miner_remaining_payouts_usd = {
+            hotkey: max(0.0, payout_penalized)
+            for hotkey, payout_penalized in all_required_payouts.items()
+        }
 
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
-        total_actual_payout_usd = sum(all_emissions_cumulative.values())
-        total_needed_payout_usd = total_remaining_payout_usd
-        # total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
         logger.info(
             f"[PAYOUT] SUMMARY ({len(miner_remaining_payouts_usd)} miners): "
-            f"remaining_payouts=${total_remaining_payout_usd:.2f}, "
-            f"required_payouts=${total_needed_payout_usd:.2f}, "
-            f"paid_out=${total_actual_payout_usd:.2f} (accumulated until {TimeUtil.millis_to_short_date_str(prev_target_end_ms)}"
+            f"weekly_payouts=${total_remaining_payout_usd:.2f} "
+            f"(week ending {TimeUtil.millis_to_short_date_str(prev_target_end_ms)})"
         )
 
+        # Diagnostic only: lifetime on-chain emissions per hotkey, for sanity-checking this
+        # week's target against total historical payout. Not used in the weight math.
         all_time_emissions = {
             hotkey: sum(cp.chunk_emissions_usd for cp in ledger.checkpoints)
             for hotkey, ledger in all_emissions_ledgers.items()
@@ -433,21 +422,19 @@ class WeightCalculatorManager(CacheController):
         if verbose:
             _payouts_sorted = sorted(all_required_payouts.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
             for hotkey in _payouts_sorted:
-                remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
-                actual = all_emissions_cumulative.get(hotkey, 0.0)
-                payout_penalized = all_required_payouts.get(hotkey, 0.0)
+                weekly_target = miner_remaining_payouts_usd.get(hotkey, 0.0)
                 payout_raw = miner_required_payouts_raw.get(hotkey, 0.0)
                 all_time = all_time_emissions.get(hotkey, 0.0)
                 settlements = miner_required_payout_settlements.get(hotkey, [])
                 if settlements:
-                    first_week = TimeUtil.millis_to_datetime(settlements[0].start_ms).strftime('%Y-%m-%d')
-                    last_week = TimeUtil.millis_to_datetime(settlements[-1].end_ms).strftime('%Y-%m-%d')
-                    week_range = f" ({first_week} - {last_week})"
+                    week_start = TimeUtil.millis_to_datetime(settlements[-1].start_ms).strftime('%Y-%m-%d')
+                    week_end = TimeUtil.millis_to_datetime(settlements[-1].end_ms).strftime('%Y-%m-%d')
+                    week_range = f" ({week_start} - {week_end})"
                 else:
                     week_range = ""
                 logger.info(
-                    f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, "
-                    f"payout_penalized=${payout_penalized:.2f}, payout_raw=${payout_raw:.2f}{week_range}, all_time_emissions=${all_time:.2f}"
+                    f"[PAYOUT] [{hotkey}] weekly_target=${weekly_target:.2f} (raw=${payout_raw:.2f}){week_range}, "
+                    f"all_time_emissions=${all_time:.2f}"
                 )
 
         days_until_target = 7 - current_dt.weekday()
