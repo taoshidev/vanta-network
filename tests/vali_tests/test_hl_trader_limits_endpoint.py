@@ -272,7 +272,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         self.assertEqual(data['max_portfolio_usd'], expected_overall)
 
     def test_hl_all_per_class_values_match_table(self):
-        """Each per-class entry matches TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY for the right tier."""
+        """Each tradeable per-class entry matches TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY."""
         from vali_objects.vali_config import ValiConfig
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             asset_class="hl_all",
@@ -285,13 +285,24 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         breakdown = data['max_asset_class_usd']
         for cat_str, cat in (
             ('crypto',     TradePairCategory.CRYPTO),
-            ('forex',      TradePairCategory.FOREX),
             ('equities',   TradePairCategory.EQUITIES),
             ('indices',    TradePairCategory.INDICES),
             ('commodities', TradePairCategory.COMMODITIES),
         ):
             expected = ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][cat]
             self.assertEqual(breakdown[cat_str], expected, f"per-class mismatch for {cat_str}")
+
+    def test_hl_all_reports_no_fx_capacity(self):
+        """Hyperliquid lists no forex pairs, so an HL_ALL account has no FX capacity."""
+        self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
+            asset_class="hl_all",
+            challenge_bucket=MinerBucket.SUBACCOUNT_FUNDED.value,
+        )
+
+        status, data = self._get(VALID_HL_ADDRESS)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data['max_asset_class_usd']['forex'], 0.0)
 
     def test_hl_all_challenge_period_uses_tier_1(self):
         """HL_ALL during challenge period uses tier-1 entry in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS."""

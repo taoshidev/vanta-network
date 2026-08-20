@@ -2870,6 +2870,21 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         4: {MinerAssetClass.HL_ALL: 2.0},
     }
 
+    _TRADEABLE_CATEGORIES: dict = {}
+
+    @classmethod
+    def _tradeable_categories(cls, asset_class: MinerAssetClass) -> set:
+        """Categories `asset_class` has at least one tradeable pair in.
+
+        Derived from the live universe so it follows listing changes, cached because this
+        scans every TradePair and serves an unauthenticated endpoint.
+        """
+        if asset_class not in cls._TRADEABLE_CATEGORIES:
+            cls._TRADEABLE_CATEGORIES[asset_class] = {
+                tp.trade_pair_category for tp in TradePair if asset_class.can_trade(tp)
+            }
+        return cls._TRADEABLE_CATEGORIES[asset_class]
+
     def get_hl_trader_limits(self, hl_address: str):
         """
         Public endpoint — no authentication required.
@@ -2928,8 +2943,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         }
 
         response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
+        # 0 for classes this asset class cannot trade — Hyperliquid lists no forex pairs, so
+        # an HL_ALL account has no FX capacity to report.
+        tradeable = self._tradeable_categories(asset_class)
         response_payload['max_asset_class_usd'] = {
-            c.value: account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
+            c.value: (account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
+                      if c in tradeable else 0.0)
             for c in (
                 TradePairCategory.CRYPTO,
                 TradePairCategory.FOREX,

@@ -17,12 +17,16 @@ import types
 import unittest
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.utils.leverage_utils import (
     REG_T_OVERNIGHT_EQUITY_SPOT_CAP,
     _LEGACY_XAU_XAG_TIER_POSITIONAL,
+    get_max_order_size,
     get_portfolio_caps,
     get_tier_positional_leverage,
 )
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.trade_pair import (
     InstrumentType,
@@ -137,9 +141,9 @@ class TestGetTierPositionalLeverage(unittest.TestCase):
                 )
 
     def test_forex_bases(self):
-        # G1 majors: base = 10.0; crosses (G2-G5): base = 5.0
-        self.assertEqual(get_tier_positional_leverage(1, TradePair.EURUSD), 10.0)
-        self.assertEqual(get_tier_positional_leverage(1, TradePair.AUDJPY), 5.0)
+        # G1 majors: base = 20.0; crosses (G2-G5): base = 10.0
+        self.assertEqual(get_tier_positional_leverage(1, TradePair.EURUSD), 20.0)
+        self.assertEqual(get_tier_positional_leverage(1, TradePair.AUDJPY), 10.0)
 
     def test_xau_xag_bypass_uses_mini_dict(self):
         for pair in (TradePair.XAUUSD, TradePair.XAGUSD):
@@ -159,7 +163,7 @@ class TestGetTierPositionalLeverage(unittest.TestCase):
         )
 
     def test_equity_spot_capped_by_reg_t(self):
-        # NVDA: EQUITIES SPOT base = 0.5; tier 4 -> 0.5 × 4 = 2.0 hits the cap exactly.
+        # NVDA: EQUITIES SPOT base = 1.0; tier 3 -> 1.0 × 3 = 3.0 clips to the 2.0 cap.
         self.assertEqual(
             get_tier_positional_leverage(4, TradePair.NVDA),
             REG_T_OVERNIGHT_EQUITY_SPOT_CAP,
@@ -167,7 +171,7 @@ class TestGetTierPositionalLeverage(unittest.TestCase):
 
     def test_equity_perp_not_capped_by_reg_t(self):
         # HL equity perps are PERP, not SPOT — Reg-T should NOT apply.
-        # NVDAUSDC: EQUITIES PERP base = 0.5; tier 4 -> 2.0. Coincides with cap value, but
+        # NVDAUSDC: EQUITIES PERP base = 1.0; tier 4 -> 4.0, above the Reg-T value, but
         # we verify the cap doesn't fire by checking the code path: pump the base manually.
         # Use the live config value as-is; assert base × tier multiplier with no clip.
         base = TradePair.NVDAUSDC.subaccount_tier_base_leverage
@@ -258,6 +262,75 @@ class TestGetPortfolioCaps(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# get_max_order_size — the order path actually honours the two pools
+# ---------------------------------------------------------------------------
+
+class TestMaxOrderSizeFxPools(unittest.TestCase):
+
+    def _account(self, asset_class=MinerAssetClass.ALL_MARKETS,
+                 bucket=MinerBucket.SUBACCOUNT_FUNDED, used=None):
+        used = used or {}
+        return MinerAccount(
+            miner_hotkey="hk",
+            asset_class=asset_class,
+            miner_bucket=bucket,
+            capital_used=sum(used.values()),
+            capital_used_by_class=dict(used),
+        )
+
+    @staticmethod
+    def _position(trade_pair, net_value=0.0):
+        position = Position(
+            miner_hotkey="hk", position_uuid="u", open_ms=0,
+            trade_pair=trade_pair, position_type=OrderType.LONG,
+        )
+        position.net_value = net_value
+        return position
+
+    def test_fx_major_reaches_its_per_pair_cap(self):
+        """20x EURUSD must be reachable — the 10x cross-asset cap must not bind it."""
+        account = self._account()
+        max_value, _ = get_max_order_size(account, self._position(TradePair.EURUSD))
+        expected = account.balance * get_tier_positional_leverage(2, TradePair.EURUSD)
+        self.assertAlmostEqual(max_value, expected)
+
+    def test_maxed_fx_does_not_shrink_non_fx_order_size(self):
+        fx_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.FOREX]
+        empty = self._account()
+        maxed_fx = self._account(used={TradePairCategory.FOREX: empty.balance * fx_cap})
+
+        for pair in (TradePair.BTCUSDC, TradePair.SP500USDC, TradePair.GOLDUSDC):
+            with self.subTest(pair=pair.trade_pair_id):
+                before, _ = get_max_order_size(empty, self._position(pair))
+                after, _ = get_max_order_size(maxed_fx, self._position(pair))
+                self.assertAlmostEqual(before, after)
+
+        # ...while FX itself is now fully consumed.
+        fx_room, _ = get_max_order_size(maxed_fx, self._position(TradePair.EURUSD))
+        self.assertAlmostEqual(fx_room, 0.0)
+
+    def test_maxed_non_fx_does_not_shrink_fx_order_size(self):
+        overall = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.ALL_MARKETS]
+        empty = self._account()
+        maxed_non_fx = self._account(used={TradePairCategory.CRYPTO: empty.balance * overall})
+
+        before, _ = get_max_order_size(empty, self._position(TradePair.EURUSD))
+        after, _ = get_max_order_size(maxed_non_fx, self._position(TradePair.EURUSD))
+        self.assertAlmostEqual(before, after)
+
+    def test_regular_miner_fx_still_consumes_the_single_pool(self):
+        """Main-comp miners keep one pool: FX exposure must still reduce non-FX room."""
+        empty = self._account(asset_class=MinerAssetClass.FOREX, bucket=MinerBucket.MAINCOMP)
+        with_fx = self._account(
+            asset_class=MinerAssetClass.FOREX, bucket=MinerBucket.MAINCOMP,
+            used={TradePairCategory.FOREX: empty.balance},
+        )
+        before, _ = get_max_order_size(empty, self._position(TradePair.EURUSD))
+        after, _ = get_max_order_size(with_fx, self._position(TradePair.EURUSD))
+        self.assertAlmostEqual(after, before - empty.balance)
+
+
+# ---------------------------------------------------------------------------
 # TradePair property accessors are position-independent
 # ---------------------------------------------------------------------------
 
@@ -276,9 +349,9 @@ class TestTradePairPropertyAccessors(unittest.TestCase):
 
     def test_subaccount_tier_base_via_named_tuple_scan(self):
         self.assertEqual(TradePair.BTCUSD.subaccount_tier_base_leverage, 0.5)
-        self.assertEqual(TradePair.EURUSD.subaccount_tier_base_leverage, 10.0)
+        self.assertEqual(TradePair.EURUSD.subaccount_tier_base_leverage, 20.0)
         self.assertEqual(TradePair.GOLDUSDC.subaccount_tier_base_leverage, 3.0)
-        self.assertEqual(TradePair.NVDA.subaccount_tier_base_leverage, 0.5)
+        self.assertEqual(TradePair.NVDA.subaccount_tier_base_leverage, 1.0)
 
     def test_subaccount_tier_base_wrapper_isolates_from_floats(self):
         """The SubaccountTierBaseLeverage wrapper is distinct from raw float fields."""

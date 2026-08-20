@@ -62,9 +62,9 @@ class TestEquityUniverse(unittest.TestCase):
         # a synthetic new ticker would be added with default values; an existing one would not
         rows = [{"symbol": "AAPL"}, {"symbol": "ZZNEWCO"}]
         self.assertEqual(tickers_to_add(rows, present), ["ZZNEWCO"])
-        line = render_member_line("ZZNEWCO", "0.00009", "0.5")
+        line = render_member_line("ZZNEWCO", "0.00009", "1.0")
         self.assertIn('["ZZNEWCO", "ZZNEWCO", 0.00009,', line)
-        self.assertIn("SubaccountTierBaseLeverage(0.5)]", line)
+        self.assertIn("SubaccountTierBaseLeverage(1.0)]", line)
 
 
 if __name__ == "__main__":
