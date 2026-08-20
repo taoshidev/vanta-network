@@ -392,6 +392,19 @@ class WeightCalculatorManager(CacheController):
             entity_miner_required_payouts[hotkey] = max(
                 0.0, cumulative_through_this_week - cumulative_through_prior_week
             )
+            # Small hotkey count (few entities); log unconditionally, not gated on `verbose`,
+            # so this is visible on every run while diagnosing the this-week-vs-prior-week diff.
+            latest_ts = entity_checkpoints[-1].timestamp_ms if entity_checkpoints else None
+            latest_str = TimeUtil.millis_to_short_date_str(latest_ts) if latest_ts else "n/a"
+            logger.info(
+                f"[PAYOUT_ENTITY_DEBUG] [{hotkey}] total_checkpoints={len(entity_checkpoints)}, "
+                f"latest_checkpoint={latest_str}, "
+                f"checkpoints_through_this_week={len(checkpoints_through_this_week)} "
+                f"(cumulative=${cumulative_through_this_week:.2f}), "
+                f"checkpoints_through_prior_week={len(checkpoints_through_prior_week)} "
+                f"(cumulative=${cumulative_through_prior_week:.2f}), "
+                f"weekly_target=${entity_miner_required_payouts[hotkey]:.2f}"
+            )
 
         # Combine miner and entity weekly targets into a unified dict
         all_required_payouts = {**miner_required_payouts, **entity_miner_required_payouts}
