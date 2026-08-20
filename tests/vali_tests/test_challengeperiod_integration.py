@@ -53,6 +53,14 @@ INTRADAY_DD_PCT = ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100
 EOD_DD_PCT = ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD * 100
 STATIC_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
 STATIC_EOD_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
+# A test-local clock anchor for the static-drawdown scenarios. Deliberately NOT
+# a ValiConfig constant: production has no global "static rules effective time" —
+# the validator branches purely on the per-subaccount drawdown_criteria stored at
+# creation (see ChallengePeriodManager.refresh), so the only thing these tests
+# need is a stable timestamp to build bucket histories around. Canonical
+# DrawdownStats initialization: set the underlying fields (current_equity,
+# current_balance, eod_hwm, last_eod_equity); every *_drawdown_pct is a computed
+# @property, never a constructor argument.
 STATIC_EFFECTIVE_MS = TimeUtil.formatted_date_str_to_millis("2026-09-05 00:00:00")
 
 _CLIENT_PATHS = [
@@ -525,8 +533,12 @@ class TestChallengePeriodManagerLogic(TestBase):
         self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.ELIMINATED)
 
     def test_refresh_healthy_miner_unchanged_no_disk_write(self):
-        """Brand-new miner with no issues triggers no bucket change and no account sync
-        (the end-of-cycle disk save still runs unconditionally)."""
+        """Brand-new miner with no issues triggers no bucket change and no account sync.
+
+        Note: refresh() persists to disk unconditionally at the end of every cycle
+        (ChallengePeriodManager.refresh -> _save_to_disk), so unlike the pre-#866
+        behavior this test asserts the save IS called; "no state change" is still
+        enforced via the untouched bucket and the absence of an account sync."""
         now = TimeUtil.now_in_millis()
         hk = "hk_healthy"
         mgr, stack = self._make_manager()
