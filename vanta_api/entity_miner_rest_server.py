@@ -121,6 +121,16 @@ class EntityMinerRestServer(MinerRestServer):
     DASHBOARD_CACHE_TTL_MS = 10_000
     MAPPING_REFRESH_TTL_MS = 5_000
 
+    # SSE stream caps. Each open stream pins one of Waitress's 32 worker threads
+    # for its whole lifetime (the generator blocks in queue.get), so uncapped
+    # streams can exhaust the pool and stall every other endpoint. Streams are
+    # bounded in count and lifetime; the browser's EventSource reconnects
+    # transparently after either cutoff.
+    SSE_MAX_CONCURRENT_STREAMS = 8
+    SSE_HEARTBEAT_S = 30
+    SSE_MAX_LIFETIME_S = 15 * 60
+    SSE_MAX_IDLE_S = 5 * 60
+
     def __init__(self, api_keys_file, flask_host="0.0.0.0", flask_port=8088,
                  slack_notifier=None, prop_net_order_placer=None, **kwargs):
         # Internal state (initialized before super().__init__ calls _initialize_clients)
@@ -141,6 +151,8 @@ class EntityMinerRestServer(MinerRestServer):
         # SSE subscriber tracking: hl_address -> set of Queue objects
         self._sse_subscribers: Dict[str, Set[queue.Queue]] = {}
         self._sse_lock = threading.Lock()
+        # Caps concurrent SSE streams so they can never exhaust the Waitress pool.
+        self._sse_stream_slots = threading.BoundedSemaphore(self.SSE_MAX_CONCURRENT_STREAMS)
 
         # WebSocket connection state
         self._ws_thread: Optional[threading.Thread] = None
@@ -926,14 +938,42 @@ class EntityMinerRestServer(MinerRestServer):
 
     def stream_endpoint(self, hl_address):
         """GET /api/hl/<hl_address>/stream - SSE real-time stream (no API key required)."""
-        normalized_hl = self._normalize_hl_address(hl_address)
-        subscriber_queue = self._subscribe_sse(normalized_hl)
+        # Take a stream slot first: an uncapped stream pins a Waitress worker
+        # thread indefinitely, and ~32 open streams would stall the whole REST
+        # surface (see SSE_MAX_CONCURRENT_STREAMS).
+        if not self._sse_stream_slots.acquire(blocking=False):
+            response = jsonify({
+                'status': 'error',
+                'message': f'Too many concurrent streams (max {self.SSE_MAX_CONCURRENT_STREAMS}). Retry shortly.'
+            })
+            response.headers['Retry-After'] = '5'
+            return response, 503
+
+        try:
+            normalized_hl = self._normalize_hl_address(hl_address)
+            subscriber_queue = self._subscribe_sse(normalized_hl)
+        except Exception:
+            # Slot must not leak if setup fails before the generator owns it.
+            self._sse_stream_slots.release()
+            raise
 
         def event_stream():
             try:
+                started = time.monotonic()
+                last_event = started
                 while True:
+                    now = time.monotonic()
+                    if now - started > self.SSE_MAX_LIFETIME_S:
+                        # Rotate long-lived streams so slots (and worker threads) recycle.
+                        yield ": max stream lifetime reached, reconnect\n\n"
+                        return
+                    if now - last_event > self.SSE_MAX_IDLE_S:
+                        # No events for a while: free the slot; the client reconnects on demand.
+                        yield ": idle stream closed, reconnect\n\n"
+                        return
                     try:
-                        data = subscriber_queue.get(timeout=30)
+                        data = subscriber_queue.get(timeout=self.SSE_HEARTBEAT_S)
+                        last_event = time.monotonic()
                         yield f"data: {json.dumps(data)}\n\n"
                     except queue.Empty:
                         # Send keepalive heartbeat
@@ -942,6 +982,7 @@ class EntityMinerRestServer(MinerRestServer):
                 pass
             finally:
                 self._unsubscribe_sse(normalized_hl, subscriber_queue)
+                self._sse_stream_slots.release()
 
         return Response(
             event_stream(),
