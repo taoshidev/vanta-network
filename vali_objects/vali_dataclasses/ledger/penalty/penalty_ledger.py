@@ -705,26 +705,29 @@ class PenaltyLedgerManager:
 
         logger.info("[PENALTY_LEDGER] Penalty Ledger Manager daemon stopped")
 
-    def _get_status_for_checkpoint(self, checkpoint_ms: int, bucket_history: list) -> str:
+    def _get_status_for_checkpoint(self, checkpoint_ms: int, bucket_data: dict) -> str:
         """
-        Determine the challenge period status for a checkpoint from pre-fetched bucket history.
+        Determine the challenge period status for a checkpoint from pre-fetched bucket data.
 
         Duplicates the logic of ChallengePeriodManager.get_miner_bucket(timestamp_ms) against
         locally pre-fetched data to avoid per-checkpoint RPC calls.
 
         Args:
             checkpoint_ms: The checkpoint timestamp in milliseconds
-            bucket_history: Newest-first list of dicts [{"bucket": str, "bucket_start_time": int}, ...]
-                            as returned by to_checkpoint_dict()
+            bucket_data: Dict as returned by MinerBucketState.to_checkpoint_dict(), with an
+                         "entries" key containing a list of {"bucket": str, "start_time_ms": int} dicts
+                         sorted ascending by start_time_ms.
 
         Returns:
             Status string for this checkpoint
         """
-        if not bucket_history or not isinstance(bucket_history, list):
+        if not bucket_data or not isinstance(bucket_data, dict):
             return MinerBucket.UNKNOWN.value
 
-        for entry in bucket_history:
-            start_time_ms = entry.get("bucket_start_time")
+        entries = bucket_data.get("entries", [])
+        # Iterate newest-first so we return the most recent bucket that started before checkpoint_ms
+        for entry in reversed(entries):
+            start_time_ms = entry.get("start_time_ms") or entry.get("bucket_start_time")
             if start_time_ms is not None and checkpoint_ms >= start_time_ms:
                 return entry.get("bucket", MinerBucket.UNKNOWN.value)
 
