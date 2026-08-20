@@ -134,10 +134,10 @@ class DebtLedgerServer(RPCServerBase):
         # Step 1: Update penalty ledgers
         logger.info("Step 1/3: Updating penalty ledgers...")
         penalty_start = time.time()
-        self._penalty_delta_update = True
+        self._penalty_delta_update = False
         self._manager.penalty_ledger_manager.build_penalty_ledgers(delta_update=self._penalty_delta_update)
         logger.info(f"Penalty ledgers updated in {time.time() - penalty_start:.2f}s")
-        # self._penalty_delta_update = True
+        self._penalty_delta_update = True
 
         # Step 2: Update emissions ledgers
         logger.info("Step 2/3: Updating emissions ledgers...")
