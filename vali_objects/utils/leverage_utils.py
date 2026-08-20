@@ -114,9 +114,8 @@ def get_max_order_size(
 def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
     """Per-pair positional leverage for the subaccount path.
 
-    Linear scaling: pair.subaccount_tier_base_leverage * tier (tier ∈ {1, 2, 3, 4} maps to 1x-4x base).
-    If the tier curve ever needs to be non-linear, replace the multiplication with a
-    {tier: multiplier} dict in ValiConfig and update this helper.
+    pair.subaccount_tier_base_leverage × ValiConfig.SUBACCOUNT_TIER_LEVERAGE_MULTIPLIER[tier].
+    Tier 2 multiplier is 1.0: funded and challenge accounts share the same per-pair limits.
 
     Two exceptions:
       - XAUUSD/XAGUSD bypass via the legacy mini-dict (non-linear, retained until external
@@ -125,7 +124,7 @@ def get_tier_positional_leverage(tier: int, trade_pair: TradePair) -> float:
     """
     if trade_pair.trade_pair_id in ("XAUUSD", "XAGUSD"):
         return _LEGACY_XAU_XAG_TIER_POSITIONAL[tier]
-    scaled = trade_pair.subaccount_tier_base_leverage * tier
+    scaled = trade_pair.subaccount_tier_base_leverage * ValiConfig.SUBACCOUNT_TIER_LEVERAGE_MULTIPLIER[tier]
     if trade_pair.trade_pair_category == TradePairCategory.EQUITIES and trade_pair.instrument_type == InstrumentType.SPOT:
         scaled = min(scaled, REG_T_OVERNIGHT_EQUITY_SPOT_CAP)  # Reg T overnight equity-margin cap
     return scaled

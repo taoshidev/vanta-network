@@ -6,10 +6,8 @@ Tier-1 base × tier dispatch, portfolio leverage table split).
 Covers:
   * Config completeness — every TradePair has the new fields; every dict has
     the right keys; HL_ALL is absent from the single-class portfolio table.
-  * Value preservation — the new "base × tier" formula reproduces main's
-    per-(category, instrument_type) values for all 171 pairs × 4 tiers.
-  * get_tier_positional_leverage — base × tier, XAU/XAG mini-dict bypass,
-    Reg-T cap on EQUITIES SPOT.
+  * get_tier_positional_leverage — base × SUBACCOUNT_TIER_LEVERAGE_MULTIPLIER[tier],
+    XAU/XAG mini-dict bypass, Reg-T cap on EQUITIES SPOT.
   * get_portfolio_caps — multi-class returns (per-class, overall); single-class
     returns the same value twice.
   * TradePair property accessors are position-independent (type-scan).
@@ -119,17 +117,29 @@ class TestConfigCompleteness(unittest.TestCase):
 
 class TestGetTierPositionalLeverage(unittest.TestCase):
 
-    def test_returns_base_times_tier_for_regular_pair(self):
+    def test_returns_base_times_tier_multiplier_for_regular_pair(self):
         # BTCUSD has subaccount_tier_base_leverage = 0.5 (CRYPTO SPOT placeholder)
         base = TradePair.BTCUSD.subaccount_tier_base_leverage
         for tier in (1, 2, 3, 4):
             with self.subTest(tier=tier):
-                self.assertEqual(get_tier_positional_leverage(tier, TradePair.BTCUSD), base * tier)
+                self.assertEqual(
+                    get_tier_positional_leverage(tier, TradePair.BTCUSD),
+                    base * ValiConfig.SUBACCOUNT_TIER_LEVERAGE_MULTIPLIER[tier],
+                )
 
-    def test_forex_uses_2_5_base(self):
-        # EURUSD: FOREX SPOT base = 2.5
-        self.assertEqual(get_tier_positional_leverage(1, TradePair.EURUSD), 2.5)
-        self.assertEqual(get_tier_positional_leverage(4, TradePair.EURUSD), 10.0)
+    def test_tier_2_matches_tier_1(self):
+        # Funded (Tier 2) and challenge (Tier 1) share the same per-pair limits.
+        for tp in (TradePair.BTCUSDC, TradePair.EURUSD, TradePair.GOLDUSDC, TradePair.SP500USDC):
+            with self.subTest(pair=tp.trade_pair_id):
+                self.assertEqual(
+                    get_tier_positional_leverage(2, tp),
+                    get_tier_positional_leverage(1, tp),
+                )
+
+    def test_forex_bases(self):
+        # G1 majors: base = 10.0; crosses (G2-G5): base = 5.0
+        self.assertEqual(get_tier_positional_leverage(1, TradePair.EURUSD), 10.0)
+        self.assertEqual(get_tier_positional_leverage(1, TradePair.AUDJPY), 5.0)
 
     def test_xau_xag_bypass_uses_mini_dict(self):
         for pair in (TradePair.XAUUSD, TradePair.XAGUSD):
@@ -159,11 +169,14 @@ class TestGetTierPositionalLeverage(unittest.TestCase):
         # HL equity perps are PERP, not SPOT — Reg-T should NOT apply.
         # NVDAUSDC: EQUITIES PERP base = 0.5; tier 4 -> 2.0. Coincides with cap value, but
         # we verify the cap doesn't fire by checking the code path: pump the base manually.
-        # Use the live config value as-is; assert the value is exactly base × tier with no clip.
+        # Use the live config value as-is; assert base × tier multiplier with no clip.
         base = TradePair.NVDAUSDC.subaccount_tier_base_leverage
         for tier in (1, 2, 3, 4):
             with self.subTest(tier=tier):
-                self.assertEqual(get_tier_positional_leverage(tier, TradePair.NVDAUSDC), base * tier)
+                self.assertEqual(
+                    get_tier_positional_leverage(tier, TradePair.NVDAUSDC),
+                    base * ValiConfig.SUBACCOUNT_TIER_LEVERAGE_MULTIPLIER[tier],
+                )
 
     def test_reg_t_cap_actually_clips_when_base_exceeds(self):
         """Inject a synthetic EQUITIES SPOT pair with a base that would breach Reg-T at tier 4.
@@ -263,8 +276,8 @@ class TestTradePairPropertyAccessors(unittest.TestCase):
 
     def test_subaccount_tier_base_via_named_tuple_scan(self):
         self.assertEqual(TradePair.BTCUSD.subaccount_tier_base_leverage, 0.5)
-        self.assertEqual(TradePair.EURUSD.subaccount_tier_base_leverage, 2.5)
-        self.assertEqual(TradePair.GOLDUSDC.subaccount_tier_base_leverage, 0.5)
+        self.assertEqual(TradePair.EURUSD.subaccount_tier_base_leverage, 10.0)
+        self.assertEqual(TradePair.GOLDUSDC.subaccount_tier_base_leverage, 3.0)
         self.assertEqual(TradePair.NVDA.subaccount_tier_base_leverage, 0.5)
 
     def test_subaccount_tier_base_wrapper_isolates_from_floats(self):

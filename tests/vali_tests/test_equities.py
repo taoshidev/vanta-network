@@ -742,10 +742,11 @@ class TestEquities(TestBase):
         )
         self.assertEqual(initial_borrowed, 0.0)
 
-        # Buy $150K, borrows $75K (half the order)
-        order_value = 150_000.0
-        expected_borrowed = order_value * 0.5  # $75K
-        borrowed = expected_borrowed  # order > available_cash → borrow half
+        # Buy $90K with a caller-computed $45K margin loan (borrow amounts are
+        # caller-driven; process_order_buy only validates buying power)
+        order_value = 90_000.0
+        expected_borrowed = order_value * 0.5  # $45K
+        borrowed = expected_borrowed
         self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
 
         # Verify total borrowed amount is tracked
@@ -850,7 +851,7 @@ class TestEquities(TestBase):
 
     # ==================== SUBACCOUNT_CHALLENGE Buying Power Tests ====================
 
-    EQUITIES_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.EQUITIES]   # 1.5 (Tier 2, <$200K)
+    EQUITIES_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.EQUITIES]   # 1.0 (Tier 2 mirrors Tier 1)
     REDUCED_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[1][TradePairCategory.EQUITIES]    # 1.0 (Tier 1, challenge)
 
     def test_subaccount_challenge_buying_power_reduced(self):
@@ -892,11 +893,11 @@ class TestEquities(TestBase):
 
     def test_subaccount_challenge_insufficient_buying_power(self):
         """
-        SUBACCOUNT_CHALLENGE with reduced buying power should reject orders exceeding it.
-        Without the bucket, the same order would succeed under normal buying power.
+        Orders exceeding buying power are rejected. Tier 2 mirrors Tier 1
+        (funded == challenge limits), so the same order is rejected in both buckets.
         """
         reduced_bp = self.DEFAULT_ACCOUNT_SIZE * self.REDUCED_MULTIPLIER
-        order_value = reduced_bp + 10_000.0  # exceeds reduced buying power
+        order_value = reduced_bp + 10_000.0  # exceeds buying power
 
         # Set bucket to SUBACCOUNT_CHALLENGE
         self.miner_account_client.set_miner_bucket(
@@ -908,11 +909,12 @@ class TestEquities(TestBase):
                 self.DEFAULT_MINER_HOTKEY, order_value, order_value * 0.5
             )
 
-        # Remove bucket — Tier 2 buying power ($150K) > order_value, same order should succeed
+        # Remove bucket — Tier 2 buying power equals Tier 1, same order still rejected
         self.miner_account_client.set_miner_bucket(self.DEFAULT_MINER_HOTKEY, None)
-        borrowed = order_value * 0.5  # order ($110K) > cash ($100K) → borrow half
-        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
-        self.assertAlmostEqual(borrowed, 55_000.0, places=2)  # half of $110K
+        with self.assertRaises(SignalException):
+            self.miner_account_manager.process_order_buy(
+                self.DEFAULT_MINER_HOTKEY, order_value, order_value * 0.5
+            )
 
     def test_buying_power_restored_after_bucket_change(self):
         """
