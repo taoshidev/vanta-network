@@ -12,6 +12,7 @@ The manager contains NO RPC infrastructure - that lives in ContractServer.
 This is pure business logic that can be tested independently.
 """
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from collateral_sdk import CollateralManager, Network
 from typing import Dict, Any, Optional
 import time
@@ -118,6 +119,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         # Lock for coldkey-hotkey ownership cache (prevents concurrent modifications)
         self._coldkey_hotkey_cache_lock = threading.Lock()
 
+        # Ownership chain-lookup bounds (seconds); see verify_coldkey_owns_hotkey.
+        self.OWNERSHIP_QUERY_TIMEOUT_S = 10.0
+        self.OWNERSHIP_FAILURE_COOLDOWN_S = 30.0
+
         # Initialize collateral manager based on network type
         if self.is_testnet:
             logger.info("Using testnet collateral manager")
@@ -144,6 +149,16 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         # Key: (coldkey_ss58, hotkey_ss58) -> Value: is_owner (bool)
         # Cached permanently in memory (cleared only on restart)
         self._coldkey_hotkey_cache: Dict[tuple[str, str], bool] = {}
+
+        # Bounded on-chain ownership lookups. query_subtensor has no timeout of
+        # its own, so a slow/hung chain endpoint would pin the calling
+        # (REST-facing) thread indefinitely; the query runs on this small
+        # executor and the caller waits at most OWNERSHIP_QUERY_TIMEOUT_S.
+        # After a failure, retries for the same key are short-circuited for
+        # OWNERSHIP_FAILURE_COOLDOWN_S so a down chain can't stack up threads.
+        self._ownership_query_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="owner-query")
+        self._ownership_failure_ts: Dict[tuple[str, str], float] = {}
 
         self.setup()
 
@@ -805,22 +820,45 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         except Exception as e:
             logger.warning(f"Failed to check metagraph for {hotkey_ss58}: {e}")
 
-        # 3. Fallback to subtensor for non-registered hotkeys
+        # 3. Fallback to subtensor for non-registered hotkeys — bounded (see __init__).
+        with self._coldkey_hotkey_cache_lock:
+            failed_at = self._ownership_failure_ts.get(cache_key, 0.0)
+        if time.time() - failed_at < self.OWNERSHIP_FAILURE_COOLDOWN_S:
+            logger.warning(
+                f"Ownership query for {hotkey_ss58} in failure cooldown; refusing without chain query")
+            return False
+
         try:
             logger.info(f"Hotkey {hotkey_ss58} not in metagraph, querying subtensor")
-            subtensor_api = self.collateral_manager.subtensor_api
-            coldkey_owner = subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
+            future = self._ownership_query_executor.submit(self._query_owner_on_chain, hotkey_ss58)
+            coldkey_owner = future.result(timeout=self.OWNERSHIP_QUERY_TIMEOUT_S)
             is_owner = coldkey_owner == coldkey_ss58
 
-            # Cache the result
+            # Cache the result (definitive answers only — both True and False)
             with self._coldkey_hotkey_cache_lock:
                 self._coldkey_hotkey_cache[cache_key] = is_owner
+                self._ownership_failure_ts.pop(cache_key, None)
 
             logger.info(f"Verified ownership via subtensor for {coldkey_ss58} and {hotkey_ss58}")
             return is_owner
+        except FuturesTimeoutError:
+            future.cancel()
+            logger.error(
+                f"Ownership query for {hotkey_ss58} exceeded {self.OWNERSHIP_QUERY_TIMEOUT_S}s; "
+                f"failing closed with {self.OWNERSHIP_FAILURE_COOLDOWN_S}s cooldown")
+            with self._coldkey_hotkey_cache_lock:
+                self._ownership_failure_ts[cache_key] = time.time()
+            return False
         except Exception as e:
             logger.error(f"Error verifying coldkey-hotkey ownership: {e}")
+            with self._coldkey_hotkey_cache_lock:
+                self._ownership_failure_ts[cache_key] = time.time()
             return False
+
+    def _query_owner_on_chain(self, hotkey_ss58: str):
+        """Blocking chain query; runs on the bounded ownership executor."""
+        subtensor_api = self.collateral_manager.subtensor_api
+        return subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
 
     # ==================== Test Data Injection Methods ====================
 

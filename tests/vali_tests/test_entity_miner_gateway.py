@@ -1024,3 +1024,43 @@ class TestSSEStreamCaps(TestBase):
         self.assertTrue(any('"type": "dashboard"' in c for c in chunks), chunks)
         self.assertTrue(gw._sse_stream_slots.acquire(blocking=False))
         gw._sse_stream_slots.release()
+
+
+# ==================== Async Slack Notification Tests ====================
+
+class TestAsyncSlackNotify(TestBase):
+    """Slack webhook POSTs (up to ~10s) must not run on the request thread."""
+
+    def _make_gateway(self, notifier):
+        from vanta_api.entity_miner_rest_server import EntityMinerRestServer
+
+        gw = object.__new__(EntityMinerRestServer)
+        gw.slack_notifier = notifier
+        return gw
+
+    def test_notify_does_not_block_caller(self):
+        import threading
+        import time as _time
+
+        done = threading.Event()
+
+        def slow_send(message, level="info", **kwargs):
+            _time.sleep(0.5)
+            done.set()
+            return True
+
+        notifier = MagicMock()
+        notifier.send_message.side_effect = slow_send
+
+        gw = self._make_gateway(notifier)
+        start = _time.monotonic()
+        gw._notify_slack_async("hello", level="success", bypass_cooldown=True)
+        elapsed = _time.monotonic() - start
+        self.assertLess(elapsed, 0.2, f"caller blocked for {elapsed:.2f}s")
+        self.assertTrue(done.wait(timeout=5), "notification never delivered")
+        notifier.send_message.assert_called_once_with(
+            "hello", level="success", bypass_cooldown=True)
+
+    def test_notify_without_notifier_is_noop(self):
+        gw = self._make_gateway(None)
+        gw._notify_slack_async("hello")  # must not raise

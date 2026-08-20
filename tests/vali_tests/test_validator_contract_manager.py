@@ -320,3 +320,77 @@ class TestValidatorContractManager(TestBase):
         self.assertIn(self.MINER_2, all_sizes)
         self.assertIsNotNone(all_sizes[self.MINER_1])
         self.assertIsNotNone(all_sizes[self.MINER_2])
+
+
+class TestBoundedOwnershipQuery(TestBase):
+    """verify_coldkey_owns_hotkey must never pin its caller on a hung chain
+    endpoint: the subtensor fallback runs on a bounded executor with a timeout,
+    and failures enter a cooldown so a down chain can't stack threads."""
+
+    def _make_manager(self, query_side_effect):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import MagicMock
+        from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+
+        m = object.__new__(ValidatorContractManager)
+        m._coldkey_hotkey_cache_lock = threading.Lock()
+        m._coldkey_hotkey_cache = {}
+        m._ownership_failure_ts = {}
+        m._ownership_query_executor = ThreadPoolExecutor(max_workers=2)
+        m.OWNERSHIP_QUERY_TIMEOUT_S = 0.2
+        m.OWNERSHIP_FAILURE_COOLDOWN_S = 30.0
+        m._metagraph_client = MagicMock()
+        m._metagraph_client.get_neurons.return_value = []  # force the chain fallback
+        m.collateral_manager = MagicMock()
+        m.collateral_manager.subtensor_api.queries.query_subtensor.side_effect = query_side_effect
+        return m
+
+    def test_hung_chain_query_returns_false_within_timeout(self):
+        import time as _time
+
+        def hang(*a, **k):
+            _time.sleep(5)
+            return "5ColdKey"
+
+        m = self._make_manager(hang)
+        start = _time.monotonic()
+        result = m.verify_coldkey_owns_hotkey("5ColdKey", "5HotKey")
+        elapsed = _time.monotonic() - start
+        self.assertFalse(result)
+        self.assertLess(elapsed, 2.0, f"caller was pinned for {elapsed:.1f}s")
+        self.assertIn(("5ColdKey", "5HotKey"), m._ownership_failure_ts)
+
+    def test_failure_cooldown_short_circuits_chain(self):
+        m = self._make_manager(RuntimeError("chain down"))
+        self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))
+        calls_after_first = m.collateral_manager.subtensor_api.queries.query_subtensor.call_count
+        # Within the cooldown the chain must NOT be queried again.
+        self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))
+        self.assertEqual(
+            m.collateral_manager.subtensor_api.queries.query_subtensor.call_count,
+            calls_after_first,
+        )
+        # Once the cooldown lapses the query is attempted again.
+        m.OWNERSHIP_FAILURE_COOLDOWN_S = 0.0
+        self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))
+        self.assertGreater(
+            m.collateral_manager.subtensor_api.queries.query_subtensor.call_count,
+            calls_after_first,
+        )
+
+    def test_successful_query_caches_and_clears_failure(self):
+        m = self._make_manager(lambda *a, **k: "5Owner")
+        m._ownership_failure_ts[("5Owner", "5HK")] = 0.0  # stale failure entry
+        self.assertTrue(m.verify_coldkey_owns_hotkey("5Owner", "5HK"))
+        self.assertEqual(m._coldkey_hotkey_cache[("5Owner", "5HK")], True)
+        self.assertNotIn(("5Owner", "5HK"), m._ownership_failure_ts)
+        # Cached: no further chain calls.
+        calls = m.collateral_manager.subtensor_api.queries.query_subtensor.call_count
+        self.assertTrue(m.verify_coldkey_owns_hotkey("5Owner", "5HK"))
+        self.assertEqual(m.collateral_manager.subtensor_api.queries.query_subtensor.call_count, calls)
+
+    def test_definitive_negative_is_cached(self):
+        m = self._make_manager(lambda *a, **k: "5SomeoneElse")
+        self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))
+        self.assertEqual(m._coldkey_hotkey_cache[("5CK", "5HK")], False)
