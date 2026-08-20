@@ -174,6 +174,20 @@ class TestBoundedRPCCalls(unittest.TestCase):
             client._server.echo_rpc("x")
         self.assertIn("Not connected", str(ctx.exception))
 
+    def test_timeout_logging_is_rate_limited(self):
+        """Sustained timeouts must not flood ERROR logs: one ERROR per method per
+        RPC_TIMEOUT_LOG_INTERVAL_S; the rest drop to DEBUG."""
+        from unittest.mock import patch as mock_patch
+
+        client = self._make_client(timeout_s=0.2)
+        with mock_patch("shared_objects.rpc.rpc_client_base.logger") as mock_logger:
+            for _ in range(3):
+                with self.assertRaises(RPCCallTimeoutError):
+                    client._server.wedge_rpc()
+        self.assertEqual(mock_logger.error.call_count, 1)
+        self.assertEqual(mock_logger.debug.call_count, 2)
+        self._service._gate.set()
+
     def test_pickle_state_excludes_bounded_machinery(self):
         client = self._make_client()
         client._get_rpc_executor()  # force executor creation

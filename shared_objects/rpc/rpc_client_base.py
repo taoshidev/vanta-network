@@ -134,6 +134,11 @@ class _BoundedProxy:
     until the service recovers; the caller is freed immediately. When every
     worker is parked, new calls queue behind them and time out promptly — a
     natural fail-fast while the service is wedged that self-heals on recovery.
+
+    The timeout is CLIENT-SIDE ONLY: the server keeps executing the dispatched
+    method to completion. Design RPC methods to be idempotent/retry-safe, and
+    give known-long operations a larger per-client rpc_call_timeout_s rather
+    than relying on the default.
     """
 
     __slots__ = ("_client",)
@@ -196,7 +201,12 @@ class RPCClientBase:
     RPC_CALL_TIMEOUT_S = 60.0
     # Executor size per client: enough to pump concurrent healthy calls from a
     # full Waitress pool without serializing them, small enough that parked
-    # (timed-out) workers stay cheap.
+    # (timed-out) workers stay cheap. Note the deliberate failure semantics:
+    # while a service is wedged, its parked workers consume slots and queued
+    # calls time out promptly (fail-fast); healthy-service queuing is transient
+    # (calls complete in ms). Tune upward for clients that legitimately carry
+    # heavy concurrent fan-out; tune rpc_call_timeout_s (not workers) for
+    # legitimately slow calls.
     RPC_EXECUTOR_WORKERS = 16
 
     @classmethod
@@ -332,6 +342,7 @@ class RPCClientBase:
         self._bounded_proxy = None
         self._rpc_executor: Optional[ThreadPoolExecutor] = None
         self._rpc_executor_lock = threading.Lock()
+        self._rpc_timeout_log_ts: Dict[str, float] = {}
 
         # Local cache state
         self._local_cache_refresh_period_ms = local_cache_refresh_period_ms
@@ -403,12 +414,33 @@ class RPCClientBase:
         try:
             return future.result(timeout=timeout_s)
         except FuturesTimeoutError:
-            future.cancel()  # no-op if already running; the worker stays parked
-            logger.error(
-                f"{self.service_name}Client.{method_name} exceeded {timeout_s}s — "
-                f"freeing caller; worker remains parked until the service recovers"
-            )
+            # cancel() succeeds only for QUEUED calls (they never hit the wire);
+            # a call already running keeps its worker parked until the service
+            # recovers. Either way this caller is freed now.
+            cancelled = future.cancel()
+            self._log_rpc_timeout(method_name, timeout_s, cancelled)
             raise RPCCallTimeoutError(self.service_name, method_name, timeout_s) from None
+
+    # Sustained outages produce one timeout per call; full-volume ERROR logging
+    # would flood the logs with identical lines. Log ERROR at most once per
+    # method per RPC_TIMEOUT_LOG_INTERVAL_S; the rest drop to DEBUG.
+    RPC_TIMEOUT_LOG_INTERVAL_S = 30.0
+
+    def _log_rpc_timeout(self, method_name: str, timeout_s: float, cancelled: bool) -> None:
+        now = time.monotonic()
+        detail = (
+            f"{self.service_name}Client.{method_name} exceeded {timeout_s}s — freeing caller; "
+            f"{'call was still queued (never dispatched)' if cancelled else 'worker remains parked until the service recovers'}"
+        )
+        with self._rpc_executor_lock:
+            last = self._rpc_timeout_log_ts.get(method_name, 0.0)
+            should_error = now - last >= self.RPC_TIMEOUT_LOG_INTERVAL_S
+            if should_error:
+                self._rpc_timeout_log_ts[method_name] = now
+        if should_error:
+            logger.error(detail)
+        else:
+            logger.debug(detail)
 
     def connect(self, max_retries: int = None, retry_delay: float = None) -> bool:
         """
@@ -893,6 +925,7 @@ class RPCClientBase:
         self._rpc_executor = None
         self._rpc_executor_lock = threading.Lock()
         self._bounded_proxy = None
+        self._rpc_timeout_log_ts = {}
 
         # Restart cache refresh daemon if it was configured and in RPC mode
         if (self._local_cache_refresh_period_ms is not None
