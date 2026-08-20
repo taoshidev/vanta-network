@@ -586,12 +586,14 @@ class EntityMinerRestServer(MinerRestServer):
     def _resolve_active_synthetic_hotkey(self, hl_address: str) -> Optional[str]:
         """Resolve active synthetic hotkey, refreshing from validator periodically."""
         now_ms = int(time.time() * 1000)
+        # The freshness decision and the value it returns come from one atomic
+        # snapshot. (Any returned mapping is inherently a snapshot the moment
+        # the lock releases — extending the lock further would not change that.)
         with self._mapping_lock:
             cached_synthetic = self._hl_to_synthetic.get(hl_address)
             last_refresh_ms = self._mapping_last_refresh_ms.get(hl_address, 0)
-
-        if cached_synthetic and (now_ms - last_refresh_ms) < self.MAPPING_REFRESH_TTL_MS:
-            return cached_synthetic
+            if cached_synthetic and (now_ms - last_refresh_ms) < self.MAPPING_REFRESH_TTL_MS:
+                return cached_synthetic
 
         refreshed_dashboard = self._refresh_dashboard_from_validator(hl_address)
         if refreshed_dashboard:
@@ -809,7 +811,10 @@ class EntityMinerRestServer(MinerRestServer):
             with self._mapping_lock:
                 self._dashboard_cache[hl_address] = dashboard_payload
                 self._dashboard_cache_updated_ms[hl_address] = int(time.time() * 1000)
-            # Push to SSE (outside the lock; payload is a local reference)
+            # Push to SSE outside the lock. Safe: dashboard payload dicts are
+            # never mutated in place anywhere — every writer builds a fresh dict
+            # and REBINDS the cache entry, so this local reference stays stable
+            # for serialization even if the cache is concurrently replaced.
             self._push_sse(hl_address, {"type": "dashboard", "data": dashboard_payload})
 
         elif msg_type == "error":
