@@ -43,6 +43,7 @@ import os
 import time
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from multiprocessing.managers import BaseManager
 from typing import Optional, Any, Dict
 
@@ -99,6 +100,63 @@ def _patch_socket_for_nodelay():
     logger.debug("Socket patched to enable TCP_NODELAY for all RPC connections")
 
 
+class RPCCallTimeoutError(TimeoutError):
+    """An RPC call exceeded the client's per-call timeout.
+
+    The backing service is alive-but-unresponsive (or mid-GC / mid-heavy-pass);
+    the caller has been freed instead of blocking forever. Callers should treat
+    this as a retryable service-unavailable condition.
+    """
+
+    def __init__(self, service_name: str, method_name: str, timeout_s: float):
+        self.service_name = service_name
+        self.method_name = method_name
+        self.timeout_s = timeout_s
+        super().__init__(
+            f"{service_name}.{method_name} timed out after {timeout_s}s "
+            f"(service alive but unresponsive)"
+        )
+
+
+class _BoundedProxy:
+    """Facade over the BaseManager proxy that bounds every RPC call.
+
+    Typed clients invoke RPC methods directly on self._server
+    (e.g. self._server.get_positions_rpc(...)). The raw proxy call blocks in
+    conn.recv() with NO timeout, so a wedged (alive but unresponsive) service
+    pins the calling thread forever — in the REST process that permanently
+    drains Waitress's 32-thread pool and takes the whole API down until
+    restart. This facade routes each call through the client's small executor
+    and waits at most rpc_call_timeout_s, raising RPCCallTimeoutError instead
+    of hanging.
+
+    A timed-out worker thread stays parked on its own thread-local connection
+    until the service recovers; the caller is freed immediately. When every
+    worker is parked, new calls queue behind them and time out promptly — a
+    natural fail-fast while the service is wedged that self-heals on recovery.
+    """
+
+    __slots__ = ("_client",)
+
+    def __init__(self, client: "RPCClientBase"):
+        object.__setattr__(self, "_client", client)
+
+    def __getattr__(self, name):
+        client = self._client
+        proxy = client._get_live_proxy()
+        if proxy is None:
+            raise RuntimeError(f"Not connected to {client.service_name}")
+        attr = getattr(proxy, name)
+        if not callable(attr):
+            return attr
+
+        def bounded_call(*args, **kwargs):
+            return client._invoke_bounded(name, attr, args, kwargs)
+
+        bounded_call.__name__ = name
+        return bounded_call
+
+
 class RPCClientBase:
     """
     Lightweight RPC client base - connects to existing server.
@@ -130,6 +188,16 @@ class RPCClientBase:
 
     # Track instance counts per service name for sequential IDs
     _instance_counts: Dict[str, int] = {}
+
+    # Default per-call RPC timeout (seconds). Generous on purpose: the goal is
+    # to convert an INFINITE hang into a bounded failure, not to police normal
+    # latency. Override per client via rpc_call_timeout_s=, or set <= 0 to
+    # disable bounding for a client that makes legitimately unbounded calls.
+    RPC_CALL_TIMEOUT_S = 60.0
+    # Executor size per client: enough to pump concurrent healthy calls from a
+    # full Waitress pool without serializing them, small enough that parked
+    # (timed-out) workers stay cheap.
+    RPC_EXECUTOR_WORKERS = 16
 
     @classmethod
     def disconnect_all(cls, reset_counts: bool = True) -> None:
@@ -215,7 +283,8 @@ class RPCClientBase:
         connect_immediately: bool = False,
         warning_threshold: int = 2,
         local_cache_refresh_period_ms: int = None,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        rpc_call_timeout_s: float = None,
     ):
         """
         Initialize RPC client.
@@ -255,6 +324,15 @@ class RPCClientBase:
         # Direct server reference (used in LOCAL mode)
         self._direct_server = None
 
+        # Per-call timeout machinery (see _BoundedProxy). None -> class default;
+        # a value <= 0 disables bounding entirely (raw proxy behavior).
+        self._rpc_call_timeout_s = (
+            rpc_call_timeout_s if rpc_call_timeout_s is not None else self.RPC_CALL_TIMEOUT_S
+        )
+        self._bounded_proxy = None
+        self._rpc_executor: Optional[ThreadPoolExecutor] = None
+        self._rpc_executor_lock = threading.Lock()
+
         # Local cache state
         self._local_cache_refresh_period_ms = local_cache_refresh_period_ms
         self._local_cache: Dict[str, Any] = {}
@@ -293,11 +371,44 @@ class RPCClientBase:
         if self._direct_server is not None:
             return self._direct_server
 
-        # Lazy connection: connect on first use if not already connected (RPC mode only)
+        if self.connection_mode == RPCConnectionMode.RPC and self._rpc_call_timeout_s > 0:
+            # Bounded facade: every method call gets a per-call timeout.
+            if self._bounded_proxy is None:
+                self._bounded_proxy = _BoundedProxy(self)
+            return self._bounded_proxy
+
+        return self._get_live_proxy()
+
+    def _get_live_proxy(self):
+        """Return the raw proxy, connecting lazily on first use (RPC mode)."""
         if self._proxy is None and not self._connected and self.connection_mode == RPCConnectionMode.RPC:
             self.connect()
-
         return self._proxy
+
+    def _get_rpc_executor(self) -> ThreadPoolExecutor:
+        """Lazily create the small executor that carries bounded RPC calls."""
+        if self._rpc_executor is None:
+            with self._rpc_executor_lock:
+                if self._rpc_executor is None:
+                    self._rpc_executor = ThreadPoolExecutor(
+                        max_workers=self.RPC_EXECUTOR_WORKERS,
+                        thread_name_prefix=f"rpc-{self.service_name}",
+                    )
+        return self._rpc_executor
+
+    def _invoke_bounded(self, method_name: str, bound_method, args, kwargs):
+        """Run one proxy method call with the per-call timeout (see _BoundedProxy)."""
+        timeout_s = self._rpc_call_timeout_s
+        future = self._get_rpc_executor().submit(bound_method, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout_s)
+        except FuturesTimeoutError:
+            future.cancel()  # no-op if already running; the worker stays parked
+            logger.error(
+                f"{self.service_name}Client.{method_name} exceeded {timeout_s}s — "
+                f"freeing caller; worker remains parked until the service recovers"
+            )
+            raise RPCCallTimeoutError(self.service_name, method_name, timeout_s) from None
 
     def connect(self, max_retries: int = None, retry_delay: float = None) -> bool:
         """
@@ -545,6 +656,11 @@ class RPCClientBase:
         self._proxy = None
         self._connected = False
         self._direct_server = None
+        self._bounded_proxy = None
+        if self._rpc_executor is not None:
+            # Don't wait: parked workers may be blocked on a dead service.
+            self._rpc_executor.shutdown(wait=False, cancel_futures=True)
+            self._rpc_executor = None
 
         # Unregister from instance tracking
         RPCClientBase._unregister_instance(self)
@@ -679,6 +795,11 @@ class RPCClientBase:
         state['_cache_refresh_thread'] = None
         state['_cache_refresh_shutdown'] = None
 
+        # Don't pickle bounded-call machinery (executor/lock/facade are unpicklable)
+        state['_rpc_executor'] = None
+        state['_rpc_executor_lock'] = None
+        state['_bounded_proxy'] = None
+
         # Apply subclass-specific excludes/transforms
         self._prepare_state_for_pickle(state)
 
@@ -767,6 +888,11 @@ class RPCClientBase:
         self._local_cache_lock = threading.Lock()
         self._cache_refresh_shutdown = threading.Event()
         self._cache_refresh_thread = None
+
+        # Restore bounded-call machinery (recreated lazily on first use)
+        self._rpc_executor = None
+        self._rpc_executor_lock = threading.Lock()
+        self._bounded_proxy = None
 
         # Restart cache refresh daemon if it was configured and in RPC mode
         if (self._local_cache_refresh_period_ms is not None
