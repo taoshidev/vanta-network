@@ -823,7 +823,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         # 3. Fallback to subtensor for non-registered hotkeys — bounded (see __init__).
         with self._coldkey_hotkey_cache_lock:
             failed_at = self._ownership_failure_ts.get(cache_key, 0.0)
-        if time.time() - failed_at < self.OWNERSHIP_FAILURE_COOLDOWN_S:
+            in_cooldown = time.time() - failed_at < self.OWNERSHIP_FAILURE_COOLDOWN_S
+        if in_cooldown:
             logger.warning(
                 f"Ownership query for {hotkey_ss58} in failure cooldown; refusing without chain query")
             return False
@@ -842,6 +843,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             logger.info(f"Verified ownership via subtensor for {coldkey_ss58} and {hotkey_ss58}")
             return is_owner
         except FuturesTimeoutError:
+            # cancel() only prevents QUEUED work from starting; a query that is
+            # already running keeps its worker parked until the chain call
+            # returns or the socket dies. The timeout is client-side only —
+            # it frees THIS caller, it does not abort the chain request.
             future.cancel()
             logger.error(
                 f"Ownership query for {hotkey_ss58} exceeded {self.OWNERSHIP_QUERY_TIMEOUT_S}s; "
@@ -859,6 +864,17 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         """Blocking chain query; runs on the bounded ownership executor."""
         subtensor_api = self.collateral_manager.subtensor_api
         return subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
+
+    def shutdown_ownership_executor(self):
+        """Release the bounded ownership executor (operator/teardown hook).
+
+        In production this manager lives inside the ContractServer process,
+        which the orchestrator terminates with the process — a parked worker's
+        chain socket dies with it, so leaked-thread warnings at clean interpreter
+        exit are not a practical concern. This hook exists for explicit
+        teardown paths and tests.
+        """
+        self._ownership_query_executor.shutdown(wait=False, cancel_futures=True)
 
     # ==================== Test Data Injection Methods ====================
 

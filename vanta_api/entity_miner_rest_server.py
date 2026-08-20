@@ -862,13 +862,15 @@ class EntityMinerRestServer(MinerRestServer):
         """
         if not self.slack_notifier:
             return
-        threading.Thread(
-            target=self.slack_notifier.send_message,
-            args=(message,),
-            kwargs={"level": level, **kwargs},
-            daemon=True,
-            name="slack-notify",
-        ).start()
+
+        def _send():
+            try:
+                self.slack_notifier.send_message(message, level=level, **kwargs)
+            except Exception as e:
+                # Daemon threads die silently; surface delivery failures here.
+                logger.warning(f"[ENTITY-GW] Async Slack notification failed: {e}")
+
+        threading.Thread(target=_send, daemon=True, name="slack-notify").start()
 
     # ==================== SSE ====================
 
