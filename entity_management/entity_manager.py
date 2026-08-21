@@ -1146,12 +1146,16 @@ class EntityManager(ValidatorBroadcastBase):
 
                 # Prefer the end-of-week account snapshot (equity - balance) when available;
                 # fall back to the perf ledger checkpoint if no snapshot exists near end_time.
-                snapshot = get_snapshot_at(synthetic_hotkey, end_time)
+                snapshot = get_snapshot_at(synthetic_hotkey, end_time, running_unit_tests=self.running_unit_tests)
                 if snapshot is not None:
                     unrealized_pnl = snapshot.equity - snapshot.balance
                 else:
                     cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
                     unrealized_pnl = cp.unrealized_pnl if cp else 0.0
+                    logger.warning(
+                        f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
+                        f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
+                    )
                 if end_time == end_time_ms and realtime:
                     unrealized_pnl = realtime_unrealized
                 _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)
