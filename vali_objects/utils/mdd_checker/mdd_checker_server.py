@@ -72,7 +72,8 @@ class MDDCheckerServer(RPCServerBase):
             start_server=start_server,
             start_daemon=False,  # Defer until initialization complete
             daemon_interval_s=ValiConfig.MDD_CHECK_REFRESH_TIME_MS / 1000.0,  # Convert ms to seconds
-            hang_timeout_s=120.0  # MDD check can take a while
+            hang_timeout_s=120.0,  # MDD check can take a while
+            daemon_required=True,  # Drawdown elimination checks are correctness-critical; flag health as degraded if it stalls
         )
 
         # Create the MDDChecker instance that contains all business logic

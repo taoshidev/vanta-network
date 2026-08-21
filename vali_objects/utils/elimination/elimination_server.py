@@ -100,8 +100,8 @@ class EliminationServer(RPCServerBase):
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager and caches exist, so RPC calls won't fail
-        # daemon_interval_s: 5 minutes (elimination checks are moderate frequency)
-        # hang_timeout_s: 10 minutes (2x interval, prevents false alarms during startup)
+        # daemon_interval_s: 2 minutes (elimination checks are moderate frequency)
+        # hang_timeout_s: 4 minutes (2x interval, prevents false alarms during startup)
         daemon_interval_s = ValiConfig.ELIMINATION_CHECK_INTERVAL_MS // 1000
         hang_timeout_s = daemon_interval_s * 2  # 2x daemon interval s
 
@@ -113,9 +113,10 @@ class EliminationServer(RPCServerBase):
             start_server=start_server,
             start_daemon=False,  # We'll start daemon after full initialization
             daemon_interval_s=daemon_interval_s,  # 2 minutes
-            hang_timeout_s=hang_timeout_s,  # 10 minutes (prevents false alarms during startup)
+            hang_timeout_s=hang_timeout_s,  # 4 minutes (prevents false alarms during startup)
             connection_mode=connection_mode,
-            daemon_stagger_s=60
+            daemon_stagger_s=60,
+            daemon_required=True,  # Elimination checks are correctness-critical; flag health as degraded if it stalls
         )
 
         # Initial cache population
@@ -205,7 +206,8 @@ class EliminationServer(RPCServerBase):
         """Add service-specific health check details."""
         return {
             "num_eliminations": len(self._manager.eliminations),
-            "num_deregistered": sum(1 for r in self._manager.eliminations.values() if r.reason == "DEREGISTERED")
+            "num_deregistered": sum(1 for r in self._manager.eliminations.values() if r.reason == "DEREGISTERED"),
+            "last_update_ms": self._manager.get_last_update_time_ms(),
         }
 
     def is_hotkey_eliminated_rpc(self, hotkey: str) -> bool:

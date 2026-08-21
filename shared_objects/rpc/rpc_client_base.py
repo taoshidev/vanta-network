@@ -55,6 +55,54 @@ _original_socket = socket.socket
 _socket_patched = False
 
 
+class _TimeoutRPCProxy:
+    """
+    Wraps a multiprocessing manager proxy so every remote call is bounded by a timeout.
+
+    multiprocessing.managers proxy calls have no socket-level timeout - if the remote
+    server is wedged inside the handler, the call blocks forever. That freezes whatever
+    thread made the call (e.g. a daemon's _daemon_loop thread), which never dies, so
+    daemon-alive flags stay stuck True while the watchdog heartbeat goes stale with no
+    bound. Running each call on its own thread and joining with a timeout lets the
+    caller give up and raise instead of hanging forever.
+    """
+
+    def __init__(self, proxy, timeout_s: float, service_name: str):
+        self._proxy = proxy
+        self._timeout_s = timeout_s
+        self._service_name = service_name
+
+    def __getattr__(self, name):
+        remote_method = getattr(self._proxy, name)
+
+        def _call_with_timeout(*args, **kwargs):
+            result = {}
+
+            def _target():
+                try:
+                    result['value'] = remote_method(*args, **kwargs)
+                except BaseException as e:
+                    result['error'] = e
+
+            thread = threading.Thread(
+                target=_target,
+                daemon=True,
+                name=f"{self._service_name}_rpc_timeout_{name}"
+            )
+            thread.start()
+            thread.join(self._timeout_s)
+            if thread.is_alive():
+                raise TimeoutError(
+                    f"{self._service_name} RPC call '{name}' exceeded {self._timeout_s}s timeout "
+                    f"(remote server may be wedged)"
+                )
+            if 'error' in result:
+                raise result['error']
+            return result.get('value')
+
+        return _call_with_timeout
+
+
 def _patch_socket_for_nodelay():
     """
     Monkey-patch socket.socket to enable TCP_NODELAY on all TCP sockets.
@@ -215,7 +263,8 @@ class RPCClientBase:
         connect_immediately: bool = False,
         warning_threshold: int = 2,
         local_cache_refresh_period_ms: int = None,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        rpc_call_timeout_s: float = 300.0
     ):
         """
         Initialize RPC client.
@@ -235,10 +284,14 @@ class RPCClientBase:
                 - LOCAL (0): Direct mode - bypass RPC, use set_direct_server()
                 - RPC (1): Normal RPC mode - connect via network
                 Default: RPC
+            rpc_call_timeout_s: Max seconds to wait for any single remote call before
+                raising TimeoutError, so a wedged remote server can't hang the caller
+                forever (default: 300.0). Not applied in LOCAL mode.
         """
         self.connection_mode = connection_mode
         self.service_name = service_name
         self.port = port
+        self._rpc_call_timeout_s = rpc_call_timeout_s
         # Use 127.0.0.1 instead of 'localhost' to avoid IPv6/IPv4 fallback delays
         # 'localhost' can trigger ~170ms delay due to IPv6 ::1 timeout then IPv4 127.0.0.1 fallback
         self._address = ('127.0.0.1', port)
@@ -346,7 +399,10 @@ class RPCClientBase:
                 t2 = time.time()
 
                 # Get the proxy object (TCP_NODELAY now enabled via socket patch)
-                self._proxy = getattr(manager, self.service_name)()
+                raw_proxy = getattr(manager, self.service_name)()
+                self._proxy = _TimeoutRPCProxy(
+                    raw_proxy, timeout_s=self._rpc_call_timeout_s, service_name=self.service_name
+                )
                 t3 = time.time()
                 self._manager = manager
                 self._connected = True

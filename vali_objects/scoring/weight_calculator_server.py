@@ -132,7 +132,8 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
             start_daemon=False,  # We'll start daemon after full initialization
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            daemon_required=True,  # Weight calculation is correctness-critical; flag health as degraded if it stalls
         )
 
         # Start daemon if requested (deferred until all initialization complete)
@@ -202,7 +203,8 @@ class WeightCalculatorServer(RPCServerBase, CacheController):
         n_weights = len(self._manager.transformed_list)
         return {
             "num_checkpoint_results": n_results,
-            "num_weights": n_weights
+            "num_weights": n_weights,
+            "last_update_ms": self.get_last_update_time_ms(),
         }
 
     def get_checkpoint_results_rpc(self) -> List[Tuple[str, float]]:

@@ -76,7 +76,8 @@ class DebtLedgerServer(RPCServerBase):
             start_daemon=start_daemon,
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
-            daemon_stagger_s=5*60    # Stagger startup to allow perf ledger rebuild time
+            daemon_stagger_s=5*60,    # Stagger startup to allow perf ledger rebuild time
+            daemon_required=True,  # Debt ledgers are correctness-critical; flag health as degraded if it stalls
         )
 
         self.running_unit_tests = running_unit_tests

@@ -442,7 +442,7 @@ class EliminationManager(CacheController):
             self._cleanup_eliminated_miners(iteration_epoch)
 
             logger.debug("[ELIM_PROCESS] Completed successfully")
-            # self.set_last_update_time()
+            self.set_last_update_time()
 
             return self._to_slack_message()
 

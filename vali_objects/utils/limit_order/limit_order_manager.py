@@ -136,8 +136,6 @@ class LimitOrderManager(CacheController):
         )
 
         return {
-            "status": "ok",
-            "timestamp_ms": TimeUtil.now_in_millis(),
             "total_orders": total_orders,
             "unfilled_orders": unfilled_count,
             "num_trade_pairs": len(self._limit_orders)

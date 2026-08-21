@@ -30,6 +30,7 @@ Usage:
 """
 
 import traceback
+from typing import Optional
 
 
 from time_util.time_util import TimeUtil
@@ -74,6 +75,7 @@ class CoreOutputsServer(RPCServerBase):
         """
         self.running_unit_tests = running_unit_tests
         self._last_upload_hour = -1
+        self._last_success_ms: Optional[int] = None
 
         # Initialize RPCServerBase (handles RPC server lifecycle, daemon, watchdog)
         super().__init__(
@@ -86,6 +88,7 @@ class CoreOutputsServer(RPCServerBase):
             hang_timeout_s = 300.0,  # 5 minute hang timeout
             connection_mode=connection_mode,
             daemon_stagger_s=30,
+            daemon_required=True,  # Checkpoint cache freshness is correctness-critical; flag health as degraded if it stalls
         )
 
         # Create the actual CoreOutputsManager (contains all business logic)
@@ -133,11 +136,18 @@ class CoreOutputsServer(RPCServerBase):
 
             elapsed_ms = TimeUtil.now_in_millis() - time_now
             logger.info(f"CoreOutputsServer daemon: checkpoint cache refreshed in {elapsed_ms}ms")
+            self._last_success_ms = TimeUtil.now_in_millis()
 
         except Exception as e:
             logger.error(f"CoreOutputsServer daemon error: {e}")
             logger.error(traceback.format_exc())
             # Don't re-raise - let daemon continue on next iteration
+
+    def get_health_check_details(self) -> dict:
+        """Add service-specific health check details."""
+        return {
+            "last_success_ms": self._last_success_ms,
+        }
 
     # ==================== Properties (Forward Compatibility) ====================
 

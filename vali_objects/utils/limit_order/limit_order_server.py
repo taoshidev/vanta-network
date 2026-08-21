@@ -96,7 +96,8 @@ class LimitOrderServer(RPCServerBase):
             start_server=start_server,
             start_daemon=False,  # We'll start daemon after full initialization
             daemon_interval_s=0.01,
-            hang_timeout_s=120.0
+            hang_timeout_s=120.0,
+            daemon_required=True,  # Limit order fills are correctness-critical; flag health as degraded if it stalls
         )
 
         # Start daemon if requested (deferred until all initialization complete)

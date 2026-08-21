@@ -102,7 +102,8 @@ class PositionManagerServer(RPCServerBase):
             start_server=start_server,
             start_daemon=start_daemon,
             daemon_interval_s=daemon_interval_s,
-            hang_timeout_s=hang_timeout_s
+            hang_timeout_s=hang_timeout_s,
+            daemon_required=True,  # Carry fee/dividend settlement is correctness-critical; flag health as degraded if it stalls
         )
 
         logger.info("PositionManagerServer initialized")
