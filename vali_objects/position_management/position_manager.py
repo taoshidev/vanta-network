@@ -134,8 +134,6 @@ class PositionManager:
         total_open = sum(len(d) for d in self.hotkey_to_open_positions.values())
 
         return {
-            "status": "ok",
-            "timestamp_ms": TimeUtil.now_in_millis(),
             "total_positions": total_positions,
             "total_open_positions": total_open,
             "num_hotkeys": len(self.hotkey_to_positions)

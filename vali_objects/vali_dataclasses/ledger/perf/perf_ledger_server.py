@@ -91,7 +91,7 @@ class PerfLedgerServer(RPCServerBase):
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
         # daemon_interval_s: 5 minutes (perf ledger update frequency)
-        # hang_timeout_s: 10 minutes (first iteration can take 5+ min processing large datasets)
+        # hang_timeout_s: 30 minutes (first iteration can take 5+ min processing large datasets)
         super().__init__(
             service_name=ValiConfig.RPC_PERFLEDGER_SERVICE_NAME,
             port=ValiConfig.RPC_PERFLEDGER_PORT,
@@ -100,7 +100,8 @@ class PerfLedgerServer(RPCServerBase):
             start_daemon=False,  # We'll start daemon after full initialization
             daemon_interval_s=ValiConfig.PERF_LEDGER_REFRESH_TIME_MS / 1000.0,
             hang_timeout_s=1800,  # 30 minutes (heavy hotkey?)
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            daemon_required=True,  # Perf ledger updates are correctness-critical; flag health as degraded if it stalls
         )
 
         self._regenerate_all_ledgers = True  # Full rebuild on first daemon iteration
@@ -148,7 +149,8 @@ class PerfLedgerServer(RPCServerBase):
     def get_health_check_details(self) -> dict:
         """Add service-specific health check details."""
         return {
-            "num_ledgers": len(self._manager.hotkey_to_perf_bundle)
+            "num_ledgers": len(self._manager.hotkey_to_perf_bundle),
+            "last_update_ms": self._manager.get_last_update_time_ms(),
         }
 
     def update_rpc(self, testing_one_hotkey=None, regenerate_all_ledgers=False, t_ms=None) -> dict:

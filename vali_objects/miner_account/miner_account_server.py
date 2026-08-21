@@ -95,6 +95,7 @@ class MinerAccountServer(RPCServerBase):
             start_daemon=False,  # Daemon started later via orchestrator
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
+            daemon_required=True,  # Hourly snapshot is correctness-critical; flag health as degraded if it stalls
         )
 
     # ==================== RPCServerBase Abstract Methods ====================
@@ -127,8 +128,11 @@ class MinerAccountServer(RPCServerBase):
 
     def get_health_check_details(self) -> dict:
         """Add service-specific health check details."""
+        manager_health = self._manager.health_check()
         return {
-            "account_count": len(self._manager.accounts),
+            "num_accounts": manager_health["num_accounts"],
+            "num_collateral_records": manager_health["num_collateral_records"],
+            "last_snapshot_success_ms": manager_health["last_snapshot_success_ms"],
         }
 
     # ==================== Account Size Methods ====================
@@ -283,10 +287,6 @@ class MinerAccountServer(RPCServerBase):
         if account is None:
             return None
         return account.balance
-
-    def health_check(self) -> dict:
-        """Health check for monitoring."""
-        return self._manager.health_check()
 
     # ==================== Margin/Cash Processing Methods ====================
 

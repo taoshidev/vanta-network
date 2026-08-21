@@ -439,7 +439,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             try:
                 client.connect(max_retries=1, retry_delay=0.2)
                 detail = client.health_check()
-                return name, {"status": "ok", "detail": detail}
+                status = detail.get("status", "ok") if isinstance(detail, dict) else "ok"
+                return name, {"status": status, "detail": detail}
             except Exception as e:
                 try:
                     client.disconnect()

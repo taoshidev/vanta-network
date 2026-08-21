@@ -50,6 +50,7 @@ class HLFundingRateServer(RPCServerBase):
             connection_mode=connection_mode,
             daemon_interval_s=daemon_interval_s,
             hang_timeout_s=hang_timeout_s,
+            daemon_required=True,  # Funding rate freshness is correctness-critical; flag health as degraded if it stalls
         )
 
     def _get_coins(self) -> list:

@@ -63,6 +63,7 @@ class EntityCollateralServer(RPCServerBase):
             daemon_interval_s=float(ValiConfig.ENTITY_COLLATERAL_CACHE_REFRESH_S),
             hang_timeout_s=2*ValiConfig.ENTITY_COLLATERAL_CACHE_REFRESH_S,
             connection_mode=connection_mode,
+            daemon_required=True,  # Collateral cache freshness is correctness-critical; flag health as degraded if it stalls
         )
 
         logger.info("[ENTITY_COLLATERAL_SERVER] EntityCollateralServer initialized")
