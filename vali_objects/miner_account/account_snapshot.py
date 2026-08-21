@@ -9,7 +9,7 @@ that need historical account state (e.g., entity payout unrealized PnL).
 import json
 import os
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -55,7 +55,13 @@ class AccountSnapshot:
         )
 
 
-def _read_all(hotkey: str, running_unit_tests: bool = False) -> List[AccountSnapshot]:
+def read_all_snapshots(hotkey: str, running_unit_tests: bool = False) -> List[AccountSnapshot]:
+    """Return all snapshots for `hotkey` in chronological order (oldest first).
+
+    Reads and parses the whole file — callers that need multiple lookups against the
+    same hotkey (e.g. a per-week scan) should call this once and search the in-memory
+    list rather than re-reading the file per lookup.
+    """
     path = ValiBkpUtils.get_miner_snapshot_path(hotkey, running_unit_tests)
     if not os.path.exists(path):
         return []
@@ -81,30 +87,5 @@ def read_last_n(
     n = max(0, min(n, MAX_SNAPSHOT_LIMIT))
     if n == 0:
         return []
-    snapshots = _read_all(hotkey, running_unit_tests)
+    snapshots = read_all_snapshots(hotkey, running_unit_tests)
     return snapshots[-n:]
-
-
-def get_snapshot_at(
-    hotkey: str,
-    target_ms: int,
-    tolerance_ms: int = DEFAULT_TOLERANCE_MS,
-    running_unit_tests: bool = False,
-) -> Optional[AccountSnapshot]:
-    """Return the snapshot closest to `target_ms` within `tolerance_ms`, else None.
-
-    Ties are broken by preferring the earlier snapshot (never peek into the future
-    when the caller is asking for state "as of" a boundary like Monday 00:00 UTC).
-    """
-    lo = target_ms - tolerance_ms
-    hi = target_ms + tolerance_ms
-    best: Optional[AccountSnapshot] = None
-    best_delta: int = tolerance_ms + 1
-    for snap in _read_all(hotkey, running_unit_tests):
-        if snap.snapshot_ms < lo or snap.snapshot_ms > hi:
-            continue
-        delta = abs(snap.snapshot_ms - target_ms)
-        if delta < best_delta or (best is not None and delta == best_delta and snap.snapshot_ms < best.snapshot_ms):
-            best = snap
-            best_delta = delta
-    return best
