@@ -208,17 +208,6 @@ class MarketOrderManager():
                     use_nano_increment=use_nano_increment,
                 )
 
-            # Check if clamping resulted in a min_leverage breach
-            resulting_leverage = abs(position.net_leverage + leverage)
-            if resulting_leverage < trade_pair.min_leverage:
-                msg = (
-                    f"Order for {trade_pair.trade_pair_id} would leave position leverage "
-                    f"{resulting_leverage:.6f}, below minimum {trade_pair.min_leverage} "
-                    f"(binding cap: {binding_cap})"
-                )
-                logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} {msg}")
-                raise SignalException(msg)
-
         if abs(value) < 1e-9 or abs(quantity) < 1e-9:
             raise SignalException("Error processing order: 0 order size after clamping")
 
