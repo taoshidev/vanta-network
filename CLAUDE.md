@@ -151,7 +151,7 @@ The system uses a distributed RPC architecture for inter-process communication:
   - 8% end-of-day drawdown elimination threshold, measured from the highest-ever end-of-day equity (FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08)
   - Risk-adjusted performance penalties based on Sharpe, Sortino, Calmar, Omega ratios
 - **Fees**:
-  - Carry fees: 10.95% annually (crypto), 3% annually (forex); equities instead pay a 3% annual stock-borrow fee (short) or 6.6% annual margin interest on the borrowed amount (long); commodities carry no fee for standard positions. Hyperliquid-linked entity positions pay live Hyperliquid funding rates instead of the flat carry fee, regardless of asset class.
+  - Carry fees: 10.95% annually (crypto), 3% annually (forex); equities instead pay a 3% annual stock-borrow fee (short) or 6.6% annual margin interest on the borrowed amount (long). Positions in Hyperliquid-sourced trade pairs (`TradePair.src == HYPERLIQUID` — most crypto pairs, all commodities and indices, and several equities) pay live Hyperliquid funding rates instead of the flat carry fee, regardless of asset class or which miner holds the position; this is keyed on the trade pair itself, not on whether the position belongs to an entity/HL-mirrored account.
   - Spread fees: 0.03% × order value (crypto), 0.01% (equities), 0.005% (commodities); none for forex or indices. Set per asset class in `HL_FEE_BY_CATEGORY` (Hyperliquid-sourced pairs) and `TRANSACTION_FEE_RATE` (Vanta-native), which currently hold the same rates. Maker and taker are priced identically.
   - Slippage costs: Higher for high leverage and low liquidity assets
 - **Leverage Limits**:

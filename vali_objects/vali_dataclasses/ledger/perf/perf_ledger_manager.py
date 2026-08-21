@@ -98,13 +98,6 @@ class PerfLedgerManager(CacheController):
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
 
-        # HL funding rate client for HL position carry fees
-        from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
-        self._hl_funding_client = HLFundingRateClient(
-            connection_mode=connection_mode,
-            connect_immediately=False,
-        )
-
         # Every update, pick a hotkey to rebuild in case polygon 1s candle data changed.
         self.trade_pair_to_price_info = {'second':{}, 'minute':{}}
         self.portfolio_ret = None
@@ -122,7 +115,6 @@ class PerfLedgerManager(CacheController):
         self.hk_to_last_order_processed_ms = {}
         self.mode_to_n_updates = {}
         self.update_to_n_open_positions = {}
-        self._hl_funding_rates_cache: dict = {}  # (coin, position_uuid) -> funding_rates dict
         self.target_ledger_window_ms = target_ledger_window_ms
         logger.info(f"Running performance ledger manager with mode {self.parallel_mode.name}")
         if self.is_backtesting or self.parallel_mode != ParallelizationMode.SERIAL:
@@ -141,21 +133,6 @@ class PerfLedgerManager(CacheController):
             self.secrets = secrets
         else:
             self.secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
-
-    def _get_hl_funding_rates(self, position, current_time_ms: int):
-        """Fetch HL funding rates for a position if it is an HL position, otherwise return None."""
-        if not position.is_hl:
-            return None
-        coin = position.trade_pair.hl_coin
-        if not coin:
-            return None
-        try:
-            return self._hl_funding_client.get_rates_for_position(
-                coin, position.open_ms, current_time_ms
-            )
-        except Exception as e:
-            logger.warning(f"[PERF_LEDGER] Failed to fetch HL funding rates for {coin}: {e}")
-            return None
 
     @property
     def contract_manager(self):

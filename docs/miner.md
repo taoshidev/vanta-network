@@ -372,9 +372,9 @@ A carry fee is charged at each interval based on the current market value of the
 | Commodities | —          | None for standard positions      | 0%          |
 | Equities    | 24h        | See below                        | —           |
 
-Equities don't use the flat carry fee above — instead, at each UTC midnight: SHORT positions accrue a **3%/yr stock-borrow fee** on the position's market value, and LONG positions accrue **6.6%/yr margin interest** on the borrowed (margin loan) portion of the position only, not the full market value.
+The rates above apply to Vanta-native trade pairs (`TradePair.src == VANTA`). Equities don't use the flat carry fee above — instead, at each UTC midnight: SHORT positions accrue a **3%/yr stock-borrow fee** on the position's market value, and LONG positions accrue **6.6%/yr margin interest** on the borrowed (margin loan) portion of the position only, not the full market value.
 
-Hyperliquid-linked entity positions (subaccounts mirroring a real Hyperliquid account) are charged actual, live Hyperliquid funding rates instead of the flat carry fee above, regardless of asset class.
+Positions in Hyperliquid-sourced trade pairs (`TradePair.src == HYPERLIQUID`) are charged actual, live Hyperliquid funding rates instead of the flat carry fee (or the equities borrow/margin-interest fee) above, regardless of asset class. This includes most crypto perp pairs (the USDC-quoted ones; native USD-denominated crypto pairs are blocked in their favor), all commodities and indices pairs, and a subset of equities (e.g. NVDA, AAPL, COIN, MSTR — offered both as Vanta-native and as Hyperliquid-linked USDC perps).
 
 **Spread Fee (Transaction Fee):**
 

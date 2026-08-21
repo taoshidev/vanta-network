@@ -1614,9 +1614,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
     - `portfolio_return`: Portfolio return multiplier (1.0 = break-even)
     - `realized_pnl`: Net realized profit/loss during this checkpoint
     - `unrealized_pnl`: Net unrealized profit/loss during this checkpoint
-    - `spread_fee_loss`: Spread fee losses during this checkpoint
-    - `carry_fee_loss`: Carry fee losses during this checkpoint
-    - `total_fees`: Sum of all fees paid
+    - `cumulative_fees_usd`: Running total of all fees paid (carry, Hyperliquid funding, equities borrow/margin, spread/transaction) up to this checkpoint
     - `max_drawdown`: Worst loss from peak (0.985 = 1.5% drawdown)
     - `max_portfolio_value`: Best portfolio value achieved
     - `open_ms`: Time with open positions (milliseconds)
