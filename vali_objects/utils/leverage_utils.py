@@ -10,7 +10,7 @@ from vali_objects.vali_dataclasses.position import Position
 # Legacy positional caps for XAUUSD/XAGUSD (FOREX-tagged commodity pairs). These pairs will
 # be deprecated as the HL-sourced commodity lineup (GOLDUSDC, SILVERUSDC, etc.) takes over
 # the commodities category; this block goes away with them.
-_LEGACY_XAU_XAG_TIER_POSITIONAL = {1: 1.0, 2: 1.0, 3: 1.5, 4: 2.0}
+_LEGACY_XAU_XAG_TIER_POSITIONAL = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
 
 # Reg T overnight margin caps equity SPOT at 2x regardless of subaccount tier.
 REG_T_OVERNIGHT_EQUITY_SPOT_CAP = 2.0

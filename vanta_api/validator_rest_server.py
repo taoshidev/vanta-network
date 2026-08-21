@@ -2866,8 +2866,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     _ENDPOINT_TIER_POSITIONAL_LEVERAGE = {
         1: {MinerAssetClass.HL_ALL: 0.5},
         2: {MinerAssetClass.HL_ALL: 0.5},
-        3: {MinerAssetClass.HL_ALL: 1.5},
-        4: {MinerAssetClass.HL_ALL: 2.0},
+        3: {MinerAssetClass.HL_ALL: 0.5},
+        4: {MinerAssetClass.HL_ALL: 0.5},
     }
 
     _TRADEABLE_CATEGORIES: dict = {}

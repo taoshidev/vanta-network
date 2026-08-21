@@ -461,10 +461,10 @@ class ValiConfig:
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
 
     # Per-tier multiplier applied to pair.subaccount_tier_base_leverage
-    # (see leverage_utils.get_tier_positional_leverage). Tier 2 == Tier 1: funded and
-    # challenge accounts share the same per-pair leverage limits. Tiers 3/4 keep the
-    # legacy linear curve; unreachable while MAX_SUBACCOUNT_ACCOUNT_SIZE < $200K.
-    SUBACCOUNT_TIER_LEVERAGE_MULTIPLIER = {1: 1.0, 2: 1.0, 3: 3.0, 4: 4.0}
+    # (see leverage_utils.get_tier_positional_leverage). Every tier carries the same
+    # limits today; the higher tiers are placeholders, so re-review the leverage schedule
+    # before making any tier differ.
+    SUBACCOUNT_TIER_LEVERAGE_MULTIPLIER = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
 
     # Cap leverage across an individual miner's entire portfolio, per pair.
     # Keyed on (asset class, instrument type).
@@ -488,7 +488,8 @@ class ValiConfig:
     #   *_BY_ASSET_CLASS : account-wide multiplier from the subaccount's own asset_class field
     #                      (which can be HL_ALL). Keyed by single MinerAssetClass.
     # XAUUSD/XAGUSD positions land in the FOREX subaccount asset_class bucket.
-    # Equity portfolio cap stays 2x from Tier 3 onward in the SPOT column (Reg T overnight).
+    # All four tiers carry the same caps today; the higher tiers are placeholders, so
+    # re-review the leverage schedule before making any tier differ.
     TIER_PORTFOLIO_LEVERAGE_BY_PAIR = {
         1: {
             (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 5.0,
@@ -502,7 +503,6 @@ class ValiConfig:
             (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 3.0,
             (TradePairCategory.COMMODITIES, InstrumentType.PERP): 3.0,
         },
-        # Tier 2 mirrors Tier 1: funded and challenge accounts share the same limits.
         2: {
             (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 5.0,
             (TradePairCategory.CRYPTO,      InstrumentType.PERP): 5.0,
@@ -516,28 +516,28 @@ class ValiConfig:
             (TradePairCategory.COMMODITIES, InstrumentType.PERP): 3.0,
         },
         3: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 3.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 3.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 15.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 15.0,
+            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 5.0,
+            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 5.0,
+            (TradePairCategory.FOREX,       InstrumentType.SPOT): 30.0,
+            (TradePairCategory.FOREX,       InstrumentType.PERP): 30.0,
             (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 3.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 15.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 3.0,
+            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 2.0,
+            (TradePairCategory.INDICES,     InstrumentType.SPOT): 10.0,
+            (TradePairCategory.INDICES,     InstrumentType.PERP): 10.0,
             (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 3.0,
             (TradePairCategory.COMMODITIES, InstrumentType.PERP): 3.0,
         },
         4: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 4.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 4.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 20.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 20.0,
+            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 5.0,
+            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 5.0,
+            (TradePairCategory.FOREX,       InstrumentType.SPOT): 30.0,
+            (TradePairCategory.FOREX,       InstrumentType.PERP): 30.0,
             (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 4.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 20.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 4.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 4.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 4.0,
+            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 2.0,
+            (TradePairCategory.INDICES,     InstrumentType.SPOT): 10.0,
+            (TradePairCategory.INDICES,     InstrumentType.PERP): 10.0,
+            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 3.0,
+            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 3.0,
         },
     }
 
@@ -547,16 +547,16 @@ class ValiConfig:
     TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY = {
         1: {TradePairCategory.CRYPTO: 5.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 3.0},
         2: {TradePairCategory.CRYPTO: 5.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 3.0},
-        3: {TradePairCategory.CRYPTO: 3.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 8.0,  TradePairCategory.COMMODITIES: 3.0},
-        4: {TradePairCategory.CRYPTO: 4.0, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 4.0},
+        3: {TradePairCategory.CRYPTO: 5.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 3.0},
+        4: {TradePairCategory.CRYPTO: 5.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 3.0},
     }
     # FOREX here governs regular miners only: an FX subaccount draws on the FX class cap
     # above instead (MinerAccount.portfolio_cap carves FX out of the cross-asset pool).
     TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
         1: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0,  MinerAssetClass.ALL_MARKETS: 10.0},
         2: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 10.0},
-        3: {MinerAssetClass.CRYPTO: 3.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 18.0},
-        4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
+        3: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 10.0},
+        4: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 10.0},
     }
 
     # Collateral limits

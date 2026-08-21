@@ -162,17 +162,18 @@ class TestGetTierPositionalLeverage(unittest.TestCase):
             2.5 * 1,
         )
 
-    def test_equity_spot_capped_by_reg_t(self):
-        # NVDA: EQUITIES SPOT base = 1.0; tier 3 -> 1.0 × 3 = 3.0 clips to the 2.0 cap.
-        self.assertEqual(
-            get_tier_positional_leverage(4, TradePair.NVDA),
-            REG_T_OVERNIGHT_EQUITY_SPOT_CAP,
-        )
+    def test_equity_spot_never_exceeds_reg_t(self):
+        # Equity SPOT must stay within the Reg-T overnight margin at every tier. The guard
+        # is dormant while base × multiplier lands below it; this pins the invariant.
+        for tier in (1, 2, 3, 4):
+            with self.subTest(tier=tier):
+                self.assertLessEqual(
+                    get_tier_positional_leverage(tier, TradePair.NVDA),
+                    REG_T_OVERNIGHT_EQUITY_SPOT_CAP,
+                )
 
     def test_equity_perp_not_capped_by_reg_t(self):
         # HL equity perps are PERP, not SPOT — Reg-T should NOT apply.
-        # NVDAUSDC: EQUITIES PERP base = 1.0; tier 4 -> 4.0, above the Reg-T value, but
-        # we verify the cap doesn't fire by checking the code path: pump the base manually.
         # Use the live config value as-is; assert base × tier multiplier with no clip.
         base = TradePair.NVDAUSDC.subaccount_tier_base_leverage
         for tier in (1, 2, 3, 4):
