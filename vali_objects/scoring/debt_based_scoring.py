@@ -299,11 +299,11 @@ class DebtBasedScoring:
         realtime_unrealized_pnl = 0
         for position in positions:
             orders.extend(order for order in position.orders if order.processed_ms < end_time_ms)
-            fees.extend(fee for fee in position.fee_history if fee["time_ms"] < end_time_ms)
+            fees.extend(fee for fee in position.fee_history if fee.time_ms < end_time_ms)
             realtime_unrealized_pnl += position.unrealized_pnl
 
         orders.sort(key=lambda x: x.processed_ms)
-        fees.sort(key=lambda x: x["time_ms"])
+        fees.sort(key=lambda x: x.time_ms)
         if not orders:
             return []
 
@@ -340,11 +340,11 @@ class DebtBasedScoring:
                 payout_eligible_pnl_penalized += _payout_pnl * order_penalty if _payout_pnl > 0 else _payout_pnl
 
                 order_idx += 1
-            while fee_idx < len(fees) and fees[fee_idx]["time_ms"] < week_end_ms:
-                _payout_fee = fees[fee_idx]["amount"] if fees[fee_idx]["time_ms"] > start_time_ms else 0
-                weekly_pnl_raw -= fees[fee_idx]["amount"]
+            while fee_idx < len(fees) and fees[fee_idx].time_ms < week_end_ms:
+                _payout_fee = fees[fee_idx].amount if fees[fee_idx].time_ms > start_time_ms else 0
+                weekly_pnl_raw -= fees[fee_idx].amount
                 payout_eligible_pnl_raw -= _payout_fee
-                weekly_pnl_penalized -= fees[fee_idx]["amount"]
+                weekly_pnl_penalized -= fees[fee_idx].amount
                 payout_eligible_pnl_penalized -= _payout_fee
                 fee_idx += 1
 

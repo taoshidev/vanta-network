@@ -1098,13 +1098,13 @@ class EntityManager(ValidatorBroadcastBase):
                     if order.processed_ms < end_time_ms:
                         orders.append(order)
                 for fee in position.fee_history:
-                    if fee["time_ms"] < end_time_ms:
+                    if fee.time_ms < end_time_ms:
                         fees.append(fee)
 
                 realtime_unrealized += position.unrealized_pnl
 
             orders.sort(key=lambda x: x.processed_ms)
-            fees.sort(key=lambda x: x["time_ms"])
+            fees.sort(key=lambda x: x.time_ms)
             if not orders:
                 return EMPTY_RESPONSE
 
@@ -1139,8 +1139,8 @@ class EntityManager(ValidatorBroadcastBase):
                     if orders[idx_order].realized_pnl != 0:
                         week_orders.append(orders[idx_order])
                     idx_order += 1
-                while idx_fee < len(fees) and fees[idx_fee]["time_ms"] < end_time:
-                    running_balance -= fees[idx_fee]["amount"]
+                while idx_fee < len(fees) and fees[idx_fee].time_ms < end_time:
+                    running_balance -= fees[idx_fee].amount
                     idx_fee += 1
 
                 # Use perf ledger instead of delayed debt ledger

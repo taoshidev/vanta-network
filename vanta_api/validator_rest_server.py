@@ -57,6 +57,7 @@ from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.vali_dataclasses.fee_event import FeeType
 from vali_objects.vali_dataclasses.order import Order
 from vanta_api.base_rest_server import BaseRestServer
 from vanta_api.nonce_manager import NonceManager
@@ -1999,10 +2000,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': f"Order {edit['order_uuid']} not found in position"}), 404
 
             # Validate all fee_history edits before applying any
-            fee_index = {(f['time_ms'], f['fee_type']): i for i, f in enumerate(position.fee_history)}
+            fee_index = {(f.time_ms, f.fee_type): i for i, f in enumerate(position.fee_history)}
             for fee_edit in fee_edits:
                 if 'time_ms' not in fee_edit or 'fee_type' not in fee_edit or 'amount' not in fee_edit:
                     return jsonify({'error': 'Each fee_history entry must have time_ms, fee_type, and amount'}), 400
+                try:
+                    fee_edit['fee_type'] = FeeType(fee_edit['fee_type'])
+                except ValueError:
+                    return jsonify({'error': f"Invalid fee_type: {fee_edit['fee_type']}"}), 400
                 key = (fee_edit['time_ms'], fee_edit['fee_type'])
                 if key not in fee_index:
                     return jsonify({'error': f"Fee not found: time_ms={fee_edit['time_ms']}, fee_type={fee_edit['fee_type']}"}), 404
@@ -2044,7 +2049,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Apply fee_history edits (zero out amount, preserve timestamp anchor)
             for fee_edit in fee_edits:
                 key = (fee_edit['time_ms'], fee_edit['fee_type'])
-                position.fee_history[fee_index[key]]['amount'] = fee_edit['amount']
+                position.fee_history[fee_index[key]].amount = fee_edit['amount']
 
             position.rebuild_position_with_updated_orders()
 

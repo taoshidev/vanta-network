@@ -13,6 +13,7 @@ from time_util.time_util import TimeUtil, timeme, MS_IN_1_HOUR
 from vali_objects.exceptions.corrupt_data_exception import ValiBkpCorruptDataException
 from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMissingException
 from vali_objects.position_management.position_utils import PositionUtils
+from vali_objects.trade_pair import TradePairSource
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
@@ -1157,8 +1158,8 @@ class PositionManager:
 
         logger.info(f'Removed {n_price_sources_removed} price sources from old data.')
 
-    def _get_hl_funding_rates(self, position, current_time_ms: int):
-        if not position.is_hl:
+    def _get_hl_funding_rates(self, position: Position, current_time_ms: int):
+        if position.trade_pair.src != TradePairSource.HYPERLIQUID:
             return None
         coin = position.trade_pair.hl_coin
         if not coin:
@@ -1184,13 +1185,11 @@ class PositionManager:
         for hotkey, positions_dict in self.hotkey_to_positions.items():
             hotkey_fee = 0.0
             for _, position in positions_dict.items():
-                if position.is_closed_position and position.close_ms < recent_cutoff_ms:
+                if position.is_closed_position and position.close_ms and position.close_ms < recent_cutoff_ms:
                     continue
-                if position.trade_pair.is_equities:
-                    fee = position.refresh_equities_fee_usd(time_ms)
-                else:
-                    hl_fr = self._get_hl_funding_rates(position, time_ms)
-                    fee = position.refresh_carry_fee_usd(time_ms, hl_funding_rates=hl_fr)
+
+                hl_funding_rates = self._get_hl_funding_rates(position, time_ms)
+                fee = position.refresh_position_fee_usd(time_ms, hl_funding_rates=hl_funding_rates)
 
                 if fee > 0:
                     logger.info(

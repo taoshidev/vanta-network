@@ -98,13 +98,6 @@ class PerfLedgerManager(CacheController):
         # Create own LivePriceFetcherClient (forward compatibility - no parameter passing)
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
 
-        # HL funding rate client for HL position carry fees
-        from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
-        self._hl_funding_client = HLFundingRateClient(
-            connection_mode=connection_mode,
-            connect_immediately=False,
-        )
-
         # Every update, pick a hotkey to rebuild in case polygon 1s candle data changed.
         self.trade_pair_to_price_info = {'second':{}, 'minute':{}}
         self.portfolio_ret = None
@@ -122,7 +115,6 @@ class PerfLedgerManager(CacheController):
         self.hk_to_last_order_processed_ms = {}
         self.mode_to_n_updates = {}
         self.update_to_n_open_positions = {}
-        self._hl_funding_rates_cache: dict = {}  # (coin, position_uuid) -> funding_rates dict
         self.target_ledger_window_ms = target_ledger_window_ms
         logger.info(f"Running performance ledger manager with mode {self.parallel_mode.name}")
         if self.is_backtesting or self.parallel_mode != ParallelizationMode.SERIAL:
@@ -141,21 +133,6 @@ class PerfLedgerManager(CacheController):
             self.secrets = secrets
         else:
             self.secrets = ValiUtils.get_secrets(running_unit_tests=self.running_unit_tests)
-
-    def _get_hl_funding_rates(self, position, current_time_ms: int):
-        """Fetch HL funding rates for a position if it is an HL position, otherwise return None."""
-        if not position.is_hl:
-            return None
-        coin = position.trade_pair.hl_coin
-        if not coin:
-            return None
-        try:
-            return self._hl_funding_client.get_rates_for_position(
-                coin, position.open_ms, current_time_ms
-            )
-        except Exception as e:
-            logger.warning(f"[PERF_LEDGER] Failed to fetch HL funding rates for {coin}: {e}")
-            return None
 
     @property
     def contract_manager(self):
@@ -1164,7 +1141,7 @@ class PerfLedgerManager(CacheController):
             for positions_list in tp_to_historical_positions.values():
                 for pos in positions_list:
                     _all_fee_events.extend(pos.fee_history)
-            _all_fee_events.sort(key=lambda e: e["time_ms"])
+            _all_fee_events.sort(key=lambda e: e.time_ms)
 
         # Check if the while loop will execute at all
         if start_time_ms + accumulated_time_ms >= end_time_ms:
@@ -1239,8 +1216,8 @@ class PerfLedgerManager(CacheController):
             )
 
             if account_size is not None:
-                while _fee_cursor < len(_all_fee_events) and _all_fee_events[_fee_cursor]["time_ms"] <= t_ms:
-                    _cumulative_fees += _all_fee_events[_fee_cursor]["amount"]
+                while _fee_cursor < len(_all_fee_events) and _all_fee_events[_fee_cursor].time_ms <= t_ms:
+                    _cumulative_fees += _all_fee_events[_fee_cursor].amount
                     _fee_cursor += 1
                 _tp_cumulative_fees = _cumulative_fees
             else:
@@ -1684,7 +1661,7 @@ class PerfLedgerManager(CacheController):
                     hotkeys_with_no_positions.add(k)
             for k in hotkeys_with_no_positions:
                 del hotkey_to_positions[k]
-            logger.info('PERF LEDGERS TOTAL N POSITIONS IN MEMORY: ' + str(n_positions_total), 'TOTAL N HOTKEYS IN MEMORY: ' + str(n_hotkeys_total))
+            logger.info(f'PERF LEDGERS TOTAL N POSITIONS IN MEMORY: {n_positions_total} TOTAL N HOTKEYS IN MEMORY: {n_hotkeys_total}')
 
         return hotkey_to_positions, hotkeys_with_no_positions
 
