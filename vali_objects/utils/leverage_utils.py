@@ -55,10 +55,6 @@ def get_portfolio_caps(
       - overall_cap_multiplier limits total subaccount exposure across all classes; this
         is designed to be strictly tighter than the sum of per-class caps
 
-    FOREX is the exception: FX exposure is governed by its per-class cap alone and does not
-    consume the overall cap (see MinerAccount.portfolio_cap), so for a FOREX
-    `trade_pair_category` the overall value does not apply.
-
     For single-class subaccounts, both return values equal the same per-class multiplier so
     the caller's overall-cap check is a no-op (it can apply the same two-gate logic blindly).
 
@@ -68,7 +64,7 @@ def get_portfolio_caps(
     """
     tier = get_leverage_tier(miner_bucket, account_size)
     per_class_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier].get(trade_pair_category, 1.0)
-    overall_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
+    overall_cap = ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
     return per_class_cap, overall_cap
 
 def get_max_order_size(
@@ -90,16 +86,10 @@ def get_max_order_size(
         max_position_leverage = trade_pair.max_leverage
 
     per_pair_room = account.balance * max_position_leverage - abs(position.net_value)
-    # FX draws on its own cap for subaccounts; everything else on the cross-asset cap.
-    portfolio_room, cap_multiplier = account.portfolio_cap(trade_pair.trade_pair_category)
-    cap_label = (
-        f"FX portfolio cap {cap_multiplier}x"
-        if account.fx_carved_out and trade_pair.trade_pair_category == TradePairCategory.FOREX
-        else f"overall portfolio cap {cap_multiplier}x"
-    )
+    portfolio_room = account.buying_power
     limits = [
         (per_pair_room,  f"per pair cap {max_position_leverage}x"),
-        (portfolio_room, cap_label),
+        (portfolio_room, f"overall portfolio cap {account.multiplier}x"),
     ]
 
     if account.miner_bucket and account.miner_bucket.is_subaccount:
@@ -115,8 +105,8 @@ def get_max_order_size(
     max_value, binding_cap = min(limits, key=lambda x: x[0])
 
     transaction_fee_rate = trade_pair.transaction_fee_rate()
-    if max_value * (1 + transaction_fee_rate * cap_multiplier) > portfolio_room:
-        max_value = max_value / (1 + transaction_fee_rate * cap_multiplier)
+    if max_value * (1 + transaction_fee_rate * account.multiplier) > portfolio_room:
+        max_value = max_value / (1 + transaction_fee_rate * account.multiplier)
 
     return max(0.0, max_value), binding_cap
 

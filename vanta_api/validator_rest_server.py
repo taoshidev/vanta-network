@@ -2942,7 +2942,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'timestamp': TimeUtil.now_in_millis(),
         }
 
-        response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
+        response_payload['max_portfolio_usd'] = account_size * ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
         # 0 for classes this asset class cannot trade — Hyperliquid lists no forex pairs, so
         # an HL_ALL account has no FX capacity to report.
         tradeable = self._tradeable_categories(asset_class)

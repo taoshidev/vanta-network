@@ -485,11 +485,12 @@ class ValiConfig:
     # semantically two different things:
     #   *_BY_PAIR        : per-pair multiplier used when validating an incoming order in
     #                      market_order_manager. Keyed on (asset class, instrument type).
-    #   *_BY_ASSET_CLASS : account-wide multiplier from the subaccount's own asset_class field
-    #                      (which can be HL_ALL). Keyed by single MinerAssetClass.
+    #   *_BY_ASSET_CLASS : account-wide multiplier from the account's own asset_class field
+    #                      (which can be HL_ALL). Keyed by single MinerAssetClass. Two tables:
+    #                      regular miners vs SUBACCOUNT_* (split on miner_bucket.is_subaccount).
     # XAUUSD/XAGUSD positions land in the FOREX subaccount asset_class bucket.
-    # All four tiers carry the same caps today; the higher tiers are placeholders, so
-    # re-review the leverage schedule before making any tier differ.
+    # The subaccount tables carry the same caps in all four tiers today; the higher tiers
+    # are placeholders, so re-review the leverage schedule before making any tier differ.
     TIER_PORTFOLIO_LEVERAGE_BY_PAIR = {
         1: {
             (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 5.0,
@@ -543,20 +544,29 @@ class ValiConfig:
 
     # Single-class per-category sub-caps. Multi-class subaccounts (HL_ALL, ALL_MARKETS) reuse
     # these per-class entries for sub-cap enforcement, and pull their overall cross-class cap
-    # from the HL_ALL/ALL_MARKETS entries in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS below.
+    # from the HL_ALL/ALL_MARKETS entries in SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS.
     TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY = {
         1: {TradePairCategory.CRYPTO: 5.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 3.0},
         2: {TradePairCategory.CRYPTO: 5.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 3.0},
         3: {TradePairCategory.CRYPTO: 5.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 3.0},
         4: {TradePairCategory.CRYPTO: 5.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 3.0},
     }
-    # FOREX here governs regular miners only: an FX subaccount draws on the FX class cap
-    # above instead (MinerAccount.portfolio_cap carves FX out of the cross-asset pool).
+    # Regular (non-subaccount) miners only — they land in tiers 2-3 by collateral account
+    # size. Subaccounts use SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS below.
     TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
-        1: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0,  MinerAssetClass.ALL_MARKETS: 10.0},
-        2: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 10.0},
-        3: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 10.0},
-        4: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 10.0},
+        1: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 5.0,  MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 4.0,  MinerAssetClass.ALL_MARKETS: 6.0},
+        2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.5, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 7.0, MinerAssetClass.ALL_MARKETS: 12.0},
+        3: {MinerAssetClass.CRYPTO: 3.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 18.0},
+        4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
+    }
+    # Subaccount cross-class portfolio cap: one pool, FX included. Single-class rows equal
+    # the class cap in TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY (the overall gate is a no-op
+    # there); HL_ALL has no FX and stays 10x. All four tiers are the same today (placeholders).
+    SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
+        1: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 30.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 30.0},
+        2: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 30.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 30.0},
+        3: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 30.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 30.0},
+        4: {MinerAssetClass.CRYPTO: 5.0, MinerAssetClass.FOREX: 30.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 30.0},
     }
 
     # Collateral limits

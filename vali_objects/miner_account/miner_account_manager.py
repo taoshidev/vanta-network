@@ -72,10 +72,7 @@ class MinerAccount:
     """Per-miner account state. Unified source of truth for account data."""
     miner_hotkey: str
     total_realized_pnl: float = 0.0     # Cumulative realized PNL from closed trades
-    # Total leveraged USD value of open positions, FX and non-FX combined. Still exact, but
-    # no single cap governs the total now that FX is capped separately — compare against a
-    # cap per pool, via capital_used_fx / capital_used_non_fx.
-    capital_used: float = 0.0
+    capital_used: float = 0.0            # Total leveraged USD value of open positions
     total_borrowed_amount: float = 0.0   # Total margin loans outstanding (equities only)
     total_fees_paid: float = 0.0         # Cumulative fees paid (transaction, funding, interest, ...)
     total_dividend_income: float = 0.0   # Net dividend income
@@ -108,125 +105,30 @@ class MinerAccount:
 
     @property
     def buying_power(self) -> float:
-        """The pre-carve-out formula over the whole book, kept for backward compatibility.
-
-        FX exposure is charged against the cross-asset cap, which no longer governs it, so
-        this matches no live cap and lands below the room actually available. Use
-        `buying_power_fx` / `buying_power_non_fx`.
-        """
+        """Available buying power"""
         if self.asset_class == MinerAssetClass.EQUITIES:
             # balance - cash used
             return (self.balance - (self.capital_used - self.total_borrowed_amount)) * self.multiplier
-        return self.balance * self.multiplier - self.capital_used
+        else:
+            return self.balance * self.multiplier - self.capital_used
 
     @property
     def multiplier(self) -> float:
-        """Subaccount-wide portfolio cap multiplier used by `buying_power`.
+        """Account-wide portfolio cap multiplier used by `buying_power`.
 
-        Returns TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
-        subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling; per-class
-        sub-caps are enforced separately at order entry via get_portfolio_caps.
+        Subaccounts read SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS; regular miners
+        read TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS. For multi-class subaccounts (HL_ALL,
+        ALL_MARKETS) this is the cross-class overall ceiling; per-class sub-caps are
+        enforced separately at order entry via get_portfolio_caps.
         """
         if not self.asset_class:
             return 1
 
         from vali_objects.utils.leverage_utils import get_leverage_tier
         tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
+        if self.miner_bucket and self.miner_bucket.is_subaccount:
+            return ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
         return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
-
-    @property
-    def fx_has_access(self) -> bool:
-        """True if this asset class can trade FX at all.
-
-        HL_ALL is absent because Hyperliquid lists no forex pairs — add it here if that
-        changes. Membership is by value rather than a MinerAssetClass method call so this
-        still resolves for a TradePairCategory-typed asset_class (the two str enums share
-        values); tests construct accounts that way.
-        """
-        return self.asset_class in (MinerAssetClass.FOREX, MinerAssetClass.ALL_MARKETS)
-
-    @property
-    def fx_carved_out(self) -> bool:
-        """FX gets its own pool, outside the cross-asset portfolio cap.
-
-        FX and non-FX draw on separate pools: neither consumes the other's room. Applies to
-        subaccounts that can actually trade FX; regular miners and FX-less asset classes keep
-        a single cross-asset cap covering all exposure.
-        """
-        return bool(self.miner_bucket and self.miner_bucket.is_subaccount and self.fx_has_access)
-
-    @property
-    def capital_used_fx(self) -> float:
-        """Capital deployed in FX. Always 0 when FX is not carved out."""
-        if not self.fx_carved_out:
-            return 0.0
-        return self.capital_used_by_class.get(TradePairCategory.FOREX, 0.0)
-
-    @property
-    def capital_used_non_fx(self) -> float:
-        """Capital deployed outside FX. Equals `capital_used` when FX is not carved out."""
-        return max(0.0, self.capital_used - self.capital_used_fx)
-
-    @property
-    def fx_multiplier(self) -> float:
-        """FX class cap multiplier — the portfolio cap for FX exposure once carved out."""
-        if not self.asset_class:
-            return 1
-
-        from vali_objects.utils.leverage_utils import get_leverage_tier
-        tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
-        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier].get(TradePairCategory.FOREX, 1.0)
-
-    @property
-    def capital_used_untracked(self) -> float:
-        """Exposure `capital_used_by_class` cannot account for (pre-breakdown checkpoints)."""
-        return max(0.0, self.capital_used - sum(self.capital_used_by_class.values()))
-
-    @property
-    def buying_power_fx(self) -> float:
-        """Room left in the FX pool. 0 for accounts with no separate FX pool.
-
-        Unattributed exposure is charged here too: without it, an account whose per-class
-        breakdown is missing would keep a full FX allowance on top of FX it already holds.
-        It is already charged to the non-FX pool via `capital_used_non_fx`, so a missing
-        breakdown costs room in both pools rather than granting it in either.
-        """
-        if not self.fx_carved_out:
-            return 0.0
-        return (self.balance * self.fx_multiplier
-                - self.capital_used_fx
-                - self.capital_used_untracked)
-
-    @property
-    def buying_power_non_fx(self) -> float:
-        """Room left in the cross-asset pool. Covers all exposure when FX is not carved out.
-
-        0 for a FOREX subaccount: it has no non-FX access, so it has no cross-asset pool.
-        """
-        if self.fx_carved_out and self.asset_class == MinerAssetClass.FOREX:
-            return 0.0
-        if self.asset_class == MinerAssetClass.EQUITIES:
-            # balance - cash used
-            return (self.balance - (self.capital_used - self.total_borrowed_amount)) * self.multiplier
-        return self.balance * self.multiplier - self.capital_used_non_fx
-
-    def portfolio_cap(self, trade_pair_category: Optional[TradePairCategory] = None) -> tuple[float, float]:
-        """Return (remaining_room_usd, multiplier) of the portfolio cap applying to this order.
-
-        FX orders on subaccounts draw on the FX cap; everything else on the cross-asset cap.
-
-        XAUUSD/XAGUSD are tagged TradePairCategory.FOREX but are commodities. They are fully
-        blocked today, so they never reach this path. Reclassify them before unblocking —
-        otherwise they draw on the FX cap, which is far looser than the commodity one.
-        """
-        if trade_pair_category is None:
-            # Category unknown: fall back to the legacy single pool over the whole book.
-            # Routing to the non-FX pool instead would reject every order from an FX-only
-            # subaccount, whose non-FX pool is 0 by definition.
-            return self.buying_power, self.multiplier
-        if self.fx_carved_out and trade_pair_category == TradePairCategory.FOREX:
-            return self.buying_power_fx, self.fx_multiplier
-        return self.buying_power_non_fx, self.multiplier
 
     @property
     def account_size(self) -> float:
@@ -290,15 +192,6 @@ class MinerAccount:
             'capital_used': self.capital_used,
             'balance': self.balance,
             'buying_power': self.buying_power,
-            # FX is capped separately from the cross-asset pool for subaccounts that can
-            # trade it, so the two pools are reported explicitly. Pair fx with fx and
-            # non_fx with non_fx; `capital_used` above is the total across both and
-            # `buying_power` is a legacy number matching no live cap. With no separate FX
-            # pool the fx values are 0 and the non_fx pair covers everything.
-            'capital_used_fx': self.capital_used_fx,
-            'capital_used_non_fx': self.capital_used_non_fx,
-            'buying_power_fx': self.buying_power_fx,
-            'buying_power_non_fx': self.buying_power_non_fx,
             'asset_class': self.asset_class.value if self.asset_class else None,
             'total_borrowed_amount': self.total_borrowed_amount,
             'total_fees_paid': self.total_fees_paid,
@@ -327,10 +220,6 @@ class MinerAccount:
             'total_borrowed_amount': self.total_borrowed_amount,
             'total_fees_paid': self.total_fees_paid,
             'buying_power': self.buying_power,
-            'capital_used_fx': self.capital_used_fx,
-            'capital_used_non_fx': self.capital_used_non_fx,
-            'buying_power_fx': self.buying_power_fx,
-            'buying_power_non_fx': self.buying_power_non_fx,
             'max_return': self.max_return,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
@@ -922,11 +811,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         with self._accounts_lock:
             tolerance = 0.001  # floating point errors
-            portfolio_room, cap_multiplier = account.portfolio_cap(trade_pair_category)
-            needed = order_value_usd + fee_usd * cap_multiplier
-            if needed > portfolio_room + tolerance:
+            if order_value_usd + fee_usd * account.multiplier > account.buying_power + tolerance:
                 raise SignalException(
-                    f"Insufficient buying power. Need ${needed:.2f}, have ${portfolio_room:.2f}"
+                    f"Insufficient buying power. Need ${order_value_usd + fee_usd * account.multiplier:.2f}, have ${account.buying_power:.2f}"
                 )
 
             if account.asset_class == MinerAssetClass.EQUITIES and borrowed_amount > 0:
@@ -941,12 +828,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             self._save_accounts_to_disk()
 
-            # Log the pool this order was charged to, not account.buying_power — for an FX
-            # order on a multi-class subaccount that is the pool that did not move.
-            charged_room, _ = account.portfolio_cap(trade_pair_category)
             logger.info(
                 f"[PROCESS ORDER BUY {hotkey}] ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
-                f"buying_power: ${charged_room:.2f}, borrowed: ${borrowed_amount:.2f}"
+                f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
 
     def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0) -> None:
