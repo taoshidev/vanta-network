@@ -144,6 +144,9 @@ class ChallengePeriodServer(RPCServerBase):
     def get_miner_bucket_rpc(self, hotkey: str, timestamp_ms: int | None = None) -> MinerBucket | None:
         return self._manager.get_miner_bucket(hotkey, timestamp_ms)
 
+    def get_miner_buckets_rpc(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, MinerBucket | None]:
+        return self._manager.get_miner_buckets(hotkeys, timestamp_ms)
+
     def get_miner_start_time_rpc(self, hotkey: str) -> int | None:
         return self._manager.get_miner_start_time(hotkey)
 

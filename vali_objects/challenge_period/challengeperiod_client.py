@@ -74,6 +74,10 @@ class ChallengePeriodClient(RPCClientBase):
         """Get the bucket of a miner, optionally at a specific timestamp."""
         return self._server.get_miner_bucket_rpc(hotkey, timestamp_ms)
 
+    def get_miner_buckets(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, MinerBucket | None]:
+        """Get buckets for multiple miners in one call."""
+        return self._server.get_miner_buckets_rpc(hotkeys, timestamp_ms)
+
     def get_miner_start_time(self, hotkey: str) -> int | None:
         """Get the start time of a miner's current bucket."""
         return self._server.get_miner_start_time_rpc(hotkey)

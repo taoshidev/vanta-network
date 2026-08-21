@@ -21,7 +21,6 @@ from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
-from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from shared_objects.locks.position_lock_client import PositionLockClient
 from shared_objects.log import logger
@@ -39,7 +38,6 @@ class MarketOrderManager():
 
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._live_price_client = LivePriceFetcherClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
-        self._entity_collateral_client = EntityCollateralClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests, connect_immediately=False)
         self._position_client = PositionManagerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
 
@@ -241,12 +239,6 @@ class MarketOrderManager():
         if not order.value or not order.quantity:
             raise SignalException(f"Order value and quantity must be set before applying order. value={order.value}, quantity={order.quantity}")
 
-        if is_buy:
-            allowed, reason = self._entity_collateral_client.try_gate_position_open(hotkey, order.value)
-            if not allowed:
-                logger.error(f"{hotkey} {order_uuid} Entity cross-margin check failed for subaccount [{hotkey}]: {reason}")
-                raise SignalException("Account cross-margin validation failed. Please contact an administrator.")  # better msg for the user?
-
         if is_buy and trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA and miner_account.asset_class == MinerAssetClass.EQUITIES:
             cash_available = balance - (miner_account.capital_used - miner_account.total_borrowed_amount)
             if abs(order.value) > cash_available:
@@ -265,7 +257,6 @@ class MarketOrderManager():
                 hotkey, entry_value, realized_pnl, loan_repaid, transaction_fee, trade_pair.trade_pair_category,
                 unrealized_pnl_released=unrealized_pnl_released,
             )
-            self._entity_collateral_client.try_slash_on_position_close(hotkey, realized_pnl)
 
         self._position_client.save_miner_position(position)
 

@@ -81,6 +81,14 @@ class DebtLedgerManager():
             connection_mode=connection_mode
         )
 
+        # Create EntityCollateralClient for computing entity collateral penalties
+        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+        self._entity_collateral_client = EntityCollateralClient(
+            running_unit_tests=running_unit_tests,
+            connection_mode=connection_mode,
+            connect_immediately=False,
+        )
+
         # IMPORTANT: PenaltyLedgerManager runs WITHOUT its own daemon process (run_daemon=False)
         # because DebtLedgerServer itself is already a daemon process, and daemon processes
         # cannot spawn child processes. The DebtLedgerServer daemon thread calls
@@ -828,7 +836,7 @@ class DebtLedgerManager():
             for entity_hotkey, entity_data in all_entities.items():
                 # Get active subaccounts for this entity
                 active_subaccounts = [sa for sa in entity_data.get('subaccounts', {}).values()
-                                     if sa.get('status') == 'active']
+                                     if sa.get('status') == 'active' and sa.get('reg_fee_theta', 0) > 0]
 
                 has_frozen_ledgers = entity_hotkey in entity_to_frozen_debt_ledgers
                 if not active_subaccounts and not has_frozen_ledgers:
@@ -873,6 +881,18 @@ class DebtLedgerManager():
                 sorted_timestamps = sorted(all_timestamps)
 
                 entity_emissions_ledger = self.emissions_ledger_manager.get_ledger(entity_hotkey)
+
+                # Compute entity collateral penalty: current_collateral / required_collateral (capped at 1.0).
+                # If nothing is required, no penalty. If current is unavailable, treat as 0.
+                try:
+                    required_collateral = self._entity_collateral_client.compute_entity_required_collateral(entity_hotkey)
+                    current_collateral = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch entity collateral for {entity_hotkey}: {e}")
+                    required_collateral = 0.0
+                    current_collateral = None
+
+                entity_collateral_penalty = 1.0 if required_collateral <= 0 else min(1.0, (current_collateral or 0.0) / required_collateral)
 
                 # Track per-subaccount HWM state for realized PnL across checkpoints
                 subaccount_cum_realized = {hk: 0.0 for hk, _ in subaccount_ledgers}
@@ -965,12 +985,12 @@ class DebtLedgerManager():
                         open_ms=agg_open_ms,
                         accum_ms=agg_accum_ms,
                         n_updates=agg_n_updates,
-                        # Penalties (Ignored for entity miner)
+                        # Penalties: only entity collateral penalty applies at the entity level
                         drawdown_penalty=1.0,
                         risk_profile_penalty=1.0,
-                        min_collateral_penalty=1.0,
+                        min_collateral_penalty=entity_collateral_penalty,
                         risk_adjusted_performance_penalty=1.0,
-                        total_penalty=1.0,
+                        total_penalty=entity_collateral_penalty,
                         challenge_period_status=entity_bucket,
                     )
 

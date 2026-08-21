@@ -256,15 +256,16 @@ class EntityManager(ValidatorBroadcastBase):
             for entity_data in self.entities.values():
                 for subaccount in entity_data.subaccounts.values():
                     self._uuid_to_hotkey[subaccount.subaccount_uuid] = subaccount.synthetic_hotkey
-                    if subaccount.hl_address and subaccount.status in ('active', 'admin', 'pending'):
+                    # TODO: remove after all validators have migrated
+                    if subaccount.status == 'admin':
+                        subaccount.status = 'active'
+                        subaccount.reg_fee_theta = 0.0
+                        if subaccount.reg_fee_slashed_ms is None:
+                            subaccount.reg_fee_slashed_ms = float(subaccount.created_at_ms)
+                    if subaccount.hl_address and subaccount.status in ('active', 'pending'):
                         normalized_hl = self._normalize_hl_address(subaccount.hl_address)
                         if normalized_hl:
                             self._hl_address_to_synthetic[normalized_hl] = subaccount.synthetic_hotkey
-
-                    cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if subaccount.account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
-                    if not subaccount.reg_fee_theta:
-                        subaccount.reg_fee_theta = subaccount.account_size / cpt
-                        subaccount.reg_fee_slashed_ms = subaccount.created_at_ms
 
             # Recreate locks for all loaded entities
             for entity_hotkey in self.entities.keys():
@@ -393,7 +394,7 @@ class EntityManager(ValidatorBroadcastBase):
         entity_hotkey: str,
         account_size: float,
         asset_class: str,
-        admin: bool = False,
+        collateral_exempt: bool = False,
         hl_address: Optional[str] = None,
         payout_address: Optional[str] = None,
         drawdown_criteria: str = "trailing",
@@ -408,8 +409,8 @@ class EntityManager(ValidatorBroadcastBase):
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             account_size: Account size in USD (immutable once set, max 100k)
             asset_class: Asset class selection (immutable once set)
-            admin: If True, skip collateral slashing and set status to "admin".
-                   Admin subaccounts are excluded from entity aggregation and payouts.
+            collateral_exempt: If True, skip collateral slashing.
+                   Exempt subaccounts are excluded from entity aggregation and payouts.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -444,7 +445,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Calculate required collateral: account_size / ENTITY_COST_PER_THETA (lower rate for <=10k accounts)
             cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
-            required_theta = account_size / cpt if not admin else 0
+            required_theta = account_size / cpt if not collateral_exempt else 0
 
             # Verify collateral balance
             try:
@@ -468,10 +469,7 @@ class EntityManager(ValidatorBroadcastBase):
 
                     if current_balance - required_theta < required_min_theta:
                         logger.warning(
-                            f"[ENTITY_MANAGER] {entity_hotkey} collateral after fee {current_balance - required_theta:.2f} < required {required_min_theta:.2f} theta"
-                        )
-                        return False, None, (
-                            f"Insufficient collateral: {current_balance - required_theta:.2f} theta after fee < {required_min_theta:.2f} theta required"
+                            f"[ENTITY_MANAGER] {entity_hotkey} collateral after fee {current_balance - required_theta:.2f} < required {required_min_theta:.2f} theta (non-blocking)"
                         )
 
                 # Decrement collateral cache immediately to prevent double-spend before daemon slashes on-chain
@@ -538,16 +536,15 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Create subaccount info
             now_ms = TimeUtil.now_in_millis()
-            initial_status = "admin" if admin else "active"
             subaccount_info = SubaccountInfo(
                 subaccount_id=subaccount_id,
                 subaccount_uuid=subaccount_uuid,
                 synthetic_hotkey=synthetic_hotkey,
-                status=initial_status,
+                status="active",
                 created_at_ms=now_ms,
                 account_size=account_size,
                 reg_fee_theta=required_theta,
-                reg_fee_slashed_ms=None,
+                reg_fee_slashed_ms=now_ms if collateral_exempt else None,
                 asset_class=asset_class,
                 drawdown_criteria=drawdown_criteria,
                 hl_address=hl_address,
@@ -586,7 +583,7 @@ class EntityManager(ValidatorBroadcastBase):
             logger.info(
                 f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
                 f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
-                f"status={initial_status} ({total_ms} ms)"
+                f"status=active ({total_ms} ms)"
             )
             remaining_theta = (current_balance - required_theta) if current_balance else 0.0
             return True, subaccount_info, f"Slashing {required_theta} theta, {remaining_theta:.2f} theta remaining"
@@ -621,7 +618,7 @@ class EntityManager(ValidatorBroadcastBase):
         account_size: float,
         hl_address: str,
         asset_class: str = "hl_all",
-        admin: bool = False,
+        collateral_exempt: bool = False,
         payout_address: Optional[str] = None
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
@@ -635,7 +632,7 @@ class EntityManager(ValidatorBroadcastBase):
             account_size: Account size in USD
             hl_address: Hyperliquid address (0x-prefixed, 40 hex chars)
             asset_class: Asset class selection (default: "hl_all")
-            admin: If True, skip collateral slashing
+            collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
 
         Returns:
@@ -668,7 +665,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         # Delegate to standard create_subaccount for all existing validation
         success, subaccount_info, message = self.create_subaccount(
-            entity_hotkey, account_size, asset_class, admin=admin,
+            entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
             hl_address=hl_address, payout_address=payout_address,
             drawdown_criteria="trailing"
         )
@@ -695,7 +692,7 @@ class EntityManager(ValidatorBroadcastBase):
         with self._entities_lock:
             for entity_data in self.entities.values():
                 for subaccount in entity_data.subaccounts.values():
-                    if subaccount.hl_address and subaccount.status in ('active', 'admin'):
+                    if subaccount.hl_address and subaccount.status == 'active':
                         result.append((subaccount.hl_address, subaccount.model_dump()))
         return result
 
@@ -1200,7 +1197,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'status': None
                 }
 
-            if status not in ['active', 'admin']:
+            if status != 'active':
                 return {
                     'is_valid': False,
                     'error_message': (f"Synthetic hotkey {hotkey} is not active (status: {status}). "
@@ -1423,7 +1420,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         active_subaccounts = [
             (addr, sa, shk) for addr, sa, shk in all_hl_subaccounts
-            if sa.status in ('active', 'admin')
+            if sa.status == 'active'
         ]
         eliminated_subaccounts = [
             (addr, sa, shk) for addr, sa, shk in all_hl_subaccounts
