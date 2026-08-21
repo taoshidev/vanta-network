@@ -74,7 +74,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
         # Tier defaults to 2 (funded, no collateral records → MIN_CAPITAL < 200K)
-        expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][MinerAssetClass.CRYPTO]
+        expected = ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.CRYPTO]
         self.assertEqual(account.multiplier, expected)
 
     def test_multiplier_multi_class_reads_overall_cap_table(self):
@@ -83,7 +83,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
-        self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
+        self.assertEqual(account.multiplier, ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
 
     def test_multiplier_challenge_bucket_uses_tier_1(self):
         account = MinerAccount(
@@ -91,7 +91,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_CHALLENGE,
         )
-        self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL])
+        self.assertEqual(account.multiplier, ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL])
 
     def test_buying_power_multi_class_uses_overall_cap(self):
         """buying_power = balance × multiplier − capital_used for non-equities."""
@@ -103,182 +103,17 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             capital_used_by_class={TradePairCategory.CRYPTO: 1_000.0},
         )
         balance = account.balance
-        expected = balance * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL] - 1_000.0
+        expected = balance * ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL] - 1_000.0
         self.assertAlmostEqual(account.buying_power, expected)
 
-
-# ---------------------------------------------------------------------------
-# FX carve-out: FX and non-FX draw on separate portfolio pools (subaccounts)
-# ---------------------------------------------------------------------------
-
-class TestFxCarveOut(unittest.TestCase):
-
-    def _subaccount(self, asset_class=MinerAssetClass.ALL_MARKETS, used=None):
-        used = used or {}
-        return MinerAccount(
-            miner_hotkey="hk",
-            asset_class=asset_class,
-            miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
-            capital_used=sum(used.values()),
-            capital_used_by_class=dict(used),
-        )
-
-    def test_maxed_fx_leaves_non_fx_room_untouched(self):
-        account = self._subaccount()
-        fx_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.FOREX]
-        maxed = self._subaccount(used={TradePairCategory.FOREX: account.balance * fx_cap})
-
-        self.assertAlmostEqual(maxed.portfolio_cap(TradePairCategory.FOREX)[0], 0.0)
-        self.assertAlmostEqual(
-            maxed.portfolio_cap(TradePairCategory.CRYPTO)[0],
-            account.portfolio_cap(TradePairCategory.CRYPTO)[0],
-        )
-
-    def test_maxed_non_fx_leaves_fx_room_untouched(self):
-        account = self._subaccount()
-        overall = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.ALL_MARKETS]
-        maxed = self._subaccount(used={TradePairCategory.CRYPTO: account.balance * overall})
-
-        self.assertAlmostEqual(maxed.portfolio_cap(TradePairCategory.CRYPTO)[0], 0.0)
-        self.assertAlmostEqual(
-            maxed.portfolio_cap(TradePairCategory.FOREX)[0],
-            account.portfolio_cap(TradePairCategory.FOREX)[0],
-        )
-
-    def test_fx_only_subaccount_room_comes_from_the_fx_pool(self):
-        fx_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.FOREX]
-        probe = self._subaccount(asset_class=MinerAssetClass.FOREX)
-        used = probe.balance * 2
-        account = self._subaccount(
-            asset_class=MinerAssetClass.FOREX, used={TradePairCategory.FOREX: used}
-        )
-        self.assertAlmostEqual(account.buying_power_fx, account.balance * fx_cap - used)
-        self.assertAlmostEqual(account.portfolio_cap(TradePairCategory.FOREX)[0],
-                               account.buying_power_fx)
-        # No non-FX access, so it has no cross-asset pool to report.
-        self.assertEqual(account.buying_power_non_fx, 0.0)
-
-    def test_legacy_buying_power_keeps_the_pre_carve_out_formula(self):
-        """buying_power must stay value-compatible for existing clients."""
-        account = self._subaccount(used={
-            TradePairCategory.FOREX: 3_000.0,
-            TradePairCategory.CRYPTO: 2_000.0,
-        })
-        self.assertAlmostEqual(
-            account.buying_power,
-            account.balance * account.multiplier - account.capital_used,
-        )
-        # ...and is therefore NOT either live pool.
-        self.assertNotAlmostEqual(account.buying_power, account.buying_power_fx)
-        self.assertNotAlmostEqual(account.buying_power, account.buying_power_non_fx)
-
-    def test_regular_miner_keeps_single_cross_asset_pool(self):
-        """Only subaccounts carve FX out; main-comp miners keep one pool over all exposure."""
+    def test_multiplier_regular_miner_reads_regular_table(self):
+        """Non-subaccount buckets keep the regular-miner table (main values)."""
         account = MinerAccount(
             miner_hotkey="hk",
-            asset_class=MinerAssetClass.FOREX,
+            asset_class=MinerAssetClass.CRYPTO,
             miner_bucket=MinerBucket.MAINCOMP,
-            capital_used=1_000.0,
-            capital_used_by_class={TradePairCategory.FOREX: 1_000.0},
         )
-        self.assertFalse(account.fx_carved_out)
-        expected = account.balance * account.multiplier - 1_000.0
-        self.assertAlmostEqual(account.portfolio_cap(TradePairCategory.FOREX)[0], expected)
-
-    def test_hl_all_has_no_fx_pool(self):
-        """Hyperliquid lists no forex pairs, so Hyperscaled keeps one cross-asset pool."""
-        account = self._subaccount(asset_class=MinerAssetClass.HL_ALL,
-                                   used={TradePairCategory.CRYPTO: 1_000.0})
-        self.assertFalse(account.fx_has_access)
-        self.assertFalse(account.fx_carved_out)
-        self.assertEqual(account.buying_power_fx, 0.0)
-        self.assertEqual(account.capital_used_fx, 0.0)
-        self.assertAlmostEqual(account.buying_power, account.balance * account.multiplier - 1_000.0)
-
-    def test_fx_access_tolerates_trade_pair_category_asset_class(self):
-        """asset_class holds a TradePairCategory at some call sites; both str enums share values."""
-        account = self._subaccount(asset_class=TradePairCategory.FOREX)
-        self.assertTrue(account.fx_has_access)
-        self.assertTrue(account.fx_carved_out)
-
-        account = self._subaccount(asset_class=TradePairCategory.EQUITIES)
-        self.assertFalse(account.fx_has_access)
-        self.assertEqual(account.buying_power_fx, 0.0)
-
-    def test_single_class_non_fx_pools_are_zero_on_fx_side(self):
-        for ac in (MinerAssetClass.CRYPTO, MinerAssetClass.COMMODITIES, MinerAssetClass.EQUITIES):
-            with self.subTest(asset_class=ac):
-                account = self._subaccount(asset_class=ac)
-                self.assertEqual(account.buying_power_fx, 0.0)
-                self.assertEqual(account.capital_used_fx, 0.0)
-
-    def test_reported_pools_sum_to_total_capital_used(self):
-        account = self._subaccount(used={
-            TradePairCategory.FOREX: 3_000.0,
-            TradePairCategory.CRYPTO: 2_000.0,
-        })
-        self.assertAlmostEqual(account.capital_used_fx, 3_000.0)
-        self.assertAlmostEqual(account.capital_used_non_fx, 2_000.0)
-        self.assertAlmostEqual(
-            account.capital_used_fx + account.capital_used_non_fx, account.capital_used
-        )
-
-    def test_dashboard_and_dict_expose_both_pools(self):
-        account = self._subaccount(used={TradePairCategory.FOREX: 3_000.0})
-        for payload in (account.to_dict(), account.to_dashboard()):
-            for key in ('capital_used_fx', 'capital_used_non_fx',
-                        'buying_power_fx', 'buying_power_non_fx'):
-                self.assertIn(key, payload)
-            self.assertAlmostEqual(payload['capital_used_fx'], 3_000.0)
-            self.assertAlmostEqual(payload['buying_power_fx'], account.buying_power_fx)
-            self.assertAlmostEqual(payload['buying_power_non_fx'], account.buying_power_non_fx)
-
-    def test_legacy_checkpoint_without_per_class_fails_closed_in_both_pools(self):
-        """Untracked exposure must cost room in BOTH pools, never grant a fresh allowance."""
-        account = MinerAccount(
-            miner_hotkey="hk",
-            asset_class=MinerAssetClass.ALL_MARKETS,
-            miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
-            capital_used=1_000.0,
-        )
-        self.assertAlmostEqual(account.capital_used_untracked, 1_000.0)
-        self.assertAlmostEqual(account.capital_used_non_fx, 1_000.0)
-
-        # Non-FX pool: charged, as before.
-        self.assertAlmostEqual(
-            account.portfolio_cap(TradePairCategory.CRYPTO)[0],
-            account.balance * account.multiplier - 1_000.0,
-        )
-        # FX pool: must also be charged, or an account holding untracked FX would keep a
-        # full FX allowance on top of it.
-        self.assertAlmostEqual(
-            account.portfolio_cap(TradePairCategory.FOREX)[0],
-            account.balance * account.fx_multiplier - 1_000.0,
-        )
-
-    def test_untracked_fx_exposure_cannot_exceed_the_fx_cap(self):
-        """An all-FX book with no per-class breakdown must not reach 2x the FX cap."""
-        probe = self._subaccount()
-        fx_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.FOREX]
-        already_open = probe.balance * 10
-        account = MinerAccount(
-            miner_hotkey="hk",
-            asset_class=MinerAssetClass.ALL_MARKETS,
-            miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
-            capital_used=already_open,
-        )
-        reachable = already_open + account.portfolio_cap(TradePairCategory.FOREX)[0]
-        self.assertLessEqual(reachable, account.balance * fx_cap + 1e-6)
-
-    def test_unknown_category_falls_back_to_one_pool(self):
-        """process_order_buy without a category must not reject FX-only subaccounts."""
-        for ac in (MinerAssetClass.FOREX, MinerAssetClass.ALL_MARKETS, MinerAssetClass.EQUITIES):
-            with self.subTest(asset_class=ac):
-                account = self._subaccount(asset_class=ac,
-                                           used={TradePairCategory.FOREX: 1_000.0}
-                                           if ac != MinerAssetClass.EQUITIES else {})
-                room, _ = account.portfolio_cap(None)
-                self.assertGreater(room, 0.0)
+        self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.CRYPTO])
 
 
 # ---------------------------------------------------------------------------

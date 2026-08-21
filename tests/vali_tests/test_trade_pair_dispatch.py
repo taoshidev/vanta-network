@@ -103,10 +103,12 @@ class TestConfigCompleteness(unittest.TestCase):
                     self.assertIn(cat, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier])
 
     def test_tier_portfolio_leverage_by_asset_class_has_multi_class_entries(self):
-        for tier in self.ALL_TIERS:
-            for ac in (MinerAssetClass.HL_ALL, MinerAssetClass.ALL_MARKETS):
-                self.assertIn(ac, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier])
-                self.assertGreater(ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][ac], 0)
+        for table in (ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS,
+                      ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS):
+            for tier in self.ALL_TIERS:
+                for ac in (MinerAssetClass.HL_ALL, MinerAssetClass.ALL_MARKETS):
+                    self.assertIn(ac, table[tier])
+                    self.assertGreater(table[tier][ac], 0)
 
     def test_portfolio_leverage_cap_full_matrix(self):
         for cat in self.ALL_REAL_CATEGORIES:
@@ -223,7 +225,7 @@ class TestGetPortfolioCaps(unittest.TestCase):
         _, overall = get_portfolio_caps(
             MinerAssetClass.HL_ALL, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
         )
-        self.assertEqual(overall, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
+        self.assertEqual(overall, ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
 
     def test_multi_class_per_class_keyed_on_order_category(self):
         for cat in (
@@ -263,10 +265,10 @@ class TestGetPortfolioCaps(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# get_max_order_size — the order path actually honours the two pools
+# get_max_order_size — every class draws on the single cross-asset portfolio pool
 # ---------------------------------------------------------------------------
 
-class TestMaxOrderSizeFxPools(unittest.TestCase):
+class TestMaxOrderSizeSinglePool(unittest.TestCase):
 
     def _account(self, asset_class=MinerAssetClass.ALL_MARKETS,
                  bucket=MinerBucket.SUBACCOUNT_FUNDED, used=None):
@@ -289,46 +291,62 @@ class TestMaxOrderSizeFxPools(unittest.TestCase):
         return position
 
     def test_fx_major_reaches_its_per_pair_cap(self):
-        """20x EURUSD must be reachable — the 10x cross-asset cap must not bind it."""
+        """20x EURUSD must be reachable — the 30x portfolio cap must not bind it."""
         account = self._account()
         max_value, _ = get_max_order_size(account, self._position(TradePair.EURUSD))
         expected = account.balance * get_tier_positional_leverage(2, TradePair.EURUSD)
         self.assertAlmostEqual(max_value, expected)
 
-    def test_maxed_fx_does_not_shrink_non_fx_order_size(self):
-        fx_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.FOREX]
-        empty = self._account()
-        maxed_fx = self._account(used={TradePairCategory.FOREX: empty.balance * fx_cap})
-
-        for pair in (TradePair.BTCUSDC, TradePair.SP500USDC, TradePair.GOLDUSDC):
-            with self.subTest(pair=pair.trade_pair_id):
-                before, _ = get_max_order_size(empty, self._position(pair))
-                after, _ = get_max_order_size(maxed_fx, self._position(pair))
-                self.assertAlmostEqual(before, after)
-
-        # ...while FX itself is now fully consumed.
-        fx_room, _ = get_max_order_size(maxed_fx, self._position(TradePair.EURUSD))
-        self.assertAlmostEqual(fx_room, 0.0)
-
-    def test_maxed_non_fx_does_not_shrink_fx_order_size(self):
-        overall = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.ALL_MARKETS]
-        empty = self._account()
-        maxed_non_fx = self._account(used={TradePairCategory.CRYPTO: empty.balance * overall})
-
-        before, _ = get_max_order_size(empty, self._position(TradePair.EURUSD))
-        after, _ = get_max_order_size(maxed_non_fx, self._position(TradePair.EURUSD))
-        self.assertAlmostEqual(before, after)
-
-    def test_regular_miner_fx_still_consumes_the_single_pool(self):
-        """Main-comp miners keep one pool: FX exposure must still reduce non-FX room."""
-        empty = self._account(asset_class=MinerAssetClass.FOREX, bucket=MinerBucket.MAINCOMP)
-        with_fx = self._account(
-            asset_class=MinerAssetClass.FOREX, bucket=MinerBucket.MAINCOMP,
-            used={TradePairCategory.FOREX: empty.balance},
+    def test_pure_fx_subaccount_reaches_the_full_30x_class_cap(self):
+        """A FOREX subaccount's portfolio cap equals its 30x class cap: with 20x of majors
+        open, a cross still gets its full 10x per-pair room, totalling 30x."""
+        overall = ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.FOREX]
+        empty = self._account(asset_class=MinerAssetClass.FOREX)
+        loaded = self._account(
+            asset_class=MinerAssetClass.FOREX,
+            used={TradePairCategory.FOREX: empty.balance * (overall - 10.0)},
         )
-        before, _ = get_max_order_size(empty, self._position(TradePair.EURUSD))
-        after, _ = get_max_order_size(with_fx, self._position(TradePair.EURUSD))
-        self.assertAlmostEqual(after, before - empty.balance)
+        max_value, _ = get_max_order_size(loaded, self._position(TradePair.AUDJPY))
+        self.assertAlmostEqual(max_value, loaded.balance * 10.0)
+
+    def test_maxed_fx_consumes_the_shared_pool(self):
+        """FX at the full 30x portfolio cap leaves no room in any class, FX included."""
+        cap = ValiConfig.SUBACCOUNT_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.ALL_MARKETS]
+        empty = self._account()
+        maxed_fx = self._account(used={TradePairCategory.FOREX: empty.balance * cap})
+
+        for pair in (TradePair.BTCUSDC, TradePair.SP500USDC, TradePair.GOLDUSDC, TradePair.EURUSD):
+            with self.subTest(pair=pair.trade_pair_id):
+                room, _ = get_max_order_size(maxed_fx, self._position(pair))
+                self.assertAlmostEqual(room, 0.0)
+
+    def test_non_fx_exposure_shrinks_fx_room(self):
+        """Non-FX exposure draws on the same pool: with 20x of non-FX open, an FX order is
+        clipped to the remaining 10x of portfolio room instead of its 20x per-pair cap."""
+        empty = self._account()
+        balance = empty.balance
+        loaded = self._account(used={
+            TradePairCategory.CRYPTO: balance * 5.0,
+            TradePairCategory.INDICES: balance * 10.0,
+            TradePairCategory.COMMODITIES: balance * 3.0,
+            TradePairCategory.EQUITIES: balance * 2.0,
+        })
+        room, binding = get_max_order_size(loaded, self._position(TradePair.EURUSD))
+        self.assertAlmostEqual(room, balance * 10.0)
+        self.assertIn("overall portfolio cap", binding)
+
+    def test_regular_miner_fx_consumes_the_single_pool(self):
+        """Main-comp miners keep one pool at the regular-miner (main) cap values: a FOREX
+        miner with 9x of its 10x pool used has 1x of room left."""
+        overall = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.FOREX]
+        empty = self._account(asset_class=MinerAssetClass.FOREX, bucket=MinerBucket.MAINCOMP)
+        loaded = self._account(
+            asset_class=MinerAssetClass.FOREX, bucket=MinerBucket.MAINCOMP,
+            used={TradePairCategory.FOREX: empty.balance * (overall - 1.0)},
+        )
+        room, binding = get_max_order_size(loaded, self._position(TradePair.EURUSD))
+        self.assertAlmostEqual(room, loaded.balance * 1.0)
+        self.assertIn("overall portfolio cap", binding)
 
 
 # ---------------------------------------------------------------------------
