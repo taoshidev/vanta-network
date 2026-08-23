@@ -185,7 +185,6 @@ class EntityServer(RPCServerBase):
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
         payout_address: Optional[str] = None,
-        account_type: str = "standard",
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -197,13 +196,12 @@ class EntityServer(RPCServerBase):
             asset_class: Asset class selection (default: "hl_all")
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
-            account_type: "standard" or "pro"
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         success, subaccount_info, message = self._manager.create_hl_subaccount(
-            entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address, account_type = account_type
+            entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address
         )
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
         return success, subaccount_dict, message

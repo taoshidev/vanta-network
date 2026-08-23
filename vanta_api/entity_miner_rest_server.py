@@ -972,6 +972,7 @@ class EntityMinerRestServer(MinerRestServer):
                 payout_address = request_data.get("payout_address")
                 asset_class = "hl_all"
                 drawdown_criteria = "trailing"
+                account_type = None
             else:
                 hl_address = None
                 payout_address = None
@@ -984,15 +985,14 @@ class EntityMinerRestServer(MinerRestServer):
                 drawdown_criteria = request_data.get("drawdown_criteria", "trailing")
                 if drawdown_criteria not in ("trailing", "static"):
                     return jsonify({'status': 'error', 'message': 'drawdown_criteria must be "trailing" or "static"'}), 400
+                account_type = request_data.get("account_type", "standard")
+                if account_type not in ("standard", "pro"):
+                    return jsonify({'status': 'error', 'message': 'account_type must be "standard" or "pro"'}), 400
 
             raw = request_data.get("collateral_exempt", request_data.get("admin", False))
             if not isinstance(raw, bool):
                 return jsonify({'status': 'error', 'message': 'collateral_exempt must be a boolean'}), 400
             collateral_exempt = raw
-
-            account_type = request_data.get("account_type", "standard")
-            if account_type not in ("standard", "pro"):
-                return jsonify({'status': 'error', 'message': 'account_type must be "standard" or "pro"'}), 400
 
             try:
                 account_size = float(request_data["account_size"])
@@ -1076,6 +1076,8 @@ class EntityMinerRestServer(MinerRestServer):
             }
             if collateral_exempt:
                 payload["collateral_exempt"] = collateral_exempt
+            if account_type is not None:
+                payload["account_type"] = account_type
             if is_hl:
                 payload["hl_address"] = hl_address
                 if payout_address is not None:

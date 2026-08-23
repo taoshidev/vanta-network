@@ -199,6 +199,39 @@ class TestEntityManagement(TestBase):
         self.assertIsNone(subaccount_info)
         self.assertIn("account_type", message)
 
+    def test_create_hl_subaccount_is_always_standard(self):
+        """Hyperliquid subaccounts have no pro tier - they always start on the standard track."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            hl_address="0x" + "a" * 40,
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertEqual(subaccount_info['account_type'], 'standard')
+        bucket = self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(bucket, MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    def test_hl_creation_path_takes_no_account_type(self):
+        """No HL entry point exposes account_type, so an HL subaccount can never be pro."""
+        import inspect
+
+        from entity_management.entity_client import EntityClient
+        from entity_management.entity_manager import EntityManager
+        from entity_management.entity_server import EntityServer
+
+        for fn in (
+            EntityManager.create_hl_subaccount,
+            EntityClient.create_hl_subaccount,
+            EntityServer.create_hl_subaccount_rpc,
+        ):
+            self.assertNotIn('account_type', inspect.signature(fn).parameters, fn.__qualname__)
+
+        # The manager still guards the combination for direct hl_address callers
+        self.assertIn('account_type', inspect.signature(EntityManager.create_subaccount).parameters)
+
     def test_create_multiple_subaccounts(self):
         """Test creating multiple subaccounts for an entity."""
         # Register entity
@@ -853,6 +886,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         ]
 
         manager = object.__new__(EntityManager)
+        manager.running_unit_tests = True
         manager.get_synthetic_hotkey_from_uuid = lambda _uuid: self.SUBACCOUNT_HOTKEY
         manager.get_entity_data = lambda _hk: SimpleNamespace(subaccounts={1: {'id': 1}})
         manager._debt_ledger_client = SimpleNamespace(

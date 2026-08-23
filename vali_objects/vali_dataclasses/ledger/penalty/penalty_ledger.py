@@ -25,6 +25,7 @@ from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.position_management.position_utils.position_filter import PositionFilter
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey
@@ -36,15 +37,25 @@ FEB_1_MS = 1769932800000    # FEB 1 2026 timestamp
 
 class PenaltyInputType(Enum):
     LEDGER = auto()
+    LEDGER_ASSET_CLASS = auto()
     POSITIONS = auto()
     PSEUDO_POSITIONS = auto()
     COLLATERAL = auto()
+
+
+class PenaltyApplicationScope(Enum):
+    """PER_CHECKPOINT penalties multiply into total_penalty; WEEKLY penalties are tracked
+    separately in weekly_penalty and applied across the whole payout week."""
+    PER_CHECKPOINT = auto()
+    WEEKLY = auto()
 
 
 @dataclass
 class PenaltyConfig:
     function: callable
     input_type: PenaltyInputType
+    buckets: Optional[set] = None
+    application_scope: PenaltyApplicationScope = PenaltyApplicationScope.PER_CHECKPOINT
 
 
 class PenaltyCheckpoint:
@@ -57,7 +68,10 @@ class PenaltyCheckpoint:
         risk_profile_penalty: float = 1.0,
         min_collateral_penalty: float = 1.0,
         risk_adjusted_performance_penalty: float = 1.0,
+        min_sharpe_penalty: float = 1.0,
+        daily_consistency_penalty: float = 1.0,
         total_penalty: float = 1.0,
+        weekly_penalty: float = 1.0,
         challenge_period_status: str = None
     ):
         self.last_processed_ms = int(last_processed_ms)
@@ -65,7 +79,10 @@ class PenaltyCheckpoint:
         self.risk_profile_penalty = float(risk_profile_penalty)
         self.min_collateral_penalty = float(min_collateral_penalty)
         self.risk_adjusted_performance_penalty = float(risk_adjusted_performance_penalty)
+        self.min_sharpe_penalty = float(min_sharpe_penalty)
+        self.daily_consistency_penalty = float(daily_consistency_penalty)
         self.total_penalty = float(total_penalty)
+        self.weekly_penalty = float(weekly_penalty)
         self.challenge_period_status = challenge_period_status if challenge_period_status else MinerBucket.UNKNOWN.value
 
     def __eq__(self, other):
@@ -228,7 +245,10 @@ class PenaltyLedger:
                 risk_profile_penalty=cp_dict.get('risk_profile_penalty', 1.0),
                 min_collateral_penalty=cp_dict.get('min_collateral_penalty', 1.0),
                 risk_adjusted_performance_penalty=cp_dict.get('risk_adjusted_performance_penalty', 1.0),
+                min_sharpe_penalty=cp_dict.get('min_sharpe_penalty', 1.0),
+                daily_consistency_penalty=cp_dict.get('daily_consistency_penalty', 1.0),
                 total_penalty=cp_dict.get('total_penalty', 1.0),
+                weekly_penalty=cp_dict.get('weekly_penalty', 1.0),
                 challenge_period_status=cp_dict.get('challenge_period_status', MinerBucket.UNKNOWN.value)
             )
             checkpoints.append(checkpoint)
@@ -261,6 +281,18 @@ class PenaltyLedgerManager:
         'risk_adjusted_performance': PenaltyConfig(
             function=PositionPenalties.risk_adjusted_performance_penalty,
             input_type=PenaltyInputType.LEDGER
+        ),
+        'min_sharpe': PenaltyConfig(
+            function=PositionPenalties.min_sharpe_penalty,
+            input_type=PenaltyInputType.LEDGER_ASSET_CLASS,
+            buckets={b for b in MinerBucket if b.is_pro},
+            application_scope=PenaltyApplicationScope.WEEKLY
+        ),
+        'daily_consistency': PenaltyConfig(
+            function=PositionPenalties.daily_consistency_penalty,
+            input_type=PenaltyInputType.LEDGER,
+            buckets={b for b in MinerBucket if b.is_pro},
+            application_scope=PenaltyApplicationScope.WEEKLY
         )
     }
 
