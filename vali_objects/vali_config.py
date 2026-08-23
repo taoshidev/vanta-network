@@ -587,6 +587,22 @@ class ValiConfig:
         4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
     }
 
+    # Correlated-exposure limits, pro accounts only. Multiples of account balance, applied to the
+    # *net* signed exposure summed across a correlation group (see leverage_utils).
+    # Each is 1.5x the largest single-pair exposure in the group, so one full-size position always
+    # fits while stacking the same bet across correlated pairs is capped at ~1.5 positions.
+    PRO_CURRENCY_EXPOSURE_LIMITS = {
+        "USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0,
+        "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 20.0,
+    }
+    PRO_SECTOR_EXPOSURE_LIMIT = 3.0     # per ExposureGroup; 1.5x the 2x equities per-pair cap
+    PRO_US_INDEX_EXPOSURE_LIMIT = 25.0  # shared across the six instruments below
+    # US index pairs and broad US market ETFs carry the same beta, so they share one limit.
+    # EWY, single stocks, and all other ETFs are excluded.
+    PRO_US_INDEX_TRADE_PAIR_IDS = frozenset({
+        "SP500USDC", "XYZ100USDC", "SPY", "QQQ", "IWM", "DIA",
+    })
+
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
     MAX_COLLATERAL_BALANCE_THETA = 1000  # Approx $500k capital account size
