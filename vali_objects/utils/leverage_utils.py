@@ -104,9 +104,7 @@ def get_max_order_size(
 
     max_value, binding_cap = min(limits, key=lambda x: x[0])
 
-    transaction_fee_rate = trade_pair.transaction_fee_rate(
-        is_pro=bool(account.miner_bucket and account.miner_bucket.is_pro)
-    )
+    transaction_fee_rate = trade_pair.transaction_fee_rate()
     if max_value * (1 + transaction_fee_rate * account.multiplier) > portfolio_room:
         max_value = max_value / (1 + transaction_fee_rate * account.multiplier)
 
