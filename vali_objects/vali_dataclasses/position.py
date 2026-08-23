@@ -158,8 +158,9 @@ class Position(BaseModel):
 
         most_recent_midnight_ms = (current_time_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
         total_fee = 0.0
-        borrow_rate = PRO_DAILY_STOCK_BORROW_RATE if self.is_pro else DAILY_STOCK_BORROW_RATE
-        interest_rate = PRO_DAILY_MARGIN_INTEREST_RATE if self.is_pro else DAILY_MARGIN_INTEREST_RATE
+        use_pro = self.is_pro and self.trade_pair.src == TradePairSource.VANTA
+        borrow_rate = PRO_DAILY_STOCK_BORROW_RATE if use_pro else DAILY_STOCK_BORROW_RATE
+        interest_rate = PRO_DAILY_MARGIN_INTEREST_RATE if use_pro else DAILY_MARGIN_INTEREST_RATE
 
         if self.position_type == OrderType.SHORT:
             short_position_value = abs(self.net_value) + self.unrealized_pnl
@@ -440,7 +441,7 @@ class Position(BaseModel):
         is_reducing = order.order_type != self.position_type or self.is_closed_position
         self._update_position()
 
-        transaction_fee_rate = self.trade_pair.transaction_fee_rate(order.is_hl_taker, self.is_pro)
+        transaction_fee_rate = self.trade_pair.transaction_fee_rate(order.is_hl_taker)
         transaction_fee, loan_repaid = 0.0, 0.0
         if is_reducing:
             entry_value = abs(order.quantity) * self.trade_pair.lot_size * self.average_entry_price * order.quote_usd_rate

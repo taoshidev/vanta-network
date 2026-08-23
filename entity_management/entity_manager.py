@@ -423,6 +423,8 @@ class EntityManager(ValidatorBroadcastBase):
 
         if not AccountType.is_valid(account_type):
             return False, None, f"Invalid account_type: {account_type}. Must be 'standard' or 'pro'"
+        if hl_address and AccountType(account_type) == AccountType.PRO:
+            return False, None, "account_type 'pro' is not supported for Hyperliquid subaccounts"
         initial_bucket = AccountType(account_type).challenge_bucket
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
@@ -629,7 +631,6 @@ class EntityManager(ValidatorBroadcastBase):
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
         payout_address: Optional[str] = None,
-        account_type: str = "standard",
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -677,7 +678,7 @@ class EntityManager(ValidatorBroadcastBase):
         success, subaccount_info, message = self.create_subaccount(
             entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
             hl_address=hl_address, payout_address=payout_address,
-            drawdown_criteria="trailing", account_type=account_type
+            drawdown_criteria="trailing"
         )
 
         if not success:

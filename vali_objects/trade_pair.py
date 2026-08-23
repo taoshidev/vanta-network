@@ -134,9 +134,6 @@ DAILY_MARGIN_INTEREST_RATE  = ANNUAL_MARGIN_INTEREST_RATE / 365
 
 # Pro account fee schedule. Currently mirrors the standard schedule above so pro accounts
 # are priced identically until real values are set.
-PRO_HL_TAKER_FEE = HL_TAKER_FEE
-PRO_HL_MAKER_FEE = HL_MAKER_FEE
-PRO_TRANSACTION_FEE_RATE = dict(TRANSACTION_FEE_RATE)
 PRO_CARRY_FEE_RATE_PER_INTERVAL = dict(CARRY_FEE_RATE_PER_INTERVAL)
 PRO_DAILY_STOCK_BORROW_RATE = DAILY_STOCK_BORROW_RATE
 PRO_DAILY_MARGIN_INTEREST_RATE = DAILY_MARGIN_INTEREST_RATE
@@ -1410,7 +1407,7 @@ class TradePair(Enum):
                 return v.value
         raise ValueError(f"TradePair {self.trade_pair_id} is missing subaccount_tier_base_leverage")
 
-    def transaction_fee_rate(self, is_hl_taker: bool | None = True, is_pro=False) -> float:
+    def transaction_fee_rate(self, is_hl_taker: bool | None = True) -> float:
         """Maker rate only when the fill added liquidity; taker when it took or is unknown."""
         if self.src != TradePairSource.HYPERLIQUID:
             return TRANSACTION_FEE_RATE.get(self.trade_pair_category, 0)
