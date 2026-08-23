@@ -27,6 +27,8 @@ from vali_objects.utils.leverage_utils import (
 )
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.trade_pair import (
+    HL_COIN_TO_TRADE_PAIR,
+    ExposureGroup,
     InstrumentType,
     SubaccountTierBaseLeverage,
     TradePair,
@@ -258,7 +260,7 @@ class TestTradePairPropertyAccessors(unittest.TestCase):
         self.assertEqual(TradePair.BTCUSDC.instrument_type, InstrumentType.PERP)
         # HL commodity: [id, name, fee, min, max, category, None, src, coin, instrument, base]
         self.assertEqual(TradePair.GOLDUSDC.instrument_type, InstrumentType.PERP)
-        # Equities (no subcategory): [id, name, fee, min, max, category, instrument, base]
+        # Equities (no subcategory): [id, name, fee, min, max, category, instrument, base, exposure_group]
         self.assertEqual(TradePair.NVDA.instrument_type, InstrumentType.SPOT)
 
     def test_subaccount_tier_base_via_named_tuple_scan(self):
@@ -280,6 +282,43 @@ class TestTradePairPropertyAccessors(unittest.TestCase):
     def test_hl_coin_property_still_works(self):
         # GOLDUSDC has hl_coin="xyz:GOLD"; BTCUSD has no hl_coin → falls back to base name
         self.assertEqual(TradePair.GOLDUSDC.hl_coin, "xyz:GOLD")
+
+    def test_hl_coin_falls_back_to_base_for_non_hl_pairs(self):
+        """Equities and forex sit at len(value) > 8, so the index-8 slot must not be read."""
+        self.assertEqual(TradePair.NVDA.hl_coin, "NVDA")
+        self.assertEqual(TradePair.EURUSD.hl_coin, "EUR")
+        self.assertEqual(TradePair.NVDAUSDC.hl_coin, "xyz:NVDA")
+        self.assertIs(HL_COIN_TO_TRADE_PAIR["xyz:NVDA"], TradePair.NVDAUSDC)
+
+    def test_exposure_group_is_equities_only(self):
+        self.assertEqual(TradePair.NVDA.exposure_group, ExposureGroup.INFORMATION_TECHNOLOGY)
+        self.assertIsNone(TradePair.EURUSD.exposure_group)
+        self.assertIsNone(TradePair.BTCUSD.exposure_group)
+        self.assertIsNone(TradePair.SP500USDC.exposure_group)
+
+
+class TestExposureGroups(unittest.TestCase):
+    """Sectors are literals on each equity member; nothing is read from the CSV at runtime."""
+
+    def test_every_group_is_used(self):
+        in_use = {tp.exposure_group for tp in TradePair if tp.exposure_group is not None}
+        self.assertEqual(in_use, set(ExposureGroup))
+
+    def test_hand_assigned_sectors(self):
+        # These deliberately disagree with russell1000.csv (Industrials / Information Technology).
+        self.assertEqual(TradePair.UBER.exposure_group, ExposureGroup.INFORMATION_TECHNOLOGY)
+        self.assertEqual(TradePair.APP.exposure_group, ExposureGroup.COMMUNICATION)
+        # Sector ETFs, which the CSV does not cover at all.
+        self.assertEqual(TradePair.XLK.exposure_group, ExposureGroup.INFORMATION_TECHNOLOGY)
+        self.assertEqual(TradePair.VGT.exposure_group, ExposureGroup.INFORMATION_TECHNOLOGY)
+        self.assertEqual(TradePair.VNQ.exposure_group, ExposureGroup.REAL_ESTATE)
+
+    def test_values_are_the_csv_labels_verbatim(self):
+        """The generator derives member names from these, so they must not be reformatted."""
+        self.assertEqual(ExposureGroup.HEALTH_CARE.value, "Health Care")
+        self.assertEqual(ExposureGroup.INFORMATION_TECHNOLOGY.value, "Information Technology")
+        for group in ExposureGroup:
+            self.assertEqual(group.value.upper().replace(" ", "_"), group.name)
 
 
 if __name__ == "__main__":
