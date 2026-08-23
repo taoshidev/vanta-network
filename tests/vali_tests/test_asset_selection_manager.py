@@ -301,6 +301,24 @@ class TestAssetSelectionManager(TestBase):
         # Should succeed normally (server handles errors internally)
         self.assertTrue(result['successfully_processed'])
 
+    def test_pro_accounts_cannot_trade_hyperliquid_pairs(self):
+        """Pro accounts are Vanta-only, so every Hyperliquid-sourced pair is rejected."""
+        cases = [
+            (MinerAssetClass.HL_ALL, TradePair.BTCUSDC),
+            (MinerAssetClass.CRYPTO, TradePair.BTCUSDC),
+            (MinerAssetClass.COMMODITIES, TradePair.GOLDUSDC),
+            (MinerAssetClass.ALL_MARKETS, TradePair.BTCUSDC),
+        ]
+        for asset_class, trade_pair in cases:
+            self.assertTrue(asset_class.can_trade(trade_pair), f"{asset_class} {trade_pair}")
+            self.assertFalse(asset_class.can_trade(trade_pair, is_pro=True), f"{asset_class} {trade_pair}")
+
+    def test_pro_accounts_keep_vanta_pairs(self):
+        """Vanta-sourced pairs stay available to pro accounts."""
+        self.assertTrue(MinerAssetClass.FOREX.can_trade(TradePair.EURUSD, is_pro=True))
+        self.assertTrue(MinerAssetClass.EQUITIES.can_trade(TradePair.NVDA, is_pro=True))
+        self.assertTrue(MinerAssetClass.ALL_MARKETS.can_trade(TradePair.EURUSD, is_pro=True))
+
 
 if __name__ == '__main__':
     unittest.main()
