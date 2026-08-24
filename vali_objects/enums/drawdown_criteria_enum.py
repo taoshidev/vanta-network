@@ -6,4 +6,4 @@ class DrawdownCriteria(str, Enum):
     subaccounts, this is chosen once at subaccount creation (SubaccountInfo.drawdown_criteria) and
     is immutable afterward"""
     TRAILING = "trailing"   # intraday + EOD trailing (regular miners and subaccounts opted into legacy rules)
-    STATIC = "static"        # static balance + static EOD (subaccounts opted into static rules at creation)
+    STATIC = "static"        # static equity vs starting balance + daily loss limit vs day-open equity (subaccounts opted in at creation)

@@ -428,7 +428,7 @@ class ValiConfig:
 
     # Entity subaccount (standard account) static drawdown rules
     SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD = 0.05  # Rule 1: equity (incl. unrealized PnL) more than 5% below starting balance eliminates
-    SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # equity (incl. unrealized PnL) more than 5% below starting balance at 00:00 UTC eliminates
+    SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # retired rule — no longer enforced; kept for dashboard payload compatibility
     SUBACCOUNT_DAILY_LOSS_LIMIT_THRESHOLD = 0.05  # Rule 2: equity cannot drop more than 5% from the starting equity of the day
 
     # Subaccount promotion requirements

@@ -352,11 +352,6 @@ class ChallengePeriodManager(CacheController):
                 if reason := self._check_daily_loss_limit(state):
                     eliminations[hotkey] = reason
                     continue
-
-                # Static EOD drawdown — equity at the 00:00 UTC check cannot be more than 5% below starting balance
-                if reason := self._check_static_eod_drawdown(state):
-                    eliminations[hotkey] = reason
-                    continue
             else:
                 # Legacy rules: pre-effective subaccounts eliminate immediately; regular miners only after activation
                 # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
@@ -466,21 +461,6 @@ class ChallengePeriodManager(CacheController):
                 return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN
         elif state.drawdown.static_drawdown_pct > threshold_pct * 0.75:
             logger.info(f"[CHALLENGE] near static drawdown {threshold_pct}%: {state}")
-        return None
-
-    @staticmethod
-    def _check_static_eod_drawdown(state: MinerBucketState) -> EliminationReason | None:
-        threshold_pct = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
-        if state.drawdown.static_eod_drawdown_pct > threshold_pct:
-            logger.warning(f"[CHALLENGE] ELIMINATION static EOD drawdown {threshold_pct}%: {state}")
-            if state.current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
-                return EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN
-            else:
-                return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN
-
-        if (1.0 - state.drawdown.current_equity) * 100.0 > threshold_pct:
-            logger.info(f"[CHALLENGE] near static EOD with current equity {threshold_pct}%: {state}")
-
         return None
 
     @staticmethod
