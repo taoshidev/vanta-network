@@ -64,7 +64,7 @@ class DrawdownStats:
 
     @property
     def static_drawdown_pct(self) -> float:
-        return (1.0 - self.current_balance) * 100.0
+        return (1.0 - self.current_equity) * 100.0
 
     @property
     def static_eod_drawdown_pct(self) -> float:
@@ -344,7 +344,7 @@ class ChallengePeriodManager(CacheController):
             if state.drawdown_criteria == DrawdownCriteria.STATIC:
                 # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
                 # both measured against starting balance
-                # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
+                # Rule 1: Static drawdown — equity (incl. unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
                     eliminations[hotkey] = reason
                     continue
