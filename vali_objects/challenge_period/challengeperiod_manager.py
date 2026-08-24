@@ -342,14 +342,18 @@ class ChallengePeriodManager(CacheController):
                 continue
 
             if state.drawdown_criteria == DrawdownCriteria.STATIC:
-                # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
-                # both measured against starting balance
+                # Static rules (Hyperscaled excluded)
                 # Rule 1: Static drawdown — equity (incl. unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
                     eliminations[hotkey] = reason
                     continue
 
-                # Rule 2: Static EOD drawdown — equity at the 00:00 UTC check cannot be more than 5% below starting balance
+                # Rule 2: Daily loss limit — equity cannot drop more than 5% below the day's opening equity (00:00 UTC)
+                if reason := self._check_daily_loss_limit(state):
+                    eliminations[hotkey] = reason
+                    continue
+
+                # Static EOD drawdown — equity at the 00:00 UTC check cannot be more than 5% below starting balance
                 if reason := self._check_static_eod_drawdown(state):
                     eliminations[hotkey] = reason
                     continue
@@ -480,6 +484,21 @@ class ChallengePeriodManager(CacheController):
         return None
 
     @staticmethod
+    def _check_daily_loss_limit(state: MinerBucketState) -> EliminationReason | None:
+        # Threshold is always 5% for static accounts. If a legacy subaccount under trailing dd is switched over to static, it's still 5%
+        # Do not use state.intraday_drawdown_threshold_pct here, because that's the legacy-rules lookup, which resolves 8%/10% for subaccounts registered before May 27, 2026.
+        threshold_pct = ValiConfig.SUBACCOUNT_DAILY_LOSS_LIMIT_THRESHOLD * 100
+        if state.drawdown.intraday_drawdown_pct > threshold_pct:
+            logger.warning(f"[CHALLENGE] ELIMINATION daily loss limit {threshold_pct}%: {state}")
+            if state.current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+                return EliminationReason.FAILED_CHALLENGE_PERIOD_DAILY_LOSS_LIMIT
+            else:
+                return EliminationReason.FAILED_FUNDED_PERIOD_DAILY_LOSS_LIMIT
+        elif state.drawdown.intraday_drawdown_pct > threshold_pct * 0.75:
+            logger.info(f"[CHALLENGE] near daily loss limit {threshold_pct}%: {state}")
+        return None
+
+    @staticmethod
     def _check_demotion(state: MinerBucketState) -> bool:
         if state.current_bucket == MinerBucket.MAINCOMP:
             result = (state.rank > ValiConfig.PROMOTION_THRESHOLD_RANK
@@ -534,6 +553,8 @@ class ChallengePeriodManager(CacheController):
             elif elimination_reason.is_static_eod_drawdown:
                 elimination_drawdown_pct = state.drawdown.static_eod_drawdown_pct
                 elimination_time_ms = state.drawdown.last_eod_checked_ms or current_time_ms
+            elif elimination_reason.is_daily_loss_limit:
+                elimination_drawdown_pct = state.drawdown.intraday_drawdown_pct
             else:
                 elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
 
@@ -1025,6 +1046,7 @@ class ChallengePeriodManager(CacheController):
             "eod_drawdown_threshold": eod_threshold,
             "static_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD,
             "static_eod_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD,
+            "daily_loss_limit_threshold": ValiConfig.SUBACCOUNT_DAILY_LOSS_LIMIT_THRESHOLD,
             "drawdown_criteria": criteria.value,
         }
 
