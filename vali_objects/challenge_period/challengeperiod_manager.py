@@ -64,7 +64,7 @@ class DrawdownStats:
 
     @property
     def static_drawdown_pct(self) -> float:
-        return (1.0 - self.current_balance) * 100.0
+        return (1.0 - self.current_equity) * 100.0
 
     @property
     def static_eod_drawdown_pct(self) -> float:
@@ -194,6 +194,9 @@ class MinerBucketState:
 
     @property
     def intraday_drawdown_threshold(self):
+        if self.drawdown_criteria == DrawdownCriteria.STATIC:
+            # 5% for static accounts, regardless of bucket or registration time
+            return ValiConfig.SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD
         if self.current_bucket == MinerBucket.ELIMINATED:
             if len(self.entries) >= 2:
                 prev_entry = self.entries[-2]
@@ -341,31 +344,40 @@ class ChallengePeriodManager(CacheController):
                 eliminations[hotkey] = reason
                 continue
 
-            if state.drawdown_criteria == DrawdownCriteria.STATIC:
-                # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
-                # both measured against starting balance
-                # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
-                if reason := self._check_static_drawdown(state):
+            is_static = state.drawdown_criteria == DrawdownCriteria.STATIC
+            if is_static and current_time_ms < ValiConfig.SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS:
+                # Legacy static rules until the v2 effective time — delete this branch once it has passed
+                # Rule 1: balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
+                if reason := self._check_static_balance_drawdown(state):
                     eliminations[hotkey] = reason
                     continue
 
-                # Rule 2: Static EOD drawdown — equity at the 00:00 UTC check cannot be more than 5% below starting balance
+                # Rule 2: equity at the 00:00 UTC check cannot be more than 5% below starting balance
                 if reason := self._check_static_eod_drawdown(state):
                     eliminations[hotkey] = reason
                     continue
             else:
+                if is_static:
+                    # Static rules (Hyperscaled excluded)
+                    # Rule 1: Static drawdown — equity (incl. unrealized PnL) cannot drop more than 5% below starting balance
+                    if reason := self._check_static_drawdown(state):
+                        eliminations[hotkey] = reason
+                        continue
+
                 # Legacy rules: pre-effective subaccounts eliminate immediately; regular miners only after activation
-                # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
+                # Rule: Intraday drawdown — current equity cannot drop below today's opening equity by more than the
+                # applicable threshold (flat 5% for static accounts, bucket/registration-time-dependent for trailing)
                 if reason := self._check_intraday_drawdown(state):
                     if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
                         eliminations[hotkey] = reason
                     continue
 
-                # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
-                if reason := self._check_eod_drawdown(state):
-                    if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
-                        eliminations[hotkey] = reason
-                    continue
+                if not is_static:
+                    # Rule: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
+                    if reason := self._check_eod_drawdown(state):
+                        if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                            eliminations[hotkey] = reason
+                        continue
 
             _asset = asset_selections.get(hotkey)
             if _asset is None:
@@ -465,7 +477,23 @@ class ChallengePeriodManager(CacheController):
         return None
 
     @staticmethod
+    def _check_static_balance_drawdown(state: MinerBucketState) -> EliminationReason | None:
+        # Legacy pre-v2 Rule 1 — balance (excl. unrealized PnL) vs starting balance. Delete after the v2 effective time
+        threshold_pct = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
+        balance_drawdown_pct = (1.0 - state.drawdown.current_balance) * 100.0
+        if balance_drawdown_pct > threshold_pct:
+            logger.warning(f"[CHALLENGE] ELIMINATION static balance drawdown {threshold_pct}%: {state}")
+            if state.current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+                return EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN
+            else:
+                return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN
+        elif balance_drawdown_pct > threshold_pct * 0.75:
+            logger.info(f"[CHALLENGE] near static balance drawdown {threshold_pct}%: {state}")
+        return None
+
+    @staticmethod
     def _check_static_eod_drawdown(state: MinerBucketState) -> EliminationReason | None:
+        # Legacy pre-v2 Rule 2 — EOD equity vs starting balance. Delete after the v2 effective time
         threshold_pct = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
         if state.drawdown.static_eod_drawdown_pct > threshold_pct:
             logger.warning(f"[CHALLENGE] ELIMINATION static EOD drawdown {threshold_pct}%: {state}")
@@ -537,9 +565,17 @@ class ChallengePeriodManager(CacheController):
             else:
                 elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
 
-            is_static = elimination_reason.is_static_drawdown or elimination_reason.is_static_eod_drawdown
+            is_static = state.drawdown_criteria == DrawdownCriteria.STATIC
             intraday_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.intraday_drawdown_pct
-            eod_drawdown_pct = state.drawdown.static_eod_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
+            if is_static:
+                # Rule 2 slot: post-cutover this is the shared intraday-drawdown check; before it, the legacy EOD-vs-starting-balance check
+                eod_drawdown_pct = (
+                    state.drawdown.intraday_drawdown_pct
+                    if current_time_ms >= ValiConfig.SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS
+                    else state.drawdown.static_eod_drawdown_pct
+                )
+            else:
+                eod_drawdown_pct = state.drawdown.eod_drawdown_pct
 
             self._elimination_client.append_elimination_row(
                 hotkey=hotkey,
