@@ -186,7 +186,9 @@ class IndicesMarketCalendar:
         if schedule.empty:
             self.cache_valid_ans = False
             self.cache_valid_min_ms = timestamp_ms
-            self.cache_valid_max_ms = self.cache_valid_min_ms + MS_IN_24_HOURS
+            # Bound to the end of this calendar day, not 24h from an arbitrary intraday
+            # timestamp, so a Sunday check can't stay cached into Monday's open.
+            self.cache_valid_max_ms = TimeUtil.timestamp_to_millis(tsn) + MS_IN_24_HOURS
             return self.cache_valid_ans
         #print('schedule', schedule, 'ts', timestamp, 'ts_m', timestamp_ms)
 
