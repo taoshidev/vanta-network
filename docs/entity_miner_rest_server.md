@@ -69,12 +69,13 @@ Returns the cached dashboard for a Hyperliquid address. The cache is populated i
     "eod_drawdown_threshold": 0.05,
     "static_drawdown_threshold": 0.05,
     "static_eod_drawdown_threshold": 0.05,
+    "daily_loss_limit_threshold": 0.05,
     "criteria": "trailing"
   }
 }
 ```
 
-`drawdown_criteria` is fixed per subaccount at creation (see [entity_miner.md](entity_miner.md#elimination)) and reflected here as `criteria`. HL-linked subaccounts are always created with `criteria: "trailing"` — the `static_*` fields are still present (drawdown stats are always computed regardless of which rule set applies) but are not used to decide elimination for a `"trailing"` subaccount.
+`drawdown_criteria` is fixed per subaccount at creation (see [entity_miner.md](entity_miner.md#elimination)) and reflected here as `criteria`. HL-linked subaccounts are always created with `criteria: "trailing"` — the `static_*` and `daily_loss_limit_threshold` fields are still present (drawdown stats are always computed regardless of which rule set applies) but are not used to decide elimination for a `"trailing"` subaccount. `static_eod_drawdown_pct`/`static_eod_drawdown_threshold` are retired as of `SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS` (Aug 25, 2026 00:00 UTC) and kept only for payload compatibility — see [entity_miner.md](entity_miner.md#elimination) for current static-rule behavior.
 
 **Error Responses:**
 ```json
