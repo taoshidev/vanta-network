@@ -28,6 +28,8 @@ from shared_objects.log import logger
 
 class MarketOrderManager():
 
+    BRACKET_FULL_CLOSE_PCT_THRESHOLD = 0.99  # bracket_pct at or above this closes the entire position instead of leaving a small remainder open
+
     def __init__(self, serve:bool, running_unit_tests=False, connection_mode=RPCConnectionMode.RPC):
         self.serve = serve
         self.running_unit_tests = running_unit_tests
@@ -163,7 +165,11 @@ class MarketOrderManager():
 
         quantity, leverage, value, bracket_pct = order_size
         if bracket_pct:
-            quantity = -position.net_quantity * bracket_pct
+            if bracket_pct < self.BRACKET_FULL_CLOSE_PCT_THRESHOLD:
+                quantity = -position.net_quantity * bracket_pct
+            else:
+                order_type = OrderType.FLAT
+
         if order_type == OrderType.FLAT or quantity == -position.net_quantity:
             order_type = OrderType.FLAT
             sizing = OrderSize(quantity=-position.net_quantity)
