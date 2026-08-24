@@ -1109,7 +1109,7 @@ class EntityManager(ValidatorBroadcastBase):
             weekly_settlements = []
             def _record_week(start_ms, end_ms, balance, eow_unrealized, week_orders):
                 previous_payouts = sum(s['payout'] for s in weekly_settlements)
-                payout = max(0, min(balance, balance + eow_unrealized)) - previous_payouts
+                payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
                 weekly_settlements.append({
                     'start_ms': start_ms,
                     'end_ms': end_ms,
