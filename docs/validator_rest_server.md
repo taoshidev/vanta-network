@@ -1334,7 +1334,6 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
       "eod_drawdown_threshold": 0.05,
       "static_drawdown_threshold": 0.05,
       "static_eod_drawdown_threshold": 0.05,
-      "daily_loss_limit_threshold": 0.05,
       "criteria": "trailing"
     },
     "ledger": {
@@ -1776,7 +1775,6 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "eod_drawdown_threshold": 0.05,
       "static_drawdown_threshold": 0.05,
       "static_eod_drawdown_threshold": 0.05,
-      "daily_loss_limit_threshold": 0.05,
       "criteria": "static"
     },
     // elimination is only included if the subaccount is eliminated
@@ -1935,27 +1933,24 @@ Only present after the first challenge period evaluation cycle (~60s after start
 - `daily_open_equity`: Equity at today's midnight UTC checkpoint (trailing Rule 1 baseline). Defaults to `1.0` if no midnight checkpoint exists yet.
 - `eod_hwm`: Highest end-of-day equity across all midnight checkpoints ever (trailing Rule 2 high water mark). Defaults to `1.0` if no midnight checkpoints exist.
 - `last_eod_equity`: Most recent midnight checkpoint equity. Defaults to `1.0` if no midnight checkpoints exist yet.
-- `intraday_drawdown_pct`: Percentage drop from `daily_open_equity` to `current_equity`. Positive = drawdown, negative = gain since open. Drives elimination when `criteria` is `"trailing"` (intraday rule), and also for `"static"` subaccounts via the daily loss limit.
+- `intraday_drawdown_pct`: Percentage drop from `daily_open_equity` to `current_equity`. Positive = drawdown, negative = gain since open. Drives elimination for both `criteria` values — the check is identical, only `intraday_drawdown_threshold` differs.
 - `eod_drawdown_pct`: Percentage drop from `eod_hwm` to `last_eod_equity`. `0.0` if no midnight checkpoints exist. Drives elimination only when `criteria` is `"trailing"` (EOD rule).
 - `static_drawdown_pct`: Percentage drop from starting balance (`1.0`) to `current_equity` (includes unrealized PnL). Drives elimination when `criteria` is `"static"`.
-- `static_eod_drawdown_pct`: Percentage drop from starting balance (`1.0`) to `last_eod_equity`. Retired as an elimination driver as of `SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS` (Aug 25, 2026 00:00 UTC) — kept in the payload for dashboard/API compatibility only.
+- `static_eod_drawdown_pct`: Percentage drop from starting balance (`1.0`) to `last_eod_equity`. Retired — no longer drives elimination for any subaccount, kept in the payload for dashboard/API compatibility only.
 - `current_return`: `min(current_equity, current_balance) - 1.0` — used for challenge-period promotion, independent of drawdown criteria.
-- `intraday_drawdown_threshold`: Elimination threshold for the trailing intraday rule (e.g. `0.05` = 5%).
+- `intraday_drawdown_threshold`: Elimination threshold for the intraday drawdown rule (e.g. `0.05` = 5%). For `"static"` subaccounts this is always a flat 5%, regardless of bucket or registration time; for `"trailing"` it's the bucket/registration-time-dependent value.
 - `eod_drawdown_threshold`: Elimination threshold for the trailing EOD rule (e.g. `0.05` = 5%).
 - `static_drawdown_threshold`: Elimination threshold for the static starting-balance rule (`0.05` = 5%).
 - `static_eod_drawdown_threshold`: Retired rule's threshold — no longer enforced, kept for dashboard payload compatibility.
-- `daily_loss_limit_threshold`: Elimination threshold for the static daily loss limit (`0.05` = 5%).
 - `criteria`: Which rule set is actually applied for this subaccount — `"trailing"` or `"static"`. Mirrors `subaccount_info.drawdown_criteria`, fixed at creation.
 
 #### Static vs. Trailing Drawdown Rules
 
 Each subaccount is assigned a `drawdown_criteria` at creation (see [Create Subaccount](#create-subaccount)) that never changes for the life of the subaccount:
 - **`"trailing"`** (default): eliminated at intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaching the applicable threshold (5% during challenge, 8% once funded — same as regular miners).
-- **`"static"`**: eliminated when equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or when equity drops more than 5% below the day's opening equity (the daily loss limit). These thresholds do not change between challenge and funded periods. HL-linked subaccounts always use `"trailing"`.
+- **`"static"`**: eliminated when equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or when intraday drawdown from the day's opening equity reaches 5% — the same intraday-drawdown check used for trailing accounts, just with the threshold pinned to a flat 5% instead of the bucket/registration-time lookup. These thresholds do not change between challenge and funded periods. HL-linked subaccounts always use `"trailing"`.
 
-As of `SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS` (Aug 25, 2026 00:00 UTC), the starting-balance rule compares against equity rather than balance, and the separate EOD-vs-starting-balance rule is retired in favor of the daily loss limit above. Before that time, static subaccounts instead used the legacy rules — balance vs. starting balance, and EOD equity vs. starting balance — under the same `FAILED_*_STATIC_DRAWDOWN` / `FAILED_*_STATIC_EOD_DRAWDOWN` reason values.
-
-Elimination reasons reflect which rule triggered: `FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN` / `FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN` (starting-balance rule) and `FAILED_CHALLENGE_PERIOD_DAILY_LOSS_LIMIT` / `FAILED_FUNDED_PERIOD_DAILY_LOSS_LIMIT` (daily loss limit) for `"static"` subaccounts, versus the existing `*_INTRADAY_DRAWDOWN` / `*_EOD_DRAWDOWN` reasons for `"trailing"`. `FAILED_*_STATIC_EOD_DRAWDOWN` remains a valid value on historical elimination rows from before the cutover.
+Elimination reasons reflect which rule triggered: `FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN` / `FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN` for the starting-balance rule. The intraday drawdown rule reuses the same `FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN` / `FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN` reasons for both `"static"` and `"trailing"` subaccounts — check `criteria` to tell which threshold actually applied. `FAILED_*_STATIC_EOD_DRAWDOWN` is retired and no longer produced, but remains a valid value on historical elimination rows.
 
 **Elimination:**
 

@@ -120,7 +120,7 @@ Miners who repeatedly copy another miner's trades will be eliminated. Our system
 
 Miners who exceed a 5% intraday drawdown (measured from the day's opening equity) or an 8% end-of-day drawdown (measured from their highest-ever end-of-day equity) will be eliminated. Our system continuously tracks each miner's equity to enforce these limits and maintain risk control.
 
-Entity subaccounts (see <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/entity_miner.md">Entity Miner docs</a>) follow a related but distinct drawdown rule set, assigned per-subaccount at creation: either the same trailing intraday/EOD rules as regular miners, or a static rule set that eliminates if equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or if equity drops more than 5% below the day's opening equity (the daily loss limit).
+Entity subaccounts (see <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/entity_miner.md">Entity Miner docs</a>) follow a related but distinct drawdown rule set, assigned per-subaccount at creation: either the same trailing intraday/EOD rules as regular miners, or a static rule set that eliminates if equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or if equity drops more than 5% below the day's opening equity (the same intraday drawdown check as trailing accounts, with a flat 5% threshold).
 
 ### Probation Elimination
 

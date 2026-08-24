@@ -177,7 +177,7 @@ Passing is evaluated continuously — a subaccount is promoted immediately once 
 
 **Elimination during challenge:** Each subaccount is assigned a drawdown rule set at creation (`drawdown_criteria`), which is fixed for the life of the subaccount:
 - **Trailing** (default): eliminated if intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaches **5%**.
-- **Static**: eliminated if equity (including unrealized PnL) drops more than **5%** below the subaccount's starting balance, or if equity drops more than **5%** below the day's opening equity (the daily loss limit).
+- **Static**: eliminated if equity (including unrealized PnL) drops more than **5%** below the subaccount's starting balance, or if intraday drawdown from the day's opening equity reaches **5%** (same intraday drawdown check as trailing, with a flat 5% threshold).
 
 **Portfolio leverage limits:** A subaccount's maximum portfolio leverage (the sum of all open position leverages) is capped by tier. **Tier 1** applies to any subaccount in `SUBACCOUNT_CHALLENGE`, regardless of account size. Once promoted to `SUBACCOUNT_FUNDED`, the tier is instead determined by account size, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
 
@@ -194,7 +194,7 @@ Passing is evaluated continuously — a subaccount is promoted immediately once 
 
 Once in SUBACCOUNT_FUNDED, the subaccount keeps the same `drawdown_criteria` it was created with:
 - **Trailing** (default): standard **8% max drawdown** elimination applies (same as regular miners) — intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaching **8%**.
-- **Static**: still eliminated at **5%** below starting balance, or **5%** below the day's opening equity (daily loss limit), same thresholds as during challenge — this rule set does not loosen after funding.
+- **Static**: still eliminated at **5%** below starting balance, or **5%** intraday drawdown from the day's opening equity, same thresholds as during challenge — this rule set does not loosen after funding.
 
 After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is eligible for additional funding.
 
@@ -647,7 +647,7 @@ Each subaccount is identified by a synthetic hotkey with the format `{entity_hot
 Subaccounts can be eliminated for:
 - **Trailing criteria, challenge period failure** — drawdown exceeds 5% before achieving the return threshold
 - **Trailing criteria, funded period failure** — drawdown exceeds 8%
-- **Static criteria (challenge or funded)** — equity drops more than 5% below starting balance, or more than 5% below the day's opening equity (daily loss limit)
+- **Static criteria (challenge or funded)** — equity drops more than 5% below starting balance, or intraday drawdown from the day's opening equity reaches 5%
 - **Plagiarism** — detected order similarity with other miners
 
 Eliminated subaccount ids are permanently retired. Create a new subaccount to replace an eliminated one.
