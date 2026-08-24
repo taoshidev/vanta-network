@@ -427,8 +427,11 @@ class ValiConfig:
     FUNDED_V1_CUTOFF_MS = 1779840000000  # May 27, 2026 00:00:00 UTC
 
     # Entity subaccount (standard account) static drawdown rules
+    # Before the effective time the legacy static rules apply (balance vs starting balance + EOD equity check);
+    # after it, Rule 1 (equity vs starting balance) + Rule 2 (daily loss limit) apply
+    SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS = 1787616000000  # Tue Aug 25, 2026 00:00:00 UTC
     SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD = 0.05  # Rule 1: equity (incl. unrealized PnL) more than 5% below starting balance eliminates
-    SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # retired rule — no longer enforced; kept for dashboard payload compatibility
+    SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # legacy rule, enforced only before SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS
     SUBACCOUNT_DAILY_LOSS_LIMIT_THRESHOLD = 0.05  # Rule 2: equity cannot drop more than 5% from the starting equity of the day
 
     # Subaccount promotion requirements
