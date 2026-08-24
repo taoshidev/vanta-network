@@ -565,9 +565,17 @@ class ChallengePeriodManager(CacheController):
             else:
                 elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
 
-            is_static = elimination_reason.is_static_drawdown or elimination_reason.is_static_eod_drawdown
+            is_static = state.drawdown_criteria == DrawdownCriteria.STATIC
             intraday_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.intraday_drawdown_pct
-            eod_drawdown_pct = state.drawdown.static_eod_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
+            if is_static:
+                # Rule 2 slot: post-cutover this is the shared intraday-drawdown check; before it, the legacy EOD-vs-starting-balance check
+                eod_drawdown_pct = (
+                    state.drawdown.intraday_drawdown_pct
+                    if current_time_ms >= ValiConfig.SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS
+                    else state.drawdown.static_eod_drawdown_pct
+                )
+            else:
+                eod_drawdown_pct = state.drawdown.eod_drawdown_pct
 
             self._elimination_client.append_elimination_row(
                 hotkey=hotkey,
