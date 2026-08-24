@@ -1161,17 +1161,19 @@ class EntityManager(ValidatorBroadcastBase):
                         snapshot = snapshots[j]
                         best_delta = delta
                     j += 1
-                if snapshot is not None:
+
+                if end_time == end_time_ms and realtime:
+                    unrealized_pnl = realtime_unrealized
+                elif snapshot is not None:
                     unrealized_pnl = snapshot.equity - snapshot.balance
                 else:
                     cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
                     unrealized_pnl = cp.unrealized_pnl if cp else 0.0
-                    logger.warning(
-                        f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
-                        f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
-                    )
-                if end_time == end_time_ms and realtime:
-                    unrealized_pnl = realtime_unrealized
+                    if not cp:
+                        logger.warning(
+                            f"[ENTITY_MANAGER] No account unrealized pnl found near end_time={end_time} for "
+                            f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
+                        )
                 _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)
                 eow_hwm = max(eow_hwm, running_balance)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
