@@ -1434,7 +1434,10 @@ class HyperliquidTracker:
         current_price = price_sources[0].close
         current_signed_weight = (current_position.net_quantity * current_price) / vanta_balance if current_position else 0
         delta = target_signed_weight - current_signed_weight
-        if abs(delta) < min_lev:
+
+        # A close-out should go through even if the delta is too small
+        is_close_out = target_signed_weight == 0.0 and current_position is not None
+        if abs(delta) < min_lev and not is_close_out:
             logger.info(
                 f"[HL_TRACKER] Skipping fill: {coin} delta={delta:+.4f} below min leverage {min_lev} "
                 f"target={target_signed_weight:+.4f} current={current_signed_weight:+.4f} -> {synthetic_hotkey}"
