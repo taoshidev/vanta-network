@@ -523,10 +523,11 @@ class ChallengePeriodManager(CacheController):
                 elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
 
             is_static = state.drawdown_criteria == DrawdownCriteria.STATIC
-            intraday_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.intraday_drawdown_pct
-            # Rule 2 slot: for static accounts this is the shared intraday-drawdown check (state.drawdown.intraday_drawdown_pct);
-            # for trailing accounts it's the EOD-vs-high-water-mark check
-            eod_drawdown_pct = state.drawdown.intraday_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
+            # intraday_drawdown_pct always holds the literal equity-vs-day-open number
+            intraday_drawdown_pct = state.drawdown.intraday_drawdown_pct
+            # eod_drawdown_pct holds the account's other rule: static equity-vs-starting-balance for static accounts,
+            # or the trailing EOD-vs-high-water-mark check for trailing accounts
+            eod_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
 
             self._elimination_client.append_elimination_row(
                 hotkey=hotkey,
