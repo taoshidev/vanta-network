@@ -427,11 +427,9 @@ class ValiConfig:
     FUNDED_V1_CUTOFF_MS = 1779840000000  # May 27, 2026 00:00:00 UTC
 
     # Entity subaccount (standard account) static drawdown rules
-    # Rule 1 (equity vs starting balance)
-    # Rule 2 (intraday drawdown)
-    SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS = 1787616000000  # Tue Aug 25, 2026 00:00:00 UTC
+    # Rule 1: equity vs starting balance. Rule 2: intraday drawdown (shared check with trailing accounts, flat threshold)
     SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD = 0.05  # Rule 1: equity (incl. unrealized PnL) more than 5% below starting balance eliminates
-    SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # legacy rule, enforced only before SUBACCOUNT_STATIC_RULES_V2_EFFECTIVE_MS
+    SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # retired rule, no longer enforced — kept for dashboard/API payload compatibility
     SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: flat intraday-drawdown threshold for static accounts, regardless of bucket entry time
 
     # Subaccount promotion requirements
