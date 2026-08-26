@@ -367,7 +367,7 @@ class ChallengePeriodManager(CacheController):
             if state.drawdown_criteria == DrawdownCriteria.STATIC:
                 # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
                 # both measured against starting balance
-                # Rule 1: Static drawdown — balance (excl. unrealized PnL) cannot drop more than 5% below starting balance
+                # Rule 1: Static drawdown — equity (including unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
                     eliminations[hotkey] = reason
                     continue
