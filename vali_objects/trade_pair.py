@@ -1280,6 +1280,7 @@ class TradePair(Enum):
     TONUSDC   = ["TONUSDC",   "TON/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
     TRXUSDC   = ["TRXUSDC",   "TRX/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
     LTCUSDC   = ["LTCUSDC",   "LTC/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
+    BCHUSDC   = ["BCHUSDC",   "BCH/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
     TAOUSDC   = ["TAOUSDC",   "TAO/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
     SUIUSDC   = ["SUIUSDC",   "SUI/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
     ARBUSDC   = ["ARBUSDC",   "ARB/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5)]
@@ -1547,7 +1548,6 @@ HL_COIN_TO_TRADE_PAIR: dict[str, TradePair] = {
 }
 
 # Maps native Vanta crypto TradePairs to their Hyperliquid (USDC-quoted) equivalents.
-# BCHUSD has no corresponding HL pair and is omitted.
 NATIVE_CRYPTO_TO_HL_TRADE_PAIR: dict[TradePair, TradePair] = {
     TradePair.BTCUSD:  TradePair.BTCUSDC,
     TradePair.ETHUSD:  TradePair.ETHUSDC,
@@ -1558,6 +1558,7 @@ NATIVE_CRYPTO_TO_HL_TRADE_PAIR: dict[TradePair, TradePair] = {
     TradePair.TAOUSD:  TradePair.TAOUSDC,
     TradePair.HYPEUSD: TradePair.HYPEUSDC,
     TradePair.ZECUSD:  TradePair.ZECUSDC,
+    TradePair.BCHUSD:  TradePair.BCHUSDC,
     TradePair.LINKUSD: TradePair.LINKUSDC,
     TradePair.XMRUSD:  TradePair.XMRUSDC,
     TradePair.LTCUSD:  TradePair.LTCUSDC,
