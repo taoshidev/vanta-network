@@ -793,12 +793,15 @@ class RPCServerBase(ABC):
                 # Success - reset backoff
                 self._backoff.reset()
 
-                # Don't trigger daemon level exception - slack fail is trivial
-                try:
-                    if message and self.slack_notifier:
-                        self.slack_notifier.send_message(message, bypass_cooldown=True)
-                except Exception as e:
-                    logger.error(f"[RPC_SERVER_BASE] Error sending slack message: {message} {e}")
+                # Send off-thread so a hung network call (e.g. a stalled SSL handshake)
+                # can never block the daemon loop itself.
+                if message and self.slack_notifier:
+                    def _notify(msg=message):
+                        try:
+                            self.slack_notifier.send_message(msg, bypass_cooldown=True)
+                        except Exception as e:
+                            logger.error(f"[RPC_SERVER_BASE] Error sending slack message: {msg} {e}")
+                    threading.Thread(target=_notify, daemon=True, name=f"{self.service_name}_SlackNotify").start()
 
                 time.sleep(self.daemon_interval_s)
 
