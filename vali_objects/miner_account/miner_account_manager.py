@@ -930,6 +930,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 else self.accounts.values()
             )
             for account in targets:
+                if hotkey is None and account.miner_bucket == MinerBucket.ELIMINATED:
+                    continue
                 snapshot = AccountSnapshot(
                     snapshot_ms=timestamp_ms,
                     account_size=account.get_account_size(),

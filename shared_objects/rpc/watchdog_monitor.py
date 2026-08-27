@@ -120,7 +120,13 @@ class WatchdogMonitor:
                 )
                 logger.error(hang_msg)
                 if self.slack_notifier:
-                    self.slack_notifier.send_message(hang_msg, level="error")
+                    # Send off-thread so a hung network call can't also freeze the watchdog.
+                    def _notify(msg=hang_msg):
+                        try:
+                            self.slack_notifier.send_message(msg, level="error")
+                        except Exception as e:
+                            logger.error(f"{self.service_name} watchdog error sending Slack alert: {e}")
+                    threading.Thread(target=_notify, daemon=True, name=f"{self.service_name}_WatchdogNotify").start()
 
         logger.debug(f"{self.service_name} watchdog shutting down")
 
