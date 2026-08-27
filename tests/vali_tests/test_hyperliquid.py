@@ -234,19 +234,19 @@ class TestHyperliquidSubaccounts(TestBase):
         self.assertFalse(success)
         self.assertIn("not registered", message.lower())
 
-    def test_create_hl_subaccount_admin_flag(self):
-        """Test HL subaccount creation with admin flag."""
+    def test_create_hl_subaccount_collateral_exempt_flag(self):
+        """Test HL subaccount creation with the collateral_exempt flag."""
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
 
         success, subaccount_info, _ = self.entity_client.create_hl_subaccount(
             entity_hotkey=self.ENTITY_HOTKEY_1,
             account_size=50_000,
             hl_address=VALID_HL_ADDRESS,
-            admin=True
+            collateral_exempt=True
         )
 
         self.assertTrue(success)
-        self.assertEqual(subaccount_info['status'], 'admin')
+        self.assertEqual(subaccount_info['status'], 'active')
 
     # ==================== Payout Address ====================
 
