@@ -5,18 +5,22 @@ Tests for Entity Miner Gateway implementation.
 
 Covers:
 - OrderEvent / OrderEventStore (ring buffer)
-- WebSocket Server entity auth (signature, nonce, scope enforcement)
-- HyperliquidTracker rejection broadcasts
-- EntityMinerRestServer WS message handling
-- Dynamic subaccount subscription
-- _remove_client entity cleanup
+- Synthetic-hotkey scope enforcement
+- WebSocket Server client removal + new-subaccount dashboard subscription
+- HyperliquidTracker rejection/acceptance broadcasts
+- EntityMinerRestServer WS message handling + dashboard cache reconciliation
+- EntityManager new-subaccount WS notification
+
+(WS-level entity signature auth and nonce replay protection were removed in the
+Dashboard-v2 refactor; nonce handling now lives in NonceManager — see
+test_nonce_manager.py.)
 """
 import asyncio
 import json
 import time
 import unittest
-from collections import defaultdict, deque
-from unittest.mock import MagicMock, AsyncMock, patch
+from collections import defaultdict
+from unittest.mock import MagicMock
 
 from tests.vali_tests.base_objects.test_base import TestBase
 
@@ -161,350 +165,6 @@ class TestOrderEventStore(TestBase):
         self.assertEqual(store.get_events(addr2)[0]["trade_pair"], "ETHUSD")
 
 
-# ==================== WebSocket Server Entity Auth Tests ====================
-
-class TestWebSocketEntityAuth(unittest.IsolatedAsyncioTestCase):
-    """Tests for the WebSocket server entity authentication flow."""
-
-    def _make_server(self):
-        """Create a minimal WebSocketServer-like object for testing auth methods."""
-        from vanta_api.websocket_server import (
-            WebSocketServer
-        )
-
-        server = object.__new__(WebSocketServer)
-        # Initialize only the state we need
-        server.connected_clients = {}
-        server.client_auth = {}
-        server.api_key_clients = defaultdict(deque)
-        server.entity_clients = defaultdict(deque)
-        server._entity_auth_nonces = defaultdict(dict)
-        server._entity_nonce_lock = asyncio.Lock()
-        server.subscribed_clients = set()
-        server.subaccount_subscriptions = defaultdict(set)
-        server.subaccount_last_broadcast_ms = {}
-        server._subaccount_poll_tasks = {}
-        server.sequence_number = 0
-        server.loop = asyncio.get_event_loop()
-        server._entity_client = MagicMock()
-        server.api_key_to_alias = {}
-        return server
-
-    def _mock_websocket(self):
-        """Create a mock WebSocket with async send/close."""
-        ws = MagicMock()
-        ws.send = AsyncMock()
-        ws.close = AsyncMock()
-        return ws
-
-    # --- Nonce Cleanup ---
-
-    def test_cleanup_expired_nonces(self):
-        """Expired nonces are removed during cleanup."""
-        from vanta_api.websocket_server import ENTITY_AUTH_TIMESTAMP_TTL_MS
-
-        server = self._make_server()
-        entity = "5EntityHotkey"
-        now = 10_000_000
-
-        # Add nonces: some expired, some valid
-        server._entity_auth_nonces[entity] = {
-            "old1": now - ENTITY_AUTH_TIMESTAMP_TTL_MS - 1000,  # expired
-            "old2": now - ENTITY_AUTH_TIMESTAMP_TTL_MS - 500,   # expired
-            "new1": now - 1000,                                  # valid
-            "new2": now - 500,                                   # valid
-        }
-
-        server._cleanup_expired_nonces(entity, now)
-
-        self.assertEqual(len(server._entity_auth_nonces[entity]), 2)
-        self.assertIn("new1", server._entity_auth_nonces[entity])
-        self.assertIn("new2", server._entity_auth_nonces[entity])
-        self.assertNotIn("old1", server._entity_auth_nonces[entity])
-
-    def test_cleanup_nonces_bounded(self):
-        """Nonce set is bounded to ENTITY_AUTH_MAX_NONCES."""
-        from vanta_api.websocket_server import ENTITY_AUTH_MAX_NONCES
-
-        server = self._make_server()
-        entity = "5EntityHotkey"
-        now = 10_000_000
-
-        # Add more than max nonces, all valid
-        for i in range(ENTITY_AUTH_MAX_NONCES + 100):
-            server._entity_auth_nonces[entity][f"nonce_{i}"] = now - i
-
-        server._cleanup_expired_nonces(entity, now)
-
-        self.assertEqual(len(server._entity_auth_nonces[entity]), ENTITY_AUTH_MAX_NONCES)
-
-    def test_cleanup_nonces_empty(self):
-        """Cleanup on empty nonce set is a no-op."""
-        server = self._make_server()
-        server._cleanup_expired_nonces("nonexistent", 10000)
-        # Should not raise
-
-    # --- _authenticate_entity ---
-
-    async def test_entity_auth_missing_fields(self):
-        """Auth fails when required fields are missing."""
-        server = self._make_server()
-        ws = self._mock_websocket()
-
-        result = await server._authenticate_entity("c1", ws, {
-            "entity_hotkey": "5abc",
-            # Missing timestamp, nonce, signature
-        })
-
-        self.assertFalse(result)
-        ws.send.assert_called_once()
-        msg = json.loads(ws.send.call_args[0][0])
-        self.assertEqual(msg["status"], "error")
-        self.assertIn("requires", msg["message"])
-
-    async def test_entity_auth_expired_timestamp(self):
-        """Auth fails when timestamp is outside the TTL window."""
-        server = self._make_server()
-        ws = self._mock_websocket()
-
-        old_timestamp = int(time.time() * 1000) - 10 * 60 * 1000  # 10 min ago
-
-        result = await server._authenticate_entity("c1", ws, {
-            "entity_hotkey": "5abc",
-            "timestamp": old_timestamp,
-            "nonce": "unique-nonce",
-            "signature": "deadbeef"
-        })
-
-        self.assertFalse(result)
-        msg = json.loads(ws.send.call_args[0][0])
-        self.assertIn("expired", msg["message"].lower())
-
-    async def test_entity_auth_nonce_replay(self):
-        """Auth fails when nonce has already been used."""
-        server = self._make_server()
-        ws = self._mock_websocket()
-        entity = "5EntityKey"
-        now_ms = int(time.time() * 1000)
-
-        # Pre-register a nonce
-        server._entity_auth_nonces[entity]["used-nonce"] = now_ms
-
-        result = await server._authenticate_entity("c1", ws, {
-            "entity_hotkey": entity,
-            "timestamp": now_ms,
-            "nonce": "used-nonce",
-            "signature": "deadbeef"
-        })
-
-        self.assertFalse(result)
-        msg = json.loads(ws.send.call_args[0][0])
-        self.assertIn("Nonce already used", msg["message"])
-
-    async def test_entity_auth_unregistered_entity(self):
-        """Auth fails when entity is not registered."""
-        server = self._make_server()
-        ws = self._mock_websocket()
-        now_ms = int(time.time() * 1000)
-
-        server._entity_client.get_entity_data.return_value = None
-
-        result = await server._authenticate_entity("c1", ws, {
-            "entity_hotkey": "5Unregistered",
-            "timestamp": now_ms,
-            "nonce": "fresh-nonce",
-            "signature": "deadbeef"
-        })
-
-        self.assertFalse(result)
-        msg = json.loads(ws.send.call_args[0][0])
-        self.assertIn("not registered", msg["message"])
-
-    async def test_entity_auth_invalid_signature(self):
-        """Auth fails when signature doesn't verify."""
-        server = self._make_server()
-        ws = self._mock_websocket()
-        now_ms = int(time.time() * 1000)
-
-        server._entity_client.get_entity_data.return_value = {"subaccounts": {}}
-
-        # Use a valid-looking but wrong signature
-        result = await server._authenticate_entity("c1", ws, {
-            "entity_hotkey": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
-            "timestamp": now_ms,
-            "nonce": "fresh-nonce",
-            "signature": "00" * 64  # Wrong signature
-        })
-
-        self.assertFalse(result)
-        # Should fail at signature verification
-        msg = json.loads(ws.send.call_args[0][0])
-        self.assertEqual(msg["status"], "error")
-
-    async def test_entity_auth_success(self):
-        """Full entity auth succeeds with valid signature."""
-        server = self._make_server()
-        ws = self._mock_websocket()
-
-        try:
-            from bittensor_wallet import Keypair
-        except ImportError:
-            self.skipTest("bittensor_wallet not installed")
-
-        # Generate a real keypair for testing
-        keypair = Keypair.create_from_mnemonic(Keypair.generate_mnemonic())
-        entity_hotkey = keypair.ss58_address
-        now_ms = int(time.time() * 1000)
-        nonce = "test-nonce-123"
-
-        # Sign the auth message
-        message_dict = {
-            "entity_hotkey": entity_hotkey,
-            "nonce": nonce,
-            "timestamp": now_ms
-        }
-        message_bytes = json.dumps(message_dict, sort_keys=True).encode('utf-8')
-        signature = keypair.sign(message_bytes).hex()
-
-        # Mock entity data with one active subaccount
-        server._entity_client.get_entity_data.return_value = {
-            "subaccounts": {
-                "0": {
-                    "status": "active",
-                    "synthetic_hotkey": f"{entity_hotkey}_0"
-                }
-            }
-        }
-
-        # Mock _ensure_subaccount_poll_task to avoid event loop issues
-        server._ensure_subaccount_poll_task = MagicMock()
-
-        result = await server._authenticate_entity("c1", ws, {
-            "entity_hotkey": entity_hotkey,
-            "timestamp": now_ms,
-            "nonce": nonce,
-            "signature": signature
-        })
-
-        self.assertTrue(result)
-        # Client should be registered
-        self.assertIn("c1", server.connected_clients)
-        self.assertEqual(server.client_auth["c1"]["auth_type"], "entity")
-        self.assertEqual(server.client_auth["c1"]["entity_hotkey"], entity_hotkey)
-        # Should be in entity_clients
-        self.assertIn("c1", server.entity_clients[entity_hotkey])
-        # Should be auto-subscribed to the subaccount
-        self.assertIn("c1", server.subaccount_subscriptions[f"{entity_hotkey}_0"])
-
-        # Auth success message sent
-        last_send = ws.send.call_args_list[-1]
-        msg = json.loads(last_send[0][0])
-        self.assertEqual(msg["status"], "success")
-        self.assertEqual(msg["auth_type"], "entity")
-        self.assertEqual(msg["subscribed_subaccounts"], 1)
-
-    async def test_entity_auth_fifo_eviction(self):
-        """Oldest entity client is evicted when MAX_N_WS_PER_ENTITY is reached."""
-        from vanta_api.websocket_server import MAX_N_WS_PER_ENTITY
-
-        server = self._make_server()
-        entity = "5EntityKey"
-
-        try:
-            from bittensor_wallet import Keypair
-        except ImportError:
-            self.skipTest("bittensor_wallet not installed")
-
-        keypair = Keypair.create_from_mnemonic(Keypair.generate_mnemonic())
-        entity = keypair.ss58_address
-
-        server._entity_client.get_entity_data.return_value = {"subaccounts": {}}
-        server._ensure_subaccount_poll_task = MagicMock()
-
-        # Fill up to max connections
-        for i in range(MAX_N_WS_PER_ENTITY):
-            client_id = f"client_{i}"
-            mock_ws = self._mock_websocket()
-            server.connected_clients[client_id] = mock_ws
-            server.client_auth[client_id] = {"auth_type": "entity", "entity_hotkey": entity}
-            server.entity_clients[entity].append(client_id)
-
-        self.assertEqual(len(server.entity_clients[entity]), MAX_N_WS_PER_ENTITY)
-
-        # Now authenticate a new client — should evict client_0
-        new_ws = self._mock_websocket()
-        now_ms = int(time.time() * 1000)
-        nonce = "eviction-nonce"
-        msg_dict = {"entity_hotkey": entity, "nonce": nonce, "timestamp": now_ms}
-        sig = keypair.sign(json.dumps(msg_dict, sort_keys=True).encode()).hex()
-
-        result = await server._authenticate_entity("new_client", new_ws, {
-            "entity_hotkey": entity, "timestamp": now_ms, "nonce": nonce, "signature": sig
-        })
-
-        self.assertTrue(result)
-        self.assertNotIn("client_0", server.connected_clients)
-        self.assertIn("new_client", server.entity_clients[entity])
-        self.assertEqual(len(server.entity_clients[entity]), MAX_N_WS_PER_ENTITY)
-
-
-# ==================== Auto-Subscribe Tests ====================
-
-class TestAutoSubscribeEntitySubaccounts(unittest.IsolatedAsyncioTestCase):
-    """Tests for _auto_subscribe_entity_subaccounts."""
-
-    def _make_server(self):
-        from vanta_api.websocket_server import WebSocketServer
-        server = object.__new__(WebSocketServer)
-        server.subaccount_subscriptions = defaultdict(set)
-        server._subaccount_poll_tasks = {}
-        server._ensure_subaccount_poll_task = MagicMock()
-        return server
-
-    async def test_subscribe_active_subaccounts(self):
-        """Auto-subscribes to active and admin subaccounts."""
-        server = self._make_server()
-        entity = "5Entity"
-        entity_data = {
-            "subaccounts": {
-                "0": {"status": "active", "synthetic_hotkey": f"{entity}_0"},
-                "1": {"status": "admin", "synthetic_hotkey": f"{entity}_1"},
-                "2": {"status": "eliminated", "synthetic_hotkey": f"{entity}_2"},
-                "3": {"status": "failed", "synthetic_hotkey": f"{entity}_3"},
-            }
-        }
-
-        count = await server._auto_subscribe_entity_subaccounts("c1", entity, entity_data)
-
-        self.assertEqual(count, 2)  # only active + admin
-        self.assertIn("c1", server.subaccount_subscriptions[f"{entity}_0"])
-        self.assertIn("c1", server.subaccount_subscriptions[f"{entity}_1"])
-        self.assertNotIn(f"{entity}_2", server.subaccount_subscriptions)
-        self.assertNotIn(f"{entity}_3", server.subaccount_subscriptions)
-        self.assertEqual(server._ensure_subaccount_poll_task.call_count, 2)
-
-    async def test_subscribe_no_subaccounts(self):
-        """Zero subscriptions when entity has no subaccounts."""
-        server = self._make_server()
-        count = await server._auto_subscribe_entity_subaccounts("c1", "5Entity", {"subaccounts": {}})
-        self.assertEqual(count, 0)
-
-    async def test_subscribe_generates_synthetic_hotkey(self):
-        """Generates synthetic_hotkey from entity+id if not in subaccount data."""
-        server = self._make_server()
-        entity = "5Entity"
-        entity_data = {
-            "subaccounts": {
-                "0": {"status": "active"}  # No synthetic_hotkey field
-            }
-        }
-
-        count = await server._auto_subscribe_entity_subaccounts("c1", entity, entity_data)
-
-        self.assertEqual(count, 1)
-        self.assertIn("c1", server.subaccount_subscriptions[f"{entity}_0"])
-
-
 # ==================== Scope Enforcement Tests ====================
 
 class TestEntityScopeEnforcement(TestBase):
@@ -538,76 +198,55 @@ class TestEntityScopeEnforcement(TestBase):
         self.assertEqual(parsed_entity, "5Alice")
 
 
-# ==================== Remove Client Entity Cleanup Tests ====================
+# ==================== Remove Client Tests ====================
 
-class TestRemoveClientEntityCleanup(TestBase):
-    """Tests for _remove_client cleaning up entity tracking."""
+class TestRemoveClient(TestBase):
+    """Tests for _remove_client on the WebSocket server (api-key/tier client model)."""
 
     def _make_server(self):
         from vanta_api.websocket_server import WebSocketServer
         server = object.__new__(WebSocketServer)
-        server.connected_clients = {}
-        server.client_auth = {}
-        server.api_key_clients = defaultdict(deque)
-        server.entity_clients = defaultdict(deque)
-        server.subscribed_clients = set()
-        server.subaccount_subscriptions = defaultdict(set)
-        server._subaccount_poll_tasks = {}
+        server._clients = {}
+        server._api_key_client_ids = defaultdict(list)
         server.api_key_to_alias = {}
-        server._cancel_subaccount_poll_task = MagicMock()
+        server._event_loop = None
         return server
 
-    def test_remove_entity_client(self):
-        """Removing an entity client cleans up entity_clients tracking."""
+    def test_remove_api_key_client(self):
+        """Removing a client drops it from _clients and its api-key client list."""
         server = self._make_server()
-        entity = "5EntityKey"
-        ws = MagicMock()
+        client = MagicMock()
+        client.api_key = "key123"
+        client.websocket.state = "CLOSED"  # != State.OPEN, so no async close is scheduled
+        server._clients["c1"] = client
+        server._api_key_client_ids["key123"] = ["c1"]
 
-        # Register client
-        server.connected_clients["c1"] = ws
-        server.client_auth["c1"] = {"auth_type": "entity", "entity_hotkey": entity}
-        server.entity_clients[entity].append("c1")
-        server.subaccount_subscriptions[f"{entity}_0"].add("c1")
-
-        # Remove
         server._remove_client("c1")
 
-        self.assertNotIn("c1", server.connected_clients)
-        self.assertNotIn("c1", server.client_auth)
-        self.assertNotIn(entity, server.entity_clients)  # Empty deque removed
-        self.assertNotIn("c1", server.subaccount_subscriptions.get(f"{entity}_0", set()))
+        self.assertNotIn("c1", server._clients)
+        self.assertNotIn("c1", server._api_key_client_ids["key123"])
 
-    def test_remove_entity_client_preserves_others(self):
-        """Removing one entity client doesn't affect other clients for the same entity."""
+    def test_remove_client_preserves_others(self):
+        """Removing one client leaves the api-key's other clients registered."""
         server = self._make_server()
-        entity = "5EntityKey"
-
-        # Register two clients
         for cid in ["c1", "c2"]:
-            server.connected_clients[cid] = MagicMock()
-            server.client_auth[cid] = {"auth_type": "entity", "entity_hotkey": entity}
-            server.entity_clients[entity].append(cid)
+            client = MagicMock()
+            client.api_key = "key123"
+            client.websocket.state = "CLOSED"
+            server._clients[cid] = client
+        server._api_key_client_ids["key123"] = ["c1", "c2"]
 
         server._remove_client("c1")
 
-        self.assertNotIn("c1", server.connected_clients)
-        self.assertIn("c2", server.connected_clients)
-        self.assertEqual(len(server.entity_clients[entity]), 1)
-        self.assertIn("c2", server.entity_clients[entity])
+        self.assertNotIn("c1", server._clients)
+        self.assertIn("c2", server._clients)
+        self.assertEqual(server._api_key_client_ids["key123"], ["c2"])
 
-    def test_remove_api_key_client_no_entity_side_effects(self):
-        """Removing an API key client doesn't touch entity_clients."""
+    def test_remove_unknown_client_is_noop(self):
+        """Removing an unknown client id does not raise."""
         server = self._make_server()
-
-        server.connected_clients["c1"] = MagicMock()
-        server.client_auth["c1"] = {"auth_type": "api_key", "api_key": "key123", "tier": 100}
-        server.api_key_clients["key123"].append("c1")
-
-        server._remove_client("c1")
-
-        self.assertNotIn("c1", server.connected_clients)
-        # entity_clients should be untouched (empty)
-        self.assertEqual(len(server.entity_clients), 0)
+        server._remove_client("does-not-exist")
+        self.assertEqual(len(server._clients), 0)
 
 
 # ==================== Notify New Subaccount RPC Tests ====================
@@ -618,37 +257,49 @@ class TestNotifyNewSubaccount(TestBase):
     def _make_server(self):
         from vanta_api.websocket_server import WebSocketServer
         server = object.__new__(WebSocketServer)
-        server.connected_clients = {}
-        server.entity_clients = defaultdict(deque)
-        server.subaccount_subscriptions = defaultdict(set)
-        server.subaccount_last_broadcast_ms = {}
-        server._subaccount_poll_tasks = {}
-        server.sequence_number = 0
-        server.loop = None  # Will prevent actual async send
-        server._ensure_subaccount_poll_task = MagicMock()
+        server.api_key_to_alias = {}
+        server._api_key_client_ids = defaultdict(list)
+        server._clients = {}
+        server._event_loop = None  # skips the async subscription-status send
+        server.broadcast_subaccount_dashboard_rpc = MagicMock()
         return server
 
     def test_notify_subscribes_connected_clients(self):
-        """Connected entity clients are auto-subscribed to new subaccount."""
+        """Connected entity clients are dashboard-subscribed to the new subaccount."""
         server = self._make_server()
         entity = "5Entity"
-
-        # Register two clients for this entity
-        server.entity_clients[entity] = deque(["c1", "c2"])
+        api_key = "key-1"
+        server.api_key_to_alias[api_key] = entity
+        server._api_key_client_ids[api_key] = ["c1", "c2"]
+        for cid in ["c1", "c2"]:
+            client = MagicMock()
+            client.dashboard_subscriptions = {}
+            server._clients[cid] = client
 
         result = server.notify_new_subaccount_rpc(entity, f"{entity}_5")
 
         self.assertTrue(result)
-        self.assertIn("c1", server.subaccount_subscriptions[f"{entity}_5"])
-        self.assertIn("c2", server.subaccount_subscriptions[f"{entity}_5"])
-        server._ensure_subaccount_poll_task.assert_called_once_with(f"{entity}_5")
+        self.assertIn(f"{entity}_5", server._clients["c1"].dashboard_subscriptions)
+        self.assertIn(f"{entity}_5", server._clients["c2"].dashboard_subscriptions)
+        server.broadcast_subaccount_dashboard_rpc.assert_called_once_with(f"{entity}_5")
 
     def test_notify_no_connected_clients(self):
-        """Returns True (no-op) when entity has no connected clients."""
+        """Returns True (no-op) and does not broadcast when the entity has no clients."""
         server = self._make_server()
+        server.api_key_to_alias["key-off"] = "5Offline"
+        server._api_key_client_ids["key-off"] = []
+
         result = server.notify_new_subaccount_rpc("5Offline", "5Offline_0")
+
         self.assertTrue(result)
-        self.assertEqual(len(server.subaccount_subscriptions), 0)
+        server.broadcast_subaccount_dashboard_rpc.assert_not_called()
+
+    def test_notify_unknown_entity(self):
+        """Returns True (no-op) when the entity has no api-key mapping yet."""
+        server = self._make_server()
+        result = server.notify_new_subaccount_rpc("5Unmapped", "5Unmapped_0")
+        self.assertTrue(result)
+        server.broadcast_subaccount_dashboard_rpc.assert_not_called()
 
 
 # ==================== WebSocketNotifierClient Tests ====================
@@ -689,85 +340,70 @@ class TestWebSocketNotifierClientNewMethod(TestBase):
 # ==================== HyperliquidTracker Rejection Broadcast Tests ====================
 
 class TestHLTrackerRejectionBroadcasts(TestBase):
-    """Tests for rejection broadcast calls in HyperliquidTracker._process_fill."""
+    """Tests for rejection/acceptance broadcast calls in HyperliquidTracker."""
 
-    def _make_tracker(self):
+    def _make_tracker(self, ws_notifier_client="__default__"):
         """Create a HyperliquidTracker with all dependencies mocked."""
         from entity_management.hyperliquid_tracker import HyperliquidTracker
+        from vali_objects.vali_config import RPCConnectionMode
 
-        tracker = HyperliquidTracker(
+        notifier = MagicMock() if ws_notifier_client == "__default__" else ws_notifier_client
+        return HyperliquidTracker(
             entity_client=MagicMock(),
-            elimination_client=MagicMock(),
             price_fetcher_client=MagicMock(),
-            asset_selection_client=MagicMock(),
-            limit_order_client=MagicMock(),
-            ws_notifier_client=MagicMock(),
+            order_processor=MagicMock(),
+            ws_notifier_client=notifier,
+            connection_mode=RPCConnectionMode.LOCAL,
         )
-        return tracker
 
     def _make_fill(self, coin="BTC", side="B", sz="1.0", px="50000"):
         return {"coin": coin, "side": side, "sz": sz, "px": px}
 
-    def _setup_valid_fill_path(self, tracker, synthetic="5Entity_0"):
-        """Configure mocks so fill passes coin/hotkey resolution but hits fail-early checks."""
-        from vali_objects.vali_config import TradePair
-
-        # Coin resolves to a valid trade pair via static registry
-        tracker._hl_universe = {
-            "BTC": TradePair.BTCUSDC,
-        }
+    def _setup_order_path(self, tracker, synthetic="5Entity_0"):
+        """Mock every dependency so a fill reaches _order_processor.validate / _dispatch_order."""
         tracker._entity_client.get_synthetic_hotkey_for_hl_address.return_value = synthetic
-        tracker._entity_client.get_subaccount_info_for_synthetic.return_value = {
-            "account_size": 100_000
-        }
+        tracker._entity_client.get_subaccount_info_for_synthetic.return_value = {"account_size": 100_000}
+        tracker._rate_limiter = MagicMock()
+        tracker._rate_limiter.is_allowed.return_value = (True, 0)
+        tracker._fetch_hl_account_state = MagicMock(return_value={
+            "total_portfolio_value": 100_000,
+            "positions": {"BTC": {"weight": 0.3}},
+        })
+        tracker._position_client = MagicMock()
+        tracker._position_client.get_open_position_for_trade_pair.return_value = None
+        tracker._miner_account_client = MagicMock()
+        tracker._miner_account_client.get_balance.return_value = 100_000
+        price = MagicMock()
+        price.close = 50_000.0
+        tracker._price_fetcher_client.get_sorted_price_sources_for_trade_pair.return_value = [price]
+        tracker._compute_fill_price = MagicMock(return_value=50_000.0)
 
     def test_broadcast_rejection_calls_notifier(self):
-        """_broadcast_rejection sends error via ws_notifier_client."""
+        """_broadcast_rejection broadcasts the subaccount dashboard."""
         tracker = self._make_tracker()
-
         tracker._broadcast_rejection("5Entity_0", "Test error message")
-
-        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once_with(
-            "5Entity_0"
-        )
+        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once_with("5Entity_0")
 
     def test_broadcast_rejection_no_notifier(self):
         """_broadcast_rejection is a no-op when ws_notifier_client is None."""
-        from entity_management.hyperliquid_tracker import HyperliquidTracker
-
-        tracker = HyperliquidTracker(
-            entity_client=MagicMock(),
-            elimination_client=MagicMock(),
-            price_fetcher_client=MagicMock(),
-            asset_selection_client=MagicMock(),
-            limit_order_client=MagicMock(),
-            uuid_tracker=MagicMock(),
-            ws_notifier_client=None,
-        )
-        # Should not raise
-        tracker._broadcast_rejection("5Entity_0", "No crash")
+        tracker = self._make_tracker(ws_notifier_client=None)
+        tracker._broadcast_rejection("5Entity_0", "No crash")  # must not raise
 
     def test_broadcast_accepted_fill_calls_notifier(self):
-        """Accepted fills are broadcast as order_event payloads."""
+        """Accepted fills broadcast the subaccount dashboard."""
         tracker = self._make_tracker()
-
         tracker._broadcast_accepted_fill(
             synthetic_hotkey="5Entity_0",
             trade_pair="BTCUSD",
             order_type="LONG",
             fill_hash="0xabc123",
         )
-
-        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once_with(
-            "5Entity_0"
-        )
+        tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once_with("5Entity_0")
 
     def test_rate_limit_rejection_broadcasts(self):
-        """Rate limiting rejection triggers broadcast with wait time."""
+        """A rate-limited fill triggers a rejection broadcast."""
         tracker = self._make_tracker()
-        self._setup_valid_fill_path(tracker)
-
-        # Rate limiter rejects
+        tracker._entity_client.get_synthetic_hotkey_for_hl_address.return_value = "5Entity_0"
         tracker._rate_limiter = MagicMock()
         tracker._rate_limiter.is_allowed.return_value = (False, 5.0)
 
@@ -775,71 +411,37 @@ class TestHLTrackerRejectionBroadcasts(TestBase):
 
         tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
 
-    def test_elimination_rejection_broadcasts(self):
-        """Eliminated miner rejection triggers broadcast."""
+    def test_validate_rejection_broadcasts(self):
+        """A fill rejected by the order processor's pre-trade validation broadcasts."""
         tracker = self._make_tracker()
-        self._setup_valid_fill_path(tracker)
-
-        # Rate limiter allows
-        tracker._rate_limiter = MagicMock()
-        tracker._rate_limiter.is_allowed.return_value = (True, 0)
-
-        # Elimination check returns data (eliminated)
-        tracker._elimination_client.get_elimination_local_cache.return_value = {"reason": "mdd"}
+        self._setup_order_path(tracker)
+        tracker._order_processor.validate.return_value = (False, "Miner eliminated", None)
 
         tracker._process_fill("0xaddr", self._make_fill())
 
         tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
 
     def test_signal_exception_rejection_broadcasts(self):
-        """SignalException during order processing triggers broadcast."""
+        """A SignalException raised while dispatching the order broadcasts a rejection."""
         from vali_objects.exceptions.signal_exception import SignalException
 
         tracker = self._make_tracker()
-        self._setup_valid_fill_path(tracker)
+        self._setup_order_path(tracker)
+        tracker._order_processor.validate.return_value = (True, "", None)
+        tracker._order_processor.process_hyperliquid_order.side_effect = SignalException("Leverage too high")
 
-        tracker._rate_limiter = MagicMock()
-        tracker._rate_limiter.is_allowed.return_value = (True, 0)
-        tracker._elimination_client.get_elimination_local_cache.return_value = None
-        tracker._entity_client.validate_hotkey_for_orders.return_value = {"is_valid": True}
-
-        tracker._price_fetcher_client.is_market_open.return_value = True
-        tracker._fetch_hl_account_state = MagicMock(return_value={
-            "total_portfolio_value": 100_000,
-            "positions": {"BTC": {"weight": 0.3}},
-        })
-        tracker._position_client = MagicMock()
-        tracker._position_client.get_open_position_for_trade_pair.return_value = None
-
-        with patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
-            mock_op.process_order.side_effect = SignalException("Leverage too high")
-
-            tracker._process_fill("0xaddr", self._make_fill())
+        tracker._process_fill("0xaddr", self._make_fill())
 
         tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
 
     def test_unexpected_exception_rejection_broadcasts(self):
-        """Unexpected exceptions during order processing also trigger rejection broadcast."""
+        """An unexpected exception while dispatching the order also broadcasts a rejection."""
         tracker = self._make_tracker()
-        self._setup_valid_fill_path(tracker)
+        self._setup_order_path(tracker)
+        tracker._order_processor.validate.return_value = (True, "", None)
+        tracker._order_processor.process_hyperliquid_order.side_effect = ValueError("boom")
 
-        tracker._rate_limiter = MagicMock()
-        tracker._rate_limiter.is_allowed.return_value = (True, 0)
-        tracker._elimination_client.get_elimination_local_cache.return_value = None
-        tracker._entity_client.validate_hotkey_for_orders.return_value = {"is_valid": True}
-
-        tracker._price_fetcher_client.is_market_open.return_value = True
-        tracker._fetch_hl_account_state = MagicMock(return_value={
-            "total_portfolio_value": 100_000,
-            "positions": {"BTC": {"weight": 0.3}},
-        })
-        tracker._position_client = MagicMock()
-        tracker._position_client.get_open_position_for_trade_pair.return_value = None
-
-        with patch('entity_management.hyperliquid_tracker.OrderProcessor') as mock_op:
-            mock_op.process_order.side_effect = ValueError("Position at max $1000.00 (limit: $1000.00)")
-
-            tracker._process_fill("0xaddr", self._make_fill())
+        tracker._process_fill("0xaddr", self._make_fill())
 
         tracker._ws_notifier_client.broadcast_subaccount_dashboard.assert_called_once()
 
@@ -1170,6 +772,10 @@ class TestEntityManagerNotification(TestBase):
         )
         manager._websocket_client = MagicMock()
         manager._websocket_client.notify_new_subaccount = MagicMock(return_value=True)
+        manager._entity_collateral_client = MagicMock()
+        # Admin create still reads cached collateral for the result message (slashing is skipped).
+        manager._entity_collateral_client.get_cached_collateral.return_value = 1_000_000.0
+        manager._entity_collateral_client.compute_entity_required_collateral.return_value = 0.0
 
         # Mock RPC clients that are called during register/create
         manager._position_client = MagicMock()
@@ -1187,12 +793,20 @@ class TestEntityManagerNotification(TestBase):
         # Register entity
         manager.register_entity(entity_hotkey=entity_hotkey)
 
-        # Create admin subaccount (skips slashing, synchronous path)
+        # The WS-notification path runs only outside unit-test mode; enable it for
+        # this create call while stubbing the disk write and dashboard broadcasts so
+        # the create stays fully in-memory.
+        manager._write_entities_from_memory_to_disk = MagicMock()
+        manager.broadcast_subaccount_registration = MagicMock()
+        manager.broadcast_subaccount_dashboard = MagicMock()
+        manager.running_unit_tests = False
+
+        # Create a collateral-exempt subaccount (skips slashing, synchronous path)
         success, info, msg = manager.create_subaccount(
             entity_hotkey=entity_hotkey,
             account_size=10_000,
             asset_class="crypto",
-            admin=True
+            collateral_exempt=True
         )
 
         self.assertTrue(success)

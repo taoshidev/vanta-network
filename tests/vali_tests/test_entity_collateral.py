@@ -21,6 +21,12 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
 
+# The slash cap is account_size * FUNDED_INTRADAY_DRAWDOWN_THRESHOLD. Derive it
+# from the config rather than hardcoding a percentage so these tests stay
+# correct when the threshold changes (it moved 0.10 -> 0.08 -> 0.05; the old
+# tests hardcoded the 0.08 era's $8K values for a $100K account).
+MAX_SLASH_100K = 100_000 * ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+
 
 class TestEntityCollateral(TestBase):
     """
@@ -321,21 +327,21 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $100K * 8% = $8K
+        # max_slash = MAX_SLASH_100K (account_size * MDD)
 
         # Trade 1: Lose $3K
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 3_000.0
         )
-        self.assertAlmostEqual(slashed_1, 3_000.0)
+        self.assertAlmostEqual(slashed_1, min(3_000.0, MAX_SLASH_100K))
 
-        # Trade 2: Lose $4K (cumulative_loss = $7K, still under max $8K).
-        # Returns total pending slash (7K = min(7K, 8K) - 0), not incremental (4K),
+        # Trade 2: Lose $4K (cumulative_loss = $7K). Returns total pending slash
+        # (min(cumulative_loss, max_slash) - cumulative_slashed), not incremental,
         # because cumulative_slashed stays 0 until process_pending_slashes runs.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 4_000.0
         )
-        self.assertAlmostEqual(slashed_2, 7_000.0)
+        self.assertAlmostEqual(slashed_2, min(7_000.0, MAX_SLASH_100K))
 
         # Verify cumulative tracking
         tracking = self._get_slash_tracking(synthetic_hotkey)
@@ -349,21 +355,21 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $100K * 8% = $8K
+        # max_slash = MAX_SLASH_100K (account_size * MDD)
 
-        # Trade 1: Lose $8K → exactly at cap, slash $8K
+        # Trade 1: Lose $8K (>= cap) → slash is capped at max_slash
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 8_000.0
         )
-        self.assertAlmostEqual(slashed_1, 8_000.0)
+        self.assertAlmostEqual(slashed_1, MAX_SLASH_100K)
 
-        # Trade 2: Lose $5K → still returns 8K (total pending, capped at max_slash).
-        # cumulative_slashed stays 0 until process_pending_slashes runs, so the
-        # pending remains at the cap (8K) rather than going to 0.
+        # Trade 2: Lose $5K more → still returns the cap (total pending, capped
+        # at max_slash). cumulative_slashed stays 0 until process_pending_slashes
+        # runs, so the pending remains at the cap rather than going to 0.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
-        self.assertAlmostEqual(slashed_2, 8_000.0)
+        self.assertAlmostEqual(slashed_2, MAX_SLASH_100K)
 
         # cumulative_realized_loss tracks all losses; cumulative_slashed stays 0
         # until process_pending_slashes commits the on-chain slash.
@@ -644,15 +650,15 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $8K, loss exactly $8K
+        # loss exactly max_slash
         slashed = self.entity_collateral_client.slash_on_realized_loss(
-            entity_hotkey, synthetic_hotkey, 8_000.0
+            entity_hotkey, synthetic_hotkey, MAX_SLASH_100K
         )
-        self.assertAlmostEqual(slashed, 8_000.0)
+        self.assertAlmostEqual(slashed, MAX_SLASH_100K)
 
-        # cumulative_realized_loss = 8K; cumulative_slashed stays 0 until process_pending_slashes
+        # cumulative_realized_loss = max_slash; cumulative_slashed stays 0 until process_pending_slashes
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], MAX_SLASH_100K)
         self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     def test_slash_loss_exceeds_max_slash_single_trade(self):
@@ -662,11 +668,11 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $8K, loss = $50K → only slash $8K
+        # loss = $50K >> max_slash → capped at max_slash
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 50_000.0
         )
-        self.assertAlmostEqual(slashed, 8_000.0)
+        self.assertAlmostEqual(slashed, MAX_SLASH_100K)
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 50_000.0)
@@ -690,8 +696,8 @@ class TestEntityCollateral(TestBase):
                 entity_hotkey, synthetic_hotkey, float(loss)
             )
 
-        # Total losses = $15K > max_slash = $8K → last call returns 8K (at cap)
-        self.assertAlmostEqual(last_slash, 8_000.0)
+        # Total losses = $15K > max_slash → last call returns the cap
+        self.assertAlmostEqual(last_slash, MAX_SLASH_100K)
 
         # All losses are tracked; cumulative_slashed stays 0 until process_pending_slashes
         tracking = self._get_slash_tracking(synthetic_hotkey)
@@ -737,13 +743,16 @@ class TestEntityCollateral(TestBase):
         self.assertIn("_entity_client", source)
 
     def test_validator_contract_manager_withdrawal_blocking_code_exists(self):
-        """Test that process_withdrawal_request contains entity withdrawal blocking logic."""
+        """The withdrawal path blocks a withdrawal that would drop below the
+        entity's required cross-margin collateral. That logic lives in
+        query_withdrawal_request (called by process_withdrawal_request); it was
+        refactored out of process_withdrawal_request, so inspect the method that
+        actually holds it now."""
         from vali_objects.contract.validator_contract_manager import ValidatorContractManager
         import inspect
-        source = inspect.getsource(ValidatorContractManager.process_withdrawal_request)
-        self.assertIn("entity_data", source)
-        self.assertIn("required_theta", source)
-        self.assertIn("subaccount", source.lower())
+        source = inspect.getsource(ValidatorContractManager.query_withdrawal_request)
+        self.assertIn("compute_entity_required_collateral", source)
+        self.assertIn("required_min_theta", source)
 
     # ==================== Validator.py Wiring Tests ====================
 
