@@ -291,6 +291,41 @@ class TestPositionLockBehavior(TestBase):
                 # Both locks held
                 pass
 
+    def test_stale_release_after_lease_reclaim_is_noop(self):
+        """A lease-reclaimed holder's late release must NOT free the reclaimer's lock.
+
+        Sequence: A acquires; A's hold exceeds the lease; B's acquire reclaims and takes the
+        lock; A's (stale-token) release arrives late — it must be ignored, so a third acquire
+        still blocks while B holds.
+        """
+        from shared_objects.locks.position_lock_server import PositionLockServer
+        server = PositionLockServer(running_unit_tests=True, start_server=False, start_daemon=False)
+        miner = "test_miner_stale_release"
+        trade_pair = "BTCUSD"
+        lock_key = (miner, trade_pair)
+
+        token_a = server.acquire_rpc(miner, trade_pair, timeout=2.0)
+        self.assertTrue(token_a)
+        # Backdate A's hold past the lease so B's acquire reclaims it.
+        with server.locks_dict_lock:
+            tok, held_at = server.lock_owner[lock_key]
+            server.lock_owner[lock_key] = (tok, held_at - (server._lock_lease_ms + 1))
+
+        token_b = server.acquire_rpc(miner, trade_pair, timeout=2.0)
+        self.assertTrue(token_b, "B reclaims the stale hold and acquires")
+        self.assertNotEqual(token_a, token_b)
+
+        # A's late release with its stale token: ignored, B still holds.
+        self.assertFalse(server.release_rpc(miner, trade_pair, token_a))
+        self.assertFalse(server.acquire_rpc(miner, trade_pair, timeout=0.2),
+                         "lock must still be held by B after A's stale release")
+
+        # B's own release works.
+        self.assertTrue(server.release_rpc(miner, trade_pair, token_b))
+        token_c = server.acquire_rpc(miner, trade_pair, timeout=1.0)
+        self.assertTrue(token_c)
+        server.release_rpc(miner, trade_pair, token_c)
+
 
 if __name__ == '__main__':
     unittest.main()
