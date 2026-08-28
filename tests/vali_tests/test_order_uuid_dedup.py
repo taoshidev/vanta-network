@@ -87,14 +87,40 @@ class TestOrderUuidDedup(unittest.TestCase):
     # ==================== Capacity eviction ====================
 
     def test_capacity_eviction_fifo(self):
+        # Capacity applies to CONFIRMED (committed) uuids; claims are provisional until confirmed.
         self.server._order_uuid_capacity = 3
         for u in ["u1", "u2", "u3"]:
             self.dedup.check_and_add(u)
+            self.dedup.confirm(u)
         self.assertEqual(self.server.order_uuid_count_rpc(), 3)
-        self.dedup.check_and_add("u4")  # evicts u1 (oldest)
+        self.dedup.check_and_add("u4")
+        self.dedup.confirm("u4")  # evicts u1 (oldest)
         self.assertEqual(self.server.order_uuid_count_rpc(), 3)
         self.assertFalse(self.server.order_uuid_exists_rpc("u1"), "oldest evicted")
         self.assertTrue(self.server.order_uuid_exists_rpc("u4"))
+
+    # ==================== Two-phase claims (provisional -> confirm/release/TTL) ====================
+
+    def test_provisional_claim_rejects_duplicates_until_ttl(self):
+        """A live provisional claim rejects duplicates; an expired one (claimant hard-killed
+        mid-apply, release never ran) lets the miner's retry re-claim."""
+        self.assertTrue(self.dedup.check_and_add("crash-uuid"))
+        other = self._new_client()
+        self.assertFalse(other.check_and_add("crash-uuid"), "live claim rejects the duplicate")
+        # Simulate claim expiry (hard-killed claimant never confirmed or released).
+        self.server._order_uuid_provisional["crash-uuid"] -= (self.server._order_uuid_claim_ttl_ms + 1)
+        self.assertTrue(other.check_and_add("crash-uuid"),
+                        "expired provisional claim is reclaimable — the order never committed")
+
+    def test_confirmed_claim_never_expires_via_ttl(self):
+        """confirm() promotes the claim to the permanent set: even with an expired TTL, a
+        duplicate of a COMMITTED order is still rejected."""
+        self.assertTrue(self.dedup.check_and_add("committed-uuid"))
+        self.dedup.confirm("committed-uuid")
+        self.server._order_uuid_claim_ttl_ms = 0
+        other = self._new_client()
+        self.assertFalse(other.check_and_add("committed-uuid"),
+                         "confirmed uuid is permanent (FIFO-evicted only)")
 
     # ==================== The two scenarios this feature exists for ====================
 

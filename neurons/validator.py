@@ -669,10 +669,15 @@ class Validator(ValidatorBase):
                 # Set synapse response (centralized - single line instead of 4)
                 synapse.order_json = result.get_response_json()
 
-                # The claim was taken before we knew the result; drop it if this order isn't tracked.
+                # The claim was taken before we knew the result; drop it if this order isn't tracked,
+                # else promote it to permanent (a provisional claim expires after
+                # ORDER_UUID_CLAIM_TTL_MS so a hard-killed apply can't strand it — see
+                # CommonDataServer.confirm_order_uuid_rpc).
                 if claimed and not result.should_track_uuid:
                     self.uuid_tracker.release(order_uuid)
                     claimed = False
+                elif claimed:
+                    self.uuid_tracker.confirm(order_uuid)
 
                 # For logging (used in the ack below)
                 order = result.order_for_logging

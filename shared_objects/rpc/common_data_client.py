@@ -135,6 +135,10 @@ class CommonDataClient(RPCClientBase):
         """Atomic claim: True if newly claimed (apply the order), False if duplicate (reject)."""
         return self.call("check_and_add_order_uuid_rpc", uuid)
 
+    def confirm_order_uuid(self, uuid) -> None:
+        """Promote a provisional claim to the permanent dedup set (order committed)."""
+        self.call("confirm_order_uuid_rpc", uuid)
+
     def release_order_uuid(self, uuid) -> None:
         """Undo a claim after an apply failure so the retry can re-claim."""
         self.call("release_order_uuid_rpc", uuid)

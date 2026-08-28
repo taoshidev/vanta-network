@@ -298,6 +298,12 @@ class ValiConfig:
     # 100k. Dedup only needs to cover the retry/replay window (seconds–minutes), not forever;
     # oldest uuids are evicted past capacity.
     ORDER_UUID_DEDUP_CAPACITY = 100_000
+    # A claimed-but-unconfirmed order uuid (check_and_add taken, confirm/release never called —
+    # the claimant was hard-killed mid-apply) expires after this long, so a miner's retry of an
+    # order that never committed is not permanently rejected as a duplicate. Confirmed uuids
+    # (post-commit) never expire this way — they live in the FIFO dedup set. Must exceed the
+    # longest real apply (lock wait + RPC self-heal cycles + price fetches).
+    ORDER_UUID_CLAIM_TTL_MS = 300_000  # 5 minutes
     # Position-lock lease (never-release protection): a server-side (hotkey, trade_pair) lock held
     # longer than this is presumed abandoned (holder crashed between acquire and release) and
     # force-reclaimed on the next acquire. Set FAR above any real hold (order processing is a few
