@@ -23,9 +23,10 @@ class LocalLocks:
     def get_lock(self, miner_hotkey: str, trade_pair_id: str):
         """Get or create a lock for the given key"""
         lock_key = (miner_hotkey, trade_pair_id)
-        if lock_key not in self.locks:
-            self.locks[lock_key] = self._lock_factory()
-        return self.locks[lock_key]
+        # setdefault is atomic under the GIL: threads racing on a new key always
+        # receive the SAME Lock object. The old check-then-create could hand each
+        # racer a different Lock, silently breaking mutual exclusion for that key.
+        return self.locks.setdefault(lock_key, self._lock_factory())
 
 
 class PositionLocks:

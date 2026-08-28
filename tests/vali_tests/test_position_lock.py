@@ -294,3 +294,34 @@ class TestPositionLockBehavior(TestBase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestLocalLocksGetLockRace(TestBase):
+    """Regression: LocalLocks.get_lock must hand ALL racing threads the same Lock
+    object for a new key (the old check-then-create could give each racer its own
+    Lock, silently breaking mutual exclusion)."""
+
+    def test_racing_threads_get_same_lock_object(self):
+        from shared_objects.locks.position_lock import LocalLocks
+
+        locks = LocalLocks()
+        n_threads = 8
+        for i in range(200):
+            barrier = threading.Barrier(n_threads)
+            results = []
+
+            def grab(key=f"pair_{i}"):
+                barrier.wait()  # maximize the race window on the fresh key
+                results.append(locks.get_lock("hk", key))
+
+            threads = [threading.Thread(target=grab) for _ in range(n_threads)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+            distinct = {id(lock) for lock in results}
+            self.assertEqual(
+                len(distinct), 1,
+                f"iteration {i}: racing threads received {len(distinct)} distinct Lock objects"
+            )
