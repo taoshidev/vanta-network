@@ -117,6 +117,13 @@ class CommonDataServer(RPCServerBase):
         self._order_uuids_deque = deque()
         self._order_uuids_set = set()
         self._order_uuid_capacity = ValiConfig.ORDER_UUID_DEDUP_CAPACITY
+        # Two-phase claims: check_and_add records a PROVISIONAL claim (uuid -> claimed_at_ms);
+        # confirm promotes it to the permanent FIFO set post-commit, release drops it on apply
+        # failure. A claimant hard-killed mid-apply (SIGKILL/OOM — release never runs) leaves a
+        # provisional claim that simply expires after ORDER_UUID_CLAIM_TTL_MS, so the miner's
+        # retry of a never-committed order is not permanently rejected as a duplicate.
+        self._order_uuid_provisional = {}   # uuid -> claimed_at_ms
+        self._order_uuid_claim_ttl_ms = ValiConfig.ORDER_UUID_CLAIM_TTL_MS  # instance attr so tests can shrink it
 
         self._sync_waiting = False
         self._last_sync_start_ms = 0
@@ -410,11 +417,35 @@ class CommonDataServer(RPCServerBase):
         """
         if not uuid:
             return True
+        now_ms = TimeUtil.now_in_millis()
         with self._state_lock:
             if uuid in self._order_uuids_set:
                 return False
-            self._add_order_uuid_locked(uuid)
+            claimed_at = self._order_uuid_provisional.get(uuid)
+            if claimed_at is not None:
+                if now_ms - claimed_at <= self._order_uuid_claim_ttl_ms:
+                    return False  # live claim held by another (or a hung) apply
+                # Expired provisional: the claimant died mid-apply without release; let this
+                # retry re-claim rather than rejecting an order that never committed.
+                logger.warning(
+                    f"[COMMON_DATA] Reclaiming expired provisional order-uuid claim {uuid} "
+                    f"(claimed {(now_ms - claimed_at) / 1000:.0f}s ago, ttl {self._order_uuid_claim_ttl_ms / 1000:.0f}s)"
+                )
+            self._order_uuid_provisional[uuid] = now_ms
             return True
+
+    def confirm_order_uuid_rpc(self, uuid) -> None:
+        """
+        Promote a provisional claim to the permanent dedup set — call after the order COMMITTED.
+        A confirmed uuid never expires via the claim TTL (only via FIFO capacity eviction), so a
+        late duplicate of a committed order is still rejected. No-op-safe: confirming an unknown
+        uuid just records it (covers a confirm racing the TTL reap).
+        """
+        if not uuid:
+            return
+        with self._state_lock:
+            self._order_uuid_provisional.pop(uuid, None)
+            self._add_order_uuid_locked(uuid)
 
     def release_order_uuid_rpc(self, uuid) -> None:
         """
@@ -441,14 +472,19 @@ class CommonDataServer(RPCServerBase):
         if not uuid:
             return
         with self._state_lock:
+            self._order_uuid_provisional.pop(uuid, None)
             self._order_uuids_set.discard(uuid)
 
     def order_uuid_exists_rpc(self, uuid) -> bool:
         """Read-only membership check (early-reject fast path also served by the client-local cache)."""
         if not uuid:
             return False
+        now_ms = TimeUtil.now_in_millis()
         with self._state_lock:
-            return uuid in self._order_uuids_set
+            if uuid in self._order_uuids_set:
+                return True
+            claimed_at = self._order_uuid_provisional.get(uuid)
+            return claimed_at is not None and now_ms - claimed_at <= self._order_uuid_claim_ttl_ms
 
     def seed_order_uuids_rpc(self, uuids) -> int:
         """
@@ -494,6 +530,7 @@ class CommonDataServer(RPCServerBase):
             # Reset the order-UUID dedup set (else dedup state leaks across tests).
             self._order_uuids_deque.clear()
             self._order_uuids_set.clear()
+            self._order_uuid_provisional.clear()
             logger.debug("[COMMON_DATA] Test state cleared (shutdown, sync_in_progress, sync_epoch, order coordination reset)")
 
     # ==================== Combined State RPC Methods ====================
