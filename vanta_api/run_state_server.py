@@ -111,6 +111,19 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
 
     try:
+        # Run on-disk state migrations BEFORE any server loads that state. vanta-state starts
+        # FIRST (run.sh ordering) and its servers (position_manager, limit_order, miner_account)
+        # load exactly the files migrations rewrite — if core ran them instead (as the monolith
+        # does), it would migrate the files AFTER this tier already loaded pre-migration data,
+        # and this tier's next save would clobber the migrated file while migrations_completed.txt
+        # marks it done forever. Core skips migrations under --split-state for this reason.
+        from runnable.run_migrations import main as run_migrations
+        bt.logging.info("[vanta-state] Checking for pending migrations (state tier owns them under --split-state)...")
+        if not run_migrations():
+            bt.logging.error("[vanta-state] Migration failed. Starting state servers without executing migrations")
+        else:
+            bt.logging.info("[vanta-state] Migrations completed successfully.")
+
         # Start the include-set (scoped start: skips the global RPC-port kill so we never take down
         # core's subtensor_ops or other core-held ports).
         orchestrator.start_state_servers(context)
