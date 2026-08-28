@@ -106,13 +106,18 @@ class Validator(ValidatorBase):
         self.split_state = getattr(self.config, 'split_state', False)
         self.is_mainnet = self.config.netuid == 8
 
-        # Migrations + tmp clear mutate on-disk state, which the client-only orders app does not own.
-        if not self.orders_app:
+        # Migrations + tmp clear mutate on-disk state, which the client-only orders app does not
+        # own. Under --split-state, MIGRATIONS belong to vanta-state (run_state_server.py): it
+        # starts first and its servers load the migrated files — core migrating afterwards would
+        # rewrite files underneath the live state tier, whose next save would silently undo the
+        # migration (while migrations_completed.txt marks it done).
+        if not self.orders_app and not self.split_state:
             print("Checking for pending migrations...")
             if not run_migrations():
                 print("ERROR: Migration failed. Starting validator without executing migrations")
             else:
                 print("Migrations completed successfully.")
+        if not self.orders_app:
             ValiBkpUtils.clear_tmp_dir()
 
         # OrderUuidDedupClient is server-authoritative (survives a restart, holds across instances);
