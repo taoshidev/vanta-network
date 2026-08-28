@@ -124,6 +124,9 @@ class CommonDataServer(RPCServerBase):
         # retry of a never-committed order is not permanently rejected as a duplicate.
         self._order_uuid_provisional = {}   # uuid -> claimed_at_ms
         self._order_uuid_claim_ttl_ms = ValiConfig.ORDER_UUID_CLAIM_TTL_MS  # instance attr so tests can shrink it
+        # Above this many live provisional claims, check_and_add sweeps expired ones (amortized
+        # cleanup for claims whose uuid is never retried). Normal in-flight population is <100.
+        self._PROVISIONAL_SWEEP_THRESHOLD = 1_000
 
         self._sync_waiting = False
         self._last_sync_start_ms = 0
@@ -470,6 +473,20 @@ class CommonDataServer(RPCServerBase):
             return True
         now_ms = TimeUtil.now_in_millis()
         with self._state_lock:
+            # Amortized sweep: expired provisionals for uuids that are NEVER retried (claimant
+            # hard-killed, miner gave up) would otherwise accumulate forever — the per-uuid reap
+            # below only fires when the SAME uuid is re-claimed. Sweeping only past a size
+            # threshold keeps the common case O(1).
+            if len(self._order_uuid_provisional) > self._PROVISIONAL_SWEEP_THRESHOLD:
+                expired = [u for u, ts in self._order_uuid_provisional.items()
+                           if now_ms - ts > self._order_uuid_claim_ttl_ms]
+                for u in expired:
+                    del self._order_uuid_provisional[u]
+                if expired:
+                    logger.warning(
+                        f"[COMMON_DATA] Swept {len(expired)} expired provisional order-uuid claims "
+                        f"({len(self._order_uuid_provisional)} live claims remain)"
+                    )
             if uuid in self._order_uuids_set:
                 return False
             claimed_at = self._order_uuid_provisional.get(uuid)

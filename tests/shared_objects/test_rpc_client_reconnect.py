@@ -211,6 +211,70 @@ def test_reset_connection_preserves_registration_and_cache_daemon(client):
     assert client not in RPCClientBase._active_instances
 
 
+def test_server_raised_oserror_with_healthy_transport_not_retried(client):
+    """A server-side OSError-family BUSINESS exception (e.g. position-lock TimeoutError) arrives
+    type-identical to a dead socket — but the transport probe (health_check_rpc on the same
+    connection) succeeds, so the client must re-raise WITHOUT reconnecting or re-executing."""
+    state = {"connects": 0, "target_calls": 0}
+
+    def behavior(name, args, kwargs):
+        if name == "health_check_rpc":
+            return {"status": "healthy"}  # transport is alive
+        state["target_calls"] += 1
+        raise TimeoutError("Failed to acquire lock after 10.0s")  # OSError subclass, server-raised
+
+    _seed_live_but_poisoned(client, behavior)
+    monkeypatch_connect(client, lambda **_k: state.__setitem__("connects", state["connects"] + 1))
+
+    with pytest.raises(TimeoutError):
+        client._invoke_rpc("execute_order_rpc")
+
+    assert state["target_calls"] == 1   # NOT re-executed 5 more times
+    assert state["connects"] == 0       # healthy connection never torn down
+    assert client._connected is True
+
+
+def test_circuit_breaker_fails_fast_after_exhaustion_then_closes_on_success(client):
+    """After self-heal exhaustion the breaker opens: the next call gets ONE fast attempt (no
+    multi-cycle self-heal). A later success closes the breaker."""
+    state = {"connects": 0, "calls": 0, "ready": False}
+
+    def behavior(name, args, kwargs):
+        state["calls"] += 1
+        if not state["ready"]:
+            raise BrokenPipeError(32, "Broken pipe")
+        return "OK"
+
+    _seed_live_but_poisoned(client, behavior)
+
+    def fake_connect(max_retries=None, retry_delay=None):
+        state["connects"] += 1
+        client._proxy = _ScriptedProxy(behavior)
+        client._connected = True
+        client._connection_generation += 1
+        return True
+
+    monkeypatch_connect(client, fake_connect)
+
+    # Exhaust the self-heal — opens the breaker.
+    with pytest.raises(BrokenPipeError):
+        client._invoke_rpc("echo_rpc")
+    assert client._backoff_until > 0
+    connects_after_exhaustion = state["connects"]
+
+    # Breaker open: the next call must fail fast — one reconnect at most, no settle cycles.
+    with pytest.raises(BrokenPipeError):
+        client._invoke_rpc("echo_rpc")
+    assert state["connects"] - connects_after_exhaustion <= 1
+
+    # Server recovers; a successful call closes the breaker.
+    state["ready"] = True
+    client._proxy = _ScriptedProxy(behavior)
+    client._connected = True
+    assert client._invoke_rpc("echo_rpc") == "OK"
+    assert client._backoff_until == 0.0
+
+
 def monkeypatch_connect(client, fn):
     """Replace the instance's connect with a plain function (no `self`), matching how
     _invoke_rpc calls self.connect(max_retries=..., retry_delay=...)."""
