@@ -852,6 +852,26 @@ class EntityMinerRestServer(MinerRestServer):
             # Push to SSE
             self._push_sse(hl_address, {"type": "event", "data": event.to_dict()})
 
+    def _notify_slack_async(self, message: str, level: str = "info", **kwargs):
+        """Send a Slack notification without blocking the request thread.
+
+        The Slack webhook POST can take up to ~10s; on the create-subaccount
+        path that time was previously spent while holding one of Waitress's 32
+        worker threads. Fire-and-forget on a daemon thread — send_message is
+        internally locked, and delivery failures are logged by the notifier.
+        """
+        if not self.slack_notifier:
+            return
+
+        def _send():
+            try:
+                self.slack_notifier.send_message(message, level=level, **kwargs)
+            except Exception as e:
+                # Daemon threads die silently; surface delivery failures here.
+                logger.warning(f"[ENTITY-GW] Async Slack notification failed: {e}")
+
+        threading.Thread(target=_send, daemon=True, name="slack-notify").start()
+
     # ==================== SSE ====================
 
     def _push_sse(self, hl_address: str, data: dict):
@@ -1213,14 +1233,14 @@ class EntityMinerRestServer(MinerRestServer):
                             f"Created: {timestamp}\n"
                             f"Time: {elapsed_s:.2f}s"
                         )
-                    self.slack_notifier.send_message(msg, level="success", bypass_cooldown=True)
+                    self._notify_slack_async(msg, level="success", bypass_cooldown=True)
 
                 return jsonify(response_data), 200
             else:
                 error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
                 if self.slack_notifier:
                     hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
-                    self.slack_notifier.send_message(
+                    self._notify_slack_async(
                         f"Subaccount creation failed\n"
                         f"{hl_address_line}"
                         f"Asset Class: {asset_class}\n"
@@ -1233,7 +1253,7 @@ class EntityMinerRestServer(MinerRestServer):
         except http_requests.exceptions.Timeout:
             if self.slack_notifier:
                 hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
-                self.slack_notifier.send_message(
+                self._notify_slack_async(
                     f"Subaccount creation failed\n"
                     f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"
@@ -1246,7 +1266,7 @@ class EntityMinerRestServer(MinerRestServer):
         except http_requests.exceptions.ConnectionError:
             if self.slack_notifier:
                 hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
-                self.slack_notifier.send_message(
+                self._notify_slack_async(
                     f"Subaccount creation failed\n"
                     f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"
@@ -1260,7 +1280,7 @@ class EntityMinerRestServer(MinerRestServer):
             logger.error(f"Error communicating with validator: {e}")
             if self.slack_notifier:
                 hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
-                self.slack_notifier.send_message(
+                self._notify_slack_async(
                     f"Subaccount creation failed\n"
                     f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"
