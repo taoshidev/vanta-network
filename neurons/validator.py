@@ -310,7 +310,29 @@ class Validator(ValidatorBase):
             logger.info("[INIT] --no-axon: HL tracker not started here (runs in vanta-orders app)")
 
         # Verify hotkey is registered (via metagraph_client — available in all roles).
-        logger.info(f"Metagraph n_entries: {len(self.metagraph_client.get_hotkeys())}")
+        #
+        # The metagraph server binds its RPC port at spawn but serves EMPTY data until core's
+        # subtensor daemon pushes the chain metagraph (minutes on mainnet: perf-ledger load runs
+        # first). The monolith/core paths block on wait_for_initial_update before reaching here;
+        # the orders app has no such gate, so it must WAIT for population rather than read the
+        # empty metagraph as "not registered" and exit() — that crash-looped vanta-orders into
+        # PM2 'errored' on every full-split deploy, silently dropping all order reception.
+        _mg_wait_deadline = time.time() + 600  # generous: core's boot is minutes on mainnet
+        while True:
+            hotkeys = self.metagraph_client.get_hotkeys()
+            if hotkeys:
+                break
+            if time.time() > _mg_wait_deadline:
+                # Still empty after the deadline — core is not populating. Crash loudly (PM2
+                # restarts us and the wait restarts with a fresh window); do NOT claim the
+                # hotkey is unregistered, we never saw the real metagraph.
+                raise RuntimeError(
+                    "Metagraph still empty after 600s — core has not populated it; cannot "
+                    "verify hotkey registration. Will retry on restart."
+                )
+            logger.info("[INIT] Metagraph empty (core still booting) — waiting to verify hotkey registration...")
+            time.sleep(5)
+        logger.info(f"Metagraph n_entries: {len(hotkeys)}")
         if not self.metagraph_client.has_hotkey(self.wallet.hotkey.ss58_address):
             logger.error(
                 f"\nYour validator hotkey: {self.wallet.hotkey.ss58_address} (wallet: {self.wallet.name}, hotkey: {self.wallet.hotkey_str}) "
