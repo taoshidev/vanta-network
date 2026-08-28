@@ -941,3 +941,86 @@ class TestEntityMinerMappingConcurrency(TestBase):
             t.join(timeout=10)
 
         self.assertEqual(errors, [], f"concurrent reassignment broke invariants: {errors!r}")
+
+
+# ==================== SSE Stream Cap Tests ====================
+
+class TestSSEStreamCaps(TestBase):
+    """The SSE endpoint must never pin an unbounded number of Waitress worker
+    threads: concurrent streams are capped (503 + Retry-After when full) and each
+    stream's lifetime/idle time is bounded so slots recycle. The browser's
+    EventSource reconnects transparently after either cutoff."""
+
+    def _make_gateway(self, slots=1):
+        from vanta_api.entity_miner_rest_server import EntityMinerRestServer, OrderEventStore
+        import threading
+        from flask import Flask
+
+        gw = object.__new__(EntityMinerRestServer)
+        gw.app = Flask(__name__)
+        gw._event_store = OrderEventStore()
+        gw._dashboard_cache = {}
+        gw._dashboard_cache_updated_ms = {}
+        gw._hl_to_synthetic = {}
+        gw._synthetic_to_hl = {}
+        gw._mapping_last_refresh_ms = {}
+        gw._sse_subscribers = {}
+        gw._sse_lock = threading.Lock()
+        gw._mapping_lock = threading.RLock()
+        gw._sse_stream_slots = threading.BoundedSemaphore(slots)
+        gw._validator_url = None
+        return gw
+
+    def test_stream_rejected_when_slots_exhausted(self):
+        gw = self._make_gateway(slots=1)
+        self.assertTrue(gw._sse_stream_slots.acquire(blocking=False))  # occupy the only slot
+        try:
+            with gw.app.test_request_context("/api/hl/0xabc/stream"):
+                resp, status = gw.stream_endpoint("0xabc")
+                self.assertEqual(status, 503)
+                from vanta_api.entity_miner_rest_server import EntityMinerRestServer
+                self.assertEqual(
+                    resp.headers["Retry-After"],
+                    str(EntityMinerRestServer.SSE_RETRY_AFTER_S))
+        finally:
+            gw._sse_stream_slots.release()
+
+    def test_stream_lifetime_cap_frees_slot_and_unsubscribes(self):
+        gw = self._make_gateway(slots=1)
+        gw.SSE_MAX_LIFETIME_S = 0      # every stream is immediately over-lifetime
+        gw.SSE_HEARTBEAT_S = 0.01
+        with gw.app.test_request_context("/api/hl/0xabc/stream"):
+            resp = gw.stream_endpoint("0xabc")
+        chunks = list(resp.response)   # drain the generator to termination
+        self.assertTrue(any("max stream lifetime" in c for c in chunks), chunks)
+        # Slot released and subscriber removed once the stream ends.
+        self.assertTrue(gw._sse_stream_slots.acquire(blocking=False))
+        gw._sse_stream_slots.release()
+        self.assertEqual(gw._sse_subscribers, {})
+
+    def test_stream_idle_cap_closes_stream(self):
+        gw = self._make_gateway(slots=1)
+        gw.SSE_MAX_LIFETIME_S = 3600
+        gw.SSE_MAX_IDLE_S = 0          # any gap with no events closes the stream
+        gw.SSE_HEARTBEAT_S = 0.01
+        with gw.app.test_request_context("/api/hl/0xabc/stream"):
+            resp = gw.stream_endpoint("0xabc")
+        chunks = list(resp.response)
+        self.assertTrue(any("idle stream closed" in c for c in chunks), chunks)
+        self.assertTrue(gw._sse_stream_slots.acquire(blocking=False))
+        gw._sse_stream_slots.release()
+
+    def test_stream_delivers_event_then_respects_caps(self):
+        gw = self._make_gateway(slots=1)
+        gw.SSE_MAX_LIFETIME_S = 3600
+        gw.SSE_MAX_IDLE_S = 0.2
+        gw.SSE_HEARTBEAT_S = 0.01
+        with gw.app.test_request_context("/api/hl/0xabc/stream"):
+            resp = gw.stream_endpoint("0xabc")
+        # Push one event into the (single) subscriber queue, then drain.
+        (subscriber_queue,) = set(next(iter(gw._sse_subscribers.values())))
+        subscriber_queue.put({"type": "dashboard", "data": {"x": 1}})
+        chunks = list(resp.response)
+        self.assertTrue(any('"type": "dashboard"' in c for c in chunks), chunks)
+        self.assertTrue(gw._sse_stream_slots.acquire(blocking=False))
+        gw._sse_stream_slots.release()
