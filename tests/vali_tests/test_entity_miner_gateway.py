@@ -803,12 +803,12 @@ class TestEntityManagerNotification(TestBase):
         manager.broadcast_subaccount_dashboard = MagicMock()
         manager.running_unit_tests = False
 
-        # Create admin subaccount (skips slashing, synchronous path)
+        # Create a collateral-exempt subaccount (skips slashing, synchronous path)
         success, info, msg = manager.create_subaccount(
             entity_hotkey=entity_hotkey,
             account_size=10_000,
             asset_class="crypto",
-            admin=True
+            collateral_exempt=True
         )
 
         self.assertTrue(success)
