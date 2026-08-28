@@ -15,6 +15,7 @@ from copy import deepcopy
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
@@ -99,6 +100,8 @@ class TestPositionManager(TestBase):
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=self.DEFAULT_TRADE_PAIR,
+            position_type=OrderType.LONG,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
     def _find_disk_position_from_memory_position(self, position):
@@ -290,6 +293,70 @@ class TestPositionManager(TestBase):
         all_disk_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY,
                                                                                 sort_positions=True)
         self.assertEqual(len(all_disk_positions), 2 * len(TradePair))
+
+    def test_get_dashboard_keeps_repeat_fills_sharing_order_uuid(self):
+        """
+        A bracket order that fills in more than one chunk produces several fills
+        sharing one order_uuid. The dashboard's fo dict must keep every fill:
+        the first keeps the bare uuid (backward compatible), repeat fills are
+        keyed "{uuid}@{occurrence}", and each fill's key must be stable across
+        incremental frames (positions_time_ms windows).
+        """
+        from vali_objects.enums.order_type_enum import OrderType
+        from vali_objects.vali_dataclasses.order import Order
+
+        open_ms = 1000
+        position = deepcopy(self.default_position)
+
+        def mk(order_type, price, leverage, uuid, ms):
+            return Order(
+                price=price,
+                slippage=0.0,
+                processed_ms=ms,
+                order_uuid=uuid,
+                trade_pair=position.trade_pair,
+                order_type=order_type,
+                leverage=leverage,
+            )
+
+        position.orders = [
+            mk(OrderType.LONG, 4094.0, 0.08, "open_order", open_ms),
+            # One stop order filling in three chunks — all share its uuid.
+            mk(OrderType.SHORT, 3983.2683, -0.02, "sl_order", open_ms + 1000),
+            mk(OrderType.SHORT, 3990.0, -0.02, "sl_order", open_ms + 2000),
+            mk(OrderType.FLAT, 4013.5489, -0.04, "sl_order", open_ms + 3000),
+        ]
+        position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+        position.close_out_position(open_ms + 3000)
+        self.position_client.save_miner_position(position)
+
+        dashboard = self.position_client.get_dashboard(self.DEFAULT_MINER_HOTKEY, 0)
+        self.assertIsNotNone(dashboard)
+        fo = dashboard["positions"][position.position_uuid]["fo"]
+        self.assertEqual(
+            set(fo.keys()), {"open_order", "sl_order", "sl_order@1", "sl_order@2"},
+            f"Expected all four fills to survive, got keys: {sorted(fo.keys())}"
+        )
+        # Old consumers still find the FIRST fill under the bare uuid.
+        self.assertEqual(fo["sl_order"]["pr"], 3983.2683)
+        self.assertEqual(fo["sl_order@1"]["pr"], 3990.0)
+        self.assertEqual(fo["sl_order@2"]["pr"], 4013.5489)
+
+        # Watermark falling BETWEEN repeat fills of the same uuid: the frame
+        # contains only the later chunks, with no in-frame collision — but
+        # they must keep their suffixed keys so clients merging frames by key
+        # do not overwrite the earlier fills.
+        incremental = self.position_client.get_dashboard(
+            self.DEFAULT_MINER_HOTKEY, open_ms + 1500
+        )
+        self.assertIsNotNone(incremental)
+        inc_fo = incremental["positions"][position.position_uuid]["fo"]
+        self.assertEqual(
+            set(inc_fo.keys()), {"sl_order@1", "sl_order@2"},
+            f"Repeat fills must keep stable keys in incremental frames, got: {sorted(inc_fo.keys())}"
+        )
+        self.assertEqual(inc_fo["sl_order@1"]["pr"], 3990.0)
+        self.assertEqual(inc_fo["sl_order@2"]["pr"], 4013.5489)
 
     # ==================== RACE CONDITION TESTS ====================
     # These tests demonstrate race conditions in PositionManager when accessed concurrently.
