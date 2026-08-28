@@ -1092,6 +1092,15 @@ class EntityMinerRestServer(MinerRestServer):
                 return jsonify({'status': 'error', 'message': 'collateral_exempt must be a boolean'}), 400
             collateral_exempt = raw
 
+            # Optional idempotency key forwarded to the validator. Validated
+            # here so a malformed value fails fast; forwarded in the payload
+            # only (never signed), matching how drawdown_criteria is handled.
+            client_ref = request_data.get("client_ref")
+            if client_ref is not None and (
+                not isinstance(client_ref, str) or not re.match(r'^[A-Za-z0-9_.:-]{1,64}\Z', client_ref)
+            ):
+                return jsonify({'status': 'error', 'message': 'client_ref must be 1-64 chars of [A-Za-z0-9_.:-]'}), 400
+
             try:
                 account_size = float(request_data["account_size"])
             except (ValueError, TypeError):
@@ -1174,6 +1183,11 @@ class EntityMinerRestServer(MinerRestServer):
             }
             if collateral_exempt:
                 payload["collateral_exempt"] = collateral_exempt
+            # client_ref rides unsigned alongside drawdown_criteria. message_dict
+            # above is intentionally left untouched so the coldkey signature is
+            # byte-identical to the legacy field set (forward/back compatible).
+            if client_ref is not None:
+                payload["client_ref"] = client_ref
             if is_hl:
                 payload["hl_address"] = hl_address
                 if payout_address is not None:

@@ -170,6 +170,129 @@ class TestEntityManagement(TestBase):
         entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
         self.assertEqual(len(entity_data['subaccounts']), 3)
 
+    # ==================== client_ref Idempotency Tests ====================
+
+    def test_client_ref_dedupe_returns_existing(self):
+        """Same (entity, client_ref) twice => one subaccount, 2nd flagged duplicate."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        ok1, s1, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref="acct-abc-123")
+        self.assertTrue(ok1)
+        self.assertIsNone(s1.get("duplicate"))  # first create is not a duplicate
+
+        ok2, s2, msg2 = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref="acct-abc-123")
+        self.assertTrue(ok2)
+        self.assertTrue(s2.get("duplicate"), "retry must be flagged duplicate")
+        self.assertEqual(s2["subaccount_id"], s1["subaccount_id"])
+        self.assertEqual(s2["subaccount_uuid"], s1["subaccount_uuid"])
+
+        # Exactly one subaccount exists, and the id counter advanced only once.
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 1)
+        self.assertEqual(entity_data["next_subaccount_id"], 1)
+        self.assertIn("duplicate", msg2.lower())
+
+    def test_client_ref_persisted_on_subaccount(self):
+        """The normalized client_ref is stored on the created subaccount."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        _, s, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=50_000, asset_class="crypto",
+            client_ref="acct-XYZ-9")
+        # normalized to lowercase
+        self.assertEqual(s["client_ref"], "acct-xyz-9")
+
+    def test_client_ref_normalization_collides(self):
+        """' ABC ' and 'abc' normalize to the same key and dedupe together."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        _, s1, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=25_000, asset_class="crypto",
+            client_ref="  ABC  ")
+        _, s2, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=25_000, asset_class="crypto",
+            client_ref="abc")
+        self.assertTrue(s2.get("duplicate"))
+        self.assertEqual(s2["subaccount_id"], s1["subaccount_id"])
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 1)
+
+    def test_without_client_ref_unchanged(self):
+        """No client_ref => every call creates a new subaccount (today's behavior)."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        for _ in range(3):
+            ok, s, _ = self.entity_client.create_subaccount(
+                self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto")
+            self.assertTrue(ok)
+            self.assertIsNone(s.get("duplicate"))
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 3)
+
+    def test_client_ref_scoped_per_entity(self):
+        """Same client_ref under two different entities => two subaccounts."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_2)
+        _, s1, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref="shared-ref")
+        ok2, s2, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_2, account_size=100_000, asset_class="crypto",
+            client_ref="shared-ref")
+        self.assertTrue(ok2)
+        self.assertIsNone(s2.get("duplicate"), "ref is namespaced per entity")
+        self.assertNotEqual(s1["subaccount_uuid"], s2["subaccount_uuid"])
+
+    def test_different_client_ref_distinct_subaccounts(self):
+        """Different refs, identical params => two subaccounts (legit 2nd purchase)."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        _, s1, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref="ref-one")
+        ok2, s2, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref="ref-two")
+        self.assertTrue(ok2)
+        self.assertIsNone(s2.get("duplicate"))
+        self.assertNotEqual(s1["subaccount_id"], s2["subaccount_id"])
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 2)
+
+    def test_malformed_client_ref_disables_dedupe(self):
+        """A ref that fails normalization (>64 chars) is treated as absent, so
+        each call creates a new subaccount rather than silently claiming a slot."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        bad = "x" * 65
+        _, s1, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref=bad)
+        _, s2, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref=bad)
+        self.assertIsNone(s1.get("client_ref"))
+        self.assertIsNone(s2.get("duplicate"))
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 2)
+
+    def test_client_ref_dedupe_after_elimination(self):
+        """A retry under a ref whose subaccount was eliminated returns the
+        eliminated subaccount and creates nothing (a claim is never released)."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        _, s1, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref="elim-ref")
+        self.entity_client.eliminate_subaccount(
+            self.ENTITY_HOTKEY_1, s1["subaccount_id"])
+        ok2, s2, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto",
+            client_ref="elim-ref")
+        self.assertTrue(ok2)
+        self.assertTrue(s2.get("duplicate"))
+        self.assertEqual(s2["subaccount_id"], s1["subaccount_id"])
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 1)
+
     # def test_create_subaccount_max_limit(self):
     #     """Test that subaccount creation fails when max limit is reached."""
     #     # TODO: mock override max_subaccounts

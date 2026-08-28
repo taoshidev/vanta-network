@@ -152,6 +152,7 @@ class EntityServer(RPCServerBase):
         asset_class: str,
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
+        client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -162,16 +163,25 @@ class EntityServer(RPCServerBase):
             asset_class: Asset class selection
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
+            client_ref: Optional idempotency key. A repeat with the same
+                (entity_hotkey, client_ref) returns the existing subaccount
+                dict with an added "duplicate": True and creates nothing.
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
+            The dict carries "duplicate": True when the ref matched a prior
+            creation. Carrying the flag INSIDE the dict preserves the 3-tuple
+            RPC contract for every existing caller.
         """
-        success, subaccount_info, message = self._manager.create_subaccount(
-            entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria
+        success, subaccount_info, message, duplicate = self._manager.create_subaccount_ex(
+            entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
+            drawdown_criteria=drawdown_criteria, client_ref=client_ref,
         )
 
         # Convert SubaccountInfo to dict for RPC serialization
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
+        if subaccount_dict is not None and duplicate:
+            subaccount_dict["duplicate"] = True
 
         return success, subaccount_dict, message
 
@@ -182,7 +192,8 @@ class EntityServer(RPCServerBase):
         hl_address: str,
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
-        payout_address: Optional[str] = None
+        payout_address: Optional[str] = None,
+        client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -198,10 +209,13 @@ class EntityServer(RPCServerBase):
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        success, subaccount_info, message = self._manager.create_hl_subaccount(
-            entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address
+        success, subaccount_info, message, duplicate = self._manager.create_hl_subaccount_ex(
+            entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
+            payout_address=payout_address, client_ref=client_ref,
         )
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
+        if subaccount_dict is not None and duplicate:
+            subaccount_dict["duplicate"] = True
         return success, subaccount_dict, message
 
     def get_all_active_hl_subaccounts_rpc(self) -> List[Tuple[str, dict]]:
