@@ -170,6 +170,13 @@ class RPCClientBase:
     # staleness-tolerant). Callers needing fail-fast (probes) pass retry=False to _invoke_rpc.
     _RECONNECT_MAX_RETRIES = 5
     _RECONNECT_RETRY_DELAY_S = 1.0
+    # Circuit breaker: once a full self-heal cycle (or a lazy connect) has failed, further calls
+    # within this window fail FAST (single attempt, quick connect, no settle sleeps) instead of
+    # each paying the full multi-cycle penalty. Without it, a state-tier restart turned every
+    # call from every one of the 32 axon/waitress worker threads into ~4-8s of blocked thread —
+    # saturating both pools within seconds and queueing even health checks. The first call after
+    # the window (or any success) closes the breaker.
+    _BACKOFF_WINDOW_S = 5.0
 
     # Class-level registry of all active client instances (for test cleanup)
     _active_instances: list = []
@@ -307,6 +314,10 @@ class RPCClientBase:
         # across the axon's executor threads) a transient-error storm doesn't spawn many managers or
         # tear down a freshly-rebuilt connection. Reentrant: connect() may be entered via _server.
         self._conn_lock = threading.RLock()
+        # Circuit breaker state: monotonic-ish wall-clock deadline until which calls fail fast
+        # (see _BACKOFF_WINDOW_S). 0 = breaker closed. Read/written unlocked (float assignment is
+        # atomic; a racy read only costs one extra fast/slow attempt).
+        self._backoff_until = 0.0
 
         # Resilient proxy returned by the _server property in RPC mode. Bound to this client so
         # every method call routes through _invoke_rpc()'s reconnect-on-bounce logic.
@@ -370,7 +381,10 @@ class RPCClientBase:
         both connect to the same live server, the last write to self._proxy wins, and the orphaned
         manager is GC'd. Locking here would add contention to the common already-connected path.
         """
-        if self._proxy is None and not self._connected and self.connection_mode == RPCConnectionMode.RPC:
+        # Keyed on _proxy alone (not `and not self._connected`): a racing teardown must never
+        # leave this returning None while _connected looks True — connect() itself no-ops when
+        # already connected, so the extra call in a race is harmless.
+        if self._proxy is None and self.connection_mode == RPCConnectionMode.RPC:
             self.connect()
         return self._proxy
 
@@ -563,8 +577,22 @@ class RPCClientBase:
         if self._direct_server is not None:
             return getattr(self._direct_server, method_name)(*args, **kwargs)
 
+        # Circuit breaker: while open (a recent self-heal or connect already failed), this call
+        # gets ONE fast attempt — quick connect, no self-heal cycles, no settle sleeps — so an
+        # outage costs each caller ~0.3s instead of ~4-8s of blocked thread. Any success closes
+        # the breaker.
+        breaker_open = time.time() < self._backoff_until
+
         # ---- First attempt (lazy-connects on first use) ----
-        proxy = self._ensure_proxy()
+        try:
+            if breaker_open and self._proxy is None:
+                self.connect(max_retries=1, retry_delay=0.25)
+            proxy = self._ensure_proxy()
+        except Exception:
+            # Even the connect failed — open (or extend) the breaker so concurrent/subsequent
+            # calls fail fast instead of each paying the full connect-retry penalty.
+            self._backoff_until = time.time() + self._BACKOFF_WINDOW_S
+            raise
         generation = self._connection_generation
         try:
             result = getattr(proxy, method_name)(*args, **kwargs)
@@ -572,16 +600,28 @@ class RPCClientBase:
             # route through here now), and repr-ing large payloads (metagraph/position lists) on
             # the hot path would cost even when trace logging is disabled. Name + result type only.
             logger.debug(f"{self.service_name}Client.{method_name} -> {type(result).__name__}")
+            if self._backoff_until:
+                self._backoff_until = 0.0
             return result
         except Exception as e:
             if not ErrorUtils.is_transient_rpc_error(e):
                 # Business rejection / missing method / etc. — do NOT reconnect or retry.
                 raise
+            # Type says transient — but multiprocessing transports server-raised exceptions
+            # VERBATIM, so an OSError subclass raised by the server's own business logic (e.g.
+            # a position-lock TimeoutError under contention) is type-identical to a dead socket.
+            # Disambiguate by probing the SAME connection: if it still serves calls, the error
+            # came from the server's logic — re-executing the method would multiply real work
+            # (6x the full order pipeline per the review) for nothing. Probe cost is one cheap
+            # RPC, on error paths only.
+            if self._transport_probe_ok(proxy):
+                raise
             last_error = e
 
         # Fail-fast opt-out: drop the poisoned connection (de-duped) so the next call reconnects,
         # then re-raise now instead of running the multi-cycle self-heal.
-        if not retry:
+        if not retry or breaker_open:
+            self._backoff_until = time.time() + self._BACKOFF_WINDOW_S
             with self._conn_lock:
                 if self._connection_generation == generation:
                     self._reset_connection()
@@ -623,14 +663,20 @@ class RPCClientBase:
                 except Exception as e2:
                     if not ErrorUtils.is_transient_rpc_error(e2):
                         raise
+                    if self._transport_probe_ok(proxy):
+                        # Fresh connection works — this is the server's own OSError-family
+                        # business exception; stop re-executing (see first-attempt comment).
+                        raise
                     last_error = e2
 
             # Brief settle so a just-restarted server becomes ready before the next cycle.
             if attempt < self._RECONNECT_MAX_RETRIES:
                 time.sleep(self._RECONNECT_RETRY_DELAY_S)
 
-        # All recovery cycles exhausted — drop the (still-dead) connection so a later call
-        # reconnects cleanly, and surface the failure to the caller (placer retry / daemon loop).
+        # All recovery cycles exhausted — open the circuit breaker (subsequent calls fail fast
+        # for _BACKOFF_WINDOW_S), drop the (still-dead) connection so a later call reconnects
+        # cleanly, and surface the failure to the caller (placer retry / daemon loop).
+        self._backoff_until = time.time() + self._BACKOFF_WINDOW_S
         with self._conn_lock:
             if self._connection_generation == generation:
                 self._reset_connection()
@@ -639,6 +685,21 @@ class RPCClientBase:
             f"{self._RECONNECT_MAX_RETRIES} reconnect attempts: {last_error!r}"
         )
         raise last_error
+
+    def _transport_probe_ok(self, proxy) -> bool:
+        """
+        True if the connection that just raised is actually alive — meaning the exception was
+        raised by the SERVER'S code (transported verbatim by multiprocessing) rather than by the
+        transport itself. Every RPCServerBase exposes health_check_rpc, and BaseProxy uses a
+        per-thread connection, so this probes the exact connection the failed call used.
+        """
+        if proxy is None:
+            return False
+        try:
+            proxy.health_check_rpc()
+            return True
+        except Exception:
+            return False
 
     def is_connected(self) -> bool:
         """Check if client is connected (or has direct server)."""
@@ -710,9 +771,13 @@ class RPCClientBase:
             except Exception as e:
                 logger.debug(f"{self.service_name}Client error during manager cleanup: {e}")
 
+        # Write order is load-bearing: _connected FIRST, then _proxy. _ensure_proxy reads these
+        # unlocked; the reverse order exposed (_proxy=None, _connected=True), which skipped the
+        # reconnect and produced getattr(None, method) -> AttributeError — misclassified as a
+        # permanent business error on the order path.
+        self._connected = False
         self._manager = None
         self._proxy = None
-        self._connected = False
 
     def _reset_connection(self) -> None:
         """

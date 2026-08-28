@@ -733,8 +733,17 @@ class Validator(ValidatorBase):
                     synapse.should_retry = ErrorUtils.is_transient_rpc_error(order_exc)
 
                 # TODO Review overlap with serving in market order manager
+                # Best-effort: the entity server lives in CORE — during a core restart this call
+                # raising inside `finally` would REPLACE the fully-crafted success synapse with an
+                # axon error, and the still-claimed uuid would turn the miner's retry into a hard
+                # duplicate rejection for an order that is live on their account.
                 if is_synthetic_hotkey(miner_hotkey):
-                    self.entity_client.broadcast_subaccount_dashboard(miner_hotkey)
+                    try:
+                        self.entity_client.broadcast_subaccount_dashboard(miner_hotkey)
+                    except Exception as broadcast_err:
+                        logger.warning(
+                            f"Entity dashboard broadcast failed for {miner_hotkey} (ack unaffected): {broadcast_err}"
+                        )
 
                 processing_time_ms = TimeUtil.now_in_millis() - now_ms
                 logger.info(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
