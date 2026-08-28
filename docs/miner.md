@@ -77,6 +77,7 @@ Native USD-denominated pairs (e.g. BTC/USD) are blocked in favor of their Hyperl
 | DOTUSDC   | DOT/USDC   |
 | TRXUSDC   | TRX/USDC   |
 | LTCUSDC   | LTC/USDC   |
+| BCHUSDC   | BCH/USDC   |
 | TAOUSDC   | TAO/USDC   |
 | SUIUSDC   | SUI/USDC   |
 | ARBUSDC   | ARB/USDC   |
@@ -94,8 +95,6 @@ Native USD-denominated pairs (e.g. BTC/USD) are blocked in favor of their Hyperl
 | WLDUSDC   | WLD/USDC   |
 | PUMPUSDC  | PUMP/USDC  |
 | kPEPEUSDC | kPEPE/USDC |
-
-Note: BCH/USD is blocked with no Hyperliquid equivalent offered — Bitcoin Cash is not currently tradeable.
 
 ### Forex
 
@@ -241,7 +240,7 @@ The following pairs are defined in the system but currently disabled:
 | LINKUSD      | Crypto      | Native pair deprecated for LINKUSDC               |
 | XMRUSD       | Crypto      | Native pair deprecated for XMRUSDC                |
 | LTCUSD       | Crypto      | Native pair deprecated for LTCUSDC                |
-| BCHUSD       | Crypto      | Native pair deprecated; no HL equivalent offered  |
+| BCHUSD       | Crypto      | Native pair deprecated for BCHUSDC                |
 | TONUSDC      | Crypto      | Delisted from Hyperliquid                         |
 | PAXGUSDC     | Crypto      | Gold; kept GOLDUSDC instead                       |
 | USDMXN       | Forex       | Exotic, larger spreads                            |
