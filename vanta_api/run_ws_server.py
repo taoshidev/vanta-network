@@ -55,8 +55,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "mainnet-specific behavior, so this is informational only.")
     parser.add_argument("--api-keys-file", type=str, default=None,
                         help="Path to the API keys JSON file. Default: ValiBkpUtils.get_api_keys_file_path().")
-    parser.add_argument("--host", type=str, default="0.0.0.0",
-                        help="Host to bind the WebSocket server. Default: 0.0.0.0 (external reachability).")
+    parser.add_argument("--host", type=str, default="127.0.0.1",
+                        help="Host to bind the WebSocket server. Default: 127.0.0.1 — parity with "
+                             "the in-core spawn's --api-host default, so the split never widens the "
+                             "bind surface an operator didn't ask for. Pass 0.0.0.0 for external reachability.")
     parser.add_argument("--port", type=int, default=None,
                         help=f"Port for the WebSocket server. Default: ValiConfig.VANTA_WEBSOCKET_PORT ({ValiConfig.VANTA_WEBSOCKET_PORT}).")
     parser.add_argument("--refresh-interval", type=int, default=15,

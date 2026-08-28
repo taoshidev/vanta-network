@@ -250,6 +250,13 @@ orders_split_enabled=false
 wallet_name_value=""
 wallet_hotkey_value=""
 wallet_path_value="$HOME/.bittensor/wallets"
+# API bind forwarding: the standalone REST/WS apps must bind exactly where the in-core spawn
+# would have (default 127.0.0.1, --api-host/--api-*-port honored) — NOT their own defaults —
+# else a relaunch silently moves the API (breaking any reverse proxy pointed at the old bind)
+# and exposes a loopback-only API on all interfaces.
+api_host_value="127.0.0.1"
+api_rest_port_value=""
+api_ws_port_value=""
 for ((i = 0; i < ${#args[@]}; i++)); do
     case "${args[$i]}" in
         --serve)
@@ -291,6 +298,24 @@ for ((i = 0; i < ${#args[@]}; i++)); do
         --wallet.path=*)
             wallet_path_value="${args[$i]#*=}"
             ;;
+        --api-host)
+            api_host_value="${args[$((i + 1))]}"
+            ;;
+        --api-host=*)
+            api_host_value="${args[$i]#*=}"
+            ;;
+        --api-rest-port)
+            api_rest_port_value="${args[$((i + 1))]}"
+            ;;
+        --api-rest-port=*)
+            api_rest_port_value="${args[$i]#*=}"
+            ;;
+        --api-ws-port)
+            api_ws_port_value="${args[$((i + 1))]}"
+            ;;
+        --api-ws-port=*)
+            api_ws_port_value="${args[$i]#*=}"
+            ;;
     esac
 done
 
@@ -303,6 +328,15 @@ if [ "$serve_enabled" = true ]; then
     if [ -n "$slack_webhook_value" ]; then
         rest_args+=("--slack-webhook-url" "$slack_webhook_value")
         ws_args+=("--slack-webhook-url" "$slack_webhook_value")
+    fi
+    # Bind parity with the in-core spawn (see api_host_value comment above).
+    rest_args+=("--host" "$api_host_value")
+    ws_args+=("--host" "$api_host_value")
+    if [ -n "$api_rest_port_value" ]; then
+        rest_args+=("--port" "$api_rest_port_value")
+    fi
+    if [ -n "$api_ws_port_value" ]; then
+        ws_args+=("--port" "$api_ws_port_value")
     fi
 fi
 
@@ -417,10 +451,38 @@ check_and_restart_pm2() {
     pm2 start $proc_name.app.config.js
 }
 
+# delete_pm2_if_running proc_name — tear down a split app whose flag is no longer set. Without
+# this, rolling back (dropping --split-state / --no-axon / --serve) leaves the OLD app running
+# and auto-restarting, and it fights the monolith core for the same RPC ports (mutual SIGKILL
+# loop until PM2 marks both errored).
+delete_pm2_if_running() {
+    local proc_name=$1
+    if pm2 status | grep -q "$proc_name"; then
+        echo "Flag for $proc_name is not set but the app is running — deleting stale PM2 app $proc_name"
+        pm2 delete "$proc_name"
+    fi
+}
+
+# Tear down split apps whose flags were dropped BEFORE starting anything, so a rollback can't
+# leave two owners of the order-write servers.
+teardown_disabled_split_apps() {
+    if [ "$split_state_enabled" != true ]; then
+        delete_pm2_if_running "$state_proc_name"
+    fi
+    if [ "$orders_split_enabled" != true ]; then
+        delete_pm2_if_running "$orders_proc_name"
+    fi
+    if [ "$serve_enabled" != true ]; then
+        delete_pm2_if_running "$rest_proc_name"
+        delete_pm2_if_running "$ws_proc_name"
+    fi
+}
+
 # Start order: vanta-state FIRST (owns the order-write state servers core connects to), then core,
 # then the API apps. Under --split-state this ordering matters — core's clients target vanta-state's
 # servers; the readiness watchdogs tolerate transient absence and alert on sustained un-readiness.
 pip_install_if_requirements_changed
+teardown_disabled_split_apps
 if [ "$split_state_enabled" = true ]; then
     check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
 fi
@@ -501,6 +563,7 @@ while true; do
                 # models, RPC serialization) needs ALL tiers restarted together to avoid skew.
                 # RPC is pickle with no version handshake, so vanta-state MUST restart with core
                 # (matched-pair rule); vanta-state first to mirror the startup order.
+                teardown_disabled_split_apps
                 if [ "$split_state_enabled" = true ]; then
                     check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
                 fi

@@ -39,8 +39,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Subnet netuid; is_mainnet is derived as (netuid == 8). Default: 8.")
     parser.add_argument("--api-keys-file", type=str, default=None,
                         help="Path to the API keys JSON file. Default: ValiBkpUtils.get_api_keys_file_path().")
-    parser.add_argument("--host", type=str, default="0.0.0.0",
-                        help="Host to bind the Flask HTTP server. Default: 0.0.0.0 (external reachability).")
+    parser.add_argument("--host", type=str, default="127.0.0.1",
+                        help="Host to bind the Flask HTTP server. Default: 127.0.0.1 — parity with "
+                             "the in-core spawn's --api-host default, so the split never widens the "
+                             "bind surface an operator didn't ask for. Pass 0.0.0.0 for external reachability.")
     parser.add_argument("--port", type=int, default=None,
                         help=f"Port for the Flask HTTP server. Default: ValiConfig.REST_API_PORT ({ValiConfig.REST_API_PORT}).")
     parser.add_argument("--refresh-interval", type=int, default=15,
