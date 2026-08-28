@@ -1415,10 +1415,19 @@ class HyperliquidTracker:
             return
         with self._fill_retry_lock:
             self._pending_fill_retries.append({"kwargs": dispatch_kwargs, "attempts": attempts})
+            backlog = len(self._pending_fill_retries)
         logger.warning(
             f"[HL_TRACKER] Transient dispatch failure for fill {fill_hash} ({hotkey}) — queued "
             f"for replay (attempt {attempts}/{self._FILL_RETRY_MAX_ATTEMPTS}): {err}"
         )
+        # No maxlen on the queue by design — evicting would LOSE fills, the exact bug this queue
+        # exists to fix; entries self-expire via the attempt cap instead. But a large backlog
+        # means a sustained state-tier outage with live entity trading: alert loudly.
+        if backlog > 1_000 and backlog % 500 == 1:
+            logger.error(
+                f"[HL_TRACKER] Fill replay backlog abnormal: {backlog} queued fills — state tier "
+                f"has been unreachable for an extended period while entities trade"
+            )
 
     def _drain_pending_fill_retries(self) -> None:
         """Replay transiently-failed fills, oldest first (order matters for position deltas).
