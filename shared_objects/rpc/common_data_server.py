@@ -128,6 +128,13 @@ class CommonDataServer(RPCServerBase):
         self._sync_waiting = False
         self._last_sync_start_ms = 0
         self._last_sync_complete_ms = 0
+        # Lease on the sync gate: the sync side (core) renews this while its sync runs
+        # (renew_sync_lease_rpc heartbeat). sync_waiting has no owning process on THIS server —
+        # if core is hard-killed between wait_for_orders and mark_sync_complete, nothing would
+        # ever clear it and every order network-wide would be rejected until the next sync. A
+        # stale lease (no renewal for SYNC_WAITING_LEASE_MS) auto-clears the gate instead.
+        self._sync_lease_renewed_ms = 0
+        self._sync_lease_ms = ValiConfig.SYNC_WAITING_LEASE_MS  # instance attr so tests can shrink it
         self._order_condition = threading.Condition(self._state_lock)
         # INVARIANT (load-bearing): the condition MUST wrap _state_lock, not a lock of its own.
         # The R2.5a order/sync TOCTOU fix depends on begin_order_rpc's `_sync_waiting` check and
@@ -285,6 +292,7 @@ class CommonDataServer(RPCServerBase):
         cap, emit a throttled alert — but do NOT evict live entries (would undercount).
         """
         with self._order_condition:
+            self._expire_stale_sync_gate_locked()
             count = self._reap_and_count_locked()
             if self._sync_waiting:
                 return None  # sync quiescing/running — refuse; caller rejects with should_retry
@@ -321,15 +329,51 @@ class CommonDataServer(RPCServerBase):
         with self._order_condition:
             return self._reap_and_count_locked()
 
+    def _expire_stale_sync_gate_locked(self) -> None:
+        """
+        Auto-clear a sync gate whose lease has lapsed. Caller holds _order_condition/_state_lock.
+
+        The gate's owner is a process on the OTHER side of an RPC boundary (core's PositionSyncer);
+        if it is hard-killed between wait_for_orders and mark_sync_complete, no code path on this
+        server would ever clear sync_waiting — and begin_order_rpc would reject every order,
+        network-wide, until the next successful sync. The in-flight registry got a TTL for exactly
+        this cross-process reason (R2.4); this is the same medicine for the sync flag.
+        """
+        if not self._sync_waiting:
+            return
+        now_ms = TimeUtil.now_in_millis()
+        renewed = self._sync_lease_renewed_ms or self._last_sync_start_ms
+        if renewed and (now_ms - renewed) > self._sync_lease_ms:
+            self._sync_waiting = False
+            self._sync_lease_renewed_ms = 0
+            logger.error(
+                f"[COMMON_DATA] sync_waiting lease expired ({(now_ms - renewed) / 1000:.0f}s since "
+                f"last renewal > {self._sync_lease_ms / 1000:.0f}s) — the sync owner (core) is "
+                f"presumed dead mid-sync. Auto-clearing the gate so orders resume."
+            )
+
+    def renew_sync_lease_rpc(self) -> bool:
+        """Heartbeat from the sync owner (core) while its sync runs. Returns whether the gate is
+        still held (False => it already expired or was completed; the owner should treat its sync
+        window as lost)."""
+        with self._order_condition:
+            if not self._sync_waiting:
+                return False
+            self._sync_lease_renewed_ms = TimeUtil.now_in_millis()
+            return True
+
     def is_sync_waiting_rpc(self) -> bool:
         """True if a sync is waiting for orders to drain (order early-reject reads this)."""
         with self._order_condition:
+            self._expire_stale_sync_gate_locked()
             return self._sync_waiting
 
     def set_sync_waiting_rpc(self, value: bool) -> None:
         """Set the sync_waiting flag directly (mark_sync_complete_rpc clears it)."""
         with self._order_condition:
             self._sync_waiting = value
+            # Stamp/clear the lease so a directly-set gate is still covered by expiry.
+            self._sync_lease_renewed_ms = TimeUtil.now_in_millis() if value else 0
 
     def wait_for_orders_rpc(self, timeout_seconds: float = None) -> bool:
         """
@@ -342,12 +386,18 @@ class CommonDataServer(RPCServerBase):
         with self._order_condition:
             self._sync_waiting = True
             self._last_sync_start_ms = TimeUtil.now_in_millis()
+            self._sync_lease_renewed_ms = self._last_sync_start_ms
             deadline_ms = None if timeout_seconds is None else self._last_sync_start_ms + int(timeout_seconds * 1000)
             while self._reap_and_count_locked() > 0:
+                # Renew while this drain loop is alive: the loop runs in the RPC call's server
+                # thread, so it proves the wait itself is progressing. Once we return True, the
+                # sync owner's own heartbeat (renew_sync_lease_rpc) must take over.
+                self._sync_lease_renewed_ms = TimeUtil.now_in_millis()
                 if deadline_ms is not None:
                     remaining_s = (deadline_ms - TimeUtil.now_in_millis()) / 1000.0
                     if remaining_s <= 0:
                         self._sync_waiting = False
+                        self._sync_lease_renewed_ms = 0
                         return False
                     self._order_condition.wait(timeout=min(self._WAIT_POLL_SECONDS, remaining_s))
                 else:
@@ -358,6 +408,7 @@ class CommonDataServer(RPCServerBase):
         """Clear sync_waiting (sync finished; orders may resume)."""
         with self._order_condition:
             self._sync_waiting = False
+            self._sync_lease_renewed_ms = 0
             self._last_sync_complete_ms = TimeUtil.now_in_millis()
 
     def get_order_sync_state_rpc(self) -> dict:
@@ -525,6 +576,7 @@ class CommonDataServer(RPCServerBase):
             self._inflight_orders.clear()
             self._next_order_token = 0
             self._sync_waiting = False
+            self._sync_lease_renewed_ms = 0
             self._last_sync_start_ms = 0
             self._last_sync_complete_ms = 0
             # Reset the order-UUID dedup set (else dedup state leaks across tests).

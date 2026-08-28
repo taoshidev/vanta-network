@@ -254,6 +254,29 @@ class TestOrderSyncClient(unittest.TestCase):
         t.join(timeout=1.0)
         self.assertTrue(sync_done[0], "sync proceeds once the admitted order ends")
 
+    def test_sync_gate_lease_expires_when_owner_dies(self):
+        """Core hard-killed mid-sync: no mark_sync_complete, no heartbeat — the gate must
+        auto-clear after the lease instead of rejecting orders until the next sync (~24h)."""
+        self.assertTrue(self.server.wait_for_orders_rpc(timeout_seconds=0.1))
+        self.assertTrue(self.server.is_sync_waiting_rpc())
+        # Owner dies: renewals stop. Backdate the last renewal past the lease.
+        self.server._sync_lease_renewed_ms -= (self.server._sync_lease_ms + 1)
+        self.assertFalse(self.server.is_sync_waiting_rpc(), "expired gate auto-clears")
+        self.assertIsNotNone(self.server.begin_order_rpc("post-expiry-order"),
+                             "orders are admitted again after the stale gate expires")
+
+    def test_sync_gate_lease_renewal_keeps_gate_held(self):
+        """A live owner's heartbeat keeps the gate held past the lease window."""
+        self.assertTrue(self.server.wait_for_orders_rpc(timeout_seconds=0.1))
+        self.server._sync_lease_renewed_ms -= (self.server._sync_lease_ms + 1)
+        # Renewal arrives before anyone observes the gate — but a renewal on an
+        # already-expired-but-unobserved gate is still honored (sync_waiting is True).
+        self.assertTrue(self.server.renew_sync_lease_rpc())
+        self.assertTrue(self.server.is_sync_waiting_rpc(), "renewed gate stays held")
+        self.assertIsNone(self.server.begin_order_rpc("order-during-sync"), "orders still gated")
+        self.server.mark_sync_complete_rpc()
+        self.assertFalse(self.server.is_sync_waiting_rpc())
+
     def test_sync_side_does_not_fail_open(self):
         """The sync side must NOT swallow errors — it cannot safely rewrite positions blind."""
         class _RaisingWait:
