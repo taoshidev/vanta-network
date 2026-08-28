@@ -121,6 +121,10 @@ class CommonDataClient(RPCClientBase):
         """Block until in-flight orders drain to 0; returns False on timeout."""
         return self.call("wait_for_orders_rpc", timeout_seconds)
 
+    def renew_sync_lease(self) -> bool:
+        """Heartbeat the sync gate's lease (sync owner only). False => the gate is no longer held."""
+        return self.call("renew_sync_lease_rpc")
+
     def mark_sync_complete(self) -> None:
         """Clear sync_waiting (orders may resume)."""
         self.call("mark_sync_complete_rpc")

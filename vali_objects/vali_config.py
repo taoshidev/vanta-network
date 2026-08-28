@@ -307,6 +307,13 @@ class ValiConfig:
     # (post-commit) never expire this way — they live in the FIFO dedup set. Must exceed the
     # longest real apply (lock wait + RPC self-heal cycles + price fetches).
     ORDER_UUID_CLAIM_TTL_MS = 300_000  # 5 minutes
+    # Lease on the cross-process sync gate (sync_waiting on CommonDataServer): the sync side
+    # (core) renews it via a heartbeat while its sync runs; if core is hard-killed mid-sync the
+    # renewals stop and the gate auto-clears after this long, instead of rejecting every order
+    # network-wide until the next successful sync (potentially ~24h). Must exceed the heartbeat
+    # interval (60s) by enough to ride out core GC pauses / brief stalls.
+    SYNC_WAITING_LEASE_MS = 300_000  # 5 minutes
+    SYNC_LEASE_RENEW_INTERVAL_S = 60  # core heartbeat cadence while a sync holds the gate
     # Position-lock lease (never-release protection): a server-side (hotkey, trade_pair) lock held
     # longer than this is presumed abandoned (holder crashed between acquire and release) and
     # force-reclaimed on the next acquire. Must sit FAR above the worst LEGITIMATE hold — which is
