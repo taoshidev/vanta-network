@@ -450,7 +450,7 @@ class Position(BaseModel):
         # pnl with slippage
         if order:
             # update realized pnl for orders that reduce the size of a position
-            if order.order_type != self.position_type or self.position_type == OrderType.FLAT:
+            if order.order_type != self.position_type or self.is_closed_position:
                 exit_price = current_price * (1 + order.slippage) if order.leverage > 0 else current_price * (1 - order.slippage)
                 order_realized_pnl_quote = -1 * (exit_price - self.average_entry_price) * (order.quantity * order.trade_pair.lot_size)
                 order.realized_pnl = order_realized_pnl_quote * order.quote_usd_rate
@@ -515,7 +515,7 @@ class Position(BaseModel):
         self._position_log(f"closed position total w/o fees [{self.current_return}]. Trade pair: {self.trade_pair.trade_pair_id}")
         self._position_log(f"closed return with fees [{self.return_at_close}]. Trade pair: {self.trade_pair.trade_pair_id}")
 
-        if self.position_type == OrderType.FLAT:
+        if self.is_closed_position:
             self.net_leverage = 0.0
             self.net_quantity = 0.0
             self.net_value = 0.0
@@ -588,7 +588,6 @@ class Position(BaseModel):
         self.add_order(flat_order)
 
     def close_out_position(self, close_ms):
-        self.position_type = OrderType.FLAT
         self.is_closed_position = True
         self.close_ms = close_ms
 
@@ -743,10 +742,10 @@ class Position(BaseModel):
 
             # Reflect the current order in the current position's return.
             adjusted_quantity = (
-                0.0 if self.position_type == OrderType.FLAT else order.quantity
+                0.0 if self.is_closed_position else order.quantity
             )
             adjusted_leverage = (
-                0.0 if self.position_type == OrderType.FLAT else order.leverage
+                0.0 if self.is_closed_position else order.leverage
             )
             #logger.info(
             #    f"Updating position state for new order {order} with adjusted leverage {adjusted_quantity}"
@@ -755,5 +754,5 @@ class Position(BaseModel):
 
 
             # If the position is already closed, we don't need to process any more orders. break in case there are more orders.
-            if self.position_type == OrderType.FLAT:
+            if self.is_closed_position:
                 break

@@ -358,7 +358,7 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.LONG,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'net_value': 0.0,
@@ -425,7 +425,7 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.LONG,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'net_value': 0.0,
@@ -492,7 +492,7 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.SHORT,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'net_value': 0.0,
@@ -555,7 +555,7 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.LONG,
             'is_closed_position': True,
             'net_leverage': 2.0,
             'initial_entry_price': 100,
@@ -618,7 +618,7 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.SHORT,
             'is_closed_position': True,
             'net_leverage': -1.0,
             'initial_entry_price': 100,
@@ -694,7 +694,7 @@ class TestPositions(TestBase):
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, position.orders[2]],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.SHORT,
             'is_closed_position': True,
             'net_leverage': -1.0,
             'initial_entry_price': 100,
@@ -720,7 +720,7 @@ class TestPositions(TestBase):
             self.add_order_to_position_and_save(position, o3)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, position.orders[2]],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.SHORT,
             'is_closed_position': True,
             'net_leverage': -1.0,
             'initial_entry_price': 100,
@@ -795,7 +795,7 @@ class TestPositions(TestBase):
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, position.orders[2]],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.LONG,
             'is_closed_position': True,
             'net_leverage': 2.0,
             'initial_entry_price': 100,
@@ -822,7 +822,7 @@ class TestPositions(TestBase):
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, position.orders[2]],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.LONG,
             'is_closed_position': True,
             'net_leverage': 2.0,
             'initial_entry_price': 100,
@@ -885,7 +885,7 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.SHORT,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
@@ -1011,7 +1011,7 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o3)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, o3],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.LONG,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
@@ -1074,7 +1074,7 @@ class TestPositions(TestBase):
         self.add_order_to_position_and_save(position, o2)
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.LONG,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
@@ -1229,7 +1229,7 @@ class TestPositions(TestBase):
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, o3, o4, o5],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.LONG,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
@@ -1291,7 +1291,7 @@ class TestPositions(TestBase):
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, o3, o4, o5],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.SHORT,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
@@ -1353,7 +1353,7 @@ class TestPositions(TestBase):
 
         self.validate_intermediate_position_state(position, {
             'orders': [o1, o2, o3, o4, o5],
-            'position_type': OrderType.FLAT,
+            'position_type': OrderType.SHORT,
             'is_closed_position': True,
             'net_leverage': 0.0,
             'initial_entry_price': 1000,
