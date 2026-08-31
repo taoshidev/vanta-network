@@ -5,6 +5,7 @@ import time
 import asyncio
 import json
 import shutil
+import threading
 import os
 
 from miner_config import MinerConfig
@@ -175,7 +176,19 @@ class PositionInspector:
         """
         try:
             file_path = MinerConfig.get_position_file_location()
-            temp_path = file_path + ".tmp"
+            # get_position_file_location() is process-global. That is correct for one
+            # wallet per process, but a host running several miners in a single process
+            # has every PositionInspector writing the same path: the file ends up holding
+            # whichever wallet finished last and the rest are silently discarded. Keying
+            # the destination by hotkey keeps each wallet's positions separate.
+            hotkey = getattr(getattr(self.wallet, "hotkey", None), "ss58_address", None)
+            if hotkey:
+                root, ext = os.path.splitext(file_path)
+                file_path = f"{root}-{hotkey}{ext}"
+            # A shared temp name races the same way, and worse: the first shutil.move
+            # renames it away, so every other writer fails with ENOENT and reports
+            # "Failed to save positions to disk" while nothing is actually wrong.
+            temp_path = f"{file_path}.tmp.{os.getpid()}.{threading.get_ident()}"
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(temp_path, 'w') as f:
                 json.dump(positions if positions else [], f, indent=2)
