@@ -1705,7 +1705,7 @@ class PerfLedgerManager(CacheController):
 
         # Move frozen ledgers from active to frozen storage
         for hk in frozen_ledger_hotkeys:
-            if hk in perf_ledger_bundles and hk not in self._frozen_ledgers:
+            if hk in perf_ledger_bundles:
                 self._frozen_ledgers[hk] = perf_ledger_bundles[hk]
                 del perf_ledger_bundles[hk]
                 logger.info(f"Moved frozen ledger for {hk} to frozen storage")
