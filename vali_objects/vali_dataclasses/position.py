@@ -270,6 +270,19 @@ class Position(BaseModel):
         if self.net_leverage:
             results["nl"] = self.net_leverage
 
+        # Net value in USD. Emitted alongside net_leverage because the two are
+        # NOT interchangeable downstream: net_leverage is net_value divided by
+        # THIS POSITION's account_size snapshot (see update_position_state),
+        # not the subaccount's nominal account_size. A client that only
+        # receives `nl` and multiplies by the nominal size gets a figure that
+        # is wrong by the ratio between the two, constant per account and up
+        # to ~16% on live accounts as of 2026-09-01 — and it is this value,
+        # not the leverage, that get_max_order_size() compares against the
+        # per-pair cap. Same truthiness gate as `nl` so a closed position
+        # (net_value 0.0) does not grow the frame.
+        if self.net_value:
+            results["nv"] = self.net_value
+
         if self.is_closed_position:
             results["c"] = self.close_ms
             results["rc"] = self.return_at_close
