@@ -355,15 +355,22 @@ class WeightCalculatorManager(CacheController):
             start_time_ms=payout_activation_start_ms,
             end_time_ms=prev_target_end_ms
         )
-        # Weekly target is this week's own settlement only (not summed across history):
-        # each PayoutSettlement.payout_penalized is already the balance-above-personal-HWM
-        # for that single week, so taking the latest one directly (rather than summing all
-        # settlements since activation) is what keeps a miner's weight tied to recent
-        # performance instead of re-paying every historical high-water week forever.
-        miner_required_payouts = {
-            hotkey: payouts[-1].payout_penalized if payouts else 0.0
-            for hotkey, payouts in miner_required_payout_settlements.items()
+        # Lifetime emissions to carry forward any underpayment from prior weeks
+        all_time_emissions = {
+            hotkey: sum(cp.chunk_emissions_usd for cp in ledger.checkpoints)
+            for hotkey, ledger in all_emissions_ledgers.items()
         }
+
+        # pnl weight = current_week_required + max(0, all_time_required - current_week_required - all_time_emissions)
+        miner_required_payouts = {}
+        miner_overflow_by_hotkey = {}
+        for hotkey, payouts in miner_required_payout_settlements.items():
+            current_week_required = payouts[-1].payout_penalized if payouts else 0.0
+            all_time_required = sum(p.payout_penalized for p in payouts)
+            overflow = max(0.0, all_time_required - current_week_required - all_time_emissions.get(hotkey, 0.0))
+            miner_overflow_by_hotkey[hotkey] = overflow
+            miner_required_payouts[hotkey] = current_week_required + overflow
+
         miner_required_payouts_raw = {
             hotkey: payouts[-1].payout_raw if payouts else 0.0
             for hotkey, payouts in miner_required_payout_settlements.items()
@@ -389,9 +396,13 @@ class WeightCalculatorManager(CacheController):
             cumulative_through_prior_week = DebtBasedScoring.calculate_payout_from_checkpoints(
                 checkpoints_through_prior_week
             )
-            entity_miner_required_payouts[hotkey] = max(
+            current_week_required = max(
                 0.0, cumulative_through_this_week - cumulative_through_prior_week
             )
+
+            # cumulative through prior week = all time required - current week required
+            overflow = max(0.0, cumulative_through_prior_week - all_time_emissions.get(hotkey, 0.0))
+            entity_miner_required_payouts[hotkey] = current_week_required + overflow
             # Small hotkey count (few entities); log unconditionally, not gated on `verbose`,
             # so this is visible on every run while diagnosing the this-week-vs-prior-week diff.
             latest_ts = entity_checkpoints[-1].timestamp_ms if entity_checkpoints else None
@@ -403,6 +414,8 @@ class WeightCalculatorManager(CacheController):
                 f"(cumulative=${cumulative_through_this_week:.2f}), "
                 f"checkpoints_through_prior_week={len(checkpoints_through_prior_week)} "
                 f"(cumulative=${cumulative_through_prior_week:.2f}), "
+                f"all_time_emissions=${all_time_emissions.get(hotkey, 0.0):.2f}, "
+                f"overflow=${overflow:.2f}, "
                 f"weekly_target=${entity_miner_required_payouts[hotkey]:.2f}"
             )
 
@@ -425,13 +438,6 @@ class WeightCalculatorManager(CacheController):
             f"(week ending {TimeUtil.millis_to_short_date_str(prev_target_end_ms)})"
         )
 
-        # Diagnostic only: lifetime on-chain emissions per hotkey, for sanity-checking this
-        # week's target against total historical payout. Not used in the weight math.
-        all_time_emissions = {
-            hotkey: sum(cp.chunk_emissions_usd for cp in ledger.checkpoints)
-            for hotkey, ledger in all_emissions_ledgers.items()
-        }
-
         if verbose:
             _payouts_sorted = sorted(all_required_payouts.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
             for hotkey in _payouts_sorted:
@@ -445,8 +451,10 @@ class WeightCalculatorManager(CacheController):
                     week_range = f" ({week_start} - {week_end})"
                 else:
                     week_range = ""
+                overflow = miner_overflow_by_hotkey.get(hotkey, 0.0)
                 logger.info(
-                    f"[PAYOUT] [{hotkey}] weekly_target=${weekly_target:.2f} (raw=${payout_raw:.2f}){week_range}, "
+                    f"[PAYOUT] [{hotkey}] weekly_target=${weekly_target:.2f} "
+                    f"(raw=${payout_raw:.2f}, overflow=${overflow:.2f}){week_range}, "
                     f"all_time_emissions=${all_time:.2f}"
                 )
 
