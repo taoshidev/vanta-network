@@ -251,40 +251,4 @@ class Signal(BaseModel):
         return None
 
     def __str__(self):
-        base = {
-            'trade_pair': str(self.trade_pair) if self.trade_pair else None,
-            'order_type': str(self.order_type),
-            'leverage': self.leverage,
-            'value': self.value,
-            'quantity': self.quantity,
-            'execution_type': str(self.execution_type),
-            'bracket_orders': self.bracket_orders
-        }
-        if self.execution_type == ExecutionType.MARKET:
-            return str(base)
-
-        elif self.execution_type == ExecutionType.LIMIT:
-            base.update({
-                'limit_price': self.limit_price,
-                'stop_loss': self.stop_loss,
-                'take_profit': self.take_profit
-            })
-            return str(base)
-
-        elif self.execution_type == ExecutionType.STOP_LIMIT:
-            base.update({
-                'stop_price': self.stop_price,
-                'stop_condition': str(self.stop_condition) if self.stop_condition else None,
-                'limit_price': self.limit_price,
-                'stop_loss': self.stop_loss,
-                'take_profit': self.take_profit
-            })
-            return str(base)
-
-        elif self.execution_type == ExecutionType.LIMIT_CANCEL:
-            return str(base)
-
-        elif self.execution_type == ExecutionType.FLAT_ALL:
-            return str(base)
-
-        return str({**base, 'Error': 'Unknown execution type'})
+        return str(self.model_dump(mode="json", exclude_none=True))
