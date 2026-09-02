@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class OrderType(Enum):
+class OrderType(str, Enum):
     LONG = "LONG"
     SHORT = "SHORT"
     FLAT = "FLAT"
@@ -43,7 +43,7 @@ class OrderType(Enum):
         return self.__str__()
 
 
-class StopCondition(Enum):
+class StopCondition(str, Enum):
     GTE = "GTE"  # trigger when price >= stop_price
     LTE = "LTE"  # trigger when price <= stop_price
 
