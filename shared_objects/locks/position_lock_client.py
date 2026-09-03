@@ -76,18 +76,19 @@ class PositionLockClient(RPCClientBase):
         """
         return self._server.acquire_rpc(miner_hotkey, trade_pair_id, timeout)
 
-    def release(self, miner_hotkey: str, trade_pair_id: str) -> bool:
+    def release(self, miner_hotkey: str, trade_pair_id: str, token: int = None) -> bool:
         """
         Release lock directly (without context manager).
 
         Args:
             miner_hotkey: Miner's hotkey
             trade_pair_id: Trade pair ID
+            token: Owner token from acquire(); when given, only the actual holder releases.
 
         Returns:
             bool: True if released successfully, False if error
         """
-        return self._server.release_rpc(miner_hotkey, trade_pair_id)
+        return self._server.release_rpc(miner_hotkey, trade_pair_id, token)
 
     # ==================== Health Check ====================
 

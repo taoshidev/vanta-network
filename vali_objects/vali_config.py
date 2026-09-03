@@ -290,21 +290,40 @@ class ValiConfig:
     # Cross-process order/sync coordination (spec R2.4): an in-flight order registration on
     # CommonDataServer older than this is treated as abandoned (the producer — e.g. vanta-orders —
     # crashed mid-order) and reaped, so it can't block position sync forever. Must comfortably
-    # exceed the worst-case real order-processing time (lock wait + price fetch + write, ~seconds)
-    # to avoid reaping a genuinely-live order; sync is infrequent (daily) so a generous value is fine.
-    ORDER_INFLIGHT_TTL_MS = 60_000  # 60 seconds
+    # exceed the worst-case real order-processing time — which is NOT "~seconds": a hung (not dead)
+    # state server blocks the apply silently (BaseManager calls have no transport timeout), and
+    # lock waits (10s/attempt) plus RPC self-heal cycles stack on top. Reaping a live order lets
+    # the checkpoint-wide sync rewrite race that order's eventual position write. Sync is
+    # infrequent (daily), so waiting minutes for a straggler is far cheaper than that race.
+    ORDER_INFLIGHT_TTL_MS = 300_000  # 5 minutes
     # Server-side order-UUID dedup (spec R2.6): FIFO capacity of the authoritative dedup set on
     # CommonDataServer that replaces the process-local UUIDTracker. Matches UUIDTracker's historic
     # 100k. Dedup only needs to cover the retry/replay window (seconds–minutes), not forever;
     # oldest uuids are evicted past capacity.
     ORDER_UUID_DEDUP_CAPACITY = 100_000
+    # A claimed-but-unconfirmed order uuid (check_and_add taken, confirm/release never called —
+    # the claimant was hard-killed mid-apply) expires after this long, so a miner's retry of an
+    # order that never committed is not permanently rejected as a duplicate. Confirmed uuids
+    # (post-commit) never expire this way — they live in the FIFO dedup set. Must exceed the
+    # longest real apply (lock wait + RPC self-heal cycles + price fetches).
+    ORDER_UUID_CLAIM_TTL_MS = 300_000  # 5 minutes
+    # Lease on the cross-process sync gate (sync_waiting on CommonDataServer): the sync side
+    # (core) renews it via a heartbeat while its sync runs; if core is hard-killed mid-sync the
+    # renewals stop and the gate auto-clears after this long, instead of rejecting every order
+    # network-wide until the next successful sync (potentially ~24h). Must exceed the heartbeat
+    # interval (60s) by enough to ride out core GC pauses / brief stalls.
+    SYNC_WAITING_LEASE_MS = 300_000  # 5 minutes
+    SYNC_LEASE_RENEW_INTERVAL_S = 60  # core heartbeat cadence while a sync holds the gate
     # Position-lock lease (never-release protection): a server-side (hotkey, trade_pair) lock held
     # longer than this is presumed abandoned (holder crashed between acquire and release) and
-    # force-reclaimed on the next acquire. Set FAR above any real hold (order processing is a few
-    # seconds: lock wait + price fetch + write) so a live-but-slow holder is never reclaimed; the
-    # hazard it guards is a crashed vanta-orders process leaking a lock forever. Analog of
-    # ORDER_INFLIGHT_TTL_MS for the position-lock server.
-    POSITION_LOCK_LEASE_MS = 60_000  # 60 seconds
+    # force-reclaimed on the next acquire. Must sit FAR above the worst LEGITIMATE hold — which is
+    # minutes, not seconds: mdd_checker._refresh_position_prices holds this exact lock while making
+    # one historical Polygon REST call per recent order (5-min window, ~5s order cadence => dozens
+    # of calls at 1-3s+ each under normal latency, worse when rate-limited). Reclaiming a live
+    # holder puts two writers on one position. Releases are owner-token-checked (see
+    # PositionLockServer), so a reclaimed holder's late release can no longer free the reclaimer's
+    # lock. Analog of ORDER_INFLIGHT_TTL_MS for the position-lock server.
+    POSITION_LOCK_LEASE_MS = 600_000  # 10 minutes
     ORDER_MIN_LEVERAGE = 0.00001
     ORDER_MAX_LEVERAGE = 500
 

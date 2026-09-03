@@ -117,6 +117,17 @@ class OrderUuidDedupClient:
         self._remember_local(uuid)
         return claimed
 
+    def confirm(self, uuid) -> None:
+        """Promote a provisional claim to the permanent dedup set — call after the order COMMITTED.
+        Best-effort: a failed confirm must never raise out of the order handler; the provisional
+        claim keeps rejecting duplicates until its TTL, by which point the placer has its ack."""
+        if not uuid:
+            return
+        try:
+            self._client.confirm_order_uuid(uuid)
+        except Exception as e:
+            bt.logging.warning(f"OrderUuidDedupClient.confirm best-effort (dedup unreachable): {e}")
+
     def release(self, uuid) -> None:
         """Undo a claim after an apply failure (server-authoritative), and drop it from the cache.
         Best-effort: a failed release RPC must never raise out of the order handler (see

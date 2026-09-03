@@ -60,6 +60,12 @@ class UUIDTracker:
         OrderUuidDedupClient.release."""
         self.remove(uuid)
 
+    def confirm(self, uuid) -> None:
+        """No-op API mirror of OrderUuidDedupClient.confirm: in-process claims are already
+        permanent (check_and_add records directly), and process death loses the whole tracker
+        anyway (rebuilt from on-disk positions at boot)."""
+        pass
+
     def exists(self, uuid):
         with self.lock:  # Ensure exclusive access within this block
             return uuid in self.uuid_set

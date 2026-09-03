@@ -679,8 +679,24 @@ class ServerOrchestrator:
             if scoped_start:
                 logger.info("Scoped start: skipping global RPC-port kill (each server clears its "
                                 "own port) so we don't kill another tier's servers.")
-            else:
+            elif mode == ServerMode.TESTING:
+                # Test cleanup keeps the nuclear sweep — tests own the whole port range.
                 PortManager.force_kill_all_rpc_ports()
+            else:
+                # Production boot: clear ONLY the ports this start will own (covers orphaned
+                # children of a previous crashed run). The all-RPC-ports sweep is NOT safe here:
+                # vanta-rest (:50022) and vanta-ws (:50014) hold RPC_* ports but are sibling PM2
+                # apps the orchestrator never starts — the sweep SIGKILLed them on every core
+                # restart under --serve without --split-state, and killed a stale vanta-state's
+                # servers during a rollback. A listener owned by another app is not ours to kill.
+                own_ports = set()
+                for _name in servers_to_start:
+                    _cls = self.SERVERS[_name].server_class
+                    _port = getattr(_cls, 'service_port', None)
+                    if isinstance(_port, int):
+                        own_ports.add(_port)
+                logger.info(f"Unscoped start: clearing only this tier's {len(own_ports)} server ports")
+                PortManager.force_kill_ports(sorted(own_ports))
 
             # Start servers in parallel using ThreadPoolExecutor
             start_order = self._get_start_order(servers_to_start)

@@ -19,10 +19,12 @@ degrades to False and begin/end degrade to no-ops — orders keep flowing. The S
 fail open: if it cannot confirm orders are quiesced it must not proceed with a checkpoint-wide
 rewrite, so wait_for_orders errors propagate to the caller.
 """
+import threading
+
 import bittensor as bt
 
 from shared_objects.rpc.common_data_client import CommonDataClient
-from vali_objects.vali_config import RPCConnectionMode
+from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 
 
 class OrderSyncClient:
@@ -115,18 +117,46 @@ class OrderSyncClient:
             return False  # never suppress the order's own exception
 
     class _SyncContext:
-        """Waits for orders to drain on enter (raising on timeout), clears sync_waiting on exit."""
+        """
+        Waits for orders to drain on enter (raising on timeout), clears sync_waiting on exit.
+
+        While held, a daemon heartbeat thread renews the gate's server-side lease every
+        SYNC_LEASE_RENEW_INTERVAL_S. The gate lives on CommonDataServer in another process; if
+        THIS process (core) is hard-killed mid-sync, the heartbeat dies with it and the server
+        auto-clears the gate after SYNC_WAITING_LEASE_MS — instead of rejecting every order
+        network-wide until the next successful sync. Renewal errors are swallowed (a blip must
+        not kill the sync); a dead server means orders aren't being gated anyway.
+        """
         def __init__(self, client: CommonDataClient, timeout_seconds: float = None):
             self.client = client
             self.timeout_seconds = timeout_seconds
             self.acquired = False
+            self._stop_heartbeat = threading.Event()
+            self._heartbeat_thread = None
+
+        def _heartbeat(self):
+            while not self._stop_heartbeat.wait(ValiConfig.SYNC_LEASE_RENEW_INTERVAL_S):
+                try:
+                    if not self.client.renew_sync_lease():
+                        bt.logging.error(
+                            "OrderSyncClient: sync gate no longer held (lease expired or cleared) "
+                            "— the in-progress sync has lost its exclusion window"
+                        )
+                        return
+                except Exception as e:
+                    bt.logging.warning(f"OrderSyncClient: sync-lease renewal failed (continuing): {e}")
 
         def __enter__(self):
             self.acquired = self.client.wait_for_orders(self.timeout_seconds)
             if not self.acquired:
                 raise TimeoutError("Timeout waiting for orders to complete")
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat, name="sync-lease-heartbeat", daemon=True
+            )
+            self._heartbeat_thread.start()
             return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):
+            self._stop_heartbeat.set()
             self.client.mark_sync_complete()
             return False
