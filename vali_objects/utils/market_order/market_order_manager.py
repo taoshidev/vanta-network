@@ -100,20 +100,11 @@ class MarketOrderManager():
             )
 
             if position is not None and len(position.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
-                logger.info(
-                    f"[ORDER_EXECUTION] {hotkey} hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
-                    f"Auto-closing {trade_pair.trade_pair_id} with {len(position.orders)} orders."
+                raise SignalException(
+                    f"Order Rejected {hotkey} hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
+                    f"Rejecting {trade_pair.trade_pair_id} with {len(position.orders)} orders."
+                    f"Only FLAT orders will be accepted for this position."
                 )
-                flat_uuid = position.position_uuid[::-1]
-                self._apply_order(
-                    position, miner_account,
-                    ExecutionType.MARKET, OrderType.FLAT, OrderSize(quantity=-position.net_quantity),
-                    flat_uuid, now_ms - 1, price_sources,
-                    OrderSource.MAX_ORDERS_PER_POSITION_CLOSE,
-                    fill_price, usd_base_rate, quote_usd_rate,
-                    slippage=0,
-                )
-                position = None
 
             if not position:
                 if order_type == OrderType.FLAT:
