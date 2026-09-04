@@ -249,7 +249,7 @@ class ChallengePeriodManager(CacheController):
     - Server delegates all RPC methods to manager methods
     - Manager creates its own clients internally (forward compatibility)
     """
-    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-09-05 00:00:00")   # TODO: remove
+    DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-10-05 00:00:00")   # TODO: remove
 
     def __init__(
         self,
@@ -292,7 +292,7 @@ class ChallengePeriodManager(CacheController):
         self._cached_asset_softmaxed_scores: dict[MinerAssetClass, dict[str, float]] = {}
         self._cached_asset_competitiveness: dict[MinerAssetClass, float] = {}
 
-        logger.info("[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
+        logger.info(f"[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
 
     # ==================== Core Business Logic ====================
 

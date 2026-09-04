@@ -394,7 +394,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
-            logger.info("Received withdrawal query {miner_hotkey} withdraw amount: {amount:.4f}")
+            logger.info(f"Received withdrawal query {miner_hotkey} withdraw amount: {amount:.4f}")
 
             # Check collateral balance
             theta_current_balance = self.get_miner_collateral_balance(miner_hotkey)
