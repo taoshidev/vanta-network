@@ -613,7 +613,7 @@ class ChallengePeriodManager(CacheController):
 
             prev_bucket = miner_state.entries[-2].bucket
 
-            miner_state.add_bucket_entry(prev_bucket, miner_state.entries[-2].start_time_ms)
+            miner_state.add_bucket_entry(prev_bucket, TimeUtil.now_in_millis())
 
         self._reset_drawdown_stats_cache(hotkey)
         self._sync_buckets_to_accounts(hotkeys=[hotkey])
