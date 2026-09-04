@@ -406,27 +406,29 @@ class WeightCalculatorManager(CacheController):
                 f"weekly_target=${entity_miner_required_payouts[hotkey]:.2f}"
             )
 
-        # Combine miner and entity weekly targets into a unified dict
+        # Combine miner and entity payouts/emissions into unified dicts
         all_required_payouts = {**miner_required_payouts, **entity_miner_required_payouts}
+        all_emissions_cumulative = {**miner_emissions_cumulative, **entity_miner_emissions_cumulative}
 
-        # Weekly payout targets are already HWM-gated and floored at zero per-settlement;
-        # no further "already paid" subtraction is needed or wanted here (see #862/#865:
-        # emissions are distributed pro-rata with no burn, so nothing needs to be trued up
-        # against actual on-chain payments).
-        miner_remaining_payouts_usd = {
-            hotkey: max(0.0, payout_penalized)
-            for hotkey, payout_penalized in all_required_payouts.items()
-        }
+        # Calculate remaining payouts: needed minus already paid, clamped to zero
+        miner_remaining_payouts_usd = {}
+        for hotkey in all_required_payouts:
+            payout_penalized = all_required_payouts.get(hotkey, 0.0)
+            actual = all_emissions_cumulative.get(hotkey, 0.0)
+            miner_remaining_payouts_usd[hotkey] = max(0.0, payout_penalized)
+            # miner_remaining_payouts_usd[hotkey] = max(0.0, payout_penalized - actual)
 
         total_remaining_payout_usd = sum(miner_remaining_payouts_usd.values())
+        total_actual_payout_usd = sum(all_emissions_cumulative.values())
+        total_needed_payout_usd = total_remaining_payout_usd
+        # total_needed_payout_usd = total_remaining_payout_usd + total_actual_payout_usd
         logger.info(
             f"[PAYOUT] SUMMARY ({len(miner_remaining_payouts_usd)} miners): "
-            f"weekly_payouts=${total_remaining_payout_usd:.2f} "
-            f"(week ending {TimeUtil.millis_to_short_date_str(prev_target_end_ms)})"
+            f"remaining_payouts=${total_remaining_payout_usd:.2f}, "
+            f"required_payouts=${total_needed_payout_usd:.2f}, "
+            f"paid_out=${total_actual_payout_usd:.2f} (accumulated until {TimeUtil.millis_to_short_date_str(prev_target_end_ms)}"
         )
 
-        # Diagnostic only: lifetime on-chain emissions per hotkey, for sanity-checking this
-        # week's target against total historical payout. Not used in the weight math.
         all_time_emissions = {
             hotkey: sum(cp.chunk_emissions_usd for cp in ledger.checkpoints)
             for hotkey, ledger in all_emissions_ledgers.items()
@@ -435,19 +437,21 @@ class WeightCalculatorManager(CacheController):
         if verbose:
             _payouts_sorted = sorted(all_required_payouts.keys(), key=lambda hk: miner_remaining_payouts_usd.get(hk, 0.0), reverse=True)
             for hotkey in _payouts_sorted:
-                weekly_target = miner_remaining_payouts_usd.get(hotkey, 0.0)
+                remaining = miner_remaining_payouts_usd.get(hotkey, 0.0)
+                actual = all_emissions_cumulative.get(hotkey, 0.0)
+                payout_penalized = all_required_payouts.get(hotkey, 0.0)
                 payout_raw = miner_required_payouts_raw.get(hotkey, 0.0)
                 all_time = all_time_emissions.get(hotkey, 0.0)
                 settlements = miner_required_payout_settlements.get(hotkey, [])
                 if settlements:
-                    week_start = TimeUtil.millis_to_datetime(settlements[-1].start_ms).strftime('%Y-%m-%d')
-                    week_end = TimeUtil.millis_to_datetime(settlements[-1].end_ms).strftime('%Y-%m-%d')
-                    week_range = f" ({week_start} - {week_end})"
+                    first_week = TimeUtil.millis_to_datetime(settlements[0].start_ms).strftime('%Y-%m-%d')
+                    last_week = TimeUtil.millis_to_datetime(settlements[-1].end_ms).strftime('%Y-%m-%d')
+                    week_range = f" ({first_week} - {last_week})"
                 else:
                     week_range = ""
                 logger.info(
-                    f"[PAYOUT] [{hotkey}] weekly_target=${weekly_target:.2f} (raw=${payout_raw:.2f}){week_range}, "
-                    f"all_time_emissions=${all_time:.2f}"
+                    f"[PAYOUT] [{hotkey}] remaining=${remaining:.2f}, paid_out=${actual:.2f}, "
+                    f"payout_penalized=${payout_penalized:.2f}, payout_raw=${payout_raw:.2f}{week_range}, all_time_emissions=${all_time:.2f}"
                 )
 
         days_until_target = 7 - current_dt.weekday()

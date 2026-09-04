@@ -13,8 +13,11 @@ import unittest
 from runnable.generate_equity_universe import (
     all_member_ids,
     current_generated_lines,
+    default_fees_base,
+    exposure_group_members,
     read_clean_csv,
     render_member_line,
+    sector_to_member,
     tickers_to_add,
     CONFIG_PATH,
 )
@@ -22,7 +25,7 @@ from vali_objects.vali_config import (
     InstrumentType,
     TradePairCategory,
 )
-from vali_objects.trade_pair import TRADE_PAIR_ID_TO_TRADE_PAIR
+from vali_objects.trade_pair import ExposureGroup, TRADE_PAIR_ID_TO_TRADE_PAIR
 
 
 class TestEquityUniverse(unittest.TestCase):
@@ -62,9 +65,27 @@ class TestEquityUniverse(unittest.TestCase):
         # a synthetic new ticker would be added with default values; an existing one would not
         rows = [{"symbol": "AAPL"}, {"symbol": "ZZNEWCO"}]
         self.assertEqual(tickers_to_add(rows, present), ["ZZNEWCO"])
-        line = render_member_line("ZZNEWCO", "0.00009", "0.5")
+        line = render_member_line("ZZNEWCO", "0.00009", "0.5", "Health Care")
         self.assertIn('["ZZNEWCO", "ZZNEWCO", 0.00009,', line)
-        self.assertIn("SubaccountTierBaseLeverage(0.5)]", line)
+        self.assertIn("SubaccountTierBaseLeverage(0.5), ExposureGroup.HEALTH_CARE]", line)
+
+    def test_default_fees_base_still_finds_a_reference_member(self):
+        """Guards the regex against the trailing ExposureGroup literal added to every equity."""
+        self.assertEqual(default_fees_base(self.config_text), ("0.00009", "0.5"))
+
+    def test_every_csv_sector_maps_to_a_real_exposure_group(self):
+        """A reconstitution introducing a new sector must fail loudly, not emit a bad member."""
+        known = exposure_group_members(self.config_text)
+        self.assertEqual(known, {g.name for g in ExposureGroup})
+        for row in self.clean_rows:
+            with self.subTest(symbol=row["symbol"]):
+                self.assertIn(sector_to_member(row["sector"]), known)
+
+    def test_bulk_added_members_all_carry_a_sector(self):
+        gen = [re.match(r"\s+([A-Za-z_][A-Za-z0-9_]*)", line).group(1) for line in current_generated_lines(self.config_text)]
+        for s in gen:
+            with self.subTest(symbol=s):
+                self.assertIsNotNone(TRADE_PAIR_ID_TO_TRADE_PAIR[s].exposure_group)
 
 
 if __name__ == "__main__":

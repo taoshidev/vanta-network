@@ -126,6 +126,7 @@ class MarketOrderManager():
                     position_type=order_type,
                     account_size=miner_account.account_size,
                     is_hl=is_hl,
+                    is_pro=bool(miner_account.miner_bucket and miner_account.miner_bucket.is_pro),
                 )
 
             order = self._apply_order(
@@ -188,16 +189,24 @@ class MarketOrderManager():
             quantity, leverage, value = -position.net_quantity, -position.net_leverage, -position.net_value
 
         is_buy = order_type == position.position_type
+
+        # Correlated-exposure limits require all open positions (pro only)
+        open_positions = None
+        if is_buy and miner_account.miner_bucket and miner_account.miner_bucket.is_pro:
+            stored = self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
+            open_positions = [p for p in stored if p.trade_pair != trade_pair] + [position]
         if is_buy:
-            max_order_value, binding_cap = get_max_order_size(miner_account, position)
+            max_order_value, binding_cap = get_max_order_size(miner_account, position, open_positions=open_positions)
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} max_order_value=${max_order_value:.4f}")
+
             if max_order_value <= 0:
                 msg = f"No buying power remaining for {trade_pair.trade_pair_id} (capped by {binding_cap})"
                 logger.error(f"[ORDER_EXECUTION] {hotkey} {order_uuid} {msg}")
                 raise SignalException(msg)
-            sign = -1 if order_type == OrderType.SHORT else 1
-            clamped_value = sign * min(abs(value), max_order_value)
-            if abs(clamped_value) < abs(value):
+
+            if abs(value) > max_order_value:
+                sign = 1 if value >= 0 else -1
+                clamped_value = sign * max_order_value
                 logger.info(
                     f"[ORDER_EXECUTION] {hotkey} {order_uuid} order value clamped from ${value:.4f} to ${clamped_value:.4f} by {binding_cap}"
                 )

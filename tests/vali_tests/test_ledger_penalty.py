@@ -3,8 +3,14 @@ import time
 
 from tests.shared_objects.test_utilities import generate_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
+from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
-from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import PenaltyLedgerManager, PenaltyLedger, PenaltyCheckpoint
+from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import (
+    PenaltyApplicationScope,
+    PenaltyLedgerManager,
+    PenaltyLedger,
+    PenaltyCheckpoint,
+)
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
@@ -71,6 +77,62 @@ class TestLedgerPenalty(TestBase):
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l2_ledger), (True, 11))
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l3_ledger), (True, 11))
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l4_ledger), (True, 11))
+
+    def test_min_sharpe_penalty(self):
+        passing = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        failing = generate_ledger(gain=0.001, loss=-0.005, mdd=0.99)
+
+        self.assertEqual(PositionPenalties.min_sharpe_penalty(passing, 365), 1.0)
+        self.assertEqual(PositionPenalties.min_sharpe_penalty(failing, 365), 0.0)
+
+    def test_daily_consistency_penalty(self):
+        # Evenly distributed gains pass; a flat ledger has no profit and fails closed
+        passing = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        no_profit = generate_ledger(gain=0.0, loss=-0.001, mdd=0.99)
+
+        self.assertEqual(PositionPenalties.daily_consistency_penalty(passing), 1.0)
+        self.assertEqual(PositionPenalties.daily_consistency_penalty(no_profit), 0.0)
+
+    def test_weekly_penalties_configured_for_pro_buckets_only(self):
+        for name in ('min_sharpe', 'daily_consistency'):
+            config = PenaltyLedgerManager.PENALTIES_CONFIG[name]
+            self.assertEqual(config.application_scope, PenaltyApplicationScope.WEEKLY)
+            self.assertEqual(set(config.buckets), {b for b in MinerBucket if b.is_pro})
+
+        # Pre-existing penalties keep per-checkpoint scope and apply to every bucket
+        for name in ('drawdown_threshold', 'risk_profile', 'min_collateral'):
+            config = PenaltyLedgerManager.PENALTIES_CONFIG[name]
+            self.assertEqual(config.application_scope, PenaltyApplicationScope.PER_CHECKPOINT)
+            self.assertIsNone(config.buckets)
+
+    def test_weekly_penalty_serialization_round_trip(self):
+        target_cp_duration_ms = 43200000
+        ledger = PenaltyLedger("hotkey1")
+        ledger.add_checkpoint(
+            PenaltyCheckpoint(
+                last_processed_ms=target_cp_duration_ms,
+                min_sharpe_penalty=0.0,
+                daily_consistency_penalty=1.0,
+                total_penalty=0.5,
+                weekly_penalty=0.0,
+                challenge_period_status=MinerBucket.SUBACCOUNT_PRO_FUNDED.value,
+            ),
+            target_cp_duration_ms,
+        )
+
+        restored = PenaltyLedger.from_dict(ledger.to_dict()).checkpoints[0]
+        self.assertEqual(restored.min_sharpe_penalty, 0.0)
+        self.assertEqual(restored.daily_consistency_penalty, 1.0)
+        self.assertEqual(restored.weekly_penalty, 0.0)
+        # weekly_penalty is tracked separately so the withheld amount stays derivable
+        self.assertEqual(restored.total_penalty, 0.5)
+
+        # Checkpoints written before this field existed default to no weekly penalty
+        legacy = PenaltyLedger.from_dict({
+            'hotkey': 'hotkey1',
+            'checkpoints': [{'last_processed_ms': target_cp_duration_ms}],
+        }).checkpoints[0]
+        self.assertEqual(legacy.weekly_penalty, 1.0)
 
     def test_penalty_ledger_manager_metadata_persistence(self):
         """Test that last_full_rebuild_ms is properly saved and loaded"""

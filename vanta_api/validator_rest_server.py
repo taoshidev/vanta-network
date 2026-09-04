@@ -2379,6 +2379,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             asset_class = data['asset_class']
             collateral_exempt = data.get('collateral_exempt')
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
+            # account_type applies to Vanta-native subaccounts only
+            account_type = data.get('account_type', 'standard')
 
             if collateral_exempt is not None and not isinstance(collateral_exempt, bool):
                 return jsonify({'error': 'collateral_exempt must be a boolean'}), 400
@@ -2451,7 +2453,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria
+                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria, account_type=account_type
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
@@ -2828,6 +2830,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
         add_to_dashboard("drawdown", self._challenge_period_client.get_drawdown_stats)
+        add_to_dashboard("pro_stats", self._challenge_period_client.get_pro_stats)
         add_to_dashboard("elimination", self._elimination_client.get_dashboard)
         add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
         add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)

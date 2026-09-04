@@ -118,7 +118,10 @@ class DebtCheckpoint:
     risk_profile_penalty: float = 1.0
     min_collateral_penalty: float = 1.0
     risk_adjusted_performance_penalty: float = 1.0
+    min_sharpe_penalty: float = 1.0
+    daily_consistency_penalty: float = 1.0
     total_penalty: float = 1.0
+    weekly_penalty: float = 1.0
     challenge_period_status: str = None
 
     def __post_init__(self):
@@ -175,7 +178,10 @@ class DebtCheckpoint:
                 'risk_profile': self.risk_profile_penalty,
                 'min_collateral': self.min_collateral_penalty,
                 'risk_adjusted_performance': self.risk_adjusted_performance_penalty,
+                'min_sharpe': self.min_sharpe_penalty,
+                'daily_consistency': self.daily_consistency_penalty,
                 'cumulative': self.total_penalty,
+                'weekly': self.weekly_penalty,
                 'challenge_period_status': self.challenge_period_status,
             },
 
@@ -441,7 +447,10 @@ class DebtLedger:
                     risk_profile_penalty=penalties.get('risk_profile', 1.0),
                     min_collateral_penalty=penalties.get('min_collateral', 1.0),
                     risk_adjusted_performance_penalty=penalties.get('risk_adjusted_performance', 1.0),
+                    min_sharpe_penalty=penalties.get('min_sharpe', 1.0),
+                    daily_consistency_penalty=penalties.get('daily_consistency', 1.0),
                     total_penalty=penalties.get('cumulative', 1.0),
+                    weekly_penalty=penalties.get('weekly', 1.0),
                     challenge_period_status=penalties.get('challenge_period_status', MinerBucket.UNKNOWN.value),
                 )
             else:
@@ -468,7 +477,10 @@ class DebtLedger:
                     risk_profile_penalty=cp_dict.get('risk_profile_penalty', 1.0),
                     min_collateral_penalty=cp_dict.get('min_collateral_penalty', 1.0),
                     risk_adjusted_performance_penalty=cp_dict.get('risk_adjusted_performance_penalty', 1.0),
+                    min_sharpe_penalty=cp_dict.get('min_sharpe_penalty', 1.0),
+                    daily_consistency_penalty=cp_dict.get('daily_consistency_penalty', 1.0),
                     total_penalty=cp_dict.get('total_penalty', 1.0),
+                    weekly_penalty=cp_dict.get('weekly_penalty', 1.0),
                     challenge_period_status=cp_dict.get('challenge_period_status', MinerBucket.UNKNOWN.value),
                 )
 

@@ -214,6 +214,7 @@ Authorization: Bearer <api_key>
 - `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, or `"hl_all"`
 - `account_size` (float, required): Account size in USD. Must be positive.
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [entity_miner.md](entity_miner.md#elimination). Fixed for the life of the subaccount once created. Always forced to `"trailing"` for HL-linked subaccounts (`hl_address` present), regardless of what's passed.
+- `account_type` (string, optional): `"standard"` (default) or `"pro"` — see [entity_miner.md](entity_miner.md#account-types). Fixed for the life of the subaccount once created. Ignored when `hl_address` is supplied; Hyperliquid subaccounts are always `standard`.
 
 **Success Response (200):**
 ```json

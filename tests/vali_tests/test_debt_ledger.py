@@ -14,16 +14,19 @@ Architecture:
 - Tests verify production integration of all three data sources
 """
 import time
+from types import SimpleNamespace
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from time_util.time_util import TimeUtil
+from time_util.time_util import MS_IN_WEEK, TimeUtil
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
 import logging
 from shared_objects.log import logger
 
@@ -632,3 +635,64 @@ class TestDebtLedgers(TestBase):
         logger.info("="*80)
         logger.info("Production integration smoke test completed successfully")
         logger.info("="*80)
+
+
+class TestEntityWeeklyPenaltyAggregation(TestBase):
+    """Entity aggregation honors a subaccount's weekly penalty for the whole payout week."""
+
+    ENTITY_HOTKEY = "entity"
+    SUBACCOUNT_HOTKEY = "entity_1"
+    CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+    def _build_manager(self, subaccount_ledger):
+        """Bare manager with only the collaborators aggregate_entity_debt_ledgers touches."""
+        manager = object.__new__(DebtLedgerManager)
+        manager.debt_ledgers = {self.SUBACCOUNT_HOTKEY: subaccount_ledger}
+        manager.emissions_ledger_manager = SimpleNamespace(get_ledger=lambda _hotkey: None)
+        manager._entity_client = SimpleNamespace(get_all_entities=lambda: {
+            self.ENTITY_HOTKEY: {'subaccounts': {'1': {
+                'status': 'active', 'synthetic_hotkey': self.SUBACCOUNT_HOTKEY,
+            }}}
+        })
+        manager._perf_ledger_client = SimpleNamespace(get_frozen_ledgers=lambda: {})
+        manager._challengeperiod_client = SimpleNamespace(
+            get_miner_bucket=lambda _hotkey: MinerBucket.ENTITY
+        )
+        return manager
+
+    def _subaccount_ledger(self, blocked_checkpoint_indices=()):
+        """One earning checkpoint per 12h for two weeks, each realizing 10 USD."""
+        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+        checkpoints = []
+        for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS):
+            checkpoints.append(DebtCheckpoint(
+                timestamp_ms=week_0_start + (i + 1) * self.CP_DURATION_MS,
+                realized_pnl=10.0,
+                accum_ms=self.CP_DURATION_MS,
+                max_portfolio_value=1000.0,
+                challenge_period_status=MinerBucket.SUBACCOUNT_PRO_FUNDED.value,
+                weekly_penalty=0.0 if i in blocked_checkpoint_indices else 1.0,
+            ))
+        return DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=checkpoints), week_0_start
+
+    def _aggregate(self, blocked_checkpoint_indices=()):
+        ledger, week_0_start = self._subaccount_ledger(blocked_checkpoint_indices)
+        manager = self._build_manager(ledger)
+        manager.aggregate_entity_debt_ledgers(self.CP_DURATION_MS)
+
+        entity_ledger = manager.debt_ledgers[self.ENTITY_HOTKEY]
+        per_week = [0.0, 0.0]
+        for cp in entity_ledger.checkpoints:
+            per_week[(cp.timestamp_ms - 1 - week_0_start) // MS_IN_WEEK] += cp.realized_pnl
+        return per_week
+
+    def test_unblocked_weeks_aggregate_fully(self):
+        week_0, week_1 = self._aggregate()
+        self.assertAlmostEqual(week_0, 140.0)
+        self.assertAlmostEqual(week_1, 140.0)
+
+    def test_single_breach_blocks_the_whole_week_only(self):
+        # Breach stamped on a single mid-week checkpoint (index 8 of week 0's 14)
+        week_0, week_1 = self._aggregate(blocked_checkpoint_indices=(8,))
+        self.assertAlmostEqual(week_0, 0.0)
+        self.assertAlmostEqual(week_1, 140.0)

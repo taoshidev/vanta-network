@@ -38,6 +38,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
@@ -64,6 +65,7 @@ class SubaccountInfo(BaseModel):
     reg_fee_slashed_ms: Optional[float] = Field(default=None, description="Timestamp when registration fee was paid")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
+    account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro' (immutable once set)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
@@ -399,6 +401,7 @@ class EntityManager(ValidatorBroadcastBase):
         hl_address: Optional[str] = None,
         payout_address: Optional[str] = None,
         drawdown_criteria: str = "trailing",
+        account_type: str = "standard",
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount for an entity.
@@ -417,6 +420,12 @@ class EntityManager(ValidatorBroadcastBase):
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
         """
         t_start = time.time()
+
+        if not AccountType.is_valid(account_type):
+            return False, None, f"Invalid account_type: {account_type}. Must be 'standard' or 'pro'"
+        if hl_address and AccountType(account_type) == AccountType.PRO:
+            return False, None, "account_type 'pro' is not supported for Hyperliquid subaccounts"
+        initial_bucket = AccountType(account_type).challenge_bucket
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -512,7 +521,7 @@ class EntityManager(ValidatorBroadcastBase):
                     collateral_balance_theta=account_size / cpt,
                     timestamp_ms=TimeUtil.now_in_millis(),
                     account_size=account_size,
-                    bucket=MinerBucket.SUBACCOUNT_CHALLENGE
+                    bucket=initial_bucket
                 )
 
                 if not set_size_success:
@@ -548,6 +557,7 @@ class EntityManager(ValidatorBroadcastBase):
                 reg_fee_slashed_ms=now_ms if collateral_exempt else None,
                 asset_class=asset_class,
                 drawdown_criteria=drawdown_criteria,
+                account_type=account_type,
                 hl_address=hl_address,
                 payout_address=payout_address,
             )
@@ -563,7 +573,7 @@ class EntityManager(ValidatorBroadcastBase):
             # Register subaccount with challenge period
             try:
                 self._challenge_period_client.set_miner_bucket(
-                    synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms,
+                    synthetic_hotkey, initial_bucket, now_ms,
                     drawdown_criteria=DrawdownCriteria(drawdown_criteria),
                 )
             except Exception as e:
@@ -620,7 +630,7 @@ class EntityManager(ValidatorBroadcastBase):
         hl_address: str,
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
-        payout_address: Optional[str] = None
+        payout_address: Optional[str] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -1082,7 +1092,7 @@ class EntityManager(ValidatorBroadcastBase):
                 'payout': 0,
             }
             miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
-            if miner_bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            if miner_bucket is None or not miner_bucket.is_subaccount_earning:
                 return EMPTY_RESPONSE
 
             checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
@@ -1106,9 +1116,18 @@ class EntityManager(ValidatorBroadcastBase):
             if not orders:
                 return EMPTY_RESPONSE
 
+            # Weekly-scope penalties
+            week_penalties = {}
+            for cp in (debt_ledger.checkpoints if debt_ledger else []):
+                cp_week_start = TimeUtil.ms_at_start_of_week(cp.timestamp_ms - 1)
+                week_penalties[cp_week_start] = min(
+                    week_penalties.get(cp_week_start, 1.0), cp.weekly_penalty
+                )
+
             weekly_settlements = []
             def _record_week(start_ms, end_ms, balance, eow_unrealized, week_orders):
                 previous_payouts = sum(s['payout'] for s in weekly_settlements)
+                week_penalty = week_penalties.get(start_ms, 1.0)
                 payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
                 weekly_settlements.append({
                     'start_ms': start_ms,
@@ -1116,6 +1135,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
                     'payout': payout,
+                    'weekly_penalty': week_penalty,
                     'orders': [o.to_python_dict() for o in week_orders],
                 })
 
@@ -1162,9 +1182,7 @@ class EntityManager(ValidatorBroadcastBase):
                         snapshot = snapshots[j]
                         best_delta = delta
                     j += 1
-                if end_time == end_time_ms and realtime:
-                    unrealized_pnl = realtime_unrealized
-                elif snapshot is not None:
+                if snapshot is not None:
                     unrealized_pnl = snapshot.equity - snapshot.balance
                 else:
                     cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
@@ -1173,7 +1191,10 @@ class EntityManager(ValidatorBroadcastBase):
                         f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
                         f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
                     )
-                _record_week(week_start, end_time, running_balance, unrealized_pnl, week_orders)
+                if end_time == end_time_ms and realtime:
+                    unrealized_pnl = realtime_unrealized
+                _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)
+                eow_hwm = max(eow_hwm, running_balance)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
 
             # Only sum weeks that fall within the requested period.

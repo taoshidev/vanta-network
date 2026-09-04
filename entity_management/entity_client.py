@@ -94,6 +94,7 @@ class EntityClient(RPCClientBase):
         asset_class: str,
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
+        account_type: str = "standard",
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -104,11 +105,13 @@ class EntityClient(RPCClientBase):
             asset_class: Asset class selection
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
+            account_type: "standard" or "pro"
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria)
+        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
+                                                  drawdown_criteria=drawdown_criteria, account_type=account_type)
 
     def create_hl_subaccount(
         self,
@@ -117,7 +120,7 @@ class EntityClient(RPCClientBase):
         hl_address: str,
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
-        payout_address: Optional[str] = None
+        payout_address: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -133,7 +136,8 @@ class EntityClient(RPCClientBase):
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address)
+        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, asset_class=asset_class,
+                                                     collateral_exempt=collateral_exempt, payout_address=payout_address)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """

@@ -1,6 +1,7 @@
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.vali_config import ValiConfig
 from vali_objects.trade_pair import InstrumentType, TradePair, TradePairCategory
@@ -27,12 +28,12 @@ def get_position_leverage_bounds(trade_pair: TradePair) -> tuple[float, float]:
 def get_leverage_tier(miner_bucket, account_size: float) -> int:
     """Return leverage tier (1-4) for an entity subaccount.
 
-    Tier 1: SUBACCOUNT_CHALLENGE (any size)
+    Tier 1: SUBACCOUNT_CHALLENGE / SUBACCOUNT_PRO_CHALLENGE (any size)
     Tier 2: non-challenge, account_size < $200K
     Tier 3: non-challenge, $200K <= account_size < $1M
     Tier 4: non-challenge, account_size >= $1M
     """
-    if miner_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
+    if miner_bucket and miner_bucket.is_subaccount_challenge:
         return 1
     if account_size >= ValiConfig.LEVERAGE_TIER4_MIN_ACCOUNT_SIZE:
         return 4
@@ -67,18 +68,114 @@ def get_portfolio_caps(
     overall_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
     return per_class_cap, overall_cap
 
+
+# Correlation group key prefixes. Groups span trade pair categories (the US index group holds both
+# INDICES perps and EQUITIES ETFs), so keys are namespaced strings rather than a single enum.
+_CURRENCY_GROUP_PREFIX = "currency"
+_SECTOR_GROUP_PREFIX = "sector"
+_US_INDEX_GROUP = "index:us"
+
+
+def get_correlation_legs(trade_pair: TradePair) -> tuple[tuple[str, float], ...]:
+    """Return the (group_key, direction) legs a LONG position in `trade_pair` contributes to.
+
+    A long EURUSD is long EUR and short USD, so it returns both legs with opposite directions.
+    Equities contribute a single sector leg, index pairs and broad US ETFs a single index leg.
+    Pairs in no group return an empty tuple.
+    """
+    if trade_pair.trade_pair_id in ValiConfig.PRO_US_INDEX_TRADE_PAIR_IDS:
+        return ((_US_INDEX_GROUP, 1.0),)
+
+    if trade_pair.is_forex:
+        legs = []
+        for currency, direction in ((trade_pair.base, 1.0), (trade_pair.quote, -1.0)):
+            if currency in ValiConfig.PRO_CURRENCY_EXPOSURE_LIMITS:
+                legs.append((f"{_CURRENCY_GROUP_PREFIX}:{currency}", direction))
+        return tuple(legs)
+
+    exposure_group = trade_pair.exposure_group
+    if exposure_group is not None:
+        return ((f"{_SECTOR_GROUP_PREFIX}:{exposure_group.value}", 1.0),)
+
+    return ()
+
+
+def get_correlation_group_limit(group_key: str) -> float:
+    """Per-side (gross long or gross short) exposure limit for a group, as a multiple of balance."""
+    prefix, _, name = group_key.partition(":")
+    if prefix == _CURRENCY_GROUP_PREFIX:
+        return ValiConfig.PRO_CURRENCY_EXPOSURE_LIMITS[name]
+    if prefix == _SECTOR_GROUP_PREFIX:
+        return ValiConfig.PRO_SECTOR_EXPOSURE_LIMIT
+    return ValiConfig.PRO_US_INDEX_EXPOSURE_LIMIT
+
+
+def compute_correlated_exposures(open_positions: list[Position]) -> dict[str, tuple[float, float]]:
+    """Gross (long, short) USD exposure per correlation group across all open positions.
+
+    Both sides are accumulated separately, as positive magnitudes, rather than netted against each
+    other, so an offsetting position never frees up room for more of the opposite side.
+    """
+    exposures: dict[str, list[float]] = {}
+    for position in open_positions:
+        for group_key, direction in get_correlation_legs(position.trade_pair):
+            contribution = direction * position.net_value
+            sides = exposures.setdefault(group_key, [0.0, 0.0])
+            if contribution >= 0:
+                sides[0] += contribution
+            else:
+                sides[1] -= contribution
+    return {group_key: (longs, shorts) for group_key, (longs, shorts) in exposures.items()}
+
+
+def get_max_correlated_order_size(
+    trade_pair: TradePair,
+    open_positions: list[Position],
+    balance: float,
+    position_type: OrderType,
+) -> tuple[float, str | None]:
+    """Return (max_usd_value, binding_group_label) allowed by correlated-exposure limits.
+    Assumes order is an open or increase.
+
+    Every group caps its gross long and gross short exposure separately, so a group may carry up
+    to `limit x balance` in each direction at once and filling one side never frees room on the
+    other.
+    """
+
+    side_sign = 1.0 if position_type ==OrderType.LONG else -1.0
+    legs = get_correlation_legs(trade_pair)
+    if not legs:
+        return float("inf"), None
+
+    exposures = compute_correlated_exposures(open_positions)
+    max_value, binding_group = float("inf"), None
+    for group_key, direction in legs:
+        limit = get_correlation_group_limit(group_key)
+        longs, shorts = exposures.get(group_key, (0.0, 0.0))
+        used = longs if direction * side_sign > 0 else shorts
+        room = limit * balance - used
+        if room < max_value:
+            max_value, binding_group = room, f"{group_key} exposure cap {limit}x"
+
+    return max(0.0, max_value), binding_group
+
+
 def get_max_order_size(
     account: MinerAccount,
     position: Position,
+    open_positions: list[Position] | None = None
 ) -> tuple[float, str]:
     """Return (max_usd_value, binding_cap_label) for this position.
 
     Computes remaining room as min across all applicable caps:
-      - per_pair_room:   max position size for this pair minus current exposure
-      - per_class_room:  per-asset-class portfolio cap minus class exposure  (subaccounts only)
-      - overall_room:    overall portfolio cap minus total exposure           (subaccounts only)
+      - per_pair_room:   max position size for this pair minus current exposure  (buys only)
+      - per_class_room:  per-asset-class portfolio cap minus class exposure  (subaccounts, buys)
+      - overall_room:    overall portfolio cap minus total exposure           (subaccounts, buys)
+      - correlated_room: per-side gross exposure cap across correlated pairs  (pro accounts, buys)
+
     """
     trade_pair = position.trade_pair
+
     if account.miner_bucket and account.miner_bucket.is_subaccount:
         tier = get_leverage_tier(account.miner_bucket, account.account_size)
         max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
@@ -95,17 +192,25 @@ def get_max_order_size(
     if account.miner_bucket and account.miner_bucket.is_subaccount:
         if not account.asset_class:
             raise ValueError("asset_class must be selected for trading")
-        per_class_cap, overall_cap = get_portfolio_caps(
+        per_class_cap, _ = get_portfolio_caps(
             account.asset_class, account.miner_bucket, account.account_size, trade_pair.trade_pair_category
         )
         per_class_used = account.capital_used_by_class.get(trade_pair.trade_pair_category, 0.0)
         per_class_room = account.balance * per_class_cap - per_class_used
         limits.append((per_class_room, f"per class cap {trade_pair.trade_pair_category.value} {per_class_cap}x"))
 
+    if account.miner_bucket and account.miner_bucket.is_pro and open_positions is not None:
+        correlated_room, correlated_label = get_max_correlated_order_size(
+            trade_pair, open_positions, account.balance, position.position_type
+        )
+        if correlated_label:
+            limits.append((correlated_room, correlated_label))
+
     max_value, binding_cap = min(limits, key=lambda x: x[0])
 
+
     transaction_fee_rate = trade_pair.transaction_fee_rate()
-    if max_value * (1 + transaction_fee_rate * account.multiplier) > portfolio_room:
+    if max_value * (1 + transaction_fee_rate * account.multiplier) > account.buying_power:
         max_value = max_value / (1 + transaction_fee_rate * account.multiplier)
 
     return max(0.0, max_value), binding_cap

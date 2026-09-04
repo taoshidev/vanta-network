@@ -12,6 +12,9 @@ re-run will not clobber it. The CSV's only job is to let us bulk-add ~1000 ticke
 
   * Per-pair fees / SubaccountTierBaseLeverage are written as LITERALS (not shared constants)
     so each pair can be tuned individually in trade_pair.py.
+  * The ExposureGroup (GICS sector) is written from the CSV's `sector` column when a ticker is
+    first added, and is never rewritten afterward — hand-tuned sectors survive a re-run. Use
+    --check to report tickers whose CSV sector has since diverged from trade_pair.py.
   * Re-running only inserts tickers missing from the file; existing members are left byte-for-byte.
   * To REMOVE a ticker: drop it from the CSV (so it won't be re-added) and, if it has positions,
     block it via BLOCKED_TRADE_PAIR_IDS — never hard-delete a member (trade_pair_id is an
@@ -114,12 +117,25 @@ def default_fees_base(config_text: str) -> tuple[str, str]:
     m = re.search(
         r'=\s*\[\s*"[^"]*",\s*"[^"]*",\s*([0-9.eE+-]+),\s*'
         r"EQUITIES_MIN_LEVERAGE,.*?TradePairCategory\.EQUITIES,\s*InstrumentType\.SPOT,\s*"
-        r"SubaccountTierBaseLeverage\(([0-9.eE+-]+)\)\]",
+        r"SubaccountTierBaseLeverage\(([0-9.eE+-]+)\)(?:,\s*ExposureGroup\.[A-Z_]+)?\]",
         _members_text_excluding_generated(config_text),
     )
     if not m:
         raise RuntimeError("no reference EQUITIES/SPOT member found to read default fees/base")
     return m.group(1), m.group(2)
+
+
+def exposure_group_members(config_text: str) -> set[str]:
+    """ExposureGroup member names defined in trade_pair.py (parsed, not imported)."""
+    block = re.search(r"class ExposureGroup\(str, Enum\):\n(.*?)(?=\n\S)", config_text, re.S)
+    if not block:
+        raise RuntimeError("no ExposureGroup enum found in trade_pair.py")
+    return set(re.findall(r"^\s+([A-Z][A-Z_]*)\s*=", block.group(1), re.M))
+
+
+def sector_to_member(sector: str) -> str:
+    """CSV sector label -> ExposureGroup member name. Values are the labels verbatim."""
+    return sector.strip().upper().replace(" ", "_")
 
 
 def clean_iwb_holdings(raw_path: str) -> list[dict]:
@@ -153,13 +169,39 @@ def read_clean_csv() -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def render_member_line(symbol: str, fees: str, base: str) -> str:
+def render_member_line(symbol: str, fees: str, base: str, sector: str) -> str:
     display = symbol.replace("_", ".")  # dotted vendor/display symbol (BRK_B -> BRK.B)
     return (
         f'    {symbol} = ["{symbol}", "{display}", {fees}, '
         f"EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, "
-        f"TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage({base})]"
+        f"TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage({base}), "
+        f"ExposureGroup.{sector_to_member(sector)}]"
     )
+
+
+def config_sectors(config_text: str) -> dict[str, str]:
+    """Member id -> ExposureGroup member name, as currently written in trade_pair.py."""
+    start, end = _member_region(config_text)
+    return dict(re.findall(
+        r"^\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[.*?ExposureGroup\.([A-Z_]+)\]",
+        config_text[start:end], re.M,
+    ))
+
+
+def sector_drift(clean_rows: list[dict], config_text: str) -> list[tuple[str, str, str]]:
+    """(symbol, csv sector, config sector) where the CSV disagrees with trade_pair.py.
+
+    Additive-only means sectors are never rewritten, so drift is reported, not corrected.
+    Deliberate hand-overrides (UBER, APP, ...) show up here permanently and by design.
+    """
+    in_config = config_sectors(config_text)
+    drift = []
+    for r in clean_rows:
+        current = in_config.get(r["symbol"])
+        wanted = sector_to_member(r.get("sector") or "")
+        if current and wanted and current != wanted:
+            drift.append((r["symbol"], wanted, current))
+    return drift
 
 
 def tickers_to_add(clean_rows: list[dict], present_ids: set[str]) -> list[str]:
@@ -194,10 +236,30 @@ def main() -> int:
 
     if args.check:
         print(f"{len(to_add)} CSV ticker(s) not yet in trade_pair.py" + (f": {to_add[:20]}{' ...' if len(to_add) > 20 else ''}" if to_add else "."))
+        drift = sector_drift(clean_rows, config_text)
+        if drift:
+            print(f"{len(drift)} ticker(s) whose CSV sector differs from trade_pair.py:")
+            for symbol, csv_sector, config_sector in drift:
+                print(f"  {symbol:8} {csv_sector} (csv)  !=  {config_sector} (config)")
+            print("(additive-only: sectors are never rewritten — hand-edit if desired)")
+        else:
+            print("No sector drift between the CSV and trade_pair.py.")
         return 0
 
+    known_groups = exposure_group_members(config_text)
+    sector_by_symbol = {r["symbol"]: (r.get("sector") or "").strip() for r in clean_rows}
+    for sym in to_add:
+        sector = sector_by_symbol[sym]
+        if not sector:
+            raise RuntimeError(f"{sym} has no sector in the CSV; cannot emit an ExposureGroup")
+        if sector_to_member(sector) not in known_groups:
+            raise RuntimeError(
+                f"{sym}: sector {sector!r} has no ExposureGroup member "
+                f"(expected {sector_to_member(sector)}). Add it to trade_pair.py first."
+            )
+
     df, db = default_fees_base(config_text)
-    new_lines = [render_member_line(sym, df, db) for sym in to_add]
+    new_lines = [render_member_line(sym, df, db, sector_by_symbol[sym]) for sym in to_add]
     kept_lines = current_generated_lines(config_text)
     new_text = splice_into_config(config_text, kept_lines, new_lines)
     if new_text != config_text:

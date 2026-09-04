@@ -91,6 +91,7 @@ class EntityCollateralManager(CacheController):
         # This is the actual elimination threshold applied to funded subaccounts,
         # so it is also the maximum loss that can ever be slashed from a subaccount.
         self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
+        self.pro_mdd_percent = ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
 
         # Load persisted state from disk
         self._collateral_cache = self._load_cache_from_disk()
@@ -265,7 +266,7 @@ class EntityCollateralManager(CacheController):
 
             # Only funded subaccounts require margin; skip challenge, unknown, or other buckets
             bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-            if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            if bucket is None or not bucket.is_subaccount_earning:
                 continue
 
             margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey)
@@ -336,7 +337,7 @@ class EntityCollateralManager(CacheController):
         """
         # Only funded subaccounts are subject to margin requirements
         bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-        if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+        if bucket is None or not bucket.is_subaccount_earning:
             return True, ""
 
         # Current required collateral across all funded subaccounts with open positions.
@@ -412,7 +413,7 @@ class EntityCollateralManager(CacheController):
 
         # Only funded subaccounts are subject to slashing
         bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-        if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+        if bucket is None or not bucket.is_subaccount_earning:
             return 0.0
 
         # Collateral-exempt subaccounts (reg_fee_theta == 0) are never slashed on losses
@@ -425,7 +426,7 @@ class EntityCollateralManager(CacheController):
                         return 0.0
                     break
 
-        max_slash = self.get_max_slash(synthetic_hotkey)
+        max_slash = self.get_max_slash(synthetic_hotkey, bucket)
         if max_slash <= 0:
             logger.warning(
                 f"[ENTITY_COLLATERAL] Cannot compute max slash for {synthetic_hotkey}, skipping"
@@ -483,10 +484,10 @@ class EntityCollateralManager(CacheController):
 
         # Only slash funded subaccounts
         bucket = self._challenge_period_client.get_miner_bucket(hotkey)
-        if bucket is not None and bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+        if bucket is not None and not bucket.is_subaccount_earning:
             return 0.0
 
-        max_slash = self.get_max_slash(hotkey)
+        max_slash = self.get_max_slash(hotkey, bucket)
         cumulative_slashed = self.get_cumulative_slashed(hotkey)
         remaining = max(0.0, max_slash - cumulative_slashed)
 
@@ -706,12 +707,14 @@ class EntityCollateralManager(CacheController):
             raise RuntimeError("get_test_slash_file_path can only be used in unit test mode")
         return self._slash_file
 
-    def get_max_slash(self, synthetic_hotkey: str) -> float:
+    def get_max_slash(self, synthetic_hotkey: str, bucket: MinerBucket | None = None) -> float:
         """
         Get the maximum slashable amount for a subaccount (account_balance * MDD%).
 
         Args:
             synthetic_hotkey: The subaccount's synthetic hotkey.
+            bucket: The subaccount's bucket; pass it when already known to select the pro
+                MDD percentage without an extra lookup.
 
         Returns:
             Maximum slash amount in USD.
@@ -719,4 +722,5 @@ class EntityCollateralManager(CacheController):
         account_size = self._miner_account_client.get_miner_account_size(synthetic_hotkey)
         if not account_size or account_size <= 0:
             return 0.0
-        return account_size * self.mdd_percent
+        mdd_percent = self.pro_mdd_percent if (bucket and bucket.is_pro) else self.mdd_percent
+        return account_size * mdd_percent

@@ -714,7 +714,10 @@ class DebtLedgerManager():
                     risk_profile_penalty=penalty_checkpoint.risk_profile_penalty,
                     min_collateral_penalty=penalty_checkpoint.min_collateral_penalty,
                     risk_adjusted_performance_penalty=penalty_checkpoint.risk_adjusted_performance_penalty,
+                    min_sharpe_penalty=penalty_checkpoint.min_sharpe_penalty,
+                    daily_consistency_penalty=penalty_checkpoint.daily_consistency_penalty,
                     total_penalty=penalty_checkpoint.total_penalty,
+                    weekly_penalty=penalty_checkpoint.weekly_penalty,
                     challenge_period_status=penalty_checkpoint.challenge_period_status,
                 )
 
@@ -813,6 +816,8 @@ class DebtLedgerManager():
                         timestamp_ms=cp.last_update_ms,
                         realized_pnl=cp.realized_pnl,
                         cumulative_fees_usd=cp.cumulative_fees_usd,
+                        # Ledgers are only frozen for earning buckets, so stamp the canonical
+                        # earning status here rather than looking up the pro/standard track
                         challenge_period_status=MinerBucket.SUBACCOUNT_FUNDED.value,
                         max_portfolio_value=cp.mpv,
                         max_drawdown=cp.mdd,
@@ -845,7 +850,7 @@ class DebtLedgerManager():
                     continue
 
                 # Get debt ledgers for all active subaccounts
-                _earning_statuses = {MinerBucket.SUBACCOUNT_FUNDED.value, MinerBucket.SUBACCOUNT_ALPHA.value}
+                _earning_statuses = {b.value for b in MinerBucket if b.is_subaccount_earning}
                 subaccount_ledgers = []
                 for subaccount in active_subaccounts:
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
@@ -898,12 +903,25 @@ class DebtLedgerManager():
                 subaccount_cum_realized = {hk: 0.0 for hk, _ in subaccount_ledgers}
                 subaccount_hwm = {hk: 0.0 for hk, _ in subaccount_ledgers}
 
+                # Widen each subaccount's weekly penalty across its whole payout week. A breach is
+                # only stamped on the breaching checkpoint, so the worst value in a week governs it.
+                subaccount_week_penalty = {}
+                for synthetic_hotkey, ledger in subaccount_ledgers:
+                    week_penalties = {}
+                    for checkpoint in ledger.checkpoints:
+                        week_start_ms = TimeUtil.ms_at_start_of_week(checkpoint.timestamp_ms - 1)
+                        week_penalties[week_start_ms] = min(
+                            week_penalties.get(week_start_ms, 1.0), checkpoint.weekly_penalty
+                        )
+                    subaccount_week_penalty[synthetic_hotkey] = week_penalties
+
                 # Create aggregated checkpoints for each timestamp
                 aggregated_checkpoints = []
                 for timestamp_ms in sorted_timestamps:
                     # Collect earning checkpoints from all subaccounts at this timestamp
                     checkpoints_at_time = []
                     agg_realized_pnl = 0.0
+                    week_start_ms = TimeUtil.ms_at_start_of_week(timestamp_ms - 1)
                     for synthetic_hotkey, ledger in subaccount_ledgers:
                         try:
                             checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
@@ -919,7 +937,11 @@ class DebtLedgerManager():
                                 delta = net_realized - subaccount_hwm[synthetic_hotkey]
                                 subaccount_hwm[synthetic_hotkey] = net_realized
 
-                                agg_realized_pnl += delta
+                                # HWM still advances on a blocked week, so the withheld amount is
+                                # not carried into the next week - it is recomputable from
+                                # weekly_penalty if escrow ever pays it back.
+                                week_penalty = subaccount_week_penalty[synthetic_hotkey].get(week_start_ms, 1.0)
+                                agg_realized_pnl += delta * week_penalty
 
                     if not checkpoints_at_time:
                         continue

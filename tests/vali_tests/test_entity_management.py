@@ -11,12 +11,16 @@ This test file validates the core entity management functionality including:
 - Metagraph integration
 """
 import unittest
+from types import SimpleNamespace
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
-from time_util.time_util import TimeUtil
+from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger
+from time_util.time_util import MS_IN_WEEK, TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
 class TestEntityManagement(TestBase):
@@ -35,6 +39,7 @@ class TestEntityManagement(TestBase):
     orchestrator = None
     entity_client = None
     metagraph_client = None
+    challenge_period_client = None
 
     @classmethod
     def setUpClass(cls):
@@ -52,6 +57,7 @@ class TestEntityManagement(TestBase):
         # Get clients from orchestrator (servers guaranteed ready, no connection delays)
         cls.entity_client = cls.orchestrator.get_client('entity')
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.challenge_period_client = cls.orchestrator.get_client('challenge_period')
 
     @classmethod
     def tearDownClass(cls):
@@ -146,6 +152,85 @@ class TestEntityManagement(TestBase):
         # Verify synthetic hotkey format
         synthetic_hotkey = subaccount_info['synthetic_hotkey']
         self.assertEqual(synthetic_hotkey, f"{self.ENTITY_HOTKEY_1}_0")
+
+    def test_create_subaccount_defaults_to_standard_account_type(self):
+        """Omitting account_type keeps the standard track."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto"
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertEqual(subaccount_info['account_type'], 'standard')
+        bucket = self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(bucket, MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    def test_create_pro_subaccount_lands_in_pro_challenge_bucket(self):
+        """account_type='pro' puts the subaccount on the pro bucket track."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto",
+            account_type="pro"
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertEqual(subaccount_info['account_type'], 'pro')
+        bucket = self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(bucket, MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+
+    def test_create_subaccount_rejects_invalid_account_type(self):
+        """An unrecognized account_type is rejected before any state is written."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto",
+            account_type="platinum"
+        )
+
+        self.assertFalse(success)
+        self.assertIsNone(subaccount_info)
+        self.assertIn("account_type", message)
+
+    def test_create_hl_subaccount_is_always_standard(self):
+        """Hyperliquid subaccounts have no pro tier - they always start on the standard track."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            hl_address="0x" + "a" * 40,
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertEqual(subaccount_info['account_type'], 'standard')
+        bucket = self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(bucket, MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    def test_hl_creation_path_takes_no_account_type(self):
+        """No HL entry point exposes account_type, so an HL subaccount can never be pro."""
+        import inspect
+
+        from entity_management.entity_client import EntityClient
+        from entity_management.entity_manager import EntityManager
+        from entity_management.entity_server import EntityServer
+
+        for fn in (
+            EntityManager.create_hl_subaccount,
+            EntityClient.create_hl_subaccount,
+            EntityServer.create_hl_subaccount_rpc,
+        ):
+            self.assertNotIn('account_type', inspect.signature(fn).parameters, fn.__qualname__)
+
+        # The manager still guards the combination for direct hl_address callers
+        self.assertIn('account_type', inspect.signature(EntityManager.create_subaccount).parameters)
 
     def test_create_multiple_subaccounts(self):
         """Test creating multiple subaccounts for an entity."""
@@ -767,6 +852,73 @@ class TestEntityManagement(TestBase):
         self.assertIn(self.ENTITY_HOTKEY_1, all_entities)
         self.assertIn(self.ENTITY_HOTKEY_2, all_entities)
         self.assertIn(self.ENTITY_HOTKEY_3, all_entities)
+
+
+class TestSubaccountPayoutWeeklyPenalty(TestBase):
+    """A blocked payout week zeroes the subaccount's USDC payout for that week only."""
+
+    ENTITY_HOTKEY = "entity"
+    SUBACCOUNT_HOTKEY = "entity_1"
+    SUBACCOUNT_UUID = "uuid-1"
+    CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+    def _payouts_by_week(self, blocked_checkpoint_indices=()):
+        from entity_management.entity_manager import EntityManager
+
+        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+        end_time_ms = week_0_start + 2 * MS_IN_WEEK
+
+        # One order realizing 10 USD per 12h cell across two weeks
+        orders = [
+            SimpleNamespace(
+                processed_ms=week_0_start + i * self.CP_DURATION_MS + 1,
+                realized_pnl=10.0,
+                to_python_dict=lambda: {},
+            )
+            for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS)
+        ]
+        debt_checkpoints = [
+            DebtCheckpoint(
+                timestamp_ms=week_0_start + (i + 1) * self.CP_DURATION_MS,
+                weekly_penalty=0.0 if i in blocked_checkpoint_indices else 1.0,
+            )
+            for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS)
+        ]
+
+        manager = object.__new__(EntityManager)
+        manager.running_unit_tests = True
+        manager.get_synthetic_hotkey_from_uuid = lambda _uuid: self.SUBACCOUNT_HOTKEY
+        manager.get_entity_data = lambda _hk: SimpleNamespace(subaccounts={1: {'id': 1}})
+        manager._debt_ledger_client = SimpleNamespace(
+            get_ledger=lambda _hk: DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=debt_checkpoints)
+        )
+        manager._perf_ledger_client = SimpleNamespace(
+            get_perf_ledger_for_hotkey=lambda hk: {
+                hk: SimpleNamespace(get_checkpoint_at_time=lambda *_a: None)
+            }
+        )
+        manager._challenge_period_client = SimpleNamespace(
+            get_miner_bucket=lambda *_a: MinerBucket.SUBACCOUNT_PRO_FUNDED
+        )
+        manager._position_client = SimpleNamespace(
+            get_positions_for_one_hotkey=lambda *_a, **_k: [
+                SimpleNamespace(orders=orders, fee_history=[], unrealized_pnl=0.0)
+            ]
+        )
+
+        result = manager.calculate_subaccount_payout(self.SUBACCOUNT_UUID, week_0_start, end_time_ms)
+        return [w['payout'] for w in result['weekly_settlements']], result['payout']
+
+    def test_unblocked_weeks_pay_out(self):
+        per_week, total = self._payouts_by_week()
+        self.assertEqual(per_week, [140.0, 140.0])
+        self.assertAlmostEqual(total, 280.0)
+
+    def test_single_breach_blocks_that_week_only(self):
+        # Breach stamped on one mid-week checkpoint zeroes all of week 0
+        per_week, total = self._payouts_by_week(blocked_checkpoint_indices=(8,))
+        self.assertEqual(per_week, [0.0, 140.0])
+        self.assertAlmostEqual(total, 140.0)
 
 
 if __name__ == '__main__':

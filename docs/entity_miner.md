@@ -198,6 +198,23 @@ Once in SUBACCOUNT_FUNDED, the subaccount keeps the same `drawdown_criteria` it 
 
 After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is eligible for additional funding.
 
+### Account Types
+
+Each subaccount is created with an `account_type`, fixed for the life of the subaccount:
+
+| Account Type         | Challenge Bucket           | Funded Bucket           |
+|----------------------|----------------------------|-------------------------|
+| `standard` (default) | `SUBACCOUNT_CHALLENGE`     | `SUBACCOUNT_FUNDED`     |
+| `pro`                | `SUBACCOUNT_PRO_CHALLENGE` | `SUBACCOUNT_PRO_FUNDED` |
+
+Pro accounts run on a parallel bucket track with their own carry, stock-borrow and margin-interest
+rates, challenge period rules, and permitted trade pairs. Those values currently mirror the standard
+account rules documented above; this section will be updated as the pro rules are finalized.
+
+Pro accounts are Vanta-native only: they trade Vanta-sourced pairs (forex and equities) and cannot
+trade Hyperliquid-sourced pairs. Hyperliquid subaccounts have no pro tier — `account_type` is not
+accepted alongside `hl_address`, and HL-sourced pairs are priced identically for every account type.
+
 ## Getting Started
 
 ### Prerequisites
@@ -453,6 +470,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
 | `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
+| `account_type` | string | No | `"standard"` (default) or `"pro"` — see [Account Types](#account-types). Set once at creation; immutable afterward. Not accepted alongside `hl_address`. |
 
 ### 12. Submit Orders
 
