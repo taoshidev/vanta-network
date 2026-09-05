@@ -96,7 +96,7 @@ import atexit
 import sys
 import time
 import inspect
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Set
 from dataclasses import dataclass
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -126,11 +126,18 @@ class NeuronContext:
     secrets: Dict | None = None
     is_mainnet: bool = False
     is_miner: bool = False  # True for miners, False for validators
+    # ss58 identity for a WALLET-LESS process (vanta-state): weight_calculator/debt_ledger need the
+    # validator hotkey STRING, but not signing capability — core's subtensor_ops holds the keypair
+    # and signs. This lets vanta-state supply its identity without loading the wallet (and thus
+    # without holding hotkey signing material). Ignored whenever `wallet` is set.
+    validator_hotkey_override: str = None
 
     @property
     def validator_hotkey(self) -> str:
-        """Extract hotkey from wallet."""
-        return self.wallet.hotkey.ss58_address if self.wallet else None
+        """Hotkey ss58: from the wallet if loaded, else the wallet-less override (vanta-state)."""
+        if self.wallet is not None:
+            return self.wallet.hotkey.ss58_address
+        return self.validator_hotkey_override
 
 
 @dataclass
@@ -555,11 +562,49 @@ class ServerOrchestrator:
                 # Silently ignore errors during atexit cleanup
                 pass
 
+    def _select_servers(
+        self,
+        mode: ServerMode,
+        include_servers: Optional[Set[str]] = None,
+        exclude_servers: Optional[Set[str]] = None,
+    ) -> list:
+        """
+        Pure selection: which servers to start for `mode`, honoring an explicit include-set and/or
+        exclude-set. No side effects (no spawning, no port kills) so it is unit-testable in isolation.
+
+        - include_servers (when not None): EXPLICIT allow-list — only these start (still filtered by
+          the mode's required_in_* flags). This is the vanta-state tiering model.
+        - exclude_servers: names to NOT start even if required for the mode (e.g. core excludes the
+          vanta-state include-set).
+        - Both compose (exclude wins). Unknown names in either raise — a typo would silently start
+          (or drop) the wrong server and quietly defeat the split.
+        """
+        exclude_servers = exclude_servers or set()
+        unknown = (exclude_servers | (include_servers or set())) - set(self.SERVERS)
+        if unknown:
+            raise ValueError(f"include/exclude_servers contains unknown server names: {sorted(unknown)}")
+        selected = []
+        for server_name, server_config in self.SERVERS.items():
+            if include_servers is not None and server_name not in include_servers:
+                continue
+            if server_name in exclude_servers:
+                continue
+            if mode == ServerMode.TESTING and not server_config.required_in_testing:
+                continue
+            if mode == ServerMode.MINER and not server_config.required_in_miner:
+                continue
+            if mode == ServerMode.VALIDATOR and not server_config.required_in_validator:
+                continue
+            selected.append(server_name)
+        return selected
+
     def start_all_servers(
         self,
         mode: ServerMode = ServerMode.TESTING,
         secrets: Optional[Dict] = None,
         context: Optional[NeuronContext] = None,
+        exclude_servers: Optional[Set[str]] = None,
+        include_servers: Optional[Set[str]] = None,
         **kwargs
     ) -> None:
         """
@@ -572,6 +617,13 @@ class ServerOrchestrator:
             mode: ServerMode enum (TESTING, BACKTESTING, PRODUCTION, VALIDATOR)
             secrets: API secrets dictionary (required for live_price_fetcher in legacy mode)
             context: NeuronContext for VALIDATOR/MINER mode (contains config, wallet, slack_notifier, secrets, etc.)
+            include_servers: Optional EXPLICIT set of server names to start (still filtered by mode
+                requirements). This is the vanta-state tiering model: vanta-state passes the
+                order-WRITE-critical include-set (see start_state_servers) so ONLY those servers
+                move off core's lifecycle — contract/collateral, scoring, metagraph, and
+                subtensor_ops all stay in core. Preferred over exclude_servers for the split; the
+                two compose (exclude wins) if both are given.
+            exclude_servers: Optional set of server names to NOT start, even if required for the mode.
             **kwargs: Additional server-specific kwargs
 
         Example:
@@ -614,19 +666,37 @@ class ServerOrchestrator:
             from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
             ShutdownCoordinator.cleanup_stale_memory()
 
-            # Kill any stale servers from previous runs
-            PortManager.force_kill_all_rpc_ports()
+            # Determine which servers to start based on mode + explicit include/exclude sets.
+            servers_to_start = self._select_servers(mode, include_servers, exclude_servers)
 
-            # Determine which servers to start based on mode
-            servers_to_start = []
-            for server_name, server_config in self.SERVERS.items():
-                if mode == ServerMode.TESTING and not server_config.required_in_testing:
-                    continue
-                if mode == ServerMode.MINER and not server_config.required_in_miner:
-                    continue
-                if mode == ServerMode.VALIDATOR and not server_config.required_in_validator:
-                    continue
-                servers_to_start.append(server_name)
+            # Stale-server cleanup. A SCOPED start (vanta-state's include-set, or an exclude-set)
+            # must NOT nuke every RPC port — that would kill servers owned by ANOTHER tier running
+            # on this host (a vanta-state restart killing core's subtensor_ops :50015, and
+            # vice-versa). Each server already force-clears its OWN port on startup (see
+            # rpc_server_base port-in-use path), so a scoped start relies on that. The global
+            # "nuclear" clear is kept only for the unscoped full-tier / test path.
+            scoped_start = include_servers is not None or bool(exclude_servers)
+            if scoped_start:
+                logger.info("Scoped start: skipping global RPC-port kill (each server clears its "
+                                "own port) so we don't kill another tier's servers.")
+            elif mode == ServerMode.TESTING:
+                # Test cleanup keeps the nuclear sweep — tests own the whole port range.
+                PortManager.force_kill_all_rpc_ports()
+            else:
+                # Production boot: clear ONLY the ports this start will own (covers orphaned
+                # children of a previous crashed run). The all-RPC-ports sweep is NOT safe here:
+                # vanta-rest (:50022) and vanta-ws (:50014) hold RPC_* ports but are sibling PM2
+                # apps the orchestrator never starts — the sweep SIGKILLed them on every core
+                # restart under --serve without --split-state, and killed a stale vanta-state's
+                # servers during a rollback. A listener owned by another app is not ours to kill.
+                own_ports = set()
+                for _name in servers_to_start:
+                    _cls = self.SERVERS[_name].server_class
+                    _port = getattr(_cls, 'service_port', None)
+                    if isinstance(_port, int):
+                        own_ports.add(_port)
+                logger.info(f"Unscoped start: clearing only this tier's {len(own_ports)} server ports")
+                PortManager.force_kill_ports(sorted(own_ports))
 
             # Start servers in parallel using ThreadPoolExecutor
             start_order = self._get_start_order(servers_to_start)
@@ -750,6 +820,16 @@ class ServerOrchestrator:
             elif server_name in ('contract', 'asset_selection', 'entity', 'miner_account'):
                 if context.config:
                     spawn_kwargs['config'] = context.config
+                # Wallet-less path (vanta-state): miner_account is the only broadcast-base server that
+                # moves off core, and it needs identity but NOT signing. When the context has no
+                # wallet (vanta-state) but carries a hotkey override, pass the ss58 string so
+                # ValidatorBroadcastBase skips loading a wallet — keeping vanta-state keypair-free.
+                # In-core (context.wallet set) this is skipped, so miner_account loads the wallet
+                # exactly as before (unchanged default path). contract stays in core and MUST keep
+                # its wallet (collateral signer), so it never gets validator_hotkey.
+                if (server_name == 'miner_account' and context.wallet is None
+                        and context.validator_hotkey):
+                    spawn_kwargs['validator_hotkey'] = context.validator_hotkey
 
             elif server_name in ('elimination', 'market_order'):
                 if context.config and hasattr(context.config, 'serve'):
@@ -1207,8 +1287,12 @@ class ServerOrchestrator:
             else:
                 logger.warning(f"{server_name} client has no start_daemon method")
 
-        # Warm up caches now that daemons are running
-        # This ensures caches are populated before validator starts accepting orders
+        # Warm up caches now that daemons are running.
+        # NOTE: this is effectively a no-op now that core instantiates its clients DIRECTLY rather
+        # than via orchestrator.get_client — warmup_client_caches only iterates orchestrator-owned
+        # `_clients`, which is empty in that flow, so it warms nothing and returns. The cacheable
+        # clients (elimination, asset_selection) instead populate lazily on first use via their 5s
+        # local cache. Kept for the get_client-based paths (miner mode / any residual caller).
         if warmup_caches:
             self.warmup_client_caches()
 
@@ -1273,7 +1357,10 @@ class ServerOrchestrator:
             raise Exception("Servers not started, cannot run pre_run_setup")
 
         logger.info("Running pre_run_setup on PositionManagerClient...")
-        self._clients['position_manager'].pre_run_setup(
+        # get_client (not self._clients[...]) so this works whether or not a client was cached: core
+        # now instantiates its clients directly rather than via the orchestrator, so _clients may be
+        # empty. get_client lazily creates+caches an RPC client for position_manager on demand.
+        self.get_client('position_manager').pre_run_setup(
             perform_order_corrections=perform_order_corrections
         )
         logger.info("pre_run_setup completed")
@@ -1423,6 +1510,96 @@ class ServerOrchestrator:
 
         logger.info("[INIT] Metagraph populated, ready for other daemons")
         logger.info(f"All {neuron_type} servers started and initialized")
+
+    # The vanta-state tier: an EXPLICIT include-set of the order-WRITE-critical servers that must
+    # survive a core restart. Derived from the verified order-write path deps (MarketOrderManager +
+    # OrderProcessor). Everything NOT listed here stays in core — deliberately:
+    #   - subtensor_ops (wallet/chain), contract/collateral (only wallet SIGNER; periodic/mothership,
+    #     read via entity_collateral's cache on the order path — never synchronously), and all
+    #     scoring (perf/debt/weight/core_outputs/statistics/plagiarism/mdd_checker) which is not
+    #     order-critical, plus metagraph (blacklist is an axon/reception-tier read, not a state read).
+    # Consequence: of these 8, only miner_account inherits ValidatorBroadcastBase and needs the
+    # hotkey ss58 STRING (no signing — the signer, contract, stays in core), covered by
+    # NeuronContext.validator_hotkey_override. So vanta-state is wallet/keypair-free.
+    # NOTE: R6 moves the state WRITES off core; the order handler/axon is still in core until R1
+    # (vanta-orders). R6 + R1 together achieve "orders survive a core restart".
+    VANTA_STATE_SERVERS = frozenset({
+        'common_data',
+        'position_lock',
+        'live_price_fetcher',
+        'miner_account',
+        'entity_collateral',
+        'position_manager',
+        'limit_order',
+        'market_order',
+    })
+
+    def start_state_servers(
+        self,
+        context: NeuronContext,
+    ) -> None:
+        """
+        Start the state tier (vanta-state): the explicit order-WRITE-critical include-set
+        (VANTA_STATE_SERVERS). This is the vanta-state entrypoint's counterpart to
+        start_neuron_servers.
+
+        Only these servers move off core's lifecycle; subtensor_ops, contract/collateral, scoring,
+        and metagraph all stay in core (see VANTA_STATE_SERVERS for why). This tier holds NO wallet
+        and NO chain signer.
+
+        Differences from start_neuron_servers (deliberate):
+          - Starts only the include-set (not "everything except subtensor_ops").
+          - Does NOT start the subtensor_ops daemon or block on metagraph population — core owns the
+            chain connection; vanta-state's write servers do not read the metagraph.
+          - Scoped start: skips the global RPC-port kill so a vanta-state (re)start cannot take down
+            core's subtensor_ops or any other core-held port.
+
+        Daemons and pre-run setup are still deferred to the entrypoint (call_pre_run_setup +
+        start_server_daemons), exactly as in the in-core path.
+        """
+        context.is_miner = False
+        logger.info(f"[INIT] Starting vanta-state servers (order-write include-set: "
+                    f"{sorted(self.VANTA_STATE_SERVERS)})...")
+        self.start_all_servers(
+            mode=ServerMode.VALIDATOR,
+            context=context,
+            include_servers=set(self.VANTA_STATE_SERVERS),
+        )
+        logger.info("[INIT] vanta-state servers started (subtensor_ops/contract/scoring stay in core)")
+
+    def start_core_servers(
+        self,
+        context: NeuronContext,
+        metagraph_timeout: float = 60.0,
+    ) -> None:
+        """
+        Start the CORE tier under the vanta-state split: everything EXCEPT the vanta-state
+        include-set (VANTA_STATE_SERVERS). That is subtensor_ops (wallet/chain), contract/collateral,
+        metagraph, and all scoring — the servers that hold the wallet or are not order-critical.
+
+        This is core's counterpart to start_state_servers. Unlike start_state_servers it DOES start
+        the subtensor_ops daemon and block on metagraph population (mirroring start_neuron_servers),
+        because subtensor_ops + metagraph live in core.
+
+        The order handler/axon still runs in core during R6 and reaches the vanta-state write servers
+        through core's directly-instantiated RPC clients (which connect by port regardless of which
+        process spawned the server). R1 later moves the handler/axon out to vanta-orders.
+        """
+        context.is_miner = False
+        logger.info(f"[INIT] Starting core servers (VALIDATOR tier minus vanta-state include-set)...")
+        self.start_all_servers(
+            mode=ServerMode.VALIDATOR,
+            context=context,
+            exclude_servers=set(self.VANTA_STATE_SERVERS),
+        )
+
+        # subtensor_ops lives in core: start its daemon and block until the metagraph is populated,
+        # exactly as start_neuron_servers does for the unsplit validator.
+        logger.info("[INIT] Starting SubtensorOps daemon (core), waiting for metagraph...")
+        subtensor_ops = self.get_server('subtensor_ops')
+        subtensor_ops.start_daemon()
+        subtensor_ops.wait_for_initial_update(max_wait_time=metagraph_timeout)
+        logger.info("[INIT] Core servers started, metagraph populated")
 
     def start_validator_servers(
         self,

@@ -3,14 +3,32 @@
 # Initialize variables
 script="neurons/validator.py"
 generate_script="runnable/generate_request_outputs.py"
+# Standalone API apps (REST/WS split): own PM2 apps so an API-only deploy doesn't restart core.
+rest_script="vanta_api/run_rest_server.py"
+ws_script="vanta_api/run_ws_server.py"
+# vanta-state split: order-write state servers as their own PM2 app so a core restart can't kill
+# them. Only launched when --split-state is passed to core.
+state_script="vanta_api/run_state_server.py"
+# vanta-orders split: axon + HL + order path as their own PM2 app so a core restart doesn't drop
+# order reception. Launched when core is told --no-axon.
+orders_script="vanta_api/run_orders_server.py"
 autoRunLoc=$(readlink -f "$0")
 proc_name="vanta"
 generate_proc_name="generate"
+rest_proc_name="vanta-rest"
+ws_proc_name="vanta-ws"
+state_proc_name="vanta-state"
+orders_proc_name="vanta-orders"
 args=()
 generate_args=() # Assuming no specific arguments to the generate script
+rest_args=()
+ws_args=()
+state_args=()
+orders_args=()
 version_location="meta/meta.json"
 version=".subnet_version"
 start_generate=false
+serve_enabled=false
 
 old_args=$@
 
@@ -222,17 +240,170 @@ while [[ $# -gt 0 ]]; do
   fi
 done
 
+# REST/WS split, only when --serve is set. Core gets --no-spawn-api (else its spawned copies and
+# the standalone apps double-bind 48888/8765/50014/50022); --netuid/--slack-webhook-url are
+# forwarded to the API apps (netuid drives is_mainnet in REST). No --serve = today's behavior.
+netuid_value=""
+slack_webhook_value=""
+split_state_enabled=false
+orders_split_enabled=false
+wallet_name_value=""
+wallet_hotkey_value=""
+wallet_path_value="$HOME/.bittensor/wallets"
+# API bind forwarding: the standalone REST/WS apps must bind exactly where the in-core spawn
+# would have (default 127.0.0.1, --api-host/--api-*-port honored) — NOT their own defaults —
+# else a relaunch silently moves the API (breaking any reverse proxy pointed at the old bind)
+# and exposes a loopback-only API on all interfaces.
+api_host_value="127.0.0.1"
+api_rest_port_value=""
+api_ws_port_value=""
+for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[$i]}" in
+        --serve)
+            serve_enabled=true
+            ;;
+        --split-state)
+            split_state_enabled=true
+            ;;
+        --no-axon)
+            orders_split_enabled=true
+            ;;
+        --netuid)
+            netuid_value="${args[$((i + 1))]}"
+            ;;
+        --netuid=*)
+            netuid_value="${args[$i]#*=}"
+            ;;
+        --slack-webhook-url)
+            slack_webhook_value="${args[$((i + 1))]}"
+            ;;
+        --slack-webhook-url=*)
+            slack_webhook_value="${args[$i]#*=}"
+            ;;
+        --wallet.name)
+            wallet_name_value="${args[$((i + 1))]}"
+            ;;
+        --wallet.name=*)
+            wallet_name_value="${args[$i]#*=}"
+            ;;
+        --wallet.hotkey)
+            wallet_hotkey_value="${args[$((i + 1))]}"
+            ;;
+        --wallet.hotkey=*)
+            wallet_hotkey_value="${args[$i]#*=}"
+            ;;
+        --wallet.path)
+            wallet_path_value="${args[$((i + 1))]}"
+            ;;
+        --wallet.path=*)
+            wallet_path_value="${args[$i]#*=}"
+            ;;
+        --api-host)
+            api_host_value="${args[$((i + 1))]}"
+            ;;
+        --api-host=*)
+            api_host_value="${args[$i]#*=}"
+            ;;
+        --api-rest-port)
+            api_rest_port_value="${args[$((i + 1))]}"
+            ;;
+        --api-rest-port=*)
+            api_rest_port_value="${args[$i]#*=}"
+            ;;
+        --api-ws-port)
+            api_ws_port_value="${args[$((i + 1))]}"
+            ;;
+        --api-ws-port=*)
+            api_ws_port_value="${args[$i]#*=}"
+            ;;
+    esac
+done
+
+if [ "$serve_enabled" = true ]; then
+    args+=("--no-spawn-api")
+
+    if [ -n "$netuid_value" ]; then
+        rest_args+=("--netuid" "$netuid_value")
+    fi
+    if [ -n "$slack_webhook_value" ]; then
+        rest_args+=("--slack-webhook-url" "$slack_webhook_value")
+        ws_args+=("--slack-webhook-url" "$slack_webhook_value")
+    fi
+    # Bind parity with the in-core spawn (see api_host_value comment above).
+    rest_args+=("--host" "$api_host_value")
+    ws_args+=("--host" "$api_host_value")
+    if [ -n "$api_rest_port_value" ]; then
+        rest_args+=("--port" "$api_rest_port_value")
+    fi
+    if [ -n "$api_ws_port_value" ]; then
+        ws_args+=("--port" "$api_ws_port_value")
+    fi
+fi
+
+# vanta-state split: forward args to the state app. It runs WALLET-LESS, so we derive the validator
+# hotkey ss58 from the hotkey PUBKEY file (public data, no keypair loaded) and pass it in as a
+# string. Core already carries --split-state in its own args (it was passed to run.sh).
+if [ "$split_state_enabled" = true ]; then
+    hotkey_file="$wallet_path_value/$wallet_name_value/hotkeys/$wallet_hotkey_value"
+    validator_hotkey_ss58=""
+    if [ -f "$hotkey_file" ]; then
+        validator_hotkey_ss58=$(jq -r '.ss58Address' "$hotkey_file")
+    fi
+    if [ -z "$validator_hotkey_ss58" ] || [ "$validator_hotkey_ss58" = "null" ]; then
+        echo "ERROR: --split-state set but could not read validator hotkey ss58 from $hotkey_file"
+        echo "       (need --wallet.name and --wallet.hotkey; wallet path: $wallet_path_value)"
+        exit 1
+    fi
+    if [ -n "$netuid_value" ]; then
+        state_args+=("--netuid" "$netuid_value")
+    fi
+    state_args+=("--wallet.name" "$wallet_name_value" "--wallet.hotkey" "$wallet_hotkey_value")
+    state_args+=("--validator-hotkey" "$validator_hotkey_ss58")
+    if [ "$serve_enabled" = true ]; then
+        state_args+=("--serve")
+    fi
+    if [ -n "$slack_webhook_value" ]; then
+        state_args+=("--slack-webhook-url" "$slack_webhook_value")
+    fi
+fi
+
+# vanta-orders app: it serves the axon + runs HL. It reuses core's args (wallet/netuid/axon/
+# subtensor/slack) so its wallet + axon.serve + chain config match core, but DROPS --split-state
+# (irrelevant — it starts no servers) and --no-axon (it MUST serve the axon), and adds --orders-app.
+if [ "$orders_split_enabled" = true ]; then
+    for a in "${args[@]}"; do
+        case "$a" in
+            --split-state|--no-axon) ;;  # drop: orders app starts no servers and must serve the axon
+            *) orders_args+=("$a") ;;
+        esac
+    done
+    orders_args+=("--orders-app")
+fi
+
 branch=$(git branch --show-current)
 echo "Watching branch: $branch"
-echo "PM2 process names: $proc_name"
+pm2_names="$proc_name"
+if [ "$split_state_enabled" = true ]; then
+    pm2_names="$state_proc_name, $pm2_names"
+fi
+if [ "$orders_split_enabled" = true ]; then
+    pm2_names="$pm2_names, $orders_proc_name"
+fi
+if [ "$serve_enabled" = true ]; then
+    pm2_names="$pm2_names, $rest_proc_name, $ws_proc_name"
+fi
+echo "PM2 process names: $pm2_names"
 
 current_version=$(read_version_value)
 
-# Function to check and restart pm2 processes
+# check_and_restart_pm2 proc_name script_path args_array_name [kill_timeout_ms]
+# kill_timeout_ms: PM2's default is only 1.6s before it SIGKILLs — too short for the API apps'
+# graceful shutdown (close WS clients, cancel tasks, unlink shared memory), so they pass 10s.
 check_and_restart_pm2() {
     local proc_name=$1
     local script_path=$2
     local -n proc_args_ref=$3
+    local kill_timeout_ms=${4:-}
 
     # Check for current process name
     if pm2 status | grep -q $proc_name; then
@@ -250,8 +421,20 @@ check_and_restart_pm2() {
 
     echo "Running $script_path with the following pm2 config:"
 
-    joined_args=$(printf "'%s'," "${proc_args_ref[@]}")
-    joined_args=${joined_args%,}
+    # An empty args array must render [] not [''] — printf with zero args still emits one empty
+    # '%s', which PM2 would pass as a literal empty-string arg that argparse rejects (crash loop).
+    if [ ${#proc_args_ref[@]} -eq 0 ]; then
+        joined_args=""
+    else
+        joined_args=$(printf "'%s'," "${proc_args_ref[@]}")
+        joined_args=${joined_args%,}
+    fi
+
+    local kill_timeout_line=""
+    if [ -n "$kill_timeout_ms" ]; then
+        kill_timeout_line="
+        kill_timeout: $kill_timeout_ms,"
+    fi
 
     echo "module.exports = {
       apps : [{
@@ -259,7 +442,7 @@ check_and_restart_pm2() {
         script : '$script_path',
         interpreter: 'python3',
         min_uptime: '5m',
-        max_restarts: '5',
+        max_restarts: '5',$kill_timeout_line
         args: [$joined_args]
       }]
     }" > $proc_name.app.config.js
@@ -268,10 +451,50 @@ check_and_restart_pm2() {
     pm2 start $proc_name.app.config.js
 }
 
-# Initial call to start both processes before entering the update loop
+# delete_pm2_if_running proc_name — tear down a split app whose flag is no longer set. Without
+# this, rolling back (dropping --split-state / --no-axon / --serve) leaves the OLD app running
+# and auto-restarting, and it fights the monolith core for the same RPC ports (mutual SIGKILL
+# loop until PM2 marks both errored).
+delete_pm2_if_running() {
+    local proc_name=$1
+    if pm2 status | grep -q "$proc_name"; then
+        echo "Flag for $proc_name is not set but the app is running — deleting stale PM2 app $proc_name"
+        pm2 delete "$proc_name"
+    fi
+}
+
+# Tear down split apps whose flags were dropped BEFORE starting anything, so a rollback can't
+# leave two owners of the order-write servers.
+teardown_disabled_split_apps() {
+    if [ "$split_state_enabled" != true ]; then
+        delete_pm2_if_running "$state_proc_name"
+    fi
+    if [ "$orders_split_enabled" != true ]; then
+        delete_pm2_if_running "$orders_proc_name"
+    fi
+    if [ "$serve_enabled" != true ]; then
+        delete_pm2_if_running "$rest_proc_name"
+        delete_pm2_if_running "$ws_proc_name"
+    fi
+}
+
+# Start order: vanta-state FIRST (owns the order-write state servers core connects to), then core,
+# then the API apps. Under --split-state this ordering matters — core's clients target vanta-state's
+# servers; the readiness watchdogs tolerate transient absence and alert on sustained un-readiness.
 pip_install_if_requirements_changed
-# Fixed: Proper array passing
+teardown_disabled_split_apps
+if [ "$split_state_enabled" = true ]; then
+    check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
+fi
 check_and_restart_pm2 "$proc_name" "$script" args
+if [ "$orders_split_enabled" = true ]; then
+    # After core: vanta-orders seeds dedup + primes its blacklist cache from core's metagraph on boot.
+    check_and_restart_pm2 "$orders_proc_name" "$orders_script" orders_args 10000
+fi
+if [ "$serve_enabled" = true ]; then
+    check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
+    check_and_restart_pm2 "$ws_proc_name" "$ws_script" ws_args 10000
+fi
 if [ "$start_generate" = true ]; then
     check_and_restart_pm2 "$generate_proc_name" "$generate_script" generate_args
 fi
@@ -335,8 +558,23 @@ while true; do
             echo "New version published. Updating the local copy."
             if pip_install_if_requirements_changed; then
                 echo "Package installation successful."
-                # Fixed: Proper array passing
+                # Fail-safe: a version bump restarts ALL apps. Narrowing to the changed app is a
+                # future optimization — any shared-module change (vali_config, order/position
+                # models, RPC serialization) needs ALL tiers restarted together to avoid skew.
+                # RPC is pickle with no version handshake, so vanta-state MUST restart with core
+                # (matched-pair rule); vanta-state first to mirror the startup order.
+                teardown_disabled_split_apps
+                if [ "$split_state_enabled" = true ]; then
+                    check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
+                fi
                 check_and_restart_pm2 "$proc_name" "$script" args
+                if [ "$orders_split_enabled" = true ]; then
+                    check_and_restart_pm2 "$orders_proc_name" "$orders_script" orders_args 10000
+                fi
+                if [ "$serve_enabled" = true ]; then
+                    check_and_restart_pm2 "$rest_proc_name" "$rest_script" rest_args 10000
+                    check_and_restart_pm2 "$ws_proc_name" "$ws_script" ws_args 10000
+                fi
                 if [ "$start_generate" = true ]; then
                     check_and_restart_pm2 "$generate_proc_name" "$generate_script" generate_args
                 fi

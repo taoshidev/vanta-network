@@ -141,13 +141,22 @@ class ValiUtils:
             >>>     # This is the mothership validator
             >>>     logger.info("Running as mothership")
         """
-        from vali_objects.vali_config import ValiConfig
-
         if not wallet or not hasattr(wallet, 'hotkey'):
             return False
+        return ValiUtils.is_mothership_hotkey(wallet.hotkey.ss58_address, is_testnet)
 
-        hotkey = wallet.hotkey.ss58_address
+    @staticmethod
+    def is_mothership_hotkey(hotkey_ss58: str, is_testnet=False) -> bool:
+        """
+        Mothership check from a hotkey ss58 STRING (no wallet/keypair needed).
+
+        Used by wallet-less processes (vanta-state's miner_account) that receive the validator
+        hotkey as a string via NeuronContext.validator_hotkey_override rather than loading a wallet.
+        is_mothership_wallet() delegates here.
+        """
+        from vali_objects.vali_config import ValiConfig
+        if not hotkey_ss58:
+            return False
         if is_testnet:
-            return hotkey == ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
-        else:
-            return hotkey == ValiConfig.MOTHERSHIP_HOTKEY
+            return hotkey_ss58 == ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
+        return hotkey_ss58 == ValiConfig.MOTHERSHIP_HOTKEY

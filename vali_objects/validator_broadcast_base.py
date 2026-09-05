@@ -56,7 +56,8 @@ class ValidatorBroadcastBase:
         running_unit_tests: bool = False,
         is_testnet: bool = False,
         config=None,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        validator_hotkey: str = None
     ):
         """
         Initialize ValidatorBroadcastBase.
@@ -66,23 +67,35 @@ class ValidatorBroadcastBase:
             is_testnet: Whether running on testnet
             config: Bittensor config (used to get hotkey for axon filtering)
             connection_mode: RPC connection mode (for lazy client initialization)
+            validator_hotkey: Optional hotkey ss58 STRING. When provided, identity comes from this
+                string and NO wallet/keypair is loaded (the wallet-less path for vanta-state's
+                miner_account — see NeuronContext.validator_hotkey_override). Broadcasting still
+                signs via SubtensorOpsClient (core), so no local keypair is needed here. When absent,
+                the wallet is loaded from config as before (in-core: entity/asset_selection/contract).
         """
         self.running_unit_tests = running_unit_tests
         self.is_testnet = is_testnet
         self._config = config
 
         # Get hotkey for filtering out self from broadcasts and derive is_mothership
+        from vali_objects.utils.vali_utils import ValiUtils
         if self.running_unit_tests:
             logger.info(f"[VALIDATOR_BROADCAST_BASE] Test mode - skipping wallet creation (running_unit_tests={running_unit_tests})")
             self._hotkey = None
             self.is_mothership = False
             self.wallet = None
+        elif validator_hotkey:
+            # Wallet-less path: identity from the ss58 string, no keypair loaded. Signing happens in
+            # core (SubtensorOpsClient), so this process never needs the wallet object.
+            bt.logging.info(f"[VALIDATOR_BROADCAST_BASE] Wallet-less mode - identity from hotkey string {validator_hotkey}...")
+            self.wallet = None
+            self._hotkey = validator_hotkey
+            self.is_mothership = ValiUtils.is_mothership_hotkey(validator_hotkey, self.is_testnet)
         else:
             logger.info(f"[VALIDATOR_BROADCAST_BASE] Production mode - creating wallet (running_unit_tests={running_unit_tests}, config={config})")
             self.wallet = bt.Wallet(config=config)
             self._hotkey = self.wallet.hotkey.ss58_address
             # Derive is_mothership using centralized utility
-            from vali_objects.utils.vali_utils import ValiUtils
             self.is_mothership = ValiUtils.is_mothership_wallet(self.wallet, self.is_testnet)
             logger.info(f"[VALIDATOR_BROADCAST_BASE] Wallet created successfully (hotkey={self._hotkey}...)")
 

@@ -29,6 +29,7 @@ from typing import Tuple, Dict
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.vali_config import ValiConfig
 from shared_objects.log import logger
+from time_util.time_util import TimeUtil
 
 
 class PositionLockServer(RPCServerBase):
@@ -65,6 +66,13 @@ class PositionLockServer(RPCServerBase):
         # Use threading.Lock since all RPC access goes through this server process
         self.locks: Dict[Tuple[str, str], threading.Lock] = {}
         self.locks_dict_lock = threading.Lock()  # Protect dict mutations
+        # Current owner of each held lock: key -> (owner_token, held_at_ms). Absent = not held.
+        # The token gives releases holder identity: threading.Lock has none, so without it a
+        # lease-reclaimed holder's eventual release would free the RECLAIMER's lock, cascading to
+        # multiple concurrent writers on one (hotkey, trade_pair). Guarded by locks_dict_lock.
+        self.lock_owner: Dict[Tuple[str, str], Tuple[int, float]] = {}
+        self._next_owner_token = 0
+        self._lock_lease_ms = ValiConfig.POSITION_LOCK_LEASE_MS
 
         # Initialize base class
         # daemon_interval_s: 60s (slow interval since daemon does nothing)
@@ -139,7 +147,7 @@ class PositionLockServer(RPCServerBase):
 
             return lock
 
-    def acquire_rpc(self, miner_hotkey: str, trade_pair_id: str, timeout: float = 10.0) -> bool:
+    def acquire_rpc(self, miner_hotkey: str, trade_pair_id: str, timeout: float = 10.0):
         """
         Acquire lock for the given key (blocks until available or timeout).
 
@@ -149,28 +157,63 @@ class PositionLockServer(RPCServerBase):
             timeout: Maximum time to wait in seconds
 
         Returns:
-            bool: True if lock was acquired, False if timeout
+            int owner token (truthy) if acquired — pass it back to release_rpc so only the
+            actual holder can release; False if timeout. Truthiness preserves the legacy
+            bool contract for callers that only check success.
         """
+        lock_key = (miner_hotkey, trade_pair_id)
         lock = self._get_or_create_lock(miner_hotkey, trade_pair_id)
+
+        # Lease reclaim (never-release protection): if this lock has been HELD past the lease, the
+        # holder is presumed dead (crashed between acquire and release — a real hazard now that the
+        # holder is the crashable vanta-orders process, not core). Force-release so the (hotkey,
+        # trade_pair) is not wedged forever. The lease is FAR above any real hold (see
+        # POSITION_LOCK_LEASE_MS), so a live-but-slow holder is never reclaimed. Serialized under
+        # locks_dict_lock so only one reclaim fires; dropping the owner entry first makes the dead
+        # holder's late release (if it ever arrives) a token-mismatch no-op.
+        now_ms = TimeUtil.now_in_millis()
+        with self.locks_dict_lock:
+            owner = self.lock_owner.get(lock_key)
+            if owner is not None and (now_ms - owner[1]) > self._lock_lease_ms:
+                self.lock_owner.pop(lock_key, None)
+                try:
+                    lock.release()
+                    logger.warning(
+                        f"[LOCK_SERVER] Reclaimed stale lock for {miner_hotkey}.../{trade_pair_id} "
+                        f"held {(now_ms - owner[1]) / 1000:.1f}s (> {self._lock_lease_ms / 1000:.0f}s lease) "
+                        f"— presumed crashed holder"
+                    )
+                except RuntimeError:
+                    pass  # already free; nothing to reclaim
+
         acquired = lock.acquire(timeout=timeout)
 
-        if not acquired:
-            logger.warning(
-                f"[LOCK_SERVER] Failed to acquire lock for {miner_hotkey}.../{trade_pair_id} after {timeout}s"
-            )
+        if acquired:
+            with self.locks_dict_lock:
+                self._next_owner_token += 1
+                token = self._next_owner_token
+                self.lock_owner[lock_key] = (token, TimeUtil.now_in_millis())
+            return token
 
-        return acquired
+        logger.warning(
+            f"[LOCK_SERVER] Failed to acquire lock for {miner_hotkey}.../{trade_pair_id} after {timeout}s"
+        )
+        return False
 
-    def release_rpc(self, miner_hotkey: str, trade_pair_id: str) -> bool:
+    def release_rpc(self, miner_hotkey: str, trade_pair_id: str, token: int = None) -> bool:
         """
         Release lock for the given key.
 
         Args:
             miner_hotkey: Miner's hotkey
             trade_pair_id: Trade pair ID
+            token: Owner token from acquire_rpc. When provided, the release is a no-op unless
+                the token matches the current owner — a lease-reclaimed holder's late release
+                must not free the lock its reclaimer now holds. None = legacy unconditional
+                release (version-skew tolerance only).
 
         Returns:
-            bool: True if released successfully, False if error
+            bool: True if released successfully, False if error/stale
         """
         lock_key = (miner_hotkey, trade_pair_id)
         lock = self.locks.get(lock_key)
@@ -181,15 +224,25 @@ class PositionLockServer(RPCServerBase):
             )
             return False
 
-        try:
-            lock.release()
-            return True
-        except RuntimeError as e:
-            # Lock was not held (already released)
-            logger.warning(
-                f"[LOCK_SERVER] Error releasing lock for {miner_hotkey}.../{trade_pair_id}: {e}"
-            )
-            return False
+        with self.locks_dict_lock:
+            owner = self.lock_owner.get(lock_key)
+            if token is not None and (owner is None or owner[0] != token):
+                logger.warning(
+                    f"[LOCK_SERVER] Stale release for {miner_hotkey}.../{trade_pair_id} "
+                    f"(token {token}, current owner {owner[0] if owner else None}) — ignored; "
+                    f"the lock was lease-reclaimed and is (or will be) held by a newer owner"
+                )
+                return False
+            self.lock_owner.pop(lock_key, None)
+            try:
+                lock.release()
+                return True
+            except RuntimeError as e:
+                # Lock was not held (already released — possibly reclaimed by the lease above)
+                logger.warning(
+                    f"[LOCK_SERVER] Error releasing lock for {miner_hotkey}.../{trade_pair_id}: {e}"
+                )
+                return False
 
     def get_lock_count_rpc(self) -> int:
         """Get the number of locks currently tracked."""
@@ -219,10 +272,12 @@ class PositionLockProxy:
         self.trade_pair_id = trade_pair_id
         self.timeout = timeout
         self.acquired = False
+        self.token = None
 
     def __enter__(self):
-        """Acquire lock via RPC."""
-        self.acquired = self.server.acquire_rpc(self.miner_hotkey, self.trade_pair_id, self.timeout)
+        """Acquire lock via RPC. Keeps the owner token so only THIS holder's exit releases."""
+        self.token = self.server.acquire_rpc(self.miner_hotkey, self.trade_pair_id, self.timeout)
+        self.acquired = bool(self.token)
         if not self.acquired:
             raise TimeoutError(
                 f"Failed to acquire lock for {self.miner_hotkey}/{self.trade_pair_id} after {self.timeout}s"
@@ -230,9 +285,9 @@ class PositionLockProxy:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Release lock via RPC."""
+        """Release lock via RPC (token-checked: a lease-reclaimed hold releases as a no-op)."""
         if self.acquired:
-            self.server.release_rpc(self.miner_hotkey, self.trade_pair_id)
+            self.server.release_rpc(self.miner_hotkey, self.trade_pair_id, self.token)
         return False  # Don't suppress exceptions
 
 
