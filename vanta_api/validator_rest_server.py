@@ -2611,10 +2611,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     def revert_elimination(self, hotkey: str):
         """
         Revert an elimination for a hotkey (regular or synthetic). Updates:
-          - Challenge period manager: pops the ELIMINATED bucket entry (restoring prior bucket),
-            resets drawdown cache, syncs MinerAccount, saves to disk
           - Elimination manager: removes the elimination record
           - Debt ledger: deleted
+          - Challenge period manager: appends the penultimate bucket at the current time (restoring it),
+            resets drawdown cache, syncs MinerAccount, saves to disk
 
         Query params:
           reopen_positions: if "true", strips force-close orders and reopens positions
