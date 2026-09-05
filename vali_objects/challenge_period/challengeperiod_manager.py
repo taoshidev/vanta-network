@@ -686,6 +686,8 @@ class ChallengePeriodManager(CacheController):
                 last_eod_equity, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
 
             if last_eod_checked_ms == current_day_open_ms:
+                existing.current_equity = current_equity
+                existing.current_balance = current_balance
                 existing.last_eod_equity = last_eod_equity
                 existing.daily_open_equity = daily_open_equity
                 existing.eod_hwm = max(existing.eod_hwm, last_eod_equity, eod_hwm)
