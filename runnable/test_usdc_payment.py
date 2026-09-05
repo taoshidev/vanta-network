@@ -54,7 +54,7 @@ def load_config():
         wallet_hotkey = secrets.get("wallet_hotkey")
         if wallet_name and wallet_hotkey:
             try:
-                from bittensor_wallet import Wallet
+                from bittensor.wallet import Wallet
                 wallet = Wallet(name=wallet_name, hotkey=wallet_hotkey)
                 entity_hotkey = wallet.hotkey.ss58_address
             except Exception as e:

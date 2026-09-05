@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import concurrent.futures
 import os
+import threading
 from typing import Tuple
 
 import bittensor as bt
@@ -12,7 +13,167 @@ logger.setLevel(logging.INFO)
 import template
 from time_util.time_util import timeme
 from shared_objects.locks.subtensor_lock import get_subtensor_lock
+from shared_objects.bt_config import (
+    add_subtensor_args, add_wallet_args, add_axon_args, add_logging_args,
+    build_config, make_wallet,
+)
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Minimal Axon replacement
+#
+# bt.Axon, bt.Dendrite, and bt.Synapse do not exist in bt11.
+# LocalAxon provides a thin Flask-based HTTP server that:
+#   • exposes /axon/<SynapseClass> POST routes for each registered handler
+#   • verifies the caller's hotkey with bt.http_auth.verify
+#   • sets synapse.dendrite.hotkey from the verified hotkey
+#   • applies the blacklist function before calling the forward handler
+#   • registers the validator endpoint on chain via bt.ServeAxon
+# ──────────────────────────────────────────────────────────────────────────────
+
+class LocalAxon:
+    """Flask-based Axon replacement for bt11 migration."""
+
+    def __init__(self, wallet, port: int, external_port: int | None = None):
+        self.wallet = wallet
+        self.port = port
+        self.external_port = external_port or port
+        self._handlers: dict[str, dict] = {}  # synapse_class_name → {forward_fn, blacklist_fn}
+        self._app = None
+        self._thread: threading.Thread | None = None
+
+    # ------------------------------------------------------------------
+    def attach(self, forward_fn, blacklist_fn=None, priority_fn=None):
+        """Register a forward handler (and optional blacklist/priority) for a synapse type."""
+        import inspect
+        sig = inspect.signature(forward_fn)
+        params = list(sig.parameters.values())
+        if not params:
+            logger.warning(f"[LocalAxon] Could not determine synapse type for {forward_fn}")
+            return
+        synapse_class = params[0].annotation
+        if synapse_class is inspect.Parameter.empty or synapse_class is None:
+            logger.warning(f"[LocalAxon] No type annotation on first param of {forward_fn}")
+            return
+        class_name = synapse_class.__name__ if hasattr(synapse_class, '__name__') else str(synapse_class)
+        self._handlers[class_name] = {
+            "forward_fn": forward_fn,
+            "blacklist_fn": blacklist_fn,
+            "synapse_class": synapse_class,
+        }
+        logger.info(f"[LocalAxon] Registered handler for {class_name}")
+
+    # ------------------------------------------------------------------
+    def _build_flask_app(self):
+        from flask import Flask, request as flask_request, jsonify
+        app = Flask(__name__)
+
+        for class_name, info in self._handlers.items():
+            # Capture via default arg to avoid closure-over-loop pitfall
+            def make_route(cn=class_name, inf=info):
+                def route_fn():
+                    body = flask_request.get_data()
+                    sender_hotkey = ""
+                    try:
+                        caller = bt.http_auth.verify(
+                            dict(flask_request.headers), body,
+                            method=flask_request.method,
+                            path=flask_request.path,
+                            self_hotkey_ss58=self.wallet.hotkey.ss58_address,
+                            require_receiver=False,
+                        )
+                        sender_hotkey = caller.hotkey_ss58
+                    except Exception as e:
+                        logger.warning(f"[LocalAxon] Signature verification failed for {cn}: {e}")
+                        sender_hotkey = flask_request.headers.get("x-bittensor-hotkey", "")
+
+                    synapse_cls = inf["synapse_class"]
+                    try:
+                        import json as _json
+                        synapse = synapse_cls.model_validate_json(body)
+                    except Exception as e:
+                        logger.error(f"[LocalAxon] Failed to deserialize {cn}: {e}")
+                        return jsonify({"error": str(e)}), 400
+
+                    synapse.dendrite = template.protocol._DendriteInfo(hotkey=sender_hotkey)
+
+                    blacklist_fn = inf.get("blacklist_fn")
+                    if blacklist_fn:
+                        try:
+                            blocked, reason = blacklist_fn(synapse)
+                            if blocked:
+                                logger.debug(f"[LocalAxon] Blacklisted {sender_hotkey}: {reason}")
+                                return jsonify({"error": "blacklisted", "reason": reason}), 403
+                        except Exception as e:
+                            logger.error(f"[LocalAxon] Blacklist error for {cn}: {e}")
+
+                    forward_fn = inf["forward_fn"]
+                    try:
+                        if asyncio.iscoroutinefunction(forward_fn):
+                            loop = asyncio.new_event_loop()
+                            result = loop.run_until_complete(forward_fn(synapse))
+                            loop.close()
+                        else:
+                            result = forward_fn(synapse)
+                    except Exception as e:
+                        logger.error(f"[LocalAxon] Forward fn error for {cn}: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        return jsonify({"error": str(e)}), 500
+
+                    return result.model_dump_json(), 200, {"Content-Type": "application/json"}
+
+                route_fn.__name__ = f"axon_{cn}"
+                return route_fn
+
+            app.add_url_rule(
+                f"/axon/{class_name}",
+                view_func=make_route(),
+                methods=["POST"],
+            )
+
+        return app
+
+    # ------------------------------------------------------------------
+    def serve(self, netuid: int, subtensor):
+        """Register this axon on chain via bt.ServeAxon."""
+        try:
+            import bittensor.utils.networking as net_utils
+            ip = net_utils.get_external_ip()
+        except Exception:
+            ip = "0.0.0.0"
+
+        try:
+            result = subtensor.execute(
+                bt.ServeAxon(netuid=netuid, ip=ip, port=self.external_port),
+                self.wallet,
+            )
+            if result.success:
+                logger.info(f"[LocalAxon] Registered on chain: {ip}:{self.external_port} netuid={netuid}")
+            else:
+                logger.warning(f"[LocalAxon] Chain registration failed: {getattr(result, 'error', result)}")
+        except Exception as e:
+            logger.error(f"[LocalAxon] Failed to register on chain: {e}")
+
+    # ------------------------------------------------------------------
+    def start(self):
+        """Start the Flask server in a background daemon thread."""
+        self._app = self._build_flask_app()
+        import waitress
+
+        def run():
+            logger.info(f"[LocalAxon] Starting HTTP server on port {self.port}")
+            waitress.serve(self._app, host="0.0.0.0", port=self.port)
+
+        self._thread = threading.Thread(target=run, name="LocalAxon", daemon=True)
+        self._thread.start()
+        logger.info(f"[LocalAxon] Server thread started (port={self.port})")
+
+    def __repr__(self):
+        return f"LocalAxon(port={self.port}, handlers={list(self._handlers.keys())})"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 class ValidatorBase:
     def __init__(self, wallet, config, metagraph_client, asset_selection_client, subtensor=None, slack_notifier=None):
@@ -89,14 +250,9 @@ class ValidatorBase:
         return False, synapse.dendrite.hotkey
 
     def get_config(self):
-        # Step 2: Set up the configuration parser
-        # This function initializes the necessary command-line arguments.
-        # Using command-line arguments allows users to customize various miner settings.
         parser = argparse.ArgumentParser()
-        # Set autosync to store true if flagged, otherwise defaults to False.
         parser.add_argument("--autosync", action='store_true',
                             help="Automatically sync order data with a validator trusted by Taoshi.")
-        # Set run_generate to store true if flagged, otherwise defaults to False.
         parser.add_argument("--start-generate", action='store_true', dest='start_generate',
                             help="Run the request output generator.")
 
@@ -110,21 +266,13 @@ class ValidatorBase:
         parser.add_argument("--api-ws-port", type=int, default=8765,
                             help="Port for the WebSocket server")
 
-        # (developer): Adds your custom arguments to the parser.
-        # Adds override arguments for network and netuid.
         parser.add_argument("--netuid", type=int, default=1, help="The chain subnet uid.")
 
-        # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
-        bt.Subtensor.add_args(parser)
-        # Logging arguments (--logging.debug, --logging.trace, --logging.logging_dir)
-        parser.add_argument("--logging.debug", action="store_true", default=False,
-                            help="Turn on debugging information")
-        parser.add_argument("--logging.trace", action="store_true", default=False,
-                            help="Turn on trace level information")
-        parser.add_argument("--logging.logging_dir", type=str, default=os.path.expanduser("~/.bittensor/miners"),
-                            help="Logging default root directory.")
-        # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
-        bt.Wallet.add_args(parser)
+        # bt11-compatible argument helpers (replaces bt.Subtensor.add_args etc.)
+        add_subtensor_args(parser)
+        add_wallet_args(parser)
+        add_axon_args(parser)
+        add_logging_args(parser)
 
         # Add Slack webhook arguments
         parser.add_argument(
@@ -139,18 +287,15 @@ class ValidatorBase:
             default=None,
             help="Slack webhook URL for error notifications (optional, defaults to general webhook if not provided)"
         )
-        # Adds axon specific arguments i.e. --axon.port ...
-        bt.Axon.add_args(parser)
-        # Activating the parser to read any command-line inputs.
-        # To print help message, run python3 template/miner.py --help
-        config = bt.Config(parser)
+
+        args = parser.parse_args()
+        config = build_config(args)
+
         if config.logging.debug:
             logger.setLevel(logging.DEBUG)
         if config.logging.trace:
             logger.setLevel(logging.DEBUG)
 
-        # Step 3: Set up logging directory
-        # Logging captures events for diagnosis or understanding miner's behavior.
         config.full_path = os.path.expanduser(
             "{}/{}/{}/netuid{}/{}".format(
                 config.logging.logging_dir,
@@ -165,12 +310,13 @@ class ValidatorBase:
     def wire_axon(self):
         logger.info(f"setting port [{self.config.axon.port}]")
         logger.info(f"setting external port [{self.config.axon.external_port}]")
-        self.axon = bt.Axon(
-            wallet=self.wallet, port=self.config.axon.port, external_port=self.config.axon.external_port
+        self.axon = LocalAxon(
+            wallet=self.wallet,
+            port=self.config.axon.port,
+            external_port=self.config.axon.external_port,
         )
         logger.info(f"Axon {self.axon}")
 
-        # Attach determines which functions are called when servicing a request.
         logger.info("Attaching forward function to axon.")
 
         def rs_blacklist_fn(synapse: template.protocol.SendSignal) -> Tuple[bool, str]:
@@ -216,16 +362,13 @@ class ValidatorBase:
             blacklist_fn=eeu_blacklist_fn
         )
 
-        # Serve passes the axon information to the network + netuid we are hosting on.
-        # This will auto-update if the axon port of external ip have changed.
         logger.info(
             f"Serving attached axons on network:"
-            f" {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
+            f" {getattr(self.config.subtensor, 'chain_endpoint', None) or getattr(self.config.subtensor, 'network', 'finney')}"
+            f" with netuid: {self.config.netuid}"
         )
-        # Use subtensor lock to prevent WebSocket concurrency errors with metagraph_updater thread
         with get_subtensor_lock():
             self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
 
-        # Starts the miner's axon, making it active on the network.
         logger.info(f"Starting axon server on port: {self.config.axon.port}")
         self.axon.start()

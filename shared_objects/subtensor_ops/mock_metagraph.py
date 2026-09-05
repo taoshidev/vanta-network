@@ -1,6 +1,6 @@
 from typing import List
 
-from bittensor import Balance
+from bittensor.balance import Balance
 
 
 class MockAxonInfo:

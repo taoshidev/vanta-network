@@ -38,7 +38,8 @@ class Miner:
         if running_unit_tests:
             self.wallet = self._create_mock_wallet()
         else:
-            self.wallet = bt.Wallet(config=self.config)
+            from shared_objects.bt_config import make_wallet
+            self.wallet = make_wallet(self.config)
 
         # Initialize Slack notifier
         if running_unit_tests:
@@ -292,17 +293,11 @@ class Miner:
         parser = argparse.ArgumentParser()
         # Adds override arguments for network and netuid.
         parser.add_argument("--netuid", type=int, default=8, help="The chain subnet uid.")
-        # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
-        bt.Subtensor.add_args(parser)
-        # Logging arguments (--logging.debug, --logging.trace, --logging.logging_dir)
-        parser.add_argument("--logging.debug", action="store_true", default=False,
-                            help="Turn on debugging information")
-        parser.add_argument("--logging.trace", action="store_true", default=False,
-                            help="Turn on trace level information")
-        parser.add_argument("--logging.logging_dir", type=str, default=os.path.expanduser("~/.bittensor/miners"),
-                            help="Logging default root directory.")
-        # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
-        bt.Wallet.add_args(parser)
+        # bt11-compatible argument helpers (replaces bt.Subtensor.add_args etc.)
+        from shared_objects.bt_config import add_subtensor_args, add_wallet_args, add_logging_args
+        add_subtensor_args(parser)
+        add_logging_args(parser)
+        add_wallet_args(parser)
         # Adds an argument to allow setting write_failed_signal_logs from the command line
         parser.add_argument("--write_failed_signal_logs", type=bool, default=None,
                             help="Whether to write logs for failed signals. Default is True unless --subtensor.network is 'test'.")
@@ -351,8 +346,10 @@ class Miner:
             help='Name of this miner instance.'
         )
 
-        # Parse the config (will take command-line arguments if provided)
-        config = bt.Config(parser)
+        # Parse the config (bt11-compatible nested namespace)
+        from shared_objects.bt_config import build_config
+        args = parser.parse_args()
+        config = build_config(args)
         logger.setLevel(logging.INFO)
         if config.logging.debug:
             logger.setLevel(logging.DEBUG)

@@ -148,7 +148,7 @@ def force_validator_to_restore_from_checkpoint(validator_hotkey, metagraph, conf
         #    logger.warning("Not forcing validator to restore from checkpoint in testnet.")
         #    return
 
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in metagraph.neurons}
+        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in metagraph}
         my_trust = hotkey_to_v_trust.get(validator_hotkey)
         if my_trust is None:
             logger.warning(f"Validator {validator_hotkey} not found in metagraph. Cannot determine trust.")

@@ -14,7 +14,7 @@ import json
 from multiprocessing import current_process
 import gzip
 import traceback
-from bittensor_wallet import Keypair
+from bittensor.wallet import Keypair
 
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
