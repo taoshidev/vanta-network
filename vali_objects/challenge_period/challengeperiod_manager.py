@@ -260,6 +260,15 @@ class MinerBucketState:
     def eod_drawdown_threshold_pct(self):
         return self.eod_drawdown_threshold * 100
 
+    @property
+    def soft_breach(self) -> bool:
+        """True when a pro rule is currently breached in a bucket that withholds the week's payout."""
+        bucket = self.current_bucket
+        if not bucket.soft_breach_applies:
+            return False
+        return (self.pro_stats.calmar < bucket.calmar_threshold
+                or self.pro_stats.daily_consistency > bucket.daily_consistency_threshold)
+
 
 
 class ChallengePeriodManager(CacheController):
@@ -418,10 +427,7 @@ class ChallengePeriodManager(CacheController):
                 demotions[hotkey] = MinerBucket.PROBATION
                 continue
 
-            if state.current_bucket.is_pro:
-                returns_threshold = ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD[asset_class]
-            else:
-                returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[asset_class]
+            returns_threshold = state.current_bucket.returns_threshold(asset_class)
             if hotkey == "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_87": # remove once eliminated or promoted
                 returns_threshold = 0.08
             if self._check_promotion(state, returns_threshold, current_time_ms):
@@ -1201,10 +1207,14 @@ class ChallengePeriodManager(CacheController):
         if not state or not state.current_bucket.is_pro_track:
             return None
 
+        asset_class = self._asset_selection_client.get_asset_selection(synthetic_hotkey)
         return {
             **state.pro_stats.to_dict(),
             "calmar_threshold": state.current_bucket.calmar_threshold,
             "daily_consistency_threshold": state.current_bucket.daily_consistency_threshold,
+            "returns_threshold": state.current_bucket.returns_threshold(asset_class),
+            "soft_breach_applies": state.current_bucket.soft_breach_applies,
+            "soft_breach": state.soft_breach,
         }
 
     # ==================== Disk I/O ====================
