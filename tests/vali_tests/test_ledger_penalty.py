@@ -12,6 +12,9 @@ from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import (
     PenaltyCheckpoint,
 )
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
+
+ACCOUNT_SIZE = 100_000.0
 
 
 class TestLedgerPenalty(TestBase):
@@ -79,21 +82,59 @@ class TestLedgerPenalty(TestBase):
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l4_ledger), (True, 11))
 
     def test_all_time_calmar_penalty(self):
-        # 7% return against a 4% all-time drawdown clears 1.75; the same return against 5% does not
+        # 7.1% realized return against a 4% all-time drawdown clears 1.75; the same return against 5% does not
         passing = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
-        passing.cps[-1].prev_portfolio_ret = 1.07
+        passing.cps[-1].prev_portfolio_realized_pnl = 7_100.0
         failing = copy.deepcopy(passing)
 
-        self.assertEqual(PositionPenalties.all_time_calmar_penalty(passing, 0.96), 1.0)
-        self.assertEqual(PositionPenalties.all_time_calmar_penalty(failing, 0.95), 0.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(passing, 0.96, ACCOUNT_SIZE), 1.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(failing, 0.95, ACCOUNT_SIZE), 0.0)
 
     def test_all_time_calmar_penalty_uses_ratcheted_drawdown(self):
         # The ledger's own mdd is shallow, but the passed-in all-time value governs
         ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.999)
-        ledger.cps[-1].prev_portfolio_ret = 1.07
+        ledger.cps[-1].prev_portfolio_realized_pnl = 7_000.0
 
-        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.999), 1.0)
-        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.90), 0.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.999, ACCOUNT_SIZE), 1.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.90, ACCOUNT_SIZE), 0.0)
+
+    def test_all_time_calmar_penalty_ignores_unrealized_gains(self):
+        # Paper gains on an open position must not clear the gate
+        ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        ledger.cps[-1].unrealized_pnl = 20_000.0
+        ledger.cps[-1].prev_portfolio_unrealized_pnl = 20_000.0
+        ledger.cps[-1].prev_portfolio_ret = 1.20
+
+        self.assertEqual(LedgerUtils.realized_return(ledger, ACCOUNT_SIZE), 0.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.96, ACCOUNT_SIZE), 0.0)
+
+    def test_all_time_calmar_penalty_nets_fees(self):
+        # 8.1% gross less 1% of fees is the 7.1% that clears a 4% drawdown
+        ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        ledger.cps[-1].prev_portfolio_realized_pnl = 8_100.0
+        ledger.cps[-1].cumulative_fees_usd = 1_000.0
+
+        self.assertAlmostEqual(LedgerUtils.realized_return(ledger, ACCOUNT_SIZE), 0.071)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.96, ACCOUNT_SIZE), 1.0)
+
+    def test_realized_return_matches_account_balance(self):
+        # The numerator is the same quantity as MinerAccount.balance / account_size - 1.0
+        ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        ledger.cps[-1].prev_portfolio_realized_pnl = 8_000.0
+        ledger.cps[-1].cumulative_fees_usd = 1_000.0
+
+        # Synthetic hotkey so account_size is the granted subaccount size, as it is for pro accounts
+        account = MinerAccount(miner_hotkey="hk_parity_1", total_realized_pnl=8_000.0, total_fees_paid=1_000.0)
+        account.add_collateral_record(CollateralRecord(ACCOUNT_SIZE, 0, 0, is_first_record=True))
+
+        self.assertAlmostEqual(
+            LedgerUtils.realized_return(ledger, ACCOUNT_SIZE),
+            account.balance / ACCOUNT_SIZE - 1.0,
+        )
+
+    def test_realized_return_handles_empty_inputs(self):
+        self.assertEqual(LedgerUtils.realized_return(None, ACCOUNT_SIZE), 0.0)
+        self.assertEqual(LedgerUtils.realized_return(generate_ledger(gain=0.0, loss=0.0), 0.0), 0.0)
 
     def test_daily_consistency_penalty(self):
         # Evenly distributed gains pass; a flat ledger has no profit and fails closed
