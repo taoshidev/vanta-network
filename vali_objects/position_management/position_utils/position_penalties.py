@@ -168,14 +168,14 @@ class PositionPenalties:
         }
 
     @staticmethod
-    def all_time_calmar_penalty(ledger: PerfLedger, max_drawdown: float) -> float:
+    def all_time_calmar_penalty(ledger: PerfLedger, max_drawdown: float, account_size: float) -> float:
         """
         Binary penalty: 0 if the ledger's all-time calmar is below the pro threshold, else 1.
 
         max_drawdown is the ratcheted all-time value from ProStats, since the ledger itself only
         retains a rolling window.
         """
-        calmar = Metrics.all_time_calmar(ledger.prev_portfolio_ret - 1.0, max_drawdown)
+        calmar = Metrics.all_time_calmar(LedgerUtils.realized_return(ledger, account_size), max_drawdown)
         return 0.0 if calmar < ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD else 1.0
 
     @staticmethod
