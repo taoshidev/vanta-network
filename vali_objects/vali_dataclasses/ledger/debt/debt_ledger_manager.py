@@ -714,7 +714,7 @@ class DebtLedgerManager():
                     risk_profile_penalty=penalty_checkpoint.risk_profile_penalty,
                     min_collateral_penalty=penalty_checkpoint.min_collateral_penalty,
                     risk_adjusted_performance_penalty=penalty_checkpoint.risk_adjusted_performance_penalty,
-                    min_sharpe_penalty=penalty_checkpoint.min_sharpe_penalty,
+                    all_time_calmar_penalty=penalty_checkpoint.all_time_calmar_penalty,
                     daily_consistency_penalty=penalty_checkpoint.daily_consistency_penalty,
                     total_penalty=penalty_checkpoint.total_penalty,
                     weekly_penalty=penalty_checkpoint.weekly_penalty,

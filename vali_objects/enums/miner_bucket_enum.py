@@ -100,13 +100,13 @@ class MinerBucket(Enum):
         return self.is_pro or self == MinerBucket.PRO_CHALLENGE_TRANSITION
 
     @property
-    def sharpe_threshold(self) -> float | None:
-        """Minimum sharpe required for promotion. None for buckets with no sharpe requirement."""
-        return ValiConfig.PRO_CHALLENGE_SHARPE_THRESHOLD if self.is_pro else None
+    def calmar_threshold(self) -> float | None:
+        """Minimum all-time calmar required for promotion. None for buckets with no calmar requirement."""
+        return ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD if self.is_pro else None
 
     @property
     def daily_consistency_threshold(self) -> float | None:
-        """Maximum daily consistency allowed for promotion. None for buckets with no consistency requirement."""
+        """Maximum return consistency allowed for promotion. None for buckets with no consistency requirement."""
         return ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD if self.is_pro else None
 
     @property

@@ -1235,6 +1235,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'eow_unrealized': eow_unrealized,
                     'gross_payout': gross_payout,
                     'payout': gross_payout * week_penalty * week_scale,
+                    'deferred': gross_payout - gross_payout * week_penalty * week_scale,
                     'weekly_penalty': week_penalty,
                     'payout_scale': week_scale,
                     'orders': [o.to_python_dict() for o in week_orders],

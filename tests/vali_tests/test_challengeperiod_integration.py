@@ -858,22 +858,42 @@ class TestChallengePeriodManagerLogic(TestBase):
             self.assertAlmostEqual(dd.static_eod_drawdown_pct, 7.0, delta=1e-6)
 
     def test_refresh_pro_stats_only_computes_for_pro_buckets(self):
-        """_refresh_pro_stats derives sharpe and consistency for pro miners and skips the rest."""
+        """_refresh_pro_stats derives calmar and consistency for pro miners and skips the rest."""
         now = TimeUtil.now_in_millis()
         pro_hk, standard_hk = "hk_pro_stats", "hk_standard_stats"
         ledger = create_daily_checkpoints_with_pnl([0.0] * 4, [0.0] * 4)
 
         mgr, stack = self._make_manager()
         with stack:
-            mgr.set_miner_bucket(pro_hk, MinerBucket.SUBACCOUNT_PRO_CHALLENGE, now - DAILY_MS * 5)
+            mgr.set_miner_bucket(pro_hk, MinerBucket.PRO_CHALLENGE_DIRECT, now - DAILY_MS * 5)
             mgr.set_miner_bucket(standard_hk, MinerBucket.SUBACCOUNT_CHALLENGE, now - DAILY_MS * 5)
-            asset_selections = {pro_hk: MinerAssetClass.CRYPTO, standard_hk: MinerAssetClass.CRYPTO}
-            mgr._refresh_pro_stats([pro_hk, standard_hk], {pro_hk: ledger, standard_hk: ledger}, asset_selections)
+            mgr._refresh_pro_stats([pro_hk, standard_hk], {pro_hk: ledger, standard_hk: ledger})
 
-            # Four evenly distributed profitable days, sharpe has no confidence at this sample size
+            # Four evenly distributed profitable days
             self.assertAlmostEqual(mgr.miner_states[pro_hk].pro_stats.daily_consistency, 0.25, delta=1e-6)
-            self.assertEqual(mgr.miner_states[pro_hk].pro_stats.sharpe, ValiConfig.SHARPE_NOCONFIDENCE_VALUE)
             self.assertEqual(mgr.miner_states[standard_hk].pro_stats, ProStats())
+
+    def test_refresh_pro_stats_ratchets_max_drawdown(self):
+        """The perf ledger only retains a rolling window, so the worst drawdown must be held."""
+        now = TimeUtil.now_in_millis()
+        pro_hk = "hk_pro_ratchet"
+        deep = create_daily_checkpoints_with_pnl([0.0] * 4, [0.0] * 4)
+        for cp in deep.cps:
+            cp.mdd = 0.92
+        shallow = create_daily_checkpoints_with_pnl([0.0] * 4, [0.0] * 4)
+        for cp in shallow.cps:
+            cp.mdd = 0.999
+
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(pro_hk, MinerBucket.PRO_CHALLENGE_DIRECT, now - DAILY_MS * 5)
+
+            mgr._refresh_pro_stats([pro_hk], {pro_hk: deep})
+            self.assertAlmostEqual(mgr.miner_states[pro_hk].pro_stats.max_drawdown, 0.92, delta=1e-9)
+
+            # The deep drawdown has aged out of the ledger, but the ratchet keeps it
+            mgr._refresh_pro_stats([pro_hk], {pro_hk: shallow})
+            self.assertAlmostEqual(mgr.miner_states[pro_hk].pro_stats.max_drawdown, 0.92, delta=1e-9)
 
     def test_get_pro_stats_includes_thresholds(self):
         """Dashboard payload carries the pro criteria and thresholds, and is absent for standard accounts."""
@@ -881,14 +901,15 @@ class TestChallengePeriodManagerLogic(TestBase):
         pro_hk, standard_hk = "hk_pro_dash", "hk_standard_dash"
         mgr, stack = self._make_manager()
         with stack:
-            mgr.set_miner_bucket(pro_hk, MinerBucket.SUBACCOUNT_PRO_CHALLENGE, now)
+            mgr.set_miner_bucket(pro_hk, MinerBucket.PRO_CHALLENGE_DIRECT, now)
             mgr.set_miner_bucket(standard_hk, MinerBucket.SUBACCOUNT_CHALLENGE, now)
-            mgr.miner_states[pro_hk].pro_stats = ProStats(sharpe=1.25, daily_consistency=0.3)
+            mgr.miner_states[pro_hk].pro_stats = ProStats(calmar=1.25, daily_consistency=0.3, max_drawdown=0.94)
 
             stats = mgr.get_pro_stats(pro_hk)
-            self.assertEqual(stats["sharpe"], 1.25)
+            self.assertEqual(stats["calmar"], 1.25)
             self.assertEqual(stats["daily_consistency"], 0.3)
-            self.assertEqual(stats["sharpe_threshold"], ValiConfig.PRO_CHALLENGE_SHARPE_THRESHOLD)
+            self.assertEqual(stats["max_drawdown"], 0.94)
+            self.assertEqual(stats["calmar_threshold"], ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD)
             self.assertEqual(stats["daily_consistency_threshold"], ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD)
             self.assertIsNone(mgr.get_pro_stats(standard_hk))
 

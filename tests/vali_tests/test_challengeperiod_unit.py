@@ -17,6 +17,7 @@ from vali_objects.challenge_period.challengeperiod_manager import (
 )
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.elimination_reason_enum import EliminationReason
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import TradePairCategory, ValiConfig
 
@@ -325,7 +326,7 @@ PRO_STATIC_DD_PCT = ValiConfig.PRO_STATIC_DRAWDOWN_THRESHOLD * 100
 PRO_STATIC_EOD_DD_PCT = ValiConfig.PRO_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
 
 
-@pytest.mark.parametrize("bucket", [MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED])
+@pytest.mark.parametrize("bucket", [MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED])
 def test_pro_buckets_classified_as_subaccounts(bucket):
     assert bucket.is_pro is True
     assert bucket.is_subaccount is True
@@ -426,20 +427,21 @@ def test_pro_rules_currently_match_standard_rules():
             == MinerBucket.SUBACCOUNT_CHALLENGE.eod_drawdown_threshold())
     assert ValiConfig.PRO_STATIC_DRAWDOWN_THRESHOLD == ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD
     assert ValiConfig.PRO_STATIC_EOD_DRAWDOWN_THRESHOLD == ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD
-    assert ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD == ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD
+    assert all(v == 0.06 for v in ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD.values())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Section 3d — Pro promotion criteria (minimum time / sharpe / daily consistency)
+# Section 3d — Pro promotion criteria (minimum time / calmar / return consistency)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MIN_PRO_CHALLENGE_MS = ValiConfig.PRO_CHALLENGE_MINIMUM_MS  # 90 days
-SHARPE_THRESHOLD = ValiConfig.PRO_CHALLENGE_SHARPE_THRESHOLD
+CALMAR_THRESHOLD = ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD
 CONSISTENCY_THRESHOLD = ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD
+PRO_CHALLENGE_BUCKET = MinerBucket.PRO_CHALLENGE_DIRECT
 
 
 def _passing_pro_stats() -> ProStats:
-    return ProStats(sharpe=SHARPE_THRESHOLD, daily_consistency=CONSISTENCY_THRESHOLD)
+    return ProStats(calmar=CALMAR_THRESHOLD, daily_consistency=CONSISTENCY_THRESHOLD)
 
 
 def _promotable_state(bucket: MinerBucket) -> MinerBucketState:
@@ -451,58 +453,73 @@ def _promotable_state(bucket: MinerBucket) -> MinerBucketState:
 
 
 def test_check_promotion_pro_challenge_too_early():
-    state = _promotable_state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+    state = _promotable_state(PRO_CHALLENGE_BUCKET)
     state.entries[-1].start_time_ms = NOW_MS - MIN_PRO_CHALLENGE_MS + DAILY_MS  # one day short
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
 def test_pro_thresholds_only_resolve_for_pro_buckets():
-    assert MinerBucket.SUBACCOUNT_PRO_CHALLENGE.sharpe_threshold == SHARPE_THRESHOLD
-    assert MinerBucket.SUBACCOUNT_PRO_CHALLENGE.daily_consistency_threshold == CONSISTENCY_THRESHOLD
-    assert MinerBucket.SUBACCOUNT_CHALLENGE.sharpe_threshold is None
+    assert PRO_CHALLENGE_BUCKET.calmar_threshold == CALMAR_THRESHOLD
+    assert PRO_CHALLENGE_BUCKET.daily_consistency_threshold == CONSISTENCY_THRESHOLD
+    assert MinerBucket.SUBACCOUNT_CHALLENGE.calmar_threshold is None
     assert MinerBucket.SUBACCOUNT_CHALLENGE.daily_consistency_threshold is None
 
 
 def test_check_promotion_pro_meets_criteria():
-    state = _promotable_state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+    state = _promotable_state(PRO_CHALLENGE_BUCKET)
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
 
 
-def test_check_promotion_pro_blocked_by_sharpe():
-    state = _promotable_state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
-    state.pro_stats.sharpe = SHARPE_THRESHOLD - 0.01
+def test_check_promotion_pro_blocked_by_calmar():
+    state = _promotable_state(PRO_CHALLENGE_BUCKET)
+    state.pro_stats.calmar = CALMAR_THRESHOLD - 0.01
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
 def test_check_promotion_pro_blocked_by_consistency():
-    state = _promotable_state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+    state = _promotable_state(PRO_CHALLENGE_BUCKET)
     state.pro_stats.daily_consistency = CONSISTENCY_THRESHOLD + 0.01
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
 def test_check_promotion_pro_blocked_by_default_stats():
     """A pro miner with no computed stats yet cannot promote."""
-    state = _promotable_state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+    state = _promotable_state(PRO_CHALLENGE_BUCKET)
     state.pro_stats = ProStats()
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
+def test_check_promotion_pro_return_target_is_six_percent():
+    """The 6% target only blocks promotion - it never demotes, and pro buckets have no time limit."""
+    state = _promotable_state(PRO_CHALLENGE_BUCKET)
+    returns_threshold = ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD[MinerAssetClass.FOREX]
+    assert returns_threshold == 0.06
+
+    state.drawdown = DrawdownStats(current_equity=1.061, current_balance=1.061)
+    assert ChallengePeriodManager._check_promotion(state, returns_threshold, NOW_MS) is True
+
+    state.drawdown = DrawdownStats(current_equity=1.059, current_balance=1.059)
+    assert ChallengePeriodManager._check_promotion(state, returns_threshold, NOW_MS) is False
+    assert PRO_CHALLENGE_BUCKET.max_time_ms is None
+
+
 def test_check_promotion_non_pro_ignores_pro_stats():
     state = _promotable_state(MinerBucket.SUBACCOUNT_CHALLENGE)
-    state.pro_stats = ProStats(sharpe=-100.0, daily_consistency=1.0)
+    state.pro_stats = ProStats(calmar=-100.0, daily_consistency=1.0)
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
 
 
 def test_pro_stats_round_trip_through_checkpoint():
-    state = _state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
-    state.pro_stats = ProStats(sharpe=1.5, daily_consistency=0.25)
+    state = _state(PRO_CHALLENGE_BUCKET)
+    state.pro_stats = ProStats(calmar=1.5, daily_consistency=0.25, max_drawdown=0.94)
     restored = MinerBucketState.from_checkpoint_dict("test_hk", state.to_checkpoint_dict())
-    assert restored.pro_stats.sharpe == 1.5
+    assert restored.pro_stats.calmar == 1.5
     assert restored.pro_stats.daily_consistency == 0.25
+    assert restored.pro_stats.max_drawdown == 0.94
 
 
 def test_pro_stats_defaults_when_missing_from_checkpoint():
-    state = _state(MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
+    state = _state(PRO_CHALLENGE_BUCKET)
     data = state.to_checkpoint_dict()
     del data["pro_stats"]
     restored = MinerBucketState.from_checkpoint_dict("test_hk", data)

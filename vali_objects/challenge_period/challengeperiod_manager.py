@@ -99,8 +99,9 @@ class DrawdownStats:
 
 @dataclass
 class ProStats:
-    sharpe: float = 0.0
+    calmar: float = 0.0
     daily_consistency: float = 1.0
+    max_drawdown: float = 1.0  # Monotonic all-time worst drawdown, in mdd ratio form
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -189,7 +190,8 @@ class MinerBucketState:
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
             f"static_dd={dd.static_drawdown_pct:.2f}% static_eod_dd={dd.static_eod_drawdown_pct:.2f}% "
             f"eod_hwm={dd.eod_hwm:.4f} | "
-            f"sharpe={self.pro_stats.sharpe:.2f} consistency={self.pro_stats.daily_consistency:.2f}"
+            f"calmar={self.pro_stats.calmar:.2f} consistency={self.pro_stats.daily_consistency:.2f} "
+            f"pro_mdd={self.pro_stats.max_drawdown:.4f}"
         )
 
     @property
@@ -354,7 +356,7 @@ class ChallengePeriodManager(CacheController):
         positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
         self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
         # TODO: should this only recompute when perf ledgers are rebuilt, in case of retroactive ledger changes? If retroactive changes can't happen, reduce this to once a day.
-        self._refresh_pro_stats(evaluation_hotkeys, ledgers, asset_selections)
+        self._refresh_pro_stats(evaluation_hotkeys, ledgers)
         self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
 
         eliminations: dict[str, EliminationReason] = {}
@@ -573,8 +575,8 @@ class ChallengePeriodManager(CacheController):
         if state.current_bucket.next_bucket is None:
             return False
 
-        sharpe_threshold = state.current_bucket.sharpe_threshold
-        if sharpe_threshold is not None and state.pro_stats.sharpe < sharpe_threshold:
+        calmar_threshold = state.current_bucket.calmar_threshold
+        if calmar_threshold is not None and state.pro_stats.calmar < calmar_threshold:
             return False
 
         consistency_threshold = state.current_bucket.daily_consistency_threshold
@@ -678,6 +680,8 @@ class ChallengePeriodManager(CacheController):
         self._debt_ledger_client.delete_debt_ledger(hotkey)
         # Reset drawdown cache
         self._reset_drawdown_stats_cache(hotkey)
+        # Reset pro stats so the ratcheted drawdown does not carry into the new account
+        self.miner_states[hotkey].pro_stats = ProStats()
 
     def demote_hotkeys(self, demotions: dict[str, MinerBucket], current_time_ms) -> bool:
         """Demote miners to the given target bucket."""
@@ -834,12 +838,7 @@ class ChallengePeriodManager(CacheController):
                 existing.eod_hwm = max(existing.eod_hwm, last_eod_equity, eod_hwm)
                 existing.last_eod_checked_ms = last_eod_checked_ms
 
-    def _refresh_pro_stats(
-        self,
-        hotkeys: list[str],
-        ledgers: dict[str, PerfLedger],
-        asset_selections: dict[str, MinerAssetClass]
-    ) -> None:
+    def _refresh_pro_stats(self, hotkeys: list[str], ledgers: dict[str, PerfLedger]) -> None:
         for hotkey in hotkeys:
             state = self.miner_states[hotkey]
             if not state.current_bucket.is_pro_track:
@@ -850,16 +849,14 @@ class ChallengePeriodManager(CacheController):
                 logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping pro stats")
                 continue
 
-            _asset = asset_selections.get(hotkey)
-            if _asset is None:
-                logger.warning(f"[CHALLENGE] {hotkey} no asset selection, skipping pro stats")
-                continue
-
-            days_in_year = ValiConfig.MINER_ASSET_CLASS_DAYS_IN_YEAR[MinerAssetClass(_asset)]
+            # The perf ledger only retains a rolling window, so ratchet the worst drawdown to keep
+            # the calmar denominator all-time.
+            max_drawdown = min(state.pro_stats.max_drawdown, ledger.mdd)
             log_returns = LedgerUtils.daily_return_log(ledger)
             state.pro_stats = ProStats(
-                sharpe=Metrics.sharpe(log_returns, days_in_year=days_in_year),
-                daily_consistency=Metrics.daily_consistency(log_returns),
+                calmar=Metrics.all_time_calmar(ledger.prev_portfolio_ret - 1.0, max_drawdown),
+                daily_consistency=Metrics.return_consistency(log_returns),
+                max_drawdown=max_drawdown,
             )
 
     def _refresh_rank_cache(
@@ -1199,7 +1196,7 @@ class ChallengePeriodManager(CacheController):
 
         return {
             **state.pro_stats.to_dict(),
-            "sharpe_threshold": state.current_bucket.sharpe_threshold,
+            "calmar_threshold": state.current_bucket.calmar_threshold,
             "daily_consistency_threshold": state.current_bucket.daily_consistency_threshold,
         }
 
