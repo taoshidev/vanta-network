@@ -269,19 +269,35 @@ class Metrics:
         return float(excess_return / max(volatility, min_std_dev))
 
     @staticmethod
-    def daily_consistency(log_returns: list[float]) -> float:
+    def return_consistency(log_returns: list[float]) -> float:
         """
+        Share of the account's total return contributed by its single best day, after capping
+        each day's profit at PRO_DAILY_RETURN_CAP. Losing days count in full.
+
         Args:
             log_returns: list of daily log returns from the miner
         """
-        positive_returns = [log_return for log_return in log_returns if log_return > 0]
-        total_positive_return = sum(positive_returns)
+        cap = ValiConfig.PRO_DAILY_RETURN_CAP
+        capped = [min(math.exp(log_return) - 1, cap) for log_return in log_returns]
+        capped_total = sum(capped)
 
         # No profit to distribute across days - fail closed
-        if total_positive_return <= 0:
+        if not capped or capped_total <= 0:
             return 1.0
 
-        return float(max(positive_returns) / total_positive_return)
+        return float(max(capped) / capped_total)
+
+    @staticmethod
+    def all_time_calmar(total_return: float, max_drawdown: float) -> float:
+        """
+        Realized return since inception divided by the max drawdown over the same period.
+
+        Args:
+            total_return: realized return since inception as a decimal (0.06 == 6%)
+            max_drawdown: drawdown in mdd ratio form, where 0.95 is a 5% drawdown
+        """
+        drawdown = max(1.0 - max_drawdown, ValiConfig.CALMAR_DRAWDOWN_MINIMUM)
+        return float(total_return / drawdown)
 
     @staticmethod
     def omega(log_returns: list[float], bypass_confidence: bool = False, weighting: bool = False, min_days: int = None, **kwargs) -> float:
