@@ -356,7 +356,7 @@ class ChallengePeriodManager(CacheController):
         positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
         self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
         # TODO: should this only recompute when perf ledgers are rebuilt, in case of retroactive ledger changes? If retroactive changes can't happen, reduce this to once a day.
-        self._refresh_pro_stats(evaluation_hotkeys, ledgers)
+        self._refresh_pro_stats(evaluation_hotkeys, ledgers, accounts)
         self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
 
         eliminations: dict[str, EliminationReason] = {}
@@ -838,7 +838,8 @@ class ChallengePeriodManager(CacheController):
                 existing.eod_hwm = max(existing.eod_hwm, last_eod_equity, eod_hwm)
                 existing.last_eod_checked_ms = last_eod_checked_ms
 
-    def _refresh_pro_stats(self, hotkeys: list[str], ledgers: dict[str, PerfLedger]) -> None:
+    def _refresh_pro_stats(self, hotkeys: list[str], ledgers: dict[str, PerfLedger],
+                           accounts: dict[str, MinerAccount]) -> None:
         for hotkey in hotkeys:
             state = self.miner_states[hotkey]
             if not state.current_bucket.is_pro_track:
@@ -849,12 +850,18 @@ class ChallengePeriodManager(CacheController):
                 logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping pro stats")
                 continue
 
+            account = accounts.get(hotkey)
+            if account is None or account.account_size <= 0:
+                logger.warning(f"[CHALLENGE] {hotkey} invalid account, skipping pro stats")
+                continue
+
             # The perf ledger only retains a rolling window, so ratchet the worst drawdown to keep
             # the calmar denominator all-time.
             max_drawdown = min(state.pro_stats.max_drawdown, ledger.mdd)
             log_returns = LedgerUtils.daily_return_log(ledger)
             state.pro_stats = ProStats(
-                calmar=Metrics.all_time_calmar(ledger.prev_portfolio_ret - 1.0, max_drawdown),
+                calmar=Metrics.all_time_calmar(
+                    LedgerUtils.realized_return(ledger, account.account_size), max_drawdown),
                 daily_consistency=Metrics.return_consistency(log_returns),
                 max_drawdown=max_drawdown,
             )

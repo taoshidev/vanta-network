@@ -932,8 +932,8 @@ class PenaltyLedgerManager:
                             )
                             if penalty_config.input_type == PenaltyInputType.LEDGER:
                                 penalty_value = penalty_config.function(temp_ledger)
-                            elif miner_max_drawdown is not None:
-                                penalty_value = penalty_config.function(temp_ledger, miner_max_drawdown)
+                            elif miner_max_drawdown is not None and miner_account_size:
+                                penalty_value = penalty_config.function(temp_ledger, miner_max_drawdown, miner_account_size)
 
                         elif penalty_config.input_type == PenaltyInputType.POSITIONS:
                             penalty_value = penalty_config.function(miner_positions_at_checkpoint)
