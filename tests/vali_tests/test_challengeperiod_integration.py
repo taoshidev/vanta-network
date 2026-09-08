@@ -904,6 +904,7 @@ class TestChallengePeriodManagerLogic(TestBase):
             mgr.set_miner_bucket(pro_hk, MinerBucket.PRO_CHALLENGE_DIRECT, now)
             mgr.set_miner_bucket(standard_hk, MinerBucket.SUBACCOUNT_CHALLENGE, now)
             mgr.miner_states[pro_hk].pro_stats = ProStats(calmar=1.25, daily_consistency=0.3, max_drawdown=0.94)
+            mgr._asset_selection_client.get_asset_selection.return_value = MinerAssetClass.CRYPTO
 
             stats = mgr.get_pro_stats(pro_hk)
             self.assertEqual(stats["calmar"], 1.25)
@@ -911,7 +912,51 @@ class TestChallengePeriodManagerLogic(TestBase):
             self.assertEqual(stats["max_drawdown"], 0.94)
             self.assertEqual(stats["calmar_threshold"], ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD)
             self.assertEqual(stats["daily_consistency_threshold"], ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD)
+            self.assertEqual(stats["returns_threshold"], ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD[MinerAssetClass.CRYPTO])
             self.assertIsNone(mgr.get_pro_stats(standard_hk))
+
+    def test_get_pro_stats_reports_soft_breach(self):
+        """Soft breach is flagged only in the buckets that withhold the week's payout."""
+        now = TimeUtil.now_in_millis()
+        direct_hk, from_standard_hk = "hk_pro_direct", "hk_pro_from_standard"
+        def breaching():
+            return ProStats(
+                calmar=ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD - 0.01,
+                daily_consistency=0.1,
+                max_drawdown=0.94,
+            )
+
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(direct_hk, MinerBucket.PRO_CHALLENGE_DIRECT, now)
+            mgr.set_miner_bucket(from_standard_hk, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, now)
+            mgr.miner_states[direct_hk].pro_stats = breaching()
+            mgr.miner_states[from_standard_hk].pro_stats = breaching()
+
+            direct_stats = mgr.get_pro_stats(direct_hk)
+            self.assertTrue(direct_stats["soft_breach_applies"])
+            self.assertTrue(direct_stats["soft_breach"])
+
+            # Already passed the standard challenge, so a breach does not withhold the payout
+            from_standard_stats = mgr.get_pro_stats(from_standard_hk)
+            self.assertFalse(from_standard_stats["soft_breach_applies"])
+            self.assertFalse(from_standard_stats["soft_breach"])
+
+            # Consistency above its ceiling breaches on its own
+            mgr.miner_states[direct_hk].pro_stats = ProStats(
+                calmar=ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD,
+                daily_consistency=ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD + 0.01,
+                max_drawdown=0.94,
+            )
+            self.assertTrue(mgr.get_pro_stats(direct_hk)["soft_breach"])
+
+            # Both criteria met
+            mgr.miner_states[direct_hk].pro_stats = ProStats(
+                calmar=ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD,
+                daily_consistency=ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD,
+                max_drawdown=0.94,
+            )
+            self.assertFalse(mgr.get_pro_stats(direct_hk)["soft_breach"])
 
     def test_get_drawdown_stats_includes_static_fields(self):
         """Dashboard payload carries the static percentages and thresholds."""

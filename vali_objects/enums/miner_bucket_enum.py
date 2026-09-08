@@ -109,6 +109,14 @@ class MinerBucket(Enum):
         """Maximum return consistency allowed for promotion. None for buckets with no consistency requirement."""
         return ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD if self.is_pro else None
 
+    def returns_threshold(self, asset_class) -> float:
+        """Return required for promotion out of this bucket, by the miner's asset class."""
+        if self.is_pro:
+            return ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD.get(
+                asset_class, ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT)
+        return ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD.get(
+            asset_class, ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT)
+
     @property
     def soft_breach_applies(self) -> bool:
         """True for buckets where a pro-rule breach withholds the week's payout.
