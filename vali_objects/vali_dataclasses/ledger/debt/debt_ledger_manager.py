@@ -851,11 +851,20 @@ class DebtLedgerManager():
 
                 # Get debt ledgers for all active subaccounts
                 _earning_statuses = {b.value for b in MinerBucket if b.is_subaccount_earning}
+                _scaled_statuses = {b.value for b in MinerBucket if b.payout_scale_applies}
                 subaccount_ledgers = []
+                # A miner completing the pro challenge after passing the standard challenge trades
+                # the larger pro account but is paid on the size of their original standard account.
+                subaccount_payout_scale = {}
                 for subaccount in active_subaccounts:
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
                     if not synthetic_hotkey:
                         continue
+
+                    standard_size = subaccount.get('standard_account_size')
+                    pro_size = subaccount.get('pro_account_size')
+                    if standard_size and pro_size:
+                        subaccount_payout_scale[synthetic_hotkey] = standard_size / pro_size
 
                     ledger = self.debt_ledgers.get(synthetic_hotkey)
                     if ledger and ledger.checkpoints:
@@ -941,7 +950,9 @@ class DebtLedgerManager():
                                 # not carried into the next week - it is recomputable from
                                 # weekly_penalty if escrow ever pays it back.
                                 week_penalty = subaccount_week_penalty[synthetic_hotkey].get(week_start_ms, 1.0)
-                                agg_realized_pnl += delta * week_penalty
+                                payout_scale = (subaccount_payout_scale.get(synthetic_hotkey, 1.0)
+                                                if checkpoint.challenge_period_status in _scaled_statuses else 1.0)
+                                agg_realized_pnl += delta * week_penalty * payout_scale
 
                     if not checkpoints_at_time:
                         continue

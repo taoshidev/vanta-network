@@ -205,10 +205,10 @@ class MinerBucketState:
 
     @property
     def _threshold_time_ms(self) -> int | None:
-        """For SUBACCOUNT_FUNDED, returns the SUBACCOUNT_CHALLENGE entry's start time
+        """For the funded-rule buckets, returns the SUBACCOUNT_CHALLENGE entry's start time
         so versioned thresholds (V0/V1) are selected based on when the miner registered,
         not when they were promoted. For all other buckets, returns current bucket start."""
-        if self.current_bucket == MinerBucket.SUBACCOUNT_FUNDED:
+        if self.current_bucket in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION):
             challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
             return challenge_entry.start_time_ms if challenge_entry else None
         return self.current_bucket_start_ms
@@ -218,7 +218,7 @@ class MinerBucketState:
         if self.current_bucket == MinerBucket.ELIMINATED:
             if len(self.entries) >= 2:
                 prev_entry = self.entries[-2]
-                if prev_entry.bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                if prev_entry.bucket in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION):
                     challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
                     prev_threshold_time_ms = challenge_entry.start_time_ms if challenge_entry else None
                 else:
@@ -238,7 +238,7 @@ class MinerBucketState:
         if self.current_bucket == MinerBucket.ELIMINATED:
             if len(self.entries) >= 2:
                 prev_entry = self.entries[-2]
-                if prev_entry.bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                if prev_entry.bucket in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION):
                     challenge_entry = next((e for e in self.entries if e.bucket == MinerBucket.SUBACCOUNT_CHALLENGE), None)
                     prev_threshold_time_ms = challenge_entry.start_time_ms if challenge_entry else None
                 else:
@@ -352,8 +352,9 @@ class ChallengePeriodManager(CacheController):
         self._refresh_pro_stats(evaluation_hotkeys, ledgers, asset_selections)
         self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
 
-        eliminations = {}
-        promotions, demotions = [], []
+        eliminations: dict[str, EliminationReason] = {}
+        demotions: dict[str, MinerBucket] = {}
+        promotions = []
         for hotkey, state in self.miner_states.items():
             if hotkey not in evaluation_hotkeys:
                 if state.current_bucket == MinerBucket.UNKNOWN:
@@ -369,26 +370,26 @@ class ChallengePeriodManager(CacheController):
                 # both measured against starting balance
                 # Rule 1: Static drawdown — equity (including unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
-                    eliminations[hotkey] = reason
-                    continue
-
-                # Rule 2: Static EOD drawdown — equity at the 00:00 UTC check cannot be more than 5% below starting balance
-                if reason := self._check_static_eod_drawdown(state):
-                    eliminations[hotkey] = reason
+                    self._record_breach(hotkey, state, reason, eliminations, demotions)
                     continue
             else:
-                # Legacy rules: pre-effective subaccounts eliminate immediately; regular miners only after activation
+                # Trailing rules: subaccounts eliminate immediately; regular miners only after activation
                 # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
                 if reason := self._check_intraday_drawdown(state):
                     if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
-                        eliminations[hotkey] = reason
+                        self._record_breach(hotkey, state, reason, eliminations, demotions)
                     continue
 
                 # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
                 if reason := self._check_eod_drawdown(state):
                     if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
-                        eliminations[hotkey] = reason
+                        self._record_breach(hotkey, state, reason, eliminations, demotions)
                     continue
+
+            # Grace period expiry advances the miner to next_bucket regardless of performance
+            if self._check_grace_period_expiry(state, current_time_ms):
+                promotions.append(hotkey)
+                continue
 
             _asset = asset_selections.get(hotkey)
             if _asset is None:
@@ -397,10 +398,13 @@ class ChallengePeriodManager(CacheController):
             asset_class = MinerAssetClass(_asset)
 
             if self._check_demotion(state):
-                demotions.append(hotkey)
+                demotions[hotkey] = MinerBucket.PROBATION
                 continue
 
-            returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[asset_class]
+            if state.current_bucket.is_pro:
+                returns_threshold = ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD[asset_class]
+            else:
+                returns_threshold = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[asset_class]
             if hotkey == "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_87": # remove once eliminated or promoted
                 returns_threshold = 0.08
             if self._check_promotion(state, returns_threshold, current_time_ms):
@@ -449,43 +453,77 @@ class ChallengePeriodManager(CacheController):
         return None
 
     @staticmethod
-    def _check_intraday_drawdown(state: MinerBucketState) -> EliminationReason | None:
+    def _drawdown_reason(bucket: MinerBucket, rule: str) -> EliminationReason:
+        """Map (bucket, drawdown rule) to the elimination reason for that account tier."""
+        if bucket == MinerBucket.PRO_FUNDED:
+            tier = "PRO_FUNDED_PERIOD"
+        elif bucket.is_pro:
+            tier = "PRO_CHALLENGE_PERIOD"
+        elif bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
+            tier = "CHALLENGE_PERIOD"
+        else:
+            tier = "FUNDED_PERIOD"
+        return EliminationReason[f"FAILED_{tier}_{rule}_DRAWDOWN"]
+
+    @classmethod
+    def _check_intraday_drawdown(cls, state: MinerBucketState) -> EliminationReason | None:
         if state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct:
-            logger.warning(f"[CHALLENGE] ELIMINATION intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
-            if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
-                return EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN
-            else:
-                return EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
+            logger.warning(f"[CHALLENGE] BREACH intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
+            return cls._drawdown_reason(state.current_bucket, "INTRADAY")
         elif state.drawdown.intraday_drawdown_pct > state.intraday_drawdown_threshold_pct * 0.75:
             logger.info(f"[CHALLENGE] near intraday drawdown {state.intraday_drawdown_threshold_pct}%: {state}")
         return None
 
-    @staticmethod
-    def _check_eod_drawdown(state: MinerBucketState) -> EliminationReason | None:
+    @classmethod
+    def _check_eod_drawdown(cls, state: MinerBucketState) -> EliminationReason | None:
         if state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct:
-            logger.warning(f"[CHALLENGE] ELIMINATION EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
-            if state.current_bucket in (MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE):
-                return EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN
-            else:
-                return EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN
+            logger.warning(f"[CHALLENGE] BREACH EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
+            return cls._drawdown_reason(state.current_bucket, "EOD")
 
         if 1 - state.drawdown.current_equity / state.drawdown.eod_hwm > state.eod_drawdown_threshold:
             logger.info(f"[CHALLENGE] near trailing EOD with current equity {state.eod_drawdown_threshold_pct}%: {state}")
 
         return None
 
-    @staticmethod
-    def _check_static_drawdown(state: MinerBucketState) -> EliminationReason | None:
-        threshold_pct = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
+    @classmethod
+    def _check_static_drawdown(cls, state: MinerBucketState) -> EliminationReason | None:
+        bucket = state.current_bucket
+        threshold = ValiConfig.PRO_STATIC_DRAWDOWN_THRESHOLD if bucket.is_pro else ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD
+        threshold_pct = threshold * 100
         if state.drawdown.static_drawdown_pct > threshold_pct:
-            logger.warning(f"[CHALLENGE] ELIMINATION static drawdown {threshold_pct}%: {state}")
-            if state.current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE:
-                return EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN
-            else:
-                return EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN
+            logger.warning(f"[CHALLENGE] BREACH static drawdown {threshold_pct}%: {state}")
+            return cls._drawdown_reason(bucket, "STATIC")
         elif state.drawdown.static_drawdown_pct > threshold_pct * 0.75:
             logger.info(f"[CHALLENGE] near static drawdown {threshold_pct}%: {state}")
         return None
+
+    @staticmethod
+    def _record_breach(
+        hotkey: str,
+        state: MinerBucketState,
+        reason: EliminationReason,
+        eliminations: dict[str, EliminationReason],
+        demotions: dict[str, MinerBucket],
+    ) -> None:
+        """Route a drawdown breach. Pro challenge buckets fall back to the standard track they
+        came from; every other bucket is eliminated."""
+        demotion_bucket = state.current_bucket.demotion_bucket
+        if demotion_bucket is not None:
+            logger.info(f"[CHALLENGE] breach {reason.value} demoting to {demotion_bucket.value}: {state}")
+            demotions[hotkey] = demotion_bucket
+        else:
+            eliminations[hotkey] = reason
+
+    @staticmethod
+    def _check_grace_period_expiry(state: MinerBucketState, current_time_ms: int) -> bool:
+        """True once a miner has sat in a grace-period bucket past its window."""
+        grace_period_ms = state.current_bucket.grace_period_ms
+        if grace_period_ms is None:
+            return False
+        expired = current_time_ms - state.current_bucket_start_ms > grace_period_ms
+        if expired:
+            logger.info(f"[CHALLENGE] grace period expired: {state}")
+        return expired
 
     @staticmethod
     def _check_demotion(state: MinerBucketState) -> bool:
@@ -504,7 +542,7 @@ class ChallengePeriodManager(CacheController):
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
                 return False
 
-        if state.current_bucket == MinerBucket.SUBACCOUNT_PRO_CHALLENGE:
+        if state.current_bucket.is_pro:
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.PRO_CHALLENGE_MINIMUM_MS:
                 return False
 
@@ -581,16 +619,48 @@ class ChallengePeriodManager(CacheController):
 
         return state_changed
 
-    def demote_hotkeys(self, hotkeys: list[str], current_time_ms) -> bool:
-        """Demote miners to probation."""
-        if hotkeys:
-            logger.info(f"[CHALLENGE] demoting {len(hotkeys)} miners to probation")
+    def _switch_account(self, hotkey: str, target_bucket: MinerBucket, current_time_ms: int) -> None:
+        """Wind down the account a miner is leaving. Run whenever a bucket change also changes
+        the account size, so the new account's performance is tracked from scratch."""
+        # Point the subaccount at the size the target bucket trades before resetting the account
+        if is_synthetic_hotkey(hotkey):
+            success, message = self._entity_client.apply_bucket_account_size(hotkey, target_bucket)
+            if not success:
+                logger.warning(f"[CHALLENGE] {hotkey} account size not updated for {target_bucket.value}: {message}")
+
+        # Close all existing positions
+        self._position_client.close_all_positions(
+            hotkey=hotkey,
+            close_time_ms=current_time_ms,
+            order_source=OrderSource.SUBACCOUNT_PROMOTION
+        )
+        # Reset account fields (PnL, capital used, borrowed amount, interest)
+        self._miner_account_client.reset_account(hotkey, target_bucket)
+        # Archive all positions (disk move + memory removal)
+        self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
+        # Cancel all pending limit orders
+        self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
+        # Wipe perf ledgers so the new account's performance is tracked from scratch
+        self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
+        # Delete debt ledger to match new perf ledger checkpoints
+        self._debt_ledger_client.delete_debt_ledger(hotkey)
+        # Reset drawdown cache
+        self._reset_drawdown_stats_cache(hotkey)
+
+    def demote_hotkeys(self, demotions: dict[str, MinerBucket], current_time_ms) -> bool:
+        """Demote miners to the given target bucket."""
+        if demotions:
+            logger.info(f"[CHALLENGE] demoting {len(demotions)} miners")
 
         state_changed = False
-        with self._buckets_lock:
-            for hotkey in hotkeys:
-                logger.info(f"[CHALLENGE] demoting: {self.miner_states[hotkey]}")
-                state_changed |= self.miner_states[hotkey].add_bucket_entry(MinerBucket.PROBATION, current_time_ms)
+        for hotkey, target_bucket in demotions.items():
+            logger.info(f"[CHALLENGE] demoting to {target_bucket.value}: {self.miner_states[hotkey]}")
+
+            if target_bucket.switches_account:
+                self._switch_account(hotkey, target_bucket, current_time_ms)
+
+            with self._buckets_lock:
+                state_changed |= self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
         return state_changed
 
     def promote_hotkeys(self, hotkeys: list[str], current_time_ms: int) -> bool:
@@ -609,30 +679,34 @@ class ChallengePeriodManager(CacheController):
 
             logger.info(f"[CHALLENGE] promoting to {target_bucket.value}: {state}")
 
-            if target_bucket == MinerBucket.SUBACCOUNT_FUNDED:
-                # Close all existing positions
-                self._position_client.close_all_positions(
-                    hotkey=hotkey,
-                    close_time_ms=current_time_ms,
-                    order_source=OrderSource.SUBACCOUNT_PROMOTION
-                )
-                # Reset account fields (PnL, capital used, borrowed amount, interest)
-                self._miner_account_client.reset_account(hotkey, target_bucket)
-                # Archive all positions (disk move + memory removal)
-                self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
-                # Cancel all pending limit orders
-                self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
-                # Wipe perf ledgers so funded-period performance is tracked from scratch
-                self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
-                # Delete debt ledger to match new perf ledger checkpoints
-                self._debt_ledger_client.delete_debt_ledger(hotkey)
-                # Reset drawdown cache
-                self._reset_drawdown_stats_cache(hotkey)
+            if target_bucket.switches_account:
+                self._switch_account(hotkey, target_bucket, current_time_ms)
 
             with self._buckets_lock:
                 state_changed |= self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
 
         return state_changed
+
+    def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> tuple[bool, str]:
+        """Move a miner into an arbitrary bucket. Runs the same account switch as an organic
+        promotion when the target changes the account size."""
+        state = self.miner_states.get(hotkey)
+        if state is None:
+            return False, f"{hotkey} not found in challenge period manager"
+        if state.current_bucket == bucket:
+            return False, f"{hotkey} is already in {bucket.value}"
+
+        logger.info(f"[CHALLENGE] admin moving to {bucket.value}: {state}")
+
+        if bucket.switches_account:
+            self._switch_account(hotkey, bucket, current_time_ms)
+
+        with self._buckets_lock:
+            state.add_bucket_entry(bucket, current_time_ms)
+
+        self._sync_buckets_to_accounts(hotkeys=[hotkey])
+        self._save_to_disk()
+        return True, f"{hotkey} moved to {bucket.value}"
 
     def revert_elimination(self, hotkey: str) -> bool:
         miner_state = self.miner_states.get(hotkey)
@@ -700,11 +774,11 @@ class ChallengePeriodManager(CacheController):
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
             current_day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
             existing = self.miner_states[hotkey].drawdown
+            existing.current_equity = current_equity
+            existing.current_balance = current_balance
 
-            # EOD fields are locked in for today (snapshot already captured); only update live equity
+            # EOD fields are locked in for today once the snapshot has been captured
             if existing.last_eod_checked_ms == current_day_open_ms:
-                existing.current_equity = current_equity
-                existing.current_balance = current_balance
                 continue
 
             # Use daily open snapshot from miner account as default and fallback to perf ledgers
@@ -736,7 +810,7 @@ class ChallengePeriodManager(CacheController):
     ) -> None:
         for hotkey in hotkeys:
             state = self.miner_states[hotkey]
-            if not state.current_bucket.is_pro:
+            if not state.current_bucket.is_pro_track:
                 continue
 
             ledger = ledgers.get(hotkey)
@@ -873,7 +947,7 @@ class ChallengePeriodManager(CacheController):
         for hotkey, state in self.miner_states.items():
             if hotkey not in hotkeys:
                 bucket = state.current_bucket
-                if bucket in [MinerBucket.ENTITY, MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.ELIMINATED]:
+                if bucket.is_subaccount or bucket in (MinerBucket.ENTITY, MinerBucket.ELIMINATED):
                     continue
                 hotkeys_prune.append(hotkey)
                 logger.warning(f"[CHALLENGE] {hotkey} pruned from {bucket.value}: no longer in metagraph")
@@ -1088,7 +1162,7 @@ class ChallengePeriodManager(CacheController):
         Returns None if the hotkey is not a pro account or has not been evaluated yet.
         """
         state = self.miner_states.get(synthetic_hotkey)
-        if not state or not state.current_bucket.is_pro:
+        if not state or not state.current_bucket.is_pro_track:
             return None
 
         return {

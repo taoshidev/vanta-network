@@ -8,6 +8,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.limit_order.order_trigger import (
@@ -63,6 +64,12 @@ class LimitOrderManager(CacheController):
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
             connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(
+            running_unit_tests=running_unit_tests,
             connection_mode=connection_mode
         )
 
@@ -313,6 +320,22 @@ class LimitOrderManager(CacheController):
                             return order.to_python_dict()
         return None
 
+    def _reject_if_transitioning_to_pro(self, miner_hotkey, order, open_position):
+        """Block orders that would open or increase exposure while a miner winds down their
+        standard account before starting a pro account. Brackets only ever reduce, so they pass."""
+        if order.execution_type == ExecutionType.BRACKET:
+            return
+        if order.order_type == OrderType.FLAT:
+            return
+        if open_position is not None and order.order_type != open_position.position_type:
+            return
+        account = self._miner_account_client.get_account(miner_hotkey)
+        if account is not None and account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
+            raise SignalException(
+                "Your account is transitioning to a Pro Account. You cannot open new positions or increase "
+                "existing ones - close your open positions to begin trading your Pro Account."
+            )
+
     def process_limit_order(self, miner_hotkey, order, is_edit=False):
         """
         RPC method to process a limit order or bracket order.
@@ -368,6 +391,8 @@ class LimitOrderManager(CacheController):
 
             # Get position for validation
             open_position = self._get_open_position(miner_hotkey, order)
+
+            self._reject_if_transitioning_to_pro(miner_hotkey, order, open_position)
 
             # Validate order using shared validation logic (business rules)
             if order.execution_type == ExecutionType.BRACKET:

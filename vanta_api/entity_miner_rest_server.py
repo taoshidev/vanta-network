@@ -985,9 +985,10 @@ class EntityMinerRestServer(MinerRestServer):
                 drawdown_criteria = request_data.get("drawdown_criteria", "trailing")
                 if drawdown_criteria not in ("trailing", "static"):
                     return jsonify({'status': 'error', 'message': 'drawdown_criteria must be "trailing" or "static"'}), 400
+                # Pro accounts are granted by admin promotion, never at creation
                 account_type = request_data.get("account_type", "standard")
-                if account_type not in ("standard", "pro"):
-                    return jsonify({'status': 'error', 'message': 'account_type must be "standard" or "pro"'}), 400
+                if account_type != "standard":
+                    return jsonify({'status': 'error', 'message': 'account_type must be "standard"'}), 400
 
             raw = request_data.get("collateral_exempt", request_data.get("admin", False))
             if not isinstance(raw, bool):

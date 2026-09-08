@@ -25,6 +25,8 @@ Usage:
 """
 from typing import Optional, Tuple, Dict, List
 
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+
 from template.protocol import SubaccountRegistration, EntityEndpointUpdate
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -171,6 +173,19 @@ class EntityClient(RPCClientBase):
             SubaccountInfo dict if found, None otherwise
         """
         return self._server.get_subaccount_info_for_synthetic_rpc(synthetic_hotkey)
+
+    def apply_bucket_account_size(
+        self,
+        synthetic_hotkey: str,
+        target_bucket: MinerBucket,
+        pro_account_size: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """Point a subaccount at the account size its target bucket trades."""
+        return self._server.apply_bucket_account_size_rpc(synthetic_hotkey, target_bucket, pro_account_size)
+
+    def get_payout_scale(self, synthetic_hotkey: str) -> float:
+        """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
+        return self._server.get_payout_scale_rpc(synthetic_hotkey)
 
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
         """

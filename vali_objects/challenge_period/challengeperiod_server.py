@@ -132,6 +132,9 @@ class ChallengePeriodServer(RPCServerBase):
     ) -> bool:
         return self._manager.set_miner_bucket(hotkey, bucket, start_time_ms, drawdown_criteria=drawdown_criteria)
 
+    def admin_set_bucket_rpc(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> Tuple[bool, str]:
+        return self._manager.admin_set_bucket(hotkey, bucket, current_time_ms)
+
     def update_drawdown_criteria_rpc(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
         return self._manager.update_drawdown_criteria(hotkey, criteria)
 
