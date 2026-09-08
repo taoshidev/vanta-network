@@ -78,12 +78,22 @@ class TestLedgerPenalty(TestBase):
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l3_ledger), (True, 11))
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l4_ledger), (True, 11))
 
-    def test_min_sharpe_penalty(self):
+    def test_all_time_calmar_penalty(self):
+        # 7% return against a 4% all-time drawdown clears 1.75; the same return against 5% does not
         passing = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
-        failing = generate_ledger(gain=0.001, loss=-0.005, mdd=0.99)
+        passing.cps[-1].prev_portfolio_ret = 1.07
+        failing = copy.deepcopy(passing)
 
-        self.assertEqual(PositionPenalties.min_sharpe_penalty(passing, 365), 1.0)
-        self.assertEqual(PositionPenalties.min_sharpe_penalty(failing, 365), 0.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(passing, 0.96), 1.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(failing, 0.95), 0.0)
+
+    def test_all_time_calmar_penalty_uses_ratcheted_drawdown(self):
+        # The ledger's own mdd is shallow, but the passed-in all-time value governs
+        ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.999)
+        ledger.cps[-1].prev_portfolio_ret = 1.07
+
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.999), 1.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.90), 0.0)
 
     def test_daily_consistency_penalty(self):
         # Evenly distributed gains pass; a flat ledger has no profit and fails closed
@@ -93,11 +103,20 @@ class TestLedgerPenalty(TestBase):
         self.assertEqual(PositionPenalties.daily_consistency_penalty(passing), 1.0)
         self.assertEqual(PositionPenalties.daily_consistency_penalty(no_profit), 0.0)
 
+    def test_daily_consistency_penalty_caps_the_best_day(self):
+        # Two days: one huge, one small. Capping the big day at 1.5% still leaves it
+        # over 20% of a thin total, so the week is withheld.
+        spiky = generate_ledger(gain=0.0, loss=0.0, mdd=0.99, nterms=4)
+        spiky.cps[0].gain = 0.09
+        spiky.cps[2].gain = 0.005
+
+        self.assertEqual(PositionPenalties.daily_consistency_penalty(spiky), 0.0)
+
     def test_weekly_penalties_configured_for_pro_buckets_only(self):
-        for name in ('min_sharpe', 'daily_consistency'):
+        for name in ('all_time_calmar', 'daily_consistency'):
             config = PenaltyLedgerManager.PENALTIES_CONFIG[name]
             self.assertEqual(config.application_scope, PenaltyApplicationScope.WEEKLY)
-            self.assertEqual(set(config.buckets), {b for b in MinerBucket if b.is_pro})
+            self.assertEqual(set(config.buckets), {b for b in MinerBucket if b.soft_breach_applies})
 
         # Pre-existing penalties keep per-checkpoint scope and apply to every bucket
         for name in ('drawdown_threshold', 'risk_profile', 'min_collateral'):
@@ -111,17 +130,17 @@ class TestLedgerPenalty(TestBase):
         ledger.add_checkpoint(
             PenaltyCheckpoint(
                 last_processed_ms=target_cp_duration_ms,
-                min_sharpe_penalty=0.0,
+                all_time_calmar_penalty=0.0,
                 daily_consistency_penalty=1.0,
                 total_penalty=0.5,
                 weekly_penalty=0.0,
-                challenge_period_status=MinerBucket.SUBACCOUNT_PRO_FUNDED.value,
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
             ),
             target_cp_duration_ms,
         )
 
         restored = PenaltyLedger.from_dict(ledger.to_dict()).checkpoints[0]
-        self.assertEqual(restored.min_sharpe_penalty, 0.0)
+        self.assertEqual(restored.all_time_calmar_penalty, 0.0)
         self.assertEqual(restored.daily_consistency_penalty, 1.0)
         self.assertEqual(restored.weekly_penalty, 0.0)
         # weekly_penalty is tracked separately so the withheld amount stays derivable

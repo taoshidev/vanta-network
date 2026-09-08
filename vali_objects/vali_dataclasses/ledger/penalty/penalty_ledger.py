@@ -17,7 +17,6 @@ import json
 import os
 import shutil
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
@@ -25,7 +24,6 @@ from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.position_management.position_utils.position_filter import PositionFilter
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey
@@ -37,7 +35,7 @@ FEB_1_MS = 1769932800000    # FEB 1 2026 timestamp
 
 class PenaltyInputType(Enum):
     LEDGER = auto()
-    LEDGER_ASSET_CLASS = auto()
+    LEDGER_MAX_DRAWDOWN = auto()
     POSITIONS = auto()
     PSEUDO_POSITIONS = auto()
     COLLATERAL = auto()
@@ -68,7 +66,7 @@ class PenaltyCheckpoint:
         risk_profile_penalty: float = 1.0,
         min_collateral_penalty: float = 1.0,
         risk_adjusted_performance_penalty: float = 1.0,
-        min_sharpe_penalty: float = 1.0,
+        all_time_calmar_penalty: float = 1.0,
         daily_consistency_penalty: float = 1.0,
         total_penalty: float = 1.0,
         weekly_penalty: float = 1.0,
@@ -79,7 +77,7 @@ class PenaltyCheckpoint:
         self.risk_profile_penalty = float(risk_profile_penalty)
         self.min_collateral_penalty = float(min_collateral_penalty)
         self.risk_adjusted_performance_penalty = float(risk_adjusted_performance_penalty)
-        self.min_sharpe_penalty = float(min_sharpe_penalty)
+        self.all_time_calmar_penalty = float(all_time_calmar_penalty)
         self.daily_consistency_penalty = float(daily_consistency_penalty)
         self.total_penalty = float(total_penalty)
         self.weekly_penalty = float(weekly_penalty)
@@ -245,7 +243,7 @@ class PenaltyLedger:
                 risk_profile_penalty=cp_dict.get('risk_profile_penalty', 1.0),
                 min_collateral_penalty=cp_dict.get('min_collateral_penalty', 1.0),
                 risk_adjusted_performance_penalty=cp_dict.get('risk_adjusted_performance_penalty', 1.0),
-                min_sharpe_penalty=cp_dict.get('min_sharpe_penalty', 1.0),
+                all_time_calmar_penalty=cp_dict.get('all_time_calmar_penalty', 1.0),
                 daily_consistency_penalty=cp_dict.get('daily_consistency_penalty', 1.0),
                 total_penalty=cp_dict.get('total_penalty', 1.0),
                 weekly_penalty=cp_dict.get('weekly_penalty', 1.0),
@@ -282,9 +280,9 @@ class PenaltyLedgerManager:
             function=PositionPenalties.risk_adjusted_performance_penalty,
             input_type=PenaltyInputType.LEDGER
         ),
-        'min_sharpe': PenaltyConfig(
-            function=PositionPenalties.min_sharpe_penalty,
-            input_type=PenaltyInputType.LEDGER_ASSET_CLASS,
+        'all_time_calmar': PenaltyConfig(
+            function=PositionPenalties.all_time_calmar_penalty,
+            input_type=PenaltyInputType.LEDGER_MAX_DRAWDOWN,
             buckets={b for b in MinerBucket if b.soft_breach_applies},
             application_scope=PenaltyApplicationScope.WEEKLY
         ),
@@ -306,7 +304,7 @@ class PenaltyLedgerManager:
         """
         Initialize PenaltyLedgerManager with managers for positions, performance ledgers, and collateral.
 
-        Note: Creates its own PerfLedgerClient and AssetSelectionClient internally (forward compatibility).
+        Note: Creates its own PerfLedgerClient internally (forward compatibility).
 
         Args:
             running_unit_tests: Whether this is being run in unit tests
@@ -330,7 +328,6 @@ class PenaltyLedgerManager:
         )
         self._challengeperiod_client = ChallengePeriodClient(running_unit_tests=running_unit_tests)
         self._perf_ledger_client = PerfLedgerClient(running_unit_tests=running_unit_tests)
-        self._asset_selection_client = AssetSelectionClient(running_unit_tests=running_unit_tests)
 
         # Storage for penalty checkpoints per miner (normal Python dict - managed within DebtLedgerServer process)
         self.penalty_ledgers: Dict[str, PenaltyLedger] = {}
@@ -816,13 +813,6 @@ class PenaltyLedgerManager:
             except Exception as e:
                 logger.warning(f"[PENALTY_LEDGER] Failed to fetch challenge period data via RPC: {e}")
 
-        # Asset selections drive days_in_year for LEDGER_ASSET_CLASS penalties. One RPC call for all miners.
-        asset_selections = {}
-        try:
-            asset_selections = self._asset_selection_client.get_asset_selections()
-        except Exception as e:
-            logger.warning(f"[PENALTY_LEDGER] Failed to fetch asset selections via RPC: {e}")
-
         logger.info(
             f"[PENALTY_LEDGER] Building penalty ledgers for {len(all_perf_ledgers)} hotkeys "
             f"({'delta update' if delta_update else 'full rebuild'})"
@@ -865,14 +855,9 @@ class PenaltyLedgerManager:
             if miner_account_size is None:
                 miner_account_size = 0
 
-            # Annualization factor for asset-class aware penalties. None when the miner has no selection.
-            miner_days_in_year = None
-            miner_asset_class = asset_selections.get(miner_hotkey)
-            if miner_asset_class is not None:
-                try:
-                    miner_days_in_year = ValiConfig.MINER_ASSET_CLASS_DAYS_IN_YEAR.get(MinerAssetClass(miner_asset_class))
-                except ValueError:
-                    logger.warning(f"[PENALTY_LEDGER] Unrecognized asset class {miner_asset_class} for {miner_hotkey}")
+            # All-time drawdown is ratcheted by ChallengePeriodManager, since the perf ledger only
+            # retains a rolling window. None when the miner has no pro stats yet.
+            miner_max_drawdown = (challenge_period_data.get(miner_hotkey) or {}).get('pro_stats', {}).get('max_drawdown')
 
             # Iterate through checkpoints in the portfolio ledger (only new ones if delta_update)
             checkpoints_processed = 0
@@ -935,7 +920,7 @@ class PenaltyLedgerManager:
                         continue
 
                     try:
-                        if penalty_config.input_type in (PenaltyInputType.LEDGER, PenaltyInputType.LEDGER_ASSET_CLASS):
+                        if penalty_config.input_type in (PenaltyInputType.LEDGER, PenaltyInputType.LEDGER_MAX_DRAWDOWN):
                             # Use the portfolio ledger up to this checkpoint
                             # Create a temporary ledger with only checkpoints up to current time
                             temp_ledger = PerfLedger(
@@ -947,8 +932,8 @@ class PenaltyLedgerManager:
                             )
                             if penalty_config.input_type == PenaltyInputType.LEDGER:
                                 penalty_value = penalty_config.function(temp_ledger)
-                            elif miner_days_in_year is not None:
-                                penalty_value = penalty_config.function(temp_ledger, miner_days_in_year)
+                            elif miner_max_drawdown is not None:
+                                penalty_value = penalty_config.function(temp_ledger, miner_max_drawdown)
 
                         elif penalty_config.input_type == PenaltyInputType.POSITIONS:
                             penalty_value = penalty_config.function(miner_positions_at_checkpoint)
@@ -986,7 +971,7 @@ class PenaltyLedgerManager:
                     risk_profile_penalty=penalties.get('risk_profile', 1.0),
                     min_collateral_penalty=penalties.get('min_collateral', 1.0),
                     risk_adjusted_performance_penalty=penalties.get('risk_adjusted_performance', 1.0),
-                    min_sharpe_penalty=penalties.get('min_sharpe', 1.0),
+                    all_time_calmar_penalty=penalties.get('all_time_calmar', 1.0),
                     daily_consistency_penalty=penalties.get('daily_consistency', 1.0),
                     total_penalty=total_penalty,
                     weekly_penalty=weekly_penalty,

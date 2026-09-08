@@ -13,6 +13,11 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, Pe
 from vali_objects.vali_config import ValiConfig
 
 
+def _as_log(simple_returns: list[float]) -> list[float]:
+    """Convert simple daily returns to the log series the metrics take."""
+    return [math.log(1 + r) for r in simple_returns]
+
+
 
 class TestMetrics(TestBase):
     def test_return_no_positions(self):
@@ -126,22 +131,53 @@ class TestMetrics(TestBase):
         self.assertGreater(sharpe, 0.0)
         self.assertLess(sharpe, 10)
 
-    def test_daily_consistency_evenly_distributed(self):
-        """Test that evenly distributed gains give each day an equal share of the profit"""
-        log_returns = [0.01] * 4
+    def test_return_consistency_evenly_distributed(self):
+        """Test that evenly distributed gains give each day an equal share of the return"""
+        log_returns = _as_log([0.01] * 4)
 
-        self.assertAlmostEqual(Metrics.daily_consistency(log_returns), 0.25)
+        self.assertAlmostEqual(Metrics.return_consistency(log_returns), 0.25)
 
-    def test_daily_consistency_single_spike(self):
-        """Test that a single outsized day dominates the profit share"""
-        log_returns = [0.1, 0.001, -0.05]
+    def test_return_consistency_capped_spike_passes(self):
+        """20 days of +0.4% plus one +3% day: the spike counts as 1.5% of a 9.5% total"""
+        log_returns = _as_log([0.004] * 20 + [0.03])
 
-        self.assertGreater(Metrics.daily_consistency(log_returns), 0.9)
+        self.assertAlmostEqual(Metrics.return_consistency(log_returns), 0.015 / 0.095)
 
-    def test_daily_consistency_no_profit(self):
-        """Test that the daily consistency function fails closed with no positive returns"""
-        self.assertEqual(Metrics.daily_consistency([]), 1.0)
-        self.assertEqual(Metrics.daily_consistency([-0.1, -0.2]), 1.0)
+    def test_return_consistency_thin_total_breaches(self):
+        """One +9% day plus three +1% days: the spike is 1.5% of a 4.5% total, over the 20% limit"""
+        log_returns = _as_log([0.09] + [0.01] * 3)
+
+        consistency = Metrics.return_consistency(log_returns)
+        self.assertAlmostEqual(consistency, 1 / 3)
+        self.assertGreater(consistency, ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD)
+
+    def test_return_consistency_losing_days_count_in_full(self):
+        """Losses are not capped, so they shrink the total and raise the best day's share"""
+        gains_only = Metrics.return_consistency(_as_log([0.01] * 4))
+        with_loss = Metrics.return_consistency(_as_log([0.01] * 4 + [-0.02]))
+
+        self.assertGreater(with_loss, gains_only)
+        self.assertAlmostEqual(with_loss, 0.01 / 0.02)
+
+    def test_return_consistency_no_profit(self):
+        """Test that the return consistency function fails closed with no positive total"""
+        self.assertEqual(Metrics.return_consistency([]), 1.0)
+        self.assertEqual(Metrics.return_consistency(_as_log([-0.1, -0.2])), 1.0)
+
+    def test_all_time_calmar_threshold_boundary(self):
+        """A 7% return against a 4% drawdown sits exactly on the 1.75 pass mark"""
+        self.assertAlmostEqual(Metrics.all_time_calmar(0.07, 0.96), 1.75)
+        self.assertLess(Metrics.all_time_calmar(0.07, 0.95), ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD)
+        self.assertGreater(Metrics.all_time_calmar(0.07, 0.97), ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD)
+
+    def test_all_time_calmar_no_drawdown(self):
+        """A clean record is floored by CALMAR_DRAWDOWN_MINIMUM rather than dividing by zero"""
+        self.assertEqual(Metrics.all_time_calmar(0.06, 1.0), 0.06 / ValiConfig.CALMAR_DRAWDOWN_MINIMUM)
+        self.assertEqual(Metrics.all_time_calmar(0.0, 1.0), 0.0)
+
+    def test_all_time_calmar_negative_return(self):
+        """A losing account cannot pass the calmar gate"""
+        self.assertLess(Metrics.all_time_calmar(-0.05, 0.96), 0.0)
 
     def test_sortino_no_returns(self):
         """Test that the Sortino function returns 0.0 when there are no returns"""

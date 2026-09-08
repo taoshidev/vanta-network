@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
+from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.elimination_reason_enum import EliminationReason
@@ -35,6 +36,7 @@ from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
     DrawdownStats,
     MinerBucketState,
+    ProStats,
 )
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePairCategory, ValiConfig

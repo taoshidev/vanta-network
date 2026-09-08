@@ -168,23 +168,23 @@ class PositionPenalties:
         }
 
     @staticmethod
-    def min_sharpe_penalty(ledger: PerfLedger, days_in_year: int) -> float:
+    def all_time_calmar_penalty(ledger: PerfLedger, max_drawdown: float) -> float:
         """
-        Binary penalty: 0 if the ledger's sharpe is below the pro threshold, else 1.
+        Binary penalty: 0 if the ledger's all-time calmar is below the pro threshold, else 1.
 
-        Mirrors the pro promotion gate, so a short history (sharpe no-confidence) fails closed.
+        max_drawdown is the ratcheted all-time value from ProStats, since the ledger itself only
+        retains a rolling window.
         """
-        log_returns = LedgerUtils.daily_return_log(ledger)
-        sharpe = Metrics.sharpe(log_returns, days_in_year=days_in_year)
-        return 0.0 if sharpe < ValiConfig.PRO_CHALLENGE_SHARPE_THRESHOLD else 1.0
+        calmar = Metrics.all_time_calmar(ledger.prev_portfolio_ret - 1.0, max_drawdown)
+        return 0.0 if calmar < ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD else 1.0
 
     @staticmethod
     def daily_consistency_penalty(ledger: PerfLedger) -> float:
         """
-        Binary penalty: 0 if a single day accounts for too much of total profit, else 1.
+        Binary penalty: 0 if a single day accounts for too much of the total return, else 1.
         """
         log_returns = LedgerUtils.daily_return_log(ledger)
-        consistency = Metrics.daily_consistency(log_returns)
+        consistency = Metrics.return_consistency(log_returns)
         return 0.0 if consistency > ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD else 1.0
 
     @staticmethod

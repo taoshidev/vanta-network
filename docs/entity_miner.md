@@ -234,7 +234,7 @@ pro account size, and the ledgers restart.
 
 Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro account but is paid on
 the size of the standard account they came from: `standard_account_size / pro_account_size × PnL`.
-A soft breach (minimum sharpe or daily consistency) does **not** withhold their payout during
+A soft breach (all-time Calmar or return consistency) does **not** withhold their payout during
 either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
 
 #### Traders who have not passed the standard challenge
@@ -242,6 +242,25 @@ either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
 A `SUBACCOUNT_CHALLENGE` trader offered a pro account is moved to `PRO_CHALLENGE_DIRECT` and starts
 the pro challenge from scratch on the pro account. They earn no payouts until `PRO_FUNDED`, and
 soft breaches apply.
+
+#### Passing the pro challenge
+
+Promotion from a pro challenge bucket to `PRO_FUNDED` requires all of:
+
+- **90 days** in the bucket.
+- **6% return** on the account. Missing this target only prevents promotion — pro buckets have no
+  time limit, so it never demotes or eliminates the trader.
+- **All-time Calmar of at least 1.75** — realized return since the start of the challenge divided by
+  the max drawdown over the same period.
+- **Return consistency of at most 20%** — after capping each day's profit at 1.5%, no single day may
+  account for more than 20% of the account's total return. The total is the sum of these capped daily
+  returns, with losing days counted in full.
+
+The last two are also **soft breaches**: in `PRO_CHALLENGE_DIRECT` and `PRO_FUNDED`, breaching either
+one defers that week's payout without eliminating or demoting the trader. Both resolve by continuing
+to trade until the value recovers past its threshold. Calmar is measured over the account's whole
+history from the first day of the challenge onward, so a funded account keeps the ratio it passed
+with.
 
 #### Failing the pro challenge
 
