@@ -28,7 +28,7 @@ def get_position_leverage_bounds(trade_pair: TradePair) -> tuple[float, float]:
 def get_leverage_tier(miner_bucket, account_size: float) -> int:
     """Return leverage tier (1-4) for an entity subaccount.
 
-    Tier 1: SUBACCOUNT_CHALLENGE / SUBACCOUNT_PRO_CHALLENGE (any size)
+    Tier 1: any subaccount challenge bucket, standard or pro (any size)
     Tier 2: non-challenge, account_size < $200K
     Tier 3: non-challenge, $200K <= account_size < $1M
     Tier 4: non-challenge, account_size >= $1M

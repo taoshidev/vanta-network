@@ -496,6 +496,53 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
 { "error": "Internal server error retrieving challenge period data" }
 ```
 
+### Set Miner Bucket (admin)
+
+`POST /admin/miner-bucket/<hotkey>`
+
+Moves a miner or subaccount into a specific bucket. This is the only way into the pro account
+track — see [entity_miner.md](entity_miner.md#account-types).
+
+Requires **tier 500** access. Like every `/admin/*` route, calls are recorded in the audit log.
+
+**Body:**
+- `bucket` (string, required): a `MinerBucket` value, e.g. `PRO_CHALLENGE_TRANSITION`.
+- `pro_account_size` (number, required when entering the pro track): USD size of the granted pro
+  account. Snapshotted alongside the subaccount's existing size, which becomes its
+  `standard_account_size` and the basis for payouts during the pro challenge. Omit on later pro
+  moves to keep the size already recorded.
+
+When the target bucket changes the account size, the subaccount's open positions are force closed,
+its pending limit orders are cancelled, and its ledgers restart against the new size.
+`PRO_CHALLENGE_TRANSITION` keeps the standard account, so nothing is reset when entering it.
+
+**Example:**
+```bash
+curl -X POST "http://localhost:48888/admin/miner-bucket/5GhDr3xy...abc_1" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"bucket": "PRO_CHALLENGE_TRANSITION", "pro_account_size": 500000}'
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "hotkey": "5GhDr3xy...abc_1",
+  "bucket": "PRO_CHALLENGE_TRANSITION",
+  "message": "5GhDr3xy...abc_1 moved to PRO_CHALLENGE_TRANSITION"
+}
+```
+
+**Error Responses:**
+```json
+// 400 - unknown bucket, missing pro_account_size, or miner already in that bucket
+{ "error": "pro_account_size is required to enter the pro track" }
+
+// 403 - API key below tier 500
+{ "error": "Set miner bucket endpoint requires tier 500 access" }
+```
+
 ### Validator Checkpoint 
 
 `GET /validator-checkpoint`
@@ -1107,7 +1154,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules). Fixed for the life of the subaccount once created. HL-linked subaccounts always get `"trailing"` regardless of what's passed.
-- `account_type` (string, optional): `"standard"` (default) or `"pro"`. Selects the subaccount's bucket track (`SUBACCOUNT_CHALLENGE`/`SUBACCOUNT_FUNDED` vs `SUBACCOUNT_PRO_CHALLENGE`/`SUBACCOUNT_PRO_FUNDED`) and, with it, its carry/stock-borrow/margin-interest rates, challenge period rules, and permitted trade pairs. Pro accounts trade Vanta-sourced pairs only. Fixed for the life of the subaccount once created. Ignored when `hl_address` is supplied. Not part of the signed payload.
+- `account_type` (string, optional): must be `"standard"` (the default). Pro accounts are granted by admin promotion via `POST /admin/miner-bucket/<synthetic_hotkey>`, never at creation — see [entity_miner.md](entity_miner.md#account-types). Not part of the signed payload.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
 **Response:**

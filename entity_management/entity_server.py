@@ -10,6 +10,8 @@ Follows the same pattern as ChallengePeriodServer.
 """
 from typing import Optional, Tuple, Dict, List
 
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+
 import template.protocol
 from entity_management.entity_manager import EntityManager
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -239,6 +241,19 @@ class EntityServer(RPCServerBase):
         """
         info = self._manager.get_subaccount_info_for_synthetic(synthetic_hotkey)
         return info.model_dump() if info else None
+
+    def apply_bucket_account_size_rpc(
+        self,
+        synthetic_hotkey: str,
+        target_bucket: MinerBucket,
+        pro_account_size: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """Point a subaccount at the account size its target bucket trades."""
+        return self._manager.apply_bucket_account_size(synthetic_hotkey, target_bucket, pro_account_size)
+
+    def get_payout_scale_rpc(self, synthetic_hotkey: str) -> float:
+        """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
+        return self._manager.get_payout_scale(synthetic_hotkey)
 
     def get_hl_subaccount_limits_data_rpc(self, hl_address: str) -> Optional[dict]:
         """

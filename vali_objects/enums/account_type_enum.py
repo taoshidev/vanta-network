@@ -2,11 +2,11 @@ from enum import Enum
 
 
 class AccountType(str, Enum):
-    """Which account tier an entity subaccount belongs to. Chosen once at subaccount creation
-    (SubaccountInfo.account_type) and immutable afterward. Determines the subaccount's bucket
-    track, fee schedule, challenge period rules, and permitted trade pairs."""
+    """Which account tier an entity subaccount belongs to. Every subaccount is created as
+    STANDARD; PRO is set only by admin promotion into the pro bucket track, and determines
+    the subaccount's fee schedule, challenge period rules, and permitted trade pairs."""
     STANDARD = "standard"  # SUBACCOUNT_CHALLENGE -> SUBACCOUNT_FUNDED
-    PRO = "pro"            # SUBACCOUNT_PRO_CHALLENGE -> SUBACCOUNT_PRO_FUNDED
+    PRO = "pro"            # PRO_CHALLENGE_* -> PRO_FUNDED
 
     @staticmethod
     def is_valid(account_type: str) -> bool:
@@ -17,9 +17,7 @@ class AccountType(str, Enum):
 
     @property
     def challenge_bucket(self):
-        """The bucket a newly created subaccount of this type starts in."""
+        """The bucket a newly created subaccount starts in. Pro is not reachable at creation."""
         # Deferred import: miner_bucket_enum pulls in ValiConfig.
         from vali_objects.enums.miner_bucket_enum import MinerBucket
-        if self == AccountType.PRO:
-            return MinerBucket.SUBACCOUNT_PRO_CHALLENGE
         return MinerBucket.SUBACCOUNT_CHALLENGE

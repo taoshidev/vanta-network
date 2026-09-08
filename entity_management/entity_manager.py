@@ -60,12 +60,14 @@ class SubaccountInfo(BaseModel):
     status: str = Field(default="active", description="Status: active, eliminated, or unknown")
     created_at_ms: int = Field(description="Timestamp when subaccount was created")
     eliminated_at_ms: Optional[int] = Field(default=None, description="Timestamp when subaccount was eliminated")
-    account_size: float = Field(description="Account size in USD (immutable once set)")
+    account_size: float = Field(description="Live trading account size in USD")
+    standard_account_size: Optional[float] = Field(default=None, description="Account size on the standard track, snapshotted at pro promotion")
+    pro_account_size: Optional[float] = Field(default=None, description="Account size granted for the pro account, set at pro promotion")
     reg_fee_theta: float = Field(default=0.0, description="Cost of registration fee in theta")
     reg_fee_slashed_ms: Optional[float] = Field(default=None, description="Timestamp when registration fee was paid")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
-    account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro' (immutable once set)")
+    account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
@@ -411,7 +413,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
-            account_size: Account size in USD (immutable once set, max 100k)
+            account_size: Starting account size in USD (max 100k; only a pro promotion changes it)
             asset_class: Asset class selection (immutable once set)
             collateral_exempt: If True, skip collateral slashing.
                    Exempt subaccounts are excluded from entity aggregation and payouts.
@@ -423,8 +425,8 @@ class EntityManager(ValidatorBroadcastBase):
 
         if not AccountType.is_valid(account_type):
             return False, None, f"Invalid account_type: {account_type}. Must be 'standard' or 'pro'"
-        if hl_address and AccountType(account_type) == AccountType.PRO:
-            return False, None, "account_type 'pro' is not supported for Hyperliquid subaccounts"
+        if AccountType(account_type) == AccountType.PRO:
+            return False, None, "account_type 'pro' cannot be set at creation; pro accounts are granted by admin promotion"
         initial_bucket = AccountType(account_type).challenge_bucket
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
@@ -743,6 +745,92 @@ class EntityManager(ValidatorBroadcastBase):
             if not entity_data:
                 return None
             return entity_data.subaccounts.get(subaccount_id)
+
+    def apply_bucket_account_size(
+        self,
+        synthetic_hotkey: str,
+        target_bucket: MinerBucket,
+        pro_account_size: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Point a subaccount at the account size its target bucket trades.
+
+        Entering the pro track snapshots the standard size and records the granted pro size.
+        PRO_CHALLENGE_TRANSITION keeps trading the standard account, so only the sizes are
+        recorded; every other pro bucket switches the live account size to the pro size.
+        Returning to a standard bucket restores the standard size.
+
+        Returns:
+            (success, message)
+        """
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None:
+            return False, f"{synthetic_hotkey} is not a known subaccount"
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+
+        if target_bucket.is_pro_track:
+            if pro_account_size is None:
+                pro_account_size = subaccount.pro_account_size
+            if pro_account_size is None:
+                return False, "pro_account_size is required to enter the pro track"
+            if pro_account_size > ValiConfig.MAX_PRO_ACCOUNT_SIZE:
+                return False, (
+                    f"Account size ${pro_account_size} exceeds maximum allowed "
+                    f"${ValiConfig.MAX_PRO_ACCOUNT_SIZE}"
+                )
+            if subaccount.standard_account_size is None:
+                subaccount.standard_account_size = subaccount.account_size
+            subaccount.pro_account_size = pro_account_size
+            subaccount.account_type = AccountType.PRO.value
+            # TRANSITION winds down the standard account, so it keeps the standard size
+            target_size = pro_account_size if target_bucket.is_pro else subaccount.standard_account_size
+        else:
+            subaccount.account_type = AccountType.STANDARD.value
+            target_size = subaccount.standard_account_size or subaccount.account_size
+
+        if target_size != subaccount.account_size:
+            cpt = (ValiConfig.ENTITY_COST_PER_THETA_LOW
+                   if target_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD
+                   else ValiConfig.ENTITY_COST_PER_THETA)
+            record = self._miner_account_client.set_miner_account_size(
+                synthetic_hotkey,
+                collateral_balance_theta=target_size / cpt,
+                timestamp_ms=TimeUtil.now_in_millis(),
+                account_size=target_size,
+            )
+            if not record:
+                return False, f"Failed to set account size for {synthetic_hotkey}"
+            subaccount.account_size = target_size
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if entity_data:
+                entity_data.subaccounts[subaccount_id] = subaccount
+        self._write_entities_from_memory_to_disk()
+
+        logger.info(
+            f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}: account_size=${subaccount.account_size}, "
+            f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}"
+        )
+        return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
+
+    def get_payout_scale(self, synthetic_hotkey: str) -> float:
+        """
+        Multiplier applied to this subaccount's PnL when it is folded into the entity's payout.
+
+        A miner completing the pro challenge after passing the standard challenge trades the
+        larger pro account but is paid on the size of the standard account they came from.
+        Returns 1.0 for every other subaccount.
+        """
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None:
+            return 1.0
+        standard_size, pro_size = subaccount.standard_account_size, subaccount.pro_account_size
+        if not standard_size or not pro_size:
+            return 1.0
+        return standard_size / pro_size
 
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
         """
@@ -1116,26 +1204,39 @@ class EntityManager(ValidatorBroadcastBase):
             if not orders:
                 return EMPTY_RESPONSE
 
-            # Weekly-scope penalties
+            # Weekly-scope penalties, and the account-size scale that applied in each week.
+            # A breach is stamped on a single checkpoint, so the worst penalty in a week governs
+            # it; the scale is the one in force at the end of the week.
             week_penalties = {}
+            week_scales = {}
+            payout_scale = self.get_payout_scale(synthetic_hotkey)
+            _scaled_statuses = {b.value for b in MinerBucket if b.payout_scale_applies}
             for cp in (debt_ledger.checkpoints if debt_ledger else []):
                 cp_week_start = TimeUtil.ms_at_start_of_week(cp.timestamp_ms - 1)
                 week_penalties[cp_week_start] = min(
                     week_penalties.get(cp_week_start, 1.0), cp.weekly_penalty
                 )
+                week_scales[cp_week_start] = (
+                    payout_scale if cp.challenge_period_status in _scaled_statuses else 1.0
+                )
 
             weekly_settlements = []
             def _record_week(start_ms, end_ms, balance, eow_unrealized, week_orders):
-                previous_payouts = sum(s['payout'] for s in weekly_settlements)
+                # The high water mark advances on gross terms, so a week withheld by a soft
+                # breach is forfeited rather than carried into the next week.
+                previous_payouts = sum(s['gross_payout'] for s in weekly_settlements)
                 week_penalty = week_penalties.get(start_ms, 1.0)
-                payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
+                week_scale = week_scales.get(start_ms, 1.0)
+                gross_payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
                 weekly_settlements.append({
                     'start_ms': start_ms,
                     'end_ms': end_ms,
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
-                    'payout': payout,
+                    'gross_payout': gross_payout,
+                    'payout': gross_payout * week_penalty * week_scale,
                     'weekly_penalty': week_penalty,
+                    'payout_scale': week_scale,
                     'orders': [o.to_python_dict() for o in week_orders],
                 })
 
@@ -1193,8 +1294,7 @@ class EntityManager(ValidatorBroadcastBase):
                     )
                 if end_time == end_time_ms and realtime:
                     unrealized_pnl = realtime_unrealized
-                _record_week(week_start, end_time, running_balance, eow_hwm, unrealized_pnl, week_orders)
-                eow_hwm = max(eow_hwm, running_balance)
+                _record_week(week_start, end_time, running_balance, unrealized_pnl, week_orders)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
 
             # Only sum weeks that fall within the requested period.

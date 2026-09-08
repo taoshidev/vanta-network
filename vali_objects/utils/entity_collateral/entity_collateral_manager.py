@@ -556,9 +556,9 @@ class EntityCollateralManager(CacheController):
                 with self._slash_lock:
                     for synthetic_hotkey in eligible_hotkeys:
                         bucket = buckets.get(synthetic_hotkey)
-                        if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+                        if not bucket or not bucket.is_subaccount_earning:
                             continue
-                        max_slash = self.get_max_slash(synthetic_hotkey)
+                        max_slash = self.get_max_slash(synthetic_hotkey, bucket)
                         if max_slash <= 0:
                             continue
                         tracking = self._slash_tracking.setdefault(synthetic_hotkey, {

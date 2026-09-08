@@ -461,11 +461,15 @@ class ValiConfig:
     PRO_STATIC_DRAWDOWN_THRESHOLD = 0.05
     PRO_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05
 
-    # Pro promotion criteria. Placeholder values until real thresholds are set.
+    # Pro promotion criteria.
     PRO_CHALLENGE_MINIMUM_DAYS = 90
     PRO_CHALLENGE_MINIMUM_MS = PRO_CHALLENGE_MINIMUM_DAYS * DAILY_MS
     PRO_CHALLENGE_SHARPE_THRESHOLD = 1.0
     PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = 0.2  # Best day must be at most this share of total profit
+
+    # Grace period for traders transitioning from standard funded to pro
+    PRO_TRANSITION_GRACE_PERIOD_DAYS = 7
+    PRO_TRANSITION_GRACE_PERIOD_MS = PRO_TRANSITION_GRACE_PERIOD_DAYS * DAILY_MS
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
@@ -614,6 +618,7 @@ class ValiConfig:
     ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
     ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
+    MAX_PRO_ACCOUNT_SIZE = 2_000_000  # Maximum account size in USD for pro accounts
 
     # Entity margin collateral requirement (funded subaccounts only):
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK

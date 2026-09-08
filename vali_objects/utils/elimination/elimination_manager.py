@@ -73,10 +73,10 @@ class EliminationRow:
             self.bucket_at_elimination = MinerBucket.SUBACCOUNT_FUNDED
         elif self.reason in (EliminationReason.FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN.value,
                              EliminationReason.FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN.value):
-            self.bucket_at_elimination = MinerBucket.SUBACCOUNT_PRO_FUNDED
+            self.bucket_at_elimination = MinerBucket.PRO_FUNDED
         elif self.reason in (EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
                              EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_EOD_DRAWDOWN.value):
-            self.bucket_at_elimination = MinerBucket.SUBACCOUNT_PRO_CHALLENGE
+            self.bucket_at_elimination = MinerBucket.PRO_CHALLENGE_DIRECT
         elif self.reason in (EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN.value,
                            EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN.value):
             self.bucket_at_elimination = MinerBucket.SUBACCOUNT_CHALLENGE
@@ -611,9 +611,7 @@ class EliminationManager(CacheController):
 
         logger.info("checking all active buckets for inactive miner eliminations.")
 
-        active_buckets = [MinerBucket.MAINCOMP, MinerBucket.CHALLENGE, MinerBucket.PROBATION,
-                          MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA,
-                          MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED]
+        active_buckets = [b for b in MinerBucket if b.is_regular_miner or b.is_subaccount]
 
         candidate_hotkeys = set()
         candidate_hotkeys.update(self._challenge_period_client.get_hotkeys_by_bucket(active_buckets))

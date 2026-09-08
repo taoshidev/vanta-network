@@ -200,20 +200,50 @@ After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is
 
 ### Account Types
 
-Each subaccount is created with an `account_type`, fixed for the life of the subaccount:
-
-| Account Type         | Challenge Bucket           | Funded Bucket           |
-|----------------------|----------------------------|-------------------------|
-| `standard` (default) | `SUBACCOUNT_CHALLENGE`     | `SUBACCOUNT_FUNDED`     |
-| `pro`                | `SUBACCOUNT_PRO_CHALLENGE` | `SUBACCOUNT_PRO_FUNDED` |
+Every subaccount is created as `standard`. A pro account is granted at Taoshi's discretion through
+the admin endpoint `POST /admin/miner-bucket/<synthetic_hotkey>` — there is no way to create one
+directly, and `account_type: "pro"` is rejected at subaccount creation.
 
 Pro accounts run on a parallel bucket track with their own carry, stock-borrow and margin-interest
-rates, challenge period rules, and permitted trade pairs. Those values currently mirror the standard
-account rules documented above; this section will be updated as the pro rules are finalized.
+rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs. They are
+Vanta-native only: they trade Vanta-sourced pairs (forex and equities) and cannot trade
+Hyperliquid-sourced pairs, so Hyperliquid subaccounts have no pro tier.
 
-Pro accounts are Vanta-native only: they trade Vanta-sourced pairs (forex and equities) and cannot
-trade Hyperliquid-sourced pairs. Hyperliquid subaccounts have no pro tier — `account_type` is not
-accepted alongside `hl_address`, and HL-sourced pairs are priced identically for every account type.
+| Bucket                        | Account traded | Earns payouts | Payout basis            |
+|-------------------------------|----------------|---------------|-------------------------|
+| `PRO_CHALLENGE_TRANSITION`    | standard       | yes           | standard account size   |
+| `PRO_CHALLENGE_FROM_STANDARD` | pro            | yes           | standard account size   |
+| `PRO_CHALLENGE_DIRECT`        | pro            | no            | —                       |
+| `PRO_FUNDED`                  | pro            | yes           | pro account size        |
+
+#### Traders who have already passed the standard challenge
+
+A `SUBACCOUNT_FUNDED` trader offered a pro account is moved to `PRO_CHALLENGE_TRANSITION`, a
+one-week wind-down window on their existing standard account. During that week they keep the
+`SUBACCOUNT_FUNDED` rules and keep earning payouts, but they cannot open new positions or increase
+existing ones — those orders are rejected and only closes and reductions are accepted. They move to
+`PRO_CHALLENGE_FROM_STANDARD` as soon as they are promoted again, or automatically at the end of
+the week, at which point any remaining positions are force closed, the account is resized to the
+pro account size, and the ledgers restart.
+
+Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro account but is paid on
+the size of the standard account they came from: `standard_account_size / pro_account_size × PnL`.
+A soft breach (minimum sharpe or daily consistency) does **not** withhold their payout during
+either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
+
+#### Traders who have not passed the standard challenge
+
+A `SUBACCOUNT_CHALLENGE` trader offered a pro account is moved to `PRO_CHALLENGE_DIRECT` and starts
+the pro challenge from scratch on the pro account. They earn no payouts until `PRO_FUNDED`, and
+soft breaches apply.
+
+#### Failing the pro challenge
+
+A drawdown breach in `PRO_CHALLENGE_FROM_STANDARD` demotes back to `SUBACCOUNT_FUNDED`, and one in
+`PRO_CHALLENGE_DIRECT` demotes back to `SUBACCOUNT_CHALLENGE`; in both cases the account is resized
+back to the standard account size. A breach in `PRO_CHALLENGE_TRANSITION` (still the standard
+funded account) or in `PRO_FUNDED` eliminates the subaccount. Re-promotion to pro after passing the
+standard challenge again goes through the admin endpoint like any other pro promotion.
 
 ## Getting Started
 
@@ -470,7 +500,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
 | `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
-| `account_type` | string | No | `"standard"` (default) or `"pro"` — see [Account Types](#account-types). Set once at creation; immutable afterward. Not accepted alongside `hl_address`. |
+| `account_type` | string | No | Must be `"standard"` (default). Pro accounts are granted by admin promotion — see [Account Types](#account-types). |
 
 ### 12. Submit Orders
 
