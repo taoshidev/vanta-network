@@ -342,6 +342,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
         self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
+        self.app.route("/admin/miner-bucket/<hotkey>", methods=["POST"])(self.set_miner_bucket_admin)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
@@ -2717,6 +2718,73 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         except Exception as e:
             logger.error(f"Error eliminating hotkey {hotkey}: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def set_miner_bucket_admin(self, hotkey: str):
+        """
+        Move a miner into an arbitrary bucket. This is the only way into the pro account track.
+
+        JSON body:
+          bucket: MinerBucket value string (required)
+          pro_account_size: USD size of the granted pro account (required when entering the pro track,
+                            optional afterwards to keep the size already recorded)
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/miner-bucket/<hotkey>" \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"bucket": "PRO_CHALLENGE_TRANSITION", "pro_account_size": 500000}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Set miner bucket endpoint requires tier 500 access'}), 403
+
+        try:
+            data = request.get_json(silent=True) or {}
+            bucket_str = data.get('bucket')
+            try:
+                bucket = MinerBucket(bucket_str)
+            except ValueError:
+                valid = [b.value for b in MinerBucket]
+                return jsonify({'error': f'Invalid bucket. Must be one of: {valid}'}), 400
+
+            pro_account_size = data.get('pro_account_size')
+            if pro_account_size is not None and (not isinstance(pro_account_size, (int, float))
+                                                 or isinstance(pro_account_size, bool)
+                                                 or pro_account_size <= 0):
+                return jsonify({'error': 'pro_account_size must be a positive number'}), 400
+
+            if bucket.is_subaccount and not is_synthetic_hotkey(hotkey):
+                return jsonify({'error': f'{bucket.value} is a subaccount bucket; {hotkey} is not a subaccount'}), 400
+
+            # Point the subaccount at the account size the target bucket trades before the
+            # challenge period manager resets the account against it
+            if bucket.is_subaccount:
+                success, message = self._entity_client.apply_bucket_account_size(
+                    hotkey, bucket, pro_account_size
+                )
+                if not success:
+                    return jsonify({'error': message}), 400
+
+            success, message = self._challenge_period_client.admin_set_bucket(
+                hotkey, bucket, TimeUtil.now_in_millis()
+            )
+            if not success:
+                return jsonify({'error': message}), 400
+            self._miner_account_client.set_miner_bucket(hotkey, bucket)
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'bucket': bucket.value,
+                'message': message,
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error setting bucket for hotkey {hotkey}: {e}")
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 

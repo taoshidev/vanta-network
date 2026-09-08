@@ -285,13 +285,13 @@ class PenaltyLedgerManager:
         'min_sharpe': PenaltyConfig(
             function=PositionPenalties.min_sharpe_penalty,
             input_type=PenaltyInputType.LEDGER_ASSET_CLASS,
-            buckets={b for b in MinerBucket if b.is_pro},
+            buckets={b for b in MinerBucket if b.soft_breach_applies},
             application_scope=PenaltyApplicationScope.WEEKLY
         ),
         'daily_consistency': PenaltyConfig(
             function=PositionPenalties.daily_consistency_penalty,
             input_type=PenaltyInputType.LEDGER,
-            buckets={b for b in MinerBucket if b.is_pro},
+            buckets={b for b in MinerBucket if b.soft_breach_applies},
             application_scope=PenaltyApplicationScope.WEEKLY
         )
     }
@@ -769,7 +769,7 @@ class PenaltyLedgerManager:
         for entry in reversed(entries):
             start_time_ms = entry.get("start_time_ms") or entry.get("bucket_start_time")
             if start_time_ms is not None and checkpoint_ms >= start_time_ms:
-                return entry.get("bucket", MinerBucket.UNKNOWN.value)
+                return self._bucket_from_status(entry.get("bucket", MinerBucket.UNKNOWN.value)).value
 
         return MinerBucket.UNKNOWN.value
 
