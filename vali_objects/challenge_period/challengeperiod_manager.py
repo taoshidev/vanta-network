@@ -64,6 +64,10 @@ class DrawdownStats:
         return (1.0 - self.last_eod_equity / self.eod_hwm) * 100.0
 
     @property
+    def trailing_drawdown_pct(self) -> float:
+        return (1.0 - self.current_equity / self.eod_hwm) * 100.0
+
+    @property
     def static_drawdown_pct(self) -> float:
         return (1.0 - self.current_balance) * 100.0
 
@@ -79,6 +83,7 @@ class DrawdownStats:
         d = asdict(self)
         d['intraday_drawdown_pct'] = self.intraday_drawdown_pct
         d['eod_drawdown_pct'] = self.eod_drawdown_pct
+        d['trailing_drawdown_pct'] = self.trailing_drawdown_pct
         d['static_drawdown_pct'] = self.static_drawdown_pct
         d['static_eod_drawdown_pct'] = self.static_eod_drawdown_pct
         d['current_return'] = self.current_return
@@ -365,7 +370,17 @@ class ChallengePeriodManager(CacheController):
                 eliminations[hotkey] = reason
                 continue
 
-            if state.drawdown_criteria == DrawdownCriteria.STATIC:
+            if state.current_bucket.is_pro:
+                # Rule 1: Daily loss limit — equity cannot drop below the day's opening equity
+                if reason := self._check_intraday_drawdown(state):
+                    self._record_breach(hotkey, state, reason, eliminations, demotions)
+                    continue
+
+                # Rule 2: EOD trailing loss limit — equity cannot drop below the highest EOD equity
+                if reason := self._check_trailing_drawdown(state):
+                    self._record_breach(hotkey, state, reason, eliminations, demotions)
+                    continue
+            elif state.drawdown_criteria == DrawdownCriteria.STATIC:
                 # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
                 # both measured against starting balance
                 # Rule 1: Static drawdown — equity (including unrealized PnL) cannot drop more than 5% below starting balance
@@ -480,9 +495,18 @@ class ChallengePeriodManager(CacheController):
             logger.warning(f"[CHALLENGE] BREACH EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
             return cls._drawdown_reason(state.current_bucket, "EOD")
 
-        if 1 - state.drawdown.current_equity / state.drawdown.eod_hwm > state.eod_drawdown_threshold:
+        if state.drawdown.trailing_drawdown_pct > state.eod_drawdown_threshold_pct:
             logger.info(f"[CHALLENGE] near trailing EOD with current equity {state.eod_drawdown_threshold_pct}%: {state}")
 
+        return None
+
+    @classmethod
+    def _check_trailing_drawdown(cls, state: MinerBucketState) -> EliminationReason | None:
+        if state.drawdown.trailing_drawdown_pct > state.eod_drawdown_threshold_pct:
+            logger.warning(f"[CHALLENGE] BREACH trailing drawdown {state.eod_drawdown_threshold_pct}%: {state}")
+            return cls._drawdown_reason(state.current_bucket, "EOD")
+        elif state.drawdown.trailing_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
+            logger.info(f"[CHALLENGE] near trailing drawdown {state.eod_drawdown_threshold_pct}%: {state}")
         return None
 
     @classmethod
@@ -581,10 +605,15 @@ class ChallengePeriodManager(CacheController):
 
             logger.info(f"[CHALLENGE] eliminating reason={elimination_reason.value}: {state}")
 
+            is_pro = state.current_bucket.is_pro
             elimination_time_ms = current_time_ms
             if elimination_reason.is_eod_drawdown:
-                elimination_drawdown_pct = state.drawdown.eod_drawdown_pct
-                elimination_time_ms = state.drawdown.last_eod_checked_ms or current_time_ms
+                if is_pro:
+                    # Pro measures the trailing rule against live equity, so the breach happened now
+                    elimination_drawdown_pct = state.drawdown.trailing_drawdown_pct
+                else:
+                    elimination_drawdown_pct = state.drawdown.eod_drawdown_pct
+                    elimination_time_ms = state.drawdown.last_eod_checked_ms or current_time_ms
             elif elimination_reason.is_intraday_drawdown:
                 elimination_drawdown_pct = state.drawdown.intraday_drawdown_pct
             elif elimination_reason.is_static_drawdown:
@@ -598,9 +627,12 @@ class ChallengePeriodManager(CacheController):
             is_static = state.drawdown_criteria == DrawdownCriteria.STATIC
             # intraday_drawdown_pct always holds the literal equity-vs-day-open number
             intraday_drawdown_pct = state.drawdown.intraday_drawdown_pct
-            # eod_drawdown_pct holds the account's other rule: static equity-vs-starting-balance for static accounts,
-            # or the trailing EOD-vs-high-water-mark check for trailing accounts
-            eod_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
+            # eod_drawdown_pct holds the account's other rule: the live equity-vs-high-water-mark check for pro,
+            # static equity-vs-starting-balance for static accounts, or the EOD-vs-high-water-mark check otherwise
+            if is_pro:
+                eod_drawdown_pct = state.drawdown.trailing_drawdown_pct
+            else:
+                eod_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
 
             self._elimination_client.append_elimination_row(
                 hotkey=hotkey,

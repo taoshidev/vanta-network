@@ -216,6 +216,12 @@ Hyperliquid-sourced pairs, so Hyperliquid subaccounts have no pro tier.
 | `PRO_CHALLENGE_DIRECT`        | pro            | no            | —                       |
 | `PRO_FUNDED`                  | pro            | yes           | pro account size        |
 
+Every pro bucket is subject to two drawdown rules, both checked continuously:
+- **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day.
+- **EOD trailing loss limit:** equity cannot drop **8%** below the end-of-day equity high-water mark.
+
+`PRO_CHALLENGE_TRANSITION` is still trading the standard account, so it keeps the `SUBACCOUNT_FUNDED` rules instead.
+
 #### Traders who have already passed the standard challenge
 
 A `SUBACCOUNT_FUNDED` trader offered a pro account is moved to `PRO_CHALLENGE_TRANSITION`, a
