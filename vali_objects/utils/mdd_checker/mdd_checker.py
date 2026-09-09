@@ -172,7 +172,7 @@ class MDDChecker(CacheController):
             sources_str = ", ".join(ps.debug_str(now_ms) for ps in sources)
             logger.info(f"[MDD_PRICE_SOURCES] {tp.trade_pair_id}: [{sources_str}]")
 
-        today_date_str = TimeUtil.millis_to_short_date_str(now_ms)
+        today_date_str = TimeUtil.timestamp_ms_to_eastern_time_str(now_ms, short=True)
         if self.last_corporate_actions_date != today_date_str:
             try:
                 actions_by_date = self._live_price_client.get_corporate_actions(today_date_str)

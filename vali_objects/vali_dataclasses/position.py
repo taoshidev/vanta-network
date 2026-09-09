@@ -413,7 +413,6 @@ class Position(BaseModel):
         self.unrealized_pnl = 0.0
         self.position_type = None
         self.is_closed_position = False
-        self.position_type = None
 
         self._update_position(price_fetcher_client)
 
@@ -672,8 +671,16 @@ class Position(BaseModel):
             return False
 
         for order in self.orders:
+            if TimeUtil.timestamp_ms_to_eastern_time_str(order.processed_ms, short=True) >= execution_date:
+                continue
             order.quantity *= stock_split_ratio
             order.price /= stock_split_ratio
+
+        if self.last_price_source is not None:
+            for attr in ("open", "close", "high", "low", "bid", "ask"):
+                val = getattr(self.last_price_source, attr, None)
+                if val:
+                    setattr(self.last_price_source, attr, val / stock_split_ratio)
 
         self.last_stock_split_date = execution_date
         self._update_position()
