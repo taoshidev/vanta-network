@@ -290,6 +290,15 @@ class LimitOrderManager(CacheController):
                 f"STOP_LIMIT orders must have a valid stop_condition (GTE or LTE), got {order.stop_condition}"
             )
 
+        if order.order_type == OrderType.LONG and order.limit_price < order.stop_price:
+            raise SignalException(
+                f"STOP_LIMIT LONG orders require limit_price ({order.limit_price}) >= stop_price ({order.stop_price})"
+            )
+        if order.order_type == OrderType.SHORT and order.limit_price > order.stop_price:
+            raise SignalException(
+                f"STOP_LIMIT SHORT orders require limit_price ({order.limit_price}) <= stop_price ({order.stop_price})"
+            )
+
         self._validate_limit_order(order)
 
     # ==================== Public API Methods ====================
