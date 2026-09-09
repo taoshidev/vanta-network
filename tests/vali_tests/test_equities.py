@@ -849,94 +849,80 @@ class TestEquities(TestBase):
 
 
     # ==================== SUBACCOUNT_CHALLENGE Buying Power Tests ====================
+    # Standard (non-HL) subaccounts are pinned to one tier: challenge and funded share the
+    # same multiplier, and account size does not change it.
 
-    EQUITIES_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.EQUITIES]   # 1.5 (Tier 2, <$200K)
-    REDUCED_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[1][TradePairCategory.EQUITIES]    # 1.0 (Tier 1, challenge)
+    EQUITIES_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER][TradePairCategory.EQUITIES]
 
-    def test_subaccount_challenge_buying_power_reduced(self):
-        """
-        SUBACCOUNT_CHALLENGE (Tier 1) has a lower buying power multiplier than non-challenge (Tier 2).
-        """
-        # Verify normal buying power first
+    def test_subaccount_challenge_buying_power_same_as_funded(self):
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
         normal_bp = self.DEFAULT_ACCOUNT_SIZE * self.EQUITIES_MULTIPLIER
-        self.assertAlmostEqual(account['buying_power'], normal_bp, places=2)
+        self.assertAlmostEqual(account.buying_power, normal_bp, places=2)
 
-        # Set bucket to SUBACCOUNT_CHALLENGE
         self.miner_account_client.set_miner_bucket(
             self.DEFAULT_MINER_HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE
         )
 
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        expected_bp = self.DEFAULT_ACCOUNT_SIZE * self.REDUCED_MULTIPLIER
-        self.assertAlmostEqual(account['buying_power'], expected_bp, places=2)
+        self.assertAlmostEqual(account.buying_power, normal_bp, places=2)
 
     def test_subaccount_challenge_buying_power_with_capital_used(self):
-        """
-        SUBACCOUNT_CHALLENGE buying power accounts for capital_used.
-        """
-        # Set bucket to SUBACCOUNT_CHALLENGE
         self.miner_account_client.set_miner_bucket(
             self.DEFAULT_MINER_HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE
         )
 
-        reduced_bp = self.DEFAULT_ACCOUNT_SIZE * self.REDUCED_MULTIPLIER
         order_value = 30_000.0
 
-        # Buy within reduced buying power (within available cash, no borrowing)
+        # Buy within available cash, no borrowing
         self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, 0.0)
 
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], reduced_bp - order_value, places=2)
-        self.assertAlmostEqual(account['capital_used'], order_value, places=2)
+        # Equities buying power = (balance - cash used) * multiplier
+        expected_bp = (self.DEFAULT_ACCOUNT_SIZE - order_value) * self.EQUITIES_MULTIPLIER
+        self.assertAlmostEqual(account.buying_power, expected_bp, places=2)
+        self.assertAlmostEqual(account.capital_used, order_value, places=2)
 
     def test_subaccount_challenge_insufficient_buying_power(self):
         """
-        SUBACCOUNT_CHALLENGE with reduced buying power should reject orders exceeding it.
-        Without the bucket, the same order would succeed under normal buying power.
+        SUBACCOUNT_CHALLENGE rejects orders beyond buying power and accepts the same
+        orders a funded subaccount accepts.
         """
-        reduced_bp = self.DEFAULT_ACCOUNT_SIZE * self.REDUCED_MULTIPLIER
-        order_value = reduced_bp + 10_000.0  # exceeds reduced buying power
+        normal_bp = self.DEFAULT_ACCOUNT_SIZE * self.EQUITIES_MULTIPLIER
 
-        # Set bucket to SUBACCOUNT_CHALLENGE
         self.miner_account_client.set_miner_bucket(
             self.DEFAULT_MINER_HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE
         )
 
+        too_large = normal_bp + 10_000.0
         with self.assertRaises(SignalException):
             self.miner_account_manager.process_order_buy(
-                self.DEFAULT_MINER_HOTKEY, order_value, order_value * 0.5
+                self.DEFAULT_MINER_HOTKEY, too_large, too_large * 0.5
             )
 
-        # Remove bucket — Tier 2 buying power ($150K) > order_value, same order should succeed
-        self.miner_account_client.set_miner_bucket(self.DEFAULT_MINER_HOTKEY, None)
-        borrowed = order_value * 0.5  # order ($110K) > cash ($100K) → borrow half
-        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, borrowed)
-        self.assertAlmostEqual(borrowed, 55_000.0, places=2)  # half of $110K
+        order_value = 110_000.0  # order > cash ($100K) → borrow half; within $150K buying power
+        self.miner_account_manager.process_order_buy(self.DEFAULT_MINER_HOTKEY, order_value, order_value * 0.5)
+        account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
+        self.assertAlmostEqual(account.total_borrowed_amount, 55_000.0, places=2)
 
-    def test_buying_power_restored_after_bucket_change(self):
+    def test_buying_power_unchanged_after_bucket_change(self):
         """
-        Changing bucket from SUBACCOUNT_CHALLENGE to SUBACCOUNT_FUNDED should
-        restore normal buying power.
+        Promoting SUBACCOUNT_CHALLENGE to SUBACCOUNT_FUNDED leaves buying power unchanged.
         """
         normal_bp = self.DEFAULT_ACCOUNT_SIZE * self.EQUITIES_MULTIPLIER
-        reduced_bp = self.DEFAULT_ACCOUNT_SIZE * self.REDUCED_MULTIPLIER
 
-        # Set bucket to SUBACCOUNT_CHALLENGE
         self.miner_account_client.set_miner_bucket(
             self.DEFAULT_MINER_HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE
         )
 
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], reduced_bp, places=2)
+        self.assertAlmostEqual(account.buying_power, normal_bp, places=2)
 
-        # Promote to SUBACCOUNT_FUNDED
         self.miner_account_client.set_miner_bucket(
             self.DEFAULT_MINER_HOTKEY, MinerBucket.SUBACCOUNT_FUNDED
         )
 
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)
-        self.assertAlmostEqual(account['buying_power'], normal_bp, places=2)
+        self.assertAlmostEqual(account.buying_power, normal_bp, places=2)
 
 
 if __name__ == '__main__':

@@ -10,6 +10,8 @@ Covers:
     per-(category, instrument_type) values for all 171 pairs × 4 tiers.
   * get_tier_positional_leverage — base × tier, XAU/XAG mini-dict bypass,
     Reg-T cap on EQUITIES SPOT.
+  * get_leverage_tier — standard subaccounts pinned to one tier; HL-linked
+    subaccounts and regular miners keep the legacy bucket/size curve.
   * get_portfolio_caps — multi-class returns (per-class, overall); single-class
     returns the same value twice.
   * TradePair property accessors are position-independent (type-scan).
@@ -22,6 +24,7 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.leverage_utils import (
     REG_T_OVERNIGHT_EQUITY_SPOT_CAP,
     _LEGACY_XAU_XAG_TIER_POSITIONAL,
+    get_leverage_tier,
     get_portfolio_caps,
     get_tier_positional_leverage,
 )
@@ -192,10 +195,11 @@ class TestGetPortfolioCaps(unittest.TestCase):
 
     BUCKET = MinerBucket.SUBACCOUNT_FUNDED
     ACCT = 50_000.0  # tier 2
+    HL_ADDRESS = "0x" + "a" * 40
 
     def test_single_class_returns_same_value_twice(self):
         per_class, overall = get_portfolio_caps(
-            MinerAssetClass.CRYPTO, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
+            MinerAssetClass.CRYPTO, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO, None,
         )
         self.assertEqual(per_class, overall)
         self.assertEqual(
@@ -205,7 +209,7 @@ class TestGetPortfolioCaps(unittest.TestCase):
 
     def test_multi_class_overall_from_dedicated_table(self):
         _, overall = get_portfolio_caps(
-            MinerAssetClass.HL_ALL, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
+            MinerAssetClass.HL_ALL, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO, self.HL_ADDRESS,
         )
         self.assertEqual(overall, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
 
@@ -219,31 +223,102 @@ class TestGetPortfolioCaps(unittest.TestCase):
         ):
             with self.subTest(cat=cat):
                 per_class, _ = get_portfolio_caps(
-                    MinerAssetClass.HL_ALL, self.BUCKET, self.ACCT, cat,
+                    MinerAssetClass.HL_ALL, self.BUCKET, self.ACCT, cat, self.HL_ADDRESS,
                 )
                 expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][cat]
                 self.assertEqual(per_class, expected)
 
     def test_none_subaccount_class_uses_defensive_default(self):
         per_class, overall = get_portfolio_caps(
-            None, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
+            None, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO, None,
         )
         # asset_class=None goes to single-class branch keyed on trade_pair_category.
         expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.CRYPTO]
         self.assertEqual(per_class, expected)
         self.assertEqual(overall, expected)
 
-    def test_challenge_bucket_uses_tier_1(self):
+    def test_standard_challenge_bucket_uses_standard_tier(self):
         per_class, _ = get_portfolio_caps(
             MinerAssetClass.CRYPTO,
             MinerBucket.SUBACCOUNT_CHALLENGE,
             self.ACCT,
             TradePairCategory.CRYPTO,
+            None,
         )
         self.assertEqual(
             per_class,
-            ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[1][TradePairCategory.CRYPTO],
+            ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER][TradePairCategory.CRYPTO],
         )
+
+    def test_hl_challenge_bucket_uses_tier_1(self):
+        per_class, overall = get_portfolio_caps(
+            MinerAssetClass.HL_ALL,
+            MinerBucket.SUBACCOUNT_CHALLENGE,
+            self.ACCT,
+            TradePairCategory.CRYPTO,
+            self.HL_ADDRESS,
+        )
+        self.assertEqual(per_class, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[1][TradePairCategory.CRYPTO])
+        self.assertEqual(overall, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL])
+
+
+# ---------------------------------------------------------------------------
+# get_leverage_tier
+# ---------------------------------------------------------------------------
+
+class TestGetLeverageTier(unittest.TestCase):
+
+    HL_ADDRESS = "0x" + "a" * 40
+    SIZES = (5_000.0, 50_000.0, 100_000.0, 200_000.0, 1_000_000.0)
+
+    def test_standard_subaccount_pinned_regardless_of_bucket_and_size(self):
+        expected = ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER
+        for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            for size in self.SIZES:
+                with self.subTest(bucket=bucket, size=size):
+                    self.assertEqual(get_leverage_tier(bucket, size, None), expected)
+                    self.assertEqual(get_leverage_tier(bucket, size, ""), expected)
+
+    def test_hl_subaccount_keeps_legacy_curve(self):
+        cases = (
+            (MinerBucket.SUBACCOUNT_CHALLENGE, 50_000.0, 1),
+            (MinerBucket.SUBACCOUNT_CHALLENGE, 2_000_000.0, 1),
+            (MinerBucket.SUBACCOUNT_FUNDED, 50_000.0, 2),
+            (MinerBucket.SUBACCOUNT_FUNDED, 199_999.0, 2),
+            (MinerBucket.SUBACCOUNT_FUNDED, 200_000.0, 3),
+            (MinerBucket.SUBACCOUNT_FUNDED, 1_000_000.0, 4),
+        )
+        for bucket, size, expected in cases:
+            with self.subTest(bucket=bucket, size=size):
+                self.assertEqual(get_leverage_tier(bucket, size, self.HL_ADDRESS), expected)
+
+    def test_regular_miner_keeps_size_curve(self):
+        for bucket in (MinerBucket.CHALLENGE, MinerBucket.MAINCOMP, MinerBucket.PROBATION, None):
+            with self.subTest(bucket=bucket):
+                self.assertEqual(get_leverage_tier(bucket, 50_000.0, None), 2)
+                self.assertEqual(get_leverage_tier(bucket, 200_000.0, None), 3)
+                self.assertEqual(get_leverage_tier(bucket, 1_000_000.0, None), 4)
+
+    def test_pro_subaccount_keeps_legacy_curve(self):
+        cases = (
+            (MinerBucket.PRO_CHALLENGE_DIRECT, 50_000.0, 1),
+            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 50_000.0, 1),
+            (MinerBucket.PRO_FUNDED, 50_000.0, 2),
+            (MinerBucket.PRO_FUNDED, 200_000.0, 3),
+            (MinerBucket.PRO_FUNDED, 1_000_000.0, 4),
+        )
+        for bucket, size, expected in cases:
+            with self.subTest(bucket=bucket, size=size):
+                self.assertEqual(get_leverage_tier(bucket, size, None), expected)
+
+    def test_pro_transition_bucket_is_pinned_like_standard(self):
+        # Transition week is still on the standard account, so it keeps the standard pinned tier.
+        for size in self.SIZES:
+            with self.subTest(size=size):
+                self.assertEqual(
+                    get_leverage_tier(MinerBucket.PRO_CHALLENGE_TRANSITION, size, None),
+                    ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER,
+                )
 
 
 # ---------------------------------------------------------------------------

@@ -500,9 +500,11 @@ class ValiConfig:
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
 
-    # Account size thresholds for leverage tier progression (non-challenge entity subaccounts)
+    # Account size thresholds for leverage tier progression (HL-linked subaccounts and regular miners)
     LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
+    # Standard (non-HL) subaccounts: one fixed tier for challenge and funded, no account-size scaling
+    STANDARD_SUBACCOUNT_LEVERAGE_TIER = 2
 
     # Cap leverage across an individual miner's entire portfolio, per pair.
     # Keyed on (asset class, instrument type).

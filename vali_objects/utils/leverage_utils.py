@@ -25,14 +25,19 @@ def get_position_leverage_bounds(trade_pair: TradePair) -> tuple[float, float]:
     return trade_pair.min_leverage, trade_pair.max_leverage
 
 
-def get_leverage_tier(miner_bucket, account_size: float) -> int:
-    """Return leverage tier (1-4) for an entity subaccount.
+def get_leverage_tier(miner_bucket, account_size: float, hl_address: str | None) -> int:
+    """Return leverage tier (1-4).
 
-    Tier 1: any subaccount challenge bucket, standard or pro (any size)
-    Tier 2: non-challenge, account_size < $200K
-    Tier 3: non-challenge, $200K <= account_size < $1M
-    Tier 4: non-challenge, account_size >= $1M
+    Standard (non-HL, non-pro) entity subaccounts are pinned to ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER
+    in both SUBACCOUNT_CHALLENGE and SUBACCOUNT_FUNDED; account size does not scale leverage.
+    HL-linked subaccounts, pro subaccounts and regular miners keep the legacy curve:
+      Tier 1: any subaccount challenge bucket, standard or pro (any size)
+      Tier 2: account_size < $200K
+      Tier 3: $200K <= account_size < $1M
+      Tier 4: account_size >= $1M
     """
+    if isinstance(miner_bucket, MinerBucket) and miner_bucket.is_subaccount and not miner_bucket.is_pro and not hl_address:
+        return ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER
     if miner_bucket and miner_bucket.is_subaccount_challenge:
         return 1
     if account_size >= ValiConfig.LEVERAGE_TIER4_MIN_ACCOUNT_SIZE:
@@ -47,8 +52,10 @@ def get_portfolio_caps(
     miner_bucket: MinerBucket,
     account_size: float,
     trade_pair_category: TradePairCategory,
+    hl_address: str | None,
 ) -> tuple[float, float]:
     """Return (per_class_cap_multiplier, overall_cap_multiplier) for subaccount portfolio caps.
+    `hl_address` only selects the tier curve (see get_leverage_tier).
 
     For multi-class subaccounts (HL_ALL, ALL_MARKETS), the two
     values differ:
@@ -63,7 +70,7 @@ def get_portfolio_caps(
     Takes primitives (not a MinerAccount object) so it can be called from the order-entry path
     where the account is materialized as an RPC dict, not the live MinerAccount.
     """
-    tier = get_leverage_tier(miner_bucket, account_size)
+    tier = get_leverage_tier(miner_bucket, account_size, hl_address)
     per_class_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier].get(trade_pair_category, 1.0)
     overall_cap = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
     return per_class_cap, overall_cap
@@ -177,7 +184,7 @@ def get_max_order_size(
     trade_pair = position.trade_pair
 
     if account.miner_bucket and account.miner_bucket.is_subaccount:
-        tier = get_leverage_tier(account.miner_bucket, account.account_size)
+        tier = get_leverage_tier(account.miner_bucket, account.account_size, account.hl_address)
         max_position_leverage = get_tier_positional_leverage(tier, trade_pair)
     else:
         max_position_leverage = trade_pair.max_leverage
@@ -193,7 +200,8 @@ def get_max_order_size(
         if not account.asset_class:
             raise ValueError("asset_class must be selected for trading")
         per_class_cap, _ = get_portfolio_caps(
-            account.asset_class, account.miner_bucket, account.account_size, trade_pair.trade_pair_category
+            account.asset_class, account.miner_bucket, account.account_size, trade_pair.trade_pair_category,
+            account.hl_address,
         )
         per_class_used = account.capital_used_by_class.get(trade_pair.trade_pair_category, 0.0)
         per_class_room = account.balance * per_class_cap - per_class_used

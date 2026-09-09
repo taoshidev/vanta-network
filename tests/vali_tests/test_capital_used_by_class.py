@@ -85,13 +85,28 @@ class TestMinerAccountMultiplier(unittest.TestCase):
         )
         self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
 
-    def test_multiplier_challenge_bucket_uses_tier_1(self):
+    def test_multiplier_hl_challenge_bucket_uses_tier_1(self):
         account = MinerAccount(
             miner_hotkey="hk",
             asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_CHALLENGE,
+            hl_address="0x" + "a" * 40,
         )
         self.assertEqual(account.multiplier, ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL])
+
+    def test_multiplier_standard_subaccount_pinned_to_standard_tier(self):
+        tier = ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER
+        for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED):
+            with self.subTest(bucket=bucket):
+                account = MinerAccount(
+                    miner_hotkey="hk",
+                    asset_class=MinerAssetClass.ALL_MARKETS,
+                    miner_bucket=bucket,
+                )
+                self.assertEqual(
+                    account.multiplier,
+                    ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][MinerAssetClass.ALL_MARKETS],
+                )
 
     def test_buying_power_multi_class_uses_overall_cap(self):
         """buying_power = balance × multiplier − capital_used for non-equities."""

@@ -12,7 +12,7 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 2. An entity pays a one-time registration fee of **1,000 Theta**, which is permanently slashed on registration.
 3. Each subaccount requires collateral proportional to its account size (see [Collateral Requirements](#collateral-requirements)).
 4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, `commodities`, or `hl_all`) at creation. This **cannot be changed**. HyperLiquid-linked subaccounts always use `hl_all`.
-5. New subaccounts enter a **challenge period** with stricter thresholds and reduced leverage (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
+5. New subaccounts enter a **challenge period** with stricter thresholds; HL-linked subaccounts also trade at reduced leverage during it (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
 7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours, rate limits, etc.
 8. A maximum of **10 entities** can be registered on the network at any time.
@@ -160,8 +160,8 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
 
 | Stage | Bucket | Description |
 |---|---|---|
-| SUBACCOUNT_CHALLENGE | 1× dust | Challenge phase — reduced leverage, no payout |
-| SUBACCOUNT_FUNDED | earning | Passed challenge — full leverage, earns payouts |
+| SUBACCOUNT_CHALLENGE | 1× dust | Challenge phase — no payout (HL-linked: reduced leverage) |
+| SUBACCOUNT_FUNDED | earning | Passed challenge — earns payouts |
 | eliminated | — | Permanently removed from competition |
 
 ### Challenge Period Requirements
@@ -179,14 +179,14 @@ Passing is evaluated continuously — a subaccount is promoted immediately once 
 - **Trailing** (default): eliminated if intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaches **5%**.
 - **Static**: eliminated if equity (including unrealized PnL) drops more than **5%** below the subaccount's starting balance, or if intraday drawdown from the day's opening equity reaches **5%** (same intraday drawdown check as trailing, with a flat 5% threshold).
 
-**Portfolio leverage limits:** A subaccount's maximum portfolio leverage (the sum of all open position leverages) is capped by tier. **Tier 1** applies to any subaccount in `SUBACCOUNT_CHALLENGE`, regardless of account size. Once promoted to `SUBACCOUNT_FUNDED`, the tier is instead determined by account size, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
+**Portfolio leverage limits:** A subaccount's maximum portfolio leverage (the sum of all open position leverages) is capped by tier. Standard subaccounts are pinned to **Tier 2** in both `SUBACCOUNT_CHALLENGE` and `SUBACCOUNT_FUNDED`; account size does not change the tier. HL-linked subaccounts keep the legacy curve: **Tier 1** during `SUBACCOUNT_CHALLENGE`, then by account size once promoted, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
 
-| Tier | Bucket                              | Crypto | Forex | Commodities | Equities | HL All | All Markets |
-|------|--------------------------------------|--------|-------|-------------|----------|--------|-------------|
-| 1    | SUBACCOUNT_CHALLENGE (any size)      | 2.0x   | 5.0x  | 2.0x        | 1.0x     | 4.0x   | 6.0x        |
-| 2    | SUBACCOUNT_FUNDED, <$200K            | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
-| 3    | SUBACCOUNT_FUNDED, $200K–$1M         | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
-| 4    | SUBACCOUNT_FUNDED, ≥$1M              | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
+| Tier | Bucket                                                      | Crypto | Forex | Commodities | Equities | HL All | All Markets |
+|------|--------------------------------------------------------------|--------|-------|-------------|----------|--------|-------------|
+| 1    | HL-linked, SUBACCOUNT_CHALLENGE (any size)                   | 2.0x   | 5.0x  | 2.0x        | 1.0x     | 4.0x   | 6.0x        |
+| 2    | Standard (any bucket, any size); HL-linked FUNDED, <$200K    | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
+| 3    | HL-linked FUNDED, $200K–$1M                                  | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
+| 4    | HL-linked FUNDED, ≥$1M                                       | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
 
 `HL All` and `All Markets` apply to multi-class subaccounts (Hyperliquid-linked and standard subaccounts using those asset classes, respectively) as the overall cap across all asset classes; single-class subaccounts (crypto, forex, equities, commodities) use only their own column.
 

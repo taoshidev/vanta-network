@@ -124,7 +124,7 @@ class MinerAccount:
             return 1
 
         from vali_objects.utils.leverage_utils import get_leverage_tier
-        tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
+        tier = get_leverage_tier(self.miner_bucket, self.get_account_size(), self.hl_address)
         return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
     @property
