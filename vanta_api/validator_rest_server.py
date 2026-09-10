@@ -2650,8 +2650,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # subaccount — and the elimination frees the victim's hl_address binding for
             # re-registration by the attacker. Tier-500 admin keys retain cross-entity
             # capability, consistent with /admin/eliminate/<hotkey>.
+            # entity_hotkey must be a real hotkey string: a JSON null passes the
+            # field-presence check above, and None == None against a missing alias
+            # must never read as ownership.
+            if not isinstance(entity_hotkey, str) or not entity_hotkey.strip():
+                return jsonify({'error': 'entity_hotkey must be a non-empty string'}), 400
             caller_entity = self.api_key_to_alias.get(api_key)
-            if entity_hotkey != caller_entity and not self.can_access_tier(api_key, 500):
+            if (caller_entity is None or entity_hotkey != caller_entity) and not self.can_access_tier(api_key, 500):
                 logger.warning(
                     f"Rejected cross-entity eliminate: key alias [{caller_entity}] targeted "
                     f"entity [{entity_hotkey}] subaccount [{subaccount_id}]"
