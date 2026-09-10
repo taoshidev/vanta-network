@@ -92,6 +92,32 @@ class TestEliminateSubaccountOwnership(unittest.TestCase):
         finally:
             del KEY_TIERS["ops-reader"]
 
+    def test_key_missing_from_alias_map_rejected(self):
+        # A valid tier-200 key absent from api_key_to_alias (stale/out-of-sync
+        # mapping) must be rejected, never treated as an owner.
+        KEY_TIERS["unmapped-key"] = 200
+        try:
+            resp = self._post("unmapped-key", ENTITY_A)
+            self.assertEqual(resp.status_code, 403)
+            self.server._entity_client.eliminate_subaccount.assert_not_called()
+        finally:
+            del KEY_TIERS["unmapped-key"]
+
+    def test_null_entity_hotkey_rejected(self):
+        # JSON null passes the field-presence check; it must never match a
+        # missing alias (None == None) and read as ownership.
+        KEY_TIERS["unmapped-key"] = 200
+        try:
+            resp = self.client.post(
+                "/entity/subaccount/eliminate",
+                headers={"Authorization": "Bearer unmapped-key"},
+                json={"entity_hotkey": None, "subaccount_id": 0},
+            )
+            self.assertEqual(resp.status_code, 400)
+            self.server._entity_client.eliminate_subaccount.assert_not_called()
+        finally:
+            del KEY_TIERS["unmapped-key"]
+
 
 class TestRebuildAccountTierGate(unittest.TestCase):
     """F2: account rebuild is admin-only (tier 500), including preview mode."""
@@ -196,9 +222,58 @@ class TestCreateSubaccountReplayProtection(unittest.TestCase):
         self.server._entity_client.create_subaccount.assert_not_called()
 
     def test_stale_timestamp_rejected(self):
-        body = self._signed_body(timestamp=int(time.time() * 1000) - 10 * 60 * 1000)
+        # One millisecond past the NonceManager window (read from the real
+        # instance, so this tracks the implementation's TTL).
+        stale_ms = self.server.nonce_manager.ttl_ms + 1
+        body = self._signed_body(timestamp=int(time.time() * 1000) - stale_ms)
         resp = self._post(body)
         self.assertEqual(resp.status_code, 401)
+        self.server._entity_client.create_subaccount.assert_not_called()
+
+    def test_same_nonce_different_entity_allowed(self):
+        # Nonces are scoped per coldkey::hotkey — a nonce used by one entity
+        # must not block a different entity's request.
+        shared_nonce = uuid.uuid4().hex
+        first = self._post(self._signed_body(nonce=shared_nonce))
+        self.assertEqual(first.status_code, 200)
+
+        other_cold = Keypair.create_from_uri("//Charlie")
+        other_hot = Keypair.create_from_uri("//Dave").ss58_address
+        ts = int(time.time() * 1000)
+        sig_dict = {
+            "account_size": 25000.0,
+            "asset_class": "crypto",
+            "entity_coldkey": other_cold.ss58_address,
+            "entity_hotkey": other_hot,
+            "nonce": shared_nonce,
+            "timestamp": ts,
+        }
+        body = {
+            "entity_coldkey": other_cold.ss58_address,
+            "entity_hotkey": other_hot,
+            "account_size": 25000.0,
+            "asset_class": "crypto",
+            "signature": other_cold.sign(json.dumps(sig_dict, sort_keys=True).encode()).hex(),
+            "nonce": shared_nonce,
+            "timestamp": ts,
+            "version": "3.1.0",
+        }
+        second = self._post(body)
+        self.assertEqual(second.status_code, 200, second.get_json())
+
+    def test_old_cli_version_rejected_with_upgrade_message(self):
+        body = self._signed_body()
+        body["version"] = "2.2.1"
+        resp = self._post(body)
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("upgrade", resp.get_json()["error"].lower())
+        self.server._entity_client.create_subaccount.assert_not_called()
+
+    def test_unowned_hotkey_rejected(self):
+        # Subtensor coldkey->hotkey ownership failure must 403 before any RPC.
+        self.server._verify_coldkey_owns_hotkey = lambda ck, hk: False
+        resp = self._post(self._signed_body())
+        self.assertEqual(resp.status_code, 403)
         self.server._entity_client.create_subaccount.assert_not_called()
 
     def test_collateral_exempt_rejected(self):
