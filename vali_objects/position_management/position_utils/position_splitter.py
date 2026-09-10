@@ -201,6 +201,7 @@ class PositionSplitter:
                     position_uuid=order_group[0].order_uuid,
                     open_ms=0,
                     trade_pair=position.trade_pair,
+                    position_type=order_group[0].order_type,
                     orders=order_group,
                     account_size=position.account_size
                 )
