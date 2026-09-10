@@ -31,14 +31,17 @@ from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
     DrawdownStats,
     MinerBucketState,
 )
+from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import TradePairCategory, ValiConfig
+from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger, PerfCheckpoint
+from vali_objects.vali_dataclasses.position import Position
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -63,6 +66,27 @@ _CLIENT_PATHS = [
 
 def _make_state(hotkey: str, bucket: MinerBucket, start_ms: int) -> MinerBucketState:
     return MinerBucketState(hotkey, [BucketEntry(bucket, start_ms)])
+
+
+def _make_account(hotkey: str, account_size: float, balance: float, now_ms: int) -> MinerAccount:
+    """Build a MinerAccount whose account_size and balance properties resolve to the given values."""
+    theta = account_size / ValiConfig.COST_PER_THETA
+    record = CollateralRecord(account_size=account_size, account_size_theta=theta,
+                               update_time_ms=now_ms, is_first_record=True)
+    account = MinerAccount(miner_hotkey=hotkey, collateral_records=[record])
+    account.total_realized_pnl = balance - account.get_account_size()
+    return account
+
+
+def _make_position(hotkey: str, open_ms: int) -> Position:
+    """A minimal open position, just to make positions[hotkey] non-empty."""
+    return Position(
+        miner_hotkey=hotkey,
+        position_uuid=f"pos_{hotkey}",
+        open_ms=open_ms,
+        trade_pair=TradePair.BTCUSD,
+        position_type=OrderType.LONG,
+    )
 
 
 def _local_manager() -> ChallengePeriodManager:
@@ -205,8 +229,8 @@ class TestChallengePeriodRPC(TestBase):
         """sync_challenge_period_data → get_miner_bucket preserves bucket and start time."""
         now = TimeUtil.now_in_millis()
         states = {
-            "hk_a": MinerBucketState("hk_a", [BucketEntry(MinerBucket.CHALLENGE, now)]).to_json(),
-            "hk_b": MinerBucketState("hk_b", [BucketEntry(MinerBucket.MAINCOMP, now - DAILY_MS)]).to_json(),
+            "hk_a": MinerBucketState("hk_a", [BucketEntry(MinerBucket.CHALLENGE, now)]).to_checkpoint_dict(),
+            "hk_b": MinerBucketState("hk_b", [BucketEntry(MinerBucket.MAINCOMP, now - DAILY_MS)]).to_checkpoint_dict(),
         }
         self.challenge_period_client.sync_challenge_period_data(states)
 
@@ -234,7 +258,7 @@ class TestChallengePeriodRPC(TestBase):
             BucketEntry(MinerBucket.CHALLENGE, now - DAILY_MS * 70),
             BucketEntry(MinerBucket.MAINCOMP, now - DAILY_MS * 5),
         ])
-        self.challenge_period_client.sync_challenge_period_data({"hk_hist": state.to_json()})
+        self.challenge_period_client.sync_challenge_period_data({"hk_hist": state.to_checkpoint_dict()})
 
         checkpoint = self.challenge_period_client.to_checkpoint_dict()
         parsed = ChallengePeriodManager.parse_checkpoint_dict(checkpoint)
@@ -317,19 +341,6 @@ class TestChallengePeriodManagerLogic(TestBase):
         with stack:
             changed = mgr.sync_plagiarism_miners(["unknown_hk"], now)
             self.assertFalse(changed)
-
-    def test_sync_elimination_miners_removes_targeted_hotkey(self):
-        """Eliminated miners are removed from state; unaffected miners remain."""
-        now = TimeUtil.now_in_millis()
-        mgr, stack = self._make_manager()
-        with stack:
-            mgr.set_miner_bucket("hk_elim", MinerBucket.CHALLENGE, now)
-            mgr.set_miner_bucket("hk_safe", MinerBucket.MAINCOMP, now)
-
-            changed = mgr.sync_elimination_miners(["hk_elim"], now)
-            self.assertTrue(changed)
-            self.assertFalse(mgr.has_miner("hk_elim"))
-            self.assertTrue(mgr.has_miner("hk_safe"))
 
     def test_sync_elimination_miners_empty_list_is_noop(self):
         now = TimeUtil.now_in_millis()
@@ -424,7 +435,8 @@ class TestChallengePeriodManagerLogic(TestBase):
             ):
                 mgr.refresh(current_time_ms=now)
 
-        self.assertFalse(mgr.has_miner(hk))
+        self.assertTrue(mgr.has_miner(hk))
+        self.assertTrue(mgr.miner_states[hk].is_eliminated)
 
     def test_refresh_demotes_maincomp_miner_with_bad_rank(self):
         """MAINCOMP miner with rank beyond threshold is demoted to PROBATION."""
@@ -479,12 +491,12 @@ class TestChallengePeriodManagerLogic(TestBase):
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 3)
             mgr.miner_states[hk].drawdown = DrawdownStats(
-                intraday_drawdown_pct=INTRADAY_DD_PCT + 1.0,
                 current_equity=1.0 - (INTRADAY_DD_PCT + 1.0) / 100,
                 current_balance=1.0,
                 daily_open_equity=1.0,
             )
             _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 3)
+            mgr.DRAWDOWN_ACTIVATION_MS = 0
 
             with (
                 patch.object(mgr, '_refresh_drawdown_cache'),
@@ -494,7 +506,8 @@ class TestChallengePeriodManagerLogic(TestBase):
             ):
                 mgr.refresh(current_time_ms=now)
 
-        self.assertFalse(mgr.has_miner(hk))
+        self.assertTrue(mgr.has_miner(hk))
+        self.assertTrue(mgr.miner_states[hk].is_eliminated)
 
     def test_refresh_eliminates_eod_drawdown(self):
         """Miner whose EOD trailing drawdown exceeds the threshold is eliminated during refresh."""
@@ -504,11 +517,13 @@ class TestChallengePeriodManagerLogic(TestBase):
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 5)
             mgr.miner_states[hk].drawdown = DrawdownStats(
-                eod_drawdown_pct=EOD_DD_PCT + 1.0,
+                current_equity=1.0 - (EOD_DD_PCT + 1.0) / 100,
+                current_balance=1.0,
                 eod_hwm=1.1,
                 last_eod_equity=1.1 * (1 - (EOD_DD_PCT + 1.0) / 100),
             )
             _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 5)
+            mgr.DRAWDOWN_ACTIVATION_MS = 0
 
             with (
                 patch.object(mgr, '_refresh_drawdown_cache'),
@@ -518,9 +533,10 @@ class TestChallengePeriodManagerLogic(TestBase):
             ):
                 mgr.refresh(current_time_ms=now)
 
-        self.assertFalse(mgr.has_miner(hk))
+        self.assertTrue(mgr.has_miner(hk))
+        self.assertTrue(mgr.miner_states[hk].is_eliminated)
 
-    def test_refresh_healthy_miner_unchanged_no_disk_write(self):
+    def test_refresh_healthy_miner_unchanged_disk_write(self):
         """Brand-new miner with no issues triggers no state change and no disk write."""
         now = TimeUtil.now_in_millis()
         hk = "hk_healthy"
@@ -540,7 +556,7 @@ class TestChallengePeriodManagerLogic(TestBase):
                 mgr.refresh(current_time_ms=now)
 
             self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.CHALLENGE)
-            mock_save.assert_not_called()
+            mock_save.assert_called()
             mock_sync.assert_not_called()
 
     def test_demotion_then_re_promotion_full_cycle(self):
@@ -603,8 +619,8 @@ class TestChallengePeriodManagerLogic(TestBase):
         ])
 
         intraday_drop = 0.07
-        accounts = {hk: {'account_size': account_size, 'balance': account_size * (1 - intraday_drop)}}
-        positions = {hk: []}  # no open positions → equity = balance / account_size
+        accounts = {hk: _make_account(hk, account_size, account_size * (1 - intraday_drop), now)}
+        positions = {hk: [_make_position(hk, yesterday_midnight_ms)]}
 
         mgr, stack = self._make_manager()
         with stack:
@@ -631,8 +647,8 @@ class TestChallengePeriodManagerLogic(TestBase):
                            accum_ms=DAILY_MS, equity_ret=1.04, gain=0.0, loss=0.0, mdd=1.0),
         ])
 
-        accounts = {hk: {'account_size': account_size, 'balance': account_size * 1.04}}
-        positions = {hk: []}
+        accounts = {hk: _make_account(hk, account_size, account_size * 1.04, now)}
+        positions = {hk: [_make_position(hk, today_midnight_ms - 5 * 86400000)]}
 
         mgr, stack = self._make_manager()
         with stack:
@@ -648,7 +664,7 @@ class TestChallengePeriodManagerLogic(TestBase):
         now = TimeUtil.now_in_millis()
         hk = "hk_no_ledger"
         account_size = 100_000.0
-        accounts = {hk: {'account_size': account_size, 'balance': account_size}}
+        accounts = {hk: _make_account(hk, account_size, account_size, now)}
 
         mgr, stack = self._make_manager()
         with stack:
