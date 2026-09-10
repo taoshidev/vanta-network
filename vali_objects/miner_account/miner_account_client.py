@@ -196,6 +196,25 @@ class MinerAccountClient(RPCClientBase):
     def get_dashboard(self, hotkey: str) -> dict | None:
         return self._server.get_dashboard_rpc(hotkey)
 
+    def get_daily_open_snapshot(self, hotkey: str) -> Optional[dict]:
+        """Return the most recent daily open snapshot for a miner, or None if not yet recorded."""
+        return self._server.get_daily_open_snapshot(hotkey)
+
+    def take_account_snapshot(
+        self,
+        hotkey: Optional[str] = None,
+        timestamp_ms: Optional[int] = None,
+        reset_snapshot: bool = False,
+        update_daily_open: bool = False,
+    ) -> int:
+        """Snapshot account state at the current (or given) UTC day open. Returns count snapshotted."""
+        return self._server.take_account_snapshot(
+            hotkey=hotkey,
+            timestamp_ms=timestamp_ms,
+            reset_snapshot=reset_snapshot,
+            update_daily_open=update_daily_open,
+        )
+
     def update_unrealized_pnl(self, hotkey_to_unrealized_pnl: Dict[str, float]) -> None:
         """Batch update unrealized PNL for multiple hotkeys."""
         self._server.update_unrealized_pnl(hotkey_to_unrealized_pnl)

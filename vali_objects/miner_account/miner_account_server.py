@@ -242,6 +242,21 @@ class MinerAccountServer(RPCServerBase):
             return None
         return account.daily_open_snapshot.to_dict()
 
+    def take_account_snapshot(
+        self,
+        hotkey: Optional[str] = None,
+        timestamp_ms: Optional[int] = None,
+        reset_snapshot: bool = False,
+        update_daily_open: bool = False,
+    ) -> int:
+        """Snapshot account state at the current (or given) UTC day open. Returns count snapshotted."""
+        return self._manager.take_account_snapshot(
+            hotkey=hotkey,
+            timestamp_ms=timestamp_ms,
+            reset_snapshot=reset_snapshot,
+            update_daily_open=update_daily_open,
+        )
+
     def get_dashboard_rpc(self, hotkey: str) -> dict | None:
         return self._manager.get_dashboard(hotkey)
 

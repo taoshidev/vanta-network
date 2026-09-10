@@ -345,6 +345,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
+        self.app.route("/admin/reset-snapshot/<hotkey>", methods=["POST"])(self.reset_account_snapshot)
         self.app.route("/admin/drawdown-criteria", methods=["POST"])(self.update_drawdown_criteria)
 
         # Collateral endpoints
@@ -1942,6 +1943,33 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
+    def reset_account_snapshot(self, hotkey: str):
+        """
+        Reset a miner's daily open snapshot to their current balance/equity.
+        Requires tier 500 access.
+
+        Example:
+        curl -X POST http://localhost:48888/admin/reset-snapshot/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Reset snapshot endpoint requires tier 500 access'}), 403
+
+        try:
+            count = self._miner_account_client.take_account_snapshot(hotkey=hotkey, reset_snapshot=True)
+            if count == 0:
+                return jsonify({'error': f'No account found for hotkey {hotkey}'}), 404
+
+            snapshot = self._miner_account_client.get_daily_open_snapshot(hotkey)
+            return jsonify({'status': 'success', 'hotkey': hotkey, 'snapshot': snapshot}), 200
+        except Exception as e:
+            logger.error(f"Error resetting snapshot for {hotkey}: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
     def delete_position(self, hotkey: str, position_uuid: str):
         """
         Delete (or archive) a single position for a miner.
@@ -2601,10 +2629,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     def revert_elimination(self, hotkey: str):
         """
         Revert an elimination for a hotkey (regular or synthetic). Updates:
-          - Challenge period manager: pops the ELIMINATED bucket entry (restoring prior bucket),
-            resets drawdown cache, syncs MinerAccount, saves to disk
           - Elimination manager: removes the elimination record
           - Debt ledger: deleted
+          - Challenge period manager: appends the penultimate bucket at the current time (restoring it),
+            resets drawdown cache, syncs MinerAccount, saves to disk
 
         Query params:
           reopen_positions: if "true", strips force-close orders and reopens positions
