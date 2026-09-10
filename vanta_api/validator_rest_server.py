@@ -336,7 +336,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
 
         # Account management endpoints
-        self.app.route("/miner-account/rebuild/<hotkey>", methods=["POST"])(self.rebuild_miner_account)
+        # Admin-prefixed so the tier-500 audit logger (base_rest_server) records every call.
+        self.app.route("/admin/rebuild-account/<hotkey>", methods=["POST"])(self.rebuild_miner_account)
         self.app.route("/wipe/<hotkey>", methods=["POST"])(self.wipe_hotkey)
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["DELETE"])(self.delete_position)
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
@@ -1668,20 +1669,23 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Supports preview mode (default) which computes the rebuilt state without persisting,
         and an optional open_ms_after filter to only include positions opened after a timestamp.
 
-        Requires tier 200 access.
+        Requires tier 500 (admin) access: this rewrites an arbitrary miner's persisted
+        balance/equity/buying power, and tier 200 is the self-service entity tier that any
+        registered entity can obtain — it must never gate cross-account mutation. Preview mode
+        is gated too (it discloses arbitrary miners' account internals).
 
         Example:
-        curl -X POST http://localhost:48888/miner-account/rebuild/<hotkey> \\
-          -H "Authorization: Bearer YOUR_API_KEY" \\
+        curl -X POST http://localhost:48888/admin/rebuild-account/<hotkey> \\
+          -H "Authorization: Bearer YOUR_ADMIN_API_KEY" \\
           -H "Content-Type: application/json" \\
           -d '{"open_ms_after": 1700000000000, "preview": true}'
         """
-        # Auth check - tier 200 required
+        # Auth check - tier 500 (admin) required
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
             return jsonify({'error': 'Unauthorized access'}), 401
-        if not self.can_access_tier(api_key, 200):
-            return jsonify({'error': 'Rebuild endpoint requires tier 200 access'}), 403
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Rebuild endpoint requires tier 500 (admin) access'}), 403
 
         try:
             # Parse request body
@@ -2320,6 +2324,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_coldkey": "5FxY...",
             "account_size": 25000,
             "asset_class": "crypto",
+            "nonce": "one-time-hex",
+            "timestamp": 1700000000000,
             "signature": "0x..."
           }'
 
@@ -2333,6 +2339,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "asset_class": "hl_all",
             "hl_address": "0x1234...abcd",
             "payout_address": "0xAbCd...1234",
+            "nonce": "one-time-hex",
+            "timestamp": 1700000000000,
             "signature": "0x..."
           }'
         """
@@ -2365,8 +2373,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             is_hl = 'hl_address' in data
 
-            # Validate required fields
-            required_fields = ['entity_coldkey', 'entity_hotkey', 'account_size', 'asset_class', 'signature']
+            # Validate required fields. nonce + timestamp are REQUIRED and signature-covered
+            # (see sig_dict below): without them a captured request body could be replayed
+            # forever, and every accepted replay re-triggers the Theta registration-fee
+            # slashing flow. Mirrors the /collateral/withdraw pattern.
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'account_size', 'asset_class',
+                               'signature', 'nonce', 'timestamp']
             if is_hl:
                 required_fields.append('hl_address')
             missing_fields = [field for field in required_fields if field not in data]
@@ -2377,8 +2389,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             entity_hotkey = data['entity_hotkey']
             account_size = data['account_size']
             asset_class = data['asset_class']
-            collateral_exempt = data.get('collateral_exempt')
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
+
+            # collateral_exempt is NOT accepted over the network. It waives the collateral
+            # registration fee, and the only "auth" on this endpoint is the caller's own
+            # coldkey signature — i.e. any entity could self-sign the flag and register fee
+            # -free accounts at scale. Exempt accounts are created only by Taoshi tooling
+            # calling entity_client/entity_manager directly on the validator host. Reject
+            # loudly (rather than silently ignore) so a signed-with-flag request fails with
+            # a clear error instead of a confusing signature mismatch. Covers the legacy
+            # 'admin' key name from before the #886 rename.
+            if data.get('collateral_exempt') or data.get('admin'):
+                return jsonify({'error': 'collateral_exempt is not accepted on this endpoint'}), 403
+            collateral_exempt = False
             # Optional idempotency key. Deliberately NOT part of the signed
             # payload (sig_dict below is frozen) so that a new gateway signing
             # the legacy field set still verifies against an older validator,
@@ -2388,9 +2411,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if client_ref is not None:
                 if not isinstance(client_ref, str) or not re.match(r'^[A-Za-z0-9_.:-]{1,64}\Z', client_ref):
                     return jsonify({'error': 'client_ref must be 1-64 chars of [A-Za-z0-9_.:-]'}), 400
-
-            if collateral_exempt is not None and not isinstance(collateral_exempt, bool):
-                return jsonify({'error': 'collateral_exempt must be a boolean'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -2429,9 +2449,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 "asset_class": asset_class,
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey,
+                # Signature-covered so an attacker can neither strip nor alter them; the
+                # nonce check below is what makes a captured request single-use.
+                "nonce": str(data['nonce']),
+                "timestamp": data['timestamp'],
             }
-            if collateral_exempt:
-                sig_dict["collateral_exempt"] = collateral_exempt
             if is_hl:
                 sig_dict["hl_address"] = hl_address
                 if payout_address is not None:
@@ -2443,14 +2465,27 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not is_valid:
                 return jsonify({'error': 'Invalid signature. Subaccount creation unauthorized'}), 401
 
-            collateral_exempt = bool(collateral_exempt)
-
             # Verify coldkey-hotkey ownership using subtensor
             t0 = time.time()
             owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
             timings['verify_coldkey_ownership'] = int((time.time() - t0) * 1000)
             if not owns_hotkey:
                 return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Replay protection: one-time nonce within a bounded timestamp window (same
+            # pattern and manager as /collateral/withdraw). Each accepted create triggers
+            # the Theta registration-fee slashing flow, so replays are a treasury drain.
+            try:
+                nonce_timestamp = int(data['timestamp'])
+            except (TypeError, ValueError):
+                return jsonify({'error': 'timestamp must be an integer (ms since epoch)'}), 400
+            is_valid, error_msg = self.nonce_manager.is_valid_request(
+                address=f"{entity_coldkey}::{entity_hotkey}",
+                nonce=str(data['nonce']),
+                timestamp=nonce_timestamp,
+            )
+            if not is_valid:
+                return jsonify({'error': f'{error_msg}'}), 401
 
             # Create subaccount via RPC
             t0 = time.time()
@@ -2606,6 +2641,22 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 subaccount_id = int(subaccount_id)
             except (ValueError, TypeError):
                 return jsonify({'error': 'subaccount_id must be an integer'}), 400
+
+            # Ownership check: an entity API key may only eliminate its OWN subaccounts.
+            # Entity keys are issued by /entity/request-api-key with the api_keys.json entry
+            # keyed by the entity hotkey, so api_key_to_alias maps key -> entity_hotkey (the
+            # same identity pattern websocket_server uses for dashboard scoping). Without this,
+            # ANY tier-200 key (every registered entity has one) could eliminate a rival's
+            # subaccount — and the elimination frees the victim's hl_address binding for
+            # re-registration by the attacker. Tier-500 admin keys retain cross-entity
+            # capability, consistent with /admin/eliminate/<hotkey>.
+            caller_entity = self.api_key_to_alias.get(api_key)
+            if entity_hotkey != caller_entity and not self.can_access_tier(api_key, 500):
+                logger.warning(
+                    f"Rejected cross-entity eliminate: key alias [{caller_entity}] targeted "
+                    f"entity [{entity_hotkey}] subaccount [{subaccount_id}]"
+                )
+                return jsonify({'error': 'API key is not authorized for this entity'}), 403
 
             # Eliminate subaccount via RPC
             success, message = self._entity_client.eliminate_subaccount(
