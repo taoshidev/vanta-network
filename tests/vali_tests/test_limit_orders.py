@@ -193,10 +193,9 @@ class TestLimitOrders(TestBase):
             position_uuid=f"pos_{TimeUtil.now_in_millis()}",
             open_ms=TimeUtil.now_in_millis(),
             trade_pair=trade_pair,
+            position_type=position_type or OrderType.LONG,
             account_size=1000.0  # Required for position validation
         )
-        if position_type:
-            position.position_type = position_type
         return position
 
     def get_orders_from_server(self, miner_hotkey, trade_pair):
@@ -418,8 +417,7 @@ class TestLimitOrders(TestBase):
             self.DEFAULT_MINER_HOTKEY
         )
 
-        self.assertEqual(result["status"], "deleted")
-        self.assertEqual(result["deleted_count"], 2)
+        self.assertEqual(result, 2)
 
         # Verify all deleted from memory
         total_orders = self.count_orders_in_server(self.DEFAULT_MINER_HOTKEY)
@@ -447,7 +445,7 @@ class TestLimitOrders(TestBase):
             self.DEFAULT_MINER_HOTKEY
         )
 
-        self.assertEqual(result["deleted_count"], 1)
+        self.assertEqual(result, 1)
 
         # Verify miner2's orders still exist
         miner2_orders = self.get_orders_from_server(miner2, self.DEFAULT_TRADE_PAIR)
@@ -843,19 +841,13 @@ class TestLimitOrders(TestBase):
             order
         )
 
-        # Eliminate miner - use proper API method
+        # Eliminate miner - use proper API method (append_elimination_row cancels the
+        # miner's limit orders internally, so no separate cleanup call is needed)
         from vali_objects.utils.elimination.elimination_manager import EliminationReason
         self.elimination_client.append_elimination_row(
             self.DEFAULT_MINER_HOTKEY,
-            TimeUtil.now_in_millis(),
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value
-        )
-
-        # Trigger cleanup for eliminated miner (deletes limit orders)
-        self.elimination_client.handle_eliminated_miner(
-            self.DEFAULT_MINER_HOTKEY,
-            trade_pair_to_price_source_dict={},
-            iteration_epoch=None
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
+            elimination_time_ms=TimeUtil.now_in_millis()
         )
 
         # Verify eliminated miner's orders are not accessible via orchestrator client
