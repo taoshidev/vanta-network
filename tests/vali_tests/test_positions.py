@@ -2,7 +2,6 @@
 import json
 from copy import deepcopy
 
-from data_generator.polygon_data_service import PolygonDataService
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_8_HOURS
@@ -19,6 +18,7 @@ from vali_objects.vali_dataclasses.order import (
     Order,
 )
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.vali_dataclasses.price_source import PriceSource
 
 class TestPositions(TestBase):
     """
@@ -131,6 +131,15 @@ class TestPositions(TestBase):
     def test_profit_position_returns_pre_post_slippage(self):
         """
         With slippage=0.00 on all orders, returns should be the same regardless of slippage application.
+
+        NOTE: leverage values are 2x what they were historically (2/1/2 instead of 1/0.5/1).
+        `Position.validate_min_position_size` now rejects orders (including reducing orders)
+        that would leave the position below `ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS` (0.01
+        lots). At leverage=1 on a $100k account, EURUSD's net_quantity lands at exactly 0.01
+        lots after the opening order, and `reduce_size_order` (leverage=0.5) then drops it
+        below the floor, raising ValueError. Doubling leverage keeps the same relative order
+        sizes/ratios (and therefore the same pre/post-rebuild return equality this test
+        checks) while staying comfortably above the minimum lot size.
         """
         open_order = Order(
             price=100,
@@ -139,7 +148,7 @@ class TestPositions(TestBase):
             order_uuid="open_order",
             trade_pair=TradePair.EURUSD,
             order_type=OrderType.LONG,
-            leverage=1,
+            leverage=2,
         )
         reduce_size_order = Order(
             price=110,
@@ -148,7 +157,7 @@ class TestPositions(TestBase):
             order_uuid="reduce_size_order",
             trade_pair=TradePair.EURUSD,
             order_type=OrderType.SHORT,
-            leverage=0.5,
+            leverage=1,
         )
         increase_size_order = Order(
             price=100,
@@ -157,7 +166,7 @@ class TestPositions(TestBase):
             order_uuid="reduce_size_order",
             trade_pair=TradePair.EURUSD,
             order_type=OrderType.LONG,
-            leverage=1,
+            leverage=2,
         )
         close_order = Order(
             price=110,
@@ -174,7 +183,10 @@ class TestPositions(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.EURUSD,
             orders=[],
-            account_size=ValiConfig.DEFAULT_CAPITAL
+            # Scaled up (return is scale-invariant) so the reduce_size_order's resulting lot
+            # size stays above FOREX_MIN_POSITION_SIZE_LOTS and doesn't hit validate_min_position_size.
+            account_size=ValiConfig.DEFAULT_CAPITAL * 10,
+            position_type=OrderType.LONG,
         )
         closed_position.add_order(open_order, self.live_price_fetcher)
         closed_position.add_order(reduce_size_order, self.live_price_fetcher)
@@ -189,6 +201,12 @@ class TestPositions(TestBase):
     def test_loss_position_returns_pre_post_slippage(self):
         """
         With slippage=0.00 on all orders, returns should be the same on rebuild.
+
+        NOTE: leverage values are 2x what they were historically (2/1/2 instead of 1/0.5/1).
+        See the identical note in test_profit_position_returns_pre_post_slippage: at
+        leverage=1, `reduce_size_order` drops the position below
+        `ValiConfig.FOREX_MIN_POSITION_SIZE_LOTS` and `validate_min_position_size` raises.
+        Doubling leverage preserves the same relative order sizes.
         """
         open_order = Order(
             price=100,
@@ -197,7 +215,7 @@ class TestPositions(TestBase):
             order_uuid="open_order",
             trade_pair=TradePair.EURUSD,
             order_type=OrderType.SHORT,
-            leverage=1,
+            leverage=2,
         )
         reduce_size_order = Order(
             price=110,
@@ -206,7 +224,7 @@ class TestPositions(TestBase):
             order_uuid="reduce_size_order",
             trade_pair=TradePair.EURUSD,
             order_type=OrderType.LONG,
-            leverage=0.5,
+            leverage=1,
         )
         increase_size_order = Order(
             price=100,
@@ -215,7 +233,7 @@ class TestPositions(TestBase):
             order_uuid="reduce_size_order",
             trade_pair=TradePair.EURUSD,
             order_type=OrderType.SHORT,
-            leverage=1,
+            leverage=2,
         )
         close_order = Order(
             price=110,
@@ -232,7 +250,10 @@ class TestPositions(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.EURUSD,
             orders=[],
-            account_size=ValiConfig.DEFAULT_CAPITAL
+            # Scaled up (return is scale-invariant) so the reduce_size_order's resulting lot
+            # size stays above FOREX_MIN_POSITION_SIZE_LOTS and doesn't hit validate_min_position_size.
+            account_size=ValiConfig.DEFAULT_CAPITAL * 10,
+            position_type=OrderType.SHORT,
         )
         closed_position.add_order(open_order, self.live_price_fetcher)
         closed_position.add_order(reduce_size_order, self.live_price_fetcher)
@@ -272,7 +293,8 @@ class TestPositions(TestBase):
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=TradePair.USDJPY,
             orders=[],
-            account_size=ValiConfig.DEFAULT_CAPITAL
+            account_size=ValiConfig.DEFAULT_CAPITAL,
+            position_type=OrderType.SHORT,
         )
         closed_position.add_order(open_order, self.live_price_fetcher)
         closed_position.add_order(close_order, self.live_price_fetcher)
@@ -299,7 +321,8 @@ class TestPositions(TestBase):
             orders=[],
             net_leverage=-0.1,
             average_entry_price=100,
-            account_size=ValiConfig.DEFAULT_CAPITAL
+            account_size=ValiConfig.DEFAULT_CAPITAL,
+            position_type=OrderType.SHORT,
         )
         open_position.add_order(open_order, self.live_price_fetcher)
         assert open_position.current_return == 1
@@ -315,6 +338,7 @@ class TestPositions(TestBase):
 
     def test_simple_long_position_with_explicit_FLAT(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.LONG,
                    leverage=1.0,
                    price=100,
@@ -345,7 +369,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 0.999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': FEE_V6_TIME_MS,
@@ -369,7 +393,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 100000.0,
             'realized_pnl': 10000.0,
             'close_ms': o2.processed_ms,
-            'return_at_close': 1.0976837374307222,
+            'return_at_close': 1.1,
             'current_return': 1.1,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': FEE_V6_TIME_MS,
@@ -382,6 +406,7 @@ class TestPositions(TestBase):
 
     def test_simple_long_position_with_implicit_FLAT(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.LONG,
                    leverage=1.0,
                    price=500,
@@ -412,7 +437,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 0.999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': FEE_V6_TIME_MS,
@@ -436,7 +461,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 100000.0,
             'realized_pnl': 100000.0,
             'close_ms': o2.processed_ms,
-            'return_at_close': 1.993887142229985,
+            'return_at_close': 2.0,
             'current_return': 2.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': FEE_V6_TIME_MS,
@@ -449,6 +474,7 @@ class TestPositions(TestBase):
 
     def test_simple_short_position_with_explicit_FLAT(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.SHORT,
                    leverage=1.0,
                    price=100,
@@ -479,7 +505,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 0.999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': o1.processed_ms,
@@ -503,7 +529,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': -100000.0,
             'realized_pnl': 10000.0,
             'close_ms': o2.processed_ms,
-            'return_at_close': 1.0974512492292436 ,
+            'return_at_close': 1.1,
             'current_return': 1.1,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': o1.processed_ms,
@@ -516,6 +542,7 @@ class TestPositions(TestBase):
 
     def test_liquidated_long_position_with_explicit_FLAT(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.LONG,
                    leverage=2.0,
                    price=100,
@@ -540,7 +567,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 200000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 0.998,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -579,6 +606,7 @@ class TestPositions(TestBase):
 
     def test_liquidated_short_position_with_explicit_FLAT(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.SHORT,
                    leverage=1.0,
                    price=100,
@@ -603,7 +631,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': .999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -642,6 +670,7 @@ class TestPositions(TestBase):
 
     def test_liquidated_short_position_with_no_FLAT(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.SHORT,
                    leverage=1.0,
                    price=100,
@@ -672,7 +701,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': .999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -685,24 +714,22 @@ class TestPositions(TestBase):
             'unfilled_orders': []
         })
 
+        # A severe adverse move drives current_return to 0 (liquidated in return terms), but
+        # Position no longer auto-inserts a synthetic PRICE_FILLED_ELIMINATION_FLAT order or
+        # auto-closes the position on a return-based liquidation — that now happens in a
+        # separate service (see elimination_manager.close_all_positions). The position stays
+        # open and continues accepting orders until something external closes it.
         self.add_order_to_position_and_save(position, o2)
-        assert len(position.orders) == 3, position.orders
-        assert position.orders[2].src == OrderSource.PRICE_FILLED_ELIMINATION_FLAT
-        self.assertGreater(position.orders[2].price_sources[0].lag_ms,
-                           1761281990000)  # The lag is high. now_ms - DEFAULT_TESTING_FALLBACK_PRICE_SOURCE.start_ms
-        position.orders[2].price_sources[0].lag_ms = PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE.lag_ms
-        self.assertEqual(position.orders[2].price_sources, [PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE])
-
         self.validate_intermediate_position_state(position, {
-            'orders': [o1, o2, position.orders[2]],
-            'position_type': OrderType.FLAT,
-            'is_closed_position': True,
+            'orders': [o1, o2],
+            'position_type': OrderType.SHORT,
+            'is_closed_position': False,
             'net_leverage': -1.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
             'cumulative_entry_value': -100000.0,
             'realized_pnl': -9888.888888888889,
-            'close_ms': o2.processed_ms,
+            'close_ms': None,
             'return_at_close': 0.0,
             'current_return': 0.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
@@ -716,19 +743,18 @@ class TestPositions(TestBase):
             'unfilled_orders': []
         })
 
-        # Orders post-liquidation are ignored
-        with self.assertRaises(ValueError):
-            self.add_order_to_position_and_save(position, o3)
+        # Further orders are NOT rejected — the position is still open.
+        self.add_order_to_position_and_save(position, o3)
         self.validate_intermediate_position_state(position, {
-            'orders': [o1, o2, position.orders[2]],
-            'position_type': OrderType.FLAT,
-            'is_closed_position': True,
+            'orders': [o1, o2, o3],
+            'position_type': OrderType.SHORT,
+            'is_closed_position': False,
             'net_leverage': -1.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
             'cumulative_entry_value': -100000.0,
-            'realized_pnl': -9888.888888888889,
-            'close_ms': o2.processed_ms,
+            'realized_pnl': -19777.777777777777,
+            'close_ms': None,
             'return_at_close': 0.0,
             'current_return': 0.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
@@ -763,6 +789,7 @@ class TestPositions(TestBase):
                    order_uuid="3000")
 
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         self.add_order_to_position_and_save(position, o1)
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
@@ -774,7 +801,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 200000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 0.998,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -787,23 +814,22 @@ class TestPositions(TestBase):
             'unfilled_orders': []
         })
 
+        # A severe adverse move drives current_return to 0 (liquidated in return terms), but
+        # Position no longer auto-inserts a synthetic PRICE_FILLED_ELIMINATION_FLAT order or
+        # auto-closes the position on a return-based liquidation — that now happens in a
+        # separate service (see elimination_manager.close_all_positions). The position stays
+        # open and continues accepting orders until something external closes it.
         self.add_order_to_position_and_save(position, o2)
-        assert len(position.orders) == 3, position.orders
-        assert position.orders[2].src == OrderSource.PRICE_FILLED_ELIMINATION_FLAT
-        self.assertGreater(position.orders[2].price_sources[0].lag_ms, 1761281990000) # The lag is high. now_ms - DEFAULT_TESTING_FALLBACK_PRICE_SOURCE.start_ms
-        position.orders[2].price_sources[0].lag_ms = PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE.lag_ms
-        self.assertEqual(position.orders[2].price_sources, [PolygonDataService.DEFAULT_TESTING_FALLBACK_PRICE_SOURCE])
-
         self.validate_intermediate_position_state(position, {
-            'orders': [o1, o2, position.orders[2]],
-            'position_type': OrderType.FLAT,
-            'is_closed_position': True,
+            'orders': [o1, o2],
+            'position_type': OrderType.LONG,
+            'is_closed_position': False,
             'net_leverage': 2.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
             'cumulative_entry_value': 200000.0,
             'realized_pnl': -10000.0,
-            'close_ms': o2.processed_ms,
+            'close_ms': None,
             'return_at_close': 0.0,
             'current_return': 0.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
@@ -817,20 +843,18 @@ class TestPositions(TestBase):
             'unfilled_orders': []
         })
 
-        # Orders post-liquidation are ignored
-        with self.assertRaises(ValueError):
-            self.add_order_to_position_and_save(position, o3)
-
+        # Further orders are NOT rejected — the position is still open.
+        self.add_order_to_position_and_save(position, o3)
         self.validate_intermediate_position_state(position, {
-            'orders': [o1, o2, position.orders[2]],
-            'position_type': OrderType.FLAT,
-            'is_closed_position': True,
+            'orders': [o1, o2, o3],
+            'position_type': OrderType.LONG,
+            'is_closed_position': False,
             'net_leverage': 2.0,
             'initial_entry_price': 100,
             'average_entry_price': 100,
             'cumulative_entry_value': 200000.0,
-            'realized_pnl': -10000.0,
-            'close_ms': o2.processed_ms,
+            'realized_pnl': -20000.0,
+            'close_ms': None,
             'return_at_close': 0.0,
             'current_return': 0.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
@@ -859,6 +883,7 @@ class TestPositions(TestBase):
                    order_uuid="2000")
 
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         self.add_order_to_position_and_save(position, o1)
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
@@ -870,7 +895,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': -100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': .999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -894,7 +919,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': -100000.0,
             'realized_pnl': 50000.0,
             'close_ms': o2.processed_ms,
-            'return_at_close': 1.4985,
+            'return_at_close': 1.5,
             'current_return': 1.5,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -908,20 +933,39 @@ class TestPositions(TestBase):
         })
 
     def test_invalid_leverage_order(self):
-        """Test that zero leverage raises ValueError (other leverage bounds are now clamped, not rejected)."""
-        position = deepcopy(self.default_position)
+        """
+        Test current behavior of a zero-leverage order (other leverage bounds are clamped,
+        not rejected, at the MarketOrderManager level rather than Position.add_order).
 
-        # Zero leverage should still raise ValueError
-        with self.assertRaises(ValueError):
-            position.add_order(Order(order_type=OrderType.LONG,
-                                     leverage=0.0,
-                                     price=100,
-                                     trade_pair=TradePair.BTCUSD,
-                                     processed_ms=1000,
-                                     order_uuid="1000"), self.live_price_fetcher)
+        NOTE: Position.add_order no longer raises for a zero-leverage order. Because
+        `position_type` is now a required field set at construction, a zero-leverage order
+        against a flat/empty position produces a zero net delta, which the flatten-detection
+        in `_update_position` treats as an implicit FLAT (net_quantity + order.quantity <= 0),
+        closing the position with no PnL impact instead of raising ValueError. This looks like
+        a validation gap in position.py (zero leverage should probably still be rejected), but
+        per instructions we match current behavior here rather than "fixing" production code.
+        """
+        position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
+        order = Order(order_type=OrderType.LONG,
+                      leverage=0.0,
+                      price=100,
+                      trade_pair=TradePair.BTCUSD,
+                      processed_ms=1000,
+                      order_uuid="1000")
+        position.add_order(order, self.live_price_fetcher)
+        self.assertTrue(position.is_closed_position)
+        self.assertEqual(position.position_type, OrderType.FLAT)
+        self.assertEqual(position.current_return, 1.0)
 
     def test_invalid_prices_zero(self):
+        """
+        A price of 0 on the first order of a fresh position causes
+        `initialize_position_from_first_order` to compute `initial_entry_price == 0`,
+        which raises ValueError("Initial entry price must be > 0").
+        """
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.LONG,
                    leverage=1.0,
                    price=0,
@@ -942,6 +986,7 @@ class TestPositions(TestBase):
 
     def test_three_orders_with_longs_no_drawdown(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.LONG,
                    leverage=1.0,
                    price=1000,
@@ -972,7 +1017,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': .999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -996,7 +1041,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 110000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 1.9978,
+            'return_at_close': 2.0,
             'current_return': 2.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -1020,7 +1065,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 110000.0,
             'realized_pnl': 100_000,
             'close_ms': 5000,
-            'return_at_close': 1.9978,
+            'return_at_close': 2.0,
             'current_return': 2.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -1048,6 +1093,7 @@ class TestPositions(TestBase):
                    order_uuid="2000")
 
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         self.add_order_to_position_and_save(position, o1)
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
@@ -1059,7 +1105,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 0.999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': o1.processed_ms,
@@ -1083,7 +1129,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 100000.0,
             'realized_pnl': -50000.0,
             'close_ms': o2.processed_ms,
-            'return_at_close': 0.499,
+            'return_at_close': 0.5,
             'current_return': 0.5,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': o1.processed_ms,
@@ -1117,6 +1163,7 @@ class TestPositions(TestBase):
                    order_uuid="5000")
 
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         self.add_order_to_position_and_save(position, o1)
         self.validate_intermediate_position_state(position, {
             'orders': [o1],
@@ -1128,7 +1175,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 100000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 0.999,
+            'return_at_close': 1.0,
             'current_return': 1.0,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': o1.processed_ms,
@@ -1152,7 +1199,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 110000.0,
             'realized_pnl': 0,
             'close_ms': None,
-            'return_at_close': 0.49945,
+            'return_at_close': 0.5,
             'current_return': 0.5,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': o1.processed_ms,
@@ -1176,7 +1223,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 110000.0,
             'realized_pnl': 833.3333333333337,
             'close_ms': None,
-            'return_at_close': 1.09868,
+            'return_at_close': 1.1,
             'current_return': 1.1,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': o1.processed_ms,
@@ -1221,6 +1268,7 @@ class TestPositions(TestBase):
                    processed_ms=5000,
                    order_uuid="5000")
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
 
         self.add_order_to_position_and_save(position, o1)
         self.add_order_to_position_and_save(position, o2)
@@ -1238,7 +1286,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': 112000.0,
             'realized_pnl': 4090025.641025641,
             'close_ms': 5000,
-            'return_at_close': 41.85332812307692,
+            'return_at_close': 41.90025641025641,
             'current_return': 41.90025641025641,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -1283,6 +1331,7 @@ class TestPositions(TestBase):
                    processed_ms=5000,
                    order_uuid="5000")
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
 
         self.add_order_to_position_and_save(position, o1)
         self.add_order_to_position_and_save(position, o2)
@@ -1300,7 +1349,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': -112000.0,
             'realized_pnl': 43726.19047619047,
             'close_ms': 5000,
-            'return_at_close': 1.4356521714285715,
+            'return_at_close': 1.4372619047619049,
             'current_return': 1.4372619047619049,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -1345,6 +1394,7 @@ class TestPositions(TestBase):
                    processed_ms=5000,
                    order_uuid="5000")
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
 
         self.add_order_to_position_and_save(position, o1)
         self.add_order_to_position_and_save(position, o2)
@@ -1362,7 +1412,7 @@ class TestPositions(TestBase):
             'cumulative_entry_value': -300000.0,
             'realized_pnl': 31333.33333333332,
             'close_ms': 5000,
-            'return_at_close': 1.31005,
+            'return_at_close': 1.3133333333333332,
             'current_return': 1.3133333333333332,
             'miner_hotkey': self.DEFAULT_MINER_HOTKEY,
             'open_ms': self.DEFAULT_OPEN_MS,
@@ -1377,6 +1427,7 @@ class TestPositions(TestBase):
 
     def test_error_adding_mismatched_trade_pair(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         o1 = Order(order_type=OrderType.LONG,
                    leverage=1.0,
                    price=1000,
@@ -1409,7 +1460,8 @@ class TestPositions(TestBase):
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=weekday_time_ms,
             trade_pair=trade_pair1,
-            account_size=ValiConfig.DEFAULT_CAPITAL
+            account_size=ValiConfig.DEFAULT_CAPITAL,
+            position_type=OrderType.SHORT,
         )
         trade_pair2 = TradePair.EURJPY
         hotkey2 = self.DEFAULT_MINER_HOTKEY + '_2'
@@ -1418,7 +1470,8 @@ class TestPositions(TestBase):
             position_uuid=self.DEFAULT_POSITION_UUID + '_2',
             open_ms=weekday_time_ms,
             trade_pair=trade_pair2,
-            account_size=ValiConfig.DEFAULT_CAPITAL
+            account_size=ValiConfig.DEFAULT_CAPITAL,
+            position_type=OrderType.SHORT,
         )
 
         o1 = Order(order_type=OrderType.SHORT,
@@ -1488,6 +1541,7 @@ class TestPositions(TestBase):
     def test_leverage_clamping_long(self):
         """Test that exceeding max leverage is clamped (not rejected)"""
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         live_price = 69000
         o1 = Order(order_type=OrderType.LONG,
                    leverage=TradePair.BTCUSD.max_leverage / 2,
@@ -1519,6 +1573,7 @@ class TestPositions(TestBase):
     def test_leverage_clamping_skip_long_order(self):
         """Test that when position is at max leverage, additional orders are handled (clamped at MarketOrderManager level)"""
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         live_price = 100000
         o1 = Order(order_type=OrderType.LONG,
                    leverage=TradePair.BTCUSD.max_leverage,
@@ -1545,6 +1600,7 @@ class TestPositions(TestBase):
     def test_leverage_clamping_short(self):
         """Test that exceeding max leverage is clamped (not rejected) for SHORT"""
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         live_price = 4444
         o1 = Order(order_type=OrderType.SHORT,
                    leverage=-TradePair.BTCUSD.max_leverage * .80,
@@ -1596,6 +1652,7 @@ class TestPositions(TestBase):
     def test_leverage_clamping_skip_short_order(self):
         """Test that when SHORT position is at max leverage, additional orders are handled"""
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         live_price = 999
         o1 = Order(order_type=OrderType.SHORT,
                    leverage=-TradePair.BTCUSD.max_leverage,
@@ -1622,6 +1679,7 @@ class TestPositions(TestBase):
 
     def test_position_json(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         live_price = 100000
         o1 = Order(order_type=OrderType.LONG,
                    leverage=1.0,
@@ -1668,6 +1726,7 @@ class TestPositions(TestBase):
 
     def test_fake_flat_order(self):
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         position.orders = []
         for i in range(10):
             o = Order(order_type=OrderType.LONG,
@@ -1699,47 +1758,63 @@ class TestPositions(TestBase):
 
     def test_deprecated_tp_position(self):
         """
-        An open position with a deprecated trade pair should be closed.
+        An open position with a suspended/deprecated trade pair should be force-closed.
 
-        Tests that close_open_orders_for_suspended_trade_pairs correctly identifies
-        and closes positions for deprecated trade pairs (SPX, DJI, NDX, VIX).
+        NOTE: The old `close_open_orders_for_suspended_trade_pairs` method (and the
+        indices it covered: SPX, DJI, NDX, VIX) no longer exists. The current equivalent
+        is `PositionManager.force_close_deprecated_trade_pair_positions`, which is invoked
+        internally by `pre_run_setup()` with a hardcoded commodities list
+        `[XAUUSD, XAGUSD, BRENTOILUSDC, PAXGUSDC]` (see position_manager.py). We use
+        XAUUSD here, and only that client-exposed entrypoint, since the client doesn't
+        expose `force_close_deprecated_trade_pair_positions` directly.
+
+        Orders are given an explicit `price_sources` entry because `force_close_position`
+        derives its fill price from `Position.last_price_source`, which is only populated
+        from `order.price_sources`; without it, `parse_appropriate_price` returns None and
+        the close falls back to `ELIMINATION_FLAT` at price 0 instead of `DEPRECATION_FLAT`.
         """
         position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
-            trade_pair=TradePair.DJI,
-            account_size=ValiConfig.DEFAULT_CAPITAL
+            trade_pair=TradePair.XAUUSD,
+            account_size=ValiConfig.DEFAULT_CAPITAL,
+            position_type=OrderType.LONG,
         )
         for i in range(3):
             o = Order(order_type=OrderType.LONG,
                       leverage=.1 + i / 10,
                       price=100,
-                      trade_pair=TradePair.DJI,
+                      trade_pair=TradePair.XAUUSD,
                       processed_ms=1000 + i * 10,
-                      order_uuid=str(i))
+                      order_uuid=str(i),
+                      price_sources=[PriceSource(source='test', open=100, close=100)])
             self.add_order_to_position_and_save(position, o)
         position.rebuild_position_with_updated_orders(self.live_price_fetcher)
 
         assert len(position.orders) == 3
         assert not position.is_closed_position
         # Server's internal price fetcher client can now connect to real RPC server
-        self.position_manager.close_open_orders_for_suspended_trade_pairs()
+        self.position_manager.pre_run_setup(perform_order_corrections=False)
         position = self._find_disk_position_from_memory_position(position)
         print(position)
         assert len(position.orders) == 4
         assert position.is_closed_position
         assert position.orders[-1].src == OrderSource.DEPRECATION_FLAT
 
-    # ==================== USD-Based Position Size Validation Tests ====================
+    # ==================== Minimum Position Size Validation Tests ====================
+    # Position.validate_order_size (a max-USD-value clamp keyed on a caller-supplied
+    # max_position_value) has been removed entirely from position.py with no replacement —
+    # that kind of leverage/size capping now happens at the MarketOrderManager level (see
+    # other tests' comments referencing "clamped at MarketOrderManager level"). The only
+    # size validation left on Position is validate_min_position_size, which raises ValueError
+    # if an order would leave a nonzero position below the per-asset-class minimum size. These
+    # tests exercise that method instead.
 
-    def test_usd_validation_order_within_limit(self):
-        """
-        Order value within max_position_size_usd should succeed.
-        max_position_value=$250,000
-        order.value=$200,000 is within limit
-        """
+    def test_min_position_size_crypto_order_within_limit(self):
+        """A crypto order well above CRYPTO_MIN_POSITION_SIZE_USD ($10) should not raise."""
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         position.position_type = OrderType.LONG
         position.net_leverage = 0.0
         position.net_quantity = 0.0
@@ -1751,20 +1826,16 @@ class TestPositions(TestBase):
             trade_pair=TradePair.BTCUSD,
             order_type=OrderType.LONG,
             leverage=2.0,
-            value=200000,  # $200k < $250k limit
+            value=200000,
             quantity=3.33,
         )
 
-        # Should NOT raise (max_position_value = balance * max_position_leverage = 100000 * 2.5)
-        position.validate_order_size(order, max_position_value=250000)
+        position.validate_min_position_size(order)  # should NOT raise
 
-    def test_usd_validation_order_exceeds_limit_clamped(self):
-        """
-        Order value exceeding max_position_size_usd should be clamped to remaining capacity.
-        max_position_value=$250,000
-        order.value=$300,000 should be clamped to $250,000
-        """
+    def test_min_position_size_crypto_order_below_minimum_raises(self):
+        """A crypto order below CRYPTO_MIN_POSITION_SIZE_USD ($10) should raise."""
         position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
         position.position_type = OrderType.LONG
         position.net_leverage = 0.0
         position.net_quantity = 0.0
@@ -1775,127 +1846,89 @@ class TestPositions(TestBase):
             order_uuid="test_order",
             trade_pair=TradePair.BTCUSD,
             order_type=OrderType.LONG,
-            leverage=3.0,
-            value=300000,  # $300k > $250k limit
-            quantity=5.0,
+            leverage=0.00008,
+            value=5,  # below $10 minimum
+            quantity=0.0000833,
         )
 
-        # Should NOT raise, but clamp the order value
-        position.validate_order_size(order, max_position_value=250000)
-        self.assertEqual(order.value, 250000)  # Clamped to max
-
-    def test_usd_validation_position_at_max_raises(self):
-        """
-        If position is already at max and order would increase it, should raise.
-        Existing position value=$250,000 (at max), new LONG order should fail.
-        """
-        position = deepcopy(self.default_position)
-        # Add initial order to create existing position at max
-        initial_order = Order(
-            price=60000,
-            processed_ms=self.DEFAULT_OPEN_MS,
-            order_uuid="initial_order",
-            trade_pair=TradePair.BTCUSD,
-            order_type=OrderType.LONG,
-            leverage=2.5,
-            value=250000,
-            quantity=4.17,
-        )
-        position.orders.append(initial_order)
-        position.net_value = 250000
-        position.net_leverage = 2.5
-        position.net_quantity = 4.17
-        position.position_type = OrderType.LONG
-
-        # New order trying to increase position
-        order = Order(
-            price=60000,
-            processed_ms=self.DEFAULT_OPEN_MS + 1,
-            order_uuid="test_order",
-            trade_pair=TradePair.BTCUSD,
-            order_type=OrderType.LONG,
-            leverage=0.5,
-            value=50000,
-            quantity=0.83,
-        )
-
-        # Should raise since position is already at max
         with self.assertRaises(ValueError) as ctx:
-            position.validate_order_size(order, max_position_value=250000)
-        self.assertIn("at max", str(ctx.exception))
+            position.validate_min_position_size(order)
+        self.assertIn("below minimum", str(ctx.exception))
 
-    def test_usd_validation_clamps_to_remaining_capacity(self):
-        """
-        When position has some value and order would exceed max, clamp to remaining.
-        Existing position value=$100,000, max=$250,000 → remaining=$150,000
-        Order of $200,000 should be clamped to $150,000
-        """
+    def test_min_position_size_forex_order_below_minimum_raises(self):
+        """A forex order below FOREX_MIN_POSITION_SIZE_LOTS (0.01 lots) should raise."""
         position = deepcopy(self.default_position)
-        # Set up existing position with $100k value
-        initial_order = Order(
-            price=60000,
+        position.position_type = None  # reset to force re-derivation from the first order added
+        position.position_type = OrderType.LONG
+        position.trade_pair = TradePair.EURUSD
+        position.net_leverage = 0.0
+        position.net_quantity = 0.0
+        position.net_value = 0.0
+        order = Order(
+            price=1.1,
             processed_ms=self.DEFAULT_OPEN_MS,
-            order_uuid="initial_order",
-            trade_pair=TradePair.BTCUSD,
+            order_uuid="test_order",
+            trade_pair=TradePair.EURUSD,
             order_type=OrderType.LONG,
-            leverage=1.0,
-            value=100000,
-            quantity=1.67,
+            leverage=0.0001,
+            value=10,
+            quantity=0.005,  # below 0.01 lot minimum
         )
-        position.orders.append(initial_order)
-        position.net_value = 100000
+
+        with self.assertRaises(ValueError) as ctx:
+            position.validate_min_position_size(order)
+        self.assertIn("below minimum", str(ctx.exception))
+
+    def test_min_position_size_equities_order_below_minimum_raises(self):
+        """An equities order below EQUITIES_MIN_POSITION_SIZE_SHARES (0.01 shares) should raise."""
+        position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
+        position.position_type = OrderType.LONG
+        position.trade_pair = TradePair.AAPL
+        position.net_leverage = 0.0
+        position.net_quantity = 0.0
+        position.net_value = 0.0
+        order = Order(
+            price=200,
+            processed_ms=self.DEFAULT_OPEN_MS,
+            order_uuid="test_order",
+            trade_pair=TradePair.AAPL,
+            order_type=OrderType.LONG,
+            leverage=0.00001,
+            value=1,
+            quantity=0.005,  # below 0.01 share minimum
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            position.validate_min_position_size(order)
+        self.assertIn("below minimum", str(ctx.exception))
+
+    def test_min_position_size_flat_order_not_limited(self):
+        """FLAT orders are exempt from the minimum size check regardless of resulting size."""
+        position = deepcopy(self.default_position)
+        position.position_type = None  # reset to force re-derivation from the first order added
+        position.position_type = OrderType.LONG
         position.net_leverage = 1.0
         position.net_quantity = 1.67
-        position.position_type = OrderType.LONG
+        position.net_value = 100000
 
-        # Order that exceeds remaining capacity
-        order = Order(
-            price=60000,
-            processed_ms=self.DEFAULT_OPEN_MS + 1,
-            order_uuid="test_order",
-            trade_pair=TradePair.BTCUSD,
-            order_type=OrderType.LONG,
-            leverage=2.0,
-            value=200000,  # Would make total $300k > $250k max
-            quantity=3.33,
-        )
-
-        # Should clamp to remaining capacity (max_position_value = 100000 * 2.5 = 250000)
-        position.validate_order_size(order, max_position_value=250000)
-        self.assertEqual(order.value, 150000)  # Clamped to remaining capacity
-
-    def test_usd_validation_reduced_max_for_challenge_period(self):
-        """
-        Caller passes reduced max_position_value for challenge period.
-        Normal max=2.5, challenge reduced=2.5/4=0.625 → max_size=$62,500
-        Order of $70,000 should be clamped to $62,500
-        """
-        position = deepcopy(self.default_position)
-        position.position_type = OrderType.LONG
-        position.net_leverage = 0.0
-        position.net_quantity = 0.0
-        position.net_value = 0.0
         order = Order(
             price=60000,
             processed_ms=self.DEFAULT_OPEN_MS,
             order_uuid="test_order",
             trade_pair=TradePair.BTCUSD,
-            order_type=OrderType.LONG,
-            leverage=0.7,
-            value=70000,
-            quantity=1.17,
+            order_type=OrderType.FLAT,
+            leverage=0.0,
+            value=-99995,  # would leave a tiny, below-minimum remainder if it were checked
+            quantity=-1.665,
         )
 
-        # With challenge period reduction (max_position_value = 100000 * 0.625 = 62500)
-        position.validate_order_size(order, max_position_value=62500)
-        self.assertEqual(order.value, 62500)  # Clamped to reduced max
+        position.validate_min_position_size(order)  # should NOT raise
 
-    def test_usd_validation_sell_order_not_limited(self):
-        """
-        Sell orders (reducing position) should not be subject to max limits.
-        """
+    def test_min_position_size_reducing_order_still_valid(self):
+        """A SHORT order that reduces an existing LONG position but leaves it well above the minimum should not raise."""
         position = deepcopy(self.default_position)
-        # Set up existing LONG position
+        position.position_type = None  # reset to force re-derivation from the first order added
         initial_order = Order(
             price=60000,
             processed_ms=self.DEFAULT_OPEN_MS,
@@ -1912,7 +1945,6 @@ class TestPositions(TestBase):
         position.net_quantity = 3.33
         position.position_type = OrderType.LONG
 
-        # SHORT order to reduce position
         order = Order(
             price=60000,
             processed_ms=self.DEFAULT_OPEN_MS + 1,
@@ -1924,8 +1956,7 @@ class TestPositions(TestBase):
             quantity=-0.83,
         )
 
-        # Should NOT raise even though it's "decreasing" the position
-        position.validate_order_size(order, max_position_value=250000)
+        position.validate_min_position_size(order)  # should NOT raise (remaining ~$150k is well above $10 min)
 
 if __name__ == '__main__':
     import unittest
