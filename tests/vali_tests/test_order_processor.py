@@ -1,1788 +1,729 @@
-# developer: jbonilla
+# developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
 """
-Comprehensive unit tests for OrderProcessor.
-Tests all production code paths to ensure high confidence in production releases.
+Unit tests for OrderProcessor, covering the current implementation in
+vali_objects/utils/order_processor.py: validate(), process_vanta_signal()
+dispatch, market/flat/hyperliquid execution, unfilled (LIMIT/BRACKET/
+STOP_LIMIT) order creation, limit cancel, and limit edit (including the
+bulk bracket-update path).
 """
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, PropertyMock, patch
 import uuid
 
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.execution_type_enum import ExecutionType
-from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.utils.order_processor import OrderProcessor
-from vali_objects.vali_config import TradePair
-from vali_objects.vali_dataclasses.order import Order
-from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.utils.order_processor import OrderProcessor, OrderProcessingResult
+from vali_objects.vali_config import TradePair
+from vali_objects.vali_dataclasses.order_signal import Signal
 
 
-class TestOrderProcessor(TestBase):
-    """
-    Comprehensive tests for OrderProcessor instance methods.
-    Tests cover all production code paths including validation, error handling, and edge cases.
-    """
-
-    # Test constants
+class OrderProcessorTestBase(TestBase):
     DEFAULT_MINER_HOTKEY = "test_miner"
-    DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+    # BTCUSD is a blocked native pair (remapped to BTCUSDC); use BTCUSDC directly
+    # as the default "already resolved" trade pair for most tests.
+    DEFAULT_TRADE_PAIR = TradePair.BTCUSDC
     DEFAULT_NOW_MS = 1700000000000
 
-    # ============================================================================
-    # Test: parse_signal_data
-    # ============================================================================
-
-    def test_parse_signal_data_valid_signal_with_all_fields(self):
-        """Test parsing valid signal with all required fields"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "LIMIT",
-        }
-        miner_order_uuid = str(uuid.uuid4())
-
-        trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(
-            signal, miner_order_uuid
+    def setUp(self) -> None:
+        super().setUp()
+        self.limit_order_client = Mock()
+        self.market_order_client = Mock()
+        self.miner_account_client = Mock()
+        self.processor = OrderProcessor(
+            limit_order_client=self.limit_order_client,
+            market_order_client=self.market_order_client,
+            miner_account_client=self.miner_account_client,
         )
 
-        self.assertEqual(trade_pair, TradePair.BTCUSD)
-        self.assertEqual(execution_type, ExecutionType.LIMIT)
-        self.assertEqual(order_uuid, miner_order_uuid)
+    def make_miner_account(self, bucket=MinerBucket.MAINCOMP, asset_class=MinerAssetClass.HL_ALL):
+        account = Mock()
+        account.miner_bucket = bucket
+        account.asset_class = asset_class
+        return account
 
-    def test_parse_signal_data_generates_uuid_when_not_provided(self):
-        """Test UUID generation when miner_order_uuid not provided"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "ETHUSD"},
-            "execution_type": "MARKET",
-        }
 
-        trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(signal)
+class TestValidate(OrderProcessorTestBase):
 
-        self.assertEqual(trade_pair, TradePair.ETHUSD)
-        self.assertEqual(execution_type, ExecutionType.MARKET)
-        self.assertIsNotNone(order_uuid)
-        self.assertIsInstance(order_uuid, str)
-        # Verify it's a valid UUID format
-        uuid.UUID(order_uuid)
-
-    def test_parse_signal_data_defaults_to_market_execution(self):
-        """Test execution_type defaults to MARKET when not specified"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-        }
-
-        trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(signal)
-
-        self.assertEqual(execution_type, ExecutionType.MARKET)
-
-    def test_parse_signal_data_case_insensitive_execution_type(self):
-        """Test execution_type parsing is case insensitive"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "limit",  # lowercase
-        }
-
-        trade_pair, execution_type, order_uuid = OrderProcessor.parse_signal_data(signal)
-
-        self.assertEqual(execution_type, ExecutionType.LIMIT)
-
-    def test_parse_signal_data_invalid_trade_pair(self):
-        """Test error handling for invalid trade pair"""
-        signal = {
-            "trade_pair": "INVALID_PAIR",
-        }
-
-        with self.assertRaises(SignalException) as context:
-            OrderProcessor.parse_signal_data(signal)
-
-        self.assertIn("Invalid trade pair", str(context.exception))
-
-    def test_parse_signal_data_missing_trade_pair(self):
-        """Test error handling for missing trade pair"""
-        signal = {}
-
-        with self.assertRaises(SignalException) as context:
-            OrderProcessor.parse_signal_data(signal)
-
-        self.assertIn("Invalid trade pair", str(context.exception))
-
-    def test_parse_signal_data_invalid_execution_type(self):
-        """Test error handling for invalid execution_type"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "INVALID_TYPE",
-        }
-
-        with self.assertRaises(SignalException) as context:
-            OrderProcessor.parse_signal_data(signal)
-
-        self.assertIn("Invalid execution_type", str(context.exception))
-
-    # ============================================================================
-    # Test: process_limit_order - Valid Orders
-    # ============================================================================
-
-    def test_process_limit_order_valid_long_order(self):
-        """Test processing valid LONG limit order"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_native_crypto_remap(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account()
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, TradePair.BTCUSD, OrderType.LONG
         )
+        self.assertTrue(ok)
+        self.assertEqual(resolved, TradePair.BTCUSDC)
 
-        self.assertIsNotNone(order)
-        self.assertEqual(order.order_type, OrderType.LONG)
-        self.assertEqual(order.leverage, 1.0)
-        self.assertEqual(order.limit_price, 50000.0)
-        self.assertEqual(order.execution_type, ExecutionType.LIMIT)
-        self.assertEqual(order.src, OrderSource.LIMIT_UNFILLED)
-        mock_limit_order_client.process_limit_order.assert_called_once()
-
-    def test_process_limit_order_valid_short_order(self):
-        """Test processing valid SHORT limit order"""
-        signal = {
-            "order_type": "SHORT",
-            "leverage": 0.5,
-            "limit_price": 50000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_missing_trade_pair_for_trading_execution_type(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account()
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, None, OrderType.LONG
         )
+        self.assertFalse(ok)
+        self.assertIn("Invalid trade pair", msg)
+        self.assertIsNone(resolved)
 
-        self.assertIsNotNone(order)
-        self.assertEqual(order.order_type, OrderType.SHORT)
-        # SHORT orders have negative leverage internally
-        self.assertEqual(order.leverage, -0.5)
-
-    def test_process_limit_order_with_stop_loss_long(self):
-        """Test LONG limit order with valid stop loss"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "stop_loss": 49000.0,  # Below limit_price for LONG
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_blocked_trade_pair(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account()
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, TradePair.XAUUSD, OrderType.LONG
         )
+        self.assertFalse(ok)
+        self.assertIn("no longer supported", msg)
+        self.assertEqual(resolved, TradePair.XAUUSD)
 
-        self.assertEqual(order.stop_loss, 49000.0)
-
-    def test_process_limit_order_with_stop_loss_short(self):
-        """Test SHORT limit order with valid stop loss"""
-        signal = {
-            "order_type": "SHORT",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "stop_loss": 51000.0,  # Above limit_price for SHORT
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertEqual(order.stop_loss, 51000.0)
-
-    def test_process_limit_order_with_take_profit_long(self):
-        """Test LONG limit order with valid take profit"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "take_profit": 52000.0,  # Above limit_price for LONG
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertEqual(order.take_profit, 52000.0)
-
-    def test_process_limit_order_with_take_profit_short(self):
-        """Test SHORT limit order with valid take profit"""
-        signal = {
-            "order_type": "SHORT",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "take_profit": 48000.0,  # Below limit_price for SHORT
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertEqual(order.take_profit, 48000.0)
-
-    def test_process_limit_order_with_both_sl_and_tp(self):
-        """Test limit order with both stop loss and take profit"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "stop_loss": 49000.0,
-            "take_profit": 52000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertEqual(order.stop_loss, 49000.0)
-        self.assertEqual(order.take_profit, 52000.0)
-
-    def test_process_limit_order_without_sl_and_tp(self):
-        """Test limit order without stop loss or take profit"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertIsNone(order.stop_loss)
-        self.assertIsNone(order.take_profit)
-
-    # ============================================================================
-    # Test: process_limit_order - Missing Required Fields
-    # ============================================================================
-
-    def test_process_limit_order_missing_leverage(self):
-        """Test error handling for missing leverage"""
-        signal = {
-            "order_type": "LONG",
-            "limit_price": 50000.0,
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_flat_only_blocks_non_flat_orders(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account()
+        with patch.object(TradePair, 'is_flat_only', new_callable=PropertyMock) as mock_flat_only:
+            mock_flat_only.return_value = True
+            ok, msg, resolved = self.processor.validate(
+                self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, self.DEFAULT_TRADE_PAIR, OrderType.LONG
             )
+        self.assertFalse(ok)
+        self.assertIn("being discontinued", msg)
 
-        self.assertIn("leverage", str(context.exception))
-
-    def test_process_limit_order_missing_order_type(self):
-        """Test error handling for missing order_type"""
-        signal = {
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_flat_only_allows_flat_orders(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account()
+        with patch.object(TradePair, 'is_flat_only', new_callable=PropertyMock) as mock_flat_only:
+            mock_flat_only.return_value = True
+            ok, msg, resolved = self.processor.validate(
+                self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, self.DEFAULT_TRADE_PAIR, OrderType.FLAT
             )
+        self.assertTrue(ok)
 
-        self.assertIn("order_type", str(context.exception))
-
-    def test_process_limit_order_missing_limit_price(self):
-        """Test error handling for missing limit_price"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("limit_price", str(context.exception))
-
-    # ============================================================================
-    # Test: process_limit_order - Invalid Field Values
-    # ============================================================================
-
-    def test_process_limit_order_invalid_order_type(self):
-        """Test error handling for invalid order_type"""
-        signal = {
-            "order_type": "INVALID",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("Invalid order_type", str(context.exception))
-
-    def test_process_limit_order_invalid_stop_loss_zero(self):
-        """Test error handling for zero stop_loss"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "stop_loss": 0,
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("stop_loss must be greater than 0", str(context.exception))
-
-    def test_process_limit_order_invalid_stop_loss_negative(self):
-        """Test error handling for negative stop_loss"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "stop_loss": -100.0,
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("stop_loss must be greater than 0", str(context.exception))
-
-    def test_process_limit_order_invalid_take_profit_zero(self):
-        """Test error handling for zero take_profit"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "take_profit": 0,
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("take_profit must be greater than 0", str(context.exception))
-
-    def test_process_limit_order_invalid_take_profit_negative(self):
-        """Test error handling for negative take_profit"""
-        signal = {
-            "order_type": "SHORT",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "take_profit": -100.0,
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("take_profit must be greater than 0", str(context.exception))
-
-    # ============================================================================
-    # Test: process_limit_order - Stop Loss/Take Profit Validation
-    # ============================================================================
-
-    def test_process_limit_order_long_stop_loss_above_limit_price(self):
-        """Test error for LONG order with stop_loss >= limit_price"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "stop_loss": 50000.0,  # Equal to limit_price
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(ValueError) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("stop_loss", str(context.exception))
-        self.assertIn("< limit_price", str(context.exception))
-
-    def test_process_limit_order_short_stop_loss_below_limit_price(self):
-        """Test error for SHORT order with stop_loss <= limit_price"""
-        signal = {
-            "order_type": "SHORT",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "stop_loss": 50000.0,  # Equal to limit_price
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(ValueError) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("stop_loss", str(context.exception))
-        self.assertIn("limit_price <", str(context.exception))
-
-    def test_process_limit_order_long_take_profit_below_limit_price(self):
-        """Test error for LONG order with take_profit <= limit_price"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "take_profit": 49000.0,  # Below limit_price
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(ValueError) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("take_profit", str(context.exception))
-        self.assertIn("limit_price <", str(context.exception))
-
-    def test_process_limit_order_short_take_profit_above_limit_price(self):
-        """Test error for SHORT order with take_profit >= limit_price"""
-        signal = {
-            "order_type": "SHORT",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-            "take_profit": 51000.0,  # Above limit_price
-        }
-
-        mock_limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(ValueError) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("take_profit", str(context.exception))
-        self.assertIn("< limit_price", str(context.exception))
-
-    # ============================================================================
-    # Test: process_limit_order - Manager Integration
-    # ============================================================================
-
-    def test_process_limit_order_calls_manager_with_correct_order(self):
-        """Test that process_limit_order calls manager with correct Order object"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.5,
-            "limit_price": 50000.0,
-            "stop_loss": 49000.0,
-            "take_profit": 52000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_uninitialized_miner_account(self):
+        self.miner_account_client.get_account.return_value = None
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, self.DEFAULT_TRADE_PAIR, OrderType.LONG
         )
+        self.assertFalse(ok)
+        self.assertIn("not yet initialized", msg)
 
-        # Verify manager was called with correct arguments
-        call_args = mock_limit_order_client.process_limit_order.call_args
-        self.assertEqual(call_args[0][0], self.DEFAULT_MINER_HOTKEY)
-
-        order_arg = call_args[0][1]
-        self.assertIsInstance(order_arg, Order)
-        self.assertEqual(order_arg.order_type, OrderType.LONG)
-        self.assertEqual(order_arg.leverage, 1.5)
-        self.assertEqual(order_arg.limit_price, 50000.0)
-        self.assertEqual(order_arg.stop_loss, 49000.0)
-        self.assertEqual(order_arg.take_profit, 52000.0)
-
-    def test_process_limit_order_client_raises_exception(self):
-        """Test that exceptions from manager are propagated"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock(
-            side_effect=SignalException("Manager error")
+    def test_eliminated_miner(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account(bucket=MinerBucket.ELIMINATED)
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, self.DEFAULT_TRADE_PAIR, OrderType.LONG
         )
+        self.assertFalse(ok)
+        self.assertIn("eliminated", msg)
+        self.assertIsNone(resolved)
 
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("Manager error", str(context.exception))
-
-    # ============================================================================
-    # Test: process_limit_cancel
-    # ============================================================================
-
-    def test_process_limit_cancel_specific_order(self):
-        """Test cancelling a specific limit order"""
-        signal = {}
-        order_uuid = "test_order_uuid"
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.cancel_limit_order = Mock(
-            return_value={"status": "cancelled"}
+    def test_entity_hotkey_cannot_place_orders(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account(bucket=MinerBucket.ENTITY)
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, self.DEFAULT_TRADE_PAIR, OrderType.LONG
         )
+        self.assertFalse(ok)
+        self.assertIn("cannot place orders directly", msg)
+        self.assertIsNone(resolved)
 
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-        result = processor.process_limit_cancel(
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid=order_uuid,
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_missing_asset_class_blocks_limit_orders(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account(asset_class=None)
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.LIMIT, self.DEFAULT_TRADE_PAIR, OrderType.LONG
         )
+        self.assertFalse(ok)
+        self.assertIn("No asset class selected", msg)
 
-        mock_limit_order_client.cancel_limit_order.assert_called_once_with(
-            self.DEFAULT_MINER_HOTKEY,
-            # self.DEFAULT_TRADE_PAIR.trade_pair_id, TODO support cancel by trade pair in v2
-            None,
-            order_uuid,
-            self.DEFAULT_NOW_MS
+    def test_asset_class_cannot_trade_pair(self):
+        account = self.make_miner_account()
+        account.asset_class = Mock()
+        account.asset_class.can_trade.return_value = False
+        self.miner_account_client.get_account.return_value = account
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.LIMIT, self.DEFAULT_TRADE_PAIR, OrderType.LONG
         )
-        self.assertEqual(result, {"status": "cancelled"})
+        self.assertFalse(ok)
+        self.assertIn("cannot submit orders for trade pair", msg)
 
-    # TODO support cancel by trade pair in v2
-    # def test_process_limit_cancel_all_orders(self):
-    #     """Test cancelling all limit orders (empty uuid)"""
-    #     signal = {}
-    #     order_uuid = ""
-
-    #     limit_order_client = Mock()
-    #     limit_order_client.cancel_limit_order = Mock(
-    #         return_value={"status": "all_cancelled", "count": 3}
-    #     )
-
-    #     processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-    #     result = processor.process_limit_cancel(
-    #         signal=signal,
-    #         trade_pair=self.DEFAULT_TRADE_PAIR,
-    #         order_uuid=order_uuid,
-    #         now_ms=self.DEFAULT_NOW_MS,
-    #         hotkey=self.DEFAULT_MINER_HOTKEY,
-    #     )
-
-    #     limit_order_client.cancel_limit_order.assert_called_once_with(
-    #         self.DEFAULT_MINER_HOTKEY,
-    #         self.DEFAULT_TRADE_PAIR.trade_pair_id,
-    #         order_uuid,
-    #         self.DEFAULT_NOW_MS
-    #     )
-    #     self.assertEqual(result["status"], "all_cancelled")
-    #     self.assertEqual(result["count"], 3)
-
-    # def test_process_limit_cancel_none_uuid(self):
-    #     """Test cancelling with None uuid (cancel all)"""
-    #     signal = {}
-    #     order_uuid = None
-
-    #     mock_limit_order_client = Mock()
-    #     mock_limit_order_client.cancel_limit_order = Mock(
-    #         return_value={"status": "all_cancelled"}
-    #     )
-
-    #     processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=Mock())
-    #     result = processor.process_limit_cancel(
-    #         signal=signal,
-    #         trade_pair=self.DEFAULT_TRADE_PAIR,
-    #         order_uuid=order_uuid,
-    #         now_ms=self.DEFAULT_NOW_MS,
-    #         hotkey=self.DEFAULT_MINER_HOTKEY,
-    #     )
-
-    #     mock_limit_order_client.cancel_limit_order.assert_called_once_with(
-    #         self.DEFAULT_MINER_HOTKEY,
-    #         self.DEFAULT_TRADE_PAIR.trade_pair_id,
-    #         order_uuid,
-    #         self.DEFAULT_NOW_MS
-    #     )
-
-    def test_process_limit_cancel_manager_raises_exception(self):
-        """Test that exceptions from cancel are propagated"""
-        signal = {}
-        order_uuid = "test_uuid"
-
-        limit_order_client = Mock()
-        limit_order_client.cancel_limit_order = Mock(
-            side_effect=SignalException("Order not found")
+    def test_asset_class_check_bypassed_for_market_orders(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account(asset_class=None)
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, self.DEFAULT_TRADE_PAIR, OrderType.LONG
         )
+        self.assertTrue(ok)
 
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_limit_cancel(
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid=order_uuid,
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("Order not found", str(context.exception))
-
-    # ============================================================================
-    # Test: process_bracket_order - Valid Orders
-    # ============================================================================
-
-    def test_process_bracket_order_with_both_sl_and_tp(self):
-        """Test bracket order with both stop loss and take profit"""
-        signal = {
-            "leverage": 1.0,
-            "stop_loss": 49000.0,
-            "take_profit": 52000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_asset_class_check_bypassed_for_flat_order_type(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account(asset_class=None)
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.LIMIT, self.DEFAULT_TRADE_PAIR, OrderType.FLAT
         )
+        self.assertTrue(ok)
 
-        self.assertIsNotNone(order)
-        self.assertEqual(order.execution_type, ExecutionType.BRACKET)
-        self.assertEqual(order.stop_loss, 49000.0)
-        self.assertEqual(order.take_profit, 52000.0)
-        self.assertEqual(order.leverage, 1.0)
-        self.assertEqual(order.src, OrderSource.BRACKET_UNFILLED)
-        self.assertIsNone(order.limit_price)
-        limit_order_client.process_limit_order.assert_called_once()
-
-    def test_process_bracket_order_with_only_stop_loss(self):
-        """Test bracket order with only stop loss"""
-        signal = {
-            "leverage": 0.5,
-            "stop_loss": 49000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_trade_pair_check_bypassed_for_limit_cancel(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account()
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.LIMIT_CANCEL, None, None
         )
+        self.assertTrue(ok)
 
-        self.assertEqual(order.stop_loss, 49000.0)
-        self.assertIsNone(order.take_profit)
-
-    def test_process_bracket_order_with_only_take_profit(self):
-        """Test bracket order with only take profit"""
-        signal = {
-            "leverage": 1.5,
-            "take_profit": 52000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_trade_pair_check_bypassed_for_limit_edit(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account()
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.LIMIT_EDIT, None, None
         )
+        self.assertTrue(ok)
 
-        self.assertIsNone(order.stop_loss)
-        self.assertEqual(order.take_profit, 52000.0)
-
-    def test_process_bracket_order_leverage_defaults_to_none(self):
-        """Test bracket order with no leverage defaults to None"""
-        signal = {
-            "stop_loss": 49000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_trade_pair_check_bypassed_for_flat_all(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account()
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.FLAT_ALL, None, None
         )
+        self.assertTrue(ok)
 
-        # Leverage should be None when not provided (will be determined by manager)
-        self.assertIsNone(order.leverage)
-
-    # ============================================================================
-    # Test: process_bracket_order - Validation Errors
-    # ============================================================================
-
-    def test_process_bracket_order_missing_both_sl_and_tp(self):
-        """Test error for bracket order without stop loss or take profit"""
-        signal = {
-            "leverage": 1.0,
-        }
-
-        limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("must specify at least one", str(context.exception))
-
-    def test_process_bracket_order_invalid_stop_loss_zero(self):
-        """Test error for bracket order with zero stop_loss"""
-        signal = {
-            "leverage": 1.0,
-            "stop_loss": 0,
-        }
-
-        limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("stop_loss must be greater than 0", str(context.exception))
-
-    def test_process_bracket_order_invalid_stop_loss_negative(self):
-        """Test error for bracket order with negative stop_loss"""
-        signal = {
-            "leverage": 1.0,
-            "stop_loss": -100.0,
-        }
-
-        limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("stop_loss must be greater than 0", str(context.exception))
-
-    def test_process_bracket_order_invalid_take_profit_zero(self):
-        """Test error for bracket order with zero take_profit"""
-        signal = {
-            "leverage": 1.0,
-            "take_profit": 0,
-        }
-
-        limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("take_profit must be greater than 0", str(context.exception))
-
-    def test_process_bracket_order_invalid_take_profit_negative(self):
-        """Test error for bracket order with negative take_profit"""
-        signal = {
-            "leverage": 1.0,
-            "take_profit": -100.0,
-        }
-
-        limit_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("take_profit must be greater than 0", str(context.exception))
-
-    # ============================================================================
-    # Test: process_bracket_order - Manager Integration
-    # ============================================================================
-
-    def test_process_bracket_order_calls_manager_with_correct_order(self):
-        """Test that process_bracket_order calls manager with correct Order object"""
-        signal = {
-            "leverage": 1.5,
-            "stop_loss": 49000.0,
-            "take_profit": 52000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+    def test_success_full_path(self):
+        account = self.make_miner_account()
+        account.asset_class = Mock()
+        account.asset_class.can_trade.return_value = True
+        self.miner_account_client.get_account.return_value = account
+        ok, msg, resolved = self.processor.validate(
+            self.DEFAULT_MINER_HOTKEY, ExecutionType.LIMIT, self.DEFAULT_TRADE_PAIR, OrderType.LONG
         )
+        self.assertTrue(ok)
+        self.assertEqual(msg, "")
+        self.assertEqual(resolved, self.DEFAULT_TRADE_PAIR)
 
-        # Verify manager was called with correct arguments
-        call_args = limit_order_client.process_limit_order.call_args
-        self.assertEqual(call_args[0][0], self.DEFAULT_MINER_HOTKEY)
 
-        order_arg = call_args[0][1]
-        self.assertIsInstance(order_arg, Order)
-        self.assertEqual(order_arg.execution_type, ExecutionType.BRACKET)
-        self.assertEqual(order_arg.leverage, 1.5)
-        self.assertEqual(order_arg.stop_loss, 49000.0)
-        self.assertEqual(order_arg.take_profit, 52000.0)
-        self.assertIsNone(order_arg.limit_price)
+class TestProcessVantaSignalDispatch(OrderProcessorTestBase):
 
-    def test_process_bracket_order_manager_raises_exception(self):
-        """Test that exceptions from manager are propagated"""
-        signal = {
-            "stop_loss": 49000.0,
-        }
+    def test_routes_to_market_order(self):
+        self.market_order_client.execute_order.return_value = (Mock(bracket_orders=None), Mock(is_closed_position=False))
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.MARKET,
+                         order_type=OrderType.LONG, leverage=1.0)
+        result = self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
+        self.assertEqual(result.execution_type, ExecutionType.MARKET)
+        self.market_order_client.execute_order.assert_called_once()
 
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock(
-            side_effect=SignalException("No position found")
-        )
+    def test_routes_to_flat_all(self):
+        signal = Signal(execution_type=ExecutionType.FLAT_ALL)
+        result = self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, "ALL", self.DEFAULT_NOW_MS)
+        self.assertEqual(result.execution_type, ExecutionType.FLAT_ALL)
+        self.market_order_client.close_positions.assert_called_once()
 
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        with self.assertRaises(SignalException) as context:
-            processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("No position found", str(context.exception))
-
-    # ============================================================================
-    # Test: process_market_order
-    # ============================================================================
-
-    def test_process_market_order_success(self):
-        """Test processing successful market order"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-        }
-
-        mock_market_order_client = Mock()
-        mock_position = Mock()
-        mock_order = Mock()
-        mock_market_order_client.execute_order = Mock(
-            return_value=(mock_order, mock_position)
-        )
-
-        processor = OrderProcessor(limit_order_client=Mock(), market_order_client=mock_market_order_client)
-        err_msg, position, order = processor.process_market_order(
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertIsNone(err_msg)
-        self.assertIsNotNone(position)
-        self.assertIsNotNone(order)
-
-        # Verify market_order_client.execute_order was called
-        mock_market_order_client.execute_order.assert_called_once()
-
-    def test_process_market_order_with_none_result(self):
-        """Test processing market order that returns None result"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-        }
-
-        mock_market_order_client = Mock()
-        mock_market_order_client.execute_order = Mock(
-            return_value=None
-        )
-
-        processor = OrderProcessor(limit_order_client=Mock(), market_order_client=mock_market_order_client)
-        err_msg, position, order = processor.process_market_order(
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertIsNone(err_msg)
-        self.assertIsNone(position)
-        self.assertIsNone(order)
-
-    def test_process_market_order_client_raises_exception(self):
-        """Test that exceptions from client are propagated"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-        }
-
-        mock_market_order_client = Mock()
-        mock_market_order_client.execute_order = Mock(
-            side_effect=SignalException("Invalid signal")
-        )
-
-        processor = OrderProcessor(limit_order_client=Mock(), market_order_client=mock_market_order_client)
-        with self.assertRaises(SignalException) as context:
-            processor.process_market_order(
-                signal=signal,
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        self.assertIn("Invalid signal", str(context.exception))
-
-    # ============================================================================
-    # Test: Edge Cases and Data Type Conversions
-    # ============================================================================
-
-    def test_process_limit_order_converts_string_numbers_to_float(self):
-        """Test that string numbers are properly converted to float"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": "1.5",  # String
-            "limit_price": "50000.0",  # String
-            "stop_loss": "49000.0",  # String
-            "take_profit": "52000.0",  # String
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify all values are floats
-        self.assertIsInstance(order.leverage, float)
-        self.assertIsInstance(order.limit_price, float)
-        self.assertIsInstance(order.stop_loss, float)
-        self.assertIsInstance(order.take_profit, float)
-
-    def test_process_bracket_order_converts_string_numbers_to_float(self):
-        """Test that string numbers are properly converted to float in bracket orders"""
-        signal = {
-            "leverage": "1.5",  # String
-            "stop_loss": "49000.0",  # String
-            "take_profit": "52000.0",  # String
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify all values are floats
-        self.assertIsInstance(order.leverage, float)
-        self.assertIsInstance(order.stop_loss, float)
-        self.assertIsInstance(order.take_profit, float)
-
-    def test_parse_signal_data_multiple_trade_pairs(self):
-        """Test parsing signals for different trade pairs"""
-        test_pairs = [
-            ("BTCUSD", TradePair.BTCUSD),
-            ("ETHUSD", TradePair.ETHUSD),
-            ("EURUSD", TradePair.EURUSD),
-        ]
-
-        for pair_str, expected_pair in test_pairs:
-            signal = {"trade_pair": {"trade_pair_id": pair_str}}
-            trade_pair, _, _ = OrderProcessor.parse_signal_data(signal)
-            self.assertEqual(trade_pair, expected_pair)
-
-    def test_process_limit_order_order_uuid_propagated(self):
-        """Test that order_uuid is correctly set in the created order"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        test_uuid = "custom-uuid-12345"
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid=test_uuid,
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertEqual(order.order_uuid, test_uuid)
-
-    def test_process_bracket_order_order_uuid_propagated(self):
-        """Test that order_uuid is correctly set in bracket orders"""
-        signal = {
-            "stop_loss": 49000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        test_uuid = "bracket-uuid-67890"
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid=test_uuid,
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertEqual(order.order_uuid, test_uuid)
-
-    def test_process_limit_order_timestamp_propagated(self):
-        """Test that processed_ms timestamp is correctly set"""
-        signal = {
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        custom_timestamp = 1234567890000
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.LIMIT, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=custom_timestamp,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertEqual(order.processed_ms, custom_timestamp)
-
-    def test_process_bracket_order_timestamp_propagated(self):
-        """Test that processed_ms timestamp is correctly set in bracket orders"""
-        signal = {
-            "stop_loss": 49000.0,
-        }
-
-        limit_order_client = Mock()
-        limit_order_client.process_limit_order = Mock()
-
-        custom_timestamp = 1234567890000
-        processor = OrderProcessor(limit_order_client=limit_order_client, market_order_client=Mock())
-        order = processor.process_unfilled_order(execution_type=ExecutionType.BRACKET, 
-            signal=signal,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_uuid="test_uuid",
-            now_ms=custom_timestamp,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        self.assertEqual(order.processed_ms, custom_timestamp)
-
-    # ============================================================================
-    # Test: process_order (Unified Dispatcher)
-    # ============================================================================
-
-    def test_process_order_routes_to_limit_order(self):
-        """Test that process_order correctly routes LIMIT execution type"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "LIMIT",
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "limit_price": 50000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-        mock_market_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        result = processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify result
+    def test_routes_to_limit_order(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT,
+                         order_type=OrderType.LONG, leverage=1.0, limit_price=50000.0)
+        result = self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
         self.assertEqual(result.execution_type, ExecutionType.LIMIT)
         self.assertIsNotNone(result.order)
         self.assertTrue(result.should_track_uuid)
-        self.assertTrue(result.success)
-        self.assertIsNone(result.result_dict)
+        self.limit_order_client.process_limit_order.assert_called_once()
 
-        # Verify limit order client was called
-        mock_limit_order_client.process_limit_order.assert_called_once()
-        # Verify market order client was NOT called
-        mock_market_order_client.execute_order.assert_not_called()
-
-    def test_process_order_routes_to_bracket_order(self):
-        """Test that process_order correctly routes BRACKET execution type"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "BRACKET",
-            "leverage": 1.0,
-            "stop_loss": 49000.0,
-            "take_profit": 52000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-        mock_market_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        result = processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify result
+    def test_routes_to_bracket_order(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.BRACKET,
+                         stop_loss=49000.0)
+        result = self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
         self.assertEqual(result.execution_type, ExecutionType.BRACKET)
         self.assertIsNotNone(result.order)
-        self.assertTrue(result.should_track_uuid)
-        self.assertTrue(result.success)
 
-        # Verify limit order client was called
-        mock_limit_order_client.process_limit_order.assert_called_once()
+    def test_routes_to_stop_limit_order(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.STOP_LIMIT,
+                         order_type=OrderType.LONG, leverage=1.0, limit_price=50000.0,
+                         stop_price=51000.0, stop_condition=StopCondition.GTE)
+        result = self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
+        self.assertEqual(result.execution_type, ExecutionType.STOP_LIMIT)
+        self.assertEqual(result.order.src, OrderSource.STOP_LIMIT_UNFILLED)
 
-    def test_process_order_routes_to_limit_cancel(self):
-        """Test that process_order correctly routes LIMIT_CANCEL execution type"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "LIMIT_CANCEL",
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.cancel_limit_order = Mock(
-            return_value={"status": "cancelled", "count": 2}
-        )
-        mock_market_order_client = Mock()
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        result = processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify result
+    def test_routes_to_limit_cancel(self):
+        self.limit_order_client.cancel_limit_order.return_value = {"status": "cancelled"}
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_CANCEL)
+        result = self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
         self.assertEqual(result.execution_type, ExecutionType.LIMIT_CANCEL)
         self.assertIsNone(result.order)
-        self.assertFalse(result.should_track_uuid)  # LIMIT_CANCEL doesn't track UUID
-        self.assertTrue(result.success)
-        self.assertIsNotNone(result.result_dict)
-        self.assertEqual(result.result_dict["status"], "cancelled")
+        self.assertFalse(result.should_track_uuid)
+        self.assertEqual(result.result_dict, {"status": "cancelled"})
 
-        # Verify cancel was called
-        mock_limit_order_client.cancel_limit_order.assert_called_once()
+    def test_routes_to_limit_edit(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = None
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                         leverage=1.0, bracket_orders=[{"order_uuid": "b1", "stop_loss": 49000.0}])
+        result = self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
+        self.assertEqual(result.execution_type, ExecutionType.LIMIT_EDIT)
+        self.assertFalse(result.should_track_uuid)
 
-    def test_process_order_routes_to_market_order(self):
-        """Test that process_order correctly routes MARKET execution type"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "MARKET",
-            "order_type": "LONG",
-            "leverage": 1.0,
-        }
+    def test_generates_uuid_when_not_provided(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT,
+                         order_type=OrderType.LONG, leverage=1.0, limit_price=50000.0)
+        result = self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, None, self.DEFAULT_NOW_MS)
+        self.assertIsNotNone(result.order.order_uuid)
+        uuid.UUID(result.order.order_uuid)
 
-        mock_limit_order_client = Mock()
-        mock_market_order_client = Mock()
-        mock_position = Mock()
-        mock_order = Mock()
-        mock_order.bracket_orders = None
-        mock_market_order_client.execute_order = Mock(
-            return_value=(mock_order, mock_position)
+    def test_invalid_execution_type_raises(self):
+        signal = Mock()
+        signal.execution_type = "NOT_A_REAL_TYPE"
+        with self.assertRaises(SignalException):
+            self.processor.process_vanta_signal(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
+
+
+class TestProcessMarketOrder(OrderProcessorTestBase):
+
+    def _signal(self, **overrides):
+        params = dict(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.MARKET,
+                      order_type=OrderType.LONG, leverage=1.0)
+        params.update(overrides)
+        return Signal(**params)
+
+    def test_success(self):
+        created_order = Mock(bracket_orders=None)
+        updated_position = Mock(is_closed_position=False)
+        self.market_order_client.execute_order.return_value = (created_order, updated_position)
+
+        result = self.processor.process_market_order(
+            self.DEFAULT_MINER_HOTKEY, self._signal(), "uuid1", self.DEFAULT_NOW_MS
         )
 
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        result = processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify result
         self.assertEqual(result.execution_type, ExecutionType.MARKET)
-        self.assertIsNotNone(result.order)
-        self.assertIsNotNone(result.updated_position)
+        self.assertEqual(result.order, created_order)
+        self.assertEqual(result.updated_position, updated_position)
         self.assertTrue(result.should_track_uuid)
-        self.assertTrue(result.success)
 
-        # Verify market order client was called
-        mock_market_order_client.execute_order.assert_called_once()
-        # Verify limit order client was NOT called
-        mock_limit_order_client.process_limit_order.assert_not_called()
+        call_kwargs = self.market_order_client.execute_order.call_args
+        self.assertEqual(call_kwargs.args[0], self.DEFAULT_MINER_HOTKEY)
+        self.assertEqual(call_kwargs.args[1], "uuid1")
+        self.assertEqual(call_kwargs.args[2], self.DEFAULT_TRADE_PAIR)
+        self.assertEqual(call_kwargs.kwargs["order_src"], OrderSource.ORGANIC)
+        self.assertTrue(call_kwargs.kwargs["enforce_cooldown"])
 
-    def test_process_order_market_raises_exception_on_error(self):
-        """Test that process_order raises SignalException for MARKET order errors"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "MARKET",
-            "order_type": "LONG",
-            "leverage": 1.0,
-        }
+    def test_none_result_returns_bare_result(self):
+        self.market_order_client.execute_order.return_value = None
+        result = self.processor.process_market_order(
+            self.DEFAULT_MINER_HOTKEY, self._signal(), "uuid1", self.DEFAULT_NOW_MS
+        )
+        self.assertEqual(result, OrderProcessingResult(ExecutionType.MARKET))
 
-        mock_limit_order_client = Mock()
-        mock_market_order_client = Mock()
-        mock_market_order_client.execute_order = Mock(
-            side_effect=SignalException("Order too soon")
+    def test_closed_position_cancels_brackets(self):
+        created_order = Mock(bracket_orders=None)
+        updated_position = Mock(is_closed_position=True)
+        self.market_order_client.execute_order.return_value = (created_order, updated_position)
+
+        self.processor.process_market_order(
+            self.DEFAULT_MINER_HOTKEY, self._signal(order_type=OrderType.FLAT, leverage=None), "uuid1", self.DEFAULT_NOW_MS
         )
 
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        with self.assertRaises(SignalException) as context:
-            processor.process_vanta_signal(
-                signal=Signal(**signal),
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
+        self.limit_order_client.cancel_limit_order.assert_called_once_with(
+            self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id, "ALL", self.DEFAULT_NOW_MS, ExecutionType.BRACKET
+        )
+
+    def test_open_position_with_bracket_orders_creates_sltp(self):
+        created_order = Mock(bracket_orders=None)
+        updated_position = Mock(is_closed_position=False)
+        self.market_order_client.execute_order.return_value = (created_order, updated_position)
+
+        signal = self._signal(stop_loss=49000.0)
+        self.processor.process_market_order(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
+
+        self.assertEqual(created_order.bracket_orders, signal.bracket_orders)
+        self.limit_order_client.create_sltp_order.assert_called_once_with(self.DEFAULT_MINER_HOTKEY, created_order)
+
+    def test_closed_position_does_not_create_sltp(self):
+        created_order = Mock(bracket_orders=None)
+        updated_position = Mock(is_closed_position=True)
+        self.market_order_client.execute_order.return_value = (created_order, updated_position)
+
+        signal = self._signal(order_type=OrderType.FLAT, leverage=None, stop_loss=49000.0)
+        self.processor.process_market_order(self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS)
+
+        self.limit_order_client.create_sltp_order.assert_not_called()
+
+    def test_no_bracket_orders_does_not_create_sltp(self):
+        created_order = Mock(bracket_orders=None)
+        updated_position = Mock(is_closed_position=False)
+        self.market_order_client.execute_order.return_value = (created_order, updated_position)
+
+        self.processor.process_market_order(self.DEFAULT_MINER_HOTKEY, self._signal(), "uuid1", self.DEFAULT_NOW_MS)
+
+        self.limit_order_client.create_sltp_order.assert_not_called()
+
+    def test_client_exception_propagates(self):
+        self.market_order_client.execute_order.side_effect = SignalException("Order too soon")
+        with self.assertRaises(SignalException):
+            self.processor.process_market_order(self.DEFAULT_MINER_HOTKEY, self._signal(), "uuid1", self.DEFAULT_NOW_MS)
+        self.limit_order_client.create_sltp_order.assert_not_called()
+
+
+class TestProcessFlatAll(OrderProcessorTestBase):
+
+    def test_close_all_when_uuid_is_all(self):
+        result = self.processor.process_flat_all(self.DEFAULT_MINER_HOTKEY, "ALL", self.DEFAULT_NOW_MS)
+        self.assertEqual(result.execution_type, ExecutionType.FLAT_ALL)
+        self.market_order_client.close_positions.assert_called_once_with(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=None, close_all=True, now_ms=self.DEFAULT_NOW_MS
+        )
+        self.limit_order_client.cancel_limit_order.assert_called_once_with(
+            self.DEFAULT_MINER_HOTKEY, None, "ALL", self.DEFAULT_NOW_MS, ExecutionType.BRACKET
+        )
+
+    def test_close_specific_positions(self):
+        self.processor.process_flat_all(self.DEFAULT_MINER_HOTKEY, "pos1,pos2", self.DEFAULT_NOW_MS)
+        self.market_order_client.close_positions.assert_called_once_with(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=["pos1", "pos2"], close_all=False, now_ms=self.DEFAULT_NOW_MS
+        )
+
+    def test_empty_uuid_closes_none(self):
+        self.processor.process_flat_all(self.DEFAULT_MINER_HOTKEY, "", self.DEFAULT_NOW_MS)
+        self.market_order_client.close_positions.assert_called_once_with(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[], close_all=False, now_ms=self.DEFAULT_NOW_MS
+        )
+
+    def test_case_insensitive_all(self):
+        self.processor.process_flat_all(self.DEFAULT_MINER_HOTKEY, "all", self.DEFAULT_NOW_MS)
+        self.market_order_client.close_positions.assert_called_once_with(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=None, close_all=True, now_ms=self.DEFAULT_NOW_MS
+        )
+
+
+class TestProcessHyperliquidOrder(OrderProcessorTestBase):
+
+    def test_calls_market_order_client_with_hl_defaults(self):
+        from vali_objects.utils.limit_order.order_utils import OrderSize
+        self.market_order_client.execute_order.return_value = (Mock(), Mock())
+
+        self.processor.process_hyperliquid_order(
+            self.DEFAULT_MINER_HOTKEY, "uuid1", self.DEFAULT_TRADE_PAIR, OrderType.LONG,
+            OrderSize(leverage=1.0), fill_price=50000.0, is_taker=True, now_ms=self.DEFAULT_NOW_MS,
+        )
+
+        call = self.market_order_client.execute_order.call_args
+        self.assertEqual(call.kwargs["order_src"], OrderSource.HYPERLIQUID)
+        self.assertTrue(call.kwargs["is_hl"])
+        self.assertTrue(call.kwargs["is_hl_taker"])
+        self.assertFalse(call.kwargs["enforce_cooldown"])
+        self.assertEqual(call.kwargs["slippage"], 0.0)
+        self.assertEqual(call.kwargs["fill_price"], 50000.0)
+
+    def test_missing_trade_pair_raises(self):
+        from vali_objects.utils.limit_order.order_utils import OrderSize
+        with self.assertRaises(SignalException):
+            self.processor.process_hyperliquid_order(
+                self.DEFAULT_MINER_HOTKEY, "uuid1", None, OrderType.LONG, OrderSize(leverage=1.0)
             )
 
-        self.assertIn("Order too soon", str(context.exception))
+    def test_multiple_sizes_raises(self):
+        from vali_objects.utils.limit_order.order_utils import OrderSize
+        with self.assertRaises(SignalException):
+            self.processor.process_hyperliquid_order(
+                self.DEFAULT_MINER_HOTKEY, "uuid1", self.DEFAULT_TRADE_PAIR, OrderType.LONG,
+                OrderSize(leverage=1.0, value=100.0)
+            )
 
-    def test_process_order_defaults_to_market_execution(self):
-        """Test that process_order defaults to MARKET when execution_type not specified"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "order_type": "LONG",
-            "leverage": 1.0,
-        }
 
-        mock_limit_order_client = Mock()
-        mock_market_order_client = Mock()
-        mock_position = Mock()
-        mock_order = Mock()
-        mock_order.bracket_orders = None
-        mock_market_order_client.execute_order = Mock(
-            return_value=(mock_order, mock_position)
+class TestProcessUnfilledOrder(OrderProcessorTestBase):
+
+    def test_limit_order_created(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT,
+                         order_type=OrderType.LONG, leverage=1.0, limit_price=50000.0,
+                         stop_loss=49000.0, take_profit=52000.0)
+
+        order = self.processor.process_unfilled_order(
+            self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.LIMIT
         )
 
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        result = processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+        self.assertEqual(order.order_type, OrderType.LONG)
+        self.assertEqual(order.leverage, 1.0)
+        self.assertEqual(order.limit_price, 50000.0)
+        self.assertEqual(order.src, OrderSource.LIMIT_UNFILLED)
+        self.assertEqual(order.trade_pair, self.DEFAULT_TRADE_PAIR)
+        self.limit_order_client.process_limit_order.assert_called_once_with(
+            self.DEFAULT_MINER_HOTKEY, order, is_edit=False
         )
 
-        # Verify it routed to MARKET
-        self.assertEqual(result.execution_type, ExecutionType.MARKET)
-        mock_market_order_client.execute_order.assert_called_once()
+    def test_limit_order_short_negates_leverage(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT,
+                         order_type=OrderType.SHORT, leverage=0.5, limit_price=50000.0)
 
-    def test_process_order_generates_uuid_when_not_provided(self):
-        """Test that process_order generates UUID when miner_order_uuid is None"""
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "LIMIT",
+        order = self.processor.process_unfilled_order(
+            self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.LIMIT
+        )
+        # Signal normalizes SHORT size fields to negative before OrderProcessor sees them.
+        self.assertEqual(order.leverage, -0.5)
+
+    def test_stop_limit_order_created(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.STOP_LIMIT,
+                         order_type=OrderType.LONG, leverage=1.0, limit_price=50000.0,
+                         stop_price=51000.0, stop_condition=StopCondition.GTE)
+
+        order = self.processor.process_unfilled_order(
+            self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.STOP_LIMIT
+        )
+
+        self.assertEqual(order.src, OrderSource.STOP_LIMIT_UNFILLED)
+        self.assertEqual(order.stop_price, 51000.0)
+        self.assertEqual(order.stop_condition, StopCondition.GTE)
+
+    def test_missing_size_raises(self):
+        signal = Mock()
+        signal.leverage = None
+        signal.value = None
+        signal.quantity = None
+        signal.order_type = OrderType.LONG
+        signal.trade_pair = self.DEFAULT_TRADE_PAIR
+        with self.assertRaises(SignalException):
+            self.processor.process_unfilled_order(
+                self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.LIMIT
+            )
+
+    def test_bracket_order_created_with_sl_and_tp(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.BRACKET,
+                         leverage=1.0, stop_loss=49000.0, take_profit=52000.0)
+
+        order = self.processor.process_unfilled_order(
+            self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.BRACKET
+        )
+
+        self.assertEqual(order.execution_type, ExecutionType.BRACKET)
+        self.assertEqual(order.order_type, OrderType.FLAT)
+        self.assertEqual(order.stop_loss, 49000.0)
+        self.assertEqual(order.take_profit, 52000.0)
+        self.assertEqual(order.src, OrderSource.BRACKET_UNFILLED)
+        # BRACKET orders never carry a limit_price, even if one was set upstream.
+        self.assertIsNone(order.limit_price)
+
+    def test_bracket_order_defaults_bracket_pct_to_full_when_no_size_given(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.BRACKET,
+                         stop_loss=49000.0)
+
+        order = self.processor.process_unfilled_order(
+            self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.BRACKET
+        )
+
+        self.assertEqual(order.bracket_pct, 1.0)
+
+    def test_bracket_order_keeps_explicit_size_instead_of_default_pct(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.BRACKET,
+                         leverage=0.5, stop_loss=49000.0)
+
+        order = self.processor.process_unfilled_order(
+            self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.BRACKET
+        )
+
+        self.assertIsNone(order.bracket_pct)
+        self.assertEqual(order.leverage, 0.5)
+
+    def test_is_edit_propagated_to_client(self):
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT,
+                         order_type=OrderType.LONG, leverage=1.0, limit_price=50000.0)
+
+        self.processor.process_unfilled_order(
+            self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.LIMIT, is_edit=True
+        )
+
+        self.limit_order_client.process_limit_order.assert_called_once()
+        self.assertTrue(self.limit_order_client.process_limit_order.call_args.kwargs["is_edit"])
+
+    def test_client_exception_propagates(self):
+        self.limit_order_client.process_limit_order.side_effect = SignalException("Manager error")
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT,
+                         order_type=OrderType.LONG, leverage=1.0, limit_price=50000.0)
+        with self.assertRaises(SignalException):
+            self.processor.process_unfilled_order(
+                self.DEFAULT_MINER_HOTKEY, signal, "uuid1", self.DEFAULT_NOW_MS, ExecutionType.LIMIT
+            )
+
+
+class TestProcessLimitCancel(OrderProcessorTestBase):
+
+    def test_delegates_to_client(self):
+        self.limit_order_client.cancel_limit_order.return_value = {"status": "cancelled"}
+
+        result = self.processor.process_limit_cancel(
+            self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR, "order1", self.DEFAULT_NOW_MS, ExecutionType.LIMIT
+        )
+
+        self.limit_order_client.cancel_limit_order.assert_called_once_with(
+            self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id, "order1", self.DEFAULT_NOW_MS, ExecutionType.LIMIT
+        )
+        self.assertEqual(result, {"status": "cancelled"})
+
+    def test_none_trade_pair_passes_none_id(self):
+        self.processor.process_limit_cancel(self.DEFAULT_MINER_HOTKEY, None, "ALL", self.DEFAULT_NOW_MS)
+        self.limit_order_client.cancel_limit_order.assert_called_once_with(
+            self.DEFAULT_MINER_HOTKEY, None, "ALL", self.DEFAULT_NOW_MS, None
+        )
+
+    def test_client_exception_propagates(self):
+        self.limit_order_client.cancel_limit_order.side_effect = SignalException("Order not found")
+        with self.assertRaises(SignalException):
+            self.processor.process_limit_cancel(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR, "order1", self.DEFAULT_NOW_MS)
+
+
+class TestProcessLimitEdit(OrderProcessorTestBase):
+
+    def _existing_order_dict(self, order_uuid="order1", src=OrderSource.LIMIT_UNFILLED, execution_type=ExecutionType.LIMIT):
+        return {
+            "order_uuid": order_uuid,
+            "trade_pair_id": self.DEFAULT_TRADE_PAIR.trade_pair_id,
+            "execution_type": execution_type.value,
+            "src": int(src),
             "order_type": "LONG",
             "leverage": 1.0,
             "limit_price": 50000.0,
+            "processed_ms": self.DEFAULT_NOW_MS,
+            "price": 0.0,
         }
 
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.process_limit_order = Mock()
-        mock_market_order_client = Mock()
+    def test_edit_existing_unfilled_order(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = self._existing_order_dict()
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                         order_type=OrderType.LONG, leverage=2.0, limit_price=51000.0)
 
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        result = processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid=None,  # No UUID provided
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
+        order = self.processor.process_limit_edit(self.DEFAULT_MINER_HOTKEY, signal, "order1", self.DEFAULT_NOW_MS)
+
+        self.assertEqual(order.leverage, 2.0)
+        self.assertEqual(order.limit_price, 51000.0)
+        self.assertEqual(order.execution_type, ExecutionType.LIMIT)
+        self.limit_order_client.process_limit_order.assert_called_once_with(
+            self.DEFAULT_MINER_HOTKEY, order, is_edit=True
         )
 
-        # Verify UUID was generated
-        self.assertIsNotNone(result.order.order_uuid)
-        # Verify it's a valid UUID format
-        uuid.UUID(result.order.order_uuid)
+    def test_edit_rejects_already_filled_order(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = self._existing_order_dict(
+            src=OrderSource.LIMIT_FILLED
+        )
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                         order_type=OrderType.LONG, leverage=2.0, limit_price=51000.0)
 
-    # ============================================================================
-    # Test: OrderProcessingResult
-    # ============================================================================
+        with self.assertRaises(SignalException) as ctx:
+            self.processor.process_limit_edit(self.DEFAULT_MINER_HOTKEY, signal, "order1", self.DEFAULT_NOW_MS)
+        self.assertIn("not unfilled", str(ctx.exception))
 
-    def test_order_processing_result_get_response_json_with_order(self):
-        """Test get_response_json returns order JSON when order is present"""
-        from vali_objects.utils.order_processor import OrderProcessingResult
+    def test_edit_rejects_missing_trade_pair(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = self._existing_order_dict()
+        signal = Signal(execution_type=ExecutionType.LIMIT_EDIT, order_type=OrderType.LONG, leverage=2.0)
 
+        with self.assertRaises(SignalException) as ctx:
+            self.processor.process_limit_edit(self.DEFAULT_MINER_HOTKEY, signal, "order1", self.DEFAULT_NOW_MS)
+        self.assertIn("Invalid trade pair", str(ctx.exception))
+
+    def test_edit_rejects_trade_pair_mismatch(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = self._existing_order_dict()
+        signal = Signal(trade_pair=TradePair.ETHUSDC, execution_type=ExecutionType.LIMIT_EDIT,
+                         order_type=OrderType.LONG, leverage=2.0, limit_price=51000.0)
+
+        with self.assertRaises(SignalException) as ctx:
+            self.processor.process_limit_edit(self.DEFAULT_MINER_HOTKEY, signal, "order1", self.DEFAULT_NOW_MS)
+        self.assertIn("trade pair mismatch", str(ctx.exception))
+
+    def test_edit_not_found_and_no_bracket_orders_raises(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = None
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                         order_type=OrderType.FLAT)
+
+        with self.assertRaises(SignalException) as ctx:
+            self.processor.process_limit_edit(self.DEFAULT_MINER_HOTKEY, signal, "order1", self.DEFAULT_NOW_MS)
+        self.assertIn("order not found", str(ctx.exception))
+
+    def test_edit_defers_to_bulk_bracket_update_when_uuid_in_bracket_list(self):
+        self.limit_order_client.get_limit_order_by_uuid.side_effect = [
+            self._existing_order_dict(order_uuid="order1"),  # lookup for the envelope uuid itself
+            None,  # lookup inside _apply_bulk_bracket_update for bracket "order1"
+        ]
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                         leverage=1.0, bracket_orders=[{"order_uuid": "order1", "stop_loss": 49000.0}])
+
+        result = self.processor.process_limit_edit(self.DEFAULT_MINER_HOTKEY, signal, "order1", self.DEFAULT_NOW_MS)
+
+        self.assertIsNone(result)
+        self.limit_order_client.process_limit_order.assert_called_once()
+
+    def test_bulk_bracket_update_processes_each_bracket(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = None
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                         leverage=1.0,
+                         bracket_orders=[
+                             {"order_uuid": "b1", "stop_loss": 49000.0},
+                             {"order_uuid": "b2", "take_profit": 52000.0},
+                         ])
+
+        result = self.processor.process_limit_edit(self.DEFAULT_MINER_HOTKEY, signal, "envelope-uuid", self.DEFAULT_NOW_MS)
+
+        self.assertIsNone(result)
+        self.assertEqual(self.limit_order_client.process_limit_order.call_count, 2)
+
+    def test_bulk_bracket_update_no_edits_raises(self):
+        with self.assertRaises(SignalException):
+            self.processor._apply_bulk_bracket_update(
+                self.DEFAULT_MINER_HOTKEY,
+                Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                       order_type=OrderType.FLAT),
+                self.DEFAULT_NOW_MS,
+            )
+
+    def test_bulk_bracket_update_cancels_when_cancel_intent(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = self._existing_order_dict(
+            order_uuid="b1", execution_type=ExecutionType.BRACKET
+        )
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                         leverage=1.0, bracket_orders=[{"order_uuid": "b1"}])
+
+        self.processor._apply_bulk_bracket_update(self.DEFAULT_MINER_HOTKEY, signal, self.DEFAULT_NOW_MS)
+
+        self.limit_order_client.cancel_limit_order.assert_called_once_with(
+            self.DEFAULT_MINER_HOTKEY, None, "b1", self.DEFAULT_NOW_MS, None
+        )
+        self.limit_order_client.process_limit_order.assert_not_called()
+
+    def test_bulk_bracket_update_edits_existing_bracket(self):
+        self.limit_order_client.get_limit_order_by_uuid.return_value = self._existing_order_dict(
+            order_uuid="b1", execution_type=ExecutionType.BRACKET
+        )
+        signal = Signal(trade_pair=self.DEFAULT_TRADE_PAIR, execution_type=ExecutionType.LIMIT_EDIT,
+                         leverage=1.0, bracket_orders=[{"order_uuid": "b1", "stop_loss": 48000.0}])
+
+        self.processor._apply_bulk_bracket_update(self.DEFAULT_MINER_HOTKEY, signal, self.DEFAULT_NOW_MS)
+
+        self.limit_order_client.process_limit_order.assert_called_once()
+        self.assertTrue(self.limit_order_client.process_limit_order.call_args.kwargs["is_edit"])
+
+    def test_is_bracket_cancel_intent(self):
+        self.assertTrue(OrderProcessor._is_bracket_cancel_intent({"order_uuid": "b1"}))
+        self.assertFalse(OrderProcessor._is_bracket_cancel_intent({"order_uuid": "b1", "stop_loss": 1.0}))
+        self.assertFalse(OrderProcessor._is_bracket_cancel_intent({"order_uuid": "b1", "trailing_percent": 0.1}))
+
+    def test_build_bracket_signal_with_trailing_percent(self):
+        signal = OrderProcessor._build_bracket_signal(
+            self.DEFAULT_TRADE_PAIR, {"order_uuid": "b1", "trailing_percent": 0.05, "leverage": 1.0}
+        )
+        self.assertEqual(signal.execution_type, ExecutionType.BRACKET)
+        self.assertEqual(signal.trailing_stop, {"trailing_percent": 0.05})
+        self.assertEqual(signal.leverage, 1.0)
+
+
+class TestOrderProcessingResult(OrderProcessorTestBase):
+
+    def test_get_response_json_with_order(self):
         mock_order = Mock()
         mock_order.__str__ = Mock(return_value='{"order": "data"}')
+        result = OrderProcessingResult(execution_type=ExecutionType.LIMIT, order=mock_order)
+        self.assertEqual(result.get_response_json(), '{"order": "data"}')
 
-        result = OrderProcessingResult(
-            execution_type=ExecutionType.LIMIT,
-            order=mock_order
-        )
-
-        response_json = result.get_response_json()
-        self.assertEqual(response_json, '{"order": "data"}')
-
-    def test_order_processing_result_get_response_json_with_result_dict(self):
-        """Test get_response_json returns JSON dict when result_dict is present"""
-        from vali_objects.utils.order_processor import OrderProcessingResult
-
-        result_dict = {"status": "cancelled", "count": 3}
-
+    def test_get_response_json_with_result_dict(self):
         result = OrderProcessingResult(
             execution_type=ExecutionType.LIMIT_CANCEL,
-            result_dict=result_dict,
-            should_track_uuid=False
+            result_dict={"status": "cancelled", "count": 3},
+            should_track_uuid=False,
         )
-
-        response_json = result.get_response_json()
         import json
-        parsed = json.loads(response_json)
+        parsed = json.loads(result.get_response_json())
         self.assertEqual(parsed["status"], "cancelled")
         self.assertEqual(parsed["count"], 3)
 
-    def test_order_processing_result_get_response_json_empty(self):
-        """Test get_response_json returns empty string when no data"""
-        from vali_objects.utils.order_processor import OrderProcessingResult
+    def test_get_response_json_empty(self):
+        result = OrderProcessingResult(execution_type=ExecutionType.LIMIT)
+        self.assertEqual(result.get_response_json(), "")
 
-        result = OrderProcessingResult(
-            execution_type=ExecutionType.LIMIT
-        )
-
-        response_json = result.get_response_json()
-        self.assertEqual(response_json, "")
-
-    def test_order_processing_result_order_for_logging(self):
-        """Test order_for_logging property returns order"""
-        from vali_objects.utils.order_processor import OrderProcessingResult
-
+    def test_order_for_logging(self):
         mock_order = Mock()
-
-        result = OrderProcessingResult(
-            execution_type=ExecutionType.LIMIT,
-            order=mock_order
-        )
-
+        result = OrderProcessingResult(execution_type=ExecutionType.LIMIT, order=mock_order)
         self.assertEqual(result.order_for_logging, mock_order)
 
-    def test_order_processing_result_is_frozen(self):
-        """Test that OrderProcessingResult is immutable (frozen dataclass)"""
-        from vali_objects.utils.order_processor import OrderProcessingResult
-
-        result = OrderProcessingResult(
-            execution_type=ExecutionType.LIMIT
-        )
-
-        # Attempting to modify a frozen dataclass should raise an error
-        with self.assertRaises(Exception):  # FrozenInstanceError in Python 3.10+
+    def test_is_frozen(self):
+        result = OrderProcessingResult(execution_type=ExecutionType.LIMIT)
+        with self.assertRaises(Exception):
             result.success = False
-
-
-    # ============================================================================
-    # Test: Market Order with SLTP Fields (Integration with create_sltp_order)
-    # ============================================================================
-
-    def test_process_order_market_with_sltp_creates_bracket(self):
-        """
-        Test that market order with stop_loss/take_profit creates a bracket order.
-
-        This is the primary integration test for market orders with SLTP fields.
-        Verifies that after a successful market order fill, create_sltp_order is called.
-        """
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "MARKET",
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "stop_loss": 49000.0,
-            "take_profit": 52000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.create_sltp_order = Mock()
-
-        mock_market_order_client = Mock()
-        mock_position = Mock()
-        mock_position.is_closed_position = False
-
-        mock_order = Mock()
-        mock_order.bracket_orders = [Mock()]  # Non-empty bracket_orders
-        mock_order.stop_loss = 49000.0
-        mock_order.take_profit = 52000.0
-        mock_order.order_type = OrderType.LONG
-        mock_order.quantity = 0.1
-        mock_order.price = 50000.0
-
-        mock_market_order_client.execute_order = Mock(
-            return_value=(mock_order, mock_position)
-        )
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        result = processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify market order was processed
-        self.assertEqual(result.execution_type, ExecutionType.MARKET)
-        mock_market_order_client.execute_order.assert_called_once()
-
-        # Verify create_sltp_order was called with correct arguments
-        mock_limit_order_client.create_sltp_order.assert_called_once_with(
-            self.DEFAULT_MINER_HOTKEY, mock_order
-        )
-
-    def test_process_order_market_with_sltp_closed_position_no_bracket(self):
-        """
-        Test that bracket order is NOT created if position is already closed.
-
-        This tests the race condition protection: if market order closes the position
-        (e.g., FLAT order), we should not create a bracket order.
-        """
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "MARKET",
-            "order_type": "FLAT",
-            "leverage": 1.0,
-            "stop_loss": 49000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.create_sltp_order = Mock()
-        mock_limit_order_client.cancel_limit_order = Mock()
-
-        mock_market_order_client = Mock()
-        mock_position = Mock()
-        mock_position.is_closed_position = True  # Position is closed
-        mock_position.trade_pair = self.DEFAULT_TRADE_PAIR
-
-        mock_order = Mock()
-        mock_order.bracket_orders = [Mock()]  # Has bracket orders
-        mock_order.stop_loss = 49000.0
-        mock_order.take_profit = None
-
-        mock_market_order_client.execute_order = Mock(
-            return_value=(mock_order, mock_position)
-        )
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify create_sltp_order was NOT called (position is closed)
-        mock_limit_order_client.create_sltp_order.assert_not_called()
-
-    def test_process_order_market_with_sltp_no_position_no_bracket(self):
-        """
-        Test that bracket order is NOT created if no position is returned.
-
-        This handles the edge case where a FLAT order is sent with no existing position.
-        """
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "MARKET",
-            "order_type": "FLAT",
-            "leverage": 1.0,
-            "stop_loss": 49000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.create_sltp_order = Mock()
-
-        mock_market_order_client = Mock()
-        mock_order = Mock()
-        mock_order.bracket_orders = [Mock()]
-        mock_order.stop_loss = 49000.0
-        mock_order.take_profit = None
-
-        # No position returned (e.g., FLAT with no existing position)
-        mock_market_order_client.execute_order = Mock(
-            return_value=(mock_order, None)
-        )
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify create_sltp_order was NOT called
-        mock_limit_order_client.create_sltp_order.assert_not_called()
-
-    def test_process_order_market_with_sltp_no_created_order_no_bracket(self):
-        """
-        Test that bracket order is NOT created if no order is returned.
-
-        Handles edge case where market order processing returns no created order.
-        """
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "MARKET",
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "stop_loss": 49000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.create_sltp_order = Mock()
-
-        mock_market_order_client = Mock()
-        mock_position = Mock()
-        mock_position.is_closed_position = False
-
-        # No order returned (execute_order returns None)
-        mock_market_order_client.execute_order = Mock(
-            return_value=None
-        )
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        processor.process_vanta_signal(
-            signal=Signal(**signal),
-            order_uuid="test_uuid",
-            now_ms=self.DEFAULT_NOW_MS,
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-        )
-
-        # Verify create_sltp_order was NOT called
-        mock_limit_order_client.create_sltp_order.assert_not_called()
-
-    def test_process_order_market_with_sltp_error_no_bracket(self):
-        """
-        Test that bracket order is NOT created if market order fails.
-
-        Verifies that SLTP bracket creation only happens on successful market orders.
-        """
-        signal = {
-            "trade_pair": {"trade_pair_id": "BTCUSD"},
-            "execution_type": "MARKET",
-            "order_type": "LONG",
-            "leverage": 1.0,
-            "stop_loss": 49000.0,
-        }
-
-        mock_limit_order_client = Mock()
-        mock_limit_order_client.create_sltp_order = Mock()
-
-        mock_market_order_client = Mock()
-        mock_market_order_client.execute_order = Mock(
-            side_effect=SignalException("Order too soon")
-        )
-
-        processor = OrderProcessor(limit_order_client=mock_limit_order_client, market_order_client=mock_market_order_client)
-        with self.assertRaises(SignalException):
-            processor.process_vanta_signal(
-                signal=Signal(**signal),
-                order_uuid="test_uuid",
-                now_ms=self.DEFAULT_NOW_MS,
-                hotkey=self.DEFAULT_MINER_HOTKEY,
-            )
-
-        # Verify create_sltp_order was NOT called
-        mock_limit_order_client.create_sltp_order.assert_not_called()
 
 
 if __name__ == '__main__':

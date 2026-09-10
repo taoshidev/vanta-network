@@ -6,15 +6,17 @@ Tests departed hotkey tracking, re-registration detection, and anomaly protectio
 """
 import os
 
+from shared_objects.cache_controller import CacheController
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.shared_objects.test_utilities import generate_winning_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS
+from vali_objects.challenge_period.challengeperiod_manager import MinerBucketState
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_client import EliminationClient
-from vali_objects.utils.elimination.elimination_manager import DEPARTED_HOTKEYS_KEY
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -127,16 +129,25 @@ class TestReregistration(TestBase):
         self._setup_perf_ledgers()
 
     def _setup_initial_positions(self):
-        """Create initial positions for all miners"""
+        """Create an initial position for the normal (non-departing) miner only.
+
+        Miners used in departure/re-registration tests must NOT have a position/miner
+        directory on disk: handle_zombies() runs before handle_departed_hotkeys() in
+        process_eliminations(), and any hotkey with an existing miner directory that
+        drops out of the metagraph is claimed as a ZOMBIE elimination first. Giving
+        every miner a position would make departures register as ZOMBIE instead of
+        DEREGISTERED, which is what these tests are exercising.
+        """
         base_time = TimeUtil.now_in_millis() - MS_IN_24_HOURS * 5
 
-        for miner in self.all_miners:
+        for miner in [self.NORMAL_MINER]:
             position = Position(
                 miner_hotkey=miner,
                 position_uuid=f"{miner}_BTCUSD",
                 open_ms=base_time,
                 trade_pair=TradePair.BTCUSD,
                 is_closed_position=False,
+                position_type=OrderType.LONG,
                 orders=[Order(
                     price=60000,
                     processed_ms=base_time,
@@ -153,12 +164,12 @@ class TestReregistration(TestBase):
         # Build miners dict - all miners in main competition for reregistration tests
         miners = {}
         for miner in self.all_miners:
-            miners[miner] = (MinerBucket.MAINCOMP, 0, None, None)
+            miners[miner] = {}
+            miners[miner] = MinerBucketState(miner, [BucketEntry(MinerBucket.MAINCOMP, 0)]).to_checkpoint_dict()
 
         # Update using client API
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners(miners)
-        self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        self.challenge_period_client.clear_test_state()
+        self.challenge_period_client.sync_challenge_period_data(miners)
 
     def _setup_perf_ledgers(self):
         """Set up performance ledgers for testing"""
@@ -196,13 +207,15 @@ class TestReregistration(TestBase):
         self.assertIn(self.DEREGISTERED_MINER, departed)
         self.assertEqual(len(departed), 1)
 
-        # Verify it was persisted to disk
-        departed_file = ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=True)
-        self.assertTrue(os.path.exists(departed_file))
+        # Verify it was persisted to disk as a DEREGISTERED row in the eliminations file
+        # (departed hotkeys are unified into eliminations.json, not a standalone file)
+        eliminations_file = ValiBkpUtils.get_eliminations_dir(running_unit_tests=True)
+        self.assertTrue(os.path.exists(eliminations_file))
 
-        # Load from disk and verify
-        departed_data = ValiUtils.get_vali_json_file(departed_file, DEPARTED_HOTKEYS_KEY)
-        self.assertIn(self.DEREGISTERED_MINER, departed_data)
+        eliminations_data = ValiUtils.get_vali_json_file(eliminations_file, CacheController.ELIMINATIONS)
+        matching_rows = [row for row in eliminations_data if row["hotkey"] == self.DEREGISTERED_MINER]
+        self.assertEqual(len(matching_rows), 1)
+        self.assertEqual(matching_rows[0]["reason"], EliminationReason.DEREGISTERED.value)
 
     def test_multiple_departures_tracked(self):
         """Test tracking multiple miners leaving the metagraph"""
@@ -437,7 +450,13 @@ class TestReregistration(TestBase):
         self.assertIn(self.FUTURE_REREG_MINER, departed)
 
     def test_departed_file_format(self):
-        """Test that the departed hotkeys file has correct format"""
+        """Test that departed hotkeys are persisted as DEREGISTERED rows in the eliminations file.
+
+        Departed hotkeys are no longer written to a standalone departed_hotkeys.json file -
+        they're unified into eliminations.json as EliminationReason.DEREGISTERED rows. The
+        legacy departed_hotkeys.json is only read once (at EliminationManager startup) to
+        migrate any pre-existing entries.
+        """
         # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         # Track some departures
@@ -446,19 +465,23 @@ class TestReregistration(TestBase):
         self.metagraph_client.set_hotkeys(new_hotkeys)
         self.elimination_client.process_eliminations()
 
-        # Read file directly
-        departed_file = ValiBkpUtils.get_departed_hotkeys_dir(running_unit_tests=True)
-        with open(departed_file, 'r') as f:
+        # Read the eliminations file directly
+        eliminations_file = ValiBkpUtils.get_eliminations_dir(running_unit_tests=True)
+        with open(eliminations_file, 'r') as f:
             import json
             data = json.load(f)
 
-        # Verify structure - should be a dict with metadata
-        self.assertIn(DEPARTED_HOTKEYS_KEY, data)
-        self.assertIsInstance(data[DEPARTED_HOTKEYS_KEY], dict)
-        self.assertIn(self.DEREGISTERED_MINER, data[DEPARTED_HOTKEYS_KEY])
-        # Verify metadata is present
-        metadata = data[DEPARTED_HOTKEYS_KEY][self.DEREGISTERED_MINER]
-        self.assertIn("detected_ms", metadata)
+        # Verify structure - should be a dict with a list of elimination rows
+        self.assertIn(CacheController.ELIMINATIONS, data)
+        rows = data[CacheController.ELIMINATIONS]
+        self.assertIsInstance(rows, list)
+        matching_rows = [row for row in rows if row["hotkey"] == self.DEREGISTERED_MINER]
+        self.assertEqual(len(matching_rows), 1)
+
+        # Verify it was recorded with reason DEREGISTERED and has a timestamp
+        row = matching_rows[0]
+        self.assertEqual(row["reason"], EliminationReason.DEREGISTERED.value)
+        self.assertIn("elimination_initiated_time_ms", row)
 
     def test_no_duplicate_departed_tracking(self):
         """Test that the same miner isn't added to departed list multiple times"""
