@@ -29,6 +29,7 @@ from vali_objects.vali_config import (
     ValiConfig,
 )
 from vali_objects.vali_dataclasses.position import Position
+from vali_objects.enums.order_type_enum import OrderType
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +120,7 @@ class TestComputeAccountStateFromPositions(unittest.TestCase):
             position_uuid=f"pos_{trade_pair.trade_pair_id}_{net_value}",
             open_ms=0,
             trade_pair=trade_pair,
+            position_type=OrderType.SHORT if net_value < 0 else (OrderType.LONG if net_value > 0 else OrderType.FLAT),
             net_value=net_value,
             is_closed_position=closed,
         )

@@ -127,10 +127,6 @@ class MinerBucketState:
                 return entry.bucket
         return MinerBucket.UNKNOWN
 
-    def to_json(self) -> list:
-        """Only sync bucket entries - drawdown/rank should not be synced across validators."""
-        return [entry.to_dict() for entry in self.entries]
-
     def to_checkpoint_dict(self) -> dict:
         """Serialize full state (entries + drawdown + drawdown_criteria + rank) for on-disk checkpoint."""
         return {
