@@ -571,7 +571,7 @@ curl -X POST http://localhost:8088/api/update-subaccount-leverage-tier \
   -d '{"synthetic_hotkey": "5GhDr..._0", "leverage_tier": 2}'
 ```
 
-Raising the tier is allowed at any time. Lowering it is rejected while the subaccount has open positions, because the new caps may sit below the current exposure. A subaccount created before tiers existed counts as tier 1. HL-linked and pro subaccounts do not use standard leverage tiers and are rejected.
+Raising the tier is allowed at any time. Lowering it is rejected while the subaccount has open positions, because the new caps may sit below the current exposure. A subaccount created before tiers existed counts as tier 1. HL-linked, pro and pre-migration `hl_all` subaccounts do not use standard leverage tiers and are rejected.
 
 ### 12. Submit Orders
 

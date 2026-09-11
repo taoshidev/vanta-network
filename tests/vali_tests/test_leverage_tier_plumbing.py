@@ -9,7 +9,11 @@ Covers:
     broadcasts from validators without the field leave it None.
   * MinerAccount disk format round trip, including records written before the field existed.
   * update_subaccount_leverage_tier: raise / lower / no-op, the open-position guard when caps may
-    drop, ownership and HL guards, and propagation through broadcast receive and checkpoint sync.
+    drop, ownership, HL and hl_all guards, and propagation through broadcast receive and checkpoint
+    sync, including the MinerAccount repair when the account lost the field and the rejection of
+    out-of-range tiers arriving from other validators.
+  * An order for a standard subaccount through MarketOrderManager: per-pair and class caps at
+    tier 1, more room after raising the tier, lowering only with a flat book.
 
   * The validator and gateway HTTP endpoints for the tier update: coldkey signature bound to the
     target subaccount and tier, nonce + timestamp replay protection, field validation, and the
@@ -30,12 +34,16 @@ from entity_management.entity_manager import EntityManager, SubaccountInfo
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
+from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
 from vali_objects.trade_pair import TradePair
+from vali_objects.utils.limit_order.order_utils import OrderSize
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.position import Position
+from vali_objects.vali_dataclasses.price_source import PriceSource
 
 HL_ADDRESS = "0x" + "a" * 40
 
@@ -307,7 +315,19 @@ class TestLeverageTierUpdate(TestBase):
 
     # ==================== subaccounts without a stored tier ====================
 
-    def _receiver_with_legacy_subaccount(self, synthetic_suffix: int) -> tuple:
+    @staticmethod
+    def _receive(receiver: EntityManager, data: dict) -> bool:
+        """Deliver a SubaccountRegistration broadcast to `receiver` as if sent by the mothership."""
+        original = ValiConfig.MOTHERSHIP_HOTKEY
+        ValiConfig.MOTHERSHIP_HOTKEY = "test_mothership_hotkey"
+        try:
+            return receiver.receive_subaccount_registration_update(
+                subaccount_data=data, sender_hotkey=ValiConfig.MOTHERSHIP_HOTKEY_TESTNET,
+            )
+        finally:
+            ValiConfig.MOTHERSHIP_HOTKEY = original
+
+    def _receiver_with_legacy_subaccount(self, synthetic_suffix: int, asset_class: str = "crypto") -> tuple:
         receiver = EntityManager(
             running_unit_tests=True,
             config=SimpleNamespace(netuid=116, wallet=SimpleNamespace(hotkey="receiver_hotkey"),
@@ -322,16 +342,9 @@ class TestLeverageTierUpdate(TestBase):
             "subaccount_uuid": f"uuid-upd-{synthetic_suffix}",
             "synthetic_hotkey": synthetic,
             "account_size": 50_000.0,
-            "asset_class": "crypto",
+            "asset_class": asset_class,
         }
-        original = ValiConfig.MOTHERSHIP_HOTKEY
-        ValiConfig.MOTHERSHIP_HOTKEY = "test_mothership_hotkey"
-        try:
-            self.assertTrue(receiver.receive_subaccount_registration_update(
-                subaccount_data=data, sender_hotkey=ValiConfig.MOTHERSHIP_HOTKEY_TESTNET,
-            ))
-        finally:
-            ValiConfig.MOTHERSHIP_HOTKEY = original
+        self.assertTrue(self._receive(receiver, data))
         self.assertIsNone(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[synthetic_suffix].leverage_tier)
         return receiver, synthetic, data
 
@@ -374,6 +387,177 @@ class TestLeverageTierUpdate(TestBase):
         self.assertEqual(stats['subaccounts_updated'], 1)
         self.assertEqual(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[0].leverage_tier, 2)
         self.assertEqual(self._account_tier(synthetic), 2)
+
+    # ==================== guards on what other validators send ====================
+
+    def test_hl_all_legacy_subaccount_is_rejected(self):
+        # A pre-migration standard subaccount with asset_class hl_all stays on the legacy curve, so a
+        # stored tier would never be applied; refuse to store one
+        receiver, synthetic, _ = self._receiver_with_legacy_subaccount(0, asset_class="hl_all")
+        success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, 2)
+        self.assertFalse(success)
+        self.assertIn("hl_all", msg)
+        self.assertIsNone(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[0].leverage_tier)
+        self.assertIsNone(self._account_tier(synthetic))
+
+    def test_out_of_range_tier_from_broadcast_or_checkpoint_is_ignored(self):
+        receiver, synthetic, data = self._receiver_with_legacy_subaccount(0)
+        entity = lambda: receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY)  # noqa: E731
+
+        # existing subaccount, broadcast
+        self.assertTrue(self._receive(receiver, {**data, "leverage_tier": 7}))
+        self.assertIsNone(entity().subaccounts[0].leverage_tier)
+        self.assertIsNone(self._account_tier(synthetic))
+
+        # new subaccount, broadcast
+        new_sub = {**data, "subaccount_id": 1, "subaccount_uuid": "uuid-upd-1",
+                   "synthetic_hotkey": f"{self.BROADCAST_ENTITY_HOTKEY}_1", "leverage_tier": 9}
+        self.assertTrue(self._receive(receiver, new_sub))
+        self.assertIsNone(entity().subaccounts[1].leverage_tier)
+        self.assertIsNone(self._account_tier(new_sub["synthetic_hotkey"]))
+
+        # existing subaccount, checkpoint
+        checkpoint = {self.BROADCAST_ENTITY_HOTKEY: entity().model_dump()}
+        checkpoint[self.BROADCAST_ENTITY_HOTKEY]["subaccounts"][0]["leverage_tier"] = 0
+        stats = receiver.sync_entity_data(checkpoint)
+        self.assertEqual(stats['subaccounts_updated'], 0)
+        self.assertEqual(stats['leverage_tiers_pushed'], 0)
+        self.assertIsNone(entity().subaccounts[0].leverage_tier)
+        self.assertIsNone(self._account_tier(synthetic))
+
+    # ==================== repairing a MinerAccount that lost the field ====================
+
+    def test_same_tier_call_repushes_and_rebroadcasts(self):
+        receiver, synthetic, _ = self._receiver_with_legacy_subaccount(0)
+        self.assertTrue(receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, 2)[0])
+        self.miner_account_client.set_leverage_tier(synthetic, None)
+
+        receiver.running_unit_tests = False  # only gates the broadcast in this method
+        receiver.broadcast_subaccount_registration = MagicMock()
+        success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, 2)
+        self.assertTrue(success, msg)
+        self.assertIn("already", msg)
+        self.assertEqual(self._account_tier(synthetic), 2)
+        receiver.broadcast_subaccount_registration.assert_called_once()
+        self.assertEqual(receiver.broadcast_subaccount_registration.call_args.args[1].leverage_tier, 2)
+
+    def test_broadcast_with_unchanged_tier_repairs_miner_account(self):
+        receiver, synthetic, data = self._receiver_with_legacy_subaccount(0)
+        self.assertTrue(self._receive(receiver, {**data, "leverage_tier": 3}))
+        self.assertEqual(self._account_tier(synthetic), 3)
+
+        self.miner_account_client.set_leverage_tier(synthetic, None)
+        self.assertTrue(self._receive(receiver, {**data, "leverage_tier": 3}))
+        self.assertEqual(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[0].leverage_tier, 3)
+        self.assertEqual(self._account_tier(synthetic), 3)
+
+    def test_checkpoint_sync_repairs_miner_account_that_lost_the_tier(self):
+        # An account-size sync from a validator without the field replaces the MinerAccount; the entity
+        # sync that follows puts the stored tier back although nothing changed on the entity side
+        self.assertTrue(self._update(3)[0])
+        self.miner_account_client.set_leverage_tier(self.synthetic, None)
+        self.assertIsNone(self._account_tier())
+
+        checkpoint = {self.ENTITY_HOTKEY: self.entity_client.get_entity_data(self.ENTITY_HOTKEY)}
+        stats = self.entity_client.sync_entity_data(checkpoint)
+        self.assertEqual(stats['subaccounts_updated'], 0)
+        self.assertEqual(stats['leverage_tiers_pushed'], 1)
+        self.assertEqual(self._stored_tier(), 3)
+        self.assertEqual(self._account_tier(), 3)
+        # Nothing left to repair on the next pass
+        checkpoint = {self.ENTITY_HOTKEY: self.entity_client.get_entity_data(self.ENTITY_HOTKEY)}
+        self.assertEqual(self.entity_client.sync_entity_data(checkpoint)['leverage_tiers_pushed'], 0)
+
+
+class TestStandardTierOrderPath(TestBase):
+    """Orders for a standard subaccount go through MarketOrderManager and are clamped by the standard
+    tier caps; raising the tier opens more room and lowering needs a flat book."""
+
+    orchestrator = None
+    entity_client = None
+    market_order_client = None
+    position_client = None
+    metagraph_client = None
+
+    ENTITY_HOTKEY = "entity_tierorder"
+    ACCOUNT_SIZE = 100_000.0
+    PRICE = 50_000.0
+
+    @classmethod
+    def setUpClass(cls):
+        cls.orchestrator = ServerOrchestrator.get_instance()
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(mode=ServerMode.TESTING, secrets=secrets)
+        cls.entity_client = cls.orchestrator.get_client('entity')
+        cls.market_order_client = cls.orchestrator.get_client('market_order')
+        cls.position_client = cls.orchestrator.get_client('position_manager')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+
+    def setUp(self):
+        self.orchestrator.clear_all_test_data()
+        self.metagraph_client.set_hotkeys([self.ENTITY_HOTKEY])
+        self.assertTrue(self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY)[0])
+        success, info, msg = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY, account_size=self.ACCOUNT_SIZE, asset_class="crypto",
+        )
+        self.assertTrue(success, msg)
+        self.synthetic = info['synthetic_hotkey']
+        self.now_ms = TimeUtil.now_in_millis()
+
+    def tearDown(self):
+        self.orchestrator.clear_all_test_data()
+
+    def _order(self, trade_pair, order_type, order_size):
+        """Execute a market order at PRICE; each call moves the clock past the order cooldown."""
+        self.now_ms += ValiConfig.ORDER_COOLDOWN_MS + 1_000
+        price_source = PriceSource(
+            source='test', timespan_ms=0, open=self.PRICE, close=self.PRICE, vwap=None, high=self.PRICE,
+            low=self.PRICE, start_ms=self.now_ms, websocket=True, lag_ms=100, bid=self.PRICE - 1, ask=self.PRICE + 1,
+        )
+        self.market_order_client.execute_order(
+            self.synthetic, f"order-{trade_pair.trade_pair_id}-{self.now_ms}", trade_pair, ExecutionType.MARKET,
+            order_type, order_size, fill_price=self.PRICE, price_sources=[price_source], slippage=0.0,
+            now_ms=self.now_ms,
+        )
+
+    def _buy(self, trade_pair, value) -> float:
+        """Market buy `value` USD; returns the open position's net value in USD."""
+        self._order(trade_pair, OrderType.LONG, OrderSize(value=value))
+        position = self.position_client.get_open_position_for_trade_pair(self.synthetic, trade_pair.trade_pair_id)
+        return abs(position.net_value)
+
+    def _update(self, tier):
+        return self.entity_client.update_subaccount_leverage_tier(self.ENTITY_HOTKEY, self.synthetic, tier)
+
+    def assertClampedTo(self, net_value, cap_multiple):
+        # The clamp lands just under cap x balance: fee headroom, quantity rounding, fees already paid
+        cap = cap_multiple * self.ACCOUNT_SIZE
+        self.assertLess(net_value, cap)
+        self.assertGreater(net_value, cap * 0.99)
+
+    def test_tier_one_per_pair_caps_then_class_cap(self):
+        # Other coins cap at 0.5x, majors at 1.5x, the crypto class at 1.5x in total (all requested at 3x)
+        self.assertClampedTo(self._buy(TradePair.LINKUSDC, 3 * self.ACCOUNT_SIZE), 0.5)
+        self.assertClampedTo(self._buy(TradePair.BTCUSDC, 3 * self.ACCOUNT_SIZE), 1.0)
+        with self.assertRaises(SignalException) as ctx:
+            self._buy(TradePair.LINKUSDC, 3 * self.ACCOUNT_SIZE)
+        self.assertIn("No buying power remaining", str(ctx.exception))
+
+    def test_raising_tier_opens_room_and_lowering_needs_a_flat_book(self):
+        self.assertClampedTo(self._buy(TradePair.BTCUSDC, 3 * self.ACCOUNT_SIZE), 1.5)
+
+        success, msg = self._update(3)
+        self.assertTrue(success, msg)
+        self.assertClampedTo(self._buy(TradePair.BTCUSDC, 3 * self.ACCOUNT_SIZE), 2.5)
+
+        success, msg = self._update(1)
+        self.assertFalse(success)
+        self.assertIn("open position", msg)
+
+        self._order(TradePair.BTCUSDC, OrderType.FLAT, OrderSize(quantity=0.0))
+        self.assertIsNone(self.position_client.get_open_position_for_trade_pair(self.synthetic, TradePair.BTCUSDC.trade_pair_id))
+        success, msg = self._update(1)
+        self.assertTrue(success, msg)
 
 
 LEVERAGE_TIER_SIGNED_FIELDS = ("entity_coldkey", "entity_hotkey", "synthetic_hotkey", "leverage_tier", "nonce", "timestamp")

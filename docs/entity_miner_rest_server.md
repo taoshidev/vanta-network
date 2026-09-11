@@ -286,7 +286,7 @@ Changes a standard subaccount's `leverage_tier` (see [entity_miner.md](entity_mi
 
 | Code | Cause |
 |------|-------|
-| 400 | Invalid `leverage_tier` or `synthetic_hotkey`, or the validator rejected the change: unknown subaccount, HL-linked or pro subaccount, or lowering the tier while positions are open |
+| 400 | Invalid `leverage_tier` or `synthetic_hotkey`, or the validator rejected the change: unknown subaccount, HL-linked, `hl_all` or pro subaccount, or lowering the tier while positions are open |
 | 401 | Invalid or missing API key |
 | 500 | Wallet not configured or signing error |
 | 502 | Validator unreachable |

@@ -1253,7 +1253,7 @@ Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [ent
 ```
 
 **Errors:**
-- `400`: missing or invalid field, or the change was rejected (unknown subaccount, HL-linked or pro subaccount, subaccount not active, lowering with open positions)
+- `400`: missing or invalid field, or the change was rejected (unknown subaccount, HL-linked, `hl_all` or pro subaccount, subaccount not active, lowering with open positions)
 - `401`: invalid signature, reused nonce, or expired timestamp
 - `403`: coldkey does not own the hotkey
 
