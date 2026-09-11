@@ -41,7 +41,11 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
+from vali_objects.utils.leverage_utils import (
+    get_legacy_leverage_tier,
+    get_legacy_tier_positional_leverage,
+    get_standard_positional_leverage,
+)
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
 from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
@@ -364,6 +368,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/<entity_hotkey>", methods=["GET"])(self.get_entity)
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
+        self.app.route("/entity/subaccount/leverage-tier", methods=["POST"])(self.update_subaccount_leverage_tier)
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
@@ -1005,8 +1010,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': f'Invalid asset class: {asset_class}'}), 400
             miner_asset_class = MinerAssetClass(asset_class.lower())
         is_pro = request.args.get('pro', 'false').lower() == 'true'
-        # Per-pair, per-tier positional leverage (multipliers, not USD), resolved by the same
-        # function the order path enforces (get_tier_positional_leverage). Tier 1 == challenge.
+        # Per-pair positional leverage (multipliers, not USD), resolved by the same functions the
+        # order path enforces. Legacy tiers 1 to 4: HL-linked subaccounts (tier 1 == challenge).
+        # Standard tiers 1 to 3: standard subaccounts (no stored tier counts as tier 1).
         subaccount_tiers = (1, 2, 3, 4)
 
         # These lot sizes are not used in any network calculation; they're included in
@@ -1027,7 +1033,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'min_leverage': tp.min_leverage,
                 'max_leverage': tp.max_leverage,
                 'subaccount_positional_leverage_by_tier': {
-                    str(tier): get_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
+                    str(tier): get_legacy_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
+                },
+                'standard_positional_leverage_by_tier': {
+                    str(tier): get_standard_positional_leverage(tier, tp) for tier in ValiConfig.STANDARD_LEVERAGE_TIERS
                 },
             }
             if tp.trade_pair_id in contract_lot_size:
@@ -1053,6 +1062,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'disabled': disabled,
                 'total_allowed': len(allowed),
                 'total_disabled': len(disabled),
+                # Standard-tier class and portfolio caps (multiples of balance), keyed by tier
+                'standard_leverage_tiers': {
+                    'class': {
+                        str(tier): {cat.value: cap for cat, cap in row.items()}
+                        for tier, row in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER.items()
+                    },
+                    'portfolio': {
+                        str(tier): {asset_class.value: cap for asset_class, cap in row.items()}
+                        for tier, row in ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER.items()
+                    },
+                },
                 'timestamp': TimeUtil.now_in_millis(),
             })
         except Exception as e:
@@ -2390,9 +2410,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
             # account_type applies to Vanta-native subaccounts only
             account_type = data.get('account_type', 'standard')
+            # Standard leverage tier 1 to 3; EntityManager applies the default when omitted
+            leverage_tier = data.get('leverage_tier')
 
             if collateral_exempt is not None and not isinstance(collateral_exempt, bool):
                 return jsonify({'error': 'collateral_exempt must be a boolean'}), 400
+
+            if leverage_tier is not None:
+                if is_hl:
+                    return jsonify({'error': 'leverage_tier is not supported for Hyperliquid subaccounts'}), 400
+                if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                    return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -2462,7 +2490,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria, account_type=account_type
+                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria,
+                    account_type=account_type, leverage_tier=leverage_tier
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
@@ -2551,6 +2580,112 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error retrieving all entities: {e}")
             return jsonify({'error': 'Internal server error retrieving entities'}), 500
+
+    def update_subaccount_leverage_tier(self):
+        """
+        Change a standard subaccount's leverage tier (1 to 3). The entity coldkey signs the sorted
+        JSON of every field except signature and version; nonce + timestamp make each signature
+        single use within a 5 minute window (NonceManager). Lowering the tier requires the
+        subaccount to have no open positions.
+
+        Example:
+        curl -X POST http://localhost:48888/entity/subaccount/leverage-tier \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "synthetic_hotkey": "5GhDr..._0",
+            "leverage_tier": 2,
+            "nonce": "3f9c1e...",
+            "timestamp": 1749234567890,
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'synthetic_hotkey', 'leverage_tier',
+                               'nonce', 'timestamp', 'signature']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            synthetic_hotkey = data['synthetic_hotkey']
+            leverage_tier = data['leverage_tier']
+            nonce = data['nonce']
+            timestamp = data['timestamp']
+
+            if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
+                return jsonify({'error': 'synthetic_hotkey must be a non-empty string'}), 400
+            if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
+            if not isinstance(nonce, str) or not nonce:
+                return jsonify({'error': 'nonce must be a non-empty string'}), 400
+            if not isinstance(timestamp, int) or isinstance(timestamp, bool):
+                return jsonify({'error': 'timestamp must be an integer in milliseconds'}), 400
+
+            # The signature binds the target subaccount and tier; nonce + timestamp make it single use
+            keypair = Keypair(ss58_address=entity_coldkey)
+            signed_message = json.dumps({
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey,
+                "synthetic_hotkey": synthetic_hotkey,
+                "leverage_tier": leverage_tier,
+                "nonce": nonce,
+                "timestamp": timestamp,
+            }, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(signed_message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Request unauthorized'}), 401
+
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Consume the nonce only after the signature and ownership checks pass
+            nonce_ok, nonce_error = self.nonce_manager.is_valid_request(
+                address=f"{entity_coldkey}::{entity_hotkey}", nonce=nonce, timestamp=timestamp
+            )
+            if not nonce_ok:
+                return jsonify({'error': nonce_error}), 401
+
+            success, message = self._entity_client.update_subaccount_leverage_tier(
+                entity_hotkey, synthetic_hotkey, leverage_tier
+            )
+
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': message,
+                    'synthetic_hotkey': synthetic_hotkey,
+                    'leverage_tier': leverage_tier,
+                }), 200
+            else:
+                return jsonify({'error': message}), 400
+
+        except Exception as e:
+            logger.error(f"Error updating subaccount leverage tier: {e}")
+            return jsonify({'error': 'Internal server error updating subaccount leverage tier'}), 500
 
     def eliminate_subaccount(self):
         """
@@ -2964,7 +3099,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     # Per-category positional leverage stand-in for the /hl-traders limits endpoint.
     # The endpoint only knows a subaccount's asset class, not a specific pair, so it
-    # cannot use the per-pair source of truth (leverage_utils.get_tier_positional_leverage,
+    # cannot use the per-pair source of truth (leverage_utils.get_legacy_tier_positional_leverage,
     # which is pair.subaccount_tier_base_leverage × tier). This table mirrors that result
     # for one canonical pair per class. Keep in sync with the order-entry path; once
     # per-pair bases diverge inside a class, switch this endpoint to per-pair reporting.
@@ -3016,7 +3151,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         asset_class = MinerAssetClass.HL_ALL
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
-        tier = get_leverage_tier(_bucket, account_size)
+        tier = get_legacy_leverage_tier(_bucket, account_size)
 
         ###### DEPRECATED TIER POSITIONAL LEVERAGE
         max_position_per_pair_usd = account_size * self._ENDPOINT_TIER_POSITIONAL_LEVERAGE[tier][asset_class]
@@ -3032,9 +3167,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'timestamp': TimeUtil.now_in_millis(),
         }
 
-        response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
+        response_payload['max_portfolio_usd'] = account_size * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
         response_payload['max_asset_class_usd'] = {
-            c.value: account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
+            c.value: account_size * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
             for c in (
                 TradePairCategory.CRYPTO,
                 TradePairCategory.FOREX,

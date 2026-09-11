@@ -281,6 +281,10 @@ class MinerAccountServer(RPCServerBase):
         """Set the HL address on an account."""
         self._manager.set_hl_address(hotkey, hl_address)
 
+    def set_leverage_tier(self, hotkey: str, leverage_tier: Optional[int]) -> None:
+        """Set the standard leverage tier on an account."""
+        self._manager.set_leverage_tier(hotkey, leverage_tier)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._manager.get_all_hotkeys()

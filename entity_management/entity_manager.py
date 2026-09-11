@@ -68,6 +68,7 @@ class SubaccountInfo(BaseModel):
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
+    leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades at the default tier")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
@@ -404,6 +405,7 @@ class EntityManager(ValidatorBroadcastBase):
         payout_address: Optional[str] = None,
         drawdown_criteria: str = "trailing",
         account_type: str = "standard",
+        leverage_tier: Optional[int] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount for an entity.
@@ -417,6 +419,8 @@ class EntityManager(ValidatorBroadcastBase):
             asset_class: Asset class selection (immutable once set)
             collateral_exempt: If True, skip collateral slashing.
                    Exempt subaccounts are excluded from entity aggregation and payouts.
+            leverage_tier: Standard leverage tier 1 to 3. Defaults to
+                   ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -428,6 +432,15 @@ class EntityManager(ValidatorBroadcastBase):
         if AccountType(account_type) == AccountType.PRO:
             return False, None, "account_type 'pro' cannot be set at creation; pro accounts are granted by admin promotion"
         initial_bucket = AccountType(account_type).challenge_bucket
+
+        if hl_address:
+            if leverage_tier is not None:
+                return False, None, "leverage_tier is not supported for Hyperliquid subaccounts"
+        else:
+            if leverage_tier is None:
+                leverage_tier = ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
+            if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                return False, None, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -538,6 +551,9 @@ class EntityManager(ValidatorBroadcastBase):
                     f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
                 )
 
+                if leverage_tier is not None:
+                    self._miner_account_client.set_leverage_tier(synthetic_hotkey, leverage_tier)
+
             except Exception as e:
                 logger.error(f"[ENTITY_MANAGER] Error creating subaccount: {e}")
                 # Rollback subaccount ID increment and clean up asset selection/account size
@@ -560,6 +576,7 @@ class EntityManager(ValidatorBroadcastBase):
                 asset_class=asset_class,
                 drawdown_criteria=drawdown_criteria,
                 account_type=account_type,
+                leverage_tier=leverage_tier,
                 hl_address=hl_address,
                 payout_address=payout_address,
             )
@@ -1019,6 +1036,104 @@ class EntityManager(ValidatorBroadcastBase):
 
         logger.info(f"[ENTITY_MANAGER] drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}")
         return True, f"drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}"
+
+    def update_subaccount_leverage_tier(
+        self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
+    ) -> Tuple[bool, str]:
+        """Change a standard subaccount's leverage tier and push it to the MinerAccount and other
+        validators. Lowering the tier requires no open positions because the new caps may sit below
+        the current exposure. A subaccount without a stored tier counts as the default tier."""
+        if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+            return False, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
+        if not is_synthetic_hotkey(synthetic_hotkey):
+            return False, f"{synthetic_hotkey} is not a synthetic hotkey"
+        parsed_entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        if parsed_entity_hotkey != entity_hotkey:
+            return False, f"Subaccount {synthetic_hotkey} does not belong to entity {entity_hotkey}"
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found"
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False, f"Subaccount {subaccount_id} not found for entity {entity_hotkey}"
+            if subaccount.hl_address:
+                return False, "leverage_tier is not supported for Hyperliquid subaccounts"
+            if subaccount.asset_class == MinerAssetClass.HL_ALL.value:
+                # Pre-migration standard hl_all subaccounts stay on the legacy curve (is_standard_tiered)
+                return False, "leverage_tier is not supported for hl_all subaccounts"
+            if AccountType(subaccount.account_type) == AccountType.PRO:
+                return False, "Pro accounts do not use standard leverage tiers"
+            if subaccount.status != "active":
+                return False, f"Subaccount {synthetic_hotkey} is {subaccount.status}, not active"
+
+            same_tier = subaccount.leverage_tier == leverage_tier
+            if not same_tier:
+                current_tier = (
+                    subaccount.leverage_tier if subaccount.leverage_tier is not None
+                    else ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
+                )
+                if leverage_tier < current_tier:
+                    open_positions = self._position_client.get_positions_for_one_hotkey(
+                        synthetic_hotkey, only_open_positions=True
+                    )
+                    if open_positions:
+                        return False, (
+                            f"Close all open positions on {synthetic_hotkey} before moving to leverage_tier "
+                            f"{leverage_tier} ({len(open_positions)} open)"
+                        )
+                previous_tier = subaccount.leverage_tier
+                subaccount.leverage_tier = leverage_tier
+                self._write_entities_from_memory_to_disk()
+
+        # Push and broadcast even when the tier is unchanged: a same-tier call repairs a MinerAccount
+        # that lost the field, here and on the validators that receive the broadcast
+        if self._miner_account_client:
+            self._miner_account_client.set_leverage_tier(synthetic_hotkey, leverage_tier)
+        if not self.running_unit_tests:
+            self.broadcast_subaccount_registration(entity_hotkey, subaccount)
+
+        if same_tier:
+            return True, f"Subaccount {synthetic_hotkey} is already at leverage_tier {leverage_tier}"
+        logger.info(f"[ENTITY_MANAGER] leverage_tier {previous_tier} -> {leverage_tier} for {synthetic_hotkey}")
+        return True, f"leverage_tier updated to {leverage_tier} for {synthetic_hotkey}"
+
+    @staticmethod
+    def _sanitize_leverage_tier(tier, synthetic_hotkey: str) -> Optional[int]:
+        """Tier from a broadcast or checkpoint. Values outside STANDARD_LEVERAGE_TIERS are dropped so a
+        bad record cannot make the order path fail on a table lookup."""
+        if tier is None or ValiConfig.is_valid_standard_leverage_tier(tier):
+            return tier
+        logger.warning(f"[ENTITY_MANAGER] Ignoring invalid leverage_tier {tier!r} for {synthetic_hotkey}")
+        return None
+
+    def _push_leverage_tiers(self, wanted: Dict[str, int]) -> int:
+        """Set MinerAccount.leverage_tier where it differs from the SubaccountInfo value or the account
+        is missing. Repairs accounts that lost the field to an account-size sync from a validator
+        without it. Returns the number of accounts written."""
+        if not self._miner_account_client or not wanted:
+            return 0
+        accounts = self._miner_account_client.get_accounts(list(wanted))
+        written = 0
+        for hotkey, tier in wanted.items():
+            account = accounts.get(hotkey)
+            if account is None or account.leverage_tier != tier:
+                self._miner_account_client.set_leverage_tier(hotkey, tier)
+                written += 1
+        return written
+
+    def _reconcile_leverage_tiers(self) -> int:
+        """Push every active subaccount's stored tier to its MinerAccount, see _push_leverage_tiers."""
+        with self._entities_lock:
+            wanted = {
+                sub.synthetic_hotkey: sub.leverage_tier
+                for entity in self.entities.values()
+                for sub in entity.subaccounts.values()
+                if sub.leverage_tier is not None and sub.status == "active"
+            }
+        return self._push_leverage_tiers(wanted)
 
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
         """
@@ -1821,7 +1936,8 @@ class EntityManager(ValidatorBroadcastBase):
             'entities_added': 0,
             'subaccounts_added': 0,
             'subaccounts_updated': 0,
-            'entities_skipped': 0
+            'entities_skipped': 0,
+            'leverage_tiers_pushed': 0,
         }
 
         # Validate input
@@ -1923,12 +2039,21 @@ class EntityManager(ValidatorBroadcastBase):
                                     local_sub.payout_address = incoming_sub.payout_address
                                     stats['subaccounts_updated'] += 1
 
+                                # Update leverage_tier if changed; MinerAccounts are reconciled below
+                                if incoming_sub.leverage_tier is not None and local_sub.leverage_tier != incoming_sub.leverage_tier:
+                                    local_sub.leverage_tier = incoming_sub.leverage_tier
+                                    stats['subaccounts_updated'] += 1
+
                         # Update next_subaccount_id to prevent ID collisions
                         if incoming_entity.next_subaccount_id > local_entity.next_subaccount_id:
                             local_entity.next_subaccount_id = incoming_entity.next_subaccount_id
 
             # Persist changes to disk
             self._write_entities_from_memory_to_disk()
+
+        # The account-size sync that runs before this may have replaced MinerAccounts with records
+        # from a validator without the field; put every stored tier back
+        stats['leverage_tiers_pushed'] = self._reconcile_leverage_tiers()
 
         logger.info(f"[ENTITY_MANAGER] Entity sync complete: {stats}")
         return stats
@@ -1960,7 +2085,9 @@ class EntityManager(ValidatorBroadcastBase):
             # Convert subaccount dicts back to SubaccountInfo objects
             subaccounts_dict = {}
             for sub_id_str, sub_dict in entity_dict.get("subaccounts", {}).items():
-                subaccounts_dict[int(sub_id_str)] = SubaccountInfo(**sub_dict)
+                sub = SubaccountInfo(**sub_dict)
+                sub.leverage_tier = EntityManager._sanitize_leverage_tier(sub.leverage_tier, sub.synthetic_hotkey)
+                subaccounts_dict[int(sub_id_str)] = sub
 
             entity_dict["subaccounts"] = subaccounts_dict
             entities[entity_hotkey] = EntityData(**entity_dict)
@@ -2014,6 +2141,9 @@ class EntityManager(ValidatorBroadcastBase):
                         f"[ENTITY_MANAGER] Invalid subaccount registration data: {parse_err}"
                     )
                     return False
+                subaccount_info.leverage_tier = self._sanitize_leverage_tier(
+                    subaccount_info.leverage_tier, subaccount_info.synthetic_hotkey
+                )
 
                 subaccount_id = subaccount_info.subaccount_id
                 subaccount_uuid = subaccount_info.subaccount_uuid
@@ -2083,6 +2213,17 @@ class EntityManager(ValidatorBroadcastBase):
                                 f"[ENTITY_MANAGER] Set payout_address {payout_address} for subaccount {synthetic_hotkey}"
                             )
                             changed = True
+                        # Adopt the sender's tier; the MinerAccount is checked even when the tier is
+                        # unchanged so a re-broadcast repairs an account that lost the field
+                        new_tier = subaccount_info.leverage_tier
+                        if new_tier is not None:
+                            if existing_sub.leverage_tier != new_tier:
+                                existing_sub.leverage_tier = new_tier
+                                logger.info(
+                                    f"[ENTITY_MANAGER] Set leverage_tier {new_tier} for subaccount {synthetic_hotkey}"
+                                )
+                                changed = True
+                            self._push_leverage_tiers({synthetic_hotkey: new_tier})
                         if changed:
                             self._write_entities_from_memory_to_disk()
                         else:
@@ -2119,6 +2260,10 @@ class EntityManager(ValidatorBroadcastBase):
                 # Propagate hl_address to MinerAccount so buying_power uses the correct HS divisor
                 if hl_address and self._miner_account_client:
                     self._miner_account_client.set_hl_address(synthetic_hotkey, hl_address)
+
+                # Propagate leverage_tier to MinerAccount (mirrors create_subaccount)
+                if subaccount_info.leverage_tier is not None and self._miner_account_client:
+                    self._miner_account_client.set_leverage_tier(synthetic_hotkey, subaccount_info.leverage_tier)
 
                 # Set account size for synthetic hotkey (mirrors create_subaccount)
                 if self._miner_account_client:
