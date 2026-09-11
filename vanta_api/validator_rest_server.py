@@ -41,7 +41,7 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
+from vali_objects.utils.leverage_utils import get_legacy_leverage_tier, get_legacy_tier_positional_leverage
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
 from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
@@ -1006,8 +1006,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             miner_asset_class = MinerAssetClass(asset_class.lower())
         is_pro = request.args.get('pro', 'false').lower() == 'true'
         # Per-pair, per-tier positional leverage (multipliers, not USD), resolved by the same
-        # function the order path enforces (get_tier_positional_leverage). Tier 1 == HL-linked
-        # challenge; standard subaccounts are pinned to ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER.
+        # function the order path enforces (get_legacy_tier_positional_leverage). Tier 1 == HL-linked
+        # challenge; standard subaccounts are pinned to ValiConfig.LEGACY_STANDARD_SUBACCOUNT_LEVERAGE_TIER.
         subaccount_tiers = (1, 2, 3, 4)
 
         # These lot sizes are not used in any network calculation; they're included in
@@ -1028,7 +1028,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'min_leverage': tp.min_leverage,
                 'max_leverage': tp.max_leverage,
                 'subaccount_positional_leverage_by_tier': {
-                    str(tier): get_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
+                    str(tier): get_legacy_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
                 },
             }
             if tp.trade_pair_id in contract_lot_size:
@@ -2965,7 +2965,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     # Per-category positional leverage stand-in for the /hl-traders limits endpoint.
     # The endpoint only knows a subaccount's asset class, not a specific pair, so it
-    # cannot use the per-pair source of truth (leverage_utils.get_tier_positional_leverage,
+    # cannot use the per-pair source of truth (leverage_utils.get_legacy_tier_positional_leverage,
     # which is pair.subaccount_tier_base_leverage × tier). This table mirrors that result
     # for one canonical pair per class. Keep in sync with the order-entry path; once
     # per-pair bases diverge inside a class, switch this endpoint to per-pair reporting.
@@ -3017,7 +3017,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         asset_class = MinerAssetClass.HL_ALL
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
-        tier = get_leverage_tier(_bucket, account_size, hl_address)
+        tier = get_legacy_leverage_tier(_bucket, account_size, hl_address)
 
         ###### DEPRECATED TIER POSITIONAL LEVERAGE
         max_position_per_pair_usd = account_size * self._ENDPOINT_TIER_POSITIONAL_LEVERAGE[tier][asset_class]
@@ -3033,9 +3033,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'timestamp': TimeUtil.now_in_millis(),
         }
 
-        response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
+        response_payload['max_portfolio_usd'] = account_size * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
         response_payload['max_asset_class_usd'] = {
-            c.value: account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
+            c.value: account_size * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
             for c in (
                 TradePairCategory.CRYPTO,
                 TradePairCategory.FOREX,

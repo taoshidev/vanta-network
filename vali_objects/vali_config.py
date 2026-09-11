@@ -500,96 +500,23 @@ class ValiConfig:
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
 
-    # Account size thresholds for leverage tier progression (HL-linked subaccounts and regular miners)
+    # Legacy leverage tiers 1 to 4 (HL-linked subaccounts, pro subaccounts, regular miners):
+    # tier 1 = subaccount challenge, then by account size. Standard subaccounts are pinned to
+    # LEGACY_STANDARD_SUBACCOUNT_LEVERAGE_TIER (see leverage_utils.get_legacy_leverage_tier).
     LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
-    # Standard (non-HL) subaccounts: one fixed tier for challenge and funded, no account-size scaling
-    STANDARD_SUBACCOUNT_LEVERAGE_TIER = 2
+    LEGACY_STANDARD_SUBACCOUNT_LEVERAGE_TIER = 2
 
-    # Cap leverage across an individual miner's entire portfolio, per pair.
-    # Keyed on (asset class, instrument type).
-    PORTFOLIO_LEVERAGE_CAP = {
-        (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 5,
-        (TradePairCategory.CRYPTO,      InstrumentType.PERP): 5,
-        (TradePairCategory.FOREX,       InstrumentType.SPOT): 20,
-        (TradePairCategory.FOREX,       InstrumentType.PERP): 20,
-        (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2,    # Reg T overnight
-        (TradePairCategory.EQUITIES,    InstrumentType.PERP): 5,
-        (TradePairCategory.INDICES,     InstrumentType.SPOT): 10,
-        (TradePairCategory.INDICES,     InstrumentType.PERP): 5,
-        (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 5,
-        (TradePairCategory.COMMODITIES, InstrumentType.PERP): 5,
-    }
-
-    # Per-tier portfolio leverage caps. Split into two dicts because the underlying lookup is
-    # semantically two different things:
-    #   *_BY_PAIR        : per-pair multiplier used when validating an incoming order in
-    #                      market_order_manager. Keyed on (asset class, instrument type).
-    #   *_BY_ASSET_CLASS : account-wide multiplier from the subaccount's own asset_class field
-    #                      (which can be HL_ALL). Keyed by single MinerAssetClass.
-    # XAUUSD/XAGUSD positions land in the FOREX subaccount asset_class bucket.
-    # Equity portfolio cap stays 2x from Tier 3 onward in the SPOT column (Reg T overnight).
-    TIER_PORTFOLIO_LEVERAGE_BY_PAIR = {
-        1: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 2.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 2.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 5.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 5.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 1.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 2.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 5.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 2.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 2.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 2.0,
-        },
-        2: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 2.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 2.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 10.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 10.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 1.5,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 2.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 10.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 2.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 2.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 2.0,
-        },
-        3: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 3.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 3.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 15.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 15.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 3.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 15.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 3.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 3.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 3.0,
-        },
-        4: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 4.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 4.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 20.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 20.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 4.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 20.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 4.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 4.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 4.0,
-        },
-    }
-
-    # Single-class per-category sub-caps. Multi-class subaccounts (HL_ALL, ALL_MARKETS) reuse
-    # these per-class entries for sub-cap enforcement, and pull their overall cross-class cap
-    # from the HL_ALL/ALL_MARKETS entries in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS below.
-    TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY = {
+    # Legacy per-tier portfolio caps. Single-class per-category sub-caps; multi-class subaccounts
+    # (HL_ALL, ALL_MARKETS) reuse these per-class entries for sub-cap enforcement and pull their
+    # overall cross-class cap from LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS below.
+    LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY = {
         1: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0,  TradePairCategory.COMMODITIES: 2.0},
         2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 6.0,  TradePairCategory.COMMODITIES: 2.0},
         3: {TradePairCategory.CRYPTO: 3.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 8.0,  TradePairCategory.COMMODITIES: 3.0},
         4: {TradePairCategory.CRYPTO: 4.0, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 4.0},
     }
-    TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
+    LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
         1: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 5.0,  MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 4.0,  MinerAssetClass.ALL_MARKETS: 6.0},
         2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.5, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 7.0, MinerAssetClass.ALL_MARKETS: 12.0},
         3: {MinerAssetClass.CRYPTO: 3.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 18.0},

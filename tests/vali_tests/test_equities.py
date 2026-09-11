@@ -852,7 +852,7 @@ class TestEquities(TestBase):
     # Standard (non-HL) subaccounts are pinned to one tier: challenge and funded share the
     # same multiplier, and account size does not change it.
 
-    EQUITIES_MULTIPLIER = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[ValiConfig.STANDARD_SUBACCOUNT_LEVERAGE_TIER][TradePairCategory.EQUITIES]
+    EQUITIES_MULTIPLIER = ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[ValiConfig.LEGACY_STANDARD_SUBACCOUNT_LEVERAGE_TIER][TradePairCategory.EQUITIES]
 
     def test_subaccount_challenge_buying_power_same_as_funded(self):
         account = self.miner_account_manager.get_account(self.DEFAULT_MINER_HOTKEY)

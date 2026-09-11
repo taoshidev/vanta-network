@@ -1418,8 +1418,8 @@ class TradePair(Enum):
 
     @property
     def subaccount_tier_base_leverage(self) -> float:
-        """Per-pair Tier-1 base for subaccount order-entry tier dispatch.
-        See leverage_utils.get_tier_positional_leverage.
+        """Per-pair Tier-1 base for the legacy subaccount tier curve.
+        See leverage_utils.get_legacy_tier_positional_leverage.
         """
         for v in self.value:
             if isinstance(v, SubaccountTierBaseLeverage):

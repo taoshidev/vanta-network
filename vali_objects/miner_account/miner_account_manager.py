@@ -116,16 +116,16 @@ class MinerAccount:
     def multiplier(self) -> float:
         """Subaccount-wide portfolio cap multiplier used by `buying_power`.
 
-        Returns TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
+        Returns LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
         subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling; per-class
-        sub-caps are enforced separately at order entry via get_portfolio_caps.
+        sub-caps are enforced separately at order entry via get_legacy_portfolio_caps.
         """
         if not self.asset_class:
             return 1
 
-        from vali_objects.utils.leverage_utils import get_leverage_tier
-        tier = get_leverage_tier(self.miner_bucket, self.get_account_size(), self.hl_address)
-        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
+        from vali_objects.utils.leverage_utils import get_legacy_leverage_tier
+        tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size(), self.hl_address)
+        return ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
     @property
     def account_size(self) -> float:
