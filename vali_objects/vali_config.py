@@ -465,7 +465,6 @@ class ValiConfig:
 
     # Pro promotion criteria.
     PRO_CHALLENGE_MINIMUM_DAYS = 90
-    PRO_CHALLENGE_MINIMUM_MS = PRO_CHALLENGE_MINIMUM_DAYS * DAILY_MS
     PRO_CHALLENGE_CALMAR_THRESHOLD = 1.75  # All-time realized return over all-time max drawdown
     PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = 0.2  # Best day must be at most this share of total return
     PRO_DAILY_RETURN_CAP = 0.015  # Each day's profit counts for at most this much toward the total
@@ -616,7 +615,7 @@ class ValiConfig:
     ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
     ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
-    MAX_PRO_ACCOUNT_SIZE = 2_000_000  # Maximum account size in USD for pro accounts
+    MAX_PRO_ACCOUNT_SIZE = 1_000_000  # Maximum account size in USD for pro accounts
 
     # Entity margin collateral requirement (funded subaccounts only):
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
