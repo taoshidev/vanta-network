@@ -133,7 +133,10 @@ class TestPerfLedgerVoidBehavior(TestBase):
             base_time = (self.now_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS - (365 * MS_IN_24_HOURS)
             close_ms = base_time + (3 * MS_IN_24_HOURS)
 
-            # Create position that will generate carry fees
+            # Create position with a price move on close so folding it into the portfolio
+            # ledger produces exactly one non-zero-delta checkpoint (n_updates == 1) to
+            # anchor the drift check against. (Fees no longer perturb return_at_close under
+            # the current debt-based scoring system, so a flat price wouldn't produce a delta.)
             position = Position(
                 miner_hotkey=self.test_hotkey,
                 position_uuid="drift_test",
@@ -151,7 +154,7 @@ class TestPerfLedgerVoidBehavior(TestBase):
                         leverage=1.0,
                     ),
                     Order(
-                        price=50000.0,
+                        price=51000.0,
                         processed_ms=close_ms,
                         order_uuid="close",
                         trade_pair=TradePair.BTCUSD,

@@ -271,8 +271,8 @@ class TestPerfLedgerEdgeCasesAndValidation(TestBase):
         ]
         
         for any_open, pos_closed, tp_id, tp_id_rtp_data, should_bypass in test_cases:
-            ret, spread, carry = plm.get_bypass_values_if_applicable(
-                ledger, tp_id, any_open, 1.0, .999, .998, tp_id_rtp_data
+            ret = plm.get_bypass_values_if_applicable(
+                ledger, tp_id, any_open, 1.0, tp_id_rtp_data
             )
             
             if should_bypass:
