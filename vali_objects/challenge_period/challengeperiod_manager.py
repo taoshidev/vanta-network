@@ -583,6 +583,9 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def _check_promotion(state: MinerBucketState, returns_threshold: float, current_time_ms: int) -> bool:
+        if state.current_bucket.PRO_CHALLENGE_TRANSITION:
+            return False
+
         if state.current_bucket == MinerBucket.CHALLENGE:
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
                 return False
@@ -1221,11 +1224,13 @@ class ChallengePeriodManager(CacheController):
             return None
 
         asset_class = self._asset_selection_client.get_asset_selection(synthetic_hotkey)
+        returns_threshold = (state.current_bucket.returns_threshold(asset_class)
+                                  if state.current_bucket != MinerBucket.PRO_CHALLENGE_TRANSITION else None)
         return {
             **state.pro_stats.to_dict(),
             "calmar_threshold": state.current_bucket.calmar_threshold,
             "daily_consistency_threshold": state.current_bucket.daily_consistency_threshold,
-            "returns_threshold": state.current_bucket.returns_threshold(asset_class),
+            "returns_threshold": returns_threshold,
             "soft_breach_applies": state.current_bucket.soft_breach_applies,
             "soft_breach": state.soft_breach,
         }
