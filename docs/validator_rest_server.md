@@ -327,7 +327,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "trade_pair_source": "hyperliquid",
       "min_leverage": 0.01,
       "max_leverage": 1.0,
-      "subaccount_positional_leverage_by_tier": {"1": 0.5, "2": 1.0, "3": 1.5, "4": 2.0}
+      "subaccount_positional_leverage_by_tier": {"1": 0.5, "2": 1.0, "3": 1.5, "4": 2.0},
+      "standard_positional_leverage_by_tier": {"1": 1.5, "2": 2.0, "3": 2.5}
     },
     {
       "trade_pair_id": "EURUSD",
@@ -337,7 +338,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "trade_pair_source": "vanta",
       "min_leverage": 0.1,
       "max_leverage": 5,
-      "subaccount_positional_leverage_by_tier": {"1": 1.25, "2": 2.5, "3": 3.75, "4": 5.0}
+      "subaccount_positional_leverage_by_tier": {"1": 2.5, "2": 5.0, "3": 7.5, "4": 10.0},
+      "standard_positional_leverage_by_tier": {"1": 10.0, "2": 15.0, "3": 20.0}
     }
   ],
   "disabled": [
@@ -364,6 +366,18 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
   ],
   "total_allowed": 1100,
   "total_disabled": 24,
+  "standard_leverage_tiers": {
+    "class": {
+      "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "indices": 2.5, "commodities": 1.5},
+      "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "indices": 4.0, "commodities": 2.0},
+      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "indices": 5.0, "commodities": 3.0}
+    },
+    "portfolio": {
+      "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "commodities": 1.5, "all_markets": 15.0},
+      "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "commodities": 2.0, "all_markets": 20.0},
+      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "commodities": 3.0, "all_markets": 25.0}
+    }
+  },
   "timestamp": 1749234567890
 }
 ```
@@ -371,6 +385,7 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 **Response fields:**
 - `allowed`: Trade pairs that can open and close positions. Includes all active Vanta pairs and hardcoded HyperLiquid pairs (and, when `asset_class` is given, only those tradeable by that asset class).
 - `disabled`: Trade pairs that are fully blocked (`is_blocked`) or excluded by the `asset_class` filter — neither opening nor closing is permitted.
+- `standard_leverage_tiers`: Per-class and portfolio caps (multiples of balance) for standard subaccounts, keyed by leverage tier `1` to `3`; `portfolio` is keyed by the subaccount's own asset class. See [entity_miner.md](entity_miner.md#leverage-limits).
 - `timestamp`: Response timestamp in milliseconds
 
 **Per-pair fields:**
@@ -380,7 +395,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 - `trade_pair_category`: Asset class (`crypto`, `forex`, `equities`, `indices`, `commodities`)
 - `trade_pair_source`: Data source — `"vanta"` for standard pairs, `"hyperliquid"` for HL-sourced pairs
 - `min_leverage` / `max_leverage`: Leverage bounds for this pair
-- `subaccount_positional_leverage_by_tier`: Per-tier (1–4) positional leverage multiplier for the subaccount order path
+- `subaccount_positional_leverage_by_tier`: Legacy per-tier (1–4) positional leverage multiplier, used by HL-linked subaccounts and by standard subaccounts created before leverage tiers existed
+- `standard_positional_leverage_by_tier`: Per-tier (1–3) positional leverage multiplier for standard subaccounts with a `leverage_tier`
 - `lot_size`: Present only for a handful of Hyperliquid commodity pairs (e.g. `GOLDUSDC`); UI convenience field, not used in any network calculation
 
 **Example:**

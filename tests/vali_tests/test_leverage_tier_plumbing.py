@@ -509,6 +509,37 @@ class TestGatewayLeverageTierEndpoint(unittest.TestCase):
         post.assert_not_called()
 
 
+class TestTradePairsEndpointStandardTiers(unittest.TestCase):
+    """GET /trade-pairs exposes the standard tier values next to the legacy ones."""
+
+    def setUp(self):
+        from vanta_api.validator_rest_server import ValidatorRestServer
+
+        server = object.__new__(ValidatorRestServer)
+        app = Flask(__name__)
+        app.config['TESTING'] = True
+        app.route("/trade-pairs", methods=["GET"])(server.get_allowed_trade_pairs)
+        self.client = app.test_client()
+
+    def test_per_pair_and_table_values(self):
+        resp = self.client.get("/trade-pairs")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        by_id = {entry['trade_pair_id']: entry for entry in data['allowed'] + data['disabled']}
+
+        btc = by_id['BTCUSDC']
+        self.assertEqual(btc['standard_positional_leverage_by_tier'], {"1": 1.5, "2": 2.0, "3": 2.5})
+        self.assertEqual(set(btc['subaccount_positional_leverage_by_tier']), {"1", "2", "3", "4"})
+        self.assertEqual(by_id['EURNZD']['standard_positional_leverage_by_tier'], {"1": 5.0, "2": 7.5, "3": 10.0})
+        self.assertEqual(by_id['NVDA']['standard_positional_leverage_by_tier'], {"1": 0.5, "2": 1.0, "3": 1.5})
+
+        tiers = data['standard_leverage_tiers']
+        self.assertEqual(tiers['class']['1']['crypto'], 1.5)
+        self.assertEqual(tiers['class']['3']['equities'], 3.0)
+        self.assertEqual(tiers['portfolio']['3']['all_markets'], 25.0)
+        self.assertNotIn('hl_all', tiers['portfolio']['1'])
+
+
 class TestLeverageTierModels(unittest.TestCase):
     """Pure model / disk-format checks, no servers."""
 

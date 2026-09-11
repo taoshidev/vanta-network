@@ -215,6 +215,7 @@ Authorization: Bearer <api_key>
 - `account_size` (float, required): Account size in USD. Must be positive.
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [entity_miner.md](entity_miner.md#elimination). Fixed for the life of the subaccount once created. Always forced to `"trailing"` for HL-linked subaccounts (`hl_address` present), regardless of what's passed.
 - `account_type` (string, optional): must be `"standard"` (the default). Pro accounts are granted by admin promotion, never at creation — see [entity_miner.md](entity_miner.md#account-types).
+- `leverage_tier` (int, optional): standard leverage tier `1` (default), `2` or `3` — see [entity_miner.md](entity_miner.md#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later with `/api/update-subaccount-leverage-tier`.
 
 **Success Response (200):**
 ```json
@@ -228,6 +229,7 @@ Authorization: Bearer <api_key>
     "asset_class": "crypto",
     "account_size": 50000.0,
     "drawdown_criteria": "trailing",
+    "leverage_tier": 1,
     "status": "active",
     "created_at_ms": 1702345678901,
     "eliminated_at_ms": null
@@ -239,7 +241,7 @@ Authorization: Bearer <api_key>
 
 | Code | Cause |
 |------|-------|
-| 400 | Missing/invalid field (`asset_class`, `account_size`, `drawdown_criteria`) |
+| 400 | Missing/invalid field (`asset_class`, `account_size`, `drawdown_criteria`, `leverage_tier`) |
 | 401 | Invalid or missing API key |
 | 403 | Max HL traders limit reached (HL path only) |
 | 500 | Wallet not configured or signing error |
@@ -257,6 +259,40 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 **Notes:**
 - Requires `wallet_name`, `wallet_hotkey`, `wallet_password`, and `validator_url` in `miner_secrets.json`
 - Once created, use the returned `subaccount_id` in `/api/submit-order` requests via the `subaccount_id` field
+
+### Update Subaccount Leverage Tier
+
+`POST /api/update-subaccount-leverage-tier`
+
+Changes a standard subaccount's `leverage_tier` (see [entity_miner.md](entity_miner.md#leverage-limits)). The server signs the request with the entity coldkey and forwards it to the validator.
+
+**Authentication:** API key required.
+
+**Request Body:**
+```json
+{
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "leverage_tier": 2
+}
+```
+
+**Parameters:**
+- `synthetic_hotkey` (string, required): The subaccount to change
+- `leverage_tier` (int, required): `1`, `2` or `3`
+
+**Success Response (200):** the validator response, including `synthetic_hotkey` and the new `leverage_tier`.
+
+**Error Responses:**
+
+| Code | Cause |
+|------|-------|
+| 400 | Invalid `leverage_tier` or `synthetic_hotkey`, or the validator rejected the change: unknown subaccount, HL-linked or pro subaccount, or lowering the tier while positions are open |
+| 401 | Invalid or missing API key |
+| 500 | Wallet not configured or signing error |
+| 502 | Validator unreachable |
+
+**Notes:**
+- Raising the tier is allowed at any time. Lowering it, or setting a tier on a subaccount created before tiers existed, requires every position on that subaccount to be closed first.
 
 ### Create Hyperliquid-Linked Subaccount
 

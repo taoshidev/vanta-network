@@ -230,6 +230,7 @@ class MinerAccount:
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
+            'leverage_tier': self.leverage_tier,
         }
 
 

@@ -41,7 +41,11 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.utils.leverage_utils import get_legacy_leverage_tier, get_legacy_tier_positional_leverage
+from vali_objects.utils.leverage_utils import (
+    get_legacy_leverage_tier,
+    get_legacy_tier_positional_leverage,
+    get_standard_positional_leverage,
+)
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
 from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
@@ -1006,9 +1010,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': f'Invalid asset class: {asset_class}'}), 400
             miner_asset_class = MinerAssetClass(asset_class.lower())
         is_pro = request.args.get('pro', 'false').lower() == 'true'
-        # Per-pair, per-tier positional leverage (multipliers, not USD), resolved by the same
-        # function the order path enforces (get_legacy_tier_positional_leverage). Tier 1 == HL-linked
-        # challenge; standard subaccounts are pinned to ValiConfig.LEGACY_STANDARD_SUBACCOUNT_LEVERAGE_TIER.
+        # Per-pair positional leverage (multipliers, not USD), resolved by the same functions the
+        # order path enforces. Legacy tiers 1 to 4: HL-linked subaccounts (tier 1 == challenge) and
+        # standard subaccounts without a leverage_tier. Standard tiers 1 to 3: standard subaccounts
+        # with a leverage_tier.
         subaccount_tiers = (1, 2, 3, 4)
 
         # These lot sizes are not used in any network calculation; they're included in
@@ -1030,6 +1035,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'max_leverage': tp.max_leverage,
                 'subaccount_positional_leverage_by_tier': {
                     str(tier): get_legacy_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
+                },
+                'standard_positional_leverage_by_tier': {
+                    str(tier): get_standard_positional_leverage(tier, tp) for tier in ValiConfig.STANDARD_LEVERAGE_TIERS
                 },
             }
             if tp.trade_pair_id in contract_lot_size:
@@ -1055,6 +1063,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'disabled': disabled,
                 'total_allowed': len(allowed),
                 'total_disabled': len(disabled),
+                # Standard-tier class and portfolio caps (multiples of balance), keyed by tier
+                'standard_leverage_tiers': {
+                    'class': {
+                        str(tier): {cat.value: cap for cat, cap in row.items()}
+                        for tier, row in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER.items()
+                    },
+                    'portfolio': {
+                        str(tier): {asset_class.value: cap for asset_class, cap in row.items()}
+                        for tier, row in ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER.items()
+                    },
+                },
                 'timestamp': TimeUtil.now_in_millis(),
             })
         except Exception as e:
