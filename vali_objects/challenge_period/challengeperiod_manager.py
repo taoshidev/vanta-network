@@ -102,6 +102,7 @@ class ProStats:
     calmar: float = 0.0
     daily_consistency: float = 1.0
     max_drawdown: float = 1.0  # Monotonic all-time worst drawdown, in mdd ratio form
+    trading_days: int = 0  # Full days of tracked returns on this account
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -191,7 +192,7 @@ class MinerBucketState:
             f"static_dd={dd.static_drawdown_pct:.2f}% static_eod_dd={dd.static_eod_drawdown_pct:.2f}% "
             f"eod_hwm={dd.eod_hwm:.4f} | "
             f"calmar={self.pro_stats.calmar:.2f} consistency={self.pro_stats.daily_consistency:.2f} "
-            f"pro_mdd={self.pro_stats.max_drawdown:.4f}"
+            f"pro_mdd={self.pro_stats.max_drawdown:.4f} pro_days={self.pro_stats.trading_days}"
         )
 
     @property
@@ -590,11 +591,11 @@ class ChallengePeriodManager(CacheController):
             if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
                 return False
 
-        if state.current_bucket.is_pro:
-            if current_time_ms - state.current_bucket_start_ms < ValiConfig.PRO_CHALLENGE_MINIMUM_MS:
-                return False
-
         if state.current_bucket.next_bucket is None:
+            return False
+
+        minimum_trading_days = state.current_bucket.minimum_trading_days
+        if minimum_trading_days is not None and state.pro_stats.trading_days < minimum_trading_days:
             return False
 
         calmar_threshold = state.current_bucket.calmar_threshold
@@ -886,6 +887,7 @@ class ChallengePeriodManager(CacheController):
                     LedgerUtils.realized_return(ledger, account.account_size), max_drawdown),
                 daily_consistency=Metrics.return_consistency(log_returns),
                 max_drawdown=max_drawdown,
+                trading_days=len(log_returns),
             )
 
     def _refresh_rank_cache(
@@ -1230,6 +1232,7 @@ class ChallengePeriodManager(CacheController):
             **state.pro_stats.to_dict(),
             "calmar_threshold": state.current_bucket.calmar_threshold,
             "daily_consistency_threshold": state.current_bucket.daily_consistency_threshold,
+            "minimum_trading_days": state.current_bucket.minimum_trading_days,
             "returns_threshold": returns_threshold,
             "soft_breach_applies": state.current_bucket.soft_breach_applies,
             "soft_breach": state.soft_breach,

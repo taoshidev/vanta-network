@@ -109,6 +109,11 @@ class MinerBucket(Enum):
         """Maximum return consistency allowed for promotion. None for buckets with no consistency requirement."""
         return ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD if self.is_pro else None
 
+    @property
+    def minimum_trading_days(self) -> int | None:
+        """Full days of tracked returns required before promotion. None for buckets with no day requirement."""
+        return ValiConfig.PRO_CHALLENGE_MINIMUM_DAYS if self.is_pro else None
+
     def returns_threshold(self, asset_class) -> float:
         """Return required for promotion out of this bucket, by the miner's asset class."""
         if self.is_pro:

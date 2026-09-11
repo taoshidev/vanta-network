@@ -5,9 +5,12 @@ Each test uses a manager fixture with all RPC clients mocked and
 is_backtesting=True to skip all file system access.
 """
 import contextlib
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+
+from tests.shared_objects.test_utilities import create_daily_checkpoints_with_pnl
 
 from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
@@ -434,35 +437,67 @@ def test_pro_rules_currently_match_standard_rules():
 # Section 3d — Pro promotion criteria (minimum time / calmar / return consistency)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-MIN_PRO_CHALLENGE_MS = ValiConfig.PRO_CHALLENGE_MINIMUM_MS  # 90 days
+MIN_PRO_TRADING_DAYS = ValiConfig.PRO_CHALLENGE_MINIMUM_DAYS  # 90 full days of tracked returns
 CALMAR_THRESHOLD = ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD
 CONSISTENCY_THRESHOLD = ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD
 PRO_CHALLENGE_BUCKET = MinerBucket.PRO_CHALLENGE_DIRECT
 
 
 def _passing_pro_stats() -> ProStats:
-    return ProStats(calmar=CALMAR_THRESHOLD, daily_consistency=CONSISTENCY_THRESHOLD)
+    return ProStats(calmar=CALMAR_THRESHOLD, daily_consistency=CONSISTENCY_THRESHOLD,
+                    trading_days=MIN_PRO_TRADING_DAYS)
 
 
 def _promotable_state(bucket: MinerBucket) -> MinerBucketState:
-    """State past the minimum time and clearing the returns bar, so only the pro criteria decide."""
-    state = _state(bucket, NOW_MS - MIN_PRO_CHALLENGE_MS - DAILY_MS)
+    """State past the minimum tracked days and clearing the returns bar, so only the pro criteria decide."""
+    state = _state(bucket, NOW_MS - DAILY_MS * (MIN_PRO_TRADING_DAYS + 1))
     state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD + 0.01, current_balance=1.0 + THRESHOLD + 0.01)
     state.pro_stats = _passing_pro_stats()
     return state
 
 
-def test_check_promotion_pro_challenge_too_early():
+def test_check_promotion_pro_challenge_too_few_tracked_days():
     state = _promotable_state(PRO_CHALLENGE_BUCKET)
-    state.entries[-1].start_time_ms = NOW_MS - MIN_PRO_CHALLENGE_MS + DAILY_MS  # one day short
+    state.pro_stats.trading_days = MIN_PRO_TRADING_DAYS - 1  # one day short
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
+
+
+def test_check_promotion_pro_counts_tracked_days_not_time_in_bucket():
+    """Sitting in the bucket earns nothing: only days the ledger tracked count toward the 90."""
+    idle = _promotable_state(PRO_CHALLENGE_BUCKET)
+    idle.entries[-1].start_time_ms = NOW_MS - DAILY_MS * 365
+    idle.pro_stats.trading_days = MIN_PRO_TRADING_DAYS - 1
+    assert ChallengePeriodManager._check_promotion(idle, THRESHOLD, NOW_MS) is False
+
+    tracked = _promotable_state(PRO_CHALLENGE_BUCKET)
+    tracked.entries[-1].start_time_ms = NOW_MS
+    assert ChallengePeriodManager._check_promotion(tracked, THRESHOLD, NOW_MS) is True
+
+
+def test_refresh_pro_stats_counts_full_tracked_days(manager):
+    """A flat day is still a tracked day; a day the ledger only half covered is not."""
+    hk = "test_hk"
+    manager.miner_states[hk] = _state(PRO_CHALLENGE_BUCKET)
+    ledger = create_daily_checkpoints_with_pnl([0.0] * 5, [0.0] * 5)
+    for cp in ledger.cps:
+        cp.gain = 0.0  # Five days of zero return
+    accounts = {hk: SimpleNamespace(account_size=100_000.0)}
+
+    manager._refresh_pro_stats([hk], {hk: ledger}, accounts)
+    assert manager.miner_states[hk].pro_stats.trading_days == 5
+
+    ledger.cps[-1].accum_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS // 2
+    manager._refresh_pro_stats([hk], {hk: ledger}, accounts)
+    assert manager.miner_states[hk].pro_stats.trading_days == 4
 
 
 def test_pro_thresholds_only_resolve_for_pro_buckets():
     assert PRO_CHALLENGE_BUCKET.calmar_threshold == CALMAR_THRESHOLD
     assert PRO_CHALLENGE_BUCKET.daily_consistency_threshold == CONSISTENCY_THRESHOLD
+    assert PRO_CHALLENGE_BUCKET.minimum_trading_days == MIN_PRO_TRADING_DAYS
     assert MinerBucket.SUBACCOUNT_CHALLENGE.calmar_threshold is None
     assert MinerBucket.SUBACCOUNT_CHALLENGE.daily_consistency_threshold is None
+    assert MinerBucket.SUBACCOUNT_CHALLENGE.minimum_trading_days is None
 
 
 def test_check_promotion_pro_meets_criteria():
@@ -483,7 +518,7 @@ def test_check_promotion_pro_blocked_by_consistency():
 
 
 def test_check_promotion_pro_blocked_by_default_stats():
-    """A pro miner with no computed stats yet cannot promote."""
+    """A pro miner with no computed stats yet has no tracked days, so cannot promote."""
     state = _promotable_state(PRO_CHALLENGE_BUCKET)
     state.pro_stats = ProStats()
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
@@ -527,11 +562,12 @@ def test_check_promotion_non_pro_ignores_pro_stats():
 
 def test_pro_stats_round_trip_through_checkpoint():
     state = _state(PRO_CHALLENGE_BUCKET)
-    state.pro_stats = ProStats(calmar=1.5, daily_consistency=0.25, max_drawdown=0.94)
+    state.pro_stats = ProStats(calmar=1.5, daily_consistency=0.25, max_drawdown=0.94, trading_days=42)
     restored = MinerBucketState.from_checkpoint_dict("test_hk", state.to_checkpoint_dict())
     assert restored.pro_stats.calmar == 1.5
     assert restored.pro_stats.daily_consistency == 0.25
     assert restored.pro_stats.max_drawdown == 0.94
+    assert restored.pro_stats.trading_days == 42
 
 
 def test_pro_stats_defaults_when_missing_from_checkpoint():
