@@ -25,6 +25,7 @@ from vali_objects.trade_pair import (
     TradePairCategory,
 )
 from vali_objects.utils.leverage_utils import (
+    get_effective_leverage_tier,
     get_legacy_leverage_tier,
     get_legacy_tier_positional_leverage,
     get_max_order_size,
@@ -248,14 +249,47 @@ class TestStandardTierOrderPath(unittest.TestCase):
     def test_is_standard_tiered(self):
         for bucket in self.STANDARD_BUCKETS:
             self.assertTrue(is_standard_tiered(self._account(bucket, MinerAssetClass.CRYPTO, leverage_tier=1)))
+            # no stored tier still counts as standard (default tier)
+            self.assertTrue(is_standard_tiered(self._account(bucket, MinerAssetClass.CRYPTO)))
         self.assertTrue(is_standard_tiered(self._account(None, MinerAssetClass.CRYPTO, leverage_tier=1)))
-        # no tier, HL-linked, or pro -> legacy
-        self.assertFalse(is_standard_tiered(self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.CRYPTO)))
-        self.assertFalse(is_standard_tiered(
-            self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.HL_ALL, leverage_tier=1, hl_address=self.HL_ADDRESS)
-        ))
-        for bucket in (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED):
-            self.assertFalse(is_standard_tiered(self._account(bucket, MinerAssetClass.CRYPTO, leverage_tier=3)))
+        # no bucket and no tier: nothing says it is a subaccount, so legacy
+        self.assertFalse(is_standard_tiered(self._account(None, MinerAssetClass.CRYPTO)))
+        # HL-linked, pro, regular -> legacy, with or without a stored tier
+        for tier in (None, 1):
+            self.assertFalse(is_standard_tiered(
+                self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.HL_ALL, leverage_tier=tier, hl_address=self.HL_ADDRESS)
+            ))
+            for bucket in (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED):
+                self.assertFalse(is_standard_tiered(self._account(bucket, MinerAssetClass.CRYPTO, leverage_tier=tier)))
+        self.assertFalse(is_standard_tiered(self._account(MinerBucket.MAINCOMP, MinerAssetClass.CRYPTO)))
+
+    def test_hl_all_account_without_hl_address_stays_legacy(self):
+        # MinerAccounts older than the hl_address field: HL_ALL alone must keep the legacy curve.
+        for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED):
+            with self.subTest(bucket=bucket):
+                account = self._account(bucket, MinerAssetClass.HL_ALL)
+                self.assertFalse(is_standard_tiered(account))
+                legacy_tier = get_legacy_leverage_tier(bucket, self.SIZE)
+                self.assertEqual(
+                    account.multiplier,
+                    ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[legacy_tier][MinerAssetClass.HL_ALL],
+                )
+
+    def test_effective_tier_defaults_when_not_stored(self):
+        account = self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.CRYPTO)
+        self.assertEqual(get_effective_leverage_tier(account), ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT)
+        account = self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.CRYPTO, leverage_tier=3)
+        self.assertEqual(get_effective_leverage_tier(account), 3)
+
+    def test_standard_subaccount_without_tier_uses_default_tier(self):
+        default = ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
+        for bucket in self.STANDARD_BUCKETS:
+            with self.subTest(bucket=bucket):
+                account = self._account(bucket, MinerAssetClass.ALL_MARKETS)
+                self.assertEqual(account.multiplier, get_standard_portfolio_leverage(default, MinerAssetClass.ALL_MARKETS))
+                max_value, label = get_max_order_size(account, self._position(TradePair.BTCUSDC))
+                self.assertAlmostEqual(max_value, self.SIZE * get_standard_positional_leverage(default, TradePair.BTCUSDC), places=2)
+                self.assertIn("per pair cap", label)
 
     # ---- standard tiers ----
 
@@ -302,10 +336,8 @@ class TestStandardTierOrderPath(unittest.TestCase):
 
     # ---- legacy curve untouched ----
 
-    def test_accounts_without_tier_keep_legacy_values(self):
+    def test_hl_and_pro_accounts_keep_legacy_values(self):
         cases = (
-            (MinerBucket.SUBACCOUNT_CHALLENGE, MinerAssetClass.ALL_MARKETS, None),
-            (MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.CRYPTO, None),
             (MinerBucket.SUBACCOUNT_CHALLENGE, MinerAssetClass.HL_ALL, self.HL_ADDRESS),
             (MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.HL_ALL, self.HL_ADDRESS),
             (MinerBucket.PRO_CHALLENGE_DIRECT, MinerAssetClass.ALL_MARKETS, None),
@@ -314,7 +346,7 @@ class TestStandardTierOrderPath(unittest.TestCase):
         for bucket, asset_class, hl in cases:
             with self.subTest(bucket=bucket, asset_class=asset_class):
                 account = self._account(bucket, asset_class, hl_address=hl)
-                legacy_tier = get_legacy_leverage_tier(bucket, self.SIZE, hl)
+                legacy_tier = get_legacy_leverage_tier(bucket, self.SIZE)
                 self.assertEqual(
                     account.multiplier,
                     ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[legacy_tier][asset_class],
@@ -325,7 +357,7 @@ class TestStandardTierOrderPath(unittest.TestCase):
 
     def test_pro_promoted_account_ignores_its_old_tier(self):
         account = self._account(MinerBucket.PRO_FUNDED, MinerAssetClass.CRYPTO, leverage_tier=3)
-        legacy_tier = get_legacy_leverage_tier(MinerBucket.PRO_FUNDED, self.SIZE, None)
+        legacy_tier = get_legacy_leverage_tier(MinerBucket.PRO_FUNDED, self.SIZE)
         self.assertEqual(
             account.multiplier,
             ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[legacy_tier][MinerAssetClass.CRYPTO],

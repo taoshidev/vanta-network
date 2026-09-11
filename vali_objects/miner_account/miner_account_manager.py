@@ -80,7 +80,7 @@ class MinerAccount:
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
-    leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = legacy curve (HL, pro, pre-tier accounts)
+    leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = default tier for standard subaccounts, unused by HL and pro
     max_return: float = 1.0  # High water mark for portfolio return
     unrealized_pnl: float = 0.0  # Current unrealized PNL from open positions
     # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
@@ -117,22 +117,23 @@ class MinerAccount:
     def multiplier(self) -> float:
         """Subaccount-wide portfolio cap multiplier used by `buying_power`.
 
-        Standard subaccounts with a leverage_tier read STANDARD_PORTFOLIO_LEVERAGE_BY_TIER; everyone
-        else reads LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
-        subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling; per-class
-        sub-caps are enforced separately at order entry.
+        Standard subaccounts read STANDARD_PORTFOLIO_LEVERAGE_BY_TIER at their (effective) tier;
+        everyone else reads LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For
+        multi-class subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling;
+        per-class sub-caps are enforced separately at order entry.
         """
         if not self.asset_class:
             return 1
 
         from vali_objects.utils.leverage_utils import (
+            get_effective_leverage_tier,
             get_legacy_leverage_tier,
             get_standard_portfolio_leverage,
             is_standard_tiered,
         )
         if is_standard_tiered(self):
-            return get_standard_portfolio_leverage(self.leverage_tier, self.asset_class)
-        tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size(), self.hl_address)
+            return get_standard_portfolio_leverage(get_effective_leverage_tier(self), self.asset_class)
+        tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
         return ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
     @property

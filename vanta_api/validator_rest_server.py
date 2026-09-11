@@ -1011,9 +1011,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             miner_asset_class = MinerAssetClass(asset_class.lower())
         is_pro = request.args.get('pro', 'false').lower() == 'true'
         # Per-pair positional leverage (multipliers, not USD), resolved by the same functions the
-        # order path enforces. Legacy tiers 1 to 4: HL-linked subaccounts (tier 1 == challenge) and
-        # standard subaccounts without a leverage_tier. Standard tiers 1 to 3: standard subaccounts
-        # with a leverage_tier.
+        # order path enforces. Legacy tiers 1 to 4: HL-linked subaccounts (tier 1 == challenge).
+        # Standard tiers 1 to 3: standard subaccounts (no stored tier counts as tier 1).
         subaccount_tiers = (1, 2, 3, 4)
 
         # These lot sizes are not used in any network calculation; they're included in
@@ -3130,7 +3129,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         asset_class = MinerAssetClass.HL_ALL
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
-        tier = get_legacy_leverage_tier(_bucket, account_size, hl_address)
+        tier = get_legacy_leverage_tier(_bucket, account_size)
 
         ###### DEPRECATED TIER POSITIONAL LEVERAGE
         max_position_per_pair_usd = account_size * self._ENDPOINT_TIER_POSITIONAL_LEVERAGE[tier][asset_class]

@@ -292,7 +292,7 @@ Changes a standard subaccount's `leverage_tier` (see [entity_miner.md](entity_mi
 | 502 | Validator unreachable |
 
 **Notes:**
-- Raising the tier is allowed at any time. Lowering it, or setting a tier on a subaccount created before tiers existed, requires every position on that subaccount to be closed first.
+- Raising the tier is allowed at any time. Lowering it requires every position on that subaccount to be closed first. A subaccount created before tiers existed counts as tier 1.
 
 ### Create Hyperliquid-Linked Subaccount
 

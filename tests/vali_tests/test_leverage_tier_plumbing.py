@@ -249,6 +249,14 @@ class TestLeverageTierUpdate(TestBase):
         self.assertIn("already", msg)
         self.assertEqual(self._account_tier(), ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT)
 
+    def test_same_tier_repairs_miner_account_that_lost_the_field(self):
+        self.assertTrue(self._update(3)[0])
+        self.miner_account_client.set_leverage_tier(self.synthetic, None)
+        self.assertIsNone(self._account_tier())
+        success, msg = self._update(3)
+        self.assertTrue(success, msg)
+        self.assertEqual(self._account_tier(), 3)
+
     def test_lower_tier_without_positions(self):
         self.assertTrue(self._update(3)[0])
         success, msg = self._update(2)
@@ -295,7 +303,7 @@ class TestLeverageTierUpdate(TestBase):
         self.assertIn("Hyperliquid", msg)
         self.assertIsNone(self._account_tier(info['synthetic_hotkey']))
 
-    # ==================== pre-tier (legacy) subaccounts ====================
+    # ==================== subaccounts without a stored tier ====================
 
     def _receiver_with_legacy_subaccount(self, synthetic_suffix: int) -> tuple:
         receiver = EntityManager(
@@ -325,19 +333,21 @@ class TestLeverageTierUpdate(TestBase):
         self.assertIsNone(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[synthetic_suffix].leverage_tier)
         return receiver, synthetic, data
 
-    def test_legacy_subaccount_moves_onto_tiers_only_without_open_positions(self):
+    def test_legacy_subaccount_counts_as_default_tier_when_changed(self):
+        # A pre-tier subaccount already trades at the default tier, so recording tier 1 or raising
+        # to tier 2 is never a lowering and works even with open positions.
         receiver, synthetic, _ = self._receiver_with_legacy_subaccount(0)
         self._open_position(synthetic)
         success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, 1)
-        self.assertFalse(success)
-        self.assertIn("open position", msg)
-        self.assertIsNone(self._account_tier(synthetic))
+        self.assertTrue(success, msg)
+        self.assertEqual(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[0].leverage_tier, 1)
+        self.assertEqual(self._account_tier(synthetic), 1)
 
         receiver, synthetic, _ = self._receiver_with_legacy_subaccount(1)
-        success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, 1)
+        self._open_position(synthetic)
+        success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, 2)
         self.assertTrue(success, msg)
-        self.assertEqual(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[1].leverage_tier, 1)
-        self.assertEqual(self._account_tier(synthetic), 1)
+        self.assertEqual(self._account_tier(synthetic), 2)
 
     # ==================== propagation ====================
 

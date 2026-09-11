@@ -395,8 +395,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 - `trade_pair_category`: Asset class (`crypto`, `forex`, `equities`, `indices`, `commodities`)
 - `trade_pair_source`: Data source — `"vanta"` for standard pairs, `"hyperliquid"` for HL-sourced pairs
 - `min_leverage` / `max_leverage`: Leverage bounds for this pair
-- `subaccount_positional_leverage_by_tier`: Legacy per-tier (1–4) positional leverage multiplier, used by HL-linked subaccounts and by standard subaccounts created before leverage tiers existed
-- `standard_positional_leverage_by_tier`: Per-tier (1–3) positional leverage multiplier for standard subaccounts with a `leverage_tier`
+- `subaccount_positional_leverage_by_tier`: Legacy per-tier (1–4) positional leverage multiplier, used by HL-linked subaccounts
+- `standard_positional_leverage_by_tier`: Per-tier (1–3) positional leverage multiplier for standard subaccounts (a subaccount without a stored `leverage_tier` counts as tier 1)
 - `lot_size`: Present only for a handful of Hyperliquid commodity pairs (e.g. `GOLDUSDC`); UI convenience field, not used in any network calculation
 
 **Example:**

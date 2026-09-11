@@ -502,11 +502,10 @@ class ValiConfig:
     MIN_CHECKPOINTS_RECEIVED = 5
 
     # Legacy leverage tiers 1 to 4 (HL-linked subaccounts, pro subaccounts, regular miners):
-    # tier 1 = subaccount challenge, then by account size. Standard subaccounts are pinned to
-    # LEGACY_STANDARD_SUBACCOUNT_LEVERAGE_TIER (see leverage_utils.get_legacy_leverage_tier).
+    # tier 1 = subaccount challenge, then by account size. Standard subaccounts use the
+    # STANDARD_* tables below instead (see leverage_utils.is_standard_tiered).
     LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
-    LEGACY_STANDARD_SUBACCOUNT_LEVERAGE_TIER = 2
 
     # Legacy per-tier portfolio caps. Single-class per-category sub-caps; multi-class subaccounts
     # (HL_ALL, ALL_MARKETS) reuse these per-class entries for sub-cap enforcement and pull their
@@ -526,7 +525,8 @@ class ValiConfig:
 
     # Standard subaccount leverage tiers, per the Pro Launch spec §2a: 1 = Base, 2 = Boost I,
     # 3 = Boost II (max). Challenge and funded share the same limits and account size does not
-    # change them. HL-linked and pro subaccounts never use these tables.
+    # change them. HL-linked and pro subaccounts never use these tables. A standard subaccount
+    # without a stored leverage_tier (created before tiers existed) counts as the default tier.
     STANDARD_LEVERAGE_TIERS = (1, 2, 3)
     STANDARD_LEVERAGE_TIER_DEFAULT = 1
 

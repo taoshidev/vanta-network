@@ -68,7 +68,7 @@ class SubaccountInfo(BaseModel):
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
-    leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts and accounts created before tiers existed")
+    leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades at the default tier")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
@@ -1041,8 +1041,8 @@ class EntityManager(ValidatorBroadcastBase):
         self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
     ) -> Tuple[bool, str]:
         """Change a standard subaccount's leverage tier and push it to the MinerAccount and other
-        validators. Lowering the tier, or moving a pre-tier subaccount onto the tables, requires no
-        open positions because the new caps may sit below the current exposure."""
+        validators. Lowering the tier requires no open positions because the new caps may sit below
+        the current exposure. A subaccount without a stored tier counts as the default tier."""
         if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
             return False, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
         if not is_synthetic_hotkey(synthetic_hotkey):
@@ -1066,10 +1066,16 @@ class EntityManager(ValidatorBroadcastBase):
             if subaccount.status != "active":
                 return False, f"Subaccount {synthetic_hotkey} is {subaccount.status}, not active"
             if subaccount.leverage_tier == leverage_tier:
+                # Re-push so the endpoint can repair a MinerAccount that lost the field
+                if self._miner_account_client:
+                    self._miner_account_client.set_leverage_tier(synthetic_hotkey, leverage_tier)
                 return True, f"Subaccount {synthetic_hotkey} is already at leverage_tier {leverage_tier}"
 
-            may_lower_caps = subaccount.leverage_tier is None or leverage_tier < subaccount.leverage_tier
-            if may_lower_caps:
+            current_tier = (
+                subaccount.leverage_tier if subaccount.leverage_tier is not None
+                else ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
+            )
+            if leverage_tier < current_tier:
                 open_positions = self._position_client.get_positions_for_one_hotkey(
                     synthetic_hotkey, only_open_positions=True
                 )

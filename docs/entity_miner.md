@@ -209,12 +209,14 @@ Per-class and portfolio caps:
 
 Single-class subaccounts (`crypto`, `forex`, `equities`, `commodities`) use their class row as the portfolio cap. The tables live in `ValiConfig.STANDARD_*_LEVERAGE_BY_TIER`; `GET /trade-pairs` on the validator exposes the per-pair values under `standard_positional_leverage_by_tier` and the class and portfolio caps under `standard_leverage_tiers`.
 
-**Legacy curve.** HL-linked subaccounts, and standard subaccounts created before tiers existed (no `leverage_tier`), keep the legacy tier 1 to 4 curve below. HL-linked subaccounts sit at **Tier 1** during `SUBACCOUNT_CHALLENGE`, then move by account size once promoted, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)). Pre-tier standard subaccounts are pinned to **Tier 2** in both buckets until a `leverage_tier` is set.
+Standard subaccounts created before tiers existed have no stored `leverage_tier` and trade at Tier 1 (Base) until the entity sets one.
+
+**Legacy curve.** HL-linked subaccounts keep the legacy tier 1 to 4 curve below: **Tier 1** during `SUBACCOUNT_CHALLENGE`, then by account size once promoted, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
 
 | Tier | Bucket                                                      | Crypto | Forex | Commodities | Equities | HL All | All Markets |
 |------|--------------------------------------------------------------|--------|-------|-------------|----------|--------|-------------|
 | 1    | HL-linked, SUBACCOUNT_CHALLENGE (any size)                   | 2.0x   | 5.0x  | 2.0x        | 1.0x     | 4.0x   | 6.0x        |
-| 2    | Pre-tier standard (any bucket, any size); HL-linked FUNDED, <$200K | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
+| 2    | HL-linked FUNDED, <$200K                                     | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
 | 3    | HL-linked FUNDED, $200K–$1M                                  | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
 | 4    | HL-linked FUNDED, ≥$1M                                       | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
 
@@ -569,7 +571,7 @@ curl -X POST http://localhost:8088/api/update-subaccount-leverage-tier \
   -d '{"synthetic_hotkey": "5GhDr..._0", "leverage_tier": 2}'
 ```
 
-Raising the tier is allowed at any time. Lowering the tier, or setting a tier on a subaccount created before tiers existed, is rejected while the subaccount has open positions, because the new caps may sit below the current exposure. HL-linked and pro subaccounts do not use standard leverage tiers and are rejected.
+Raising the tier is allowed at any time. Lowering it is rejected while the subaccount has open positions, because the new caps may sit below the current exposure. A subaccount created before tiers existed counts as tier 1. HL-linked and pro subaccounts do not use standard leverage tiers and are rejected.
 
 ### 12. Submit Orders
 

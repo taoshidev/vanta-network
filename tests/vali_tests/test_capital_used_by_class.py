@@ -67,14 +67,14 @@ class TestMinerAccountMultiplier(unittest.TestCase):
         account = MinerAccount(miner_hotkey="hk", asset_class=None)
         self.assertEqual(account.multiplier, 1)
 
-    def test_multiplier_single_class_reads_by_asset_class_table(self):
+    def test_multiplier_single_class_standard_subaccount_uses_default_standard_tier(self):
         account = MinerAccount(
             miner_hotkey="hk",
             asset_class=MinerAssetClass.CRYPTO,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
-        # Tier defaults to 2 (funded, no collateral records → MIN_CAPITAL < 200K)
-        expected = ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][MinerAssetClass.CRYPTO]
+        # No stored leverage_tier: a standard subaccount trades at the default standard tier
+        expected = ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT][MinerAssetClass.CRYPTO]
         self.assertEqual(account.multiplier, expected)
 
     def test_multiplier_multi_class_reads_overall_cap_table(self):
@@ -82,6 +82,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             miner_hotkey="hk",
             asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
+            hl_address="0x" + "a" * 40,
         )
         self.assertEqual(account.multiplier, ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL])
 
@@ -94,8 +95,8 @@ class TestMinerAccountMultiplier(unittest.TestCase):
         )
         self.assertEqual(account.multiplier, ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL])
 
-    def test_multiplier_standard_subaccount_pinned_to_standard_tier(self):
-        tier = ValiConfig.LEGACY_STANDARD_SUBACCOUNT_LEVERAGE_TIER
+    def test_multiplier_standard_subaccount_without_tier_uses_default_standard_tier(self):
+        tier = ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
         for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED):
             with self.subTest(bucket=bucket):
                 account = MinerAccount(
@@ -105,7 +106,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
                 )
                 self.assertEqual(
                     account.multiplier,
-                    ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][MinerAssetClass.ALL_MARKETS],
+                    ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[tier][MinerAssetClass.ALL_MARKETS],
                 )
 
     def test_buying_power_multi_class_uses_overall_cap(self):
@@ -114,6 +115,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
             miner_hotkey="hk",
             asset_class=MinerAssetClass.HL_ALL,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
+            hl_address="0x" + "a" * 40,
             capital_used=1_000.0,
         )
         balance = account.balance
