@@ -503,6 +503,22 @@ def test_check_promotion_pro_return_target_is_six_percent():
     assert PRO_CHALLENGE_BUCKET.max_time_ms is None
 
 
+def test_transition_bucket_never_promotes_on_returns():
+    """The transition week is a fixed window: returns cannot shorten it, however good they are."""
+    state = _promotable_state(MinerBucket.PRO_CHALLENGE_TRANSITION)
+    state.drawdown = DrawdownStats(current_equity=2.0, current_balance=2.0)
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
+
+def test_transition_bucket_still_advances_on_grace_expiry():
+    """Blocking the returns path leaves the grace period as the only automatic way out."""
+    grace_ms = ValiConfig.PRO_TRANSITION_GRACE_PERIOD_MS
+    inside = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS - grace_ms + DAILY_MS)
+    assert ChallengePeriodManager._check_grace_period_expiry(inside, NOW_MS) is False
+
+    expired = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS - grace_ms - DAILY_MS)
+    assert ChallengePeriodManager._check_grace_period_expiry(expired, NOW_MS) is True
+    assert MinerBucket.PRO_CHALLENGE_TRANSITION.next_bucket is MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+
 def test_check_promotion_non_pro_ignores_pro_stats():
     state = _promotable_state(MinerBucket.SUBACCOUNT_CHALLENGE)
     state.pro_stats = ProStats(calmar=-100.0, daily_consistency=1.0)
