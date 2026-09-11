@@ -369,6 +369,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
         self.app.route("/entity/subaccount/leverage-tier", methods=["POST"])(self.update_subaccount_leverage_tier)
+        self.app.route("/entity/subaccount/pro-transition", methods=["POST"])(self.promote_pro_transition)
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
@@ -2686,6 +2687,141 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error updating subaccount leverage tier: {e}")
             return jsonify({'error': 'Internal server error updating subaccount leverage tier'}), 500
+
+    def promote_pro_transition(self):
+        """
+        Promote a subaccount out of PRO_CHALLENGE_TRANSITION into PRO_CHALLENGE_FROM_STANDARD on the
+        miner's own request This closes every open position, cancels every pending limit order, and
+        restarts the ledgers on the pro account, so it is not reversible.
+
+        The entity coldkey signs the sorted JSON of every field except signature and version;
+        nonce + timestamp make each signature single use within a 5 minute window (NonceManager).
+
+        pro_account_size is optional and sets the size of the granted pro account. Omit it to keep the
+        size recorded when the subaccount entered the transition; when it is sent it must be signed
+        with the rest of the payload. A subaccount with no size on either side is rejected.
+
+        Example:
+        curl -X POST http://localhost:48888/entity/subaccount/pro-transition \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "synthetic_hotkey": "5GhDr..._0",
+            "pro_account_size": 500000,
+            "nonce": "3f9c1e...",
+            "timestamp": 1749234567890,
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'synthetic_hotkey',
+                               'nonce', 'timestamp', 'signature']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            synthetic_hotkey = data['synthetic_hotkey']
+            nonce = data['nonce']
+            timestamp = data['timestamp']
+
+            if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
+                return jsonify({'error': 'synthetic_hotkey must be a non-empty string'}), 400
+            if not isinstance(nonce, str) or not nonce:
+                return jsonify({'error': 'nonce must be a non-empty string'}), 400
+            if not isinstance(timestamp, int) or isinstance(timestamp, bool):
+                return jsonify({'error': 'timestamp must be an integer in milliseconds'}), 400
+
+            # Optional: sent only when the miner wants a size other than the one already recorded
+            pro_account_size = data.get('pro_account_size')
+            if pro_account_size is not None:
+                if (not isinstance(pro_account_size, (int, float))
+                        or isinstance(pro_account_size, bool)
+                        or pro_account_size <= 0):
+                    return jsonify({'error': 'pro_account_size must be a positive number'}), 400
+                if pro_account_size > ValiConfig.MAX_PRO_ACCOUNT_SIZE:
+                    return jsonify({'error': (f'pro_account_size ${pro_account_size} exceeds maximum allowed '
+                                              f'${ValiConfig.MAX_PRO_ACCOUNT_SIZE}')}), 400
+
+            parsed_entity_hotkey, _ = parse_synthetic_hotkey(synthetic_hotkey)
+            if parsed_entity_hotkey is None:
+                return jsonify({'error': f'{synthetic_hotkey} is not a subaccount'}), 400
+            if parsed_entity_hotkey != entity_hotkey:
+                return jsonify({'error': f'Subaccount {synthetic_hotkey} does not belong to entity {entity_hotkey}'}), 403
+
+            # The signature binds the target subaccount and the requested size; nonce + timestamp make
+            # it single use.
+            signed_fields = {
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey,
+                "synthetic_hotkey": synthetic_hotkey,
+                "nonce": nonce,
+                "timestamp": timestamp,
+            }
+            if 'pro_account_size' in data:
+                signed_fields["pro_account_size"] = data['pro_account_size']
+
+            keypair = Keypair(ss58_address=entity_coldkey)
+            signed_message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(signed_message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Request unauthorized'}), 401
+
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Consume the nonce only after the signature and ownership checks pass
+            nonce_ok, nonce_error = self.nonce_manager.is_valid_request(
+                address=f"{entity_coldkey}::{entity_hotkey}", nonce=nonce, timestamp=timestamp
+            )
+            if not nonce_ok:
+                return jsonify({'error': nonce_error}), 401
+
+            # Closes positions, cancels limit orders, restarts the ledgers, and moves the bucket
+            success, message = self._challenge_period_client.promote_pro_transition(
+                synthetic_hotkey, TimeUtil.now_in_millis(), pro_account_size
+            )
+            if not success:
+                return jsonify({'error': message}), 400
+
+            subaccount = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}
+            logger.info(f"Pro transition promotion for {synthetic_hotkey}: {message}")
+            return jsonify({
+                'status': 'success',
+                'message': message,
+                'synthetic_hotkey': synthetic_hotkey,
+                'bucket': MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value,
+                'pro_account_size': subaccount.get('pro_account_size'),
+                'account_size': subaccount.get('account_size'),
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error promoting pro transition subaccount: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': 'Internal server error promoting pro transition subaccount'}), 500
 
     def eliminate_subaccount(self):
         """

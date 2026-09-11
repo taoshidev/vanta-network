@@ -135,6 +135,12 @@ class ChallengePeriodServer(RPCServerBase):
     def admin_set_bucket_rpc(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> Tuple[bool, str]:
         return self._manager.admin_set_bucket(hotkey, bucket, current_time_ms)
 
+    def promote_pro_transition_rpc(
+        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
+    ) -> Tuple[bool, str]:
+        """Promote a subaccount out of PRO_CHALLENGE_TRANSITION at the miner's request."""
+        return self._manager.promote_pro_transition(hotkey, current_time_ms, pro_account_size)
+
     def update_drawdown_criteria_rpc(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
         return self._manager.update_drawdown_criteria(hotkey, criteria)
 

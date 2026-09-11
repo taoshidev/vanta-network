@@ -746,6 +746,35 @@ class ChallengePeriodManager(CacheController):
 
         return state_changed
 
+    def promote_pro_transition(
+        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
+    ) -> tuple[bool, str]:
+        """Promote a subaccount out of PRO_CHALLENGE_TRANSITION on the miner's own request
+
+        pro_account_size sets the size of the granted pro account. Sending none keeps the size
+        recorded when the miner entered the transition; a miner with no recorded size is rejected
+        rather than promoted onto a pro account of unknown size.
+        """
+        state = self.miner_states.get(hotkey)
+        if state is None:
+            return False, f"{hotkey} not found in challenge period manager"
+        if state.current_bucket != MinerBucket.PRO_CHALLENGE_TRANSITION:
+            return False, (f"{hotkey} is in {state.current_bucket.value}, not "
+                           f"{MinerBucket.PRO_CHALLENGE_TRANSITION.value}")
+
+        target_bucket = MinerBucket.PRO_CHALLENGE_TRANSITION.next_bucket
+        logger.info(f"[CHALLENGE] pro transition requested (pro_account_size={pro_account_size}): {state}")
+
+        # Record the granted pro size first: the account switch reads it back to size the new account
+        success, message = self._entity_client.apply_bucket_account_size(
+            hotkey, target_bucket, pro_account_size
+        )
+        if not success:
+            logger.warning(f"[CHALLENGE] pro transition rejected for {hotkey}: {message}")
+            return False, message
+
+        return self.admin_set_bucket(hotkey, target_bucket, current_time_ms)
+
     def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> tuple[bool, str]:
         """Move a miner into an arbitrary bucket. Runs the same account switch as an organic
         promotion when the target changes the account size."""
