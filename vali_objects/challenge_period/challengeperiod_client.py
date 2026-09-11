@@ -110,6 +110,13 @@ class ChallengePeriodClient(RPCClientBase):
         """Move a miner into an arbitrary bucket, running the account switch when required."""
         return self._server.admin_set_bucket_rpc(hotkey, bucket, current_time_ms)
 
+    def promote_pro_transition(
+        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
+    ) -> Tuple[bool, str]:
+        """Promote a subaccount out of PRO_CHALLENGE_TRANSITION at the miner's request, closing the
+        standard account and starting the pro account. Returns (success, message)."""
+        return self._server.promote_pro_transition_rpc(hotkey, current_time_ms, pro_account_size)
+
     def update_drawdown_criteria(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
         """Update drawdown_criteria for an existing miner state."""
         return self._server.update_drawdown_criteria_rpc(hotkey, criteria)
