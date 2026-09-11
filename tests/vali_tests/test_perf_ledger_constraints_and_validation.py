@@ -1791,21 +1791,20 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         # Apply continuity - this should update position returns based on last known prices
         plm.mutate_position_returns_for_continuity(
-            tp_to_historical_positions, 
-            bundle, 
+            tp_to_historical_positions,
+            portfolio_ledger,
             1000001000000  # portfolio_last_update_ms
         )
         
         # Verify returns were updated
-        # BTC: Long position, price went from 50k (order) to 55k (last known)
-        # Return should be approximately 1.1 minus fees
-        # The actual value is 1.0989 which includes spread fees
-        self.assertAlmostEqual(btc_position.return_at_close, 1.0989, places=5)
-        
+        # BTC: Long position, price went from 50k (order) to 55k (last known).
+        # Fees no longer perturb return_at_close (they flow through fee_history/equity_ret
+        # instead - see test_fee_calculations), so this is the raw price-driven return.
+        self.assertAlmostEqual(btc_position.return_at_close, 1.1, places=5)
+
         # ETH: Short position, price went from 3k (order) to 2.8k (last known)
-        # Short return with fees applied
         self.assertGreater(eth_position.return_at_close, 1.06)  # Should be profitable
-        self.assertLess(eth_position.return_at_close, 1.07)     # But less than raw calculation due to fees
+        self.assertLess(eth_position.return_at_close, 1.07)
 
     @patch('vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager.PerfLedgerManager.mutate_position_returns_for_continuity')
     def test_continuity_established_flag(self, mock_mutate):

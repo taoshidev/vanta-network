@@ -222,10 +222,8 @@ class PerfLedgerClient(RPCClientBase):
         trade_pair: str,
         tp_status: str,
         tp_return: float,
-        spread_fee_pct: float,
-        carry_fee_pct: float,
-        active_positions: dict
-    ) -> tuple:
+        tp_id_to_realtime_position_to_pop: dict
+    ) -> float:
         """
         Test-only method to get bypass values if applicable.
 
@@ -234,15 +232,13 @@ class PerfLedgerClient(RPCClientBase):
             trade_pair: Trade pair identifier
             tp_status: TradePairReturnStatus value
             tp_return: Trade pair return value
-            spread_fee_pct: Spread fee percentage
-            carry_fee_pct: Carry fee percentage
-            active_positions: Dict of active positions
+            tp_id_to_realtime_position_to_pop: Dict of trade pair id to position that just closed
 
         Returns:
-            Tuple of (return, spread_fee, carry_fee)
+            Return value to pass to update_pl
         """
         return self._server.get_bypass_values_if_applicable_rpc(
-            ledger, trade_pair, tp_status, tp_return, spread_fee_pct, carry_fee_pct, active_positions
+            ledger, trade_pair, tp_status, tp_return, tp_id_to_realtime_position_to_pop
         )
 
     def health_check(self) -> dict:
