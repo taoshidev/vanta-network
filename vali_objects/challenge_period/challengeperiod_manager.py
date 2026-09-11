@@ -959,7 +959,7 @@ class ChallengePeriodManager(CacheController):
             # Filter to only include miners who selected this asset class when calculating threshold
             miner_scores = {
                 hotkey: score for hotkey, score in asset_scores.items()
-                if asset_selections[hotkey] == asset_class
+                if asset_selections.get(hotkey) == asset_class
             }
             sorted_scores = sorted(miner_scores.items(), key=lambda item: item[1], reverse=True)
             for i, (hotkey, _) in enumerate(sorted_scores):
