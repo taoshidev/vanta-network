@@ -4,18 +4,18 @@
 Unit tests for the GET /hl-traders/<hl_address> endpoint.
 
 Tests the public (no-auth) endpoint that resolves a Hyperliquid address
-to a synthetic hotkey and returns trader info (positions, drawdown,
-account size, payout address).
+to a synthetic hotkey and returns a dashboard aggregated from the entity
+client and the challenge period / elimination / miner account / position /
+limit order RPC clients.
 
-Uses a lightweight Flask test client with a mocked entity_client to
-isolate endpoint logic from the full RPC stack.
+Uses a lightweight Flask test client with mocked clients to isolate
+endpoint logic from the full RPC stack.
 """
 import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from flask import Flask
-from vali_objects.vali_config import ValiConfig, TradePairCategory
 
 
 # ==================== Test constants ====================
@@ -25,35 +25,23 @@ SYNTHETIC_HOTKEY = "entity_alpha_0"
 VALID_PAYOUT_ADDRESS = "0x" + "deadbeef" * 5
 
 
-def _build_dashboard(
+def _build_subaccount_info(
     account_size=50_000,
     payout_address=VALID_PAYOUT_ADDRESS,
-    positions=None,
-    statistics=None,
-    ledger=None,
-    challenge_period=None,
-    account_size_data=None,
+    hl_address=VALID_HL_ADDRESS,
 ):
-    """Build a dashboard dict matching the shape returned by get_subaccount_dashboard_data."""
+    """Build a subaccount_info dict matching entity_manager.get_subaccount_dashboard's shape."""
     return {
-        'subaccount_info': {
-            'synthetic_hotkey': SYNTHETIC_HOTKEY,
-            'entity_hotkey': 'entity_alpha',
-            'subaccount_id': 0,
-            'status': 'active',
-            'created_at_ms': 1700000000000,
-            'eliminated_at_ms': None,
-            'account_size': account_size,
-            'asset_class': 'crypto',
-            'hl_address': VALID_HL_ADDRESS,
-            'payout_address': payout_address,
-        },
-        'challenge_period': challenge_period,
-        'ledger': ledger,
-        'positions': positions,
-        'account_size_data': account_size_data,
-        'statistics': statistics,
-        'elimination': None,
+        'synthetic_hotkey': SYNTHETIC_HOTKEY,
+        'subaccount_uuid': 'uuid-0',
+        'subaccount_id': 0,
+        'asset_class': 'crypto',
+        'account_size': account_size,
+        'status': 'active',
+        'created_at_ms': 1700000000000,
+        'eliminated_at_ms': None,
+        'hl_address': hl_address,
+        'payout_address': payout_address,
     }
 
 
@@ -62,7 +50,7 @@ class TestHlTraderEndpoint(unittest.TestCase):
     Unit tests for the get_hl_trader endpoint method.
 
     Creates a minimal Flask app and binds the real get_hl_trader method
-    with a mocked _entity_client, avoiding the heavy ValidatorRestServer
+    with mocked RPC clients, avoiding the heavy ValidatorRestServer
     constructor.
     """
 
@@ -73,9 +61,30 @@ class TestHlTraderEndpoint(unittest.TestCase):
         # Create a bare object without calling __init__
         self.server = object.__new__(ValidatorRestServer)
 
-        # Wire up the mock entity client
+        # Wire up mocked clients used by get_hl_trader
         self.mock_entity = MagicMock()
         self.server._entity_client = self.mock_entity
+
+        self.mock_challenge_period = MagicMock()
+        self.mock_challenge_period.get_dashboard.return_value = None
+        self.mock_challenge_period.get_drawdown_stats.return_value = None
+        self.server._challenge_period_client = self.mock_challenge_period
+
+        self.mock_elimination = MagicMock()
+        self.mock_elimination.get_dashboard.return_value = None
+        self.server._elimination_client = self.mock_elimination
+
+        self.mock_miner_account = MagicMock()
+        self.mock_miner_account.get_dashboard.return_value = None
+        self.server._miner_account_client = self.mock_miner_account
+
+        self.mock_position = MagicMock()
+        self.mock_position.get_dashboard.return_value = None
+        self.server._position_client = self.mock_position
+
+        self.mock_limit_order = MagicMock()
+        self.mock_limit_order.get_dashboard.return_value = None
+        self.server._limit_order_client = self.mock_limit_order
 
         # Create a minimal Flask app and register the route
         self.app = Flask(__name__)
@@ -93,55 +102,60 @@ class TestHlTraderEndpoint(unittest.TestCase):
     def test_success_basic(self):
         """200 with correct structure for a known HL address."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard()
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
 
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
         self.assertEqual(data['status'], 'success')
-        self.assertEqual(data['synthetic_hotkey'], SYNTHETIC_HOTKEY)
-        self.assertEqual(data['hl_address'], VALID_HL_ADDRESS)
-        self.assertEqual(data['account_size'], 50_000)
-        self.assertEqual(data['payout_address'], VALID_PAYOUT_ADDRESS)
         self.assertIn('timestamp', data)
         self.assertIsInstance(data['timestamp'], int)
+        info = data['dashboard']['subaccount_info']
+        self.assertEqual(info['synthetic_hotkey'], SYNTHETIC_HOTKEY)
+        self.assertEqual(info['hl_address'], VALID_HL_ADDRESS)
+        self.assertEqual(info['account_size'], 50_000)
+        self.assertEqual(info['payout_address'], VALID_PAYOUT_ADDRESS)
 
     def test_success_with_positions(self):
-        """Positions data is forwarded when present in dashboard."""
+        """Positions data is forwarded when present."""
         positions = {'n_positions': 5, 'total_leverage': 0.5}
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(positions=positions)
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+        self.mock_position.get_dashboard.return_value = positions
 
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        self.assertEqual(data['positions']['n_positions'], 5)
-        self.assertEqual(data['positions']['total_leverage'], 0.5)
+        self.assertEqual(data['dashboard']['positions']['n_positions'], 5)
+        self.assertEqual(data['dashboard']['positions']['total_leverage'], 0.5)
 
     def test_success_no_positions(self):
-        """Positions is None when trader has no positions."""
+        """Positions key is omitted when the position client returns None."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(positions=None)
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+        self.mock_position.get_dashboard.return_value = None
 
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        self.assertIsNone(data['positions'])
+        self.assertNotIn('positions', data['dashboard'])
 
     def test_success_no_payout_address(self):
-        """Payout address is None when not set."""
+        """Payout address is absent from subaccount_info when not set."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(payout_address=None)
+        info = _build_subaccount_info()
+        del info['payout_address']
+        self.mock_entity.get_subaccount_dashboard.return_value = info
 
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        self.assertIsNone(data['payout_address'])
+        self.assertNotIn('payout_address', data['dashboard']['subaccount_info'])
 
     def test_response_content_type_is_json(self):
         """Response Content-Type is application/json."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard()
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
 
         resp = self.client.get(f"/hl-traders/{VALID_HL_ADDRESS}")
 
@@ -150,180 +164,78 @@ class TestHlTraderEndpoint(unittest.TestCase):
     def test_no_auth_required(self):
         """Endpoint returns non-401/403 without any auth header."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard()
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
 
         resp = self.client.get(f"/hl-traders/{VALID_HL_ADDRESS}")
 
         self.assertNotIn(resp.status_code, (401, 403))
 
-    # ==================== Drawdown extraction ====================
+    # ==================== Drawdown ====================
 
-    def test_drawdown_none_when_no_stats_or_ledger(self):
-        """Drawdown is None when neither statistics nor ledger data exist."""
+    def test_drawdown_none_when_client_returns_none(self):
+        """Drawdown key is omitted when the challenge period client has no stats."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard()
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+        self.mock_challenge_period.get_drawdown_stats.return_value = None
 
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        self.assertIsNone(data['drawdown'])
+        self.assertNotIn('drawdown', data['dashboard'])
 
-    def test_drawdown_from_statistics_only(self):
-        """Drawdown populated from statistics drawdowns when no ledger."""
-        stats = {
-            'hotkey': SYNTHETIC_HOTKEY,
-            'drawdowns': {
-                'instantaneous_max_drawdown': 0.05,
-                'daily_max_drawdown': 0.03,
-            }
+    def test_drawdown_forwarded_from_challenge_period_client(self):
+        """Drawdown section is forwarded verbatim from the challenge period client."""
+        drawdown_stats = {
+            'instantaneous_max_drawdown': 0.05,
+            'daily_max_drawdown': 0.03,
         }
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(statistics=stats)
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+        self.mock_challenge_period.get_drawdown_stats.return_value = drawdown_stats
 
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        self.assertIsNotNone(data['drawdown'])
-        self.assertEqual(data['drawdown']['instantaneous_max_drawdown'], 0.05)
-        self.assertEqual(data['drawdown']['daily_max_drawdown'], 0.03)
-        # No ledger_max_drawdown key since no ledger
-        self.assertNotIn('ledger_max_drawdown', data['drawdown'])
+        self.assertEqual(data['dashboard']['drawdown'], drawdown_stats)
 
-    def test_drawdown_from_ledger_only(self):
-        """Drawdown includes ledger_max_drawdown from last checkpoint."""
-        ledger = {
-            'checkpoints': [
-                {'performance': {'max_drawdown': 0.08}},
-                {'performance': {'max_drawdown': 0.12}},
-            ]
+    def test_drawdown_section_error_is_swallowed(self):
+        """An exception retrieving drawdown stats doesn't fail the whole request."""
+        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+        self.mock_challenge_period.get_drawdown_stats.side_effect = RuntimeError("boom")
+
+        status, data = self._get(VALID_HL_ADDRESS)
+
+        self.assertEqual(status, 200)
+        self.assertNotIn('drawdown', data['dashboard'])
+
+    # ==================== Challenge period ====================
+
+    def test_challenge_period_forwarded(self):
+        """Challenge period section is forwarded verbatim from the challenge period client."""
+        challenge_period = {
+            'bucket': 'SUBACCOUNT_CHALLENGE',
+            'start_time_ms': 1_700_000_000_000,
         }
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(ledger=ledger)
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+        self.mock_challenge_period.get_dashboard.return_value = challenge_period
 
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        self.assertIsNotNone(data['drawdown'])
-        # Should use the LAST checkpoint's max_drawdown
-        self.assertEqual(data['drawdown']['ledger_max_drawdown'], 0.12)
+        self.assertEqual(data['dashboard']['challenge_period'], challenge_period)
 
-    def test_drawdown_combined_stats_and_ledger(self):
-        """Drawdown merges statistics drawdowns with ledger max_drawdown."""
-        stats = {
-            'hotkey': SYNTHETIC_HOTKEY,
-            'drawdowns': {
-                'instantaneous_max_drawdown': 0.05,
-                'daily_max_drawdown': 0.03,
-            }
-        }
-        ledger = {
-            'checkpoints': [
-                {'performance': {'max_drawdown': 0.07}},
-            ]
-        }
+    def test_challenge_period_none_when_client_returns_none(self):
+        """Challenge period key is omitted when the client has no data."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(
-            statistics=stats, ledger=ledger
-        )
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+        self.mock_challenge_period.get_dashboard.return_value = None
 
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        dd = data['drawdown']
-        self.assertEqual(dd['instantaneous_max_drawdown'], 0.05)
-        self.assertEqual(dd['daily_max_drawdown'], 0.03)
-        self.assertEqual(dd['ledger_max_drawdown'], 0.07)
-
-    def test_drawdown_empty_checkpoints(self):
-        """Drawdown has no ledger_max_drawdown when checkpoints list is empty."""
-        ledger = {'checkpoints': []}
-        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(ledger=ledger)
-
-        status, data = self._get(VALID_HL_ADDRESS)
-
-        self.assertEqual(status, 200)
-        # Empty drawdown dict → serialized as None
-        self.assertIsNone(data['drawdown'])
-
-    def test_drawdown_checkpoint_missing_performance(self):
-        """Handles checkpoint with no performance key gracefully."""
-        ledger = {'checkpoints': [{'something_else': 42}]}
-        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(ledger=ledger)
-
-        status, data = self._get(VALID_HL_ADDRESS)
-
-        self.assertEqual(status, 200)
-        # ledger_max_drawdown should be None since no performance key
-        self.assertIsNotNone(data['drawdown'])
-        self.assertIsNone(data['drawdown']['ledger_max_drawdown'])
-
-    # ==================== Challenge progress ====================
-
-    def test_challenge_progress_for_subaccount_challenge(self):
-        """
-        Challenge progress is populated for SUBACCOUNT_CHALLENGE subaccounts.
-        """
-        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(
-            account_size=50_000,
-            challenge_period={
-                'bucket': 'SUBACCOUNT_CHALLENGE',
-                'start_time_ms': 1_700_000_000_000,
-            },
-            account_size_data={
-                'balance': 53_000,   # current_return = 1.06
-                'max_return': 1.08,
-            },
-        )
-
-        now_ms = 1_700_864_000_000  # +10 days
-        with patch("vanta_api.validator_rest_server.TimeUtil.now_in_millis", return_value=now_ms):
-            status, data = self._get(VALID_HL_ADDRESS)
-
-        self.assertEqual(status, 200)
-        challenge_progress = data['challenge_progress']
-        self.assertIsNotNone(challenge_progress)
-        self.assertTrue(challenge_progress['in_challenge_period'])
-        self.assertEqual(challenge_progress['bucket'], 'SUBACCOUNT_CHALLENGE')
-        self.assertEqual(challenge_progress['elapsed_time_ms'], now_ms - 1_700_000_000_000)
-        self.assertAlmostEqual(challenge_progress['time_progress_percent'], (10 / ValiConfig.CHALLENGE_PERIOD_MAXIMUM_DAYS) * 100.0)
-        self.assertAlmostEqual(challenge_progress['current_return'], 1.06)
-        self.assertAlmostEqual(challenge_progress['returns_percent'], 6.0)
-        self.assertAlmostEqual(
-            challenge_progress['target_return_percent'],
-            ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD[TradePairCategory.CRYPTO] * 100.0
-        )
-        self.assertAlmostEqual(challenge_progress['returns_progress_percent'], 60.0)
-        self.assertAlmostEqual(challenge_progress['challenge_completion_percent'], 60.0)
-        self.assertAlmostEqual(challenge_progress['drawdown_limit_percent'], 5.0)
-        self.assertAlmostEqual(challenge_progress['drawdown_percent'], (1 - (1.06 / 1.08)) * 100.0)
-
-    def test_challenge_progress_for_non_challenge_bucket(self):
-        """
-        Challenge completion percent is None when not in SUBACCOUNT_CHALLENGE.
-        """
-        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard(
-            challenge_period={
-                'bucket': 'SUBACCOUNT_FUNDED',
-                'start_time_ms': 1_700_000_000_000,
-            },
-            account_size_data={
-                'balance': 52_000,
-                'max_return': 1.08,
-            },
-        )
-
-        status, data = self._get(VALID_HL_ADDRESS)
-
-        self.assertEqual(status, 200)
-        challenge_progress = data['challenge_progress']
-        self.assertFalse(challenge_progress['in_challenge_period'])
-        self.assertEqual(challenge_progress['bucket'], 'SUBACCOUNT_FUNDED')
-        self.assertIsNone(challenge_progress['returns_progress_percent'])
-        self.assertIsNone(challenge_progress['challenge_completion_percent'])
+        self.assertNotIn('challenge_period', data['dashboard'])
 
     # ==================== 404 paths ====================
 
@@ -337,10 +249,10 @@ class TestHlTraderEndpoint(unittest.TestCase):
         self.assertEqual(data['status'], 'error')
         self.assertEqual(data['message'], 'HL address not found')
 
-    def test_dashboard_none_returns_404(self):
-        """404 when hotkey resolves but dashboard returns None."""
+    def test_subaccount_info_none_returns_404(self):
+        """404 when hotkey resolves but subaccount info lookup returns None."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = None
+        self.mock_entity.get_subaccount_dashboard.return_value = None
 
         status, data = self._get(VALID_HL_ADDRESS)
 
@@ -360,10 +272,10 @@ class TestHlTraderEndpoint(unittest.TestCase):
         self.assertEqual(data['status'], 'error')
         self.assertEqual(data['message'], 'Internal error')
 
-    def test_dashboard_exception_returns_500(self):
-        """500 when dashboard aggregation raises an exception."""
+    def test_subaccount_info_exception_returns_500(self):
+        """500 when subaccount info lookup raises an exception."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.side_effect = RuntimeError("Timeout")
+        self.mock_entity.get_subaccount_dashboard.side_effect = RuntimeError("Timeout")
 
         status, data = self._get(VALID_HL_ADDRESS)
 
@@ -384,32 +296,52 @@ class TestHlTraderEndpoint(unittest.TestCase):
 
     # ==================== HL address passthrough ====================
 
-    def test_hl_address_echoed_in_response(self):
-        """The hl_address in the response matches the one in the URL."""
+    def test_hl_address_echoed_in_subaccount_info(self):
+        """The hl_address in subaccount_info matches the one in the URL."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard()
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info(
+            hl_address=VALID_HL_ADDRESS
+        )
 
         status, data = self._get(VALID_HL_ADDRESS)
 
-        self.assertEqual(data['hl_address'], VALID_HL_ADDRESS)
+        self.assertEqual(data['dashboard']['subaccount_info']['hl_address'], VALID_HL_ADDRESS)
 
     def test_correct_entity_client_calls(self):
         """Verifies the endpoint calls entity_client methods with the right args."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
-        self.mock_entity.get_subaccount_dashboard_data.return_value = _build_dashboard()
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
 
         self._get(VALID_HL_ADDRESS)
 
         self.mock_entity.get_synthetic_hotkey_for_hl_address.assert_called_once_with(VALID_HL_ADDRESS)
-        self.mock_entity.get_subaccount_dashboard_data.assert_called_once_with(SYNTHETIC_HOTKEY)
+        self.mock_entity.get_subaccount_dashboard.assert_called_once_with(SYNTHETIC_HOTKEY)
 
     def test_dashboard_not_called_when_hotkey_not_found(self):
-        """Dashboard aggregation is skipped when HL address lookup returns None."""
+        """Subaccount info lookup is skipped when HL address lookup returns None."""
         self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = None
 
         self._get(VALID_HL_ADDRESS)
 
-        self.mock_entity.get_subaccount_dashboard_data.assert_not_called()
+        self.mock_entity.get_subaccount_dashboard.assert_not_called()
+
+    def test_positions_time_ms_query_param_forwarded(self):
+        """positions_time_ms query param is parsed and forwarded to the position client."""
+        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+
+        self.client.get(f"/hl-traders/{VALID_HL_ADDRESS}?positions_time_ms=123")
+
+        self.mock_position.get_dashboard.assert_called_once_with(SYNTHETIC_HOTKEY, 123)
+
+    def test_limit_orders_time_ms_query_param_forwarded(self):
+        """limit_orders_time_ms query param is parsed and forwarded to the limit order client."""
+        self.mock_entity.get_synthetic_hotkey_for_hl_address.return_value = SYNTHETIC_HOTKEY
+        self.mock_entity.get_subaccount_dashboard.return_value = _build_subaccount_info()
+
+        self.client.get(f"/hl-traders/{VALID_HL_ADDRESS}?limit_orders_time_ms=456")
+
+        self.mock_limit_order.get_dashboard.assert_called_once_with(SYNTHETIC_HOTKEY, 456)
 
 
 if __name__ == '__main__':
