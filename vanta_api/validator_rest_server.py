@@ -364,6 +364,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/<entity_hotkey>", methods=["GET"])(self.get_entity)
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
+        self.app.route("/entity/subaccount/leverage-tier", methods=["POST"])(self.update_subaccount_leverage_tier)
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
@@ -2561,6 +2562,90 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error retrieving all entities: {e}")
             return jsonify({'error': 'Internal server error retrieving entities'}), 500
+
+    def update_subaccount_leverage_tier(self):
+        """
+        Change a standard subaccount's leverage tier (1 to 3). Signed by the entity coldkey;
+        lowering the tier requires the subaccount to have no open positions.
+
+        Example:
+        curl -X POST http://localhost:48888/entity/subaccount/leverage-tier \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "synthetic_hotkey": "5GhDr..._0",
+            "leverage_tier": 2,
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'synthetic_hotkey', 'leverage_tier', 'signature']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            synthetic_hotkey = data['synthetic_hotkey']
+            leverage_tier = data['leverage_tier']
+
+            if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
+                return jsonify({'error': 'synthetic_hotkey must be a non-empty string'}), 400
+            if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
+
+            # Coldkey signature proves entity identity (same message as register_entity)
+            keypair = Keypair(ss58_address=entity_coldkey)
+            signed_message = json.dumps({
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey
+            }, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(signed_message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Request unauthorized'}), 401
+
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            success, message = self._entity_client.update_subaccount_leverage_tier(
+                entity_hotkey, synthetic_hotkey, leverage_tier
+            )
+
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': message,
+                    'synthetic_hotkey': synthetic_hotkey,
+                    'leverage_tier': leverage_tier,
+                }), 200
+            else:
+                return jsonify({'error': message}), 400
+
+        except Exception as e:
+            logger.error(f"Error updating subaccount leverage tier: {e}")
+            return jsonify({'error': 'Internal server error updating subaccount leverage tier'}), 500
 
     def eliminate_subaccount(self):
         """

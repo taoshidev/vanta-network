@@ -388,7 +388,8 @@ class EntityMinerRestServer(MinerRestServer):
         self.app.route("/api/hl/<hl_address>/stream", methods=["GET"])(self.stream_endpoint)
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
-        print("[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
+        self.app.route("/api/update-subaccount-leverage-tier", methods=["POST"])(self.update_subaccount_leverage_tier_endpoint)
+        print("[ENTITY-GW-INIT] 9 endpoints registered (3 inherited + 6 entity-specific)")
 
     # ==================== HL Address Mapping ====================
 
@@ -1207,6 +1208,80 @@ class EntityMinerRestServer(MinerRestServer):
                     level="error"
                 )
             return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
+
+    def update_subaccount_leverage_tier_endpoint(self):
+        """
+        POST /api/update-subaccount-leverage-tier - Change a standard subaccount's leverage tier via validator.
+
+        Request body (JSON):
+        {
+            "synthetic_hotkey": "<entity_hotkey>_<id>",  // Required
+            "leverage_tier": 1 | 2 | 3                   // Required
+        }
+        Lowering the tier requires the subaccount to have no open positions.
+        """
+        import requests as http_requests
+
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        request_data = request.get_json(silent=True)
+        if not request_data:
+            return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
+
+        synthetic_hotkey = request_data.get("synthetic_hotkey")
+        leverage_tier = request_data.get("leverage_tier")
+        if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
+            return jsonify({'status': 'error', 'message': 'synthetic_hotkey must be a non-empty string'}), 400
+        if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+            return jsonify({
+                'status': 'error',
+                'message': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'
+            }), 400
+
+        if not self._coldkey or not self._hotkey or not self._validator_url:
+            return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
+
+        try:
+            message = json.dumps({
+                "entity_coldkey": self._coldkey.ss58_address,
+                "entity_hotkey": self._hotkey.ss58_address,
+            }, sort_keys=True).encode('utf-8')
+            signature = self._coldkey.sign(message).hex()
+        except Exception as e:
+            logger.error(f"Error signing message: {e}")
+            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
+
+        payload = {
+            "entity_hotkey": self._hotkey.ss58_address,
+            "entity_coldkey": self._coldkey.ss58_address,
+            "synthetic_hotkey": synthetic_hotkey,
+            "leverage_tier": leverage_tier,
+            "signature": signature,
+            "version": "2.2.1",
+        }
+        try:
+            resp = http_requests.post(
+                f"{self._validator_url}/entity/subaccount/leverage-tier",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=60,
+            )
+        except Exception as e:
+            logger.error(f"Error reaching validator for leverage tier update: {e}")
+            return jsonify({'status': 'error', 'message': f'Validator unreachable: {str(e)}'}), 502
+
+        try:
+            response_data = resp.json()
+        except json.JSONDecodeError:
+            return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
+
+        if resp.status_code == 200:
+            logger.info(f"[ENTITY-GW] leverage_tier set to {leverage_tier} for {synthetic_hotkey}")
+            return jsonify(response_data), 200
+        error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
+        return jsonify({'status': 'error', 'message': error_message}), resp.status_code
 
     def health_endpoint(self):
         """GET /api/health - Health check."""

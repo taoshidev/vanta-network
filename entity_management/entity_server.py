@@ -270,6 +270,12 @@ class EntityServer(RPCServerBase):
         """
         return self._manager.get_hl_subaccount_limits_data(hl_address)
 
+    def update_subaccount_leverage_tier_rpc(
+        self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
+    ) -> Tuple[bool, str]:
+        """Change a standard subaccount's leverage tier (1 to 3). Returns (success, message)."""
+        return self._manager.update_subaccount_leverage_tier(entity_hotkey, synthetic_hotkey, leverage_tier)
+
     def eliminate_subaccount_rpc(
         self,
         entity_hotkey: str,
