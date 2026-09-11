@@ -197,7 +197,8 @@ class LivePriceFetcher:
         polygon_results = {}
         tiingo_results = {}
         hyperliquid_results = {}
-        hl_pairs = [tp for tp in trade_pairs if tp.src == TradePairSource.HYPERLIQUID]
+        mapped_trade_pairs = [NATIVE_CRYPTO_TO_HL_TRADE_PAIR.get(tp, tp) for tp in trade_pairs]
+        hl_pairs = [tp for tp in mapped_trade_pairs if tp.src == TradePairSource.HYPERLIQUID]
         with ThreadPoolExecutor(max_workers=3) as executor:
             poly_fut = executor.submit(self.polygon_data_service.get_price_rest, trade_pairs, time_ms, live)
             tiingo_fut = executor.submit(self.tiingo_data_service.get_price_rest, trade_pairs, time_ms, live)
