@@ -530,6 +530,11 @@ class ValiConfig:
     STANDARD_LEVERAGE_TIERS = (1, 2, 3)
     STANDARD_LEVERAGE_TIER_DEFAULT = 1
 
+    @staticmethod
+    def is_valid_standard_leverage_tier(tier) -> bool:
+        """True for an int in STANDARD_LEVERAGE_TIERS; bools and floats are rejected."""
+        return isinstance(tier, int) and not isinstance(tier, bool) and tier in ValiConfig.STANDARD_LEVERAGE_TIERS
+
     # Per-pair groups narrower than an asset class (see leverage_utils.get_standard_leverage_group).
     STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}
     STANDARD_FX_NZD_CROSS_IDS = {"EURNZD", "GBPNZD", "NZDJPY", "AUDNZD", "NZDCAD", "NZDCHF"}

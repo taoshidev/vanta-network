@@ -2391,9 +2391,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
             # account_type applies to Vanta-native subaccounts only
             account_type = data.get('account_type', 'standard')
+            # Standard leverage tier 1 to 3; EntityManager applies the default when omitted
+            leverage_tier = data.get('leverage_tier')
 
             if collateral_exempt is not None and not isinstance(collateral_exempt, bool):
                 return jsonify({'error': 'collateral_exempt must be a boolean'}), 400
+
+            if leverage_tier is not None:
+                if is_hl:
+                    return jsonify({'error': 'leverage_tier is not supported for Hyperliquid subaccounts'}), 400
+                if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                    return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -2463,7 +2471,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria, account_type=account_type
+                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria,
+                    account_type=account_type, leverage_tier=leverage_tier
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 

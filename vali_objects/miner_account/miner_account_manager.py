@@ -80,6 +80,7 @@ class MinerAccount:
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
+    leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = legacy curve (HL, pro, pre-tier accounts)
     max_return: float = 1.0  # High water mark for portfolio return
     unrealized_pnl: float = 0.0  # Current unrealized PNL from open positions
     # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
@@ -195,6 +196,7 @@ class MinerAccount:
             'total_dividend_income': self.total_dividend_income,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
             'hl_address': self.hl_address,
+            'leverage_tier': self.leverage_tier,
             'max_return': self.max_return,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
@@ -388,6 +390,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_dividend_income = last_record.get("total_dividend_income", 0.0)
                     miner_bucket_str = last_record.get("miner_bucket")
                     hl_address = last_record.get("hl_address")
+                    leverage_tier = last_record.get("leverage_tier")
                     max_return = last_record.get("max_return", 1.0)
                     unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
@@ -400,6 +403,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_dividend_income = 0.0
                     miner_bucket_str = None
                     hl_address = None
+                    leverage_tier = None
                     max_return = 1.0
                     unrealized_pnl = 0.0
                     capital_used_by_class_raw = {}
@@ -467,6 +471,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     collateral_records=collateral_records,
                     miner_bucket=miner_bucket,
                     hl_address=hl_address,
+                    leverage_tier=leverage_tier,
                     max_return=max_return,
                     unrealized_pnl=unrealized_pnl,
                     capital_used_by_class=capital_used_by_class,
@@ -765,6 +770,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
             account.hl_address = hl_address
+            self._save_accounts_to_disk()
+
+    def set_leverage_tier(self, hotkey: str, leverage_tier: Optional[int]) -> None:
+        """Set the standard leverage tier on an account. Called by EntityManager when a subaccount is created/synced."""
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            account.leverage_tier = leverage_tier
             self._save_accounts_to_disk()
 
     def get_all_hotkeys(self) -> list:

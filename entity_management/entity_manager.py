@@ -68,6 +68,7 @@ class SubaccountInfo(BaseModel):
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
+    leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts and accounts created before tiers existed")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
@@ -404,6 +405,7 @@ class EntityManager(ValidatorBroadcastBase):
         payout_address: Optional[str] = None,
         drawdown_criteria: str = "trailing",
         account_type: str = "standard",
+        leverage_tier: Optional[int] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount for an entity.
@@ -417,6 +419,8 @@ class EntityManager(ValidatorBroadcastBase):
             asset_class: Asset class selection (immutable once set)
             collateral_exempt: If True, skip collateral slashing.
                    Exempt subaccounts are excluded from entity aggregation and payouts.
+            leverage_tier: Standard leverage tier 1 to 3. Defaults to
+                   ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -428,6 +432,15 @@ class EntityManager(ValidatorBroadcastBase):
         if AccountType(account_type) == AccountType.PRO:
             return False, None, "account_type 'pro' cannot be set at creation; pro accounts are granted by admin promotion"
         initial_bucket = AccountType(account_type).challenge_bucket
+
+        if hl_address:
+            if leverage_tier is not None:
+                return False, None, "leverage_tier is not supported for Hyperliquid subaccounts"
+        else:
+            if leverage_tier is None:
+                leverage_tier = ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
+            if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                return False, None, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -538,6 +551,9 @@ class EntityManager(ValidatorBroadcastBase):
                     f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
                 )
 
+                if leverage_tier is not None:
+                    self._miner_account_client.set_leverage_tier(synthetic_hotkey, leverage_tier)
+
             except Exception as e:
                 logger.error(f"[ENTITY_MANAGER] Error creating subaccount: {e}")
                 # Rollback subaccount ID increment and clean up asset selection/account size
@@ -560,6 +576,7 @@ class EntityManager(ValidatorBroadcastBase):
                 asset_class=asset_class,
                 drawdown_criteria=drawdown_criteria,
                 account_type=account_type,
+                leverage_tier=leverage_tier,
                 hl_address=hl_address,
                 payout_address=payout_address,
             )
@@ -1869,6 +1886,8 @@ class EntityManager(ValidatorBroadcastBase):
                                 self._hl_address_to_synthetic[normalized_hl] = sub.synthetic_hotkey
                             if self._miner_account_client:
                                 self._miner_account_client.set_hl_address(sub.synthetic_hotkey, sub.hl_address)
+                        if sub.leverage_tier is not None and self._miner_account_client:
+                            self._miner_account_client.set_leverage_tier(sub.synthetic_hotkey, sub.leverage_tier)
 
                     stats['entities_added'] += 1
                     stats['subaccounts_added'] += len(incoming_entity.subaccounts)
@@ -1896,6 +1915,8 @@ class EntityManager(ValidatorBroadcastBase):
                                         self._hl_address_to_synthetic[normalized_hl] = incoming_sub.synthetic_hotkey
                                     if self._miner_account_client:
                                         self._miner_account_client.set_hl_address(incoming_sub.synthetic_hotkey, incoming_sub.hl_address)
+                                if incoming_sub.leverage_tier is not None and self._miner_account_client:
+                                    self._miner_account_client.set_leverage_tier(incoming_sub.synthetic_hotkey, incoming_sub.leverage_tier)
 
                                 stats['subaccounts_added'] += 1
                                 logger.info(f"[ENTITY_MANAGER] Added subaccount {incoming_sub.synthetic_hotkey} from sync")
@@ -2119,6 +2140,10 @@ class EntityManager(ValidatorBroadcastBase):
                 # Propagate hl_address to MinerAccount so buying_power uses the correct HS divisor
                 if hl_address and self._miner_account_client:
                     self._miner_account_client.set_hl_address(synthetic_hotkey, hl_address)
+
+                # Propagate leverage_tier to MinerAccount (mirrors create_subaccount)
+                if subaccount_info.leverage_tier is not None and self._miner_account_client:
+                    self._miner_account_client.set_leverage_tier(synthetic_hotkey, subaccount_info.leverage_tier)
 
                 # Set account size for synthetic hotkey (mirrors create_subaccount)
                 if self._miner_account_client:

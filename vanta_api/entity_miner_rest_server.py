@@ -937,6 +937,7 @@ class EntityMinerRestServer(MinerRestServer):
         {
             "asset_class": "crypto" | "forex" | "equities",  // Required
             "account_size": float,                           // Required, must be > 0
+            "leverage_tier": 1 | 2 | 3,                      // Optional, default 1 (standard leverage tier)
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -973,6 +974,9 @@ class EntityMinerRestServer(MinerRestServer):
                 asset_class = "hl_all"
                 drawdown_criteria = "trailing"
                 account_type = None
+                leverage_tier = None
+                if request_data.get("leverage_tier") is not None:
+                    return jsonify({'status': 'error', 'message': 'leverage_tier is not supported for Hyperliquid subaccounts'}), 400
             else:
                 hl_address = None
                 payout_address = None
@@ -989,6 +993,13 @@ class EntityMinerRestServer(MinerRestServer):
                 account_type = request_data.get("account_type", "standard")
                 if account_type != "standard":
                     return jsonify({'status': 'error', 'message': 'account_type must be "standard"'}), 400
+                # Standard leverage tier 1 to 3; the validator applies the default when omitted
+                leverage_tier = request_data.get("leverage_tier")
+                if leverage_tier is not None and not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                    return jsonify({
+                        'status': 'error',
+                        'message': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'
+                    }), 400
 
             raw = request_data.get("collateral_exempt", request_data.get("admin", False))
             if not isinstance(raw, bool):
@@ -1079,6 +1090,8 @@ class EntityMinerRestServer(MinerRestServer):
                 payload["collateral_exempt"] = collateral_exempt
             if account_type is not None:
                 payload["account_type"] = account_type
+            if leverage_tier is not None:
+                payload["leverage_tier"] = leverage_tier
             if is_hl:
                 payload["hl_address"] = hl_address
                 if payout_address is not None:
