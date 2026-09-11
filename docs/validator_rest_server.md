@@ -1210,6 +1210,57 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - New subaccounts are automatically broadcasted to all validators in the network
 - The entity miner gateway (`EntityMinerRestServer`) handles signing and forwarding — end users typically call the miner-side endpoint rather than this one directly
 
+### Update Subaccount Leverage Tier
+
+`POST /entity/subaccount/leverage-tier`
+
+Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [entity_miner.md](entity_miner.md#leverage-limits). Raising is allowed at any time. Lowering is rejected while the subaccount has open positions. HL-linked and pro subaccounts are rejected.
+
+**Authentication:** Coldkey signature (no API key required). Each signature is single use.
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "entity_coldkey": "5FxY...",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "leverage_tier": 2,
+  "nonce": "3f9c1e5a...",
+  "timestamp": 1749234567890,
+  "signature": "0x...",
+  "version": "2.2.1"
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `entity_coldkey` (string, required): The entity's coldkey SS58 address
+- `synthetic_hotkey` (string, required): The subaccount to change. Must belong to `entity_hotkey`.
+- `leverage_tier` (int, required): `1`, `2` or `3`
+- `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
+- `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
+- `signature` (string, required): Coldkey signature over the sorted-JSON of `{entity_coldkey, entity_hotkey, leverage_tier, nonce, synthetic_hotkey, timestamp}`. The signed payload names the subaccount and the tier and carries a single-use nonce, so a captured request cannot be replayed or redirected.
+- `version` (string, optional): vanta-cli version string for compatibility checking.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "leverage_tier updated to 2 for 5GhDr3xy...abc_0",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "leverage_tier": 2
+}
+```
+
+**Errors:**
+- `400`: missing or invalid field, or the change was rejected (unknown subaccount, HL-linked or pro subaccount, subaccount not active, lowering with open positions)
+- `401`: invalid signature, reused nonce, or expired timestamp
+- `403`: coldkey does not own the hotkey
+
+**Important Notes:**
+- The entity miner gateway (`POST /api/update-subaccount-leverage-tier`) builds and signs this request. End users typically call the gateway rather than this endpoint directly.
+- The new tier is broadcast to all validators like a subaccount registration.
+
 ### Set Entity Endpoint
 
 `POST /entity/set-endpoint`

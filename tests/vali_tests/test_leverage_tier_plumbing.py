@@ -11,13 +11,15 @@ Covers:
   * update_subaccount_leverage_tier: raise / lower / no-op, the open-position guard when caps may
     drop, ownership and HL guards, and propagation through broadcast receive and checkpoint sync.
 
-  * The validator and gateway HTTP endpoints for the tier update: coldkey signature, field
-    validation, and the payload forwarded to the validator.
+  * The validator and gateway HTTP endpoints for the tier update: coldkey signature bound to the
+    target subaccount and tier, nonce + timestamp replay protection, field validation, and the
+    payload forwarded to the validator.
 
 Order-path behavior lives in test_standard_leverage_tiers.py.
 """
 import json
 import unittest
+import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -374,37 +376,48 @@ class TestLeverageTierUpdate(TestBase):
         self.assertEqual(self._account_tier(synthetic), 2)
 
 
+LEVERAGE_TIER_SIGNED_FIELDS = ("entity_coldkey", "entity_hotkey", "synthetic_hotkey", "leverage_tier", "nonce", "timestamp")
+
+
+def _validator_leverage_tier_client():
+    """Flask test client for the validator endpoint with a mocked entity client and ownership check."""
+    from vanta_api.nonce_manager import NonceManager
+    from vanta_api.validator_rest_server import ValidatorRestServer
+
+    server = object.__new__(ValidatorRestServer)
+    server._entity_client = MagicMock()
+    server._entity_client.update_subaccount_leverage_tier.return_value = (True, "updated")
+    server._verify_coldkey_owns_hotkey = MagicMock(return_value=True)
+    server.nonce_manager = NonceManager()
+    app = Flask(__name__)
+    app.config['TESTING'] = True
+    app.route("/entity/subaccount/leverage-tier", methods=["POST"])(server.update_subaccount_leverage_tier)
+    return server, app.test_client()
+
+
 class TestValidatorLeverageTierEndpoint(unittest.TestCase):
     """POST /entity/subaccount/leverage-tier on the validator, with a mocked entity client."""
 
     def setUp(self):
-        from vanta_api.validator_rest_server import ValidatorRestServer
-
         self.coldkey = Keypair.create_from_uri("//Alice")
         self.hotkey = Keypair.create_from_uri("//Bob")
-        self.server = object.__new__(ValidatorRestServer)
-        self.server._entity_client = MagicMock()
-        self.server._entity_client.update_subaccount_leverage_tier.return_value = (True, "updated")
-        self.server._verify_coldkey_owns_hotkey = MagicMock(return_value=True)
-        app = Flask(__name__)
-        app.config['TESTING'] = True
-        app.route("/entity/subaccount/leverage-tier", methods=["POST"])(self.server.update_subaccount_leverage_tier)
-        self.client = app.test_client()
+        self.server, self.client = _validator_leverage_tier_client()
 
-    def _body(self, **overrides):
-        signed = json.dumps({
-            "entity_coldkey": self.coldkey.ss58_address,
-            "entity_hotkey": self.hotkey.ss58_address,
-        }, sort_keys=True).encode("utf-8")
-        body = {
+    def _body(self, signed=None, **tampered):
+        """A correctly signed request. `signed` overrides fields before signing (what a gateway would
+        have sent), `tampered` overrides after signing (what a man in the middle would change)."""
+        fields = {
             "entity_coldkey": self.coldkey.ss58_address,
             "entity_hotkey": self.hotkey.ss58_address,
             "synthetic_hotkey": f"{self.hotkey.ss58_address}_0",
             "leverage_tier": 2,
-            "signature": self.coldkey.sign(signed).hex(),
-            "version": "2.2.1",
+            "nonce": uuid.uuid4().hex,
+            "timestamp": TimeUtil.now_in_millis(),
         }
-        body.update(overrides)
+        fields.update(signed or {})
+        message = json.dumps(fields, sort_keys=True).encode("utf-8")
+        body = {**fields, "signature": self.coldkey.sign(message).hex(), "version": "2.2.1"}
+        body.update(tampered)
         return body
 
     def _post(self, body):
@@ -440,14 +453,62 @@ class TestValidatorLeverageTierEndpoint(unittest.TestCase):
     def test_invalid_tier_and_missing_fields_are_400(self):
         for bad in (0, 4, "2", True):
             with self.subTest(tier=bad):
-                status, _ = self._post(self._body(leverage_tier=bad))
+                status, _ = self._post(self._body(signed={"leverage_tier": bad}))
                 self.assertEqual(status, 400)
-        body = self._body()
-        del body["synthetic_hotkey"]
-        status, data = self._post(body)
-        self.assertEqual(status, 400)
-        self.assertIn("synthetic_hotkey", data['error'])
+        for field in ("synthetic_hotkey", "nonce", "timestamp"):
+            with self.subTest(missing=field):
+                body = self._body()
+                del body[field]
+                status, data = self._post(body)
+                self.assertEqual(status, 400)
+                self.assertIn(field, data['error'])
+        for bad in ({"nonce": ""}, {"nonce": 123}, {"timestamp": "now"}, {"timestamp": 1.5}, {"timestamp": True}):
+            with self.subTest(signed=bad):
+                status, _ = self._post(self._body(signed=bad))
+                self.assertEqual(status, 400)
         self.server._entity_client.update_subaccount_leverage_tier.assert_not_called()
+
+    # ==================== replay protection ====================
+
+    def test_replayed_request_is_rejected(self):
+        body = self._body()
+        self.assertEqual(self._post(body)[0], 200)
+        status, data = self._post(body)
+        self.assertEqual(status, 401)
+        self.assertIn("Nonce already used", data['error'])
+        self.server._entity_client.update_subaccount_leverage_tier.assert_called_once()
+
+    def test_signature_is_bound_to_every_signed_field(self):
+        for field, value in (
+            ("leverage_tier", 3),
+            ("synthetic_hotkey", f"{self.hotkey.ss58_address}_1"),
+            ("nonce", uuid.uuid4().hex),
+            ("timestamp", TimeUtil.now_in_millis() + 30_000),
+        ):
+            with self.subTest(tampered=field):
+                body = self._body()
+                self.assertNotEqual(body[field], value)
+                body[field] = value
+                status, _ = self._post(body)
+                self.assertEqual(status, 401)
+        self.server._entity_client.update_subaccount_leverage_tier.assert_not_called()
+
+    def test_expired_or_future_timestamp_is_rejected(self):
+        now = TimeUtil.now_in_millis()
+        for timestamp in (now - 6 * 60 * 1000, now + 2 * 60 * 1000):
+            with self.subTest(timestamp=timestamp):
+                status, _ = self._post(self._body(signed={"timestamp": timestamp}))
+                self.assertEqual(status, 401)
+        self.server._entity_client.update_subaccount_leverage_tier.assert_not_called()
+
+    def test_nonce_is_consumed_only_after_signature_and_ownership_pass(self):
+        body = self._body()
+        other = Keypair.create_from_uri("//Charlie")
+        self.assertEqual(self._post({**body, "signature": other.sign(b"anything").hex()})[0], 401)
+        self.server._verify_coldkey_owns_hotkey.return_value = False
+        self.assertEqual(self._post(body)[0], 403)
+        self.server._verify_coldkey_owns_hotkey.return_value = True
+        self.assertEqual(self._post(body)[0], 200)
 
 
 class TestGatewayLeverageTierEndpoint(unittest.TestCase):
@@ -473,23 +534,46 @@ class TestGatewayLeverageTierEndpoint(unittest.TestCase):
         resp = self.client.post("/api/update-subaccount-leverage-tier", json=body)
         return resp.status_code, json.loads(resp.data)
 
-    def test_forwards_signed_payload_to_validator(self):
+    def _forward(self, leverage_tier=3):
+        """Post to the gateway with the validator call patched; returns (status, data, payload sent)."""
         validator_resp = MagicMock(status_code=200)
-        validator_resp.json.return_value = {"status": "success", "leverage_tier": 3}
+        validator_resp.json.return_value = {"status": "success", "leverage_tier": leverage_tier}
         with patch("requests.post", return_value=validator_resp) as post:
-            status, data = self._post({"synthetic_hotkey": f"{self.hotkey.ss58_address}_0", "leverage_tier": 3})
+            status, data = self._post({"synthetic_hotkey": f"{self.hotkey.ss58_address}_0", "leverage_tier": leverage_tier})
+        self.assertEqual(post.call_args.args[0], "http://validator.test/entity/subaccount/leverage-tier")
+        return status, data, post.call_args.kwargs['json']
+
+    def test_forwards_signed_payload_to_validator(self):
+        status, data, payload = self._forward()
         self.assertEqual(status, 200)
         self.assertEqual(data['leverage_tier'], 3)
-        url = post.call_args.args[0]
-        payload = post.call_args.kwargs['json']
-        self.assertEqual(url, "http://validator.test/entity/subaccount/leverage-tier")
+        self.assertEqual(payload['entity_coldkey'], self.coldkey.ss58_address)
+        self.assertEqual(payload['entity_hotkey'], self.hotkey.ss58_address)
         self.assertEqual(payload['synthetic_hotkey'], f"{self.hotkey.ss58_address}_0")
         self.assertEqual(payload['leverage_tier'], 3)
-        signed = json.dumps({
-            "entity_coldkey": self.coldkey.ss58_address,
-            "entity_hotkey": self.hotkey.ss58_address,
-        }, sort_keys=True).encode("utf-8")
+        self.assertIsInstance(payload['nonce'], str)
+        self.assertTrue(payload['nonce'])
+        self.assertIsInstance(payload['timestamp'], int)
+        self.assertLess(abs(payload['timestamp'] - TimeUtil.now_in_millis()), 60_000)
+        signed = json.dumps({k: payload[k] for k in LEVERAGE_TIER_SIGNED_FIELDS}, sort_keys=True).encode("utf-8")
         self.assertTrue(Keypair(ss58_address=self.coldkey.ss58_address).verify(signed, bytes.fromhex(payload['signature'])))
+
+    def test_each_request_gets_a_fresh_nonce(self):
+        first = self._forward()[2]
+        second = self._forward()[2]
+        self.assertNotEqual(first['nonce'], second['nonce'])
+        self.assertNotEqual(first['signature'], second['signature'])
+
+    def test_gateway_payload_is_accepted_by_the_validator_endpoint(self):
+        payload = self._forward()[2]
+        server, client = _validator_leverage_tier_client()
+        resp = client.post("/entity/subaccount/leverage-tier", json=payload)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        server._entity_client.update_subaccount_leverage_tier.assert_called_once_with(
+            self.hotkey.ss58_address, f"{self.hotkey.ss58_address}_0", 3
+        )
+        # The same bytes a second time are a replay
+        self.assertEqual(client.post("/entity/subaccount/leverage-tier", json=payload).status_code, 401)
 
     def test_validator_error_is_passed_through(self):
         validator_resp = MagicMock(status_code=400)

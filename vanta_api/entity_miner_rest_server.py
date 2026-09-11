@@ -26,6 +26,7 @@ import queue
 import re
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
@@ -1244,23 +1245,22 @@ class EntityMinerRestServer(MinerRestServer):
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
 
         try:
-            message = json.dumps({
+            # The validator rebuilds this exact dict to verify; nonce + timestamp make it single use
+            signed_fields = {
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address,
-            }, sort_keys=True).encode('utf-8')
+                "synthetic_hotkey": synthetic_hotkey,
+                "leverage_tier": leverage_tier,
+                "nonce": uuid.uuid4().hex,
+                "timestamp": int(time.time() * 1000),
+            }
+            message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
         except Exception as e:
             logger.error(f"Error signing message: {e}")
             return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
 
-        payload = {
-            "entity_hotkey": self._hotkey.ss58_address,
-            "entity_coldkey": self._coldkey.ss58_address,
-            "synthetic_hotkey": synthetic_hotkey,
-            "leverage_tier": leverage_tier,
-            "signature": signature,
-            "version": "2.2.1",
-        }
+        payload = {**signed_fields, "signature": signature, "version": "2.2.1"}
         try:
             resp = http_requests.post(
                 f"{self._validator_url}/entity/subaccount/leverage-tier",

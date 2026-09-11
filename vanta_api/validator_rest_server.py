@@ -2583,8 +2583,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     def update_subaccount_leverage_tier(self):
         """
-        Change a standard subaccount's leverage tier (1 to 3). Signed by the entity coldkey;
-        lowering the tier requires the subaccount to have no open positions.
+        Change a standard subaccount's leverage tier (1 to 3). The entity coldkey signs the sorted
+        JSON of every field except signature and version; nonce + timestamp make each signature
+        single use within a 5 minute window (NonceManager). Lowering the tier requires the
+        subaccount to have no open positions.
 
         Example:
         curl -X POST http://localhost:48888/entity/subaccount/leverage-tier \\
@@ -2594,6 +2596,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_coldkey": "5FxY...",
             "synthetic_hotkey": "5GhDr..._0",
             "leverage_tier": 2,
+            "nonce": "3f9c1e...",
+            "timestamp": 1749234567890,
             "signature": "0x..."
           }'
         """
@@ -2617,7 +2621,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if vanta_cli_error:
                 return jsonify({'error': vanta_cli_error}), 400
 
-            required_fields = ['entity_coldkey', 'entity_hotkey', 'synthetic_hotkey', 'leverage_tier', 'signature']
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'synthetic_hotkey', 'leverage_tier',
+                               'nonce', 'timestamp', 'signature']
             missing_fields = [field for field in required_fields if field not in data]
             if missing_fields:
                 return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
@@ -2626,17 +2631,27 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             entity_hotkey = data['entity_hotkey']
             synthetic_hotkey = data['synthetic_hotkey']
             leverage_tier = data['leverage_tier']
+            nonce = data['nonce']
+            timestamp = data['timestamp']
 
             if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
                 return jsonify({'error': 'synthetic_hotkey must be a non-empty string'}), 400
             if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
                 return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
+            if not isinstance(nonce, str) or not nonce:
+                return jsonify({'error': 'nonce must be a non-empty string'}), 400
+            if not isinstance(timestamp, int) or isinstance(timestamp, bool):
+                return jsonify({'error': 'timestamp must be an integer in milliseconds'}), 400
 
-            # Coldkey signature proves entity identity (same message as register_entity)
+            # The signature binds the target subaccount and tier; nonce + timestamp make it single use
             keypair = Keypair(ss58_address=entity_coldkey)
             signed_message = json.dumps({
                 "entity_coldkey": entity_coldkey,
-                "entity_hotkey": entity_hotkey
+                "entity_hotkey": entity_hotkey,
+                "synthetic_hotkey": synthetic_hotkey,
+                "leverage_tier": leverage_tier,
+                "nonce": nonce,
+                "timestamp": timestamp,
             }, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(signed_message, bytes.fromhex(data['signature']))
@@ -2646,6 +2661,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
             if not owns_hotkey:
                 return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Consume the nonce only after the signature and ownership checks pass
+            nonce_ok, nonce_error = self.nonce_manager.is_valid_request(
+                address=f"{entity_coldkey}::{entity_hotkey}", nonce=nonce, timestamp=timestamp
+            )
+            if not nonce_ok:
+                return jsonify({'error': nonce_error}), 401
 
             success, message = self._entity_client.update_subaccount_leverage_tier(
                 entity_hotkey, synthetic_hotkey, leverage_tier
