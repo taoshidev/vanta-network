@@ -22,6 +22,7 @@ from typing import Dict, Set, List, Optional
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.elimination_reason_enum import EliminationReason
+from vali_objects.utils.elimination.elimination_manager import EliminationRow
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.log import logger
 
@@ -114,7 +115,7 @@ class EliminationClient(RPCClientBase):
         """Get all eliminations as a list."""
         return self._server.get_eliminations_from_memory_rpc()
 
-    def get_eliminations_from_disk(self) -> list:
+    def get_eliminations_from_disk(self) -> Dict[str, EliminationRow]:
         """Load eliminations from disk."""
         return self._server.get_eliminations_from_disk_rpc()
 

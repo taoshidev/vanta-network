@@ -143,6 +143,7 @@ class TestEliminationCore(TestBase):
                 position_uuid=f"{miner}_position",
                 open_ms=base_time,
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 is_closed_position=False,
                 account_size=self.DEFAULT_ACCOUNT_SIZE,
                 orders=[Order(
@@ -175,7 +176,7 @@ class TestEliminationCore(TestBase):
 
         # Update using client API
         miner_states_data = {
-            hotkey: MinerBucketState(hotkey, [BucketEntry(bucket, start_time)]).to_json()
+            hotkey: MinerBucketState(hotkey, [BucketEntry(bucket, start_time)]).to_checkpoint_dict()
             for hotkey, (bucket, start_time, _, _) in miners.items()
         }
         self.challenge_period_client.sync_challenge_period_data(miner_states_data)
@@ -221,8 +222,9 @@ class TestEliminationCore(TestBase):
         # Check MDD miner was eliminated
         eliminations = self.elimination_client.get_eliminations_from_disk()
         self.assertEqual(len(eliminations), 1)
-        self.assertEqual(eliminations[0]["hotkey"], self.MDD_MINER)
-        self.assertEqual(eliminations[0]["reason"], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
+        elimination = eliminations[self.MDD_MINER].to_dict()
+        self.assertEqual(elimination["hotkey"], self.MDD_MINER)
+        self.assertEqual(elimination["reason"], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
 
     def test_zombie_elimination_basic(self):
         """Test basic zombie elimination when miner leaves metagraph"""
@@ -243,14 +245,17 @@ class TestEliminationCore(TestBase):
         self.elimination_client.process_eliminations()
 
         # Check all miners are now eliminated
-        eliminations = self.elimination_client.get_eliminations_from_disk()
-        eliminated_hotkeys = [e["hotkey"] for e in eliminations]
+        eliminations = {
+            hotkey: row.to_dict()
+            for hotkey, row in self.elimination_client.get_eliminations_from_disk().items()
+        }
+        eliminated_hotkeys = list(eliminations.keys())
 
         for miner in self.all_miners:
             self.assertIn(miner, eliminated_hotkeys)
 
         # Verify reasons
-        for elimination in eliminations:
+        for elimination in eliminations.values():
             if elimination["hotkey"] == self.MDD_MINER:
                 # MDD miner keeps original reason
                 self.assertEqual(elimination["reason"], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
@@ -267,7 +272,7 @@ class TestEliminationCore(TestBase):
         # Set up challenge period failure
         self.elimination_client.append_elimination_row(
             self.CHALLENGE_FAIL_MINER,
-            EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+            EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN,
             elimination_drawdown_pct=0.08
         )
 
@@ -286,7 +291,7 @@ class TestEliminationCore(TestBase):
         """Test that eliminations are persisted to disk correctly"""
         # Add elimination using append_elimination_row which saves to disk
         test_dd = 0.12
-        test_reason = EliminationReason.MAX_TOTAL_DRAWDOWN.value
+        test_reason = EliminationReason.MAX_TOTAL_DRAWDOWN
         test_time = TimeUtil.now_in_millis()
 
         self.elimination_client.append_elimination_row(
@@ -306,14 +311,15 @@ class TestEliminationCore(TestBase):
 
         # Verify persistence
         self.assertEqual(len(loaded_eliminations), 1)
-        self.assertEqual(loaded_eliminations[0]['hotkey'], self.MDD_MINER)
-        self.assertEqual(loaded_eliminations[0]['reason'], test_reason)
-        self.assertEqual(loaded_eliminations[0]['dd'], test_dd)
+        loaded_elimination = loaded_eliminations[self.MDD_MINER].to_dict()
+        self.assertEqual(loaded_elimination['hotkey'], self.MDD_MINER)
+        self.assertEqual(loaded_elimination['reason'], test_reason.value)
+        self.assertEqual(loaded_elimination['dd'], test_dd)
 
     def test_elimination_row_generation(self):
         """Test elimination row data structure generation"""
         test_dd = 0.15
-        test_reason = EliminationReason.MAX_TOTAL_DRAWDOWN.value
+        test_reason = EliminationReason.MAX_TOTAL_DRAWDOWN
         test_time = TimeUtil.now_in_millis()
 
         self.elimination_client.append_elimination_row(
@@ -327,7 +333,7 @@ class TestEliminationCore(TestBase):
         # Verify structure
         self.assertEqual(row['hotkey'], self.MDD_MINER)
         self.assertEqual(row['elimination_drawdown_pct'], test_dd)
-        self.assertEqual(row['reason'], test_reason)
+        self.assertEqual(row['reason'], test_reason.value)
         self.assertEqual(row['elimination_initiated_time_ms'], test_time)
 
     def test_elimination_sync(self):
@@ -369,7 +375,7 @@ class TestEliminationCore(TestBase):
         # Add elimination
         self.elimination_client.append_elimination_row(
             self.MDD_MINER,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.12
         )
 
@@ -390,7 +396,7 @@ class TestEliminationCore(TestBase):
         # Test adding elimination via RPC
         self.elimination_client.append_elimination_row(
             self.MDD_MINER,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.12
         )
 
@@ -405,7 +411,7 @@ class TestEliminationCore(TestBase):
         # First elimination
         self.elimination_client.append_elimination_row(
             self.MDD_MINER,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.12
         )
 
@@ -427,7 +433,7 @@ class TestEliminationCore(TestBase):
 
         self.elimination_client.append_elimination_row(
             'old_miner',
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.15,
             elimination_time_ms=old_time
         )

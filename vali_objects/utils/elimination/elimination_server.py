@@ -25,7 +25,7 @@ Usage:
 import time
 import threading
 
-from vali_objects.utils.elimination.elimination_manager import EliminationManager
+from vali_objects.utils.elimination.elimination_manager import EliminationManager, EliminationRow
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from typing import Dict, Set, List, Optional
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -231,9 +231,9 @@ class EliminationServer(RPCServerBase):
         """Get all eliminations as a list"""
         return self._manager.get_eliminations_from_memory()
 
-    def get_eliminations_from_disk_rpc(self) -> list:
+    def get_eliminations_from_disk_rpc(self) -> Dict[str, EliminationRow]:
         """Load eliminations from disk"""
-        return self._manager.get_eliminations_from_disk()
+        return self._manager._load_eliminations_from_disk()
 
     def append_elimination_row_rpc(
             self, hotkey: str, reason: EliminationReason, elimination_drawdown_pct: float | None = None,
