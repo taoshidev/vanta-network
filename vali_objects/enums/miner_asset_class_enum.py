@@ -1,5 +1,5 @@
 from enum import Enum
-from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource, PRO_ALLOWED_TRADE_PAIR_IDS
+from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource
 
 class MinerAssetClass(str, Enum):
     """
@@ -31,8 +31,7 @@ class MinerAssetClass(str, Enum):
         - HL_ALL allows Hyperliquid pairs plus forex (except XAUUSD/XAGUSD)
         - COMMODITIES requires Hyperliquid source and commodity category
         - Other classes require Vanta source and matching category
-        - Pro accounts trade Vanta pairs only, and are additionally restricted to
-          PRO_ALLOWED_TRADE_PAIR_IDS when set
+        - Pro accounts are additionally restricted to pairs flagged TradePair.is_pro
         """
 
         category = trade_pair.trade_pair_category
@@ -41,11 +40,8 @@ class MinerAssetClass(str, Enum):
         if trade_pair.is_blocked:
             return False
 
-        if is_pro:
-            if src != TradePairSource.VANTA:
-                return False
-            if PRO_ALLOWED_TRADE_PAIR_IDS is not None and trade_pair.trade_pair_id not in PRO_ALLOWED_TRADE_PAIR_IDS:
-                return False
+        if is_pro and not trade_pair.is_pro:
+            return False
 
         if self == MinerAssetClass.HL_ALL:
             return src == TradePairSource.HYPERLIQUID

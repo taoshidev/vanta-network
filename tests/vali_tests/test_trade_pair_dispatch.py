@@ -321,5 +321,51 @@ class TestExposureGroups(unittest.TestCase):
             self.assertEqual(group.value.upper().replace(" ", "_"), group.name)
 
 
+# ---------------------------------------------------------------------------
+# Pro account trade pair gating
+# ---------------------------------------------------------------------------
+class TestProTradePairGating(unittest.TestCase):
+    """MinerAssetClass.can_trade(..., is_pro=True) must honor TradePair.is_pro."""
+
+    def test_every_trade_pair_declares_is_pro(self):
+        for tp in TradePair:
+            self.assertIsInstance(tp.is_pro, bool, tp.trade_pair_id)
+
+    def test_pro_cannot_trade_pairs_flagged_not_pro(self):
+        for tp in TradePair:
+            if tp.is_pro:
+                continue
+            for asset_class in MinerAssetClass:
+                self.assertFalse(
+                    asset_class.can_trade(tp, is_pro=True),
+                    f"{asset_class.value} let a pro account trade {tp.trade_pair_id}",
+                )
+
+    def test_pro_universe_is_a_subset_of_the_standard_universe(self):
+        for tp in TradePair:
+            for asset_class in MinerAssetClass:
+                if asset_class.can_trade(tp, is_pro=True):
+                    self.assertTrue(asset_class.can_trade(tp, is_pro=False), tp.trade_pair_id)
+
+    def test_representative_pairs(self):
+        # HL crypto is open to pro; the Vanta-native equivalent is not.
+        self.assertTrue(MinerAssetClass.CRYPTO.can_trade(TradePair.BTCUSDC, is_pro=True))
+        self.assertFalse(MinerAssetClass.CRYPTO.can_trade(TradePair.BTCUSD, is_pro=True))
+        # HL crypto below the capacity floor is excluded.
+        self.assertFalse(MinerAssetClass.CRYPTO.can_trade(TradePair.AAVEUSDC, is_pro=True))
+        self.assertTrue(MinerAssetClass.CRYPTO.can_trade(TradePair.AAVEUSDC, is_pro=False))
+        # Equities: NVDA clears the ADV floor, VGT is a duplicate of the SPDR suite.
+        self.assertTrue(MinerAssetClass.EQUITIES.can_trade(TradePair.NVDA, is_pro=True))
+        self.assertFalse(MinerAssetClass.EQUITIES.can_trade(TradePair.VGT, is_pro=True))
+        self.assertTrue(MinerAssetClass.EQUITIES.can_trade(TradePair.VGT, is_pro=False))
+        # Forex carries no pro-specific exclusions.
+        self.assertTrue(MinerAssetClass.FOREX.can_trade(TradePair.EURUSD, is_pro=True))
+
+    def test_blocked_pairs_are_never_pro(self):
+        for tp in TradePair:
+            if tp.is_blocked:
+                self.assertFalse(tp.is_pro, tp.trade_pair_id)
+
+
 if __name__ == "__main__":
     unittest.main()
