@@ -101,8 +101,18 @@ def get_standard_class_leverage(tier: int, trade_pair_category: TradePairCategor
 
 
 def get_standard_portfolio_leverage(tier: int, asset_class: MinerAssetClass) -> float:
-    """Overall portfolio cap for a standard subaccount at `tier`, keyed by its own asset_class."""
-    return ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[tier][asset_class]
+    """Overall portfolio cap for a standard subaccount at `tier`, keyed by its own asset_class.
+    An asset class with no row falls back to 1.0, like the legacy table."""
+    return ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[tier].get(asset_class, 1.0)
+
+
+def is_standard_tiered(account: MinerAccount) -> bool:
+    """True when the account's limits come from the standard tier tables: a non-HL, non-pro
+    subaccount with a leverage_tier set. Everything else (HL-linked, pro, regular miners and
+    subaccounts created before tiers existed) uses the legacy curve."""
+    if account.leverage_tier is None or account.hl_address:
+        return False
+    return not (account.miner_bucket and account.miner_bucket.is_pro)
 
 
 # Correlation group key prefixes. Groups span trade pair categories (the US index group holds both
@@ -209,10 +219,15 @@ def get_max_order_size(
       - overall_room:    overall portfolio cap minus total exposure           (subaccounts, buys)
       - correlated_room: per-side gross exposure cap across correlated pairs  (pro accounts, buys)
 
+    Standard subaccounts with a leverage_tier take per-pair and per-class caps from the standard
+    tier tables; every other account uses the legacy curve (see is_standard_tiered).
     """
     trade_pair = position.trade_pair
+    standard_tiered = is_standard_tiered(account)
 
-    if account.miner_bucket and account.miner_bucket.is_subaccount:
+    if standard_tiered:
+        max_position_leverage = get_standard_positional_leverage(account.leverage_tier, trade_pair)
+    elif account.miner_bucket and account.miner_bucket.is_subaccount:
         tier = get_legacy_leverage_tier(account.miner_bucket, account.account_size, account.hl_address)
         max_position_leverage = get_legacy_tier_positional_leverage(tier, trade_pair)
     else:
@@ -228,10 +243,13 @@ def get_max_order_size(
     if account.miner_bucket and account.miner_bucket.is_subaccount:
         if not account.asset_class:
             raise ValueError("asset_class must be selected for trading")
-        per_class_cap, _ = get_legacy_portfolio_caps(
-            account.asset_class, account.miner_bucket, account.account_size, trade_pair.trade_pair_category,
-            account.hl_address,
-        )
+        if standard_tiered:
+            per_class_cap = get_standard_class_leverage(account.leverage_tier, trade_pair.trade_pair_category)
+        else:
+            per_class_cap, _ = get_legacy_portfolio_caps(
+                account.asset_class, account.miner_bucket, account.account_size, trade_pair.trade_pair_category,
+                account.hl_address,
+            )
         per_class_used = account.capital_used_by_class.get(trade_pair.trade_pair_category, 0.0)
         per_class_room = account.balance * per_class_cap - per_class_used
         limits.append((per_class_room, f"per class cap {trade_pair.trade_pair_category.value} {per_class_cap}x"))
