@@ -167,6 +167,7 @@ class TestEliminationWeightCalculation(TestBase):
                 position_uuid=f"{miner}_position",
                 open_ms=position_time_ms,
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 is_closed_position=False,
                 account_size=self.DEFAULT_ACCOUNT_SIZE,
                 orders=[Order(
@@ -186,17 +187,17 @@ class TestEliminationWeightCalculation(TestBase):
 
         miner_states_data = {}
         for miner in [self.HEALTHY_MINER_1, self.HEALTHY_MINER_2, self.ELIMINATED_MINER, self.ZOMBIE_MINER]:
-            miner_states_data[miner] = MinerBucketState(miner, [BucketEntry(MinerBucket.MAINCOMP, bucket_start_ms)]).to_json()
+            miner_states_data[miner] = MinerBucketState(miner, [BucketEntry(MinerBucket.MAINCOMP, bucket_start_ms)]).to_checkpoint_dict()
 
         miner_states_data[self.CHALLENGE_MINER] = MinerBucketState(
             self.CHALLENGE_MINER,
             [BucketEntry(MinerBucket.CHALLENGE, self.TEST_TIME_MS - MS_IN_24_HOURS)]
-        ).to_json()
+        ).to_checkpoint_dict()
 
         miner_states_data[self.PROBATION_MINER] = MinerBucketState(
             self.PROBATION_MINER,
             [BucketEntry(MinerBucket.PROBATION, self.TEST_TIME_MS - MS_IN_24_HOURS * 3)]
-        ).to_json()
+        ).to_checkpoint_dict()
 
         self.challenge_period_client.sync_challenge_period_data(miner_states_data)
 
@@ -271,7 +272,7 @@ class TestEliminationWeightCalculation(TestBase):
         # Eliminate the MDD miner
         self.elimination_client.append_elimination_row(
             self.ELIMINATED_MINER,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.12,
             elimination_time_ms=self.TEST_TIME_MS
         )
@@ -338,7 +339,7 @@ class TestEliminationWeightCalculation(TestBase):
         # Eliminate multiple miners
         self.elimination_client.append_elimination_row(
             self.ZOMBIE_MINER,
-            EliminationReason.ZOMBIE.value,
+            EliminationReason.ZOMBIE,
             elimination_time_ms=self.TEST_TIME_MS
         )
 
@@ -458,7 +459,7 @@ class TestEliminationWeightCalculation(TestBase):
         current_state[self.ELIMINATED_MINER] = MinerBucketState(
             self.ELIMINATED_MINER,
             [BucketEntry(MinerBucket.MAINCOMP, self.TEST_TIME_MS - ValiConfig.TARGET_LEDGER_WINDOW_MS)]
-        ).to_json()
+        ).to_checkpoint_dict()
         self.challenge_period_client.sync_challenge_period_data(current_state)
         _, transformed_list = self.weight_setter.compute_weights_default(self.TEST_TIME_MS)
 
@@ -486,7 +487,7 @@ class TestEliminationWeightCalculation(TestBase):
         # Add another elimination
         self.elimination_client.append_elimination_row(
             self.HEALTHY_MINER_2,
-            EliminationReason.PLAGIARISM.value,
+            EliminationReason.PLAGIARISM,
             elimination_time_ms=self.TEST_TIME_MS
         )
 
@@ -583,7 +584,7 @@ class TestEliminationWeightCalculation(TestBase):
         for miner in self.all_miners[1:]:  # Keep first miner
             self.elimination_client.append_elimination_row(
                 miner,
-                EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+                EliminationReason.MAX_TOTAL_DRAWDOWN,
                 elimination_drawdown_pct=0.15,
                 elimination_time_ms=self.TEST_TIME_MS
             )

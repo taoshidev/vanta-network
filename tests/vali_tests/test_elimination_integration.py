@@ -119,6 +119,7 @@ class TestEliminationIntegration(TestBase):
                     position_uuid=f"{miner}_{trade_pair.trade_pair_id}_{i}",
                     open_ms=base_time + (i * MS_IN_8_HOURS),
                     trade_pair=trade_pair,
+                    position_type=OrderType.LONG if i % 2 == 0 else OrderType.SHORT,
                     is_closed_position=False,
                     account_size=self.DEFAULT_ACCOUNT_SIZE,
                     orders=[Order(
@@ -156,7 +157,7 @@ class TestEliminationIntegration(TestBase):
         )
 
         miner_states_data = {
-            hotkey: MinerBucketState(hotkey, [BucketEntry(bucket, start_time)]).to_json()
+            hotkey: MinerBucketState(hotkey, [BucketEntry(bucket, start_time)]).to_checkpoint_dict()
             for hotkey, (bucket, start_time, _, _) in miners.items()
         }
         self.challenge_period_client.sync_challenge_period_data(miner_states_data)
@@ -208,7 +209,7 @@ class TestEliminationIntegration(TestBase):
         # Step 4: Challenge period failure
         self.elimination_client.append_elimination_row(
             self.CHALLENGE_FAIL_MINER,
-            EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN.value,
+            EliminationReason.FAILED_CHALLENGE_PERIOD_DRAWDOWN,
             elimination_drawdown_pct=0.08
         )
 
@@ -259,7 +260,7 @@ class TestEliminationIntegration(TestBase):
         """Test handling of multiple concurrent elimination scenarios"""
         self.elimination_client.append_elimination_row(
             self.CHALLENGE_FAIL_MINER,
-            EliminationReason.FAILED_CHALLENGE_PERIOD_TIME.value,
+            EliminationReason.FAILED_CHALLENGE_PERIOD_TIME,
         )
 
         self.elimination_client.process_eliminations()
@@ -309,7 +310,7 @@ class TestEliminationIntegration(TestBase):
 
         self.elimination_client.append_elimination_row(
             'old_eliminated_miner',
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.15,
             elimination_time_ms=old_elimination_time
         )
@@ -336,7 +337,7 @@ class TestEliminationIntegration(TestBase):
         """Test that a miner can only be eliminated once"""
         self.elimination_client.append_elimination_row(
             self.MDD_MINER,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.12
         )
 
@@ -391,7 +392,7 @@ class TestEliminationIntegration(TestBase):
         """Test checking if hotkey is in eliminations"""
         self.elimination_client.append_elimination_row(
             self.MDD_MINER,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.12
         )
 

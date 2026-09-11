@@ -102,6 +102,7 @@ class TestEliminationManager(TestBase):
                 open_ms=1,
                 close_ms=2,
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 is_closed_position=False,
                 return_at_close=1.00,
                 account_size=self.DEFAULT_ACCOUNT_SIZE,
@@ -186,7 +187,7 @@ class TestEliminationManager(TestBase):
                 # Use client API - this creates RPC calls that the server handles concurrently
                 self.elimination_client.append_elimination_row(
                     hotkey=hotkey,
-                    reason="RACE_TEST_MDD",
+                    reason=EliminationReason.MAX_TOTAL_DRAWDOWN,
                     elimination_drawdown_pct=0.08,
                     elimination_time_ms=1000 + hash(hotkey) % 1000
                 )
@@ -245,7 +246,7 @@ class TestEliminationManager(TestBase):
         for miner in initial_miners:
             self.elimination_client.append_elimination_row(
                 hotkey=miner,
-                reason="INITIAL_SETUP",
+                reason=EliminationReason.MAX_TOTAL_DRAWDOWN,
                 elimination_drawdown_pct=0.05
             )
 
@@ -327,7 +328,7 @@ class TestEliminationManager(TestBase):
         for i in range(50):
             self.elimination_client.append_elimination_row(
                 hotkey=f"iter_miner_{i}",
-                reason="ITER_TEST",
+                reason=EliminationReason.MAX_TOTAL_DRAWDOWN,
                 elimination_drawdown_pct=0.05,
                 elimination_time_ms=current_time_ms
             )
@@ -356,7 +357,7 @@ class TestEliminationManager(TestBase):
             for i in range(50, 70):
                 self.elimination_client.append_elimination_row(
                     hotkey=f"new_miner_{i}",
-                    reason="CONCURRENT_ADD",
+                    reason=EliminationReason.MAX_TOTAL_DRAWDOWN,
                     elimination_drawdown_pct=0.06,
                     elimination_time_ms=current_time_ms
                 )

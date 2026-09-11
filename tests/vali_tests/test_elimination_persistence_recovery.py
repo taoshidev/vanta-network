@@ -118,6 +118,7 @@ class TestEliminationPersistenceRecovery(TestBase):
                     position_uuid=f"{miner}_{trade_pair.trade_pair_id}",
                     open_ms=self.POSITION_TIME,
                     trade_pair=trade_pair,
+                    position_type=OrderType.LONG,
                     is_closed_position=False,
                     account_size=self.DEFAULT_ACCOUNT_SIZE,
                     orders=[Order(
@@ -151,7 +152,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         for elim in eliminations:
             self.elimination_client.append_elimination_row(
                 elim['hotkey'],
-                elim['reason'],
+                EliminationReason(elim['reason']),
                 elimination_drawdown_pct=elim['dd']
             )
 
@@ -227,7 +228,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         # Add and save elimination
         self.elimination_client.append_elimination_row(
             self.PERSISTENT_MINER_1,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.15
         )
         self.elimination_client.save_eliminations()
@@ -314,7 +315,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         # Create elimination
         self.elimination_client.append_elimination_row(
             self.PERSISTENT_MINER_1,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.11
         )
 
@@ -346,7 +347,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         # Add first elimination
         self.elimination_client.append_elimination_row(
             self.PERSISTENT_MINER_1,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.11
         )
         self.elimination_client.save_eliminations()
@@ -354,7 +355,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         # Add second elimination
         self.elimination_client.append_elimination_row(
             self.PERSISTENT_MINER_2,
-            EliminationReason.PLAGIARISM.value,
+            EliminationReason.PLAGIARISM,
             elimination_drawdown_pct=0.12
         )
         self.elimination_client.save_eliminations()
@@ -368,12 +369,12 @@ class TestEliminationPersistenceRecovery(TestBase):
         # Add eliminations in memory
         self.elimination_client.append_elimination_row(
             self.PERSISTENT_MINER_1,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.11
         )
         self.elimination_client.append_elimination_row(
             self.PERSISTENT_MINER_2,
-            EliminationReason.ZOMBIE.value
+            EliminationReason.ZOMBIE
         )
 
         # Save to disk
@@ -422,7 +423,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         # Add elimination
         self.elimination_client.append_elimination_row(
             self.PERSISTENT_MINER_1,
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
             elimination_drawdown_pct=0.11
         )
 
