@@ -24,6 +24,19 @@ class InstrumentType(str, Enum):
     SPOT = "spot"
     PERP = "perp"
 
+
+class StandardLeverageGroup(str, Enum):
+    """Row of the standard subaccount leverage table a pair belongs to (Pro Launch spec §2a).
+    Resolved by leverage_utils.get_standard_leverage_group."""
+    CRYPTO_MAJORS = "crypto_majors"      # BTC, ETH, SOL, XRP, DOGE
+    CRYPTO_OTHER = "crypto_other"
+    FX = "fx"                            # all forex except the NZD crosses
+    FX_NZD_CROSSES = "fx_nzd_crosses"
+    INDICES_US = "indices_us"            # SP500, XYZ100
+    INDICES_OTHER = "indices_other"      # EWY
+    COMMODITIES = "commodities"
+    EQUITIES = "equities"
+
 class SubaccountTierBaseLeverage(NamedTuple):
     """Tagged wrapper for the per-pair Tier-1 base used by subaccount tier dispatch.
 
@@ -1418,8 +1431,8 @@ class TradePair(Enum):
 
     @property
     def subaccount_tier_base_leverage(self) -> float:
-        """Per-pair Tier-1 base for subaccount order-entry tier dispatch.
-        See leverage_utils.get_tier_positional_leverage.
+        """Per-pair Tier-1 base for the legacy subaccount tier curve.
+        See leverage_utils.get_legacy_tier_positional_leverage.
         """
         for v in self.value:
             if isinstance(v, SubaccountTierBaseLeverage):

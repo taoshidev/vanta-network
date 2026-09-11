@@ -97,6 +97,7 @@ class EntityClient(RPCClientBase):
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
         account_type: str = "standard",
+        leverage_tier: Optional[int] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -108,12 +109,14 @@ class EntityClient(RPCClientBase):
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
             account_type: "standard" or "pro"
+            leverage_tier: Standard leverage tier 1 to 3; None = default tier
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
-                                                  drawdown_criteria=drawdown_criteria, account_type=account_type)
+                                                  drawdown_criteria=drawdown_criteria, account_type=account_type,
+                                                  leverage_tier=leverage_tier)
 
     def create_hl_subaccount(
         self,
@@ -198,6 +201,12 @@ class EntityClient(RPCClientBase):
             Dict with {account_size, asset_class, challenge_bucket} or None
         """
         return self._server.get_hl_subaccount_limits_data_rpc(hl_address)
+
+    def update_subaccount_leverage_tier(
+        self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
+    ) -> Tuple[bool, str]:
+        """Change a standard subaccount's leverage tier (1 to 3). Returns (success, message)."""
+        return self._server.update_subaccount_leverage_tier_rpc(entity_hotkey, synthetic_hotkey, leverage_tier)
 
     def eliminate_subaccount(
         self,

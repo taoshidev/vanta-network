@@ -12,7 +12,7 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 2. An entity pays a one-time registration fee of **1,000 Theta**, which is permanently slashed on registration.
 3. Each subaccount requires collateral proportional to its account size (see [Collateral Requirements](#collateral-requirements)).
 4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, `commodities`, or `hl_all`) at creation. This **cannot be changed**. HyperLiquid-linked subaccounts always use `hl_all`.
-5. New subaccounts enter a **challenge period** with stricter thresholds and reduced leverage (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
+5. New subaccounts enter a **challenge period** with stricter thresholds; HL-linked subaccounts also trade at reduced leverage during it (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
 7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours, rate limits, etc.
 8. A maximum of **10 entities** can be registered on the network at any time.
@@ -160,8 +160,8 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
 
 | Stage | Bucket | Description |
 |---|---|---|
-| SUBACCOUNT_CHALLENGE | 1× dust | Challenge phase — reduced leverage, no payout |
-| SUBACCOUNT_FUNDED | earning | Passed challenge — full leverage, earns payouts |
+| SUBACCOUNT_CHALLENGE | 1× dust | Challenge phase — no payout (HL-linked: reduced leverage) |
+| SUBACCOUNT_FUNDED | earning | Passed challenge — earns payouts |
 | eliminated | — | Permanently removed from competition |
 
 ### Challenge Period Requirements
@@ -179,14 +179,46 @@ Passing is evaluated continuously — a subaccount is promoted immediately once 
 - **Trailing** (default): eliminated if intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaches **5%**.
 - **Static**: eliminated if equity (including unrealized PnL) drops more than **5%** below the subaccount's starting balance, or if intraday drawdown from the day's opening equity reaches **5%** (same intraday drawdown check as trailing, with a flat 5% threshold).
 
-**Portfolio leverage limits:** A subaccount's maximum portfolio leverage (the sum of all open position leverages) is capped by tier. **Tier 1** applies to any subaccount in `SUBACCOUNT_CHALLENGE`, regardless of account size. Once promoted to `SUBACCOUNT_FUNDED`, the tier is instead determined by account size, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
+### Leverage Limits
 
-| Tier | Bucket                              | Crypto | Forex | Commodities | Equities | HL All | All Markets |
-|------|--------------------------------------|--------|-------|-------------|----------|--------|-------------|
-| 1    | SUBACCOUNT_CHALLENGE (any size)      | 2.0x   | 5.0x  | 2.0x        | 1.0x     | 4.0x   | 6.0x        |
-| 2    | SUBACCOUNT_FUNDED, <$200K            | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
-| 3    | SUBACCOUNT_FUNDED, $200K–$1M         | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
-| 4    | SUBACCOUNT_FUNDED, ≥$1M              | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
+Standard subaccounts carry a `leverage_tier` (1 = Base, 2 = Boost I, 3 = Boost II), set at creation (default 1) and changeable later (see [Change Leverage Tier](#change-leverage-tier)). Challenge and funded share the same limits, and account size does not change them. All values are multiples of the subaccount balance; an order is capped by the tightest of the per-pair, per-class and portfolio limits.
+
+Per-pair positional leverage:
+
+| Pairs | Tier 1 | Tier 2 | Tier 3 |
+|---|---|---|---|
+| Crypto majors (BTC, ETH, SOL, XRP, DOGE) | 1.5x | 2x | 2.5x |
+| All other coins | 0.5x | 0.75x | 1x |
+| FX, all pairs except the NZD crosses | 10x | 15x | 20x |
+| FX NZD crosses (EURNZD, GBPNZD, NZDJPY, AUDNZD, NZDCAD, NZDCHF) | 5x | 7.5x | 10x |
+| Indices SP500, XYZ100 | 2.5x | 4x | 5x |
+| Indices EWY | 1x | 1.5x | 2x |
+| Commodities | 1.5x | 2x | 3x |
+| Equities | 0.5x | 1x | 1.5x |
+
+Per-class and portfolio caps:
+
+| | Tier 1 | Tier 2 | Tier 3 |
+|---|---|---|---|
+| Crypto | 1.5x | 2x | 2.5x |
+| Forex | 10x | 15x | 20x |
+| Commodities | 1.5x | 2x | 3x |
+| Indices | 2.5x | 4x | 5x |
+| Equities | 1x | 2x | 3x |
+| Portfolio (`all_markets`) | 15x | 20x | 25x |
+
+Single-class subaccounts (`crypto`, `forex`, `equities`, `commodities`) use their class row as the portfolio cap. The tables live in `ValiConfig.STANDARD_*_LEVERAGE_BY_TIER`; `GET /trade-pairs` on the validator exposes the per-pair values under `standard_positional_leverage_by_tier` and the class and portfolio caps under `standard_leverage_tiers`.
+
+Standard subaccounts created before tiers existed have no stored `leverage_tier` and trade at Tier 1 (Base) until the entity sets one.
+
+**Legacy curve.** HL-linked subaccounts keep the legacy tier 1 to 4 curve below: **Tier 1** during `SUBACCOUNT_CHALLENGE`, then by account size once promoted, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
+
+| Tier | Bucket                                                      | Crypto | Forex | Commodities | Equities | HL All | All Markets |
+|------|--------------------------------------------------------------|--------|-------|-------------|----------|--------|-------------|
+| 1    | HL-linked, SUBACCOUNT_CHALLENGE (any size)                   | 2.0x   | 5.0x  | 2.0x        | 1.0x     | 4.0x   | 6.0x        |
+| 2    | HL-linked FUNDED, <$200K                                     | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
+| 3    | HL-linked FUNDED, $200K–$1M                                  | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
+| 4    | HL-linked FUNDED, ≥$1M                                       | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
 
 `HL All` and `All Markets` apply to multi-class subaccounts (Hyperliquid-linked and standard subaccounts using those asset classes, respectively) as the overall cap across all asset classes; single-class subaccounts (crypto, forex, equities, commodities) use only their own column.
 
@@ -526,6 +558,20 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `account_size` | float | Yes | Account size in USD                                                          |
 | `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
 | `account_type` | string | No | Must be `"standard"` (default). Pro accounts are granted by admin promotion — see [Account Types](#account-types). |
+| `leverage_tier` | int | No | Standard leverage tier `1` (default), `2` or `3` — see [Leverage Limits](#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later via [Change Leverage Tier](#change-leverage-tier). |
+
+#### Change Leverage Tier
+
+A standard subaccount's `leverage_tier` can be changed after creation through the Entity Miner Gateway:
+
+```bash
+curl -X POST http://localhost:8088/api/update-subaccount-leverage-tier \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"synthetic_hotkey": "5GhDr..._0", "leverage_tier": 2}'
+```
+
+Raising the tier is allowed at any time. Lowering it is rejected while the subaccount has open positions, because the new caps may sit below the current exposure. A subaccount created before tiers existed counts as tier 1. HL-linked, pro and pre-migration `hl_all` subaccounts do not use standard leverage tiers and are rejected.
 
 ### 12. Submit Orders
 
