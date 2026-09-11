@@ -583,7 +583,7 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def _check_promotion(state: MinerBucketState, returns_threshold: float, current_time_ms: int) -> bool:
-        if state.current_bucket.PRO_CHALLENGE_TRANSITION:
+        if state.current_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
             return False
 
         if state.current_bucket == MinerBucket.CHALLENGE:
