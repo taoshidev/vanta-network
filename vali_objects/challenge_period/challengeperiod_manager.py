@@ -69,7 +69,7 @@ class DrawdownStats:
 
     @property
     def static_drawdown_pct(self) -> float:
-        return (1.0 - self.current_balance) * 100.0
+        return (1.0 - self.current_equity) * 100.0
 
     @property
     def static_eod_drawdown_pct(self) -> float:
@@ -220,6 +220,13 @@ class MinerBucketState:
             return challenge_entry.start_time_ms if challenge_entry else None
         return self.current_bucket_start_ms
 
+    def _intraday_threshold_for(self, bucket: MinerBucket, threshold_time_ms: int | None) -> float:
+        """Static accounts use a flat intraday threshold regardless of bucket or registration time.
+        Pro buckets keep their own threshold even when the subaccount was created static."""
+        if self.drawdown_criteria == DrawdownCriteria.STATIC and not bucket.is_pro:
+            return ValiConfig.SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD
+        return bucket.intraday_drawdown_threshold(threshold_time_ms)
+
     @property
     def intraday_drawdown_threshold(self):
         if self.current_bucket == MinerBucket.ELIMINATED:
@@ -230,11 +237,11 @@ class MinerBucketState:
                     prev_threshold_time_ms = challenge_entry.start_time_ms if challenge_entry else None
                 else:
                     prev_threshold_time_ms = prev_entry.start_time_ms
-                return prev_entry.bucket.intraday_drawdown_threshold(prev_threshold_time_ms)
+                return self._intraday_threshold_for(prev_entry.bucket, prev_threshold_time_ms)
             else:
                 # Dummy threshold value for eliminated accounts to not raise Error
-                return MinerBucket.SUBACCOUNT_CHALLENGE.intraday_drawdown_threshold()
-        return self.current_bucket.intraday_drawdown_threshold(self._threshold_time_ms)
+                return self._intraday_threshold_for(MinerBucket.SUBACCOUNT_CHALLENGE, None)
+        return self._intraday_threshold_for(self.current_bucket, self._threshold_time_ms)
 
     @property
     def intraday_drawdown_threshold_pct(self):
@@ -392,11 +399,17 @@ class ChallengePeriodManager(CacheController):
                     self._record_breach(hotkey, state, reason, eliminations, demotions)
                     continue
             elif state.drawdown_criteria == DrawdownCriteria.STATIC:
-                # Static rules for subaccounts registered after the effective time (Hyperscaled excluded) —
-                # both measured against starting balance
+                # Static rules for subaccounts registered after the effective time (Hyperscaled excluded)
                 # Rule 1: Static drawdown — equity (including unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
                     self._record_breach(hotkey, state, reason, eliminations, demotions)
+                    continue
+
+                # Rule 2: Daily loss limit — equity cannot drop more than the flat static threshold
+                # below today's opening equity
+                if reason := self._check_intraday_drawdown(state):
+                    if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
+                        self._record_breach(hotkey, state, reason, eliminations, demotions)
                     continue
             else:
                 # Trailing rules: subaccounts eliminate immediately; regular miners only after activation
