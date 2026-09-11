@@ -199,10 +199,29 @@ def test_refresh_applies_pro_rules_to_static_pro_subaccount(manager):
     assert kwargs["reason"] == EliminationReason.FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN
 
 
+def test_refresh_eliminates_static_subaccount_on_daily_loss_limit(manager):
+    """Static accounts keep the daily loss limit: equity is up on the starting balance, so Rule 1
+    is clear, but it is more than the flat threshold below the day's open, so Rule 2 binds."""
+    day_open = 1.10
+    breach = day_open * (1 - ValiConfig.SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD) - 0.001
+    drawdown = DrawdownStats(current_equity=breach, daily_open_equity=day_open,
+                             eod_hwm=day_open, last_eod_equity=day_open)
+    clear_of_rule_1 = _state(MinerBucket.SUBACCOUNT_FUNDED)
+    clear_of_rule_1.drawdown = drawdown
+    assert ChallengePeriodManager._check_static_drawdown(clear_of_rule_1) is None
+
+    _refresh_pro(manager, "static_hk", MinerBucket.SUBACCOUNT_FUNDED, drawdown,
+                 criteria=DrawdownCriteria.STATIC)
+
+    assert manager.get_miner_bucket("static_hk") == MinerBucket.ELIMINATED
+    kwargs = manager._elimination_client.append_elimination_row.call_args.kwargs
+    assert kwargs["reason"] == EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
+
+
 def test_refresh_leaves_transition_on_standard_rules(manager):
     """PRO_CHALLENGE_TRANSITION still trades the standard account, so a static breach binds it."""
     _refresh_pro(manager, "pro_hk", MinerBucket.PRO_CHALLENGE_TRANSITION,
-                 DrawdownStats(current_balance=1.0 - ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD - 0.001),
+                 DrawdownStats(current_equity=1.0 - ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD - 0.001),
                  criteria=DrawdownCriteria.STATIC)
 
     assert manager.get_miner_bucket("pro_hk") == MinerBucket.ELIMINATED
