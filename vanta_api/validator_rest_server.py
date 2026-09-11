@@ -993,6 +993,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         further filtered to pairs tradeable by that MinerAssetClass via
         MinerAssetClass.can_trade. Pairs filtered out are moved to `disabled`.
         When omitted, all trade pairs are considered tradeable by asset class.
+
+        If `pro=true` is provided, the `allowed` list is restricted to the pro
+        universe (TradePair.is_pro), matching what the order path enforces for a
+        pro account. Every entry reports its own `is_pro` flag either way.
         """
         miner_asset_class = None
         asset_class = request.args.get('asset_class')
@@ -1000,6 +1004,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not MinerAssetClass.is_valid(asset_class):
                 return jsonify({'error': f'Invalid asset class: {asset_class}'}), 400
             miner_asset_class = MinerAssetClass(asset_class.lower())
+        is_pro = request.args.get('pro', 'false').lower() == 'true'
         # Per-pair, per-tier positional leverage (multipliers, not USD), resolved by the same
         # function the order path enforces (get_tier_positional_leverage). Tier 1 == challenge.
         subaccount_tiers = (1, 2, 3, 4)
@@ -1018,6 +1023,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'trade_pair': tp.trade_pair,
                 'trade_pair_category': tp.trade_pair_category.value,
                 'trade_pair_source': tp.src.value,
+                'is_pro': tp.is_pro,
                 'min_leverage': tp.min_leverage,
                 'max_leverage': tp.max_leverage,
                 'subaccount_positional_leverage_by_tier': {
@@ -1035,7 +1041,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 entry = build_entry(trade_pair)
                 if trade_pair.is_blocked:
                     disabled.append(entry)
-                elif miner_asset_class is not None and not miner_asset_class.can_trade(trade_pair):
+                elif is_pro and not trade_pair.is_pro:
+                    disabled.append(entry)
+                elif miner_asset_class is not None and not miner_asset_class.can_trade(trade_pair, is_pro=is_pro):
                     disabled.append(entry)
                 else:
                     allowed.append(entry)
