@@ -4,7 +4,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.vali_config import ValiConfig
-from vali_objects.trade_pair import TradePair, TradePairCategory
+from vali_objects.trade_pair import StandardLeverageGroup, TradePair, TradePairCategory
 from vali_objects.vali_dataclasses.position import Position
 
 
@@ -65,6 +65,44 @@ def get_legacy_portfolio_caps(
     per_class_cap = ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier].get(trade_pair_category, 1.0)
     overall_cap = ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(subaccount_asset_class, 1.0)
     return per_class_cap, overall_cap
+
+
+def get_standard_leverage_group(trade_pair: TradePair) -> StandardLeverageGroup:
+    """Row of the standard subaccount leverage tables this pair belongs to (Pro Launch spec §2a)."""
+    category = trade_pair.trade_pair_category
+    if category == TradePairCategory.CRYPTO:
+        if trade_pair.base in ValiConfig.STANDARD_CRYPTO_MAJOR_COINS:
+            return StandardLeverageGroup.CRYPTO_MAJORS
+        return StandardLeverageGroup.CRYPTO_OTHER
+    if category == TradePairCategory.FOREX:
+        if trade_pair.trade_pair_id in ValiConfig.STANDARD_FX_NZD_CROSS_IDS:
+            return StandardLeverageGroup.FX_NZD_CROSSES
+        return StandardLeverageGroup.FX
+    if category == TradePairCategory.INDICES:
+        if trade_pair.trade_pair_id in ValiConfig.STANDARD_INDEX_OTHER_IDS:
+            return StandardLeverageGroup.INDICES_OTHER
+        return StandardLeverageGroup.INDICES_US
+    if category == TradePairCategory.COMMODITIES:
+        return StandardLeverageGroup.COMMODITIES
+    if category == TradePairCategory.EQUITIES:
+        return StandardLeverageGroup.EQUITIES
+    raise ValueError(f"No standard leverage group for {trade_pair.trade_pair_id}")
+
+
+def get_standard_positional_leverage(tier: int, trade_pair: TradePair) -> float:
+    """Per-pair positional leverage for a standard subaccount at `tier` (1 to 3)."""
+    group = get_standard_leverage_group(trade_pair)
+    return ValiConfig.STANDARD_POSITIONAL_LEVERAGE_BY_TIER[tier][group]
+
+
+def get_standard_class_leverage(tier: int, trade_pair_category: TradePairCategory) -> float:
+    """Per-asset-class exposure cap for a standard subaccount at `tier`."""
+    return ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER[tier][trade_pair_category]
+
+
+def get_standard_portfolio_leverage(tier: int, asset_class: MinerAssetClass) -> float:
+    """Overall portfolio cap for a standard subaccount at `tier`, keyed by its own asset_class."""
+    return ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[tier][asset_class]
 
 
 # Correlation group key prefixes. Groups span trade pair categories (the US index group holds both

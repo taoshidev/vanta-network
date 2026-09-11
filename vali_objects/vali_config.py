@@ -47,6 +47,7 @@ from vali_objects.trade_pair import (  # noqa: E402,F401
     TradePairCategory,
     TradePairSource,
     InstrumentType,
+    StandardLeverageGroup,
 )
 
 
@@ -521,6 +522,66 @@ class ValiConfig:
         2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.5, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 7.0, MinerAssetClass.ALL_MARKETS: 12.0},
         3: {MinerAssetClass.CRYPTO: 3.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 18.0},
         4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
+    }
+
+    # Standard subaccount leverage tiers, per the Pro Launch spec §2a: 1 = Base, 2 = Boost I,
+    # 3 = Boost II (max). Challenge and funded share the same limits and account size does not
+    # change them. HL-linked and pro subaccounts never use these tables.
+    STANDARD_LEVERAGE_TIERS = (1, 2, 3)
+    STANDARD_LEVERAGE_TIER_DEFAULT = 1
+
+    # Per-pair groups narrower than an asset class (see leverage_utils.get_standard_leverage_group).
+    STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}
+    STANDARD_FX_NZD_CROSS_IDS = {"EURNZD", "GBPNZD", "NZDJPY", "AUDNZD", "NZDCAD", "NZDCHF"}
+    STANDARD_INDEX_OTHER_IDS = {"EWYUSDC"}
+
+    # Per-pair positional leverage, as a multiple of balance.
+    STANDARD_POSITIONAL_LEVERAGE_BY_TIER = {
+        1: {
+            StandardLeverageGroup.CRYPTO_MAJORS:  1.5,
+            StandardLeverageGroup.CRYPTO_OTHER:   0.5,
+            StandardLeverageGroup.FX:             10.0,
+            StandardLeverageGroup.FX_NZD_CROSSES: 5.0,
+            StandardLeverageGroup.INDICES_US:     2.5,
+            StandardLeverageGroup.INDICES_OTHER:  1.0,
+            StandardLeverageGroup.COMMODITIES:    1.5,
+            StandardLeverageGroup.EQUITIES:       0.5,
+        },
+        2: {
+            StandardLeverageGroup.CRYPTO_MAJORS:  2.0,
+            StandardLeverageGroup.CRYPTO_OTHER:   0.75,
+            StandardLeverageGroup.FX:             15.0,
+            StandardLeverageGroup.FX_NZD_CROSSES: 7.5,
+            StandardLeverageGroup.INDICES_US:     4.0,
+            StandardLeverageGroup.INDICES_OTHER:  1.5,
+            StandardLeverageGroup.COMMODITIES:    2.0,
+            StandardLeverageGroup.EQUITIES:       1.0,
+        },
+        3: {
+            StandardLeverageGroup.CRYPTO_MAJORS:  2.5,
+            StandardLeverageGroup.CRYPTO_OTHER:   1.0,
+            StandardLeverageGroup.FX:             20.0,
+            StandardLeverageGroup.FX_NZD_CROSSES: 10.0,
+            StandardLeverageGroup.INDICES_US:     5.0,
+            StandardLeverageGroup.INDICES_OTHER:  2.0,
+            StandardLeverageGroup.COMMODITIES:    3.0,
+            StandardLeverageGroup.EQUITIES:       1.5,
+        },
+    }
+
+    # Per-asset-class exposure cap, as a multiple of balance.
+    STANDARD_CLASS_LEVERAGE_BY_TIER = {
+        1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 2.5, TradePairCategory.COMMODITIES: 1.5},
+        2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 4.0, TradePairCategory.COMMODITIES: 2.0},
+        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 5.0, TradePairCategory.COMMODITIES: 3.0},
+    }
+
+    # Overall portfolio cap keyed by the subaccount's own asset_class. Single-class subaccounts
+    # cap at their class row; all_markets caps across classes.
+    STANDARD_PORTFOLIO_LEVERAGE_BY_TIER = {
+        1: {MinerAssetClass.CRYPTO: 1.5, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 1.5, MinerAssetClass.ALL_MARKETS: 15.0},
+        2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.ALL_MARKETS: 20.0},
+        3: {MinerAssetClass.CRYPTO: 2.5, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 3.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.ALL_MARKETS: 25.0},
     }
 
     # Correlated-exposure limits, pro accounts only. Multiples of account balance, applied
