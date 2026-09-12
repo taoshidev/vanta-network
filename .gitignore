@@ -185,6 +185,7 @@ validation/miners/
 validation/outputs/
 validation/plagiarism/
 validation/tmp/
+validation/*.bak*
 tests/validation/miners/
 tests/validation/plagiarism/
 

@@ -967,7 +967,11 @@ class DebtLedgerManager():
                             # inside the week the weight calculator reads it in, and the decision
                             # itself comes from the full-week penalty resolved above.
                             if timestamp_ms == week.first_earning_ms:
-                                released, subaccount_escrow[synthetic_hotkey] = apply_deferral(
+                                # Forfeiture is deliberately dropped here: nothing is withheld at this
+                                # call (withheld=0.0), and a forfeited balance only has to leave the
+                                # escrow, which the carried-forward value already does. Only releases
+                                # add to realized PnL. The payout path reports forfeiture instead.
+                                released, subaccount_escrow[synthetic_hotkey], _forfeited = apply_deferral(
                                     subaccount_escrow[synthetic_hotkey],
                                     0.0,
                                     track=week.track,

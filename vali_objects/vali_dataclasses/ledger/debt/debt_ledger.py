@@ -76,12 +76,14 @@ def apply_deferral(
     *,
     track: WeekTrack,
     week_penalty: float,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float]:
     """Advance the deferred-payout escrow by one week.
 
     A soft breach defers the week's payout rather than forfeiting it: the withheld amount is
     held and settled in full on the first later week that is clean and still on the pro track.
-    Leaving the track - eliminated, demoted, or moved off it by an admin - forfeits the balance.
+    Leaving the track - eliminated, demoted, or moved off it by an admin - forfeits the balance,
+    along with anything withheld in the week the account left. The forfeited amount is reported
+    so the settlement can show it rather than have the escrow vanish silently.
 
     Args:
         balance: escrow carried in from earlier weeks
@@ -90,16 +92,16 @@ def apply_deferral(
         week_penalty: the worst weekly penalty stamped in this week
 
     Returns:
-        (released_this_week, balance_carried_forward)
+        (released_this_week, balance_carried_forward, forfeited_this_week)
     """
     if track is WeekTrack.NO_DATA:
         # No evidence either way: a quiet week must not settle an unresolved breach
-        return 0.0, balance
+        return 0.0, balance, 0.0
     if track is WeekTrack.OFF_TRACK:
-        return 0.0, 0.0
+        return 0.0, 0.0, balance + withheld
     if week_penalty >= 1.0:
-        return balance, 0.0
-    return 0.0, balance + withheld
+        return balance, 0.0, 0.0
+    return 0.0, balance + withheld, 0.0
 
 
 @dataclass
