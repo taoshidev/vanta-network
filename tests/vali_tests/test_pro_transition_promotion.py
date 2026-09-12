@@ -103,6 +103,26 @@ def test_no_size_sent_keeps_the_recorded_one(manager):
     )
 
 
+@pytest.mark.parametrize(
+    "challenge_bucket",
+    [MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD],
+)
+def test_pro_funded_always_starts_fresh(manager, challenge_bucket):
+    """A pro funded account starts from scratch, so challenge-period gains are never payable."""
+    manager.set_miner_bucket(HOTKEY, challenge_bucket, NOW_MS)
+
+    assert manager.promote_hotkeys([HOTKEY], NOW_MS)
+
+    assert manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_FUNDED
+    manager._position_client.close_all_positions.assert_called_once_with(
+        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION
+    )
+    manager._position_client.archive_positions_for_hotkey.assert_called_once_with(HOTKEY, archive_all=True)
+    manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
+    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_called_once_with([HOTKEY])
+    manager._debt_ledger_client.delete_debt_ledger.assert_called_once_with(HOTKEY)
+
+
 def test_unset_size_blocks_the_promotion(manager):
     """The entity manager rejects a pro bucket with no size on either side; nothing is wound down."""
     _in_transition(manager)

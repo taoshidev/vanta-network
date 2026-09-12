@@ -277,7 +277,7 @@ class TestGetMaxOrderSizeGating(unittest.TestCase):
                 )
 
     def test_pro_buckets_apply_correlated_exposure(self):
-        for bucket in (MinerBucket.SUBACCOUNT_PRO_CHALLENGE, MinerBucket.SUBACCOUNT_PRO_FUNDED):
+        for bucket in (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED):
             with self.subTest(bucket=bucket):
                 self.assertLess(
                     self.max_size(bucket, TradePair.EURJPY, self.BREACHING),
@@ -290,7 +290,7 @@ class TestGetMaxOrderSizeGating(unittest.TestCase):
         # cannot bind, even on a pro account whose groups are already breaching.
         self.assertNotIn(
             "exposure cap",
-            self.binding_cap(MinerBucket.SUBACCOUNT_PRO_FUNDED, TradePair.NVDA, None),
+            self.binding_cap(MinerBucket.PRO_FUNDED, TradePair.NVDA, None),
         )
 
     def test_correlated_cap_binds_when_open_positions_are_supplied(self):
@@ -298,7 +298,7 @@ class TestGetMaxOrderSizeGating(unittest.TestCase):
         # the correlated cap is the binding one once the positions are passed in.
         self.assertIn(
             "exposure cap",
-            self.binding_cap(MinerBucket.SUBACCOUNT_PRO_FUNDED, TradePair.NVDA, self.BREACHING),
+            self.binding_cap(MinerBucket.PRO_FUNDED, TradePair.NVDA, self.BREACHING),
         )
 
 

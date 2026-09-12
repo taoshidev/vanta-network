@@ -183,10 +183,11 @@ class MinerBucket(Enum):
 
     @property
     def switches_account(self) -> bool:
-        """True when moving *into* this bucket changes the account size, which requires closing
+        """True when moving *into* this bucket requires closing
         positions, cancelling limit orders, and restarting the ledgers."""
         return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                        MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT)
+                        MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT,
+                        MinerBucket.PRO_FUNDED)
 
     @property
     def max_time_ms(self) -> int | None:
