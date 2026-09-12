@@ -39,10 +39,67 @@ Edit the configuration variables at the top of that file to customize behavior.
 
 """
 from dataclasses import dataclass
-from typing import List, Optional
+from enum import Enum, auto
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 from time_util.time_util import TimeUtil
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+
+
+class WeekTrack(Enum):
+    """Whether a payout week carries evidence about the pro soft-breach track.
+
+    The distinction matters because a week with no checkpoints is not the same as a week that
+    proves the subaccount left the track: the former must hold a deferred balance, the latter
+    must forfeit it.
+    """
+    NO_DATA = auto()    # no debt checkpoints fall in this week
+    ON_TRACK = auto()   # the week's governing bucket withholds payouts on a soft breach
+    OFF_TRACK = auto()  # checkpoints exist, but the governing bucket is off the pro track
+
+
+@dataclass
+class WeeklyPayoutContext:
+    """Everything the payout paths need to know about one Monday-anchored payout week."""
+    # A breach is stamped on a single checkpoint, so the worst value in the week governs it
+    weekly_penalty: float = 1.0
+    # The scale in force at the end of the week, matching how the bucket itself is read
+    payout_scale: float = 1.0
+    track: WeekTrack = WeekTrack.NO_DATA
+    # First earning checkpoint of the week - where a checkpoint-indexed caller releases escrow
+    first_earning_ms: Optional[int] = None
+
+
+def apply_deferral(
+    balance: float,
+    withheld: float,
+    *,
+    track: WeekTrack,
+    week_penalty: float,
+) -> Tuple[float, float]:
+    """Advance the deferred-payout escrow by one week.
+
+    A soft breach defers the week's payout rather than forfeiting it: the withheld amount is
+    held and settled in full on the first later week that is clean and still on the pro track.
+    Leaving the track - eliminated, demoted, or moved off it by an admin - forfeits the balance.
+
+    Args:
+        balance: escrow carried in from earlier weeks
+        withheld: the portion of this week's payout blocked by its weekly penalty
+        track: what this week's checkpoints say about the pro soft-breach track
+        week_penalty: the worst weekly penalty stamped in this week
+
+    Returns:
+        (released_this_week, balance_carried_forward)
+    """
+    if track is WeekTrack.NO_DATA:
+        # No evidence either way: a quiet week must not settle an unresolved breach
+        return 0.0, balance
+    if track is WeekTrack.OFF_TRACK:
+        return 0.0, 0.0
+    if week_penalty >= 1.0:
+        return balance, 0.0
+    return 0.0, balance + withheld
 
 
 @dataclass
@@ -272,6 +329,45 @@ class DebtLedger:
     def get_latest_checkpoint(self) -> Optional[DebtCheckpoint]:
         """Get the most recent checkpoint"""
         return self.checkpoints[-1] if self.checkpoints else None
+
+    @staticmethod
+    def _bucket_from_status(challenge_period_status: str) -> MinerBucket:
+        """Convert a stored status string to a MinerBucket, tolerating unknown/legacy values."""
+        try:
+            return MinerBucket(challenge_period_status)
+        except ValueError:
+            return MinerBucket.UNKNOWN
+
+    def weekly_payout_context(self, payout_scale: float = 1.0) -> Dict[int, WeeklyPayoutContext]:
+        """Summarize this ledger one payout week at a time, keyed by Monday 00:00 UTC.
+
+        A checkpoint stamped exactly at Monday 00:00 covers the 12 hours *ending* then, so it
+        belongs to the week that just closed - hence the `- 1` when finding the week start.
+
+        Args:
+            payout_scale: standard_account_size / pro_account_size for this subaccount, applied
+                only in weeks whose bucket has payout_scale_applies
+
+        Returns:
+            week_start_ms -> WeeklyPayoutContext, for every week with at least one checkpoint
+        """
+        context: Dict[int, WeeklyPayoutContext] = {}
+        for cp in self.checkpoints:
+            week_start_ms = TimeUtil.ms_at_start_of_week(cp.timestamp_ms - 1)
+            week = context.get(week_start_ms)
+            if week is None:
+                week = WeeklyPayoutContext()
+                context[week_start_ms] = week
+
+            bucket = self._bucket_from_status(cp.challenge_period_status)
+            week.weekly_penalty = min(week.weekly_penalty, cp.weekly_penalty)
+
+            week.payout_scale = payout_scale if bucket.payout_scale_applies else 1.0
+            week.track = WeekTrack.ON_TRACK if bucket.soft_breach_applies else WeekTrack.OFF_TRACK
+            if week.first_earning_ms is None and bucket.is_subaccount_earning:
+                week.first_earning_ms = cp.timestamp_ms
+
+        return context
 
     def get_checkpoint_at_time(self, timestamp_ms: int, target_cp_duration_ms: int) -> Optional[DebtCheckpoint]:
         """

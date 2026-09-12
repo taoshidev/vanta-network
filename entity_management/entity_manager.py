@@ -42,6 +42,7 @@ from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import WeeklyPayoutContext, apply_deferral
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
@@ -1323,39 +1324,43 @@ class EntityManager(ValidatorBroadcastBase):
                 return EMPTY_RESPONSE
 
             # Weekly-scope penalties, and the account-size scale that applied in each week.
-            # A breach is stamped on a single checkpoint, so the worst penalty in a week governs
-            # it; the scale is the one in force at the end of the week.
-            week_penalties = {}
-            week_scales = {}
-            payout_scale = self.get_payout_scale(synthetic_hotkey)
-            _scaled_statuses = {b.value for b in MinerBucket if b.payout_scale_applies}
-            for cp in (debt_ledger.checkpoints if debt_ledger else []):
-                cp_week_start = TimeUtil.ms_at_start_of_week(cp.timestamp_ms - 1)
-                week_penalties[cp_week_start] = min(
-                    week_penalties.get(cp_week_start, 1.0), cp.weekly_penalty
-                )
-                week_scales[cp_week_start] = (
-                    payout_scale if cp.challenge_period_status in _scaled_statuses else 1.0
-                )
+            week_context = (
+                debt_ledger.weekly_payout_context(self.get_payout_scale(synthetic_hotkey))
+                if debt_ledger else {}
+            )
 
             weekly_settlements = []
+            deferred_balance = 0.0
+
             def _record_week(start_ms, end_ms, balance, eow_unrealized, week_orders):
-                # The high water mark advances on gross terms, so a week withheld by a soft
-                # breach is forfeited rather than carried into the next week.
+                nonlocal deferred_balance
+                # The high water mark advances on gross terms; a week withheld by a soft breach
+                # is remembered in deferred_balance instead, so netting it down here would pay
+                # the same money twice once the balance is released.
                 previous_payouts = sum(s['gross_payout'] for s in weekly_settlements)
-                week_penalty = week_penalties.get(start_ms, 1.0)
-                week_scale = week_scales.get(start_ms, 1.0)
+                week = week_context.get(start_ms, WeeklyPayoutContext())
                 gross_payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
+
+                owed = gross_payout * week.payout_scale
+                earned = owed * week.weekly_penalty
+                released, deferred_balance = apply_deferral(
+                    deferred_balance,
+                    owed - earned,
+                    track=week.track,
+                    week_penalty=week.weekly_penalty,
+                )
                 weekly_settlements.append({
                     'start_ms': start_ms,
                     'end_ms': end_ms,
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
                     'gross_payout': gross_payout,
-                    'payout': gross_payout * week_penalty * week_scale,
-                    'deferred': gross_payout - gross_payout * week_penalty * week_scale,
-                    'weekly_penalty': week_penalty,
-                    'payout_scale': week_scale,
+                    'payout': earned + released,
+                    'deferred': owed - earned,
+                    'deferred_released': released,
+                    'deferred_balance': deferred_balance,
+                    'weekly_penalty': week.weekly_penalty,
+                    'payout_scale': week.payout_scale,
                     'orders': [o.to_python_dict() for o in week_orders],
                 })
 
