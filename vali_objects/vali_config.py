@@ -5,6 +5,7 @@ import math
 from enum import Enum
 
 from meta import load_version
+from shared_objects.log import logger
 
 BASE_DIR = base_directory = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 meta_dict = load_version(os.path.join(base_directory, "meta", "meta.json"))
@@ -74,6 +75,39 @@ class InterpolatedValueFromDate():
         else:
             new_n = self.high - abs(self.increment) * intervals
             return max(self.target, new_n)
+
+# These knobs move consensus (promotion decisions and weekly penalties feed the weight
+# calculator), so a stray environment variable must never quietly change a validator's
+# view. Reading one requires an explicit opt-in, and neurons/validator.py refuses to
+# start on mainnet with any of them present.
+_ENV_OVERRIDES_ALLOWED = os.environ.get("PTN_ALLOW_CONFIG_OVERRIDES", "").strip() == "1"
+
+
+def _env_override(name: str, default, cast=float, maximum=None):
+    """Testnet knob: read a positive number from the environment variable `name` once at import.
+
+    Ignored unless `PTN_ALLOW_CONFIG_OVERRIDES=1` is set (testnet only). Unset (or blank)
+    keeps `default`; anything else must parse as a positive number no larger than `maximum`.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    if not _ENV_OVERRIDES_ALLOWED:
+        raise ValueError(
+            f"{name} is set but PTN_ALLOW_CONFIG_OVERRIDES=1 is not. {name} changes "
+            f"consensus-affecting config; unset it or opt in explicitly (testnet only)."
+        )
+    try:
+        value = cast(raw)
+    except ValueError as e:
+        raise ValueError(f"{name}={raw!r} must be a positive number") from e
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name}={raw!r} must be a positive number")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name}={raw!r} must be at most {maximum}")
+    logger.warning(f"[VALI_CONFIG] {name} overridden by environment: {value} (default {default})")
+    return value
+
 
 class ValiConfig:
     # versioning
@@ -444,15 +478,16 @@ class ValiConfig:
     SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # retired rule, no longer enforced — kept for dashboard/API payload compatibility
     SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: flat intraday-drawdown threshold for static accounts, regardless of bucket entry time
 
-    # Pro account (entity subaccount) rules.
-    PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = 0.06
+    # Pro account (entity subaccount) rules. The promotion criteria and transition grace period can
+    # be overridden for testnet through environment variables of the same name (docs/entity_miner.md).
+    PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = _env_override("PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT", 0.06)
     PRO_CHALLENGE_RETURNS_THRESHOLD = {
-        MinerAssetClass.CRYPTO: 0.06,
-        MinerAssetClass.FOREX: 0.06,
-        MinerAssetClass.EQUITIES: 0.06,
-        MinerAssetClass.HL_ALL: 0.06,
-        MinerAssetClass.ALL_MARKETS: 0.06,
-        MinerAssetClass.COMMODITIES: 0.06,
+        MinerAssetClass.CRYPTO: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.FOREX: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.EQUITIES: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.HL_ALL: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.ALL_MARKETS: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.COMMODITIES: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
     }
     # Rule 1: intraday drop from day-open equity. Rule 2: drop from the highest EOD equity,
     # measured against live equity rather than once a day.
@@ -464,15 +499,15 @@ class ValiConfig:
     PRO_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05
 
     # Pro promotion criteria.
-    PRO_CHALLENGE_MINIMUM_DAYS = 90
-    PRO_CHALLENGE_CALMAR_THRESHOLD = 1.75  # All-time realized return over all-time max drawdown
-    PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = 0.2  # Best day must be at most this share of total return
+    PRO_CHALLENGE_MINIMUM_DAYS = _env_override("PRO_CHALLENGE_MINIMUM_DAYS", 90, int, maximum=3650)
+    PRO_CHALLENGE_CALMAR_THRESHOLD = _env_override("PRO_CHALLENGE_CALMAR_THRESHOLD", 1.75)  # All-time realized return over all-time max drawdown
+    PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = _env_override("PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD", 0.2)  # Best day must be at most this share of total return
     PRO_DAILY_RETURN_CAP = 0.015  # Each day's profit counts for at most this much toward the total
     CALMAR_DRAWDOWN_MINIMUM = 0.001  # Floor on the calmar denominator, mirrors SHARPE_STDDEV_MINIMUM
 
     # Grace period for traders transitioning from standard funded to pro
-    PRO_TRANSITION_GRACE_PERIOD_DAYS = 7
-    PRO_TRANSITION_GRACE_PERIOD_MS = PRO_TRANSITION_GRACE_PERIOD_DAYS * DAILY_MS
+    PRO_TRANSITION_GRACE_PERIOD_DAYS = _env_override("PRO_TRANSITION_GRACE_PERIOD_DAYS", 7, maximum=3650)  # fractional days allowed
+    PRO_TRANSITION_GRACE_PERIOD_MS = int(PRO_TRANSITION_GRACE_PERIOD_DAYS * DAILY_MS)
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA

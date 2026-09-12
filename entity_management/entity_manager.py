@@ -1252,7 +1252,14 @@ class EntityManager(ValidatorBroadcastBase):
                 'hotkey': str,
                 'total_checkpoints': int,
                 'checkpoints': List[dict],
-                'payout': float
+                'weekly_settlements': List[dict],  # each carries deferred / deferred_released /
+                                                   # deferred_forfeited / deferred_balance
+                'payout': float,
+                'deferred_balance': float,    # escrow still held at end_time_ms
+                'deferred_forfeited': float,  # cumulative escrow dropped by leaving the pro track
+                'off_track': bool,            # current bucket does not hold deferred payouts - true for
+                                              # every standard account, not a forfeiture signal (read
+                                              # deferred_forfeited for that)
             } or None if subaccount not found
         """
         realtime = False
@@ -1291,14 +1298,19 @@ class EntityManager(ValidatorBroadcastBase):
                 if not perf_ledger:
                     return None
 
+            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
+            # Escrow is only held while the bucket withholds on a soft breach; anywhere else it is forfeited
+            off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
             EMPTY_RESPONSE = {
                 'hotkey': synthetic_hotkey,
                 'total_checkpoints': 0,
                 'checkpoints': {},
                 'weekly_settlements': [],
                 'payout': 0,
+                'deferred_balance': 0.0,
+                'deferred_forfeited': 0.0,
+                'off_track': off_track,
             }
-            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
             if miner_bucket is None or not miner_bucket.is_subaccount_earning:
                 return EMPTY_RESPONSE
 
@@ -1343,7 +1355,7 @@ class EntityManager(ValidatorBroadcastBase):
 
                 owed = gross_payout * week.payout_scale
                 earned = owed * week.weekly_penalty
-                released, deferred_balance = apply_deferral(
+                released, deferred_balance, forfeited = apply_deferral(
                     deferred_balance,
                     owed - earned,
                     track=week.track,
@@ -1358,6 +1370,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'payout': earned + released,
                     'deferred': owed - earned,
                     'deferred_released': released,
+                    'deferred_forfeited': forfeited,
                     'deferred_balance': deferred_balance,
                     'weekly_penalty': week.weekly_penalty,
                     'payout_scale': week.payout_scale,
@@ -1430,6 +1443,9 @@ class EntityManager(ValidatorBroadcastBase):
                 'checkpoints': checkpoints_dict,
                 'weekly_settlements': weekly_settlements,
                 'payout': payout,
+                'deferred_balance': deferred_balance,
+                'deferred_forfeited': sum(w['deferred_forfeited'] for w in weekly_settlements),
+                'off_track': off_track,
             }
 
         except Exception as e:
