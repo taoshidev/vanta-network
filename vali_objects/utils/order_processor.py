@@ -195,12 +195,22 @@ class OrderProcessor:
             return OrderProcessingResult(ExecutionType.MARKET)
 
         created_order, updated_position = result
-        if updated_position and updated_position.is_closed_position:
-            self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
+        # POST-COMMIT side effects: the position write above is durable. A failure past this point
+        # must NOT propagate — the handler's except path treats any exception as "apply failed",
+        # releases the uuid claim, and invites the placer to resend, which would double-apply a
+        # committed order. Brackets/cancels are best-effort against a bouncing LimitOrderServer.
+        try:
+            if updated_position and updated_position.is_closed_position:
+                self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
 
-        if created_order and (updated_position and not updated_position.is_closed_position) and signal.bracket_orders:
-            created_order.bracket_orders = signal.bracket_orders
-            self.limit_order_client.create_sltp_order(hotkey, created_order)
+            if created_order and (updated_position and not updated_position.is_closed_position) and signal.bracket_orders:
+                created_order.bracket_orders = signal.bracket_orders
+                self.limit_order_client.create_sltp_order(hotkey, created_order)
+        except Exception as e:
+            logger.error(
+                f"[ORDER_PROCESSOR] {hotkey} {order_uuid} order COMMITTED but post-commit "
+                f"bracket/cancel side effect failed (order stands, brackets may be missing): {e}"
+            )
 
         return OrderProcessingResult(
             execution_type=ExecutionType.MARKET,
@@ -223,7 +233,14 @@ class OrderProcessor:
             close_all=close_all,
             now_ms=now_ms,
         )
-        self.process_limit_cancel(hotkey, None, "ALL", now_ms, ExecutionType.BRACKET)
+        # Post-commit: positions are closed above; a failed bracket sweep must not turn the
+        # committed close into an "apply failed" resend (see process_market_order).
+        try:
+            self.process_limit_cancel(hotkey, None, "ALL", now_ms, ExecutionType.BRACKET)
+        except Exception as e:
+            logger.error(
+                f"[ORDER_PROCESSOR] {hotkey} FLAT_ALL COMMITTED but post-commit bracket cancel failed: {e}"
+            )
         return OrderProcessingResult(execution_type=ExecutionType.FLAT_ALL, should_track_uuid=True)
 
 

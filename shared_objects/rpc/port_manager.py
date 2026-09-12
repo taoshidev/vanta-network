@@ -192,9 +192,14 @@ class PortManager:
         current_pid = os.getpid()
 
         try:
-            # Build a single lsof command for all ports: lsof -ti :50000 -ti :50001 ...
-            # This is much faster than calling lsof for each port
-            lsof_args = ['lsof']
+            # Build a single lsof command for all ports: lsof -sTCP:LISTEN -ti :50000 -ti :50001 ...
+            # This is much faster than calling lsof for each port.
+            # LISTEN-only is load-bearing: a bare `lsof -ti :PORT` also matches processes holding
+            # mere ESTABLISHED client connections to that port — which under the PM2 split means
+            # SIGKILLing another tier's MAIN process (vanta-state/vanta-orders hold long-lived
+            # client connections to each other's server ports) instead of just clearing a stale
+            # listener.
+            lsof_args = ['lsof', '-sTCP:LISTEN']
             for port in ports:
                 lsof_args.extend(['-ti', f':{port}'])
 

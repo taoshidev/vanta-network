@@ -90,6 +90,10 @@ class OrderSyncState:
         """Context manager for order processing (auto-increment/decrement)."""
         def __init__(self, state: 'OrderSyncState'):
             self.state = state
+            # In-memory monolith never atomically refuses an order (no cross-process TOCTOU); it
+            # relies on the advisory is_sync_waiting() pre-check. Exposed so the order handler can
+            # check `.rejected` uniformly across OrderSyncState and OrderSyncClient (R2.5a gate).
+            self.rejected = False
 
         def __enter__(self):
             self.state.increment_order_count()

@@ -358,7 +358,18 @@ class LimitOrderManager(CacheController):
                 if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                     raise SignalException(f"Cannot edit order {order_uuid}: order is no longer unfilled (race condition)")
             else:
-                # NEW ORDER PATH: Check max unfilled orders limit
+                # NEW ORDER PATH: idempotent replay guard — a retried process_limit_order (RPC
+                # self-heal or placer resend after a lost ack) with an already-registered uuid
+                # returns the standing order instead of appending a duplicate.
+                existing_order = self._find_existing_order_under_lock(miner_hotkey, order_uuid)
+                if existing_order:
+                    logger.warning(
+                        f"Limit order [{order_uuid}] already registered for {miner_hotkey} — "
+                        f"returning existing (idempotent replay)"
+                    )
+                    return {"status": "success", "order_uuid": order_uuid, "replayed": True}
+
+                # Check max unfilled orders limit
                 total_unfilled = self._count_unfilled_orders_for_hotkey(miner_hotkey)
                 if total_unfilled >= ValiConfig.MAX_UNFILLED_LIMIT_ORDERS:
                     raise SignalException(
@@ -368,6 +379,18 @@ class LimitOrderManager(CacheController):
 
             # Get position for validation
             open_position = self._get_open_position(miner_hotkey, order)
+
+            # Replay guard, filled case: a limit order that filled immediately on its first apply
+            # lives in the position (not the unfilled book), so the check above misses it. Answer
+            # the replay idempotently instead of re-validating and re-filling a committed order.
+            if not is_edit and open_position is not None and any(
+                o.order_uuid == order_uuid for o in open_position.orders
+            ):
+                logger.warning(
+                    f"Limit order [{order_uuid}] already filled into position for {miner_hotkey} — "
+                    f"idempotent replay, not re-filling"
+                )
+                return {"status": "success", "order_uuid": order_uuid, "replayed": True}
 
             # Validate order using shared validation logic (business rules)
             if order.execution_type == ExecutionType.BRACKET:
@@ -1285,6 +1308,14 @@ class LimitOrderManager(CacheController):
                     self._last_fill_time[trade_pair][miner_hotkey] = 0
 
                 for bracket_data in brackets_to_create:
+                    # Idempotent replay guard: bracket uuids are deterministic
+                    # ("{parent_uuid}-bracket-{i}"), so a retried create_sltp_order (RPC self-heal
+                    # or placer resend of a committed parent) must not append duplicate brackets.
+                    if self._find_existing_order_under_lock(miner_hotkey, bracket_data['uuid']):
+                        logger.warning(
+                            f"Bracket order [{bracket_data['uuid']}] already exists — skipping (idempotent replay)"
+                        )
+                        continue
                     # Build trailing_stop dict for the Order if trailing fields present
                     trailing_stop_dict = None
                     if bracket_data.get('trailing_percent') is not None:
