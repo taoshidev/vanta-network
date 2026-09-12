@@ -106,6 +106,10 @@ class ChallengePeriodClient(RPCClientBase):
         """Set or update a miner's bucket information."""
         return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms, drawdown_criteria)
 
+    def can_admin_set_bucket(self, hotkey: str, bucket: MinerBucket) -> Tuple[bool, str]:
+        """Report whether admin_set_bucket would reject this move, without changing anything."""
+        return self._server.can_admin_set_bucket_rpc(hotkey, bucket)
+
     def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> Tuple[bool, str]:
         """Move a miner into an arbitrary bucket, running the account switch when required."""
         return self._server.admin_set_bucket_rpc(hotkey, bucket, current_time_ms)

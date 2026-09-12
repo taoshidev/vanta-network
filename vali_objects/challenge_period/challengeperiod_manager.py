@@ -676,14 +676,23 @@ class ChallengePeriodManager(CacheController):
 
         return state_changed
 
-    def _switch_account(self, hotkey: str, target_bucket: MinerBucket, current_time_ms: int) -> None:
+    def _switch_account(self, hotkey: str, target_bucket: MinerBucket, current_time_ms: int) -> bool:
         """Wind down the account a miner is leaving. Run whenever a bucket change also changes
-        the account size, so the new account's performance is tracked from scratch."""
+        the account size, so the new account's performance is tracked from scratch.
+
+        Returns False when the account size could not be pointed at the target bucket. Nothing is
+        wound down in that case: the caller must leave the miner in their current bucket rather
+        than strand them on the new one with the old size and no history.
+        """
         # Point the subaccount at the size the target bucket trades before resetting the account
         if is_synthetic_hotkey(hotkey):
             success, message = self._entity_client.apply_bucket_account_size(hotkey, target_bucket)
             if not success:
-                logger.warning(f"[CHALLENGE] {hotkey} account size not updated for {target_bucket.value}: {message}")
+                logger.error(
+                    f"[CHALLENGE] {hotkey} bucket change to {target_bucket.value} ABORTED - "
+                    f"account size not updated: {message}"
+                )
+                return False
 
         # Close all existing positions
         self._position_client.close_all_positions(
@@ -705,6 +714,7 @@ class ChallengePeriodManager(CacheController):
         self._reset_drawdown_stats_cache(hotkey)
         # Reset pro stats so the ratcheted drawdown does not carry into the new account
         self.miner_states[hotkey].pro_stats = ProStats()
+        return True
 
     def demote_hotkeys(self, demotions: dict[str, MinerBucket], current_time_ms) -> bool:
         """Demote miners to the given target bucket."""
@@ -715,8 +725,9 @@ class ChallengePeriodManager(CacheController):
         for hotkey, target_bucket in demotions.items():
             logger.info(f"[CHALLENGE] demoting to {target_bucket.value}: {self.miner_states[hotkey]}")
 
-            if target_bucket.switches_account:
-                self._switch_account(hotkey, target_bucket, current_time_ms)
+            # Leave the miner where they are when the account switch fails; the next refresh retries
+            if target_bucket.switches_account and not self._switch_account(hotkey, target_bucket, current_time_ms):
+                continue
 
             with self._buckets_lock:
                 state_changed |= self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
@@ -738,8 +749,9 @@ class ChallengePeriodManager(CacheController):
 
             logger.info(f"[CHALLENGE] promoting to {target_bucket.value}: {state}")
 
-            if target_bucket.switches_account:
-                self._switch_account(hotkey, target_bucket, current_time_ms)
+            # Leave the miner where they are when the account switch fails; the next refresh retries
+            if target_bucket.switches_account and not self._switch_account(hotkey, target_bucket, current_time_ms):
+                continue
 
             with self._buckets_lock:
                 state_changed |= self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
@@ -775,19 +787,27 @@ class ChallengePeriodManager(CacheController):
 
         return self.admin_set_bucket(hotkey, target_bucket, current_time_ms)
 
-    def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> tuple[bool, str]:
-        """Move a miner into an arbitrary bucket. Runs the same account switch as an organic
-        promotion when the target changes the account size."""
+    def can_admin_set_bucket(self, hotkey: str, bucket: MinerBucket) -> tuple[bool, str]:
+        """Report whether admin_set_bucket would reject this move, without changing anything."""
         state = self.miner_states.get(hotkey)
         if state is None:
             return False, f"{hotkey} not found in challenge period manager"
         if state.current_bucket == bucket:
             return False, f"{hotkey} is already in {bucket.value}"
+        return True, ""
 
+    def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> tuple[bool, str]:
+        """Move a miner into an arbitrary bucket. Runs the same account switch as an organic
+        promotion when the target changes the account size."""
+        can_set, reason = self.can_admin_set_bucket(hotkey, bucket)
+        if not can_set:
+            return False, reason
+
+        state = self.miner_states[hotkey]
         logger.info(f"[CHALLENGE] admin moving to {bucket.value}: {state}")
 
-        if bucket.switches_account:
-            self._switch_account(hotkey, bucket, current_time_ms)
+        if bucket.switches_account and not self._switch_account(hotkey, bucket, current_time_ms):
+            return False, f"{hotkey} account size update failed, bucket unchanged"
 
         with self._buckets_lock:
             state.add_bucket_entry(bucket, current_time_ms)

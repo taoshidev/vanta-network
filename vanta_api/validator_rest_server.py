@@ -3039,6 +3039,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if bucket.is_subaccount and not is_synthetic_hotkey(hotkey):
                 return jsonify({'error': f'{bucket.value} is a subaccount bucket; {hotkey} is not a subaccount'}), 400
 
+            # Check if modification is possible before changing anything
+            can_set, message = self._challenge_period_client.can_admin_set_bucket(hotkey, bucket)
+            if not can_set:
+                return jsonify({'error': message}), 400
+
             # Point the subaccount at the account size the target bucket trades before the
             # challenge period manager resets the account against it
             if bucket.is_subaccount:
