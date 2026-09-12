@@ -5,8 +5,10 @@ Entity utility functions for synthetic hotkey parsing and validation.
 
 These are static utility functions that can be called without RPC overhead.
 """
+import math
 from typing import Tuple, Optional
 from shared_objects.log import logger
+from vali_objects.vali_config import ValiConfig
 
 
 def is_synthetic_hotkey(hotkey: str) -> bool:
@@ -87,6 +89,31 @@ def parse_synthetic_hotkey(synthetic_hotkey: str) -> Tuple[Optional[str], Option
         return entity_hotkey, subaccount_id
     except ValueError:
         return None, None
+
+
+def pro_account_size_error(pro_account_size) -> Optional[str]:
+    """
+    Why pro_account_size cannot be used as a pro account size, or None when it can.
+
+    A pro account size is an int or float (never a bool) that is finite and within
+    [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE] inclusive. The network enforces
+    only this range; the size presets offered by the Command Center are a UI concern.
+
+    Sizes arrive as parsed JSON, and Python's JSON parser (so Flask's request.get_json) accepts the
+    literals NaN, Infinity and -Infinity. NaN fails every ordered comparison, so a plain range check
+    lets it through: finiteness is checked first. Integers are always finite (and may be too large to
+    convert to float), so only floats go through math.isfinite.
+    """
+    if isinstance(pro_account_size, bool) or not isinstance(pro_account_size, (int, float)):
+        return f"pro_account_size must be a number, got {type(pro_account_size).__name__}"
+    if isinstance(pro_account_size, float) and not math.isfinite(pro_account_size):
+        return f"pro_account_size must be a finite number, got {pro_account_size}"
+    if not ValiConfig.MIN_PRO_ACCOUNT_SIZE <= pro_account_size <= ValiConfig.MAX_PRO_ACCOUNT_SIZE:
+        return (
+            f"pro_account_size ${pro_account_size} is outside the allowed range "
+            f"${ValiConfig.MIN_PRO_ACCOUNT_SIZE:,} to ${ValiConfig.MAX_PRO_ACCOUNT_SIZE:,}"
+        )
+    return None
 
 
 def create_subaccount_dashboard(

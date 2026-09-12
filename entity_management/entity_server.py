@@ -254,6 +254,14 @@ class EntityServer(RPCServerBase):
         """Point a subaccount at the account size its target bucket trades."""
         return self._manager.apply_bucket_account_size(synthetic_hotkey, target_bucket, pro_account_size)
 
+    def snapshot_bucket_account_size_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
+        """The sizing fields apply_bucket_account_size writes, read before it runs."""
+        return self._manager.snapshot_bucket_account_size(synthetic_hotkey)
+
+    def restore_bucket_account_size_rpc(self, synthetic_hotkey: str, snapshot: dict) -> Tuple[bool, str]:
+        """Undo an apply_bucket_account_size whose bucket move then failed."""
+        return self._manager.restore_bucket_account_size(synthetic_hotkey, snapshot)
+
     def get_payout_scale_rpc(self, synthetic_hotkey: str) -> float:
         """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
         return self._manager.get_payout_scale(synthetic_hotkey)

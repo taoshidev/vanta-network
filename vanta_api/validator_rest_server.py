@@ -19,7 +19,7 @@ from bittensor_wallet import Keypair
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from entity_management.entity_utils import create_subaccount_dashboard
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.metagraph_client import MetagraphClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -2697,9 +2697,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         The entity coldkey signs the sorted JSON of every field except signature and version;
         nonce + timestamp make each signature single use within a 5 minute window (NonceManager).
 
-        pro_account_size is optional and sets the size of the granted pro account. Omit it to keep the
-        size recorded when the subaccount entered the transition; when it is sent it must be signed
-        with the rest of the payload. A subaccount with no size on either side is rejected.
+        The subaccount is promoted on the pro account size the admin set when offering the transition.
+        A miner cannot choose or change it: a request that includes pro_account_size at all (even null)
+        is rejected with a 400 before the signature is checked or the nonce is consumed. Only the admin
+        endpoint POST /admin/miner-bucket/<hotkey> sets a pro account size.
 
         Example:
         curl -X POST http://localhost:48888/entity/subaccount/pro-transition \\
@@ -2708,7 +2709,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_hotkey": "5GhDr...",
             "entity_coldkey": "5FxY...",
             "synthetic_hotkey": "5GhDr..._0",
-            "pro_account_size": 500000,
             "nonce": "3f9c1e...",
             "timestamp": 1749234567890,
             "signature": "0x..."
@@ -2734,6 +2734,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if vanta_cli_error:
                 return jsonify({'error': vanta_cli_error}), 400
 
+            # The admin sets the pro account size; a miner never chooses one. Refused before any
+            # signature or nonce work, so the request's nonce stays unused.
+            if 'pro_account_size' in data:
+                return jsonify({'error': (
+                    'pro_account_size is not accepted: the pro account size is set by the admin when '
+                    'offering the pro track (POST /admin/miner-bucket/<hotkey>), and promoting out of '
+                    'PRO_CHALLENGE_TRANSITION keeps it'
+                )}), 400
+
             required_fields = ['entity_coldkey', 'entity_hotkey', 'synthetic_hotkey',
                                'nonce', 'timestamp', 'signature']
             missing_fields = [field for field in required_fields if field not in data]
@@ -2753,25 +2762,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not isinstance(timestamp, int) or isinstance(timestamp, bool):
                 return jsonify({'error': 'timestamp must be an integer in milliseconds'}), 400
 
-            # Optional: sent only when the miner wants a size other than the one already recorded
-            pro_account_size = data.get('pro_account_size')
-            if pro_account_size is not None:
-                if (not isinstance(pro_account_size, (int, float))
-                        or isinstance(pro_account_size, bool)
-                        or pro_account_size <= 0):
-                    return jsonify({'error': 'pro_account_size must be a positive number'}), 400
-                if pro_account_size > ValiConfig.MAX_PRO_ACCOUNT_SIZE:
-                    return jsonify({'error': (f'pro_account_size ${pro_account_size} exceeds maximum allowed '
-                                              f'${ValiConfig.MAX_PRO_ACCOUNT_SIZE}')}), 400
-
             parsed_entity_hotkey, _ = parse_synthetic_hotkey(synthetic_hotkey)
             if parsed_entity_hotkey is None:
                 return jsonify({'error': f'{synthetic_hotkey} is not a subaccount'}), 400
             if parsed_entity_hotkey != entity_hotkey:
                 return jsonify({'error': f'Subaccount {synthetic_hotkey} does not belong to entity {entity_hotkey}'}), 403
 
-            # The signature binds the target subaccount and the requested size; nonce + timestamp make
-            # it single use.
+            # The signature binds the target subaccount; nonce + timestamp make it single use.
             signed_fields = {
                 "entity_coldkey": entity_coldkey,
                 "entity_hotkey": entity_hotkey,
@@ -2779,8 +2776,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 "nonce": nonce,
                 "timestamp": timestamp,
             }
-            if 'pro_account_size' in data:
-                signed_fields["pro_account_size"] = data['pro_account_size']
 
             keypair = Keypair(ss58_address=entity_coldkey)
             signed_message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
@@ -2800,9 +2795,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not nonce_ok:
                 return jsonify({'error': nonce_error}), 401
 
-            # Closes positions, cancels limit orders, restarts the ledgers, and moves the bucket
+            # Closes positions, cancels limit orders, restarts the ledgers, and moves the bucket. No size
+            # is passed, so the pro account keeps the size recorded when the admin offered the transition.
             success, message = self._challenge_period_client.promote_pro_transition(
-                synthetic_hotkey, TimeUtil.now_in_millis(), pro_account_size
+                synthetic_hotkey, TimeUtil.now_in_millis()
             )
             if not success:
                 return jsonify({'error': message}), 400
@@ -3006,8 +3002,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         JSON body:
           bucket: MinerBucket value string (required)
-          pro_account_size: USD size of the granted pro account (required when entering the pro track,
-                            optional afterwards to keep the size already recorded)
+          pro_account_size: USD size of the pro account. There is no network default: this endpoint is
+                            the only way to set one. When sent it must be a finite number within
+                            [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE]
+                            ($200,000 to $1,000,000 inclusive), whatever the bucket, or the request is
+                            a 400 before anything changes.
+                            - Required when entering the pro track (e.g. SUBACCOUNT_FUNDED ->
+                              PRO_CHALLENGE_TRANSITION), including a re-offer after a demotion: a size
+                              from an earlier pro journey is never reused.
+                            - Optional on a move within the pro track (e.g. to PRO_FUNDED): a new size
+                              replaces the recorded one, omitted keeps it.
+                            - Ignored for standard buckets, which never record a pro size.
 
         Example:
         curl -X POST "http://localhost:48888/admin/miner-bucket/<hotkey>" \\
@@ -3021,6 +3026,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         if not self.can_access_tier(api_key, 500):
             return jsonify({'error': 'Set miner bucket endpoint requires tier 500 access'}), 403
 
+        # Set once the sizing below is committed and cleared once the bucket move makes it correct;
+        # while it holds a snapshot the sizing must be rolled back on every way out (see below)
+        sizing_snapshot = None
         try:
             data = request.get_json(silent=True) or {}
             bucket_str = data.get('bucket')
@@ -3030,11 +3038,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 valid = [b.value for b in MinerBucket]
                 return jsonify({'error': f'Invalid bucket. Must be one of: {valid}'}), 400
 
+            # request.get_json() parses the literals NaN and Infinity, and NaN passes a plain range
+            # check, so the size must be a finite number within the pro range
             pro_account_size = data.get('pro_account_size')
-            if pro_account_size is not None and (not isinstance(pro_account_size, (int, float))
-                                                 or isinstance(pro_account_size, bool)
-                                                 or pro_account_size <= 0):
-                return jsonify({'error': 'pro_account_size must be a positive number'}), 400
+            if pro_account_size is not None:
+                size_error = pro_account_size_error(pro_account_size)
+                if size_error:
+                    return jsonify({'error': size_error}), 400
 
             if bucket.is_subaccount and not is_synthetic_hotkey(hotkey):
                 return jsonify({'error': f'{bucket.value} is a subaccount bucket; {hotkey} is not a subaccount'}), 400
@@ -3045,19 +3055,28 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': message}), 400
 
             # Point the subaccount at the account size the target bucket trades before the
-            # challenge period manager resets the account against it
+            # challenge period manager resets the account against it. This commits — it resizes the
+            # live account and writes the record to disk — so snapshot the sizing first: if the bucket
+            # move below then fails, the subaccount must not be left marked pro, which would both let
+            # the next size-less offer reuse this size and leave the account trading it outside the
+            # pro track.
             if bucket.is_subaccount:
+                snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
                 success, message = self._entity_client.apply_bucket_account_size(
                     hotkey, bucket, pro_account_size
                 )
                 if not success:
                     return jsonify({'error': message}), 400
+                sizing_snapshot = snapshot
 
             success, message = self._challenge_period_client.admin_set_bucket(
                 hotkey, bucket, TimeUtil.now_in_millis()
             )
             if not success:
+                self._restore_bucket_account_size(hotkey, sizing_snapshot)
                 return jsonify({'error': message}), 400
+            # The bucket moved, so the sizing is now the correct one and must survive anything below
+            sizing_snapshot = None
             self._miner_account_client.set_miner_bucket(hotkey, bucket)
 
             return jsonify({
@@ -3068,9 +3087,27 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }), 200
 
         except Exception as e:
+            # An exception inside admin_set_bucket (its wind-down, its disk write) must not leave the
+            # sizing write landed behind a 500 either
+            self._restore_bucket_account_size(hotkey, sizing_snapshot)
             logger.error(f"Error setting bucket for hotkey {hotkey}: {e}")
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def _restore_bucket_account_size(self, hotkey: str, sizing_snapshot: Optional[dict]) -> None:
+        """Put a committed apply_bucket_account_size back when the bucket move it was for did not
+        happen. A no-op without a snapshot, and never allowed to mask the failure it is cleaning up."""
+        if not sizing_snapshot:
+            return
+        try:
+            restored, restore_message = self._entity_client.restore_bucket_account_size(
+                hotkey, sizing_snapshot
+            )
+            if not restored:
+                logger.error(f"Could not roll back the account size for {hotkey}: {restore_message}")
+        except Exception as restore_error:
+            logger.error(f"Could not roll back the account size for {hotkey}: {restore_error}")
+            logger.error(traceback.format_exc())
 
     def get_subaccount_dashboard(self, synthetic_hotkey):
         """
