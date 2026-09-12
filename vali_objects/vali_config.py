@@ -285,7 +285,7 @@ class ValiConfig:
     MAX_DAILY_DRAWDOWN = 0.95  # Portfolio should never fall below .95 x of initial value when measured day to day
     MAX_TOTAL_DRAWDOWN = 0.9  # Portfolio should never fall below .90 x of initial value when measured at any instant
     MAX_TOTAL_DRAWDOWN_V2 = 0.95
-    MAX_ORDERS_PER_POSITION = 100
+    MAX_ORDERS_PER_POSITION = 10000 # High value that realistically should never be reached
     ORDER_COOLDOWN_MS = 5000  # 5 seconds
     ORDER_MIN_LEVERAGE = 0.00001
     ORDER_MAX_LEVERAGE = 500
