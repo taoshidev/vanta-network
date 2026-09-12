@@ -248,6 +248,24 @@ Hyperliquid-sourced pairs, so Hyperliquid subaccounts have no pro tier.
 | `PRO_CHALLENGE_DIRECT`        | pro            | no            | —                       |
 | `PRO_FUNDED`                  | pro            | yes           | pro account size        |
 
+#### Pro account size
+
+The pro account size is set by the network, not by the UI or the admin granting the promotion. It is
+**$1,000,000** today (`ValiConfig.PRO_ACCOUNT_SIZE`) and can change in a future release. Every
+subaccount dashboard (`GET /entity/subaccount/<synthetic_hotkey>`, `GET /v2/entity/subaccount/<synthetic_hotkey>`,
+and the websocket dashboard stream) publishes it as `subaccount_info.default_pro_account_size`, for
+standard and pro subaccounts alike, so the size a promotion will grant can be shown before the
+subaccount is on the pro track. It says nothing about eligibility: Hyperliquid subaccounts carry it
+too but have no pro tier.
+
+When a subaccount enters the pro track it is granted that size, recorded as
+`subaccount_info.pro_account_size` (null until then; standard subaccounts that were never promoted
+keep null). The recorded size is kept for the rest of the pro journey, including the miner's own
+`POST /api/promote-pro-transition` out of `PRO_CHALLENGE_TRANSITION`, so a later change to the
+network size does not resize an account that was already promoted. The admin endpoint and the
+promote-pro-transition request still accept an explicit `pro_account_size` override (at most
+`ValiConfig.MAX_PRO_ACCOUNT_SIZE`, $1,000,000); the Vanta UI never sends one.
+
 Every pro bucket is subject to two drawdown rules, both checked continuously:
 - **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day.
 - **EOD trailing loss limit:** equity cannot drop **8%** below the end-of-day equity high-water mark.

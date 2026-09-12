@@ -778,6 +778,14 @@ class EntityManager(ValidatorBroadcastBase):
         recorded; every other pro bucket switches the live account size to the pro size.
         Returning to a standard bucket restores the standard size.
 
+        The granted pro size is, in order: the explicit pro_account_size, the size already recorded
+        on the subaccount, then the network's ValiConfig.PRO_ACCOUNT_SIZE. Standard buckets never
+        write pro_account_size, so a standard account that was never promoted keeps None.
+
+        Nothing is stored until every step has succeeded, so a rejected or failed move leaves the
+        subaccount exactly as it was: a standard account never picks up a pro size or the pro
+        account type from a pro move that did not happen.
+
         Returns:
             (success, message)
         """
@@ -787,25 +795,28 @@ class EntityManager(ValidatorBroadcastBase):
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
 
+        # Work out the new sizes without touching the stored subaccount
+        standard_account_size = subaccount.standard_account_size
         if target_bucket.is_pro_track:
             if pro_account_size is None:
                 pro_account_size = subaccount.pro_account_size
             if pro_account_size is None:
-                return False, "pro_account_size is required to enter the pro track"
+                pro_account_size = ValiConfig.PRO_ACCOUNT_SIZE
             if pro_account_size > ValiConfig.MAX_PRO_ACCOUNT_SIZE:
                 return False, (
                     f"Account size ${pro_account_size} exceeds maximum allowed "
                     f"${ValiConfig.MAX_PRO_ACCOUNT_SIZE}"
                 )
-            if subaccount.standard_account_size is None:
-                subaccount.standard_account_size = subaccount.account_size
-            subaccount.pro_account_size = pro_account_size
-            subaccount.account_type = AccountType.PRO.value
+            if standard_account_size is None:
+                standard_account_size = subaccount.account_size
+            account_type = AccountType.PRO.value
             # TRANSITION winds down the standard account, so it keeps the standard size
-            target_size = pro_account_size if target_bucket.is_pro else subaccount.standard_account_size
+            target_size = pro_account_size if target_bucket.is_pro else standard_account_size
         else:
-            subaccount.account_type = AccountType.STANDARD.value
-            target_size = subaccount.standard_account_size or subaccount.account_size
+            # A standard bucket never records a pro size; keep whatever is already there
+            pro_account_size = subaccount.pro_account_size
+            account_type = AccountType.STANDARD.value
+            target_size = standard_account_size or subaccount.account_size
 
         if target_size != subaccount.account_size:
             cpt = (ValiConfig.ENTITY_COST_PER_THETA_LOW
@@ -819,10 +830,13 @@ class EntityManager(ValidatorBroadcastBase):
             )
             if not record:
                 return False, f"Failed to set account size for {synthetic_hotkey}"
-            subaccount.account_size = target_size
 
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
+            subaccount.standard_account_size = standard_account_size
+            subaccount.pro_account_size = pro_account_size
+            subaccount.account_type = account_type
+            subaccount.account_size = target_size
             entity_data = self.entities.get(entity_hotkey)
             if entity_data:
                 entity_data.subaccounts[subaccount_id] = subaccount
@@ -1203,6 +1217,9 @@ class EntityManager(ValidatorBroadcastBase):
                 "account_size": subaccount.account_size,
                 "standard_account_size": subaccount.standard_account_size,
                 "pro_account_size": subaccount.pro_account_size,
+                # The size a pro promotion grants, published for every subaccount so a UI can show it
+                # before promotion. pro_account_size above stays the granted size (None until promoted).
+                "default_pro_account_size": ValiConfig.PRO_ACCOUNT_SIZE,
                 "account_type": subaccount.account_type,
                 "status": subaccount.status,
                 "created_at_ms": subaccount.created_at_ms,
@@ -1638,6 +1655,8 @@ class EntityManager(ValidatorBroadcastBase):
             'subaccount_uuid': subaccount.subaccount_uuid,
             'asset_class': subaccount.asset_class,
             'account_size': subaccount.account_size,
+            # Same field, same place as the v2 subaccount_info: the size a pro promotion grants
+            'default_pro_account_size': ValiConfig.PRO_ACCOUNT_SIZE,
             'status': subaccount.status,
             'created_at_ms': subaccount.created_at_ms,
             'eliminated_at_ms': subaccount.eliminated_at_ms,

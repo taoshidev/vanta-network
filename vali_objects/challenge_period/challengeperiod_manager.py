@@ -763,9 +763,9 @@ class ChallengePeriodManager(CacheController):
     ) -> tuple[bool, str]:
         """Promote a subaccount out of PRO_CHALLENGE_TRANSITION on the miner's own request
 
-        pro_account_size sets the size of the granted pro account. Sending none keeps the size
-        recorded when the miner entered the transition; a miner with no recorded size is rejected
-        rather than promoted onto a pro account of unknown size.
+        pro_account_size is an optional override for the size of the granted pro account. Sending
+        none keeps the size recorded when the miner entered the transition, or grants the network's
+        ValiConfig.PRO_ACCOUNT_SIZE when none is recorded (see EntityManager.apply_bucket_account_size).
         """
         state = self.miner_states.get(hotkey)
         if state is None:

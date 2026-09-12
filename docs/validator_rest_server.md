@@ -523,10 +523,17 @@ Requires **tier 500** access. Like every `/admin/*` route, calls are recorded in
 
 **Body:**
 - `bucket` (string, required): a `MinerBucket` value, e.g. `PRO_CHALLENGE_TRANSITION`.
-- `pro_account_size` (number, required when entering the pro track): USD size of the granted pro
-  account. Snapshotted alongside the subaccount's existing size, which becomes its
-  `standard_account_size` and the basis for payouts during the pro challenge. Omit on later pro
-  moves to keep the size already recorded.
+- `pro_account_size` (number, optional override): USD size of the granted pro account, at most
+  `ValiConfig.MAX_PRO_ACCOUNT_SIZE` ($1,000,000). The pro account size is set by the network, so
+  this is normally omitted (the Vanta UI never sends it): entering the pro track without it grants
+  the size already recorded on the subaccount, or the network's `ValiConfig.PRO_ACCOUNT_SIZE`
+  (currently $1,000,000, published on every subaccount dashboard as
+  `subaccount_info.default_pro_account_size`) when none is recorded. Ignored for standard buckets.
+
+Entering the pro track snapshots the subaccount's existing size, which becomes its
+`standard_account_size` and the basis for payouts during the pro challenge, and records the granted
+size as `pro_account_size`. A subaccount that already has a `pro_account_size` keeps it on later pro
+moves unless a new one is sent. A rejected move changes nothing.
 
 When the target bucket changes the account size, the subaccount's open positions are force closed,
 its pending limit orders are cancelled, and its ledgers restart against the new size.
@@ -537,7 +544,7 @@ its pending limit orders are cancelled, and its ledgers restart against the new 
 curl -X POST "http://localhost:48888/admin/miner-bucket/5GhDr3xy...abc_1" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"bucket": "PRO_CHALLENGE_TRANSITION", "pro_account_size": 500000}'
+  -d '{"bucket": "PRO_CHALLENGE_TRANSITION"}'
 ```
 
 **Response:**
@@ -552,8 +559,8 @@ curl -X POST "http://localhost:48888/admin/miner-bucket/5GhDr3xy...abc_1" \
 
 **Error Responses:**
 ```json
-// 400 - unknown bucket, missing pro_account_size, or miner already in that bucket
-{ "error": "pro_account_size is required to enter the pro track" }
+// 400 - unknown bucket, pro_account_size above the maximum, or miner already in that bucket
+{ "error": "Account size $2000000 exceeds maximum allowed $1000000" }
 
 // 403 - API key below tier 500
 { "error": "Set miner bucket endpoint requires tier 500 access" }
@@ -1424,6 +1431,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
       "synthetic_hotkey": "5GhDr3xy...abc_0",
       "entity_hotkey": "5GhDr3xy...abc",
       "subaccount_id": 0,
+      "default_pro_account_size": 1000000,
       "status": "active",
       "drawdown_criteria": "trailing",
       "created_at_ms": 1702345678901,
@@ -1696,6 +1704,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
 - `synthetic_hotkey`: The subaccount's synthetic hotkey ({entity_hotkey}_{subaccount_id})
 - `entity_hotkey`: The parent entity's hotkey
 - `subaccount_id`: Monotonically increasing subaccount ID
+- `default_pro_account_size`: USD size the network grants when this subaccount is promoted onto the pro track (`ValiConfig.PRO_ACCOUNT_SIZE`, currently $1,000,000). Present for every subaccount, standard or pro, so a UI can show it before promotion. It is not an eligibility signal (Hyperliquid subaccounts have no pro tier) and it is not the granted size: a subaccount that was already promoted keeps the `pro_account_size` it was granted even if this value later changes.
 - `status`: Current status ("active", "eliminated", or "unknown")
 - `created_at_ms`: Timestamp when subaccount was created
 - `eliminated_at_ms`: Timestamp when eliminated (null if active)
@@ -1865,6 +1874,10 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "subaccount_uuid": "abc...789",
       "asset_class": "crypto",
       "account_size": 100000.0,
+      "standard_account_size": null,
+      "pro_account_size": null,
+      "default_pro_account_size": 1000000,
+      "account_type": "standard",
       "drawdown_criteria": "static",
       "status": "active",
       "created_at_ms": 1770657674533,
@@ -2032,6 +2045,10 @@ This is the only guaranteed section of the response. All other sections may be m
 - `subaccount_uuid`: Unique identifier for this subaccount
 - `asset_class`: Asset class (crypto, forex, etc.)
 - `account_size`: Current account size (in USD)
+- `standard_account_size`: Account size on the standard track, snapshotted when the subaccount entered the pro track (null until then)
+- `pro_account_size`: Account size granted for the pro account (null until the subaccount is promoted onto the pro track)
+- `default_pro_account_size`: USD size the network grants when this subaccount is promoted onto the pro track (`ValiConfig.PRO_ACCOUNT_SIZE`, currently $1,000,000). Present for every subaccount, standard or pro, so a UI can show it before promotion. It is not an eligibility signal (Hyperliquid subaccounts have no pro tier) and it is not the granted size: a subaccount that was already promoted keeps the `pro_account_size` it was granted even if this value later changes.
+- `account_type`: `"standard"` or `"pro"`
 - `status`: Current status ("active", "eliminated", or "unknown")
 - `created_at_ms`: Timestamp when subaccount was created
 - `eliminated_at_ms`: Timestamp when eliminated (null if active)
@@ -2446,6 +2463,7 @@ Resolve a Hyperliquid wallet address to its synthetic hotkey and return the full
       "entity_hotkey": "5GhDr3xy...abc",
       "subaccount_id": 0,
       "asset_class": "crypto",
+      "default_pro_account_size": 1000000,
       "hl_address": "0xabcd1234...",
       "payout_address": "0xAbCd...",
       "status": "active",

@@ -2697,9 +2697,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         The entity coldkey signs the sorted JSON of every field except signature and version;
         nonce + timestamp make each signature single use within a 5 minute window (NonceManager).
 
-        pro_account_size is optional and sets the size of the granted pro account. Omit it to keep the
-        size recorded when the subaccount entered the transition; when it is sent it must be signed
-        with the rest of the payload. A subaccount with no size on either side is rejected.
+        The pro account size is set by the network, so pro_account_size is normally omitted (the Vanta
+        UI never sends it): the subaccount keeps the size recorded when it entered the transition, or
+        gets ValiConfig.PRO_ACCOUNT_SIZE (subaccount_info.default_pro_account_size) when none is
+        recorded. An explicit pro_account_size is still accepted as an override, at most
+        ValiConfig.MAX_PRO_ACCOUNT_SIZE, and must then be signed with the rest of the payload.
 
         Example:
         curl -X POST http://localhost:48888/entity/subaccount/pro-transition \\
@@ -2708,7 +2710,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_hotkey": "5GhDr...",
             "entity_coldkey": "5FxY...",
             "synthetic_hotkey": "5GhDr..._0",
-            "pro_account_size": 500000,
             "nonce": "3f9c1e...",
             "timestamp": 1749234567890,
             "signature": "0x..."
@@ -2753,7 +2754,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not isinstance(timestamp, int) or isinstance(timestamp, bool):
                 return jsonify({'error': 'timestamp must be an integer in milliseconds'}), 400
 
-            # Optional: sent only when the miner wants a size other than the one already recorded
+            # Optional override: omitted, the subaccount keeps its recorded size or gets
+            # ValiConfig.PRO_ACCOUNT_SIZE
             pro_account_size = data.get('pro_account_size')
             if pro_account_size is not None:
                 if (not isinstance(pro_account_size, (int, float))
@@ -3006,14 +3008,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         JSON body:
           bucket: MinerBucket value string (required)
-          pro_account_size: USD size of the granted pro account (required when entering the pro track,
-                            optional afterwards to keep the size already recorded)
+          pro_account_size: optional override, USD size of the granted pro account (at most
+                            ValiConfig.MAX_PRO_ACCOUNT_SIZE). The size is set by the network, so the
+                            Vanta UI omits it: entering the pro track without one grants the size
+                            already recorded on the subaccount, or ValiConfig.PRO_ACCOUNT_SIZE
+                            (subaccount_info.default_pro_account_size) when none is recorded.
+                            Ignored for standard buckets.
 
         Example:
         curl -X POST "http://localhost:48888/admin/miner-bucket/<hotkey>" \\
           -H "Authorization: Bearer YOUR_API_KEY" \\
           -H "Content-Type: application/json" \\
-          -d '{"bucket": "PRO_CHALLENGE_TRANSITION", "pro_account_size": 500000}'
+          -d '{"bucket": "PRO_CHALLENGE_TRANSITION"}'
         """
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):

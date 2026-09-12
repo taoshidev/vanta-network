@@ -1292,10 +1292,14 @@ class EntityMinerRestServer(MinerRestServer):
 
         Request body (JSON):
         {
-            "synthetic_hotkey": "<entity_hotkey>_<id>",  // Required
-            "pro_account_size": 500000                   // Optional, USD size of the granted pro account.
-                                                         // Omit to keep the size recorded at transition.
+            "synthetic_hotkey": "<entity_hotkey>_<id>"   // Required
         }
+
+        The pro account size is set by the network: omit pro_account_size (the Vanta UI always does)
+        and the subaccount is promoted on the size recorded when it entered the transition, which is
+        the network's ValiConfig.PRO_ACCOUNT_SIZE (published as subaccount_info.default_pro_account_size)
+        unless an admin granted a different size. An explicit "pro_account_size" (USD, positive, at most
+        ValiConfig.MAX_PRO_ACCOUNT_SIZE) is still accepted, signed, and forwarded as an override.
 
         Every open position is closed, every pending limit order is cancelled, and the ledgers restart
         on the pro account, so this cannot be undone.

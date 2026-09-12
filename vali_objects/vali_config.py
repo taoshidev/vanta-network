@@ -650,7 +650,19 @@ class ValiConfig:
     ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
     ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
-    MAX_PRO_ACCOUNT_SIZE = 1_000_000  # Maximum account size in USD for pro accounts
+    MAX_PRO_ACCOUNT_SIZE = 1_000_000  # Hard cap in USD on any pro account size, granted or explicitly requested
+    # Pro account size in USD the network grants when a subaccount enters the pro track without an
+    # explicit size. The network owns this value, not the UI or the admin; every subaccount dashboard
+    # publishes it as subaccount_info.default_pro_account_size so a UI can show what a promotion will
+    # grant before it happens. It stays separate from MAX_PRO_ACCOUNT_SIZE because the size recorded
+    # on a pro subaccount is re-checked against the cap on every later pro move: lowering the grant for
+    # future promotions must not also lower the cap and strand subaccounts already granted more.
+    PRO_ACCOUNT_SIZE = 1_000_000
+    if not 0 < PRO_ACCOUNT_SIZE <= MAX_PRO_ACCOUNT_SIZE:
+        raise ValueError(
+            f"PRO_ACCOUNT_SIZE ${PRO_ACCOUNT_SIZE} must be positive and at most "
+            f"MAX_PRO_ACCOUNT_SIZE ${MAX_PRO_ACCOUNT_SIZE}"
+        )
 
     # Entity margin collateral requirement (funded subaccounts only):
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
