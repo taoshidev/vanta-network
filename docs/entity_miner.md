@@ -248,6 +248,29 @@ Hyperliquid-sourced pairs, so Hyperliquid subaccounts have no pro tier.
 | `PRO_CHALLENGE_DIRECT`        | pro            | no            | —                       |
 | `PRO_FUNDED`                  | pro            | yes           | pro account size        |
 
+#### Pro account size
+
+There is no network default pro account size. The admin sets it when offering the pro track, through
+`POST /admin/miner-bucket/<synthetic_hotkey>` with a `pro_account_size`, and that endpoint is the
+only way to set one. The network accepts any finite amount from **$200,000** to **$1,000,000**
+inclusive (`ValiConfig.MIN_PRO_ACCOUNT_SIZE` to `ValiConfig.MAX_PRO_ACCOUNT_SIZE`); the preset amounts
+offered in the Command Center are a UI choice, not a network rule.
+
+- **Entering the pro track** (e.g. `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, or
+  `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`) requires a size. This includes a re-offer after a
+  demotion: the size from the earlier pro journey is never reused.
+- **Moving within the pro track** keeps the recorded size. When promoting to `PRO_FUNDED` the admin
+  may send a new size (still within the range), which replaces it.
+- **Start Pro Now** (`POST /api/promote-pro-transition`, and the validator's
+  `POST /entity/subaccount/pro-transition` behind it) always keeps the recorded size. A miner cannot
+  choose or change its size: a request that includes `pro_account_size` at all is rejected with a 400
+  before anything is signed or a nonce is used.
+- **Standard buckets** never record a pro size.
+
+The granted size is published as `subaccount_info.pro_account_size` in the v2 subaccount dashboard
+(`GET /v2/entity/subaccount/<synthetic_hotkey>` and the websocket dashboard stream): null until the
+subaccount is first offered the pro track, and kept on the record after a demotion.
+
 Every pro bucket is subject to two drawdown rules, both checked continuously:
 - **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day.
 - **EOD trailing loss limit:** equity cannot drop **8%** below the end-of-day equity high-water mark.
