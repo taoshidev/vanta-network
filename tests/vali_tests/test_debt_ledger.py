@@ -25,7 +25,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger, WeekTrack, apply_deferral
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
 import logging
 from shared_objects.log import logger
@@ -635,6 +635,25 @@ class TestDebtLedgers(TestBase):
         logger.info("="*80)
         logger.info("Production integration smoke test completed successfully")
         logger.info("="*80)
+
+
+class TestApplyDeferral(TestBase):
+    """One payout week of escrow bookkeeping: every dollar is released, carried, or forfeited."""
+
+    def test_clean_pro_week_releases_balance(self):
+        self.assertEqual(apply_deferral(100.0, 0.0, track=WeekTrack.ON_TRACK, week_penalty=1.0), (100.0, 0.0, 0.0))
+
+    def test_breach_week_holds_balance_and_withheld(self):
+        self.assertEqual(apply_deferral(100.0, 40.0, track=WeekTrack.ON_TRACK, week_penalty=0.0), (0.0, 140.0, 0.0))
+
+    def test_quiet_week_carries_balance(self):
+        self.assertEqual(apply_deferral(100.0, 0.0, track=WeekTrack.NO_DATA, week_penalty=1.0), (0.0, 100.0, 0.0))
+
+    def test_off_track_week_forfeits_balance_and_withheld(self):
+        self.assertEqual(apply_deferral(100.0, 40.0, track=WeekTrack.OFF_TRACK, week_penalty=0.0), (0.0, 0.0, 140.0))
+
+    def test_off_track_week_with_nothing_held_forfeits_nothing(self):
+        self.assertEqual(apply_deferral(0.0, 0.0, track=WeekTrack.OFF_TRACK, week_penalty=1.0), (0.0, 0.0, 0.0))
 
 
 class TestEntityWeeklyPenaltyAggregation(TestBase):

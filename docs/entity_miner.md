@@ -302,6 +302,25 @@ back to the standard account size. A breach in `PRO_CHALLENGE_TRANSITION` (still
 funded account) or in `PRO_FUNDED` eliminates the subaccount. Re-promotion to pro after passing the
 standard challenge again goes through the admin endpoint like any other pro promotion.
 
+#### Testnet overrides
+
+The promotion criteria and the transition grace period are read from `ValiConfig` once at import
+and can be overridden on a testnet validator through environment variables of the same name. Each
+value must be a positive number; the validator logs a warning for every override in force.
+
+These values move consensus — they decide promotions and the weekly penalties the weight
+calculator reads — so an override is only honored when `PTN_ALLOW_CONFIG_OVERRIDES=1` is also set.
+A knob present without that flag fails the import rather than quietly changing the validator, and a
+validator started on netuid 8 (mainnet) with any of these names in its environment refuses to run.
+
+| Environment variable | Default | Controls |
+|----------------------|---------|----------|
+| `PRO_CHALLENGE_MINIMUM_DAYS` | `90` | Full trading days required in a pro challenge bucket before promotion (integer). |
+| `PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT` | `0.06` | Return required for promotion, applied to every asset class. |
+| `PRO_CHALLENGE_CALMAR_THRESHOLD` | `1.75` | Minimum all-time Calmar for promotion; also the soft-breach line. |
+| `PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD` | `0.2` | Maximum return consistency for promotion; also the soft-breach line. |
+| `PRO_TRANSITION_GRACE_PERIOD_DAYS` | `7` | Length of the `PRO_CHALLENGE_TRANSITION` wind-down window (fractional days allowed). |
+
 ## Getting Started
 
 ### Prerequisites

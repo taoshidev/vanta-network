@@ -48,6 +48,7 @@ class TestPositions(TestBase):
         open_ms=DEFAULT_OPEN_MS,
         trade_pair=DEFAULT_TRADE_PAIR,
         account_size=DEFAULT_ACCOUNT_SIZE,
+        position_type=OrderType.FLAT,
     )
 
     @classmethod

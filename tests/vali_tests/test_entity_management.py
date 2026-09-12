@@ -855,18 +855,25 @@ class TestEntityManagement(TestBase):
 
 
 class TestSubaccountPayoutWeeklyPenalty(TestBase):
-    """A blocked payout week zeroes the subaccount's USDC payout for that week only."""
+    """A blocked payout week defers the subaccount's USDC payout for that week only, and the
+    escrow is either released on the next clean pro week or forfeited when the account leaves
+    the pro track."""
 
     ENTITY_HOTKEY = "entity"
     SUBACCOUNT_HOTKEY = "entity_1"
     SUBACCOUNT_UUID = "uuid-1"
     CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 
-    def _payouts_by_week(self, blocked_checkpoint_indices=()):
+    def _payout_result(self, blocked_checkpoint_indices=(), week_buckets=None,
+                       current_bucket=MinerBucket.PRO_FUNDED):
+        """Two payout weeks of 12h checkpoints. `week_buckets` stamps a week's checkpoints with a
+        bucket other than PRO_FUNDED; `current_bucket` is the bucket at end_time_ms."""
         from entity_management.entity_manager import EntityManager
 
         week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
         end_time_ms = week_0_start + 2 * MS_IN_WEEK
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        week_buckets = week_buckets or {}
 
         # One order realizing 10 USD per 12h cell across two weeks
         orders = [
@@ -881,6 +888,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             DebtCheckpoint(
                 timestamp_ms=week_0_start + (i + 1) * self.CP_DURATION_MS,
                 weekly_penalty=0.0 if i in blocked_checkpoint_indices else 1.0,
+                challenge_period_status=week_buckets.get(i // cps_per_week, MinerBucket.PRO_FUNDED).value,
             )
             for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS)
         ]
@@ -889,6 +897,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         manager.running_unit_tests = True
         manager.get_synthetic_hotkey_from_uuid = lambda _uuid: self.SUBACCOUNT_HOTKEY
         manager.get_entity_data = lambda _hk: SimpleNamespace(subaccounts={1: {'id': 1}})
+        manager.get_payout_scale = lambda _hk: 1.0
         manager._debt_ledger_client = SimpleNamespace(
             get_ledger=lambda _hk: DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=debt_checkpoints)
         )
@@ -898,7 +907,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             }
         )
         manager._challenge_period_client = SimpleNamespace(
-            get_miner_bucket=lambda *_a: MinerBucket.SUBACCOUNT_PRO_FUNDED
+            get_miner_bucket=lambda *_a: current_bucket
         )
         manager._position_client = SimpleNamespace(
             get_positions_for_one_hotkey=lambda *_a, **_k: [
@@ -906,7 +915,10 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             ]
         )
 
-        result = manager.calculate_subaccount_payout(self.SUBACCOUNT_UUID, week_0_start, end_time_ms)
+        return manager.calculate_subaccount_payout(self.SUBACCOUNT_UUID, week_0_start, end_time_ms)
+
+    def _payouts_by_week(self, blocked_checkpoint_indices=()):
+        result = self._payout_result(blocked_checkpoint_indices)
         return [w['payout'] for w in result['weekly_settlements']], result['payout']
 
     def test_unblocked_weeks_pay_out(self):
@@ -914,11 +926,68 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertEqual(per_week, [140.0, 140.0])
         self.assertAlmostEqual(total, 280.0)
 
-    def test_single_breach_blocks_that_week_only(self):
-        # Breach stamped on one mid-week checkpoint zeroes all of week 0
+    def test_single_breach_defers_that_week_until_the_next_clean_week(self):
+        # Breach stamped on one mid-week checkpoint withholds all of week 0; the clean week 1
+        # pays its own 140 plus the released 140
         per_week, total = self._payouts_by_week(blocked_checkpoint_indices=(8,))
-        self.assertEqual(per_week, [0.0, 140.0])
-        self.assertAlmostEqual(total, 140.0)
+        self.assertEqual(per_week, [0.0, 280.0])
+        self.assertAlmostEqual(total, 280.0)
+
+    def test_clean_pro_week_releases_escrow_and_forfeits_nothing(self):
+        # Week 0 withheld; week 1 clean and still PRO_FUNDED: the escrow settles, nothing is forfeited
+        result = self._payout_result(blocked_checkpoint_indices=(8,))
+        week_0, week_1 = result['weekly_settlements']
+        self.assertAlmostEqual(week_0['deferred'], 140.0)
+        self.assertAlmostEqual(week_0['deferred_balance'], 140.0)
+        self.assertEqual(week_0['deferred_forfeited'], 0.0)
+        self.assertAlmostEqual(week_1['deferred_released'], 140.0)
+        self.assertEqual(week_1['deferred_forfeited'], 0.0)
+        self.assertEqual(week_1['deferred_balance'], 0.0)
+        self.assertAlmostEqual(week_1['payout'], 280.0)
+        self.assertEqual(result['deferred_forfeited'], 0.0)
+        self.assertEqual(result['deferred_balance'], 0.0)
+        self.assertFalse(result['off_track'])
+
+    def test_leaving_pro_track_with_balance_forfeits_it(self):
+        # Week 0 withheld in PRO_FUNDED; week 1 the account is off the track: the escrow is dropped
+        # in that week and reported as forfeited, while the week's own earnings still pay
+        result = self._payout_result(
+            blocked_checkpoint_indices=(8,),
+            week_buckets={1: MinerBucket.SUBACCOUNT_FUNDED},
+            current_bucket=MinerBucket.SUBACCOUNT_FUNDED,
+        )
+        week_0, week_1 = result['weekly_settlements']
+        self.assertAlmostEqual(week_0['deferred_balance'], 140.0)
+        self.assertEqual(week_0['deferred_forfeited'], 0.0)
+        self.assertEqual(week_1['deferred_released'], 0.0)
+        self.assertAlmostEqual(week_1['deferred_forfeited'], 140.0)
+        self.assertEqual(week_1['deferred_balance'], 0.0)
+        self.assertAlmostEqual(week_1['payout'], 140.0)
+        self.assertAlmostEqual(result['deferred_forfeited'], 140.0)
+        self.assertEqual(result['deferred_balance'], 0.0)
+        self.assertAlmostEqual(result['payout'], 140.0)
+        self.assertTrue(result['off_track'])
+
+    def test_leaving_pro_track_with_zero_balance_forfeits_nothing(self):
+        # Nothing was ever withheld, so leaving the track reports no phantom forfeiture
+        result = self._payout_result(
+            week_buckets={1: MinerBucket.SUBACCOUNT_FUNDED},
+            current_bucket=MinerBucket.SUBACCOUNT_FUNDED,
+        )
+        for week in result['weekly_settlements']:
+            self.assertEqual(week['deferred_forfeited'], 0.0)
+            self.assertEqual(week['deferred_balance'], 0.0)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
+        self.assertEqual(result['deferred_forfeited'], 0.0)
+        self.assertEqual(result['deferred_balance'], 0.0)
+        self.assertTrue(result['off_track'])
+
+    def test_non_earning_bucket_returns_empty_settlement_with_deferral_fields(self):
+        result = self._payout_result(current_bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+        self.assertEqual(result['weekly_settlements'], [])
+        self.assertEqual(result['deferred_balance'], 0.0)
+        self.assertEqual(result['deferred_forfeited'], 0.0)
+        self.assertTrue(result['off_track'])
 
 
 if __name__ == '__main__':

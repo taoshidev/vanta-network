@@ -967,7 +967,7 @@ class DebtLedgerManager():
                             # inside the week the weight calculator reads it in, and the decision
                             # itself comes from the full-week penalty resolved above.
                             if timestamp_ms == week.first_earning_ms:
-                                released, subaccount_escrow[synthetic_hotkey] = apply_deferral(
+                                released, subaccount_escrow[synthetic_hotkey], _ = apply_deferral(
                                     subaccount_escrow[synthetic_hotkey],
                                     0.0,
                                     track=week.track,
