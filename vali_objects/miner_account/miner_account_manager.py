@@ -929,7 +929,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Snapshot account state at the current (or given) UTC day open.
 
         Args:
-            hotkey: If provided, snapshot only this account. If None, snapshot all accounts.
+            hotkey: If provided, snapshot only this account (returns 0 if it does not exist).
+                    If None, snapshot all non-eliminated accounts.
             timestamp_ms: Timestamp used to derive day_open_ms. Defaults to now.
             reset_snapshot: If True, unconditionally overwrite daily_open_snapshot
                              (e.g. new/reset accounts).
@@ -946,13 +947,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         to_log: list[tuple[str, dict]] = []
         with self._accounts_lock:
-            targets = (
-                [self.accounts[hotkey]] if hotkey and hotkey in self.accounts
-                else self.accounts.values()
-            )
+            if hotkey is not None:
+                account = self.accounts.get(hotkey)
+                if account is None:
+                    logger.warning(f"[MINER_ACCOUNT] take_account_snapshot: unknown hotkey {hotkey}, no snapshot taken")
+                    return 0
+                targets = [account]
+            else:
+                targets = [a for a in self.accounts.values() if a.miner_bucket != MinerBucket.ELIMINATED]
             for account in targets:
-                if hotkey is None and account.miner_bucket == MinerBucket.ELIMINATED:
-                    continue
                 snapshot = AccountSnapshot(
                     snapshot_ms=timestamp_ms,
                     account_size=account.get_account_size(),
