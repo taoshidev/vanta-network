@@ -83,11 +83,11 @@ class InterpolatedValueFromDate():
 _ENV_OVERRIDES_ALLOWED = os.environ.get("PTN_ALLOW_CONFIG_OVERRIDES", "").strip() == "1"
 
 
-def _env_override(name: str, default, cast=float):
+def _env_override(name: str, default, cast=float, maximum=None):
     """Testnet knob: read a positive number from the environment variable `name` once at import.
 
     Ignored unless `PTN_ALLOW_CONFIG_OVERRIDES=1` is set (testnet only). Unset (or blank)
-    keeps `default`; anything else must parse as a positive number.
+    keeps `default`; anything else must parse as a positive number no larger than `maximum`.
     """
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -103,6 +103,8 @@ def _env_override(name: str, default, cast=float):
         raise ValueError(f"{name}={raw!r} must be a positive number") from e
     if not math.isfinite(value) or value <= 0:
         raise ValueError(f"{name}={raw!r} must be a positive number")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name}={raw!r} must be at most {maximum}")
     logger.warning(f"[VALI_CONFIG] {name} overridden by environment: {value} (default {default})")
     return value
 
@@ -497,14 +499,14 @@ class ValiConfig:
     PRO_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05
 
     # Pro promotion criteria.
-    PRO_CHALLENGE_MINIMUM_DAYS = _env_override("PRO_CHALLENGE_MINIMUM_DAYS", 90, int)
+    PRO_CHALLENGE_MINIMUM_DAYS = _env_override("PRO_CHALLENGE_MINIMUM_DAYS", 90, int, maximum=3650)
     PRO_CHALLENGE_CALMAR_THRESHOLD = _env_override("PRO_CHALLENGE_CALMAR_THRESHOLD", 1.75)  # All-time realized return over all-time max drawdown
     PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = _env_override("PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD", 0.2)  # Best day must be at most this share of total return
     PRO_DAILY_RETURN_CAP = 0.015  # Each day's profit counts for at most this much toward the total
     CALMAR_DRAWDOWN_MINIMUM = 0.001  # Floor on the calmar denominator, mirrors SHARPE_STDDEV_MINIMUM
 
     # Grace period for traders transitioning from standard funded to pro
-    PRO_TRANSITION_GRACE_PERIOD_DAYS = _env_override("PRO_TRANSITION_GRACE_PERIOD_DAYS", 7)  # fractional days allowed
+    PRO_TRANSITION_GRACE_PERIOD_DAYS = _env_override("PRO_TRANSITION_GRACE_PERIOD_DAYS", 7, maximum=3650)  # fractional days allowed
     PRO_TRANSITION_GRACE_PERIOD_MS = int(PRO_TRANSITION_GRACE_PERIOD_DAYS * DAILY_MS)
 
     # Subaccount promotion requirements

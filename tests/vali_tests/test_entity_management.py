@@ -866,8 +866,9 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
 
     def _payout_result(self, blocked_checkpoint_indices=(), week_buckets=None,
                        current_bucket=MinerBucket.PRO_FUNDED):
-        """Two payout weeks of 12h checkpoints. `week_buckets` stamps a week's checkpoints with a
-        bucket other than PRO_FUNDED; `current_bucket` is the bucket at end_time_ms."""
+        """Two payout weeks of 12h checkpoints. `week_buckets` maps a payout-week index (0 or 1) to
+        the bucket stamped on that week's checkpoints (default PRO_FUNDED); `current_bucket` is the
+        bucket at end_time_ms."""
         from entity_management.entity_manager import EntityManager
 
         week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK

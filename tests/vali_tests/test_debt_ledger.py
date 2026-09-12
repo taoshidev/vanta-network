@@ -655,6 +655,19 @@ class TestApplyDeferral(TestBase):
     def test_off_track_week_with_nothing_held_forfeits_nothing(self):
         self.assertEqual(apply_deferral(0.0, 0.0, track=WeekTrack.OFF_TRACK, week_penalty=1.0), (0.0, 0.0, 0.0))
 
+    def test_forfeited_escrow_does_not_return_when_the_account_comes_back_on_track(self):
+        # Breach week holds 140; leaving the track forfeits it all
+        released, balance, forfeited = apply_deferral(0.0, 140.0, track=WeekTrack.ON_TRACK, week_penalty=0.0)
+        self.assertEqual((released, balance, forfeited), (0.0, 140.0, 0.0))
+        released, balance, forfeited = apply_deferral(balance, 0.0, track=WeekTrack.OFF_TRACK, week_penalty=1.0)
+        self.assertEqual((released, balance, forfeited), (0.0, 0.0, 140.0))
+        # Back on the track: a new breach holds only its own withheld amount
+        released, balance, forfeited = apply_deferral(balance, 30.0, track=WeekTrack.ON_TRACK, week_penalty=0.0)
+        self.assertEqual((released, balance, forfeited), (0.0, 30.0, 0.0))
+        # ... and the next clean week releases only that, never the forfeited 140
+        released, balance, forfeited = apply_deferral(balance, 0.0, track=WeekTrack.ON_TRACK, week_penalty=1.0)
+        self.assertEqual((released, balance, forfeited), (30.0, 0.0, 0.0))
+
 
 class TestEntityWeeklyPenaltyAggregation(TestBase):
     """Entity aggregation honors a subaccount's weekly penalty for the whole payout week."""

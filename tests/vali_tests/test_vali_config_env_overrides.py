@@ -101,6 +101,20 @@ class TestProConfigEnvOverrides(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("PRO_CHALLENGE_MINIMUM_DAYS overridden by environment: 3 (default 90)", proc.stderr + proc.stdout)
 
+    def test_day_knobs_above_their_bound_fail_import_with_a_clear_message(self):
+        # Without the bound, an absurd grace period passed the finite check and crashed the import with
+        # a raw OverflowError converting days to milliseconds.
+        for knob, raw in (
+            ("PRO_TRANSITION_GRACE_PERIOD_DAYS", "1e308"),
+            ("PRO_TRANSITION_GRACE_PERIOD_DAYS", "3651"),
+            ("PRO_CHALLENGE_MINIMUM_DAYS", "99999999999999999999"),
+        ):
+            with self.subTest(knob=knob, raw=raw):
+                proc = _import_with_env({knob: raw})
+                self.assertNotEqual(proc.returncode, 0)
+                self.assertIn(f"{knob}={raw!r} must be at most 3650", proc.stderr)
+                self.assertNotIn("OverflowError", proc.stderr)
+
     def test_knob_without_the_opt_in_flag_fails_import(self):
         """A stray knob must never quietly change a validator: it is a startup failure."""
         proc = _import_with_env({"PRO_CHALLENGE_MINIMUM_DAYS": "3"}, opt_in=False)

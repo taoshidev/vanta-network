@@ -315,11 +315,11 @@ validator started on netuid 8 (mainnet) with any of these names in its environme
 
 | Environment variable | Default | Controls |
 |----------------------|---------|----------|
-| `PRO_CHALLENGE_MINIMUM_DAYS` | `90` | Full trading days required in a pro challenge bucket before promotion (integer). |
+| `PRO_CHALLENGE_MINIMUM_DAYS` | `90` | Full trading days required in a pro challenge bucket before promotion (integer, at most 3650). |
 | `PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT` | `0.06` | Return required for promotion, applied to every asset class. |
 | `PRO_CHALLENGE_CALMAR_THRESHOLD` | `1.75` | Minimum all-time Calmar for promotion; also the soft-breach line. |
 | `PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD` | `0.2` | Maximum return consistency for promotion; also the soft-breach line. |
-| `PRO_TRANSITION_GRACE_PERIOD_DAYS` | `7` | Length of the `PRO_CHALLENGE_TRANSITION` wind-down window (fractional days allowed). |
+| `PRO_TRANSITION_GRACE_PERIOD_DAYS` | `7` | Length of the `PRO_CHALLENGE_TRANSITION` wind-down window (fractional days allowed, at most 3650). |
 
 ## Getting Started
 

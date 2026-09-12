@@ -1257,7 +1257,9 @@ class EntityManager(ValidatorBroadcastBase):
                 'payout': float,
                 'deferred_balance': float,    # escrow still held at end_time_ms
                 'deferred_forfeited': float,  # cumulative escrow dropped by leaving the pro track
-                'off_track': bool,            # current bucket no longer holds deferred payouts
+                'off_track': bool,            # current bucket does not hold deferred payouts - true for
+                                              # every standard account, not a forfeiture signal (read
+                                              # deferred_forfeited for that)
             } or None if subaccount not found
         """
         realtime = False
