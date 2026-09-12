@@ -347,7 +347,7 @@ class TestWebSocketEntityAuth(unittest.IsolatedAsyncioTestCase):
         ws = self._mock_websocket()
 
         try:
-            from bittensor_wallet import Keypair
+            from bittensor.wallet import Keypair
         except ImportError:
             self.skipTest("bittensor_wallet not installed")
 
@@ -411,7 +411,7 @@ class TestWebSocketEntityAuth(unittest.IsolatedAsyncioTestCase):
         entity = "5EntityKey"
 
         try:
-            from bittensor_wallet import Keypair
+            from bittensor.wallet import Keypair
         except ImportError:
             self.skipTest("bittensor_wallet not installed")
 

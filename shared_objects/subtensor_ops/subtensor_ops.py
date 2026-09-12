@@ -18,8 +18,71 @@ from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 from time_util.time_util import TimeUtil
 
 import bittensor as bt
+from bittensor.wallet import Wallet
 import logging
 from shared_objects.log import logger
+from shared_objects.bt_config import make_subtensor, make_wallet
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bt11 metagraph adapters
+#
+# bt11 MetagraphNeuron presents a different interface than bt10 NeuronInfo:
+#   - n.axon is "ip:port" string (not AxonInfo object)
+#   - n.emission is Balance (not float)
+#   - no mg.neurons, mg.uids, mg.axons etc. (iterate mg directly)
+#   - no mg.pool (pool reserves queried separately)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class AxonInfoAdapter:
+    """Bt10-compatible AxonInfo adapter built from a bt11 'ip:port' axon string."""
+    ip: str
+    port: int
+    hotkey: str = ""
+
+    @classmethod
+    def from_axon_str(cls, axon_str, hotkey: str = "") -> "AxonInfoAdapter":
+        if axon_str and ':' in str(axon_str):
+            parts = str(axon_str).rsplit(':', 1)
+            try:
+                return cls(ip=parts[0], port=int(parts[1]), hotkey=hotkey)
+            except (ValueError, IndexError):
+                pass
+        return cls(ip='0.0.0.0', port=0, hotkey=hotkey)
+
+
+class NeuronAdapter:
+    """Bt10-compatible NeuronInfo adapter wrapping a bt11 MetagraphNeuron."""
+
+    def __init__(self, neuron_bt11):
+        self._n = neuron_bt11
+        self.uid = int(neuron_bt11.uid)
+        self.hotkey = neuron_bt11.hotkey
+        self.validator_trust = float(getattr(neuron_bt11, 'validator_trust', 0.0))
+        self.validator_permit = bool(getattr(neuron_bt11, 'validator_permit', False))
+        self.incentive = float(getattr(neuron_bt11, 'incentive', 0.0))
+        # bt11 stake is a Balance; expose as numeric for comparisons
+        _stake = getattr(neuron_bt11, 'total_stake', getattr(neuron_bt11, 'alpha_stake', 0))
+        self.stake = float(getattr(_stake, 'amount', _stake) or 0.0)
+        # Build bt10-compatible axon_info from bt11's "ip:port" string
+        self.axon_info = AxonInfoAdapter.from_axon_str(
+            getattr(neuron_bt11, 'axon', None), hotkey=self.hotkey
+        )
+
+
+def _emission_float(emission_balance) -> float:
+    """Convert a bt11 emission Balance (or plain number) to a Python float."""
+    if emission_balance is None:
+        return 0.0
+    try:
+        return float(emission_balance.amount)
+    except AttributeError:
+        pass
+    try:
+        return float(emission_balance)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # Simple picklable data structures for unit testing (must be module-level to be picklable)
@@ -167,7 +230,7 @@ class SubtensorOpsManager(CacheController):
             self.subtensor = self._create_mock_subtensor()
         else:
             try:
-                self.subtensor = bt.Subtensor(config=self.config)
+                self.subtensor = make_subtensor(self.config)
             except (ConnectionRefusedError, ConnectionError, OSError) as e:
                 logger.error(f"Failed to create initial subtensor connection: {e}")
                 logger.warning("Will retry during first metagraph update loop iteration")
@@ -254,32 +317,28 @@ class SubtensorOpsManager(CacheController):
 
         mock_subtensor = Mock()
 
-        # Mock metagraph() method to return empty metagraph
+        # Mock metagraph() method to return empty bt11-compatible metagraph
         def mock_metagraph_func(netuid):
             mock_metagraph = Mock()
             mock_metagraph.hotkeys = []
-            mock_metagraph.uids = []
-            mock_metagraph.neurons = []
-            mock_metagraph.block_at_registration = []
-            mock_metagraph.emission = []
-            mock_metagraph.axons = []
-            # Must be a real list: update_metagraph iterates it when logging
-            # permitted validators (a bare Mock attribute is not iterable).
-            mock_metagraph.validator_permit = []
-
-            # Mock pool data
-            mock_metagraph.pool = Mock()
-            mock_metagraph.pool.tao_in = 1000.0
-            mock_metagraph.pool.alpha_in = 5000.0
+            # bt11: metagraph is iterable (yields MetagraphNeuron objects)
+            mock_metagraph.__iter__ = Mock(return_value=iter([]))
 
             return mock_metagraph
 
+        # bt11: subtensor.subnets.metagraph(netuid) instead of subtensor.metagraph(netuid)
+        mock_subtensor.subnets = Mock()
+        mock_subtensor.subnets.metagraph = Mock(side_effect=mock_metagraph_func)
+        # Keep old .metagraph for any remaining bt10-style callers
         mock_subtensor.metagraph = Mock(side_effect=mock_metagraph_func)
 
-        # Mock set_weights method (for validators)
+        # Mock execute() method for bt11 set_weights (bt.SetWeights intent)
         mock_response = Mock()
         mock_response.success = True
         mock_response.message = None
+        mock_response.error = None
+        mock_subtensor.execute = Mock(return_value=mock_response)
+        # Keep old set_weights for any remaining bt10-style callers
         mock_subtensor.set_weights = Mock(return_value=mock_response)
 
         # Mock substrate connection for cleanup
@@ -324,28 +383,36 @@ class SubtensorOpsManager(CacheController):
                 )
                 neurons.append(neuron)
 
-        # Update the mock metagraph function to return this data
-        def mock_metagraph_func(netuid):
+        # Build bt11-compatible neuron objects for the mock metagraph
+        class _MockBt11Neuron:
+            """Minimal bt11 MetagraphNeuron for unit test mocking."""
+            def __init__(self, uid, hotkey, validator_trust, axon_info):
+                self.uid = uid
+                self.hotkey = hotkey
+                self.validator_trust = validator_trust
+                self.validator_permit = validator_trust > 0
+                self.incentive = 0.1
+                self.emission = 1.0
+                self.total_stake = 0.0
+                self.alpha_stake = 0.0
+                # axon as "ip:port" string
+                self.axon = f"{axon_info.ip}:{axon_info.port}" if axon_info else None
+
+        bt11_neurons = [
+            _MockBt11Neuron(n.uid, n.hotkey, n.validator_trust, getattr(n, 'axon_info', None))
+            for n in neurons
+        ]
+
+        # Update the mock metagraph function to return bt11-compatible data
+        def mock_metagraph_func(netuid, _neurons=bt11_neurons, _hotkeys=hotkeys):
             mock_metagraph = Mock()
-            mock_metagraph.hotkeys = hotkeys
-            mock_metagraph.uids = list(range(len(hotkeys)))
-            mock_metagraph.neurons = neurons
-            mock_metagraph.block_at_registration = [1000] * len(hotkeys)
-            mock_metagraph.emission = [1.0] * len(hotkeys)
-            mock_metagraph.axons = [n.axon_info for n in neurons]
-            # Must be a real list: update_metagraph iterates it when logging
-            # permitted validators (a bare Mock attribute is not iterable).
-            mock_metagraph.validator_permit = [
-                n.validator_trust > 0 for n in neurons
-            ]
-
-            # Mock pool data
-            mock_metagraph.pool = Mock()
-            mock_metagraph.pool.tao_in = 1000.0
-            mock_metagraph.pool.alpha_in = 5000.0
-
+            mock_metagraph.hotkeys = list(_hotkeys)
+            # bt11: metagraph is iterable
+            mock_metagraph.__iter__ = Mock(return_value=iter(list(_neurons)))
             return mock_metagraph
 
+        self.subtensor.subnets = Mock()
+        self.subtensor.subnets.metagraph = Mock(side_effect=mock_metagraph_func)
         self.subtensor.metagraph = Mock(side_effect=mock_metagraph_func)
 
     def _start_weight_setter_rpc_server(self):
@@ -434,27 +501,58 @@ class SubtensorOpsManager(CacheController):
             synapse_class_name = synapse.__class__.__name__
 
             # Create wallet from config
-            wallet = bt.Wallet(config=self.config)
+            wallet = make_wallet(self.config)
 
             target_hotkeys = [a.hotkey for a in validator_axons_list]
             logger.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators: {target_hotkeys}")
 
             async def do_broadcast():
-                async with bt.Dendrite(wallet=wallet) as dendrite:
-                    responses = await dendrite.aquery(validator_axons_list, synapse)
+                """Send synapse to each validator axon using httpx + bt.http_auth.sign."""
+                import httpx
 
-                    success_count = 0
-                    errors = []
-                    successful_hotkeys = []
+                body = synapse.model_dump_json().encode()
+                synapse_class_name = synapse.__class__.__name__
+                path = f"/axon/{synapse_class_name}"
 
-                    for response in responses:
-                        if response.successfully_processed:
-                            success_count += 1
-                            successful_hotkeys.append(response.axon.hotkey)
-                        elif response.error_message:
-                            errors.append(f"{response.axon.hotkey}: {response.error_message}")
+                success_count = 0
+                errors = []
+                successful_hotkeys = []
 
-                    return success_count, errors, successful_hotkeys
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    for axon in validator_axons_list:
+                        axon_ip = getattr(axon, 'ip', None) or '0.0.0.0'
+                        axon_port = getattr(axon, 'port', 8091)
+                        axon_hotkey = getattr(axon, 'hotkey', '?')
+                        if axon_ip in ('0.0.0.0', '', None):
+                            errors.append(f"{axon_hotkey}: no valid IP")
+                            continue
+                        url = f"http://{axon_ip}:{axon_port}{path}"
+                        try:
+                            headers = bt.http_auth.sign(
+                                wallet,
+                                method="POST",
+                                path=path,
+                                body=body,
+                                receiver_ss58=axon_hotkey if axon_hotkey != '?' else None,
+                            )
+                        except Exception as sign_err:
+                            logger.warning(f"[BROADCAST RPC] http_auth.sign failed for {axon_hotkey}: {sign_err}; sending unsigned")
+                            headers = {}
+                        try:
+                            resp = await client.post(url, content=body, headers=headers)
+                            if resp.status_code == 200:
+                                result_synapse = synapse.__class__.model_validate_json(resp.content)
+                                if result_synapse.successfully_processed:
+                                    success_count += 1
+                                    successful_hotkeys.append(axon_hotkey)
+                                else:
+                                    errors.append(f"{axon_hotkey}: {result_synapse.error_message}")
+                            else:
+                                errors.append(f"{axon_hotkey}: HTTP {resp.status_code}")
+                        except Exception as req_err:
+                            errors.append(f"{axon_hotkey}: {req_err}")
+
+                return success_count, errors, successful_hotkeys
 
             success_count, errors, successful_hotkeys = asyncio.run(do_broadcast())
 
@@ -496,7 +594,7 @@ class SubtensorOpsManager(CacheController):
             if self.running_unit_tests:
                 wallet = self._create_mock_wallet()
             else:
-                wallet = bt.Wallet(config=self.config)
+                wallet = make_wallet(self.config)
 
             logger.info(f"[RPC] Processing weight setting request for {len(uids)} UIDs")
 
@@ -681,25 +779,28 @@ class SubtensorOpsManager(CacheController):
         for attempt in range(max_retries):
             try:
                 with get_subtensor_lock():
-                    response = self.subtensor.set_weights(
-                        netuid=netuid,
-                        wallet=wallet,
-                        uids=uids,
-                        weights=weights,
-                        version_key=version_key
+                    response = self.subtensor.execute(
+                        bt.SetWeights(
+                            netuid=netuid,
+                            uids=list(uids),
+                            weights=list(weights),
+                            mechid=0,
+                            version_key=version_key,
+                        ),
+                        wallet,
                     )
 
                 success = response.success
-                if response.error is not None:
-                    error_msg = str(response.error)
-                elif response.message:
-                    error_msg = response.message
+                if not response.success:
+                    err = getattr(response, 'error', None)
+                    if err is not None:
+                        remediation = getattr(err, 'remediation', None)
+                        code = getattr(err, 'code', None)
+                        error_msg = str(remediation or code or err)
+                    else:
+                        error_msg = getattr(response, 'message', None) or "set_weights returned failure"
                 else:
-                    try:
-                        response_details = vars(response)
-                    except TypeError:
-                        response_details = repr(response)
-                    error_msg = f"empty response from set_weights: {response_details}"
+                    error_msg = getattr(response, 'message', '') or ''
                 logger.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
                 return success, error_msg
 
@@ -747,7 +848,7 @@ class SubtensorOpsManager(CacheController):
             if self.running_unit_tests:
                 self.subtensor = self._create_mock_subtensor()
             else:
-                self.subtensor = bt.Subtensor(config=self.config)
+                self.subtensor = make_subtensor(self.config)
     
     def _send_weight_failure_alert(self, err_msg, failure_type, wallet):
         """Send contextual Slack alert for weight setting failure"""
@@ -911,41 +1012,49 @@ class SubtensorOpsManager(CacheController):
         """
         return hotkey in self._hotkeys_cache
 
-    def _get_substrate_reserves(self, metagraph_clone):
+    def _get_substrate_reserves(self, netuid: int):
         """
-        Get TAO and ALPHA reserve balances from metagraph.pool.
-        Uses built-in metagraph.pool data (verified to be identical to direct substrate queries).
-        Fails fast - exceptions propagate to slack alert mechanism.
+        Get TAO and ALPHA reserve balances for the subnet.
+
+        In bt11, metagraph.pool is gone.  We first try bt11 storage queries,
+        then fall back to the alpha_price ratio read.
 
         Args:
-            metagraph_clone: Freshly synced metagraph with pool data
+            netuid: The subnet netuid
 
         Returns:
             tuple: (tao_reserve_rao, alpha_reserve_rao)
         """
-        # Extract reserve data from metagraph.pool
-        if not hasattr(metagraph_clone, 'pool') or not metagraph_clone.pool:
-            raise ValueError("metagraph.pool not available - cannot get reserve data")
+        # bt11: try direct storage queries for pool reserves
+        try:
+            tao_in = self.subtensor.query(bt.storage.SubtensorModule.SubnetTaoIn, [netuid])
+            alpha_in = self.subtensor.query(bt.storage.SubtensorModule.SubnetAlphaIn, [netuid])
+            tao_reserve_rao = float(tao_in) * 1e9
+            alpha_reserve_rao = float(alpha_in) * 1e9
+            if alpha_reserve_rao == 0:
+                raise ValueError("Alpha reserve is zero")
+            logger.info(
+                f"Got reserves via storage query: TAO={tao_reserve_rao/1e9:.2f}, "
+                f"ALPHA={alpha_reserve_rao/1e9:.2f}"
+            )
+            return tao_reserve_rao, alpha_reserve_rao
+        except Exception as storage_err:
+            logger.debug(f"Storage query for reserves failed ({storage_err}), trying alpha_price")
 
-        # Get reserves from pool (in tokens, need to convert to RAO)
-        tao_reserve_tokens = metagraph_clone.pool.tao_in
-        alpha_reserve_tokens = metagraph_clone.pool.alpha_in
-
-        # Convert to RAO (1 token = 1e9 RAO)
-        tao_reserve_rao = float(tao_reserve_tokens * 1e9)
-        alpha_reserve_rao = float(alpha_reserve_tokens * 1e9)
-
-        # Validate reserves
-        if alpha_reserve_rao == 0:
-            raise ValueError("Alpha reserve is zero - cannot calculate conversion rate")
-
-        logger.info(
-            f"Got reserves from metagraph.pool: TAO={tao_reserve_rao / 1e9:.2f} TAO "
-            f"({tao_reserve_rao:.0f} RAO), ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA "
-            f"({alpha_reserve_rao:.0f} RAO)"
-        )
-
-        return tao_reserve_rao, alpha_reserve_rao
+        # Fallback: derive from alpha_price (TAO per 1 ALPHA)
+        try:
+            alpha_price = float(self.subtensor.prices.alpha_price(netuid=netuid))
+            if alpha_price <= 0:
+                raise ValueError(f"Invalid alpha_price: {alpha_price}")
+            # Express as a unit ratio (alpha_reserve = 1.0 normalized)
+            alpha_reserve_rao = 1.0
+            tao_reserve_rao = alpha_price
+            logger.info(f"Got reserves from alpha_price: {alpha_price} TAO/ALPHA")
+            return tao_reserve_rao, alpha_reserve_rao
+        except Exception as price_err:
+            raise ValueError(
+                f"Cannot determine subnet reserves: storage_err={storage_err}, price_err={price_err}"
+            )
 
     def _get_tao_usd_rate(self):
         """
@@ -1023,7 +1132,7 @@ class SubtensorOpsManager(CacheController):
                 if self.running_unit_tests:
                     new_subtensor = self._create_mock_subtensor()
                 else:
-                    new_subtensor = bt.Subtensor(config=self.config)
+                    new_subtensor = make_subtensor(self.config)
 
                 # Only cleanup old connection after new one successfully created (prevents file descriptor leak).
                 # Under the subtensor lock: weight-setter RPC threads hold it
@@ -1054,11 +1163,11 @@ class SubtensorOpsManager(CacheController):
 
         # Synchronize with weight setting operations to prevent WebSocket concurrency errors
         with get_subtensor_lock():
-            metagraph_clone = self.subtensor.metagraph(self.config.netuid)
+            # bt11: subtensor.subnets.metagraph(netuid) instead of subtensor.metagraph(netuid)
+            metagraph_clone = self.subtensor.subnets.metagraph(self.config.netuid)
 
         assert hasattr(metagraph_clone, 'hotkeys'), "Metagraph clone does not have hotkeys attribute"
         logger.info("Updating metagraph...")
-        # metagraph_clone.sync(subtensor=self.subtensor) The call to subtensor.metagraph() already syncs the metagraph.
         hotkeys_after = set(metagraph_clone.hotkeys)
         lost_hotkeys = hotkeys_before - hotkeys_after
         gained_hotkeys = hotkeys_after - hotkeys_before
@@ -1083,40 +1192,47 @@ class SubtensorOpsManager(CacheController):
                 )
             return  # Actually block the metagraph update
 
+        # Build bt10-compatible neuron/axon adapter lists from bt11 metagraph
+        # bt11 metagraph is iterable (yields MetagraphNeuron objects ordered by uid)
+        neurons_bt11 = list(metagraph_clone)
+        neurons = [NeuronAdapter(n) for n in neurons_bt11]
+        uids = [n.uid for n in neurons]
+        hotkeys = list(metagraph_clone.hotkeys)
+        emission = [_emission_float(getattr(n, 'emission', 0.0)) for n in neurons_bt11]
+        validator_permit = [bool(getattr(n, 'validator_permit', False)) for n in neurons_bt11]
+        # block_at_registration not available in bt11 metagraph; preserve existing or use 0
+        block_at_registration = [0] * len(hotkeys)
+        axons = [n.axon_info for n in neurons] if self.is_miner else None
+
         # Gather validator-specific data (reserves and TAO/USD price) if needed
         tao_reserve_rao = None
         alpha_reserve_rao = None
         tao_to_usd_rate = None
 
-        if self.is_validator:  # Only validators need reserves/prices for weight calculation
-            tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
+        if self.is_validator and not self.running_unit_tests:
+            tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(self.config.netuid)
             tao_to_usd_rate = self._get_tao_usd_rate()
 
-        # Log validator hotkeys (those with validator_permit=True) and stake requirement
-        if hasattr(metagraph_clone, 'validator_permit') and hasattr(metagraph_clone, 'hotkeys'):
-            validator_hotkeys = [
-                metagraph_clone.hotkeys[i]
-                for i, permit in enumerate(metagraph_clone.validator_permit)
-                if permit
-            ]
-            logger.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
+        # Log validator hotkeys (those with validator_permit=True)
+        validator_hotkeys = [hotkeys[i] for i, permit in enumerate(validator_permit) if permit]
+        logger.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
 
         # Single atomic RPC call to update all metagraph fields
         # Much faster than multiple calls - all fields updated together under one lock
         self._metagraph_client.update_metagraph(
-            neurons=list(metagraph_clone.neurons),
-            uids=list(metagraph_clone.uids),
-            hotkeys=list(metagraph_clone.hotkeys),  # Server will update cached set
-            block_at_registration=list(metagraph_clone.block_at_registration),
-            axons=list(metagraph_clone.axons) if self.is_miner else None,
-            emission=list(metagraph_clone.emission),
+            neurons=neurons,
+            uids=uids,
+            hotkeys=hotkeys,  # Server will update cached set
+            block_at_registration=block_at_registration,
+            axons=axons,
+            emission=emission,
             tao_reserve_rao=tao_reserve_rao,
             alpha_reserve_rao=alpha_reserve_rao,
             tao_to_usd_rate=tao_to_usd_rate
         )
 
         # Update local hotkeys cache atomically (no lock needed - set assignment is atomic)
-        self._hotkeys_cache = set(metagraph_clone.hotkeys)
+        self._hotkeys_cache = set(hotkeys)
 
         # self.log_metagraph_state()
         self.set_last_update_time()

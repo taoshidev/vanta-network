@@ -50,8 +50,7 @@ def main():
         help='Output file path (default: data/default_departed_hotkeys.json)'
     )
 
-    config = bt.Config(parser)
-    args = config
+    args = parser.parse_args()
 
     print("=" * 80)
     print("GENERATE DEFAULT DEPARTED HOTKEYS FILE FROM HISTORICAL DATABASE")
@@ -133,10 +132,10 @@ def main():
     # Step 1: Query the metagraph for current hotkeys
     print("Step 1: Querying metagraph for current hotkeys...")
     try:
-        subtensor = bt.Subtensor(network=args.network)
-        print(f"Connected to subtensor: {subtensor.network}")
+        subtensor = bt.Subtensor(args.network)
+        print(f"Connected to subtensor: {args.network}")
 
-        metagraph = subtensor.metagraph(netuid=args.netuid)
+        metagraph = subtensor.subnets.metagraph(netuid=args.netuid)
         current_hotkeys = set(metagraph.hotkeys) if metagraph.hotkeys else set()
         print(f"✓ Loaded metagraph: {len(current_hotkeys)} hotkeys currently registered")
     except Exception as e:

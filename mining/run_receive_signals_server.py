@@ -7,7 +7,7 @@ from flask import Flask, request, jsonify
 
 import waitress
 import requests
-from bittensor_wallet import Wallet
+from bittensor.wallet import Wallet
 
 from miner_config import MinerConfig
 from vali_objects.enums.execution_type_enum import ExecutionType

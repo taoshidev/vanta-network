@@ -9,7 +9,6 @@ from collections import defaultdict
 from typing import List, Set
 
 import bittensor as bt
-from bittensor import AxonInfo, NeuronInfo
 
 import template
 from time_util.time_util import TimeUtil
@@ -128,11 +127,9 @@ class P2PSyncer(ValidatorSyncBase):
         validator_axons = self.get_largest_staked_validators(ValiConfig.TOP_N_STAKE)
 
         try:
-            logger.info(f"Validator {self.wallet.hotkey.ss58_address} requesting checkpoints")
-            # create dendrite and transmit synapse
-            checkpoint_synapse = template.protocol.ValidatorCheckpoint()
-            async with bt.Dendrite(wallet=self.wallet) as dendrite:
-                validator_responses = await dendrite.aquery(axons=validator_axons,  synapse=checkpoint_synapse, timeout=60 * 5)
+            logger.info(f"Validator {self.wallet.hotkey.ss58_address} requesting checkpoints (P2P sync deprecated in bt11)")
+            # bt.Dendrite removed in bt11 — P2PSyncer operates in shadow/no-op mode
+            validator_responses = []
 
             n_failures = 0
             n_successful_checkpoints = 0
@@ -625,7 +622,7 @@ class P2PSyncer(ValidatorSyncBase):
         median_order["trade_pair"] = trade_pair
         return Order(**median_order)
 
-    def get_validators(self, neurons: List[NeuronInfo]=None) -> List[AxonInfo]:
+    def get_validators(self, neurons=None) -> list:
         """
         get a list of all validators. defined as:
         stake > 1000 and validator_trust > 0.5
@@ -635,11 +632,11 @@ class P2PSyncer(ValidatorSyncBase):
         if neurons is None:
             neurons = self.metagraph.get_neurons()
         validator_axons = [n.axon_info for n in neurons
-                           if n.stake > bt.Balance(ValiConfig.STAKE_MIN)
+                           if float(getattr(n.stake, 'amount', n.stake)) > ValiConfig.STAKE_MIN
                            and n.axon_info.ip != ValiConfig.AXON_NO_IP]
         return validator_axons
 
-    def get_largest_staked_validators(self, top_n_validators: int, neurons: List[NeuronInfo]=None) -> List[AxonInfo]:
+    def get_largest_staked_validators(self, top_n_validators: int, neurons=None) -> list:
         """
         get a list of the trusted validators for checkpoint sending
         return top 20 neurons sorted by stake
