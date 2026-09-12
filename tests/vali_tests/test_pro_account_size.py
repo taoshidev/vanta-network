@@ -1,14 +1,20 @@
 """
-The network-owned pro account size.
+The admin-set pro account size.
+
+There is no network default: the admin sets the size when offering the pro track, and the network enforces
+only the inclusive range [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE] plus finite and
+numeric.
 
 Covers:
-  * ValiConfig.PRO_ACCOUNT_SIZE: the size a pro promotion grants, bounded by MAX_PRO_ACCOUNT_SIZE at import.
-  * EntityManager.apply_bucket_account_size: entering the pro track with no size grants the network size,
-    an explicit size is still honoured (and capped), a recorded size is kept, a failed or rejected move
-    changes nothing, and a standard account never picks up a pro size (so payout_scale stays 1.0).
-  * subaccount_info.default_pro_account_size: present with the same name in the same place in the v1
-    (GET /entity/subaccount/<hotkey>) and v2 (GET /v2/entity/subaccount/<hotkey>, websocket) dashboards,
-    for standard and pro subaccounts, next to an untouched subaccount_info.pro_account_size.
+  * ValiConfig: MIN_PRO_ACCOUNT_SIZE / MAX_PRO_ACCOUNT_SIZE are $200K / $1M, checked at import with a raise, and
+    the old network default PRO_ACCOUNT_SIZE is gone.
+  * pro_account_size_error: the shared check behind every entry point (range bounds, NaN / Infinity, bool, str).
+  * EntityManager.apply_bucket_account_size: a size is required to enter the pro track, including a re-offer
+    after a demotion; a move within the track uses an explicit size or the recorded one; PRO_FUNDED can re-set
+    the size within range; a standard target never records a size; a rejected or failed move changes nothing;
+    the log line names the size source.
+  * Dashboards: subaccount_info no longer carries default_pro_account_size in the v1, v2, websocket or
+    hl-traders payloads.
 
 EntityManager is built with object.__new__ and only the attributes these methods touch, so no RPC servers
 are started.
@@ -23,7 +29,7 @@ from flask import Flask
 
 import vali_objects.vali_config as vali_config_module
 from entity_management.entity_manager import EntityData, EntityManager, SubaccountInfo
-from entity_management.entity_utils import create_subaccount_dashboard
+from entity_management.entity_utils import create_subaccount_dashboard, pro_account_size_error
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
@@ -31,8 +37,35 @@ from vali_objects.vali_config import ValiConfig
 NOW_MS = 1_748_000_000_000
 ENTITY_HOTKEY = "entity_alpha"
 STANDARD_SIZE = 100_000.0
-GRANTED_SIZE = 500_000.0  # deliberately different from ValiConfig.PRO_ACCOUNT_SIZE
-FIELD = "default_pro_account_size"
+GRANTED_SIZE = 500_000.0
+REMOVED_FIELD = "default_pro_account_size"
+REQUIRED = "pro_account_size is required to enter the pro track"
+
+PRO_BUCKETS = (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+               MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
+STANDARD_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA)
+
+# Just outside the range, NaN / Infinity (which json.loads, so Flask's get_json, accepts), and wrong types.
+# Each is (size, fragment of the rejection message).
+OUT_OF_RANGE = "outside the allowed range"
+NOT_FINITE = "must be a finite number"
+NOT_A_NUMBER = "must be a number"
+INVALID_SIZES = (
+    (199_999, OUT_OF_RANGE),
+    (199_999.99, OUT_OF_RANGE),
+    (1_000_001, OUT_OF_RANGE),
+    (1_000_000.01, OUT_OF_RANGE),
+    (0, OUT_OF_RANGE),
+    (-500_000, OUT_OF_RANGE),
+    (10 ** 400, OUT_OF_RANGE),
+    (float("nan"), NOT_FINITE),
+    (float("inf"), NOT_FINITE),
+    (float("-inf"), NOT_FINITE),
+    (True, NOT_A_NUMBER),
+    (False, NOT_A_NUMBER),
+    ("500000", NOT_A_NUMBER),
+    ([500_000], NOT_A_NUMBER),
+)
 
 
 def _bare_manager():
@@ -79,13 +112,23 @@ def _add_standard(manager, subaccount_id=0, account_size=STANDARD_SIZE):
 
 
 def _add_pro(manager, subaccount_id=1, pro_size=GRANTED_SIZE):
-    """A subaccount already promoted onto a pro account of pro_size."""
+    """A subaccount already on the pro track, trading a pro account of pro_size."""
     hotkey = _add_standard(manager, subaccount_id)
     info = manager.get_subaccount_info_for_synthetic(hotkey)
     info.standard_account_size = STANDARD_SIZE
     info.pro_account_size = pro_size
     info.account_size = pro_size
     info.account_type = AccountType.PRO.value
+    return hotkey
+
+
+def _add_demoted(manager, subaccount_id=2, pro_size=GRANTED_SIZE):
+    """A subaccount demoted back to the standard track: standard again, but still carrying the pro size
+    recorded on its earlier pro journey (a standard bucket never clears it)."""
+    hotkey = _add_pro(manager, subaccount_id, pro_size)
+    info = manager.get_subaccount_info_for_synthetic(hotkey)
+    info.account_size = STANDARD_SIZE
+    info.account_type = AccountType.STANDARD.value
     return hotkey
 
 
@@ -109,38 +152,77 @@ def _no_section_clients():
 
 class TestProAccountSizeConfig(unittest.TestCase):
 
-    def test_network_grants_one_million_today(self):
-        self.assertEqual(ValiConfig.PRO_ACCOUNT_SIZE, 1_000_000)
+    def test_range_is_200k_to_1m(self):
+        self.assertEqual(ValiConfig.MIN_PRO_ACCOUNT_SIZE, 200_000)
+        self.assertEqual(ValiConfig.MAX_PRO_ACCOUNT_SIZE, 1_000_000)
 
-    def test_grant_is_positive_and_within_the_cap(self):
-        self.assertGreater(ValiConfig.PRO_ACCOUNT_SIZE, 0)
-        self.assertLessEqual(ValiConfig.PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE)
+    def test_there_is_no_network_default_size(self):
+        self.assertFalse(hasattr(ValiConfig, "PRO_ACCOUNT_SIZE"))
 
-    def test_import_fails_for_a_grant_outside_the_cap(self):
-        """Editing PRO_ACCOUNT_SIZE above MAX_PRO_ACCOUNT_SIZE (or to a non-positive value) breaks import."""
+    def test_import_raises_for_an_invalid_range(self):
+        """MIN above MAX, or a non-positive MIN, breaks import with a ValueError (a raise, not an assert that
+        python -O would strip)."""
         path = vali_config_module.__file__
         with open(path) as f:
             source = f.read()
-        assignment = re.compile(r"^(    PRO_ACCOUNT_SIZE = ).*$", re.M)
+        assignment = re.compile(r"^(    MIN_PRO_ACCOUNT_SIZE = ).*$", re.M)
         self.assertEqual(len(assignment.findall(source)), 1)
 
-        for bad in ("MAX_PRO_ACCOUNT_SIZE + 1", "0", "-1"):
-            with self.subTest(PRO_ACCOUNT_SIZE=bad):
+        for bad in ("MAX_PRO_ACCOUNT_SIZE + 1", "0", "-200_000"):
+            with self.subTest(MIN_PRO_ACCOUNT_SIZE=bad):
                 tampered = assignment.sub(lambda m: m.group(1) + bad, source)
-                with self.assertRaisesRegex(ValueError, "PRO_ACCOUNT_SIZE"):
+                with self.assertRaisesRegex(ValueError, "MIN_PRO_ACCOUNT_SIZE"):
                     exec(compile(tampered, path, "exec"), {"__name__": "vali_config_probe", "__file__": path})
+
+        # MIN == MAX is a valid (single-size) range
+        equal = assignment.sub(lambda m: m.group(1) + "MAX_PRO_ACCOUNT_SIZE", source)
+        exec(compile(equal, path, "exec"), {"__name__": "vali_config_probe", "__file__": path})
 
         # The untouched source imports cleanly, so the failures above come from the guard
         namespace = {"__name__": "vali_config_probe", "__file__": path}
         exec(compile(source, path, "exec"), namespace)
-        self.assertEqual(namespace["ValiConfig"].PRO_ACCOUNT_SIZE, ValiConfig.PRO_ACCOUNT_SIZE)
+        self.assertEqual(namespace["ValiConfig"].MIN_PRO_ACCOUNT_SIZE, ValiConfig.MIN_PRO_ACCOUNT_SIZE)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# pro_account_size_error
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestProAccountSizeError(unittest.TestCase):
+
+    def test_accepts_the_inclusive_range(self):
+        for size in (200_000, 200_000.0, 250_000, 500_000.5, 999_999.99, 1_000_000, 1_000_000.0):
+            with self.subTest(size=size):
+                self.assertIsNone(pro_account_size_error(size))
+
+    def test_rejects_out_of_range_non_finite_and_non_numeric(self):
+        for size, reason in INVALID_SIZES + ((None, NOT_A_NUMBER), ({"size": 500_000}, NOT_A_NUMBER)):
+            with self.subTest(size=size):
+                error = pro_account_size_error(size)
+                self.assertIsNotNone(error)
+                self.assertIn(reason, error)
+                self.assertIn("pro_account_size", error)
+
+    def test_the_json_literals_flask_accepts_are_rejected(self):
+        """json.loads (and so Flask's request.get_json) turns these literals into non-finite floats, and NaN
+        passes a plain "< MIN" / "> MAX" range check."""
+        for literal in ("NaN", "Infinity", "-Infinity", "1e999"):
+            with self.subTest(literal=literal):
+                value = json.loads(literal)
+                self.assertIsInstance(value, float)
+                self.assertIn(NOT_FINITE, pro_account_size_error(value))
+
+    def test_range_is_read_from_config_at_call_time(self):
+        with patch.object(ValiConfig, "MIN_PRO_ACCOUNT_SIZE", 300_000):
+            self.assertIn(OUT_OF_RANGE, pro_account_size_error(250_000))
+            self.assertIsNone(pro_account_size_error(300_000))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EntityManager.apply_bucket_account_size
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestApplyBucketAccountSizeDefault(unittest.TestCase):
+class TestApplyBucketAccountSize(unittest.TestCase):
 
     def setUp(self):
         self.manager = _bare_manager()
@@ -150,81 +232,122 @@ class TestApplyBucketAccountSizeDefault(unittest.TestCase):
     def _info(self, hotkey):
         return self.manager.get_subaccount_info_for_synthetic(hotkey)
 
-    def test_transition_without_a_size_records_the_network_size(self):
-        success, message = self.manager.apply_bucket_account_size(
-            self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION
-        )
+    def _snapshot(self, hotkey):
+        return self._info(hotkey).model_dump()
 
-        self.assertTrue(success, message)
-        info = self._info(self.standard)
-        self.assertEqual(info.pro_account_size, ValiConfig.PRO_ACCOUNT_SIZE)
-        self.assertEqual(info.standard_account_size, STANDARD_SIZE)
-        self.assertEqual(info.account_type, AccountType.PRO.value)
-        # TRANSITION keeps trading the standard account
-        self.assertEqual(info.account_size, STANDARD_SIZE)
+    def _assert_rejected_unchanged(self, hotkey, bucket, pro_account_size, reason):
+        before = self._snapshot(hotkey)
+        self.set_size.reset_mock()
+        with patch.object(self.manager, "_write_entities_from_memory_to_disk") as write:
+            success, message = self.manager.apply_bucket_account_size(hotkey, bucket, pro_account_size)
+        self.assertFalse(success, message)
+        self.assertIn(reason, message)
+        self.assertEqual(self._snapshot(hotkey), before)
         self.set_size.assert_not_called()
+        write.assert_not_called()
 
-    def test_direct_pro_challenge_without_a_size_trades_the_network_size(self):
-        success, message = self.manager.apply_bucket_account_size(self.standard, MinerBucket.PRO_CHALLENGE_DIRECT)
+    # ==================== entering the pro track ====================
 
-        self.assertTrue(success, message)
-        info = self._info(self.standard)
-        self.assertEqual(info.pro_account_size, ValiConfig.PRO_ACCOUNT_SIZE)
-        self.assertEqual(info.account_size, ValiConfig.PRO_ACCOUNT_SIZE)
-        self.set_size.assert_called_once()
-        self.assertEqual(self.set_size.call_args.kwargs["account_size"], ValiConfig.PRO_ACCOUNT_SIZE)
-        self.assertEqual(
-            self.set_size.call_args.kwargs["collateral_balance_theta"],
-            ValiConfig.PRO_ACCOUNT_SIZE / ValiConfig.ENTITY_COST_PER_THETA,
-        )
+    def test_entering_the_track_requires_a_size(self):
+        for bucket in PRO_BUCKETS:
+            with self.subTest(bucket=bucket):
+                self._assert_rejected_unchanged(self.standard, bucket, None, REQUIRED)
+        self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
 
-    def test_default_is_read_when_the_promotion_happens(self):
-        """The network can change the size; a promotion grants whatever it is at that moment."""
-        changed = ValiConfig.PRO_ACCOUNT_SIZE - 1
-        with patch.object(ValiConfig, "PRO_ACCOUNT_SIZE", changed):
-            self.assertTrue(self.manager.apply_bucket_account_size(
-                self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION)[0])
-        self.assertEqual(self._info(self.standard).pro_account_size, changed)
-
-    def test_explicit_size_is_honoured(self):
+    def test_transition_with_a_size_records_it_and_keeps_the_standard_account(self):
         success, message = self.manager.apply_bucket_account_size(
             self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE
         )
 
         self.assertTrue(success, message)
-        self.assertEqual(self._info(self.standard).pro_account_size, GRANTED_SIZE)
-
-    def test_explicit_size_above_the_cap_is_rejected_and_changes_nothing(self):
-        success, message = self.manager.apply_bucket_account_size(
-            self.standard, MinerBucket.PRO_CHALLENGE_DIRECT, ValiConfig.MAX_PRO_ACCOUNT_SIZE + 1
-        )
-
-        self.assertFalse(success)
-        self.assertIn("exceeds maximum", message)
         info = self._info(self.standard)
-        self.assertIsNone(info.pro_account_size)
-        self.assertIsNone(info.standard_account_size)
-        self.assertEqual(info.account_type, AccountType.STANDARD.value)
+        self.assertEqual(info.pro_account_size, GRANTED_SIZE)
+        self.assertEqual(info.standard_account_size, STANDARD_SIZE)
+        self.assertEqual(info.account_type, AccountType.PRO.value)
         self.assertEqual(info.account_size, STANDARD_SIZE)
         self.set_size.assert_not_called()
 
-    def test_recorded_size_is_kept_over_the_network_size(self):
-        """Once granted, a size survives later pro moves even if the network size has changed since."""
+    def test_range_bounds_are_inclusive(self):
+        for size, accepted in ((199_999, False), (200_000, True), (1_000_000, True), (1_000_001, False)):
+            with self.subTest(pro_account_size=size):
+                manager = self.manager = _bare_manager()
+                self.set_size = manager._miner_account_client.set_miner_account_size
+                hotkey = _add_standard(manager)
+                if not accepted:
+                    self._assert_rejected_unchanged(hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, size, OUT_OF_RANGE)
+                    continue
+                success, message = manager.apply_bucket_account_size(hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, size)
+                self.assertTrue(success, message)
+                info = self._info(hotkey)
+                self.assertEqual(info.pro_account_size, size)
+                self.assertEqual(info.account_size, size)
+                self.assertEqual(self.set_size.call_args.kwargs["account_size"], size)
+                self.assertEqual(self.set_size.call_args.kwargs["collateral_balance_theta"],
+                                 size / ValiConfig.ENTITY_COST_PER_THETA)
+
+    def test_invalid_explicit_sizes_are_rejected_for_every_target_and_change_nothing(self):
         pro = _add_pro(self.manager)
+        for hotkey in (self.standard, pro):
+            for bucket in PRO_BUCKETS + STANDARD_BUCKETS:
+                for size, reason in INVALID_SIZES:
+                    with self.subTest(hotkey=hotkey, bucket=bucket, pro_account_size=size):
+                        self._assert_rejected_unchanged(hotkey, bucket, size, reason)
+        self.assertIsNone(self._info(self.standard).pro_account_size)
+        self.assertEqual(self._info(pro).pro_account_size, GRANTED_SIZE)
 
-        with patch.object(ValiConfig, "PRO_ACCOUNT_SIZE", GRANTED_SIZE + 1):
-            success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED)
+    def test_reoffer_after_demotion_requires_a_size_again(self):
+        """The size recorded on an earlier pro journey is never silently reused when re-entering the track."""
+        demoted = _add_demoted(self.manager)
+        for bucket in PRO_BUCKETS:
+            with self.subTest(bucket=bucket):
+                self._assert_rejected_unchanged(demoted, bucket, None, REQUIRED)
+        self.assertEqual(self._info(demoted).pro_account_size, GRANTED_SIZE)
 
+        success, message = self.manager.apply_bucket_account_size(
+            demoted, MinerBucket.PRO_CHALLENGE_TRANSITION, 300_000
+        )
         self.assertTrue(success, message)
-        info = self._info(pro)
-        self.assertEqual(info.pro_account_size, GRANTED_SIZE)
-        self.assertEqual(info.account_size, GRANTED_SIZE)
-        self.assertEqual(info.standard_account_size, STANDARD_SIZE)
+        info = self._info(demoted)
+        self.assertEqual(info.pro_account_size, 300_000)
+        self.assertEqual(info.account_type, AccountType.PRO.value)
+        self.assertEqual(info.account_size, STANDARD_SIZE)
 
-    def test_transition_then_promotion_grants_the_size_recorded_at_transition(self):
-        """The admin move records the network size; the miner's own promotion (no size) trades it."""
+    def test_full_journey_offer_demote_reoffer(self):
+        """Offer at 500K, start pro, demote, re-offer: the re-offer needs a size and trades the new one."""
+        hotkey = self.standard
+        apply = self.manager.apply_bucket_account_size
+        self.assertTrue(apply(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE)[0])
+        self.assertTrue(apply(hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD)[0])
+        self.assertEqual(self._info(hotkey).account_size, GRANTED_SIZE)
+        self.assertTrue(apply(hotkey, MinerBucket.SUBACCOUNT_FUNDED)[0])
+        self.assertEqual(self._info(hotkey).account_size, STANDARD_SIZE)
+
+        self._assert_rejected_unchanged(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, None, REQUIRED)
+
+        self.assertTrue(apply(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 250_000)[0])
+        self.assertTrue(apply(hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD)[0])
+        info = self._info(hotkey)
+        self.assertEqual(info.pro_account_size, 250_000)
+        self.assertEqual(info.account_size, 250_000)
+        self.assertEqual(info.standard_account_size, STANDARD_SIZE)
+        self.assertAlmostEqual(self.manager.get_payout_scale(hotkey), STANDARD_SIZE / 250_000)
+
+    # ==================== within the pro track ====================
+
+    def test_move_within_the_track_uses_the_recorded_size(self):
+        pro = _add_pro(self.manager)
+        for bucket in (MinerBucket.PRO_FUNDED, MinerBucket.PRO_CHALLENGE_FROM_STANDARD):
+            with self.subTest(bucket=bucket):
+                success, message = self.manager.apply_bucket_account_size(pro, bucket)
+                self.assertTrue(success, message)
+                info = self._info(pro)
+                self.assertEqual(info.pro_account_size, GRANTED_SIZE)
+                self.assertEqual(info.account_size, GRANTED_SIZE)
+                self.assertEqual(info.standard_account_size, STANDARD_SIZE)
+
+    def test_start_pro_now_trades_the_size_set_at_transition(self):
         self.assertTrue(self.manager.apply_bucket_account_size(
-            self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION)[0])
+            self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE)[0])
 
         success, message = self.manager.apply_bucket_account_size(
             self.standard, MinerBucket.PRO_CHALLENGE_FROM_STANDARD
@@ -232,40 +355,63 @@ class TestApplyBucketAccountSizeDefault(unittest.TestCase):
 
         self.assertTrue(success, message)
         info = self._info(self.standard)
-        self.assertEqual(info.account_size, ValiConfig.PRO_ACCOUNT_SIZE)
+        self.assertEqual(info.account_size, GRANTED_SIZE)
+        self.assertEqual(self.set_size.call_args.kwargs["account_size"], GRANTED_SIZE)
+        self.assertAlmostEqual(self.manager.get_payout_scale(self.standard), STANDARD_SIZE / GRANTED_SIZE)
+
+    def test_move_within_the_track_with_no_recorded_size_is_rejected(self):
+        pro = _add_pro(self.manager)
+        self._info(pro).pro_account_size = None
+        for bucket in PRO_BUCKETS:
+            with self.subTest(bucket=bucket):
+                self._assert_rejected_unchanged(pro, bucket, None, REQUIRED)
+
+    def test_pro_funded_can_re_set_the_size_within_range(self):
+        pro = _add_pro(self.manager)
+
+        self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, 1_000_001, OUT_OF_RANGE)
+        self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, 199_999, OUT_OF_RANGE)
+
+        success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED, 750_000)
+        self.assertTrue(success, message)
+        info = self._info(pro)
+        self.assertEqual(info.pro_account_size, 750_000)
+        self.assertEqual(info.account_size, 750_000)
         self.assertEqual(info.standard_account_size, STANDARD_SIZE)
-        self.assertAlmostEqual(self.manager.get_payout_scale(self.standard),
-                               STANDARD_SIZE / ValiConfig.PRO_ACCOUNT_SIZE)
 
-    def test_failed_account_resize_leaves_a_standard_account_untouched(self):
-        """A pro move whose account resize fails leaves the subaccount standard, with no pro size."""
-        self.set_size.return_value = None
+    def test_recorded_size_is_not_rechecked_against_the_range(self):
+        """A size that was valid when granted keeps working if the range later moves past it."""
+        pro = _add_pro(self.manager)
+        with patch.object(ValiConfig, "MAX_PRO_ACCOUNT_SIZE", 400_000), \
+                patch.object(ValiConfig, "MIN_PRO_ACCOUNT_SIZE", 300_000):
+            success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED)
+        self.assertTrue(success, message)
+        self.assertEqual(self._info(pro).account_size, GRANTED_SIZE)
 
-        for size in (None, GRANTED_SIZE):
-            with self.subTest(pro_account_size=size):
-                success, message = self.manager.apply_bucket_account_size(
-                    self.standard, MinerBucket.PRO_CHALLENGE_DIRECT, size
-                )
+    def test_corrupt_recorded_size_is_rejected_and_changes_nothing(self):
+        for recorded in (float("nan"), float("inf"), 0.0, -1.0):
+            with self.subTest(recorded=recorded):
+                manager = self.manager = _bare_manager()
+                self.set_size = manager._miner_account_client.set_miner_account_size
+                pro = _add_pro(manager)
+                self._info(pro).pro_account_size = recorded
+                self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, None, "Recorded pro_account_size")
 
-                self.assertFalse(success)
-                self.assertIn("Failed to set account size", message)
-                info = self._info(self.standard)
-                self.assertIsNone(info.pro_account_size)
-                self.assertIsNone(info.standard_account_size)
-                self.assertEqual(info.account_type, AccountType.STANDARD.value)
-                self.assertEqual(info.account_size, STANDARD_SIZE)
-                self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
+    def test_explicit_size_replaces_a_corrupt_recorded_one(self):
+        pro = _add_pro(self.manager)
+        self._info(pro).pro_account_size = float("nan")
 
-    def test_failed_account_resize_is_not_written_to_disk(self):
-        self.set_size.return_value = None
-        with patch.object(self.manager, "_write_entities_from_memory_to_disk") as write:
-            self.manager.apply_bucket_account_size(self.standard, MinerBucket.PRO_CHALLENGE_DIRECT)
-        write.assert_not_called()
+        success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED, 600_000)
+
+        self.assertTrue(success, message)
+        self.assertEqual(self._info(pro).pro_account_size, 600_000)
+        self.assertEqual(self._info(pro).account_size, 600_000)
+
+    # ==================== standard buckets ====================
 
     def test_standard_buckets_never_record_a_pro_size(self):
-        for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+        for bucket in STANDARD_BUCKETS:
             with self.subTest(bucket=bucket):
-                # Even a stray explicit size is ignored for a standard bucket
                 success, message = self.manager.apply_bucket_account_size(self.standard, bucket, GRANTED_SIZE)
                 self.assertTrue(success, message)
                 info = self._info(self.standard)
@@ -276,18 +422,10 @@ class TestApplyBucketAccountSizeDefault(unittest.TestCase):
                 self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
         self.set_size.assert_not_called()
 
-    def test_standard_account_payout_scale_is_unaffected_by_the_network_size(self):
-        """Publishing a network size must not give a never-promoted account a payout scale."""
-        for size in (ValiConfig.PRO_ACCOUNT_SIZE, ValiConfig.PRO_ACCOUNT_SIZE - 1):
-            with self.subTest(PRO_ACCOUNT_SIZE=size), patch.object(ValiConfig, "PRO_ACCOUNT_SIZE", size):
-                self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
-                self.assertEqual(self.manager.get_subaccount_dashboard(self.standard)[FIELD], size)
-                self.assertIsNone(self._info(self.standard).pro_account_size)
-
-    def test_demotion_restores_the_standard_size_and_keeps_the_granted_one(self):
+    def test_demotion_restores_the_standard_size_and_ignores_a_sent_size(self):
         pro = _add_pro(self.manager)
 
-        success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.SUBACCOUNT_FUNDED)
+        success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.SUBACCOUNT_FUNDED, 750_000)
 
         self.assertTrue(success, message)
         info = self._info(pro)
@@ -295,17 +433,78 @@ class TestApplyBucketAccountSizeDefault(unittest.TestCase):
         self.assertEqual(info.account_type, AccountType.STANDARD.value)
         self.assertEqual(info.pro_account_size, GRANTED_SIZE)
 
+    # ==================== failed resize ====================
+
+    def test_failed_account_resize_leaves_the_subaccount_untouched(self):
+        self.set_size.return_value = None
+        pro = _add_pro(self.manager)
+        for hotkey, bucket, size in (
+            (self.standard, MinerBucket.PRO_CHALLENGE_DIRECT, GRANTED_SIZE),
+            (pro, MinerBucket.PRO_FUNDED, 750_000),
+            (pro, MinerBucket.SUBACCOUNT_FUNDED, None),
+        ):
+            with self.subTest(hotkey=hotkey, bucket=bucket):
+                before = self._snapshot(hotkey)
+                with patch.object(self.manager, "_write_entities_from_memory_to_disk") as write:
+                    success, message = self.manager.apply_bucket_account_size(hotkey, bucket, size)
+                self.assertFalse(success)
+                self.assertIn("Failed to set account size", message)
+                self.assertEqual(self._snapshot(hotkey), before)
+                write.assert_not_called()
+        self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
+
+
+class TestApplyBucketAccountSizeLog(unittest.TestCase):
+    """The size-change log line says whether a pro size was explicit or recorded."""
+
+    def setUp(self):
+        self.manager = _bare_manager()
+        self.standard = _add_standard(self.manager)
+
+    def _logged(self, hotkey, bucket, pro_account_size=None):
+        with patch("entity_management.entity_manager.logger") as logger:
+            success, message = self.manager.apply_bucket_account_size(hotkey, bucket, pro_account_size)
+        self.assertTrue(success, message)
+        lines = [call.args[0] for call in logger.info.call_args_list if "[ENTITY_MANAGER]" in call.args[0]]
+        self.assertEqual(len(lines), 1, lines)
+        return lines[0]
+
+    def test_explicit_size(self):
+        line = self._logged(self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE)
+        self.assertIn("pro size source: explicit", line)
+        self.assertIn(f"pro=${GRANTED_SIZE}", line)
+
+    def test_recorded_size(self):
+        pro = _add_pro(self.manager)
+        line = self._logged(pro, MinerBucket.PRO_FUNDED)
+        self.assertIn("pro size source: recorded", line)
+        self.assertIn(f"pro=${GRANTED_SIZE}", line)
+
+    def test_explicit_re_set_within_the_track(self):
+        pro = _add_pro(self.manager)
+        line = self._logged(pro, MinerBucket.PRO_FUNDED, 750_000)
+        self.assertIn("pro size source: explicit", line)
+
+    def test_standard_bucket_names_no_source(self):
+        pro = _add_pro(self.manager)
+        for hotkey, bucket, size in ((pro, MinerBucket.SUBACCOUNT_FUNDED, None),
+                                     (self.standard, MinerBucket.SUBACCOUNT_CHALLENGE, GRANTED_SIZE)):
+            with self.subTest(bucket=bucket):
+                self.assertNotIn("source", self._logged(hotkey, bucket, size))
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Dashboards: subaccount_info.default_pro_account_size
+# Dashboards: no default_pro_account_size
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestDashboardDefaultProAccountSize(unittest.TestCase):
+class TestDashboardsCarryNoDefaultProAccountSize(unittest.TestCase):
 
     def setUp(self):
         self.manager = _bare_manager()
         self.standard = _add_standard(self.manager)
         self.pro = _add_pro(self.manager)
+        self.hl = _add_standard(self.manager, subaccount_id=2)
+        self.manager.get_subaccount_info_for_synthetic(self.hl).hl_address = "0x" + "ab" * 20
 
     def _v1_info(self, hotkey):
         return self.manager.get_subaccount_dashboard_data(hotkey)["subaccount_info"]
@@ -321,48 +520,21 @@ class TestDashboardDefaultProAccountSize(unittest.TestCase):
         )
         return dashboard["subaccount_info"]
 
-    def test_v1_publishes_the_network_size_for_standard_and_pro(self):
-        for hotkey in (self.standard, self.pro):
+    def test_v1_subaccount_info(self):
+        for hotkey in (self.standard, self.pro, self.hl):
             with self.subTest(hotkey=hotkey):
-                self.assertEqual(self._v1_info(hotkey)[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
+                self.assertNotIn(REMOVED_FIELD, self._v1_info(hotkey))
 
-    def test_v2_publishes_the_network_size_for_standard_and_pro(self):
-        for hotkey in (self.standard, self.pro):
+    def test_v2_subaccount_info_keeps_the_granted_size(self):
+        for hotkey, granted in ((self.standard, None), (self.pro, GRANTED_SIZE), (self.hl, None)):
             with self.subTest(hotkey=hotkey):
-                self.assertEqual(self._v2_info(hotkey)[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
-
-    def test_v2_keeps_pro_account_size_as_the_granted_size(self):
-        standard = self._v2_info(self.standard)
-        self.assertIsNone(standard["pro_account_size"])
-        self.assertEqual(standard["account_type"], AccountType.STANDARD.value)
-
-        pro = self._v2_info(self.pro)
-        self.assertEqual(pro["pro_account_size"], GRANTED_SIZE)
-        self.assertEqual(pro["account_type"], AccountType.PRO.value)
-        self.assertNotEqual(pro["pro_account_size"], pro[FIELD])
-
-    def test_v1_and_v2_carry_the_same_value_in_the_same_place(self):
-        for hotkey in (self.standard, self.pro):
-            with self.subTest(hotkey=hotkey):
-                self.assertEqual(self._v1_info(hotkey)[FIELD], self._v2_info(hotkey)[FIELD])
-
-    def test_dashboards_follow_a_change_to_the_network_size(self):
-        changed = ValiConfig.PRO_ACCOUNT_SIZE - 1
-        with patch.object(ValiConfig, "PRO_ACCOUNT_SIZE", changed):
-            self.assertEqual(self._v1_info(self.standard)[FIELD], changed)
-            self.assertEqual(self._v2_info(self.standard)[FIELD], changed)
-            # A granted size does not follow it
-            self.assertEqual(self._v2_info(self.pro)["pro_account_size"], GRANTED_SIZE)
-
-    def test_hl_subaccounts_carry_the_field_too(self):
-        hotkey = _add_standard(self.manager, subaccount_id=2)
-        self.manager.get_subaccount_info_for_synthetic(hotkey).hl_address = "0x" + "ab" * 20
-        self.assertEqual(self._v1_info(hotkey)[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
-        self.assertEqual(self._v2_info(hotkey)[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
+                info = self._v2_info(hotkey)
+                self.assertNotIn(REMOVED_FIELD, info)
+                self.assertEqual(info["pro_account_size"], granted)
 
 
-class TestDashboardEndpointsDefaultProAccountSize(unittest.TestCase):
-    """The field on the wire, through the real validator REST handlers and websocket frame builder."""
+class TestDashboardEndpointsCarryNoDefaultProAccountSize(unittest.TestCase):
+    """On the wire, through the real validator REST handlers and websocket frame builder."""
 
     def setUp(self):
         from vanta_api.validator_rest_server import ValidatorRestServer
@@ -386,10 +558,12 @@ class TestDashboardEndpointsDefaultProAccountSize(unittest.TestCase):
         server._limit_order_client = clients["limit_order"]
         server._debt_ledger_client = clients["debt_ledger"]
         server._statistics_client = clients["statistics"]
+        self.server = server
         app = Flask(__name__)
         app.config["TESTING"] = True
         app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(server.get_subaccount_dashboard)
         app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(server.v2_get_subaccount_dashboard)
+        app.route("/hl-traders/<hl_address>", methods=["GET"])(server.get_hl_trader)
         self.client = app.test_client()
 
     def _get(self, path):
@@ -398,22 +572,25 @@ class TestDashboardEndpointsDefaultProAccountSize(unittest.TestCase):
         return json.loads(resp.data)["dashboard"]["subaccount_info"]
 
     def test_v1_endpoint(self):
-        standard = self._get(f"/entity/subaccount/{self.standard}")
-        pro = self._get(f"/entity/subaccount/{self.pro}")
-        self.assertEqual(standard[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
-        self.assertEqual(pro[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
+        for hotkey in (self.standard, self.pro):
+            with self.subTest(hotkey=hotkey):
+                self.assertNotIn(REMOVED_FIELD, self._get(f"/entity/subaccount/{hotkey}"))
 
     def test_v2_endpoint(self):
-        standard = self._get(f"/v2/entity/subaccount/{self.standard}")
-        pro = self._get(f"/v2/entity/subaccount/{self.pro}")
-        self.assertEqual(standard[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
-        self.assertIsNone(standard["pro_account_size"])
-        self.assertEqual(pro[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
-        self.assertEqual(pro["pro_account_size"], GRANTED_SIZE)
+        for hotkey, granted in ((self.standard, None), (self.pro, GRANTED_SIZE)):
+            with self.subTest(hotkey=hotkey):
+                info = self._get(f"/v2/entity/subaccount/{hotkey}")
+                self.assertNotIn(REMOVED_FIELD, info)
+                self.assertEqual(info["pro_account_size"], granted)
 
-    def test_websocket_frames_carry_the_field_on_every_update(self):
-        """The websocket rebuilds subaccount_info in full on each frame, including incremental ones
-        where the watermarked sections have nothing new and are left out."""
+    def test_hl_traders_endpoint(self):
+        self.server._entity_client.get_synthetic_hotkey_for_hl_address.return_value = self.standard
+        info = self._get("/hl-traders/0x" + "ab" * 20)
+        self.assertEqual(info["synthetic_hotkey"], self.standard)
+        self.assertNotIn(REMOVED_FIELD, info)
+
+    def test_websocket_frames(self):
+        """The websocket rebuilds subaccount_info in full on each frame, including incremental ones."""
         from vanta_api.websocket_server import DashboardSubscription, WebSocketServer, WebSocketServerClient
 
         server = object.__new__(WebSocketServer)
@@ -443,7 +620,7 @@ class TestDashboardEndpointsDefaultProAccountSize(unittest.TestCase):
                     server._send_dashboard_update(hotkey, ws_client, subscription)
                     _client, serialized = server._send_serialized.call_args.args
                     info = json.loads(serialized)["data"]["dashboard"]["subaccount_info"]
-                    self.assertEqual(info[FIELD], ValiConfig.PRO_ACCOUNT_SIZE)
+                    self.assertNotIn(REMOVED_FIELD, info)
                     self.assertEqual(info["pro_account_size"], granted)
 
 

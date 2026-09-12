@@ -17,6 +17,7 @@ Pattern follows ChallengePeriodManager:
 - Local dicts (NOT IPC) for performance
 - Disk persistence via JSON
 """
+import math
 import re
 import uuid
 import time
@@ -25,7 +26,7 @@ from typing import Dict, Optional, Tuple, List
 from pydantic import BaseModel, Field
 
 import template.protocol
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.miner_account.account_snapshot import read_all_snapshots, DEFAULT_TOLERANCE_MS
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
@@ -778,9 +779,17 @@ class EntityManager(ValidatorBroadcastBase):
         recorded; every other pro bucket switches the live account size to the pro size.
         Returning to a standard bucket restores the standard size.
 
-        The granted pro size is, in order: the explicit pro_account_size, the size already recorded
-        on the subaccount, then the network's ValiConfig.PRO_ACCOUNT_SIZE. Standard buckets never
-        write pro_account_size, so a standard account that was never promoted keeps None.
+        There is no network default pro size. The admin sets it when offering the pro track
+        (POST /admin/miner-bucket/<hotkey>), and this is the last check before it is stored:
+          * An explicit pro_account_size, for any target, must be an int or float (not a bool),
+            finite, and within [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE].
+          * Entering the pro track from a subaccount whose account_type is not "pro" requires an
+            explicit size. A size recorded on an earlier pro journey, which a demotion keeps, is never
+            reused: a re-offer needs a size again.
+          * A move within the pro track uses the explicit size when one is sent (the admin re-setting
+            it, e.g. on PRO_FUNDED), else the size recorded when the subaccount entered the track
+            (Start Pro Now and the organic promotions send none). With neither, the move is rejected.
+          * A standard bucket never records a pro size; an explicit one is ignored.
 
         Nothing is stored until every step has succeeded, so a rejected or failed move leaves the
         subaccount exactly as it was: a standard account never picks up a pro size or the pro
@@ -793,20 +802,36 @@ class EntityManager(ValidatorBroadcastBase):
         if subaccount is None:
             return False, f"{synthetic_hotkey} is not a known subaccount"
 
+        if pro_account_size is not None:
+            size_error = pro_account_size_error(pro_account_size)
+            if size_error:
+                return False, size_error
+
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
 
         # Work out the new sizes without touching the stored subaccount
         standard_account_size = subaccount.standard_account_size
+        # Where the pro size came from ("explicit" or "recorded"), for the log; None for standard buckets
+        pro_size_source = None
         if target_bucket.is_pro_track:
-            if pro_account_size is None:
+            if pro_account_size is not None:
+                pro_size_source = "explicit"
+            elif subaccount.account_type == AccountType.PRO.value and subaccount.pro_account_size is not None:
                 pro_account_size = subaccount.pro_account_size
-            if pro_account_size is None:
-                pro_account_size = ValiConfig.PRO_ACCOUNT_SIZE
-            if pro_account_size > ValiConfig.MAX_PRO_ACCOUNT_SIZE:
-                return False, (
-                    f"Account size ${pro_account_size} exceeds maximum allowed "
-                    f"${ValiConfig.MAX_PRO_ACCOUNT_SIZE}"
-                )
+                pro_size_source = "recorded"
+                # A recorded size passed the range check when it was set, and is not re-checked against
+                # today's range so a later range change cannot strand a pro account mid-journey. It must
+                # still be a usable number: never trade a corrupt one.
+                if (isinstance(pro_account_size, bool)
+                        or not isinstance(pro_account_size, (int, float))
+                        or (isinstance(pro_account_size, float) and not math.isfinite(pro_account_size))
+                        or pro_account_size <= 0):
+                    return False, (
+                        f"Recorded pro_account_size {pro_account_size!r} for {synthetic_hotkey} is not a "
+                        f"finite positive number; send an explicit pro_account_size"
+                    )
+            else:
+                return False, "pro_account_size is required to enter the pro track"
             if standard_account_size is None:
                 standard_account_size = subaccount.account_size
             account_type = AccountType.PRO.value
@@ -842,11 +867,93 @@ class EntityManager(ValidatorBroadcastBase):
                 entity_data.subaccounts[subaccount_id] = subaccount
         self._write_entities_from_memory_to_disk()
 
+        pro_size_note = f" (pro size source: {pro_size_source})" if pro_size_source else ""
         logger.info(
             f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}: account_size=${subaccount.account_size}, "
-            f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}"
+            f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}"
         )
         return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
+
+    def snapshot_bucket_account_size(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        The four sizing fields apply_bucket_account_size writes, read before it runs.
+
+        Take one before an apply and hand it to restore_bucket_account_size if the bucket move that
+        follows then fails. A plain dict, so it crosses the EntityClient RPC hop unchanged.
+        """
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None:
+            return None
+        return {
+            "account_size": subaccount.account_size,
+            "standard_account_size": subaccount.standard_account_size,
+            "pro_account_size": subaccount.pro_account_size,
+            "account_type": subaccount.account_type,
+        }
+
+    def restore_bucket_account_size(self, synthetic_hotkey: str, snapshot: dict) -> Tuple[bool, str]:
+        """
+        Undo an apply_bucket_account_size whose bucket move then failed.
+
+        apply_bucket_account_size commits: it resizes the live account and writes the record to disk
+        before its caller moves the bucket. A failed move would otherwise leave a standard subaccount
+        marked "pro" with a pro size on record, and the size-less branch of the next offer is gated on
+        exactly that marking — so a re-offer with the size field blank would silently reuse the stale
+        size instead of demanding one. Worse, an entry that trades the pro size (PRO_CHALLENGE_DIRECT,
+        PRO_CHALLENGE_FROM_STANDARD) would leave the account live at that size in a bucket that never
+        moved.
+
+        `snapshot` is what snapshot_bucket_account_size returned before the apply. The live account size
+        is put back first and the record is left untouched if that fails: a record restored behind a
+        still-resized account is a silent divergence no later move heals (a move back to the recorded
+        size finds nothing to do), whereas a subaccount left marked pro is loudly wrong and re-syncs on
+        the next demotion.
+        """
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None:
+            return False, f"{synthetic_hotkey} is not a known subaccount"
+        if not snapshot or "account_size" not in snapshot:
+            return False, f"No account size snapshot to restore for {synthetic_hotkey}"
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        previous_account_size = snapshot["account_size"]
+
+        if previous_account_size != subaccount.account_size:
+            cpt = (ValiConfig.ENTITY_COST_PER_THETA_LOW
+                   if previous_account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD
+                   else ValiConfig.ENTITY_COST_PER_THETA)
+            record = self._miner_account_client.set_miner_account_size(
+                synthetic_hotkey,
+                collateral_balance_theta=previous_account_size / cpt,
+                timestamp_ms=TimeUtil.now_in_millis(),
+                account_size=previous_account_size,
+            )
+            if not record:
+                logger.error(
+                    f"[ENTITY_MANAGER] {synthetic_hotkey} rollback FAILED: the live account is still "
+                    f"${subaccount.account_size}, not ${previous_account_size}. Leaving the record as it "
+                    f"is rather than diverging from the account; the subaccount stays marked "
+                    f"{subaccount.account_type} outside the bucket that never moved"
+                )
+                return False, f"Failed to restore account size for {synthetic_hotkey}"
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            subaccount.account_size = previous_account_size
+            subaccount.standard_account_size = snapshot.get("standard_account_size")
+            subaccount.pro_account_size = snapshot.get("pro_account_size")
+            subaccount.account_type = snapshot.get("account_type", AccountType.STANDARD.value)
+            entity_data = self.entities.get(entity_hotkey)
+            if entity_data:
+                entity_data.subaccounts[subaccount_id] = subaccount
+        self._write_entities_from_memory_to_disk()
+
+        logger.info(
+            f"[ENTITY_MANAGER] {synthetic_hotkey} sizing rolled back after a failed bucket move: "
+            f"account_size=${subaccount.account_size}, standard=${subaccount.standard_account_size}, "
+            f"pro=${subaccount.pro_account_size}, account_type={subaccount.account_type}"
+        )
+        return True, f"{synthetic_hotkey} account size restored to ${subaccount.account_size}"
 
     def get_payout_scale(self, synthetic_hotkey: str) -> float:
         """
@@ -1217,9 +1324,6 @@ class EntityManager(ValidatorBroadcastBase):
                 "account_size": subaccount.account_size,
                 "standard_account_size": subaccount.standard_account_size,
                 "pro_account_size": subaccount.pro_account_size,
-                # The size a pro promotion grants, published for every subaccount so a UI can show it
-                # before promotion. pro_account_size above stays the granted size (None until promoted).
-                "default_pro_account_size": ValiConfig.PRO_ACCOUNT_SIZE,
                 "account_type": subaccount.account_type,
                 "status": subaccount.status,
                 "created_at_ms": subaccount.created_at_ms,
@@ -1655,8 +1759,6 @@ class EntityManager(ValidatorBroadcastBase):
             'subaccount_uuid': subaccount.subaccount_uuid,
             'asset_class': subaccount.asset_class,
             'account_size': subaccount.account_size,
-            # Same field, same place as the v2 subaccount_info: the size a pro promotion grants
-            'default_pro_account_size': ValiConfig.PRO_ACCOUNT_SIZE,
             'status': subaccount.status,
             'created_at_ms': subaccount.created_at_ms,
             'eliminated_at_ms': subaccount.eliminated_at_ms,

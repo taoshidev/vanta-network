@@ -763,9 +763,10 @@ class ChallengePeriodManager(CacheController):
     ) -> tuple[bool, str]:
         """Promote a subaccount out of PRO_CHALLENGE_TRANSITION on the miner's own request
 
-        pro_account_size is an optional override for the size of the granted pro account. Sending
-        none keeps the size recorded when the miner entered the transition, or grants the network's
-        ValiConfig.PRO_ACCOUNT_SIZE when none is recorded (see EntityManager.apply_bucket_account_size).
+        The pro account size is the one the admin set when offering the transition. The miner-signed
+        POST /entity/subaccount/pro-transition never passes pro_account_size (a request carrying one is
+        rejected before it gets here), so None keeps the recorded size; a subaccount with no recorded
+        size is rejected (see EntityManager.apply_bucket_account_size).
         """
         state = self.miner_states.get(hotkey)
         if state is None:
@@ -777,7 +778,11 @@ class ChallengePeriodManager(CacheController):
         target_bucket = MinerBucket.PRO_CHALLENGE_TRANSITION.next_bucket
         logger.info(f"[CHALLENGE] pro transition requested (pro_account_size={pro_account_size}): {state}")
 
-        # Record the granted pro size first: the account switch reads it back to size the new account
+        # Record the granted pro size first: the account switch reads it back to size the new account.
+        # That commits, and PRO_CHALLENGE_FROM_STANDARD trades the pro size, so snapshot it first: a
+        # failed move would otherwise leave the subaccount holding the pro size while still in
+        # PRO_CHALLENGE_TRANSITION, which is supposed to keep trading the standard account.
+        sizing_snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
         success, message = self._entity_client.apply_bucket_account_size(
             hotkey, target_bucket, pro_account_size
         )
@@ -785,7 +790,26 @@ class ChallengePeriodManager(CacheController):
             logger.warning(f"[CHALLENGE] pro transition rejected for {hotkey}: {message}")
             return False, message
 
-        return self.admin_set_bucket(hotkey, target_bucket, current_time_ms)
+        try:
+            success, message = self.admin_set_bucket(hotkey, target_bucket, current_time_ms)
+        except Exception:
+            self._restore_bucket_account_size(hotkey, sizing_snapshot)
+            raise
+        if not success:
+            self._restore_bucket_account_size(hotkey, sizing_snapshot)
+        return success, message
+
+    def _restore_bucket_account_size(self, hotkey: str, sizing_snapshot: dict | None) -> None:
+        """Put a committed apply_bucket_account_size back when the bucket move it was for did not
+        happen. A no-op without a snapshot, and never allowed to mask the failure it is cleaning up."""
+        if not sizing_snapshot:
+            return
+        try:
+            restored, message = self._entity_client.restore_bucket_account_size(hotkey, sizing_snapshot)
+            if not restored:
+                logger.error(f"[CHALLENGE] could not roll back the account size for {hotkey}: {message}")
+        except Exception as restore_error:
+            logger.error(f"[CHALLENGE] could not roll back the account size for {hotkey}: {restore_error}")
 
     def can_admin_set_bucket(self, hotkey: str, bucket: MinerBucket) -> tuple[bool, str]:
         """Report whether admin_set_bucket would reject this move, without changing anything."""

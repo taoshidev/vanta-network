@@ -1295,11 +1295,10 @@ class EntityMinerRestServer(MinerRestServer):
             "synthetic_hotkey": "<entity_hotkey>_<id>"   // Required
         }
 
-        The pro account size is set by the network: omit pro_account_size (the Vanta UI always does)
-        and the subaccount is promoted on the size recorded when it entered the transition, which is
-        the network's ValiConfig.PRO_ACCOUNT_SIZE (published as subaccount_info.default_pro_account_size)
-        unless an admin granted a different size. An explicit "pro_account_size" (USD, positive, at most
-        ValiConfig.MAX_PRO_ACCOUNT_SIZE) is still accepted, signed, and forwarded as an override.
+        The subaccount is promoted on the pro account size the admin set when offering the transition.
+        A miner cannot choose or change it: a request that includes "pro_account_size" at all (even null)
+        is rejected with a 400 before anything is signed or sent to the validator, which would reject it
+        too. Only the validator's admin endpoint POST /admin/miner-bucket/<hotkey> sets a pro account size.
 
         Every open position is closed, every pending limit order is cancelled, and the ledgers restart
         on the pro account, so this cannot be undone.
@@ -1318,26 +1317,20 @@ class EntityMinerRestServer(MinerRestServer):
         if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
             return jsonify({'status': 'error', 'message': 'synthetic_hotkey must be a non-empty string'}), 400
 
-        send_size = "pro_account_size" in request_data
-        pro_account_size = request_data.get("pro_account_size")
-        if send_size:
-            if (not isinstance(pro_account_size, (int, float))
-                    or isinstance(pro_account_size, bool)
-                    or pro_account_size <= 0):
-                return jsonify({'status': 'error', 'message': 'pro_account_size must be a positive number'}), 400
-            if pro_account_size > ValiConfig.MAX_PRO_ACCOUNT_SIZE:
-                return jsonify({
-                    'status': 'error',
-                    'message': (f'pro_account_size ${pro_account_size} exceeds maximum allowed '
-                                f'${ValiConfig.MAX_PRO_ACCOUNT_SIZE}')
-                }), 400
+        # The admin sets the pro account size; never sign or forward a miner-chosen one
+        if "pro_account_size" in request_data:
+            return jsonify({
+                'status': 'error',
+                'message': ('pro_account_size is not accepted: the pro account size is set by the admin when '
+                            'offering the pro track (validator POST /admin/miner-bucket/<hotkey>), and '
+                            'promoting out of PRO_CHALLENGE_TRANSITION keeps it'),
+            }), 400
 
         if not self._coldkey or not self._hotkey or not self._validator_url:
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
 
         try:
             # The validator rebuilds this exact dict to verify; nonce + timestamp make it single use.
-            # pro_account_size is part of the signature only when the miner sent one.
             signed_fields = {
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address,
@@ -1345,8 +1338,6 @@ class EntityMinerRestServer(MinerRestServer):
                 "nonce": uuid.uuid4().hex,
                 "timestamp": int(time.time() * 1000),
             }
-            if send_size:
-                signed_fields["pro_account_size"] = pro_account_size
             message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
         except Exception as e:
