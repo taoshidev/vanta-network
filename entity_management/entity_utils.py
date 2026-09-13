@@ -116,6 +116,27 @@ def pro_account_size_error(pro_account_size) -> Optional[str]:
     return None
 
 
+def attach_correlated_exposure_report(account_size_data: dict | None) -> None:
+    """Expand a pro account's stored correlated exposure into limits and remaining room.
+
+    The account carries raw gross [long, short] per group; a client also needs the cap and the
+    headroom, which are a function of the account's balance. Non-pro accounts get nothing, and a
+    pro account with no exposure gets an empty `groups` so a client can tell the two apart.
+    """
+    if not account_size_data or not account_size_data.get("is_pro"):
+        return
+    # Local import: leverage_utils -> miner_account_manager -> this module.
+    from vali_objects.utils.leverage_utils import build_correlated_exposure_report
+
+    exposures = {
+        group_key: (sides[0], sides[1])
+        for group_key, sides in (account_size_data.get("correlated_exposure_by_group") or {}).items()
+    }
+    account_size_data["correlated_exposures"] = build_correlated_exposure_report(
+        exposures, account_size_data.get("balance", 0.0)
+    )
+
+
 def create_subaccount_dashboard(
     synthetic_hotkey: str,
     subaccount_dashboard: dict | None,
@@ -153,6 +174,7 @@ def create_subaccount_dashboard(
     add_to_dashboard("pro_stats", challenge_period_client.get_pro_stats)
     add_to_dashboard("elimination", elimination_client.get_dashboard)
     add_to_dashboard("account_size_data", miner_account_client.get_dashboard)
+    attach_correlated_exposure_report(dashboard.get("account_size_data"))
     add_to_dashboard("positions", position_client.get_dashboard, positions_time_ms)
     add_to_dashboard("limit_orders", limit_order_client.get_dashboard, limit_orders_time_ms)
     add_to_dashboard("ledger", debt_ledger_client.get_dashboard, checkpoints_time_ms)

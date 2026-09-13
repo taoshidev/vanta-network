@@ -27,6 +27,25 @@ from shared_objects.locks.position_lock_client import PositionLockClient
 from shared_objects.log import logger
 
 
+class OrderExecution:
+    """Result of execute_order: the filled order, its position, and what capped its size.
+
+    Iterates as (order, position) so existing two-value unpacking keeps working; `binding_cap`
+    is set only when a cap actually shrank the order, and is how a client learns an order was
+    sized down rather than filled as requested.
+    """
+
+    __slots__ = ("order", "position", "binding_cap")
+
+    def __init__(self, order, position, binding_cap=None):
+        self.order = order
+        self.position = position
+        self.binding_cap = binding_cap
+
+    def __iter__(self):
+        return iter((self.order, self.position))
+
+
 class MarketOrderManager():
 
     def __init__(self, serve:bool, running_unit_tests=False, connection_mode=RPCConnectionMode.RPC):
@@ -130,7 +149,7 @@ class MarketOrderManager():
                     is_pro=bool(miner_account.miner_bucket and miner_account.miner_bucket.is_pro),
                 )
 
-            order = self._apply_order(
+            order, binding_cap = self._apply_order(
                 position, miner_account,
                 execution_type, order_type, order_size,
                 order_uuid, now_ms, price_sources, order_src,
@@ -138,7 +157,7 @@ class MarketOrderManager():
                 slippage, is_hl_taker
             )
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
-            return order, position
+            return OrderExecution(order, position, binding_cap)
 
     def _apply_order(
         self,
@@ -190,6 +209,9 @@ class MarketOrderManager():
             quantity, leverage, value = -position.net_quantity, -position.net_leverage, -position.net_value
 
         is_buy = order_type == position.position_type
+        # add_order can flip this to FLAT, and correlated exposure has to be released from the
+        # side the position was actually on.
+        prev_position_type = position.position_type
 
         if is_buy and miner_account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
             raise SignalException(
@@ -197,13 +219,9 @@ class MarketOrderManager():
                 "existing ones - close your open positions to begin trading your Pro Account."
             )
 
-        # Correlated-exposure limits require all open positions (pro only)
-        open_positions = None
-        if is_buy and miner_account.miner_bucket and miner_account.miner_bucket.is_pro:
-            stored = self._position_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
-            open_positions = [p for p in stored if p.trade_pair != trade_pair] + [position]
+        binding_cap = None
         if is_buy:
-            max_order_value, binding_cap = get_max_order_size(miner_account, position, open_positions=open_positions)
+            max_order_value, binding_cap = get_max_order_size(miner_account, position)
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} max_order_value=${max_order_value:.4f}")
 
             if max_order_value <= 0:
@@ -223,6 +241,9 @@ class MarketOrderManager():
                     use_floor=True,
                     use_nano_increment=use_nano_increment,
                 )
+            else:
+                # Nothing was cut, so there is no cap worth reporting.
+                binding_cap = None
 
         if abs(value) < 1e-9 or abs(quantity) < 1e-9:
             raise SignalException("Error processing order: 0 order size after clamping")
@@ -264,7 +285,8 @@ class MarketOrderManager():
 
         if is_buy:
             self._miner_account_client.process_order_buy(
-                hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category
+                hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category,
+                trade_pair=trade_pair, position_type=prev_position_type,
             )
         else:
             entry_value = abs(order.quantity) * trade_pair.lot_size * position.average_entry_price * order.quote_usd_rate
@@ -272,6 +294,7 @@ class MarketOrderManager():
             self._miner_account_client.process_order_sell(
                 hotkey, entry_value, realized_pnl, loan_repaid, transaction_fee, trade_pair.trade_pair_category,
                 unrealized_pnl_released=unrealized_pnl_released,
+                trade_pair=trade_pair, position_type=prev_position_type,
             )
 
         self._position_client.save_miner_position(position)
@@ -281,7 +304,7 @@ class MarketOrderManager():
         if self.serve:
             self.websocket_notifier.broadcast_position_update(position)
 
-        return order
+        return order, binding_cap
 
     def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
         logger.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")

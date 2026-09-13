@@ -336,12 +336,10 @@ class TestStandardTierOrderPath(unittest.TestCase):
 
     # ---- legacy curve untouched ----
 
-    def test_hl_and_pro_accounts_keep_legacy_values(self):
+    def test_hl_accounts_keep_legacy_values(self):
         cases = (
             (MinerBucket.SUBACCOUNT_CHALLENGE, MinerAssetClass.HL_ALL, self.HL_ADDRESS),
             (MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.HL_ALL, self.HL_ADDRESS),
-            (MinerBucket.PRO_CHALLENGE_DIRECT, MinerAssetClass.ALL_MARKETS, None),
-            (MinerBucket.PRO_FUNDED, MinerAssetClass.ALL_MARKETS, None),
         )
         for bucket, asset_class, hl in cases:
             with self.subTest(bucket=bucket, asset_class=asset_class):
@@ -355,15 +353,26 @@ class TestStandardTierOrderPath(unittest.TestCase):
                 expected = self.SIZE * get_legacy_tier_positional_leverage(legacy_tier, TradePair.BTCUSDC)
                 self.assertAlmostEqual(max_value, expected, places=2)
 
+    def test_pro_accounts_use_the_flat_pro_tables(self):
+        """Pro runs neither curve in this file: its own flat table, with no tier dimension."""
+        from vali_objects.utils.leverage_utils import get_pro_positional_leverage
+
+        for bucket in (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED):
+            with self.subTest(bucket=bucket):
+                account = self._account(bucket, MinerAssetClass.ALL_MARKETS)
+                self.assertEqual(account.multiplier, ValiConfig.PRO_PORTFOLIO_LEVERAGE)
+                max_value, _ = get_max_order_size(account, self._position(TradePair.BTCUSDC))
+                expected = self.SIZE * get_pro_positional_leverage(TradePair.BTCUSDC)
+                self.assertAlmostEqual(max_value, expected, places=2)
+
     def test_pro_promoted_account_ignores_its_old_tier(self):
+        """A subaccount promoted to pro keeps a stored leverage_tier that must not be applied."""
+        from vali_objects.utils.leverage_utils import get_pro_positional_leverage
+
         account = self._account(MinerBucket.PRO_FUNDED, MinerAssetClass.CRYPTO, leverage_tier=3)
-        legacy_tier = get_legacy_leverage_tier(MinerBucket.PRO_FUNDED, self.SIZE)
-        self.assertEqual(
-            account.multiplier,
-            ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[legacy_tier][MinerAssetClass.CRYPTO],
-        )
+        self.assertEqual(account.multiplier, ValiConfig.PRO_PORTFOLIO_LEVERAGE)
         max_value, _ = get_max_order_size(account, self._position(TradePair.BTCUSDC))
-        expected = self.SIZE * get_legacy_tier_positional_leverage(legacy_tier, TradePair.BTCUSDC)
+        expected = self.SIZE * get_pro_positional_leverage(TradePair.BTCUSDC)
         self.assertAlmostEqual(max_value, expected, places=2)
 
     def test_regular_miner_unchanged(self):

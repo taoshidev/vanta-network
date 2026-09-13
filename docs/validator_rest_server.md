@@ -378,6 +378,20 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "commodities": 3.0, "all_markets": 25.0}
     }
   },
+  "is_pro": false,
+  "pro": {
+    "allowed_trade_pair_ids": ["EURUSD", "NVDA", "SPY", "..."],
+    "class_leverage": {"crypto": 6.0, "equities": 6.0, "commodities": 8.0, "indices": 10.0, "forex": 35.0},
+    "portfolio_leverage": 40.0,
+    "default_positional_leverage": 1.0,
+    "basis": "gross_per_side",
+    "denominator": "balance",
+    "correlation_limits": {"currency:USD": 30.0, "currency:NZD": 20.0, "sector:Information Technology": 3.0, "index:us": 25.0},
+    "currency_limits": {"USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0, "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 20.0},
+    "sector_limit": 3.0,
+    "us_index_limit": 25.0,
+    "us_index_trade_pair_ids": ["DIA", "IWM", "QQQ", "SP500USDC", "SPY", "XYZ100USDC"]
+  },
   "timestamp": 1749234567890
 }
 ```
@@ -386,6 +400,13 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 - `allowed`: Trade pairs that can open and close positions. Includes all active Vanta pairs and hardcoded HyperLiquid pairs (and, when `asset_class` is given, only those tradeable by that asset class).
 - `disabled`: Trade pairs that are fully blocked (`is_blocked`) or excluded by the `asset_class` filter — neither opening nor closing is permitted.
 - `standard_leverage_tiers`: Per-class and portfolio caps (multiples of balance) for standard subaccounts, keyed by leverage tier `1` to `3`; `portfolio` is keyed by the subaccount's own asset class. See [entity_miner.md](entity_miner.md#leverage-limits).
+- `is_pro`: Echoes the resolved `is_pro` query flag, so a cached payload says which universe it describes.
+- `pro`: Everything a pro account is sized against.
+  - `allowed_trade_pair_ids`: The pro universe (`TradePair.is_pro`), reviewed quarterly.
+  - `class_leverage` / `portfolio_leverage`: Per-asset-class and overall caps. Pro runs its own **flat** tables — neither `standard_leverage_tiers` nor the legacy curve applies, and there is no tier to key on.
+  - `default_positional_leverage`: What a pro-tradable pair the spec does not name falls back to. See [pro_leverage_discrepancies.md](pro_leverage_discrepancies.md) for which pairs currently hit it.
+  - `correlation_limits`: Per-side cap for every correlation group, keyed the same way as each pair's `correlation_legs`. `currency_limits`, `sector_limit` and `us_index_limit` are the same values split by group type.
+  - `basis` / `denominator`: Correlated caps apply to **gross long and gross short independently** (never netted) as a multiple of the account's live `balance` — not `account_size` — and are checked **only on orders that open or increase** a position.
 - `timestamp`: Response timestamp in milliseconds
 
 **Per-pair fields:**
@@ -397,6 +418,10 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 - `min_leverage` / `max_leverage`: Leverage bounds for this pair
 - `subaccount_positional_leverage_by_tier`: Legacy per-tier (1–4) positional leverage multiplier, used by HL-linked subaccounts
 - `standard_positional_leverage_by_tier`: Per-tier (1–3) positional leverage multiplier for standard subaccounts (a subaccount without a stored `leverage_tier` counts as tier 1)
+- `pro_positional_leverage`: Positional leverage multiplier for pro accounts. A single value, not a per-tier map — the pro curve is flat
+- `exposure_group`: The pair's correlated-exposure sector (e.g. `"Information Technology"`), or `null` for pairs in no sector. Broad-market and country ETFs (SPY, QQQ, EFA, VT, …) are deliberately in none
+- `correlation_legs`: What a **long** position in this pair contributes to, as `[{"group", "direction"}]`. Forex contributes base `+1` / quote `-1` for the eight limited currencies only (so `USDMXN` yields a USD leg alone, and `XAUUSD`/`XAGUSD` yield a `-1` USD leg); equities contribute one sector leg; US index pairs and broad US ETFs contribute one `index:us` leg. Empty for pairs in no group
+- `pro_carry_fee_rate_per_interval`: Carry rate a pro account pays on this pair. `0` for Hyperliquid-sourced pairs, which pay live HL funding instead. Pro transaction/spread fees are identical to standard
 - `lot_size`: Present only for a handful of Hyperliquid commodity pairs (e.g. `GOLDUSDC`); UI convenience field, not used in any network calculation
 
 **Example:**
@@ -1986,7 +2011,25 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "capital_used": 0.0,
       "balance": 98339.3684339573,
       "buying_power": 122924.21054244661,
-      "max_return": 1.0
+      "max_return": 1.0,
+      // Which leverage curve this account trades and where it sits on it. `leverage_tier` is the
+      // *standard* tier and is null for pro accounts, so size against `tier` + `tier_curve`
+      // instead, pairing them with the matching table in GET /trade-pairs.
+      "is_pro": false,
+      "tier_curve": "standard",
+      "tier": 1,
+      "portfolio_multiplier": 15.0,
+      // Raw gross [long, short] USD per correlation group. Pro accounts only; see
+      // `correlated_exposures` below for the same data with limits and remaining room.
+      "correlated_exposure_by_group": {},
+      // Pro accounts only. Omitted entirely for non-pro; present with an empty `groups` for a
+      // pro account carrying no exposure. Caps are per side against `balance`.
+      "correlated_exposures": {
+        "basis": "gross_per_side",
+        "denominator": "balance",
+        "balance": 98339.37,
+        "groups": {}
+      }
     },
     "positions": {
       // positions is only included if there are open positions or closed positions newer
@@ -2583,6 +2626,72 @@ Returns the trading limits for a Hyperliquid subaccount based on its account siz
 **Example:**
 ```bash
 curl http://localhost:48888/hl-traders/0xabcd1234.../limits
+```
+
+<a id="get-subaccount-limits"></a>
+### Get Subaccount Limits
+
+`GET /subaccounts/<synthetic_hotkey>/limits`
+
+Every limit an order against this subaccount is sized against, in one call. This is the Vanta-native counterpart to `GET /hl-traders/<hl_address>/limits`, which is reachable only by Hyperliquid address and so cannot serve pro accounts (they are Vanta-native and have no `hl_address`).
+
+All USD figures are against the live `balance`, which is what the order path applies — **not** the static `account_size`. Per-pair caps are not repeated here: pair the `tier_curve` below with the matching table in [`GET /trade-pairs`](#get-allowed-trade-pairs) — `pro_positional_leverage` on the pro curve, `standard_positional_leverage_by_tier` on the standard one, `subaccount_positional_leverage_by_tier` on the legacy one.
+
+**Authentication:** API key required (same tier as the v2 dashboard). Unlike the HL limits endpoint this one is authenticated, because it reports entity collateral.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "account_type": "pro",
+  "bucket": "PRO_FUNDED",
+  "asset_class": "all_markets",
+  "account_size": 400000.0,
+  "balance": 412350.11,
+  "buying_power": 7422301.98,
+  "in_challenge_period": false,
+  "is_pro": true,
+  "tier_curve": "pro",
+  "tier": null,
+  "portfolio_multiplier": 40.0,
+  "max_portfolio_usd": 16494004.4,
+  "max_asset_class_usd": {"crypto": 2474100.66, "equities": 2474100.66, "commodities": 3298800.88, "indices": 4123501.1, "forex": 14432253.85},
+  "capital_used": 0.0,
+  "capital_used_by_class": {},
+  "correlation_limits": {
+    "basis": "gross_per_side",
+    "denominator": "balance",
+    "balance": 412350.11,
+    "groups": {
+      "currency:EUR": {
+        "limit_multiplier": 30.0, "limit_usd": 12370503.3,
+        "gross_long_usd": 8247002.2, "gross_short_usd": 0.0,
+        "long_room_usd": 4123501.1, "short_room_usd": 12370503.3
+      }
+    }
+  },
+  "entity_collateral": {
+    "entity_hotkey": "entity_alpha",
+    "headroom_theta": 100.0,
+    "headroom_usd": 3500.0,
+    "subaccount_margin_usd": 1234.0
+  },
+  "timestamp": 1702345690000
+}
+```
+
+**Response fields:**
+- `tier_curve`: `"pro"`, `"standard"` or `"legacy"` — which table in `/trade-pairs` to size against. Every pro bucket is `"pro"`; `PRO_CHALLENGE_TRANSITION` is `"standard"`, because it still trades the standard account.
+- `tier`: The effective tier on that curve, and **`null` on the pro curve**, which is flat and has no tier dimension — do not fall back to a tiered table for it. Note this is not `leverage_tier`, which is the *standard* tier and is `null` for pro accounts.
+- `max_asset_class_usd`: Per-asset-class exposure cap in USD, from the account's own curve.
+- `correlation_limits`: Present for pro accounts only. Groups with no exposure are omitted — they are at full room, which a client fills from `pro.correlation_limits` in `/trade-pairs`. A pro account with no exposure at all still returns the block with an empty `groups`, so "pro with nothing open" is distinguishable from "not pro".
+- `entity_collateral.headroom_theta`: The parent entity's spare collateral (deposited minus what all its subaccounts require). **`null` means the entity's balance is unknown, not that there is no headroom** — do not render it as zero.
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     http://localhost:48888/subaccounts/5GhDr3xy...abc_0/limits
 ```
 
 ### Get HL Leaderboard

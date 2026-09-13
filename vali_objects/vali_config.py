@@ -623,6 +623,38 @@ class ValiConfig:
         3: {MinerAssetClass.CRYPTO: 2.5, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 3.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.ALL_MARKETS: 25.0},
     }
 
+    # Per-pair positional leverage.
+    PRO_CRYPTO_POSITIONAL_LEVERAGE = {
+        "BTC": 5.0, "ETH": 5.0, "SOL": 5.0, "XRP": 5.0, "DOGE": 5.0,
+        "HYPE": 2.0, "SUI": 2.0, "BNB": 2.0,
+        "kPEPE": 1.5, "ADA": 1.5, "ZEC": 1.5, "LINK": 1.5,
+        "LTC": 1.0, "AVAX": 1.0, "TRX": 1.0,
+    }
+    PRO_COMMODITY_POSITIONAL_LEVERAGE = {
+        "WTIOILUSDC": 8.0, "COPPERUSDC": 8.0, "GOLDUSDC": 8.0, "NATGASUSDC": 8.0,
+        "SILVERUSDC": 5.0, "PLATINUMUSDC": 5.0,
+    }
+    PRO_INDEX_POSITIONAL_LEVERAGE = {
+        "SP500USDC": 10.0, "XYZ100USDC": 10.0, "EWYUSDC": 5.0,
+    }
+    PRO_EQUITIES_POSITIONAL_LEVERAGE = 2.0
+    PRO_FX_POSITIONAL_LEVERAGE = 20.0
+    # The six NZD crosses in STANDARD_FX_NZD_CROSS_IDS are held to half the major FX limit.
+    PRO_FX_NZD_CROSS_POSITIONAL_LEVERAGE = 10.0
+    
+    # Per-asset-class exposure cap.
+    PRO_CLASS_LEVERAGE = {
+        TradePairCategory.CRYPTO: 6.0,
+        TradePairCategory.EQUITIES: 6.0,
+        TradePairCategory.COMMODITIES: 8.0,
+        TradePairCategory.INDICES: 10.0,
+        TradePairCategory.FOREX: 35.0,
+    }
+
+    # Overall portfolio cap. A single number, not a per-asset-class row: pro accounts are
+    # all_markets in practice and the cap does not vary by asset class.
+    PRO_PORTFOLIO_LEVERAGE = 40.0
+
     # Correlated-exposure limits, pro accounts only. Multiples of account balance, applied
     # separately to the *gross long* and the *gross short* exposure summed across a correlation
     # group (see leverage_utils)

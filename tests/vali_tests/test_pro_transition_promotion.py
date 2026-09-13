@@ -844,5 +844,50 @@ class TestGatewayProTransitionEndpoint(unittest.TestCase):
         post.assert_not_called()
 
 
+class TestProLeverageCurveReporting(unittest.TestCase):
+    """A pro account trades its own flat curve, and the dashboard has to say so.
+
+    `leverage_tier` alone is None for pro, so without this block a client cannot tell which
+    table in /trade-pairs to size against. The pro curve has no tier dimension, so `tier` is
+    None there -- a client must not fall back to a tiered table for it.
+    """
+
+    @staticmethod
+    def _account(bucket, account_size):
+        from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+        from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
+
+        account = MinerAccount(
+            miner_hotkey="entity_alpha_0",
+            asset_class=MinerAssetClass.ALL_MARKETS,
+            miner_bucket=bucket,
+            leverage_tier=1,
+        )
+        account.collateral_records = [CollateralRecord(account_size, account_size / 5000, 0, True)]
+        return account
+
+    def test_curve_and_tier_by_bucket(self):
+        cases = [
+            # Every pro bucket gets the flat pro curve, regardless of account size.
+            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 400_000, "pro", None),
+            (MinerBucket.PRO_CHALLENGE_DIRECT, 400_000, "pro", None),
+            (MinerBucket.PRO_FUNDED, 400_000, "pro", None),
+            (MinerBucket.PRO_FUNDED, 1_000_000, "pro", None),
+            # Transition still trades the standard account, so it keeps the standard curve.
+            (MinerBucket.PRO_CHALLENGE_TRANSITION, 100_000, "standard", 1),
+            (MinerBucket.SUBACCOUNT_CHALLENGE, 100_000, "standard", 1),
+        ]
+        for bucket, account_size, curve, tier in cases:
+            with self.subTest(bucket=bucket, account_size=account_size):
+                account = self._account(bucket, account_size)
+                limits = account.leverage_limits()
+                self.assertEqual(limits["tier_curve"], curve)
+                self.assertEqual(limits["tier"], tier)
+                self.assertEqual(limits["is_pro"], bucket.is_pro)
+                self.assertEqual(account.to_dashboard()["is_pro"], bucket.is_pro)
+                if bucket.is_pro:
+                    self.assertEqual(limits["portfolio_multiplier"], ValiConfig.PRO_PORTFOLIO_LEVERAGE)
+
+
 if __name__ == "__main__":
     unittest.main()

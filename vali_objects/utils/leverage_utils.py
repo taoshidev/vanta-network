@@ -4,7 +4,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.vali_config import ValiConfig
-from vali_objects.trade_pair import StandardLeverageGroup, TradePair, TradePairCategory
+from vali_objects.trade_pair import ExposureGroup, StandardLeverageGroup, TradePair, TradePairCategory
 from vali_objects.vali_dataclasses.position import Position
 
 
@@ -17,7 +17,9 @@ def get_position_leverage_bounds(trade_pair: TradePair) -> tuple[float, float]:
 
 
 def get_legacy_leverage_tier(miner_bucket, account_size: float) -> int:
-    """Return legacy leverage tier (1-4) for HL-linked subaccounts, pro subaccounts and regular miners.
+    """Return legacy leverage tier (1-4) for HL-linked subaccounts and regular miners.
+
+    Pro accounts do not use this: their table is flat (see get_pro_positional_leverage).
 
       Tier 1: any subaccount challenge bucket (any size)
       Tier 2: account_size < $200K
@@ -99,9 +101,48 @@ def get_standard_portfolio_leverage(tier: int, asset_class: MinerAssetClass) -> 
     return ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[tier].get(asset_class, 1.0)
 
 
+def get_pro_positional_leverage(trade_pair: TradePair) -> float:
+    """Per-pair positional leverage for a pro account, as a multiple of balance.
+
+    Pro accounts have no tier dimension: the table is flat. A pro-tradable pair the spec does
+    not name falls back to PRO_DEFAULT_POSITIONAL_LEVERAGE -- see
+    docs/pro_leverage_discrepancies.md.
+    """
+    category = trade_pair.trade_pair_category
+    default = ValiConfig.PRO_DEFAULT_POSITIONAL_LEVERAGE
+    if category == TradePairCategory.CRYPTO:
+        return ValiConfig.PRO_CRYPTO_POSITIONAL_LEVERAGE.get(trade_pair.base, default)
+    if category == TradePairCategory.FOREX:
+        if trade_pair.trade_pair_id in ValiConfig.STANDARD_FX_NZD_CROSS_IDS:
+            return ValiConfig.PRO_FX_NZD_CROSS_POSITIONAL_LEVERAGE
+        return ValiConfig.PRO_FX_POSITIONAL_LEVERAGE
+    if category == TradePairCategory.EQUITIES:
+        return ValiConfig.PRO_EQUITIES_POSITIONAL_LEVERAGE
+    if category == TradePairCategory.COMMODITIES:
+        return ValiConfig.PRO_COMMODITY_POSITIONAL_LEVERAGE.get(trade_pair.trade_pair_id, default)
+    if category == TradePairCategory.INDICES:
+        return ValiConfig.PRO_INDEX_POSITIONAL_LEVERAGE.get(trade_pair.trade_pair_id, default)
+    return default
+
+
+def get_pro_class_leverage(trade_pair_category: TradePairCategory) -> float:
+    """Per-asset-class exposure cap for a pro account. Falls back to 1.0, like the legacy table."""
+    return ValiConfig.PRO_CLASS_LEVERAGE.get(trade_pair_category, 1.0)
+
+
+def is_pro_leveraged(account: MinerAccount) -> bool:
+    """True when the account's limits come from the flat pro tables.
+
+    PRO_CHALLENGE_TRANSITION is excluded (it is not is_pro): it still trades the standard
+    account, so it keeps the standard curve.
+    """
+    return bool(account.miner_bucket and account.miner_bucket.is_pro)
+
+
 def is_standard_tiered(account: MinerAccount) -> bool:
     """True when the account's limits come from the standard tier tables: any non-HL, non-pro
-    subaccount. HL-linked subaccounts, pro subaccounts and regular miners use the legacy curve.
+    subaccount. Pro accounts use the flat pro tables; HL-linked subaccounts and regular miners
+    use the legacy curve.
     A subaccount whose leverage_tier is still None counts as the default tier."""
     # HL_ALL is only ever assigned to HL-linked subaccounts; it guards accounts whose MinerAccount
     # predates the hl_address field.
@@ -163,6 +204,46 @@ def get_correlation_group_limit(group_key: str) -> float:
     return ValiConfig.PRO_US_INDEX_EXPOSURE_LIMIT
 
 
+def get_all_correlation_group_limits() -> dict[str, float]:
+    """Every correlation group key `get_correlation_legs` can emit, with its per-side limit.
+
+    Published so a client can render headroom for a group the account has no exposure in yet.
+    """
+    keys = [f"{_CURRENCY_GROUP_PREFIX}:{currency}" for currency in ValiConfig.PRO_CURRENCY_EXPOSURE_LIMITS]
+    keys += [f"{_SECTOR_GROUP_PREFIX}:{group.value}" for group in ExposureGroup]
+    keys.append(_US_INDEX_GROUP)
+    return {key: get_correlation_group_limit(key) for key in keys}
+
+
+def build_correlated_exposure_report(
+    exposures: dict[str, tuple[float, float]], balance: float
+) -> dict:
+    """Published view of correlated exposure: per group, the limit, both gross sides, and room.
+
+    Room matches what `get_max_correlated_order_size` allows, so the number a client renders is
+    the number the order path enforces. Only groups carrying exposure appear; the rest are at
+    full room, which a client fills from `get_all_correlation_group_limits`.
+    """
+    groups = {}
+    for group_key, (longs, shorts) in exposures.items():
+        limit = get_correlation_group_limit(group_key)
+        limit_usd = limit * balance
+        groups[group_key] = {
+            "limit_multiplier": limit,
+            "limit_usd": limit_usd,
+            "gross_long_usd": longs,
+            "gross_short_usd": shorts,
+            "long_room_usd": max(0.0, limit_usd - longs),
+            "short_room_usd": max(0.0, limit_usd - shorts),
+        }
+    return {
+        "basis": "gross_per_side",
+        "denominator": "balance",
+        "balance": balance,
+        "groups": groups,
+    }
+
+
 def compute_correlated_exposures(open_positions: list[Position]) -> dict[str, tuple[float, float]]:
     """Gross (long, short) USD exposure per correlation group across all open positions.
 
@@ -183,16 +264,17 @@ def compute_correlated_exposures(open_positions: list[Position]) -> dict[str, tu
 
 def get_max_correlated_order_size(
     trade_pair: TradePair,
-    open_positions: list[Position],
+    exposures: dict[str, tuple[float, float]],
     balance: float,
     position_type: OrderType,
 ) -> tuple[float, str | None]:
     """Return (max_usd_value, binding_group_label) allowed by correlated-exposure limits.
     Assumes order is an open or increase.
 
-    Every group caps its gross long and gross short exposure separately, so a group may carry up
-    to `limit x balance` in each direction at once and filling one side never frees room on the
-    other.
+    `exposures` is gross (long, short) per group, as tracked on the account or returned by
+    compute_correlated_exposures. Every group caps its gross long and gross short exposure
+    separately, so a group may carry up to `limit x balance` in each direction at once and
+    filling one side never frees room on the other.
     """
 
     side_sign = 1.0 if position_type ==OrderType.LONG else -1.0
@@ -200,7 +282,6 @@ def get_max_correlated_order_size(
     if not legs:
         return float("inf"), None
 
-    exposures = compute_correlated_exposures(open_positions)
     max_value, binding_group = float("inf"), None
     for group_key, direction in legs:
         limit = get_correlation_group_limit(group_key)
@@ -216,7 +297,6 @@ def get_max_correlated_order_size(
 def get_max_order_size(
     account: MinerAccount,
     position: Position,
-    open_positions: list[Position] | None = None
 ) -> tuple[float, str]:
     """Return (max_usd_value, binding_cap_label) for this position.
 
@@ -226,13 +306,20 @@ def get_max_order_size(
       - overall_room:    overall portfolio cap minus total exposure           (subaccounts, buys)
       - correlated_room: per-side gross exposure cap across correlated pairs  (pro accounts, buys)
 
-    Standard subaccounts take per-pair and per-class caps from the standard tier tables (see
-    is_standard_tiered); HL-linked, pro and regular accounts use the legacy curve.
+    Every room is measured against state stored on the account, so the number returned here is
+    the number a client sees published on the same fields.
+
+    Pro accounts take per-pair and per-class caps from the flat pro tables (see
+    is_pro_leveraged); standard subaccounts from the standard tier tables (see
+    is_standard_tiered); HL-linked and regular accounts use the legacy curve.
     """
     trade_pair = position.trade_pair
+    pro_leveraged = is_pro_leveraged(account)
     standard_tiered = is_standard_tiered(account)
 
-    if standard_tiered:
+    if pro_leveraged:
+        max_position_leverage = get_pro_positional_leverage(trade_pair)
+    elif standard_tiered:
         max_position_leverage = get_standard_positional_leverage(get_effective_leverage_tier(account), trade_pair)
     elif account.miner_bucket and account.miner_bucket.is_subaccount:
         tier = get_legacy_leverage_tier(account.miner_bucket, account.account_size)
@@ -250,7 +337,9 @@ def get_max_order_size(
     if account.miner_bucket and account.miner_bucket.is_subaccount:
         if not account.asset_class:
             raise ValueError("asset_class must be selected for trading")
-        if standard_tiered:
+        if pro_leveraged:
+            per_class_cap = get_pro_class_leverage(trade_pair.trade_pair_category)
+        elif standard_tiered:
             per_class_cap = get_standard_class_leverage(get_effective_leverage_tier(account), trade_pair.trade_pair_category)
         else:
             per_class_cap, _ = get_legacy_portfolio_caps(
@@ -260,9 +349,10 @@ def get_max_order_size(
         per_class_room = account.balance * per_class_cap - per_class_used
         limits.append((per_class_room, f"per class cap {trade_pair.trade_pair_category.value} {per_class_cap}x"))
 
-    if account.miner_bucket and account.miner_bucket.is_pro and open_positions is not None:
+    if pro_leveraged:
+        exposures = {k: (v[0], v[1]) for k, v in account.correlated_exposure_by_group.items()}
         correlated_room, correlated_label = get_max_correlated_order_size(
-            trade_pair, open_positions, account.balance, position.position_type
+            trade_pair, exposures, account.balance, position.position_type
         )
         if correlated_label:
             limits.append((correlated_room, correlated_label))

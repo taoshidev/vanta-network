@@ -145,6 +145,21 @@ class EntityCollateralManager(CacheController):
         with self._cache_lock:
             return self._collateral_cache.get(entity_hotkey)
 
+    def get_entity_collateral_headroom(self, entity_hotkey: str) -> Optional[float]:
+        """
+        Collateral an entity has spare, in theta: deposited minus what its subaccounts require.
+
+        This is the ceiling on further risk the entity can take on across all its subaccounts,
+        so it bounds order sizing just as the per-subaccount caps do.
+
+        Returns None when the entity's balance is unknown (not in the cache), which callers must
+        treat as "cannot tell", not as zero headroom.
+        """
+        deposited = self.get_cached_collateral(entity_hotkey)
+        if deposited is None:
+            return None
+        return max(0.0, deposited - self.compute_entity_required_collateral(entity_hotkey))
+
     def offset_collateral_cache(self, entity_hotkey: str, theta: float) -> None:
         """
         Adjust the cached collateral balance for an entity by a signed amount.
