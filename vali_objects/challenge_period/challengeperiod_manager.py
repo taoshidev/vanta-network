@@ -833,6 +833,12 @@ class ChallengePeriodManager(CacheController):
             state.add_bucket_entry(bucket, current_time_ms)
 
         self._sync_buckets_to_accounts(hotkeys=[hotkey])
+
+        if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
+            self._limit_order_client.cancel_entry_orders(
+                hotkey, current_time_ms, OrderSource.PRO_TRANSITION_CANCELLED
+            )
+
         self._save_to_disk()
         return True, f"{hotkey} moved to {bucket.value}"
 

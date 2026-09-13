@@ -21,6 +21,11 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from shared_objects.log import logger
 
+PRO_TRANSITION_REJECTION = (
+    "Your account is transitioning to a Pro Account. You cannot open new positions or increase "
+    "existing ones - close your open positions to begin trading your Pro Account."
+)
+
 
 class LimitOrderManager(CacheController):
     """
@@ -334,21 +339,38 @@ class LimitOrderManager(CacheController):
                             return order.to_python_dict()
         return None
 
+    @staticmethod
+    def _increases_exposure(order, open_position):
+        """True when filling this order would open a position or add to one. Brackets and FLATs
+        only ever reduce, and an order opposite an open position reduces that position."""
+        if order.execution_type == ExecutionType.BRACKET:
+            return False
+        if order.order_type == OrderType.FLAT:
+            return False
+        return open_position is None or order.order_type == open_position.position_type
+
+    def _is_transitioning_to_pro(self, miner_hotkey):
+        """True while the miner is winding their standard account down to start a pro account."""
+        account = self._miner_account_client.get_account(miner_hotkey)
+        return account is not None and account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+
+    def _blocked_by_pro_transition(self, miner_hotkey, order):
+        """Whether PRO_CHALLENGE_TRANSITION blocks this order, fetching the position only when it
+        could matter. Used at fill time as well as at placement: a resting order that reduced a
+        position when it was placed becomes an entry order once that position closes."""
+        if order.execution_type == ExecutionType.BRACKET or order.order_type == OrderType.FLAT:
+            return False
+        if not self._is_transitioning_to_pro(miner_hotkey):
+            return False
+        return self._increases_exposure(order, self._get_open_position(miner_hotkey, order))
+
     def _reject_if_transitioning_to_pro(self, miner_hotkey, order, open_position):
         """Block orders that would open or increase exposure while a miner winds down their
         standard account before starting a pro account. Brackets only ever reduce, so they pass."""
-        if order.execution_type == ExecutionType.BRACKET:
+        if not self._increases_exposure(order, open_position):
             return
-        if order.order_type == OrderType.FLAT:
-            return
-        if open_position is not None and order.order_type != open_position.position_type:
-            return
-        account = self._miner_account_client.get_account(miner_hotkey)
-        if account is not None and account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            raise SignalException(
-                "Your account is transitioning to a Pro Account. You cannot open new positions or increase "
-                "existing ones - close your open positions to begin trading your Pro Account."
-            )
+        if self._is_transitioning_to_pro(miner_hotkey):
+            raise SignalException(PRO_TRANSITION_REJECTION)
 
     def process_limit_order(self, miner_hotkey, order, is_edit=False):
         """
@@ -549,6 +571,53 @@ class LimitOrderManager(CacheController):
 
         except Exception as e:
             logger.error(f"Error cancelling limit order: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    def cancel_entry_orders(self, miner_hotkey, now_ms, order_src=None):
+        """
+        RPC method to cancel every resting order that would open a position or add to one,
+        leaving brackets and resting exits alone.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            now_ms: Current timestamp
+            order_src: Optional OrderSource override — if specified, replaces the derived cancel src
+        Returns:
+            dict with cancellation details
+        """
+        try:
+            # One fetch for the whole sweep rather than one per resting order
+            open_by_trade_pair = {
+                p.trade_pair.trade_pair_id: p
+                for p in self.position_manager.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)
+            }
+
+            orders_to_cancel = []
+            for hotkey_dict in self._limit_orders.values():
+                for order in hotkey_dict.get(miner_hotkey, []):
+                    if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
+                        continue
+                    open_position = open_by_trade_pair.get(order.trade_pair.trade_pair_id)
+                    if self._increases_exposure(order, open_position):
+                        orders_to_cancel.append(order)
+
+            for order in orders_to_cancel:
+                cancel_src = order_src if order_src is not None else OrderSource.get_cancel(order.src)
+                self._close_limit_order(miner_hotkey, order, cancel_src, now_ms)
+
+            if orders_to_cancel:
+                logger.info(f"Cancelled {len(orders_to_cancel)} entry orders for [{miner_hotkey}]")
+
+            return {
+                "status": "cancelled",
+                "miner_hotkey": miner_hotkey,
+                "cancelled_ms": now_ms,
+                "num_cancelled": len(orders_to_cancel)
+            }
+
+        except Exception as e:
+            logger.error(f"Error cancelling entry orders for {miner_hotkey}: {e}")
             logger.error(traceback.format_exc())
             raise
 
@@ -1117,6 +1186,12 @@ class LimitOrderManager(CacheController):
             logger.error(
                 f"[STOP_LIMIT] Failed to create child limit order from {order.order_uuid}: {e}"
             )
+            # The parent was closed as STOP_LIMIT_FILLED above on the assumption the child would
+            # take its place. It did not, and _close_limit_order only persists cancelled orders, so
+            # record the parent as cancelled or it leaves the trader's order history with no trace.
+            with self.limit_order_locks.get_lock(miner_hotkey, order.trade_pair.trade_pair_id):
+                order.src = OrderSource.STOP_LIMIT_CANCELLED
+                self._write_to_disk(miner_hotkey, order)
 
     def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, is_market_order=False, is_taker=None):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
@@ -1124,6 +1199,16 @@ class LimitOrderManager(CacheController):
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
         error_msg = None
+
+        # Re-check the pro transition here and not just at placement: a resting order that reduced
+        # a position when it was placed becomes an entry order once that position closes, and an
+        # order resting from before the transition was never checked at all. Without this the fill
+        # raises inside _apply_order and the generic handler below cancels it as a fill failure.
+        if self._blocked_by_pro_transition(miner_hotkey, order):
+            error_msg = f"Cancelling limit order [{order.order_uuid}] for [{miner_hotkey}]: {PRO_TRANSITION_REJECTION}"
+            logger.info(error_msg)
+            self._close_limit_order(miner_hotkey, order, OrderSource.PRO_TRANSITION_CANCELLED, fill_time)
+            return error_msg
 
         new_src = OrderSource.ORGANIC if is_market_order else OrderSource.get_fill(order.src)
         slippage = None if is_market_order else 0
