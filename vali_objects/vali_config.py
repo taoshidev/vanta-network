@@ -494,7 +494,7 @@ class ValiConfig:
     PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
     PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.08
     PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
-    PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
+    PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08 # Also affects promotion cost
     PRO_STATIC_DRAWDOWN_THRESHOLD = 0.05
     PRO_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05
 
@@ -661,10 +661,43 @@ class ValiConfig:
             f"MAX_PRO_ACCOUNT_SIZE ${MAX_PRO_ACCOUNT_SIZE}"
         )
 
+    # Pro promotion price. The premium term buys the drawdown the entity is already exposed to on
+    # the standard account, priced in theta at the token's USD price; the second term charges
+    # registration's own per-dollar rate on the size granted above the standard account.
+    PRO_PROMOTION_PREMIUM_RATE = 0.10  # Share of the standard account's drawdown allowance charged up front
+    THETA_USD_PRICE = 7.0  # Assumed USD price of one theta
+
+    @staticmethod
+    def entity_cost_per_theta(account_size: float) -> float:
+        """USD of account size per theta that registration charges for an account of this size."""
+        return (ValiConfig.ENTITY_COST_PER_THETA_LOW
+                if (account_size or 0.0) <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD
+                else ValiConfig.ENTITY_COST_PER_THETA)
+
+    @staticmethod
+    def pro_promotion_fee_theta(pro_account_size: float, standard_account_size: float) -> float:
+        """
+        Theta owed to put a subaccount on a pro account of `pro_account_size`:
+
+            PREMIUM_RATE * (FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size) / THETA_USD_PRICE
+                + (pro_size - standard_size) / registration CPT
+
+        Registration already paid for `standard_account_size`, so only the size granted above it is
+        charged per dollar. Callers subtract the fee already assessed, so re-entering the pro track
+        at the same size is free and a larger grant costs only the increase.
+        """
+        standard_size = max(0.0, standard_account_size or 0.0)
+        size_granted = max(0.0, (pro_account_size or 0.0) - standard_size)
+
+        drawdown_allowance_usd = ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size
+        premium_theta = (ValiConfig.PRO_PROMOTION_PREMIUM_RATE * drawdown_allowance_usd
+                         / ValiConfig.THETA_USD_PRICE)
+        return premium_theta + size_granted / ValiConfig.entity_cost_per_theta(pro_account_size)
+
     # Entity margin collateral requirement (funded subaccounts only):
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
     #   for each funded subaccount with open positions (or placing this order)
-    # max_slash_usd = account_size * SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+    # max_slash_usd = account_size * the bucket's intraday drawdown threshold
     ENTITY_COLLATERAL_CPT_RISK = 35  # USD of remaining loss capacity per theta ($35 of capacity = 1 theta)
 
     # Hyperliquid tracking configuration

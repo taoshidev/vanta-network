@@ -376,6 +376,23 @@ class EntityClient(RPCClientBase):
         """
         return self._server.set_reg_fee_time_rpc(entity_hotkey, subaccount_id, time)
 
+    def set_pro_fee_pending(self, entity_hotkey: str, subaccount_id: int, theta: float) -> bool:
+        """
+        Set the unslashed portion of a subaccount's pro promotion fee.
+
+        Pass 0.0 once the fee has been slashed on-chain, or the original amount to restore the
+        claim when an on-chain slash fails.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            subaccount_id: The subaccount ID
+            theta: Theta still owed for the pro promotion.
+
+        Returns:
+            True if updated successfully, False if not found.
+        """
+        return self._server.set_pro_fee_pending_rpc(entity_hotkey, subaccount_id, theta)
+
     def calculate_subaccount_payout(
         self,
         subaccount_uuid: str,

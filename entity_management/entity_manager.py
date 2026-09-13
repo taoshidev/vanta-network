@@ -67,6 +67,8 @@ class SubaccountInfo(BaseModel):
     pro_account_size: Optional[float] = Field(default=None, description="Account size granted for the pro account, set at pro promotion")
     reg_fee_theta: float = Field(default=0.0, description="Cost of registration fee in theta")
     reg_fee_slashed_ms: Optional[float] = Field(default=None, description="Timestamp when registration fee was paid")
+    pro_fee_theta: float = Field(default=0.0, description="Theta assessed so far for the pro account size granted above the standard size")
+    pro_fee_theta_pending: float = Field(default=0.0, description="Portion of the pro promotion fee charged but not yet slashed on-chain")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
@@ -776,7 +778,8 @@ class EntityManager(ValidatorBroadcastBase):
 
         Entering the pro track snapshots the standard size and records the granted pro size.
         PRO_CHALLENGE_TRANSITION keeps trading the standard account, so only the sizes are
-        recorded; every other pro bucket switches the live account size to the pro size.
+        recorded; every other pro bucket switches the live account size to the pro size and
+        charges the promotion fee for the size granted above the standard account.
         Returning to a standard bucket restores the standard size.
 
         There is no network default pro size. The admin sets it when offering the pro track
@@ -809,8 +812,9 @@ class EntityManager(ValidatorBroadcastBase):
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
 
-        # Work out the new sizes without touching the stored subaccount
+        # Work out the new sizes and the fee they cost without touching the stored subaccount
         standard_account_size = subaccount.standard_account_size
+        promotion_fee_theta = 0.0
         # Where the pro size came from ("explicit" or "recorded"), for the log; None for standard buckets
         pro_size_source = None
         if target_bucket.is_pro_track:
@@ -835,6 +839,18 @@ class EntityManager(ValidatorBroadcastBase):
             if standard_account_size is None:
                 standard_account_size = subaccount.account_size
             account_type = AccountType.PRO.value
+
+            # The pro size only goes live outside TRANSITION, so that is when the grant is charged.
+            # Only the increase over the fee already assessed is billed, so a demotion and
+            # re-promotion at a size already paid for is free. Collateral-exempt subaccounts
+            # (reg_fee_theta == 0) stay exempt on the pro track.
+            if target_bucket.is_pro and subaccount.reg_fee_theta > 0:
+                target_fee_theta = ValiConfig.pro_promotion_fee_theta(pro_account_size, standard_account_size)
+                promotion_fee_theta = max(0.0, target_fee_theta - subaccount.pro_fee_theta)
+                affordable, fee_error = self._verify_promotion_collateral(entity_hotkey, promotion_fee_theta)
+                if not affordable:
+                    return False, fee_error
+
             # TRANSITION winds down the standard account, so it keeps the standard size
             target_size = pro_account_size if target_bucket.is_pro else standard_account_size
         else:
@@ -862,24 +878,66 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount.pro_account_size = pro_account_size
             subaccount.account_type = account_type
             subaccount.account_size = target_size
+            subaccount.pro_fee_theta += promotion_fee_theta
+            subaccount.pro_fee_theta_pending += promotion_fee_theta
             entity_data = self.entities.get(entity_hotkey)
             if entity_data:
                 entity_data.subaccounts[subaccount_id] = subaccount
         self._write_entities_from_memory_to_disk()
 
+        if promotion_fee_theta > 0:
+            # The daemon slashes the pending fee on-chain; hold the reservation against the cache
+            # until it does, so the same theta cannot be spent twice in the meantime.
+            self._entity_collateral_client.offset_collateral_cache(entity_hotkey, -promotion_fee_theta)
+
         pro_size_note = f" (pro size source: {pro_size_source})" if pro_size_source else ""
+        fee_note = (f", promotion_fee={promotion_fee_theta:.4f} theta "
+                    f"(assessed {subaccount.pro_fee_theta:.4f} theta total)") if promotion_fee_theta else ""
         logger.info(
             f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}: account_size=${subaccount.account_size}, "
-            f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}"
+            f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}{fee_note}"
         )
         return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
 
+    def _verify_promotion_collateral(self, entity_hotkey: str, promotion_fee_theta: float) -> Tuple[bool, str]:
+        """
+        Check that an entity can cover a pro promotion fee before the size is granted.
+
+        A subaccount whose pro size has already been paid for costs nothing to re-enter, so a
+        zero fee always passes. An entity with no cached balance cannot be verified; that is
+        fatal in production and tolerated in unit tests, matching create_subaccount.
+        """
+        if promotion_fee_theta <= 0:
+            return True, ""
+
+        balance = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
+        if balance is None:
+            if self.running_unit_tests:
+                return True, ""
+            logger.warning(
+                f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None"
+            )
+            return False, "Unable to verify collateral balance"
+
+        if balance < promotion_fee_theta:
+            logger.warning(
+                f"[ENTITY_MANAGER] Insufficient collateral for pro promotion: entity {entity_hotkey} has "
+                f"{balance:.4f} theta, needs {promotion_fee_theta:.4f} theta"
+            )
+            return False, (
+                f"Insufficient collateral: has {balance:.4f} theta, needs {promotion_fee_theta:.4f} theta "
+                f"to grant the pro account size"
+            )
+
+        return True, ""
+
     def snapshot_bucket_account_size(self, synthetic_hotkey: str) -> Optional[dict]:
         """
-        The four sizing fields apply_bucket_account_size writes, read before it runs.
+        The sizing fields apply_bucket_account_size writes, read before it runs.
 
         Take one before an apply and hand it to restore_bucket_account_size if the bucket move that
-        follows then fails. A plain dict, so it crosses the EntityClient RPC hop unchanged.
+        follows then fails. A plain dict, so it crosses the EntityClient RPC hop unchanged. The two
+        promotion-fee fields ride along so a rolled back promotion also gives the fee back.
         """
         subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
         if subaccount is None:
@@ -889,6 +947,8 @@ class EntityManager(ValidatorBroadcastBase):
             "standard_account_size": subaccount.standard_account_size,
             "pro_account_size": subaccount.pro_account_size,
             "account_type": subaccount.account_type,
+            "pro_fee_theta": subaccount.pro_fee_theta,
+            "pro_fee_theta_pending": subaccount.pro_fee_theta_pending,
         }
 
     def restore_bucket_account_size(self, synthetic_hotkey: str, snapshot: dict) -> Tuple[bool, str]:
@@ -937,21 +997,34 @@ class EntityManager(ValidatorBroadcastBase):
                 )
                 return False, f"Failed to restore account size for {synthetic_hotkey}"
 
+        # A promotion that never happened must not be paid for. Only the part still pending is
+        # given back: once the daemon has slashed it on-chain the theta is gone, and the fee stays
+        # assessed so the next attempt at the same size is not billed twice.
+        refund_theta = max(
+            0.0, subaccount.pro_fee_theta_pending - (snapshot.get("pro_fee_theta_pending") or 0.0)
+        )
+
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
             subaccount.account_size = previous_account_size
             subaccount.standard_account_size = snapshot.get("standard_account_size")
             subaccount.pro_account_size = snapshot.get("pro_account_size")
             subaccount.account_type = snapshot.get("account_type", AccountType.STANDARD.value)
+            subaccount.pro_fee_theta_pending -= refund_theta
+            subaccount.pro_fee_theta -= refund_theta
             entity_data = self.entities.get(entity_hotkey)
             if entity_data:
                 entity_data.subaccounts[subaccount_id] = subaccount
         self._write_entities_from_memory_to_disk()
 
+        if refund_theta > 0:
+            self._entity_collateral_client.offset_collateral_cache(entity_hotkey, refund_theta)
+
+        fee_note = f", promotion fee refunded={refund_theta:.4f} theta" if refund_theta else ""
         logger.info(
             f"[ENTITY_MANAGER] {synthetic_hotkey} sizing rolled back after a failed bucket move: "
             f"account_size=${subaccount.account_size}, standard=${subaccount.standard_account_size}, "
-            f"pro=${subaccount.pro_account_size}, account_type={subaccount.account_type}"
+            f"pro=${subaccount.pro_account_size}, account_type={subaccount.account_type}{fee_note}"
         )
         return True, f"{synthetic_hotkey} account size restored to ${subaccount.account_size}"
 
@@ -2623,6 +2696,36 @@ class EntityManager(ValidatorBroadcastBase):
             self._write_entities_from_memory_to_disk()
             logger.info(
                 f"[ENTITY_MANAGER] Set reg_fee_slashed_ms={time} for subaccount {subaccount.synthetic_hotkey}"
+            )
+            return True
+
+    def set_pro_fee_pending(self, entity_hotkey: str, subaccount_id: int, theta: float) -> bool:
+        """
+        Set the unslashed portion of a subaccount's pro promotion fee.
+
+        Pass 0.0 once the fee has been slashed on-chain, or the original amount to restore the
+        claim when an on-chain slash fails.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            subaccount_id: The subaccount ID
+            theta: Theta still owed for the pro promotion.
+
+        Returns:
+            True if updated successfully, False if not found.
+        """
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False
+            subaccount.pro_fee_theta_pending = theta
+            self._write_entities_from_memory_to_disk()
+            logger.info(
+                f"[ENTITY_MANAGER] Set pro_fee_theta_pending={theta} for subaccount {subaccount.synthetic_hotkey}"
             )
             return True
 

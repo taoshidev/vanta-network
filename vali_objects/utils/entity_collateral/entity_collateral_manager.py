@@ -87,11 +87,10 @@ class EntityCollateralManager(CacheController):
         self._cache_file = ValiBkpUtils.get_entity_collateral_cache_file_location(running_unit_tests)
         self._slash_file = ValiBkpUtils.get_entity_slash_tracking_file_location(running_unit_tests)
 
-        # Intraday drawdown threshold for funded subaccounts (8%).
-        # This is the actual elimination threshold applied to funded subaccounts,
-        # so it is also the maximum loss that can ever be slashed from a subaccount.
-        self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
-        self.pro_mdd_percent = ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+        # Fallback intraday drawdown threshold, used when a subaccount's bucket is unknown.
+        # A bucket's own threshold is the elimination threshold actually applied to it, so it is
+        # also the maximum loss that can ever be slashed from that subaccount.
+        self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
 
         # Load persisted state from disk
         self._collateral_cache = self._load_cache_from_disk()
@@ -241,7 +240,7 @@ class EntityCollateralManager(CacheController):
             margin_usd     = min(open_position_value, max_slash_usd - cumulative_slashed_usd)
             required_theta += margin_usd / CPT_RISK
 
-        where max_slash_usd = account_size * SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD.
+        where max_slash_usd = account_size * the bucket's intraday drawdown threshold.
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -269,12 +268,16 @@ class EntityCollateralManager(CacheController):
             if bucket is None or not bucket.is_subaccount_earning:
                 continue
 
-            margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey)
+            margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey, bucket)
             total_required_theta += margin_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
 
         return total_required_theta
 
-    def compute_subaccount_margin_requirement(self, synthetic_hotkey: str) -> float:
+    def compute_subaccount_margin_requirement(
+        self,
+        synthetic_hotkey: str,
+        bucket: MinerBucket | None = None,
+    ) -> float:
         """
         Compute the margin requirement in USD for a single funded subaccount.
 
@@ -289,6 +292,8 @@ class EntityCollateralManager(CacheController):
 
         Args:
             synthetic_hotkey: The subaccount's synthetic hotkey.
+            bucket: The subaccount's bucket; pass it when already known so the pro account's
+                drawdown threshold is used without an extra lookup.
 
         Returns:
             Margin requirement in USD.
@@ -301,7 +306,7 @@ class EntityCollateralManager(CacheController):
 
         total_position_value = sum(abs(p.net_value) for p in open_positions)
 
-        max_slash = self.get_max_slash(synthetic_hotkey)
+        max_slash = self.get_max_slash(synthetic_hotkey, bucket)
         cumulative_slashed = self.get_cumulative_slashed(synthetic_hotkey)
         remaining_headroom = max(0.0, max_slash - cumulative_slashed)
 
@@ -353,7 +358,7 @@ class EntityCollateralManager(CacheController):
         current_position_value = sum(abs(p.net_value) for p in open_positions)
         projected_position_value = current_position_value + abs(additional_position_value)
 
-        max_slash = self.get_max_slash(synthetic_hotkey)
+        max_slash = self.get_max_slash(synthetic_hotkey, bucket)
         cumulative_slashed = self.get_cumulative_slashed(synthetic_hotkey)
         remaining_headroom = max(0.0, max_slash - cumulative_slashed)
 
@@ -446,7 +451,7 @@ class EntityCollateralManager(CacheController):
 
             # Compute the pending slash amount for cache reservation, but do NOT mark
             # cumulative_slashed yet — process_pending_slashes will mark-then-slash atomically.
-            slash_usd = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, self.get_max_slash(synthetic_hotkey))
+            slash_usd = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, max_slash)
 
             logger.info(
                 f"[ENTITY_COLLATERAL] Queued ({slash_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK:.4f} theta) "
@@ -577,6 +582,7 @@ class EntityCollateralManager(CacheController):
                 total_pending_loss_theta = sum(pending_loss_usd.values()) / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
 
                 pending_reg_theta: Dict[int, float] = {} # subaccount id -> theta
+                pending_pro_theta: Dict[int, float] = {} # subaccount id -> theta
                 for subaccount_id, subaccount_info in subaccounts.items():
                     if not isinstance(subaccount_info, dict):
                         continue
@@ -584,9 +590,13 @@ class EntityCollateralManager(CacheController):
                     reg_fee_slashed_ms = subaccount_info.get("reg_fee_slashed_ms")
                     if reg_fee_theta > 0 and reg_fee_slashed_ms is None:
                         pending_reg_theta[int(subaccount_id)] = reg_fee_theta
+                    pro_fee_theta = subaccount_info.get("pro_fee_theta_pending") or 0.0
+                    if pro_fee_theta > 0:
+                        pending_pro_theta[int(subaccount_id)] = pro_fee_theta
                 total_pending_reg_theta = sum(pending_reg_theta.values())
+                total_pending_pro_theta = sum(pending_pro_theta.values())
 
-                theta_slash = total_pending_reg_theta + total_pending_loss_theta
+                theta_slash = total_pending_reg_theta + total_pending_pro_theta + total_pending_loss_theta
                 if theta_slash <= 0:
                     continue
 
@@ -596,6 +606,8 @@ class EntityCollateralManager(CacheController):
                 now_ms = TimeUtil.now_in_millis()
                 for subaccount_id in pending_reg_theta:
                     self._entity_client.set_reg_fee_time(entity_hotkey, subaccount_id, now_ms)
+                for subaccount_id in pending_pro_theta:
+                    self._entity_client.set_pro_fee_pending(entity_hotkey, subaccount_id, 0.0)
                 with self._slash_lock:
                     for synthetic_hotkey, usd in pending_loss_usd.items():
                         self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] += usd
@@ -608,21 +620,25 @@ class EntityCollateralManager(CacheController):
                     slashed_per_entity[entity_hotkey] = theta_slash
                     msg = (
                         f"[ENTITY_COLLATERAL] slash_pending_fees: slashed {theta_slash:.4f} theta "
-                        f"({total_pending_reg_theta:.4f} reg fees + {total_pending_loss_theta:.4f} loss theta) "
-                        f"from entity {entity_hotkey} for subaccounts {list(pending_reg_theta.keys())}"
+                        f"({total_pending_reg_theta:.4f} reg fees + {total_pending_pro_theta:.4f} pro promotion fees "
+                        f"+ {total_pending_loss_theta:.4f} loss theta) from entity {entity_hotkey} for subaccounts "
+                        f"{sorted(set(pending_reg_theta) | set(pending_pro_theta))}"
                     )
                     logger.info(msg)
                 else:
-                    # Revert both marks so the slash is retried on the next iteration.
+                    # Revert every mark so the slash is retried on the next iteration.
                     for subaccount_id in pending_reg_theta:
                         self._entity_client.set_reg_fee_time(entity_hotkey, subaccount_id, None)
+                    for subaccount_id, theta in pending_pro_theta.items():
+                        self._entity_client.set_pro_fee_pending(entity_hotkey, subaccount_id, theta)
                     with self._slash_lock:
                         for synthetic_hotkey, usd in pending_loss_usd.items():
                             self._slash_tracking[synthetic_hotkey]["cumulative_slashed"] -= usd
                     self._save_slash_tracking_to_disk()
                     msg = (
                         f"[ENTITY_COLLATERAL] slash_pending_fees: on-chain slash failed for entity {entity_hotkey} "
-                        f"({theta_slash:.4f} theta, subaccounts: {list(pending_reg_theta.keys())}); marks reverted"
+                        f"({theta_slash:.4f} theta, subaccounts: "
+                        f"{sorted(set(pending_reg_theta) | set(pending_pro_theta))}); marks reverted"
                     )
                     logger.error(msg)
 
@@ -713,8 +729,9 @@ class EntityCollateralManager(CacheController):
 
         Args:
             synthetic_hotkey: The subaccount's synthetic hotkey.
-            bucket: The subaccount's bucket; pass it when already known to select the pro
-                MDD percentage without an extra lookup.
+            bucket: The subaccount's bucket; pass it when already known to skip the lookup.
+                When omitted it is resolved here, so every caller gets the threshold that
+                actually applies to the account (a pro account's is not the standard one).
 
         Returns:
             Maximum slash amount in USD.
@@ -722,5 +739,21 @@ class EntityCollateralManager(CacheController):
         account_size = self._miner_account_client.get_miner_account_size(synthetic_hotkey)
         if not account_size or account_size <= 0:
             return 0.0
-        mdd_percent = self.pro_mdd_percent if (bucket and bucket.is_pro) else self.mdd_percent
-        return account_size * mdd_percent
+        if bucket is None:
+            bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
+        return account_size * self._mdd_percent(bucket)
+
+    def _mdd_percent(self, bucket: MinerBucket | None) -> float:
+        """
+        Share of account size that can ever be slashed from a subaccount.
+
+        This is the bucket's own intraday drawdown threshold, since that is the most the
+        subaccount can lose before it is eliminated. Falls back to the standard funded
+        threshold for a bucket that defines none (an unknown or non-trading bucket).
+        """
+        if bucket is None:
+            return self.mdd_percent
+        try:
+            return bucket.intraday_drawdown_threshold()
+        except ValueError:
+            return self.mdd_percent
