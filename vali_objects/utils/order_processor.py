@@ -45,6 +45,7 @@ class OrderProcessingResult:
         result_dict: Result dictionary (used for LIMIT_CANCEL response)
         updated_position: Updated position (used for MARKET orders)
         should_track_uuid: Whether to add UUID to tracker (False for LIMIT_CANCEL)
+        binding_cap: Which limit shrank the order, when one did. None on a full fill.
     """
     execution_type: ExecutionType
     success: bool = True
@@ -52,6 +53,7 @@ class OrderProcessingResult:
     result_dict: Optional[dict] = None
     updated_position: Optional[Position] = None
     should_track_uuid: bool = True
+    binding_cap: Optional[str] = None
 
     @property
     def order_for_logging(self) -> Optional[Order]:
@@ -59,6 +61,10 @@ class OrderProcessingResult:
 
     def get_response_json(self) -> str:
         if self.order:
+            # An order that was sized down still succeeds, so the cap is the only signal the
+            # miner gets that they did not get the size they asked for.
+            if self.binding_cap:
+                return str({**self.order.to_python_dict(), 'binding_cap': self.binding_cap})
             return self.order.__str__()
         elif self.result_dict:
             return json.dumps(self.result_dict)
@@ -196,6 +202,7 @@ class OrderProcessor:
             return OrderProcessingResult(ExecutionType.MARKET)
 
         created_order, updated_position = result
+        binding_cap = getattr(result, 'binding_cap', None)
         if updated_position and updated_position.is_closed_position:
             self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
 
@@ -208,6 +215,7 @@ class OrderProcessor:
             order=created_order,
             updated_position=updated_position,
             should_track_uuid=True,
+            binding_cap=binding_cap,
         )
 
     def process_flat_all(

@@ -26,7 +26,12 @@ from typing import Dict, Optional, Tuple, List
 from pydantic import BaseModel, Field
 
 import template.protocol
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error
+from entity_management.entity_utils import (
+    attach_correlated_exposure_report,
+    is_synthetic_hotkey,
+    parse_synthetic_hotkey,
+    pro_account_size_error,
+)
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.miner_account.account_snapshot import read_all_snapshots, DEFAULT_TOLERANCE_MS
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
@@ -1799,6 +1804,11 @@ class EntityManager(ValidatorBroadcastBase):
         try:
             account_obj = self._miner_account_client.get_account(synthetic_hotkey)
             account_size_data = account_obj.to_dict() if account_obj else None
+            if account_size_data:
+                # to_dict() is the on-disk shape; the derived leverage block lives only on the
+                # wire, so v1 merges what to_dashboard() splices in for v2.
+                account_size_data.update(account_obj.leverage_limits())
+                attach_correlated_exposure_report(account_size_data)
         except Exception as e:
             logger.error(f"[ENTITY_MANAGER] Account size data unavailable for {synthetic_hotkey}: {e}")
 
@@ -1835,6 +1845,9 @@ class EntityManager(ValidatorBroadcastBase):
             'status': subaccount.status,
             'created_at_ms': subaccount.created_at_ms,
             'eliminated_at_ms': subaccount.eliminated_at_ms,
+            'account_type': subaccount.account_type,
+            'standard_account_size': subaccount.standard_account_size,
+            'pro_account_size': subaccount.pro_account_size,
         }
         if subaccount.hl_address:
             subaccount_info_dict['hl_address'] = subaccount.hl_address

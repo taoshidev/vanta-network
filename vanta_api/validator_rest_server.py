@@ -42,6 +42,13 @@ from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.leverage_utils import (
+    build_correlated_exposure_report,
+    get_all_correlation_group_limits,
+    get_correlation_legs,
+    get_legacy_portfolio_caps,
+    get_pro_class_leverage,
+    get_pro_positional_leverage,
+    get_standard_class_leverage,
     get_legacy_leverage_tier,
     get_legacy_tier_positional_leverage,
     get_standard_positional_leverage,
@@ -379,6 +386,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         # Public HL trader lookup (no auth required)
         self.app.route("/hl-traders/<hl_address>", methods=["GET"])(self.get_hl_trader)
         self.app.route("/hl-traders/<hl_address>/limits", methods=["GET"])(self.get_hl_trader_limits)
+        self.app.route("/subaccounts/<synthetic_hotkey>/limits", methods=["GET"])(self.get_subaccount_limits)
 
         # Public HL leaderboard (no auth required)
         self.app.route("/hl-leaderboard", methods=["GET"])(self.get_hl_leaderboard)
@@ -1000,9 +1008,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         MinerAssetClass.can_trade. Pairs filtered out are moved to `disabled`.
         When omitted, all trade pairs are considered tradeable by asset class.
 
-        If `pro=true` is provided, the `allowed` list is restricted to the pro
-        universe (TradePair.is_pro), matching what the order path enforces for a
-        pro account. Every entry reports its own `is_pro` flag either way.
+        If `is_pro=true` is provided, the
+        `allowed` list is restricted to the pro universe (TradePair.is_pro),
+        matching what the order path enforces for a pro account. Every entry
+        reports its own `is_pro` flag either way.
+
+        The top-level `pro` block carries everything a pro account is sized
+        against: its permitted pairs, the legacy class/portfolio caps it runs on,
+        and the correlated-exposure limits.
         """
         miner_asset_class = None
         asset_class = request.args.get('asset_class')
@@ -1010,7 +1023,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not MinerAssetClass.is_valid(asset_class):
                 return jsonify({'error': f'Invalid asset class: {asset_class}'}), 400
             miner_asset_class = MinerAssetClass(asset_class.lower())
-        is_pro = request.args.get('pro', 'false').lower() == 'true'
+        is_pro_arg = request.args.get('is_pro')
+        is_pro = str(is_pro_arg).strip().lower() == 'true'
         # Per-pair positional leverage (multipliers, not USD), resolved by the same functions the
         # order path enforces. Legacy tiers 1 to 4: HL-linked subaccounts (tier 1 == challenge).
         # Standard tiers 1 to 3: standard subaccounts (no stored tier counts as tier 1).
@@ -1033,12 +1047,23 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'is_pro': tp.is_pro,
                 'min_leverage': tp.min_leverage,
                 'max_leverage': tp.max_leverage,
+                # Correlated-exposure inputs, pro accounts only. `correlation_legs` is what a
+                # long position in this pair contributes to, and is what the trade box has to
+                # replicate to size an order; ungrouped pairs report an empty list.
+                'exposure_group': tp.exposure_group.value if tp.exposure_group else None,
+                'correlation_legs': [
+                    {'group': group_key, 'direction': direction}
+                    for group_key, direction in get_correlation_legs(tp)
+                ],
+                'pro_carry_fee_rate_per_interval': tp.carry_fee_rate_per_interval(is_pro=True),
                 'subaccount_positional_leverage_by_tier': {
                     str(tier): get_legacy_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
                 },
                 'standard_positional_leverage_by_tier': {
                     str(tier): get_standard_positional_leverage(tier, tp) for tier in ValiConfig.STANDARD_LEVERAGE_TIERS
                 },
+                # Pro accounts run a flat table of their own -- no tier dimension.
+                'pro_positional_leverage': get_pro_positional_leverage(tp),
             }
             if tp.trade_pair_id in contract_lot_size:
                 entry['lot_size'] = contract_lot_size[tp.trade_pair_id]
@@ -1063,6 +1088,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'disabled': disabled,
                 'total_allowed': len(allowed),
                 'total_disabled': len(disabled),
+                # Echoed so a cached payload says which universe it describes
+                'is_pro': is_pro,
                 # Standard-tier class and portfolio caps (multiples of balance), keyed by tier
                 'standard_leverage_tiers': {
                     'class': {
@@ -1073,6 +1100,26 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                         str(tier): {asset_class.value: cap for asset_class, cap in row.items()}
                         for tier, row in ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER.items()
                     },
+                },
+                # Everything a pro account is sized against. Pro runs its own flat tables --
+                # neither the standard nor the legacy curve applies, and there is no tier.
+                'pro': {
+                    'allowed_trade_pair_ids': [tp.trade_pair_id for tp in TradePair
+                                               if tp.is_pro and not tp.is_blocked],
+                    # Flat, untiered: per-asset-class caps and one overall portfolio cap.
+                    'class_leverage': {cat.value: cap for cat, cap in ValiConfig.PRO_CLASS_LEVERAGE.items()},
+                    'portfolio_leverage': ValiConfig.PRO_PORTFOLIO_LEVERAGE,
+                    'default_positional_leverage': ValiConfig.PRO_DEFAULT_POSITIONAL_LEVERAGE,
+                    # Correlated-exposure caps. Each is a multiple of the account's *balance*
+                    # (not account_size), applied to gross long and gross short exposure
+                    # independently, and checked only on orders that open or increase.
+                    'basis': 'gross_per_side',
+                    'denominator': 'balance',
+                    'correlation_limits': get_all_correlation_group_limits(),
+                    'currency_limits': dict(ValiConfig.PRO_CURRENCY_EXPOSURE_LIMITS),
+                    'sector_limit': ValiConfig.PRO_SECTOR_EXPOSURE_LIMIT,
+                    'us_index_limit': ValiConfig.PRO_US_INDEX_EXPOSURE_LIMIT,
+                    'us_index_trade_pair_ids': sorted(ValiConfig.PRO_US_INDEX_TRADE_PAIR_IDS),
                 },
                 'timestamp': TimeUtil.now_in_millis(),
             })
@@ -3359,6 +3406,101 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         response_body = json.dumps(response_payload, cls=CustomEncoder)
         return Response(response_body, content_type='application/json'), 200
+
+    def get_subaccount_limits(self, synthetic_hotkey: str):
+        """
+        Every limit an order against this subaccount is sized against, in one call.
+
+        All USD figures are against the live `balance`, which is what the order path applies --
+        not the static account_size. Per-pair caps are not repeated here; pair the `tier` and
+        `tier_curve` below with the matching table in GET /trade-pairs.
+
+        Example:
+        curl -H "Authorization: Bearer YOUR_API_KEY" \
+             http://localhost:48888/subaccounts/5GhDr3xy...abc_0/limits
+        """
+        access_error_response = self._get_access_error_response()
+        if access_error_response is not None:
+            return access_error_response
+
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), HTTPStatus.SERVICE_UNAVAILABLE
+
+        entity_hotkey, _ = parse_synthetic_hotkey(synthetic_hotkey)
+        if not entity_hotkey:
+            return jsonify({'error': f'{synthetic_hotkey} is not a subaccount hotkey'}), HTTPStatus.BAD_REQUEST
+
+        try:
+            subaccount_info = self._entity_client.get_subaccount_dashboard(synthetic_hotkey)
+            if subaccount_info is None:
+                return jsonify({'error': f'Subaccount {synthetic_hotkey} not found'}), HTTPStatus.NOT_FOUND
+            account = self._miner_account_client.get_account(synthetic_hotkey)
+            if account is None:
+                return jsonify({'error': f'No account for {synthetic_hotkey}'}), HTTPStatus.NOT_FOUND
+        except Exception as e:
+            logger.error(f"get_subaccount_limits: lookup failed for {synthetic_hotkey}: {e}")
+            return jsonify({'error': 'Internal server error retrieving limits'}), HTTPStatus.INTERNAL_SERVER_ERROR
+
+        balance = account.balance
+        leverage = account.leverage_limits()
+        bucket = account.miner_bucket
+        asset_class = account.asset_class
+
+        # Per-class caps come from whichever curve this account is on.
+        if leverage['tier_curve'] == 'pro':
+            class_caps = {cat.value: get_pro_class_leverage(cat) for cat in ValiConfig.PRO_CLASS_LEVERAGE}
+        elif leverage['tier_curve'] == 'standard':
+            class_caps = {
+                cat.value: get_standard_class_leverage(leverage['tier'], cat)
+                for cat in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER[leverage['tier']]
+            }
+        else:
+            class_caps = {
+                cat.value: get_legacy_portfolio_caps(asset_class, bucket, account.account_size, cat)[0]
+                for cat in ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[leverage['tier']]
+            }
+
+        payload = {
+            'status': 'success',
+            'synthetic_hotkey': synthetic_hotkey,
+            'account_type': subaccount_info.get('account_type'),
+            'bucket': bucket.value if bucket else None,
+            'asset_class': asset_class.value if asset_class else None,
+            'account_size': account.account_size,
+            'balance': balance,
+            'buying_power': account.buying_power,
+            'in_challenge_period': bool(bucket and bucket.is_subaccount_challenge),
+            **leverage,
+            'max_portfolio_usd': balance * leverage['portfolio_multiplier'],
+            'max_asset_class_usd': {cat: cap * balance for cat, cap in class_caps.items()},
+            'capital_used': account.capital_used,
+            'capital_used_by_class': {cat.value: amt for cat, amt in account.capital_used_by_class.items()},
+            'timestamp': TimeUtil.now_in_millis(),
+        }
+
+        # Correlated-exposure caps bind pro accounts only.
+        if leverage['is_pro']:
+            payload['correlation_limits'] = build_correlated_exposure_report(
+                {k: (v[0], v[1]) for k, v in account.correlated_exposure_by_group.items()}, balance
+            )
+
+        # Entity collateral bounds every subaccount under the entity, so it caps this one too.
+        collateral = {'entity_hotkey': entity_hotkey}
+        try:
+            headroom_theta = self._entity_collateral_client.get_entity_collateral_headroom(entity_hotkey)
+            collateral['headroom_theta'] = headroom_theta
+            # None means the entity's balance is unknown, which is not the same as no headroom.
+            collateral['headroom_usd'] = (None if headroom_theta is None
+                                          else headroom_theta * ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
+            collateral['subaccount_margin_usd'] = self._entity_collateral_client.compute_subaccount_margin_requirement(
+                synthetic_hotkey, bucket
+            )
+        except Exception as e:
+            logger.error(f"get_subaccount_limits: collateral lookup failed for {synthetic_hotkey}: {e}")
+            collateral['error'] = 'Collateral data unavailable'
+        payload['entity_collateral'] = collateral
+
+        return Response(json.dumps(payload, cls=CustomEncoder), content_type='application/json'), 200
 
     def get_hl_leaderboard(self):
         """

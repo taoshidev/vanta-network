@@ -14,8 +14,12 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.trade_pair import ExposureGroup, TradePair
+from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
 from vali_objects.utils.leverage_utils import (
+    build_correlated_exposure_report,
     compute_correlated_exposures,
+    get_all_correlation_group_limits,
+    get_correlation_group_limit,
     get_correlation_legs,
     get_max_correlated_order_size,
     get_max_order_size,
@@ -158,7 +162,8 @@ class TestCorrelatedOrderSize(unittest.TestCase):
 
     def room(self, trade_pair, open_positions, position_type=OrderType.LONG):
         """Room for an order that opens or grows a `position_type` position in `trade_pair`."""
-        return get_max_correlated_order_size(trade_pair, open_positions, BALANCE, position_type)[0]
+        exposures = compute_correlated_exposures(open_positions)
+        return get_max_correlated_order_size(trade_pair, exposures, BALANCE, position_type)[0]
 
     def test_stacking_the_same_currency_is_capped(self):
         # Spec example 1: long EURUSD 20x + long EURJPY 15x is 35x gross long EUR, above the 30x limit.
@@ -260,13 +265,22 @@ class TestGetMaxOrderSizeGating(unittest.TestCase):
         make_position(TradePair.SPY, 30.0),
     ]
 
+    def account_with(self, bucket, open_positions):
+        """Account carrying the exposure those positions imply, as the order path records it."""
+        account = make_account(bucket)
+        account.correlated_exposure_by_group = {
+            k: [longs, shorts]
+            for k, (longs, shorts) in compute_correlated_exposures(open_positions or []).items()
+        }
+        return account
+
     def max_size(self, bucket, trade_pair, open_positions):
         position = make_position(trade_pair, 0.0)
-        return get_max_order_size(make_account(bucket), position, open_positions=open_positions)[0]
+        return get_max_order_size(self.account_with(bucket, open_positions), position)[0]
 
     def binding_cap(self, bucket, trade_pair, open_positions):
         position = make_position(trade_pair, 0.0)
-        return get_max_order_size(make_account(bucket), position, open_positions=open_positions)[1]
+        return get_max_order_size(self.account_with(bucket, open_positions), position)[1]
 
     def test_non_pro_buckets_ignore_correlated_exposure(self):
         for bucket in (MinerBucket.MAINCOMP, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
@@ -284,22 +298,148 @@ class TestGetMaxOrderSizeGating(unittest.TestCase):
                     self.max_size(bucket, TradePair.EURJPY, None),
                 )
 
-    def test_correlated_cap_cannot_bind_without_open_positions(self):
-        # market_order_manager fetches open_positions only for orders that open or grow a
-        # position, so a reducing order reaches this function as None. The correlated cap then
-        # cannot bind, even on a pro account whose groups are already breaching.
+    def test_correlated_cap_cannot_bind_with_no_recorded_exposure(self):
+        # Exposure is read off the account, so a pro account holding nothing is never capped
+        # by a correlation group.
         self.assertNotIn(
             "exposure cap",
             self.binding_cap(MinerBucket.PRO_FUNDED, TradePair.NVDA, None),
         )
 
-    def test_correlated_cap_binds_when_open_positions_are_supplied(self):
-        # Counterpart to the above: BREACHING holds NVDA 5x long against a 3x sector limit, so
-        # the correlated cap is the binding one once the positions are passed in.
+    def test_correlated_cap_binds_on_recorded_exposure(self):
+        # BREACHING holds NVDA 5x long against a 3x sector limit, so once that exposure is on
+        # the account the correlated cap is the binding one.
         self.assertIn(
             "exposure cap",
             self.binding_cap(MinerBucket.PRO_FUNDED, TradePair.NVDA, self.BREACHING),
         )
+
+
+class TestCorrelationPublishing(unittest.TestCase):
+    """What the API hands a client has to be what the order path enforces."""
+
+    def test_published_limits_cover_every_group_a_pair_can_emit(self):
+        published = get_all_correlation_group_limits()
+        for trade_pair in TradePair:
+            for group_key, _ in get_correlation_legs(trade_pair):
+                self.assertIn(group_key, published, f"{trade_pair.trade_pair_id} -> {group_key}")
+                self.assertEqual(published[group_key], get_correlation_group_limit(group_key))
+
+    def test_published_room_equals_enforced_room(self):
+        # EURUSD 20x long puts 20x on EUR's long side against a 30x limit.
+        positions = [make_position(TradePair.EURUSD, 20.0)]
+        exposures = compute_correlated_exposures(positions)
+        report = build_correlated_exposure_report(exposures, BALANCE)
+
+        enforced, _ = get_max_correlated_order_size(
+            TradePair.EURJPY, exposures, BALANCE, OrderType.LONG
+        )
+        self.assertAlmostEqual(report["groups"]["currency:EUR"]["long_room_usd"], enforced)
+
+    def test_report_without_exposure_still_states_its_basis(self):
+        report = build_correlated_exposure_report({}, BALANCE)
+        self.assertEqual(report["groups"], {})
+        self.assertEqual(report["basis"], "gross_per_side")
+        self.assertEqual(report["denominator"], "balance")
+
+    def test_account_state_records_the_same_exposure_it_is_capped_against(self):
+        positions = [make_position(TradePair.EURUSD, 20.0), make_position(TradePair.NVDA, -2.0)]
+        account = MinerAccountManager.compute_account_state_from_positions(positions)
+        self.assertEqual(
+            account.correlated_exposure_by_group,
+            {k: [longs, shorts] for k, (longs, shorts) in compute_correlated_exposures(positions).items()},
+        )
+
+    def test_stored_exposure_survives_serialization(self):
+        positions = [make_position(TradePair.EURUSD, 20.0)]
+        account = MinerAccountManager.compute_account_state_from_positions(positions)
+        self.assertEqual(
+            account.to_dict()["correlated_exposure_by_group"],
+            account.correlated_exposure_by_group,
+        )
+        self.assertEqual(
+            account.to_dashboard()["correlated_exposure_by_group"],
+            account.correlated_exposure_by_group,
+        )
+
+
+class TestIncrementalExposureBookkeeping(unittest.TestCase):
+    """Opening then closing the same size must leave no exposure behind, on either side."""
+
+    @staticmethod
+    def _apply(account, trade_pair, position_type, value, opening):
+        MinerAccountManager._apply_correlated_exposure(
+            account, trade_pair, position_type, value, opening=opening
+        )
+
+    def _account(self):
+        return MinerAccount(miner_hotkey="hk", miner_bucket=MinerBucket.PRO_FUNDED)
+
+    def test_open_then_close_nets_to_zero(self):
+        for position_type in (OrderType.LONG, OrderType.SHORT):
+            with self.subTest(position_type=position_type):
+                account = self._account()
+                self._apply(account, TradePair.EURUSD, position_type, 5_000.0, True)
+                self._apply(account, TradePair.EURUSD, position_type, 5_000.0, False)
+                self.assertEqual(
+                    {k: v for k, v in account.correlated_exposure_by_group.items() if any(v)}, {}
+                )
+
+    def test_a_long_matches_what_the_position_walk_records(self):
+        account = self._account()
+        self._apply(account, TradePair.EURUSD, OrderType.LONG, BALANCE, True)
+        expected = compute_correlated_exposures([make_position(TradePair.EURUSD, 1.0)])
+        self.assertEqual(
+            account.correlated_exposure_by_group,
+            {k: [longs, shorts] for k, (longs, shorts) in expected.items()},
+        )
+
+    def test_a_short_lands_on_the_opposite_sides(self):
+        account = self._account()
+        self._apply(account, TradePair.EURUSD, OrderType.SHORT, BALANCE, True)
+        expected = compute_correlated_exposures([make_position(TradePair.EURUSD, -1.0)])
+        self.assertEqual(
+            account.correlated_exposure_by_group,
+            {k: [longs, shorts] for k, (longs, shorts) in expected.items()},
+        )
+
+
+class TestBindingCapIsReported(unittest.TestCase):
+    """A clamped order still succeeds, so the cap that clamped it is the only signal the
+    miner gets that the fill is smaller than they asked for."""
+
+    class _StubOrder:
+        def to_python_dict(self):
+            return {"order_uuid": "abc", "value": 100.0}
+
+        def __str__(self):
+            return str(self.to_python_dict())
+
+    def _response(self, binding_cap):
+        from vali_objects.enums.execution_type_enum import ExecutionType
+        from vali_objects.utils.order_processor import OrderProcessingResult
+
+        return OrderProcessingResult(
+            execution_type=ExecutionType.MARKET,
+            order=self._StubOrder(),
+            binding_cap=binding_cap,
+        ).get_response_json()
+
+    def test_clamped_order_names_the_cap(self):
+        cap = "currency:EUR exposure cap 30.0x"
+        self.assertIn(cap, self._response(cap))
+        self.assertIn("exposure cap", self._response(cap))
+
+    def test_unclamped_order_is_unchanged(self):
+        self.assertNotIn("binding_cap", self._response(None))
+
+    def test_execution_result_still_unpacks_as_a_pair(self):
+        from vali_objects.utils.market_order.market_order_manager import OrderExecution
+
+        result = OrderExecution("order", "position", "index:us exposure cap 25.0x")
+        order, position = result
+        self.assertEqual((order, position), ("order", "position"))
+        self.assertIn("exposure cap", result.binding_cap)
 
 
 if __name__ == "__main__":

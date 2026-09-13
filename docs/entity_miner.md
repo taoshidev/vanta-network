@@ -220,6 +220,56 @@ Standard subaccounts created before tiers existed have no stored `leverage_tier`
 | 3    | HL-linked FUNDED, $200K–$1M                                  | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
 | 4    | HL-linked FUNDED, ≥$1M                                       | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
 
+### Pro account leverage
+
+**Pro accounts run neither curve above.** They have their own flat table with no tier dimension: account size does not change it, and every pro bucket gets the same limits. `PRO_CHALLENGE_TRANSITION` is the exception — it still trades the standard account, so it keeps the standard tier tables.
+
+Per-pair positional leverage (multiples of balance):
+
+| Asset class | Leverage | Pairs |
+|---|---|---|
+| Crypto | 5x | BTC, ETH, SOL, XRP, DOGE |
+| | 2x | HYPE, SUI, BNB |
+| | 1.5x | kPEPE, ADA, ZEC, LINK |
+| | 1x | LTC, AVAX, TRX |
+| Equities | 2x | all pro-tradable US stocks and ETFs |
+| Commodities | 8x | WTI, COPPER, GOLD, NATGAS |
+| | 5x | SILVER, PLATINUM |
+| Indices | 10x | SP500, XYZ100 |
+| | 5x | EWY |
+| Forex | 20x | the 22 majors and crosses |
+| | 10x | the six NZD crosses (EURNZD, GBPNZD, NZDJPY, AUDNZD, NZDCAD, NZDCHF) |
+
+Per-asset-class and portfolio caps:
+
+| Crypto | Equities | Commodities | Indices | FX | Portfolio |
+|---|---|---|---|---|---|
+| 6x | 6x | 8x | 10x | 35x | 40x |
+
+All of these apply to **gross** exposure — offsetting positions never free up room. A pro-tradable pair the table does not name falls back to `ValiConfig.PRO_DEFAULT_POSITIONAL_LEVERAGE` (1x); see [pro_leverage_discrepancies.md](pro_leverage_discrepancies.md).
+
+The tables live in `ValiConfig.PRO_*`. `GET /trade-pairs` publishes the per-pair value as `pro_positional_leverage` and the caps under the `pro` block; `GET /subaccounts/<synthetic_hotkey>/limits` reports which curve a given subaccount is on (`tier_curve`, with `tier` null for pro).
+
+### Correlated-exposure caps (pro accounts only)
+
+On top of the per-pair, per-class and portfolio caps, a pro account's exposure is capped across *correlated* instruments:
+
+| Group | Cap (multiple of balance) |
+|---|---|
+| Each of USD, EUR, GBP, JPY, CHF, CAD, AUD | 30x |
+| NZD | 20x |
+| Each equity sector (11 GICS sectors) | 3x |
+| US index — `SP500USDC`, `XYZ100USDC`, `SPY`, `QQQ`, `IWM`, `DIA` combined | 25x |
+
+Three rules matter for sizing:
+- **Per side, never netted.** Gross long and gross short are capped independently, so a group may carry up to its full cap in each direction at once, and an offsetting position never frees room on the opposite side.
+- **Against `balance`, not `account_size`.** The live balance (account size + realized PnL − fees).
+- **Only on open/increase.** Closes and reductions are never checked against these caps.
+
+A long forex pair contributes `+1` to its base currency and `−1` to its quote, for the eight capped currencies only — so `USDMXN` contributes a USD leg alone, and `XAUUSD`/`XAGUSD` (both forex) contribute a `−1` USD leg. Equities contribute one sector leg; broad-market and country ETFs belong to no sector. `GET /trade-pairs` publishes each pair's `exposure_group` and `correlation_legs`, and the caps under `pro.correlation_limits`, so a client never has to reproduce these assignments.
+
+An order that would breach a cap is **clamped to the room left**, not rejected; it is only rejected when there is no room at all, with `" exposure cap "` in the message. When a cap does shrink an order, the order response carries `binding_cap` naming it.
+
 `HL All` and `All Markets` apply to multi-class subaccounts (Hyperliquid-linked and standard subaccounts using those asset classes, respectively) as the overall cap across all asset classes; single-class subaccounts (crypto, forex, equities, commodities) use only their own column.
 
 ### After the Challenge Period
@@ -236,10 +286,12 @@ Every subaccount is created as `standard`. A pro account is granted at Taoshi's 
 the admin endpoint `POST /admin/miner-bucket/<synthetic_hotkey>` — there is no way to create one
 directly, and `account_type: "pro"` is rejected at subaccount creation.
 
-Pro accounts run on a parallel bucket track with their own carry, stock-borrow and margin-interest
-rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs. They are
-Vanta-native only: they trade Vanta-sourced pairs (forex and equities) and cannot trade
-Hyperliquid-sourced pairs, so Hyperliquid subaccounts have no pro tier.
+Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
+margin-interest rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs.
+Hyperliquid *subaccounts* have no pro tier, but the pro universe itself is not Vanta-only: its
+crypto, commodities and indices pairs are all Hyperliquid-sourced. Note that the pro fee schedule
+applies only to Vanta-sourced positions (`position.py` gates it on `src == VANTA`), so HL-sourced
+pro positions pay live HL funding plus the standard schedule.
 
 | Bucket                        | Account traded | Earns payouts | Payout basis            |
 |-------------------------------|----------------|---------------|-------------------------|
