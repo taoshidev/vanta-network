@@ -410,6 +410,9 @@ class EntityServer(RPCServerBase):
     def set_reg_fee_time_rpc(self, entity_hotkey: str, subaccount_id: int, time: int | None) -> bool:
         return self._manager.set_reg_fee_time(entity_hotkey, subaccount_id, time)
 
+    def set_pro_fee_pending_rpc(self, entity_hotkey: str, subaccount_id: int, theta: float) -> bool:
+        return self._manager.set_pro_fee_pending(entity_hotkey, subaccount_id, theta)
+
     def calculate_subaccount_payout_rpc(
         self,
         subaccount_uuid: str,
