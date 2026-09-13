@@ -17,6 +17,7 @@ Entity-specific endpoints:
     GET  /api/hl/<hl_address>/stream     - SSE real-time stream
     POST /api/create-subaccount          - Create standard subaccount
     POST /api/create-hl-subaccount       - Create HL-linked subaccount
+    POST /api/promote-pro-transition     - Close out a PRO_CHALLENGE_TRANSITION subaccount and start its pro account
     GET  /api/health                     - Health check (extended with WS status)
 """
 import asyncio
@@ -26,6 +27,7 @@ import queue
 import re
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
@@ -388,7 +390,9 @@ class EntityMinerRestServer(MinerRestServer):
         self.app.route("/api/hl/<hl_address>/stream", methods=["GET"])(self.stream_endpoint)
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
-        print("[ENTITY-GW-INIT] 8 endpoints registered (3 inherited + 5 entity-specific)")
+        self.app.route("/api/update-subaccount-leverage-tier", methods=["POST"])(self.update_subaccount_leverage_tier_endpoint)
+        self.app.route("/api/promote-pro-transition", methods=["POST"])(self.promote_pro_transition_endpoint)
+        print("[ENTITY-GW-INIT] 10 endpoints registered (3 inherited + 7 entity-specific)")
 
     # ==================== HL Address Mapping ====================
 
@@ -937,6 +941,7 @@ class EntityMinerRestServer(MinerRestServer):
         {
             "asset_class": "crypto" | "forex" | "equities",  // Required
             "account_size": float,                           // Required, must be > 0
+            "leverage_tier": 1 | 2 | 3,                      // Optional, default 1 (standard leverage tier)
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -972,6 +977,10 @@ class EntityMinerRestServer(MinerRestServer):
                 payout_address = request_data.get("payout_address")
                 asset_class = "hl_all"
                 drawdown_criteria = "trailing"
+                account_type = None
+                leverage_tier = None
+                if request_data.get("leverage_tier") is not None:
+                    return jsonify({'status': 'error', 'message': 'leverage_tier is not supported for Hyperliquid subaccounts'}), 400
             else:
                 hl_address = None
                 payout_address = None
@@ -984,6 +993,17 @@ class EntityMinerRestServer(MinerRestServer):
                 drawdown_criteria = request_data.get("drawdown_criteria", "trailing")
                 if drawdown_criteria not in ("trailing", "static"):
                     return jsonify({'status': 'error', 'message': 'drawdown_criteria must be "trailing" or "static"'}), 400
+                # Pro accounts are granted by admin promotion, never at creation
+                account_type = request_data.get("account_type", "standard")
+                if account_type != "standard":
+                    return jsonify({'status': 'error', 'message': 'account_type must be "standard"'}), 400
+                # Standard leverage tier 1 to 3; the validator applies the default when omitted
+                leverage_tier = request_data.get("leverage_tier")
+                if leverage_tier is not None and not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                    return jsonify({
+                        'status': 'error',
+                        'message': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'
+                    }), 400
 
             raw = request_data.get("collateral_exempt", request_data.get("admin", False))
             if not isinstance(raw, bool):
@@ -1072,6 +1092,10 @@ class EntityMinerRestServer(MinerRestServer):
             }
             if collateral_exempt:
                 payload["collateral_exempt"] = collateral_exempt
+            if account_type is not None:
+                payload["account_type"] = account_type
+            if leverage_tier is not None:
+                payload["leverage_tier"] = leverage_tier
             if is_hl:
                 payload["hl_address"] = hl_address
                 if payout_address is not None:
@@ -1187,6 +1211,162 @@ class EntityMinerRestServer(MinerRestServer):
                     level="error"
                 )
             return jsonify({'status': 'error', 'message': f'Validator communication error: {str(e)}'}), 500
+
+    def update_subaccount_leverage_tier_endpoint(self):
+        """
+        POST /api/update-subaccount-leverage-tier - Change a standard subaccount's leverage tier via validator.
+
+        Request body (JSON):
+        {
+            "synthetic_hotkey": "<entity_hotkey>_<id>",  // Required
+            "leverage_tier": 1 | 2 | 3                   // Required
+        }
+        Lowering the tier requires the subaccount to have no open positions.
+        """
+        import requests as http_requests
+
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        request_data = request.get_json(silent=True)
+        if not request_data:
+            return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
+
+        synthetic_hotkey = request_data.get("synthetic_hotkey")
+        leverage_tier = request_data.get("leverage_tier")
+        if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
+            return jsonify({'status': 'error', 'message': 'synthetic_hotkey must be a non-empty string'}), 400
+        if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+            return jsonify({
+                'status': 'error',
+                'message': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'
+            }), 400
+
+        if not self._coldkey or not self._hotkey or not self._validator_url:
+            return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
+
+        try:
+            # The validator rebuilds this exact dict to verify; nonce + timestamp make it single use
+            signed_fields = {
+                "entity_coldkey": self._coldkey.ss58_address,
+                "entity_hotkey": self._hotkey.ss58_address,
+                "synthetic_hotkey": synthetic_hotkey,
+                "leverage_tier": leverage_tier,
+                "nonce": uuid.uuid4().hex,
+                "timestamp": int(time.time() * 1000),
+            }
+            message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
+            signature = self._coldkey.sign(message).hex()
+        except Exception as e:
+            logger.error(f"Error signing message: {e}")
+            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
+
+        payload = {**signed_fields, "signature": signature, "version": "2.2.1"}
+        try:
+            resp = http_requests.post(
+                f"{self._validator_url}/entity/subaccount/leverage-tier",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=60,
+            )
+        except Exception as e:
+            logger.error(f"Error reaching validator for leverage tier update: {e}")
+            return jsonify({'status': 'error', 'message': f'Validator unreachable: {str(e)}'}), 502
+
+        try:
+            response_data = resp.json()
+        except json.JSONDecodeError:
+            return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
+
+        if resp.status_code == 200:
+            logger.info(f"[ENTITY-GW] leverage_tier set to {leverage_tier} for {synthetic_hotkey}")
+            return jsonify(response_data), 200
+        error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
+        return jsonify({'status': 'error', 'message': error_message}), resp.status_code
+
+    def promote_pro_transition_endpoint(self):
+        """
+        POST /api/promote-pro-transition - Close out a subaccount's standard account and start its pro
+        account, moving it from PRO_CHALLENGE_TRANSITION to PRO_CHALLENGE_FROM_STANDARD via the validator.
+
+        Request body (JSON):
+        {
+            "synthetic_hotkey": "<entity_hotkey>_<id>"   // Required
+        }
+
+        The subaccount is promoted on the pro account size the admin set when offering the transition.
+        A miner cannot choose or change it: a request that includes "pro_account_size" at all (even null)
+        is rejected with a 400 before anything is signed or sent to the validator, which would reject it
+        too. Only the validator's admin endpoint POST /admin/miner-bucket/<hotkey> sets a pro account size.
+
+        Every open position is closed, every pending limit order is cancelled, and the ledgers restart
+        on the pro account, so this cannot be undone.
+        """
+        import requests as http_requests
+
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+
+        request_data = request.get_json(silent=True)
+        if not request_data:
+            return jsonify({'status': 'error', 'message': 'Invalid request: missing JSON body'}), 400
+
+        synthetic_hotkey = request_data.get("synthetic_hotkey")
+        if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
+            return jsonify({'status': 'error', 'message': 'synthetic_hotkey must be a non-empty string'}), 400
+
+        # The admin sets the pro account size; never sign or forward a miner-chosen one
+        if "pro_account_size" in request_data:
+            return jsonify({
+                'status': 'error',
+                'message': ('pro_account_size is not accepted: the pro account size is set by the admin when '
+                            'offering the pro track (validator POST /admin/miner-bucket/<hotkey>), and '
+                            'promoting out of PRO_CHALLENGE_TRANSITION keeps it'),
+            }), 400
+
+        if not self._coldkey or not self._hotkey or not self._validator_url:
+            return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
+
+        try:
+            # The validator rebuilds this exact dict to verify; nonce + timestamp make it single use.
+            signed_fields = {
+                "entity_coldkey": self._coldkey.ss58_address,
+                "entity_hotkey": self._hotkey.ss58_address,
+                "synthetic_hotkey": synthetic_hotkey,
+                "nonce": uuid.uuid4().hex,
+                "timestamp": int(time.time() * 1000),
+            }
+            message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
+            signature = self._coldkey.sign(message).hex()
+        except Exception as e:
+            logger.error(f"Error signing message: {e}")
+            return jsonify({'status': 'error', 'message': f'Wallet error: {str(e)}'}), 500
+
+        payload = {**signed_fields, "signature": signature, "version": "2.2.1"}
+        try:
+            resp = http_requests.post(
+                f"{self._validator_url}/entity/subaccount/pro-transition",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=60,
+            )
+        except Exception as e:
+            logger.error(f"Error reaching validator for pro transition promotion: {e}")
+            return jsonify({'status': 'error', 'message': f'Validator unreachable: {str(e)}'}), 502
+
+        try:
+            response_data = resp.json()
+        except json.JSONDecodeError:
+            return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
+
+        if resp.status_code == 200:
+            logger.info(f"[ENTITY-GW] pro transition completed for {synthetic_hotkey}: "
+                        f"pro_account_size={response_data.get('pro_account_size')}")
+            return jsonify(response_data), 200
+        error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
+        return jsonify({'status': 'error', 'message': error_message}), resp.status_code
 
     def health_endpoint(self):
         """GET /api/health - Health check."""

@@ -106,6 +106,21 @@ class ChallengePeriodClient(RPCClientBase):
         """Set or update a miner's bucket information."""
         return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms, drawdown_criteria)
 
+    def can_admin_set_bucket(self, hotkey: str, bucket: MinerBucket) -> Tuple[bool, str]:
+        """Report whether admin_set_bucket would reject this move, without changing anything."""
+        return self._server.can_admin_set_bucket_rpc(hotkey, bucket)
+
+    def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> Tuple[bool, str]:
+        """Move a miner into an arbitrary bucket, running the account switch when required."""
+        return self._server.admin_set_bucket_rpc(hotkey, bucket, current_time_ms)
+
+    def promote_pro_transition(
+        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
+    ) -> Tuple[bool, str]:
+        """Promote a subaccount out of PRO_CHALLENGE_TRANSITION at the miner's request, closing the
+        standard account and starting the pro account. Returns (success, message)."""
+        return self._server.promote_pro_transition_rpc(hotkey, current_time_ms, pro_account_size)
+
     def update_drawdown_criteria(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
         """Update drawdown_criteria for an existing miner state."""
         return self._server.update_drawdown_criteria_rpc(hotkey, criteria)
@@ -120,11 +135,13 @@ class ChallengePeriodClient(RPCClientBase):
 
     def get_testing_miners(self) -> dict[str, int]:
         """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_miners_rpc([MinerBucket.CHALLENGE, MinerBucket.SUBACCOUNT_CHALLENGE])
+        return self._server.get_miners_rpc([b for b in MinerBucket
+                                            if b == MinerBucket.CHALLENGE or b.is_subaccount_challenge])
 
     def get_success_miners(self) -> dict[str, int]:
         """Get all MAINCOMP bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_miners_rpc([MinerBucket.MAINCOMP, MinerBucket.SUBACCOUNT_FUNDED])
+        return self._server.get_miners_rpc([b for b in MinerBucket
+                                            if b == MinerBucket.MAINCOMP or b.is_subaccount_funded])
 
     def get_probation_miners(self) -> dict[str, int]:
         """Get all PROBATION bucket miners as dict {hotkey: start_time}."""
@@ -168,6 +185,10 @@ class ChallengePeriodClient(RPCClientBase):
     def get_drawdown_stats(self, synthetic_hotkey: str) -> dict | None:
         """Get drawdown statistics for a synthetic hotkey for dashboard display."""
         return self._server.get_drawdown_stats_rpc(synthetic_hotkey)
+
+    def get_pro_stats(self, synthetic_hotkey: str) -> dict | None:
+        """Get pro promotion criteria for a synthetic hotkey for dashboard display."""
+        return self._server.get_pro_stats_rpc(synthetic_hotkey)
 
     def get_miner_scores(self) -> tuple:
         """ Get cached miner scores for MinerStatisticsManager. """

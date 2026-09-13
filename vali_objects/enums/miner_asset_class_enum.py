@@ -24,19 +24,23 @@ class MinerAssetClass(str, Enum):
             return False
         return asset_class.lower() in {c.value for c in MinerAssetClass}
 
-    def can_trade(self, trade_pair: TradePair) -> bool:
+    def can_trade(self, trade_pair: TradePair, is_pro: bool = False) -> bool:
         """
         Check if `trade_pair` is allowed for this miner asset class.
 
         - HL_ALL allows Hyperliquid pairs plus forex (except XAUUSD/XAGUSD)
         - COMMODITIES requires Hyperliquid source and commodity category
         - Other classes require Vanta source and matching category
+        - Pro accounts are additionally restricted to pairs flagged TradePair.is_pro
         """
 
         category = trade_pair.trade_pair_category
         src = trade_pair.src
 
         if trade_pair.is_blocked:
+            return False
+
+        if is_pro and not trade_pair.is_pro:
             return False
 
         if self == MinerAssetClass.HL_ALL:

@@ -168,6 +168,26 @@ class PositionPenalties:
         }
 
     @staticmethod
+    def all_time_calmar_penalty(ledger: PerfLedger, max_drawdown: float, account_size: float) -> float:
+        """
+        Binary penalty: 0 if the ledger's all-time calmar is below the pro threshold, else 1.
+
+        max_drawdown is the ratcheted all-time value from ProStats, since the ledger itself only
+        retains a rolling window.
+        """
+        calmar = Metrics.all_time_calmar(LedgerUtils.realized_return(ledger, account_size), max_drawdown)
+        return 0.0 if calmar < ValiConfig.PRO_CHALLENGE_CALMAR_THRESHOLD else 1.0
+
+    @staticmethod
+    def daily_consistency_penalty(ledger: PerfLedger) -> float:
+        """
+        Binary penalty: 0 if a single day accounts for too much of the total return, else 1.
+        """
+        log_returns = LedgerUtils.daily_return_log(ledger)
+        consistency = Metrics.return_consistency(log_returns)
+        return 0.0 if consistency > ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD else 1.0
+
+    @staticmethod
     def risk_adjusted_performance_penalty(
         ledger: PerfLedger,
         asset_class: TradePairCategory

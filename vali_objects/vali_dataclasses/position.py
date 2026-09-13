@@ -3,7 +3,8 @@ from typing import Dict, Optional, List
 from pydantic import model_validator, BaseModel, Field
 
 from time_util.time_util import TimeUtil, MS_IN_8_HOURS, MS_IN_24_HOURS
-from vali_objects.trade_pair import TradePair, TradePairSource, DAILY_STOCK_BORROW_RATE, DAILY_MARGIN_INTEREST_RATE
+from vali_objects.trade_pair import (TradePair, TradePairSource, DAILY_STOCK_BORROW_RATE, DAILY_MARGIN_INTEREST_RATE,
+                                     PRO_DAILY_STOCK_BORROW_RATE, PRO_DAILY_MARGIN_INTEREST_RATE)
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.corporate_actions import DividendHistoryEntry
 from vali_objects.vali_dataclasses.fee_event import FeeEvent, FeeType
@@ -56,6 +57,7 @@ class Position(BaseModel):
     is_closed_position: bool = False
     fee_history: List[FeeEvent] = Field(default_factory=list)
     is_hl: bool = False  # True for Hyperliquid entity miner positions
+    is_pro: bool = False  # True for pro account positions; selects the pro fee schedule
     last_stock_split_date: Optional[str] = None  # Only set for equities
     dividend_history: List[DividendHistoryEntry] = Field(default_factory=list)  # Audit log of dividend events
 
@@ -126,11 +128,11 @@ class Position(BaseModel):
         if self.trade_pair.is_crypto:
             interval_ms = MS_IN_8_HOURS
             intervals = (current_time_ms - last_accrual_ms) // interval_ms
-            rate = self.trade_pair.carry_fee_rate_per_interval
+            rate = self.trade_pair.carry_fee_rate_per_interval(self.is_pro)
         elif self.trade_pair.is_forex:
             interval_ms = MS_IN_24_HOURS
             intervals = (current_time_ms - last_accrual_ms) // interval_ms
-            rate = self.trade_pair.carry_fee_rate_per_interval
+            rate = self.trade_pair.carry_fee_rate_per_interval(self.is_pro)
         else:
             return 0.0
 
@@ -156,6 +158,9 @@ class Position(BaseModel):
 
         most_recent_midnight_ms = (current_time_ms // MS_IN_24_HOURS) * MS_IN_24_HOURS
         total_fee = 0.0
+        use_pro = self.is_pro and self.trade_pair.src == TradePairSource.VANTA
+        borrow_rate = PRO_DAILY_STOCK_BORROW_RATE if use_pro else DAILY_STOCK_BORROW_RATE
+        interest_rate = PRO_DAILY_MARGIN_INTEREST_RATE if use_pro else DAILY_MARGIN_INTEREST_RATE
 
         if self.position_type == OrderType.SHORT:
             short_position_value = abs(self.net_value) + self.unrealized_pnl
@@ -163,7 +168,7 @@ class Position(BaseModel):
                 last_borrow_accrual_ms = self._last_fee_time_ms(FeeType.BORROW)
                 intervals = (most_recent_midnight_ms - last_borrow_accrual_ms) // MS_IN_24_HOURS
                 if intervals > 0:
-                    borrow_fee = short_position_value * DAILY_STOCK_BORROW_RATE * intervals
+                    borrow_fee = short_position_value * borrow_rate * intervals
                     if borrow_fee > 0:
                         self.record_fee_event(FeeType.BORROW, borrow_fee, most_recent_midnight_ms)
                         total_fee += borrow_fee
@@ -174,7 +179,7 @@ class Position(BaseModel):
                 last_interest_accrual_ms = self._last_fee_time_ms(FeeType.INTEREST)
                 intervals = (most_recent_midnight_ms - last_interest_accrual_ms) // MS_IN_24_HOURS
                 if intervals > 0:
-                    interest_fee = borrowed * DAILY_MARGIN_INTEREST_RATE * intervals
+                    interest_fee = borrowed * interest_rate * intervals
                     if interest_fee > 0:
                         self.record_fee_event(FeeType.INTEREST, interest_fee, most_recent_midnight_ms)
                         total_fee += interest_fee

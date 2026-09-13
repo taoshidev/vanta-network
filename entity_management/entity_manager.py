@@ -17,6 +17,7 @@ Pattern follows ChallengePeriodManager:
 - Local dicts (NOT IPC) for performance
 - Disk persistence via JSON
 """
+import math
 import re
 import uuid
 import time
@@ -25,7 +26,7 @@ from typing import Dict, Optional, Tuple, List
 from pydantic import BaseModel, Field
 
 import template.protocol
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.miner_account.account_snapshot import read_all_snapshots, DEFAULT_TOLERANCE_MS
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
@@ -38,9 +39,11 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import WeeklyPayoutContext, apply_deferral
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
@@ -59,11 +62,17 @@ class SubaccountInfo(BaseModel):
     status: str = Field(default="active", description="Status: active, eliminated, or unknown")
     created_at_ms: int = Field(description="Timestamp when subaccount was created")
     eliminated_at_ms: Optional[int] = Field(default=None, description="Timestamp when subaccount was eliminated")
-    account_size: float = Field(description="Account size in USD (immutable once set)")
+    account_size: float = Field(description="Live trading account size in USD")
+    standard_account_size: Optional[float] = Field(default=None, description="Account size on the standard track, snapshotted at pro promotion")
+    pro_account_size: Optional[float] = Field(default=None, description="Account size granted for the pro account, set at pro promotion")
     reg_fee_theta: float = Field(default=0.0, description="Cost of registration fee in theta")
     reg_fee_slashed_ms: Optional[float] = Field(default=None, description="Timestamp when registration fee was paid")
+    pro_fee_theta: float = Field(default=0.0, description="Theta assessed so far for the pro account size granted above the standard size")
+    pro_fee_theta_pending: float = Field(default=0.0, description="Portion of the pro promotion fee charged but not yet slashed on-chain")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
+    account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
+    leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades at the default tier")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
@@ -399,6 +408,8 @@ class EntityManager(ValidatorBroadcastBase):
         hl_address: Optional[str] = None,
         payout_address: Optional[str] = None,
         drawdown_criteria: str = "trailing",
+        account_type: str = "standard",
+        leverage_tier: Optional[int] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount for an entity.
@@ -408,15 +419,32 @@ class EntityManager(ValidatorBroadcastBase):
 
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
-            account_size: Account size in USD (immutable once set, max 100k)
+            account_size: Starting account size in USD (max 100k; only a pro promotion changes it)
             asset_class: Asset class selection (immutable once set)
             collateral_exempt: If True, skip collateral slashing.
                    Exempt subaccounts are excluded from entity aggregation and payouts.
+            leverage_tier: Standard leverage tier 1 to 3. Defaults to
+                   ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
         """
         t_start = time.time()
+
+        if not AccountType.is_valid(account_type):
+            return False, None, f"Invalid account_type: {account_type}. Must be 'standard' or 'pro'"
+        if AccountType(account_type) == AccountType.PRO:
+            return False, None, "account_type 'pro' cannot be set at creation; pro accounts are granted by admin promotion"
+        initial_bucket = AccountType(account_type).challenge_bucket
+
+        if hl_address:
+            if leverage_tier is not None:
+                return False, None, "leverage_tier is not supported for Hyperliquid subaccounts"
+        else:
+            if leverage_tier is None:
+                leverage_tier = ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
+            if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                return False, None, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -512,7 +540,7 @@ class EntityManager(ValidatorBroadcastBase):
                     collateral_balance_theta=account_size / cpt,
                     timestamp_ms=TimeUtil.now_in_millis(),
                     account_size=account_size,
-                    bucket=MinerBucket.SUBACCOUNT_CHALLENGE
+                    bucket=initial_bucket
                 )
 
                 if not set_size_success:
@@ -526,6 +554,9 @@ class EntityManager(ValidatorBroadcastBase):
                 logger.info(
                     f"[ENTITY_MANAGER] Set account size {account_size} for {synthetic_hotkey}"
                 )
+
+                if leverage_tier is not None:
+                    self._miner_account_client.set_leverage_tier(synthetic_hotkey, leverage_tier)
 
             except Exception as e:
                 logger.error(f"[ENTITY_MANAGER] Error creating subaccount: {e}")
@@ -548,6 +579,8 @@ class EntityManager(ValidatorBroadcastBase):
                 reg_fee_slashed_ms=now_ms if collateral_exempt else None,
                 asset_class=asset_class,
                 drawdown_criteria=drawdown_criteria,
+                account_type=account_type,
+                leverage_tier=leverage_tier,
                 hl_address=hl_address,
                 payout_address=payout_address,
             )
@@ -563,7 +596,7 @@ class EntityManager(ValidatorBroadcastBase):
             # Register subaccount with challenge period
             try:
                 self._challenge_period_client.set_miner_bucket(
-                    synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, now_ms,
+                    synthetic_hotkey, initial_bucket, now_ms,
                     drawdown_criteria=DrawdownCriteria(drawdown_criteria),
                 )
             except Exception as e:
@@ -620,7 +653,7 @@ class EntityManager(ValidatorBroadcastBase):
         hl_address: str,
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
-        payout_address: Optional[str] = None
+        payout_address: Optional[str] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -733,6 +766,283 @@ class EntityManager(ValidatorBroadcastBase):
             if not entity_data:
                 return None
             return entity_data.subaccounts.get(subaccount_id)
+
+    def apply_bucket_account_size(
+        self,
+        synthetic_hotkey: str,
+        target_bucket: MinerBucket,
+        pro_account_size: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Point a subaccount at the account size its target bucket trades.
+
+        Entering the pro track snapshots the standard size and records the granted pro size.
+        PRO_CHALLENGE_TRANSITION keeps trading the standard account, so only the sizes are
+        recorded; every other pro bucket switches the live account size to the pro size and
+        charges the promotion fee for the size granted above the standard account.
+        Returning to a standard bucket restores the standard size.
+
+        There is no network default pro size. The admin sets it when offering the pro track
+        (POST /admin/miner-bucket/<hotkey>), and this is the last check before it is stored:
+          * An explicit pro_account_size, for any target, must be an int or float (not a bool),
+            finite, and within [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE].
+          * Entering the pro track from a subaccount whose account_type is not "pro" requires an
+            explicit size. A size recorded on an earlier pro journey, which a demotion keeps, is never
+            reused: a re-offer needs a size again.
+          * A move within the pro track uses the explicit size when one is sent (the admin re-setting
+            it, e.g. on PRO_FUNDED), else the size recorded when the subaccount entered the track
+            (Start Pro Now and the organic promotions send none). With neither, the move is rejected.
+          * A standard bucket never records a pro size; an explicit one is ignored.
+
+        Nothing is stored until every step has succeeded, so a rejected or failed move leaves the
+        subaccount exactly as it was: a standard account never picks up a pro size or the pro
+        account type from a pro move that did not happen.
+
+        Returns:
+            (success, message)
+        """
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None:
+            return False, f"{synthetic_hotkey} is not a known subaccount"
+
+        if pro_account_size is not None:
+            size_error = pro_account_size_error(pro_account_size)
+            if size_error:
+                return False, size_error
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+
+        # Work out the new sizes and the fee they cost without touching the stored subaccount
+        standard_account_size = subaccount.standard_account_size
+        promotion_fee_theta = 0.0
+        # Where the pro size came from ("explicit" or "recorded"), for the log; None for standard buckets
+        pro_size_source = None
+        if target_bucket.is_pro_track:
+            if pro_account_size is not None:
+                pro_size_source = "explicit"
+            elif subaccount.account_type == AccountType.PRO.value and subaccount.pro_account_size is not None:
+                pro_account_size = subaccount.pro_account_size
+                pro_size_source = "recorded"
+                # A recorded size passed the range check when it was set, and is not re-checked against
+                # today's range so a later range change cannot strand a pro account mid-journey. It must
+                # still be a usable number: never trade a corrupt one.
+                if (isinstance(pro_account_size, bool)
+                        or not isinstance(pro_account_size, (int, float))
+                        or (isinstance(pro_account_size, float) and not math.isfinite(pro_account_size))
+                        or pro_account_size <= 0):
+                    return False, (
+                        f"Recorded pro_account_size {pro_account_size!r} for {synthetic_hotkey} is not a "
+                        f"finite positive number; send an explicit pro_account_size"
+                    )
+            else:
+                return False, "pro_account_size is required to enter the pro track"
+            if standard_account_size is None:
+                standard_account_size = subaccount.account_size
+            account_type = AccountType.PRO.value
+
+            # The pro size only goes live outside TRANSITION, so that is when the grant is charged.
+            # Only the increase over the fee already assessed is billed, so a demotion and
+            # re-promotion at a size already paid for is free. Collateral-exempt subaccounts
+            # (reg_fee_theta == 0) stay exempt on the pro track.
+            if target_bucket.is_pro and subaccount.reg_fee_theta > 0:
+                target_fee_theta = ValiConfig.pro_promotion_fee_theta(pro_account_size, standard_account_size)
+                promotion_fee_theta = max(0.0, target_fee_theta - subaccount.pro_fee_theta)
+                affordable, fee_error = self._verify_promotion_collateral(entity_hotkey, promotion_fee_theta)
+                if not affordable:
+                    return False, fee_error
+
+            # TRANSITION winds down the standard account, so it keeps the standard size
+            target_size = pro_account_size if target_bucket.is_pro else standard_account_size
+        else:
+            # A standard bucket never records a pro size; keep whatever is already there
+            pro_account_size = subaccount.pro_account_size
+            account_type = AccountType.STANDARD.value
+            target_size = standard_account_size or subaccount.account_size
+
+        if target_size != subaccount.account_size:
+            cpt = (ValiConfig.ENTITY_COST_PER_THETA_LOW
+                   if target_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD
+                   else ValiConfig.ENTITY_COST_PER_THETA)
+            record = self._miner_account_client.set_miner_account_size(
+                synthetic_hotkey,
+                collateral_balance_theta=target_size / cpt,
+                timestamp_ms=TimeUtil.now_in_millis(),
+                account_size=target_size,
+            )
+            if not record:
+                return False, f"Failed to set account size for {synthetic_hotkey}"
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            subaccount.standard_account_size = standard_account_size
+            subaccount.pro_account_size = pro_account_size
+            subaccount.account_type = account_type
+            subaccount.account_size = target_size
+            subaccount.pro_fee_theta += promotion_fee_theta
+            subaccount.pro_fee_theta_pending += promotion_fee_theta
+            entity_data = self.entities.get(entity_hotkey)
+            if entity_data:
+                entity_data.subaccounts[subaccount_id] = subaccount
+        self._write_entities_from_memory_to_disk()
+
+        if promotion_fee_theta > 0:
+            # The daemon slashes the pending fee on-chain; hold the reservation against the cache
+            # until it does, so the same theta cannot be spent twice in the meantime.
+            self._entity_collateral_client.offset_collateral_cache(entity_hotkey, -promotion_fee_theta)
+
+        pro_size_note = f" (pro size source: {pro_size_source})" if pro_size_source else ""
+        fee_note = (f", promotion_fee={promotion_fee_theta:.4f} theta "
+                    f"(assessed {subaccount.pro_fee_theta:.4f} theta total)") if promotion_fee_theta else ""
+        logger.info(
+            f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}: account_size=${subaccount.account_size}, "
+            f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}{fee_note}"
+        )
+        return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
+
+    def _verify_promotion_collateral(self, entity_hotkey: str, promotion_fee_theta: float) -> Tuple[bool, str]:
+        """
+        Check that an entity can cover a pro promotion fee before the size is granted.
+
+        A subaccount whose pro size has already been paid for costs nothing to re-enter, so a
+        zero fee always passes. An entity with no cached balance cannot be verified; that is
+        fatal in production and tolerated in unit tests, matching create_subaccount.
+        """
+        if promotion_fee_theta <= 0:
+            return True, ""
+
+        balance = self._entity_collateral_client.get_cached_collateral(entity_hotkey)
+        if balance is None:
+            if self.running_unit_tests:
+                return True, ""
+            logger.warning(
+                f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None"
+            )
+            return False, "Unable to verify collateral balance"
+
+        if balance < promotion_fee_theta:
+            logger.warning(
+                f"[ENTITY_MANAGER] Insufficient collateral for pro promotion: entity {entity_hotkey} has "
+                f"{balance:.4f} theta, needs {promotion_fee_theta:.4f} theta"
+            )
+            return False, (
+                f"Insufficient collateral: has {balance:.4f} theta, needs {promotion_fee_theta:.4f} theta "
+                f"to grant the pro account size"
+            )
+
+        return True, ""
+
+    def snapshot_bucket_account_size(self, synthetic_hotkey: str) -> Optional[dict]:
+        """
+        The sizing fields apply_bucket_account_size writes, read before it runs.
+
+        Take one before an apply and hand it to restore_bucket_account_size if the bucket move that
+        follows then fails. A plain dict, so it crosses the EntityClient RPC hop unchanged. The two
+        promotion-fee fields ride along so a rolled back promotion also gives the fee back.
+        """
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None:
+            return None
+        return {
+            "account_size": subaccount.account_size,
+            "standard_account_size": subaccount.standard_account_size,
+            "pro_account_size": subaccount.pro_account_size,
+            "account_type": subaccount.account_type,
+            "pro_fee_theta": subaccount.pro_fee_theta,
+            "pro_fee_theta_pending": subaccount.pro_fee_theta_pending,
+        }
+
+    def restore_bucket_account_size(self, synthetic_hotkey: str, snapshot: dict) -> Tuple[bool, str]:
+        """
+        Undo an apply_bucket_account_size whose bucket move then failed.
+
+        apply_bucket_account_size commits: it resizes the live account and writes the record to disk
+        before its caller moves the bucket. A failed move would otherwise leave a standard subaccount
+        marked "pro" with a pro size on record, and the size-less branch of the next offer is gated on
+        exactly that marking — so a re-offer with the size field blank would silently reuse the stale
+        size instead of demanding one. Worse, an entry that trades the pro size (PRO_CHALLENGE_DIRECT,
+        PRO_CHALLENGE_FROM_STANDARD) would leave the account live at that size in a bucket that never
+        moved.
+
+        `snapshot` is what snapshot_bucket_account_size returned before the apply. The live account size
+        is put back first and the record is left untouched if that fails: a record restored behind a
+        still-resized account is a silent divergence no later move heals (a move back to the recorded
+        size finds nothing to do), whereas a subaccount left marked pro is loudly wrong and re-syncs on
+        the next demotion.
+        """
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None:
+            return False, f"{synthetic_hotkey} is not a known subaccount"
+        if not snapshot or "account_size" not in snapshot:
+            return False, f"No account size snapshot to restore for {synthetic_hotkey}"
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        previous_account_size = snapshot["account_size"]
+
+        if previous_account_size != subaccount.account_size:
+            cpt = (ValiConfig.ENTITY_COST_PER_THETA_LOW
+                   if previous_account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD
+                   else ValiConfig.ENTITY_COST_PER_THETA)
+            record = self._miner_account_client.set_miner_account_size(
+                synthetic_hotkey,
+                collateral_balance_theta=previous_account_size / cpt,
+                timestamp_ms=TimeUtil.now_in_millis(),
+                account_size=previous_account_size,
+            )
+            if not record:
+                logger.error(
+                    f"[ENTITY_MANAGER] {synthetic_hotkey} rollback FAILED: the live account is still "
+                    f"${subaccount.account_size}, not ${previous_account_size}. Leaving the record as it "
+                    f"is rather than diverging from the account; the subaccount stays marked "
+                    f"{subaccount.account_type} outside the bucket that never moved"
+                )
+                return False, f"Failed to restore account size for {synthetic_hotkey}"
+
+        # A promotion that never happened must not be paid for. Only the part still pending is
+        # given back: once the daemon has slashed it on-chain the theta is gone, and the fee stays
+        # assessed so the next attempt at the same size is not billed twice.
+        refund_theta = max(
+            0.0, subaccount.pro_fee_theta_pending - (snapshot.get("pro_fee_theta_pending") or 0.0)
+        )
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            subaccount.account_size = previous_account_size
+            subaccount.standard_account_size = snapshot.get("standard_account_size")
+            subaccount.pro_account_size = snapshot.get("pro_account_size")
+            subaccount.account_type = snapshot.get("account_type", AccountType.STANDARD.value)
+            subaccount.pro_fee_theta_pending -= refund_theta
+            subaccount.pro_fee_theta -= refund_theta
+            entity_data = self.entities.get(entity_hotkey)
+            if entity_data:
+                entity_data.subaccounts[subaccount_id] = subaccount
+        self._write_entities_from_memory_to_disk()
+
+        if refund_theta > 0:
+            self._entity_collateral_client.offset_collateral_cache(entity_hotkey, refund_theta)
+
+        fee_note = f", promotion fee refunded={refund_theta:.4f} theta" if refund_theta else ""
+        logger.info(
+            f"[ENTITY_MANAGER] {synthetic_hotkey} sizing rolled back after a failed bucket move: "
+            f"account_size=${subaccount.account_size}, standard=${subaccount.standard_account_size}, "
+            f"pro=${subaccount.pro_account_size}, account_type={subaccount.account_type}{fee_note}"
+        )
+        return True, f"{synthetic_hotkey} account size restored to ${subaccount.account_size}"
+
+    def get_payout_scale(self, synthetic_hotkey: str) -> float:
+        """
+        Multiplier applied to this subaccount's PnL when it is folded into the entity's payout.
+
+        A miner completing the pro challenge after passing the standard challenge trades the
+        larger pro account but is paid on the size of the standard account they came from.
+        Returns 1.0 for every other subaccount.
+        """
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None:
+            return 1.0
+        standard_size, pro_size = subaccount.standard_account_size, subaccount.pro_account_size
+        if not standard_size or not pro_size:
+            return 1.0
+        return standard_size / pro_size
 
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
         """
@@ -922,6 +1232,104 @@ class EntityManager(ValidatorBroadcastBase):
         logger.info(f"[ENTITY_MANAGER] drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}")
         return True, f"drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}"
 
+    def update_subaccount_leverage_tier(
+        self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
+    ) -> Tuple[bool, str]:
+        """Change a standard subaccount's leverage tier and push it to the MinerAccount and other
+        validators. Lowering the tier requires no open positions because the new caps may sit below
+        the current exposure. A subaccount without a stored tier counts as the default tier."""
+        if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+            return False, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
+        if not is_synthetic_hotkey(synthetic_hotkey):
+            return False, f"{synthetic_hotkey} is not a synthetic hotkey"
+        parsed_entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        if parsed_entity_hotkey != entity_hotkey:
+            return False, f"Subaccount {synthetic_hotkey} does not belong to entity {entity_hotkey}"
+
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found"
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False, f"Subaccount {subaccount_id} not found for entity {entity_hotkey}"
+            if subaccount.hl_address:
+                return False, "leverage_tier is not supported for Hyperliquid subaccounts"
+            if subaccount.asset_class == MinerAssetClass.HL_ALL.value:
+                # Pre-migration standard hl_all subaccounts stay on the legacy curve (is_standard_tiered)
+                return False, "leverage_tier is not supported for hl_all subaccounts"
+            if AccountType(subaccount.account_type) == AccountType.PRO:
+                return False, "Pro accounts do not use standard leverage tiers"
+            if subaccount.status != "active":
+                return False, f"Subaccount {synthetic_hotkey} is {subaccount.status}, not active"
+
+            same_tier = subaccount.leverage_tier == leverage_tier
+            if not same_tier:
+                current_tier = (
+                    subaccount.leverage_tier if subaccount.leverage_tier is not None
+                    else ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
+                )
+                if leverage_tier < current_tier:
+                    open_positions = self._position_client.get_positions_for_one_hotkey(
+                        synthetic_hotkey, only_open_positions=True
+                    )
+                    if open_positions:
+                        return False, (
+                            f"Close all open positions on {synthetic_hotkey} before moving to leverage_tier "
+                            f"{leverage_tier} ({len(open_positions)} open)"
+                        )
+                previous_tier = subaccount.leverage_tier
+                subaccount.leverage_tier = leverage_tier
+                self._write_entities_from_memory_to_disk()
+
+        # Push and broadcast even when the tier is unchanged: a same-tier call repairs a MinerAccount
+        # that lost the field, here and on the validators that receive the broadcast
+        if self._miner_account_client:
+            self._miner_account_client.set_leverage_tier(synthetic_hotkey, leverage_tier)
+        if not self.running_unit_tests:
+            self.broadcast_subaccount_registration(entity_hotkey, subaccount)
+
+        if same_tier:
+            return True, f"Subaccount {synthetic_hotkey} is already at leverage_tier {leverage_tier}"
+        logger.info(f"[ENTITY_MANAGER] leverage_tier {previous_tier} -> {leverage_tier} for {synthetic_hotkey}")
+        return True, f"leverage_tier updated to {leverage_tier} for {synthetic_hotkey}"
+
+    @staticmethod
+    def _sanitize_leverage_tier(tier, synthetic_hotkey: str) -> Optional[int]:
+        """Tier from a broadcast or checkpoint. Values outside STANDARD_LEVERAGE_TIERS are dropped so a
+        bad record cannot make the order path fail on a table lookup."""
+        if tier is None or ValiConfig.is_valid_standard_leverage_tier(tier):
+            return tier
+        logger.warning(f"[ENTITY_MANAGER] Ignoring invalid leverage_tier {tier!r} for {synthetic_hotkey}")
+        return None
+
+    def _push_leverage_tiers(self, wanted: Dict[str, int]) -> int:
+        """Set MinerAccount.leverage_tier where it differs from the SubaccountInfo value or the account
+        is missing. Repairs accounts that lost the field to an account-size sync from a validator
+        without it. Returns the number of accounts written."""
+        if not self._miner_account_client or not wanted:
+            return 0
+        accounts = self._miner_account_client.get_accounts(list(wanted))
+        written = 0
+        for hotkey, tier in wanted.items():
+            account = accounts.get(hotkey)
+            if account is None or account.leverage_tier != tier:
+                self._miner_account_client.set_leverage_tier(hotkey, tier)
+                written += 1
+        return written
+
+    def _reconcile_leverage_tiers(self) -> int:
+        """Push every active subaccount's stored tier to its MinerAccount, see _push_leverage_tiers."""
+        with self._entities_lock:
+            wanted = {
+                sub.synthetic_hotkey: sub.leverage_tier
+                for entity in self.entities.values()
+                for sub in entity.subaccounts.values()
+                if sub.leverage_tier is not None and sub.status == "active"
+            }
+        return self._push_leverage_tiers(wanted)
+
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
         """
         Get the status of a subaccount by synthetic hotkey.
@@ -987,6 +1395,9 @@ class EntityManager(ValidatorBroadcastBase):
                 "subaccount_id": subaccount.subaccount_id,
                 "asset_class": subaccount.asset_class,
                 "account_size": subaccount.account_size,
+                "standard_account_size": subaccount.standard_account_size,
+                "pro_account_size": subaccount.pro_account_size,
+                "account_type": subaccount.account_type,
                 "status": subaccount.status,
                 "created_at_ms": subaccount.created_at_ms,
                 "eliminated_at_ms": subaccount.eliminated_at_ms,
@@ -1035,7 +1446,14 @@ class EntityManager(ValidatorBroadcastBase):
                 'hotkey': str,
                 'total_checkpoints': int,
                 'checkpoints': List[dict],
-                'payout': float
+                'weekly_settlements': List[dict],  # each carries deferred / deferred_released /
+                                                   # deferred_forfeited / deferred_balance
+                'payout': float,
+                'deferred_balance': float,    # escrow still held at end_time_ms
+                'deferred_forfeited': float,  # cumulative escrow dropped by leaving the pro track
+                'off_track': bool,            # current bucket does not hold deferred payouts - true for
+                                              # every standard account, not a forfeiture signal (read
+                                              # deferred_forfeited for that)
             } or None if subaccount not found
         """
         realtime = False
@@ -1074,15 +1492,20 @@ class EntityManager(ValidatorBroadcastBase):
                 if not perf_ledger:
                     return None
 
+            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
+            # Escrow is only held while the bucket withholds on a soft breach; anywhere else it is forfeited
+            off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
             EMPTY_RESPONSE = {
                 'hotkey': synthetic_hotkey,
                 'total_checkpoints': 0,
                 'checkpoints': {},
                 'weekly_settlements': [],
                 'payout': 0,
+                'deferred_balance': 0.0,
+                'deferred_forfeited': 0.0,
+                'off_track': off_track,
             }
-            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
-            if miner_bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA):
+            if miner_bucket is None or not miner_bucket.is_subaccount_earning:
                 return EMPTY_RESPONSE
 
             checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
@@ -1106,16 +1529,45 @@ class EntityManager(ValidatorBroadcastBase):
             if not orders:
                 return EMPTY_RESPONSE
 
+            # Weekly-scope penalties, and the account-size scale that applied in each week.
+            week_context = (
+                debt_ledger.weekly_payout_context(self.get_payout_scale(synthetic_hotkey))
+                if debt_ledger else {}
+            )
+
             weekly_settlements = []
+            deferred_balance = 0.0
+
             def _record_week(start_ms, end_ms, balance, eow_unrealized, week_orders):
-                previous_payouts = sum(s['payout'] for s in weekly_settlements)
-                payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
+                nonlocal deferred_balance
+                # The high water mark advances on gross terms; a week withheld by a soft breach
+                # is remembered in deferred_balance instead, so netting it down here would pay
+                # the same money twice once the balance is released.
+                previous_payouts = sum(s['gross_payout'] for s in weekly_settlements)
+                week = week_context.get(start_ms, WeeklyPayoutContext())
+                gross_payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
+
+                owed = gross_payout * week.payout_scale
+                earned = owed * week.weekly_penalty
+                released, deferred_balance, forfeited = apply_deferral(
+                    deferred_balance,
+                    owed - earned,
+                    track=week.track,
+                    week_penalty=week.weekly_penalty,
+                )
                 weekly_settlements.append({
                     'start_ms': start_ms,
                     'end_ms': end_ms,
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
-                    'payout': payout,
+                    'gross_payout': gross_payout,
+                    'payout': earned + released,
+                    'deferred': owed - earned,
+                    'deferred_released': released,
+                    'deferred_forfeited': forfeited,
+                    'deferred_balance': deferred_balance,
+                    'weekly_penalty': week.weekly_penalty,
+                    'payout_scale': week.payout_scale,
                     'orders': [o.to_python_dict() for o in week_orders],
                 })
 
@@ -1162,9 +1614,7 @@ class EntityManager(ValidatorBroadcastBase):
                         snapshot = snapshots[j]
                         best_delta = delta
                     j += 1
-                if end_time == end_time_ms and realtime:
-                    unrealized_pnl = realtime_unrealized
-                elif snapshot is not None:
+                if snapshot is not None:
                     unrealized_pnl = snapshot.equity - snapshot.balance
                 else:
                     cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
@@ -1173,6 +1623,8 @@ class EntityManager(ValidatorBroadcastBase):
                         f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
                         f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
                     )
+                if end_time == end_time_ms and realtime:
+                    unrealized_pnl = realtime_unrealized
                 _record_week(week_start, end_time, running_balance, unrealized_pnl, week_orders)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
 
@@ -1185,6 +1637,9 @@ class EntityManager(ValidatorBroadcastBase):
                 'checkpoints': checkpoints_dict,
                 'weekly_settlements': weekly_settlements,
                 'payout': payout,
+                'deferred_balance': deferred_balance,
+                'deferred_forfeited': sum(w['deferred_forfeited'] for w in weekly_settlements),
+                'off_track': off_track,
             }
 
         except Exception as e:
@@ -1696,7 +2151,8 @@ class EntityManager(ValidatorBroadcastBase):
             'entities_added': 0,
             'subaccounts_added': 0,
             'subaccounts_updated': 0,
-            'entities_skipped': 0
+            'entities_skipped': 0,
+            'leverage_tiers_pushed': 0,
         }
 
         # Validate input
@@ -1798,12 +2254,21 @@ class EntityManager(ValidatorBroadcastBase):
                                     local_sub.payout_address = incoming_sub.payout_address
                                     stats['subaccounts_updated'] += 1
 
+                                # Update leverage_tier if changed; MinerAccounts are reconciled below
+                                if incoming_sub.leverage_tier is not None and local_sub.leverage_tier != incoming_sub.leverage_tier:
+                                    local_sub.leverage_tier = incoming_sub.leverage_tier
+                                    stats['subaccounts_updated'] += 1
+
                         # Update next_subaccount_id to prevent ID collisions
                         if incoming_entity.next_subaccount_id > local_entity.next_subaccount_id:
                             local_entity.next_subaccount_id = incoming_entity.next_subaccount_id
 
             # Persist changes to disk
             self._write_entities_from_memory_to_disk()
+
+        # The account-size sync that runs before this may have replaced MinerAccounts with records
+        # from a validator without the field; put every stored tier back
+        stats['leverage_tiers_pushed'] = self._reconcile_leverage_tiers()
 
         logger.info(f"[ENTITY_MANAGER] Entity sync complete: {stats}")
         return stats
@@ -1835,7 +2300,9 @@ class EntityManager(ValidatorBroadcastBase):
             # Convert subaccount dicts back to SubaccountInfo objects
             subaccounts_dict = {}
             for sub_id_str, sub_dict in entity_dict.get("subaccounts", {}).items():
-                subaccounts_dict[int(sub_id_str)] = SubaccountInfo(**sub_dict)
+                sub = SubaccountInfo(**sub_dict)
+                sub.leverage_tier = EntityManager._sanitize_leverage_tier(sub.leverage_tier, sub.synthetic_hotkey)
+                subaccounts_dict[int(sub_id_str)] = sub
 
             entity_dict["subaccounts"] = subaccounts_dict
             entities[entity_hotkey] = EntityData(**entity_dict)
@@ -1889,6 +2356,9 @@ class EntityManager(ValidatorBroadcastBase):
                         f"[ENTITY_MANAGER] Invalid subaccount registration data: {parse_err}"
                     )
                     return False
+                subaccount_info.leverage_tier = self._sanitize_leverage_tier(
+                    subaccount_info.leverage_tier, subaccount_info.synthetic_hotkey
+                )
 
                 subaccount_id = subaccount_info.subaccount_id
                 subaccount_uuid = subaccount_info.subaccount_uuid
@@ -1958,6 +2428,17 @@ class EntityManager(ValidatorBroadcastBase):
                                 f"[ENTITY_MANAGER] Set payout_address {payout_address} for subaccount {synthetic_hotkey}"
                             )
                             changed = True
+                        # Adopt the sender's tier; the MinerAccount is checked even when the tier is
+                        # unchanged so a re-broadcast repairs an account that lost the field
+                        new_tier = subaccount_info.leverage_tier
+                        if new_tier is not None:
+                            if existing_sub.leverage_tier != new_tier:
+                                existing_sub.leverage_tier = new_tier
+                                logger.info(
+                                    f"[ENTITY_MANAGER] Set leverage_tier {new_tier} for subaccount {synthetic_hotkey}"
+                                )
+                                changed = True
+                            self._push_leverage_tiers({synthetic_hotkey: new_tier})
                         if changed:
                             self._write_entities_from_memory_to_disk()
                         else:
@@ -1994,6 +2475,10 @@ class EntityManager(ValidatorBroadcastBase):
                 # Propagate hl_address to MinerAccount so buying_power uses the correct HS divisor
                 if hl_address and self._miner_account_client:
                     self._miner_account_client.set_hl_address(synthetic_hotkey, hl_address)
+
+                # Propagate leverage_tier to MinerAccount (mirrors create_subaccount)
+                if subaccount_info.leverage_tier is not None and self._miner_account_client:
+                    self._miner_account_client.set_leverage_tier(synthetic_hotkey, subaccount_info.leverage_tier)
 
                 # Set account size for synthetic hotkey (mirrors create_subaccount)
                 if self._miner_account_client:
@@ -2211,6 +2696,36 @@ class EntityManager(ValidatorBroadcastBase):
             self._write_entities_from_memory_to_disk()
             logger.info(
                 f"[ENTITY_MANAGER] Set reg_fee_slashed_ms={time} for subaccount {subaccount.synthetic_hotkey}"
+            )
+            return True
+
+    def set_pro_fee_pending(self, entity_hotkey: str, subaccount_id: int, theta: float) -> bool:
+        """
+        Set the unslashed portion of a subaccount's pro promotion fee.
+
+        Pass 0.0 once the fee has been slashed on-chain, or the original amount to restore the
+        claim when an on-chain slash fails.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            subaccount_id: The subaccount ID
+            theta: Theta still owed for the pro promotion.
+
+        Returns:
+            True if updated successfully, False if not found.
+        """
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False
+            subaccount.pro_fee_theta_pending = theta
+            self._write_entities_from_memory_to_disk()
+            logger.info(
+                f"[ENTITY_MANAGER] Set pro_fee_theta_pending={theta} for subaccount {subaccount.synthetic_hotkey}"
             )
             return True
 

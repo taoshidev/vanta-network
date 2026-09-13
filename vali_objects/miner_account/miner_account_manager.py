@@ -80,6 +80,7 @@ class MinerAccount:
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
+    leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = default tier for standard subaccounts, unused by HL and pro
     max_return: float = 1.0  # High water mark for portfolio return
     unrealized_pnl: float = 0.0  # Current unrealized PNL from open positions
     # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
@@ -116,16 +117,24 @@ class MinerAccount:
     def multiplier(self) -> float:
         """Subaccount-wide portfolio cap multiplier used by `buying_power`.
 
-        Returns TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
-        subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling; per-class
-        sub-caps are enforced separately at order entry via get_portfolio_caps.
+        Standard subaccounts read STANDARD_PORTFOLIO_LEVERAGE_BY_TIER at their (effective) tier;
+        everyone else reads LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For
+        multi-class subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling;
+        per-class sub-caps are enforced separately at order entry.
         """
         if not self.asset_class:
             return 1
 
-        from vali_objects.utils.leverage_utils import get_leverage_tier
-        tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
-        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
+        from vali_objects.utils.leverage_utils import (
+            get_effective_leverage_tier,
+            get_legacy_leverage_tier,
+            get_standard_portfolio_leverage,
+            is_standard_tiered,
+        )
+        if is_standard_tiered(self):
+            return get_standard_portfolio_leverage(get_effective_leverage_tier(self), self.asset_class)
+        tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
+        return ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
     @property
     def account_size(self) -> float:
@@ -195,6 +204,7 @@ class MinerAccount:
             'total_dividend_income': self.total_dividend_income,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
             'hl_address': self.hl_address,
+            'leverage_tier': self.leverage_tier,
             'max_return': self.max_return,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
@@ -221,6 +231,7 @@ class MinerAccount:
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
+            'leverage_tier': self.leverage_tier,
         }
 
 
@@ -388,6 +399,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_dividend_income = last_record.get("total_dividend_income", 0.0)
                     miner_bucket_str = last_record.get("miner_bucket")
                     hl_address = last_record.get("hl_address")
+                    leverage_tier = last_record.get("leverage_tier")
                     max_return = last_record.get("max_return", 1.0)
                     unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
@@ -400,6 +412,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_dividend_income = 0.0
                     miner_bucket_str = None
                     hl_address = None
+                    leverage_tier = None
                     max_return = 1.0
                     unrealized_pnl = 0.0
                     capital_used_by_class_raw = {}
@@ -467,6 +480,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     collateral_records=collateral_records,
                     miner_bucket=miner_bucket,
                     hl_address=hl_address,
+                    leverage_tier=leverage_tier,
                     max_return=max_return,
                     unrealized_pnl=unrealized_pnl,
                     capital_used_by_class=capital_used_by_class,
@@ -767,6 +781,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.hl_address = hl_address
             self._save_accounts_to_disk()
 
+    def set_leverage_tier(self, hotkey: str, leverage_tier: Optional[int]) -> None:
+        """Set the standard leverage tier on an account. Called by EntityManager when a subaccount is created/synced."""
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            account.leverage_tier = leverage_tier
+            self._save_accounts_to_disk()
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         with self._accounts_lock:
@@ -908,7 +929,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Snapshot account state at the current (or given) UTC day open.
 
         Args:
-            hotkey: If provided, snapshot only this account. If None, snapshot all accounts.
+            hotkey: If provided, snapshot only this account (returns 0 if it does not exist).
+                    If None, snapshot all non-eliminated accounts.
             timestamp_ms: Timestamp used to derive day_open_ms. Defaults to now.
             reset_snapshot: If True, unconditionally overwrite daily_open_snapshot
                              (e.g. new/reset accounts).
@@ -925,13 +947,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         to_log: list[tuple[str, dict]] = []
         with self._accounts_lock:
-            targets = (
-                [self.accounts[hotkey]] if hotkey and hotkey in self.accounts
-                else self.accounts.values()
-            )
+            if hotkey is not None:
+                account = self.accounts.get(hotkey)
+                if account is None:
+                    logger.warning(f"[MINER_ACCOUNT] take_account_snapshot: unknown hotkey {hotkey}, no snapshot taken")
+                    return 0
+                targets = [account]
+            else:
+                targets = [a for a in self.accounts.values() if a.miner_bucket != MinerBucket.ELIMINATED]
             for account in targets:
-                if hotkey is None and account.miner_bucket == MinerBucket.ELIMINATED:
-                    continue
                 snapshot = AccountSnapshot(
                     snapshot_ms=timestamp_ms,
                     account_size=account.get_account_size(),

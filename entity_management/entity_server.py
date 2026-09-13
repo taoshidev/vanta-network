@@ -10,6 +10,8 @@ Follows the same pattern as ChallengePeriodServer.
 """
 from typing import Optional, Tuple, Dict, List
 
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+
 import template.protocol
 from entity_management.entity_manager import EntityManager
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -152,6 +154,8 @@ class EntityServer(RPCServerBase):
         asset_class: str,
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
+        account_type: str = "standard",
+        leverage_tier: Optional[int] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -162,12 +166,15 @@ class EntityServer(RPCServerBase):
             asset_class: Asset class selection
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
+            account_type: "standard" or "pro"
+            leverage_tier: Standard leverage tier 1 to 3; None = default tier
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         success, subaccount_info, message = self._manager.create_subaccount(
-            entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria
+            entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria,
+            account_type=account_type, leverage_tier=leverage_tier
         )
 
         # Convert SubaccountInfo to dict for RPC serialization
@@ -182,7 +189,7 @@ class EntityServer(RPCServerBase):
         hl_address: str,
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
-        payout_address: Optional[str] = None
+        payout_address: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -238,6 +245,27 @@ class EntityServer(RPCServerBase):
         info = self._manager.get_subaccount_info_for_synthetic(synthetic_hotkey)
         return info.model_dump() if info else None
 
+    def apply_bucket_account_size_rpc(
+        self,
+        synthetic_hotkey: str,
+        target_bucket: MinerBucket,
+        pro_account_size: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """Point a subaccount at the account size its target bucket trades."""
+        return self._manager.apply_bucket_account_size(synthetic_hotkey, target_bucket, pro_account_size)
+
+    def snapshot_bucket_account_size_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
+        """The sizing fields apply_bucket_account_size writes, read before it runs."""
+        return self._manager.snapshot_bucket_account_size(synthetic_hotkey)
+
+    def restore_bucket_account_size_rpc(self, synthetic_hotkey: str, snapshot: dict) -> Tuple[bool, str]:
+        """Undo an apply_bucket_account_size whose bucket move then failed."""
+        return self._manager.restore_bucket_account_size(synthetic_hotkey, snapshot)
+
+    def get_payout_scale_rpc(self, synthetic_hotkey: str) -> float:
+        """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
+        return self._manager.get_payout_scale(synthetic_hotkey)
+
     def get_hl_subaccount_limits_data_rpc(self, hl_address: str) -> Optional[dict]:
         """
         Get lightweight limits data for an HL subaccount.
@@ -249,6 +277,12 @@ class EntityServer(RPCServerBase):
             Dict with {account_size, asset_class, challenge_bucket} or None
         """
         return self._manager.get_hl_subaccount_limits_data(hl_address)
+
+    def update_subaccount_leverage_tier_rpc(
+        self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
+    ) -> Tuple[bool, str]:
+        """Change a standard subaccount's leverage tier (1 to 3). Returns (success, message)."""
+        return self._manager.update_subaccount_leverage_tier(entity_hotkey, synthetic_hotkey, leverage_tier)
 
     def eliminate_subaccount_rpc(
         self,
@@ -375,6 +409,9 @@ class EntityServer(RPCServerBase):
 
     def set_reg_fee_time_rpc(self, entity_hotkey: str, subaccount_id: int, time: int | None) -> bool:
         return self._manager.set_reg_fee_time(entity_hotkey, subaccount_id, time)
+
+    def set_pro_fee_pending_rpc(self, entity_hotkey: str, subaccount_id: int, theta: float) -> bool:
+        return self._manager.set_pro_fee_pending(entity_hotkey, subaccount_id, theta)
 
     def calculate_subaccount_payout_rpc(
         self,

@@ -19,7 +19,7 @@ from bittensor_wallet import Keypair
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from entity_management.entity_utils import create_subaccount_dashboard
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.metagraph_client import MetagraphClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -41,7 +41,11 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.utils.leverage_utils import get_leverage_tier, get_tier_positional_leverage
+from vali_objects.utils.leverage_utils import (
+    get_legacy_leverage_tier,
+    get_legacy_tier_positional_leverage,
+    get_standard_positional_leverage,
+)
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.utils.mdd_checker.mdd_checker_client import MDDCheckerClient
 from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
@@ -342,6 +346,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
         self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
+        self.app.route("/admin/miner-bucket/<hotkey>", methods=["POST"])(self.set_miner_bucket_admin)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
@@ -363,6 +368,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/entity/<entity_hotkey>", methods=["GET"])(self.get_entity)
         self.app.route("/entities", methods=["GET"])(self.get_all_entities)
         self.app.route("/entity/subaccount/eliminate", methods=["POST"])(self.eliminate_subaccount)
+        self.app.route("/entity/subaccount/leverage-tier", methods=["POST"])(self.update_subaccount_leverage_tier)
+        self.app.route("/entity/subaccount/pro-transition", methods=["POST"])(self.promote_pro_transition)
         self.app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.get_subaccount_dashboard)
         self.app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(self.v2_get_subaccount_dashboard)
         self.app.route("/entity/subaccount/payout", methods=["POST"])(self.calculate_subaccount_payout)
@@ -992,6 +999,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         further filtered to pairs tradeable by that MinerAssetClass via
         MinerAssetClass.can_trade. Pairs filtered out are moved to `disabled`.
         When omitted, all trade pairs are considered tradeable by asset class.
+
+        If `pro=true` is provided, the `allowed` list is restricted to the pro
+        universe (TradePair.is_pro), matching what the order path enforces for a
+        pro account. Every entry reports its own `is_pro` flag either way.
         """
         miner_asset_class = None
         asset_class = request.args.get('asset_class')
@@ -999,8 +1010,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not MinerAssetClass.is_valid(asset_class):
                 return jsonify({'error': f'Invalid asset class: {asset_class}'}), 400
             miner_asset_class = MinerAssetClass(asset_class.lower())
-        # Per-pair, per-tier positional leverage (multipliers, not USD), resolved by the same
-        # function the order path enforces (get_tier_positional_leverage). Tier 1 == challenge.
+        is_pro = request.args.get('pro', 'false').lower() == 'true'
+        # Per-pair positional leverage (multipliers, not USD), resolved by the same functions the
+        # order path enforces. Legacy tiers 1 to 4: HL-linked subaccounts (tier 1 == challenge).
+        # Standard tiers 1 to 3: standard subaccounts (no stored tier counts as tier 1).
         subaccount_tiers = (1, 2, 3, 4)
 
         # These lot sizes are not used in any network calculation; they're included in
@@ -1017,10 +1030,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'trade_pair': tp.trade_pair,
                 'trade_pair_category': tp.trade_pair_category.value,
                 'trade_pair_source': tp.src.value,
+                'is_pro': tp.is_pro,
                 'min_leverage': tp.min_leverage,
                 'max_leverage': tp.max_leverage,
                 'subaccount_positional_leverage_by_tier': {
-                    str(tier): get_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
+                    str(tier): get_legacy_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
+                },
+                'standard_positional_leverage_by_tier': {
+                    str(tier): get_standard_positional_leverage(tier, tp) for tier in ValiConfig.STANDARD_LEVERAGE_TIERS
                 },
             }
             if tp.trade_pair_id in contract_lot_size:
@@ -1034,7 +1051,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 entry = build_entry(trade_pair)
                 if trade_pair.is_blocked:
                     disabled.append(entry)
-                elif miner_asset_class is not None and not miner_asset_class.can_trade(trade_pair):
+                elif is_pro and not trade_pair.is_pro:
+                    disabled.append(entry)
+                elif miner_asset_class is not None and not miner_asset_class.can_trade(trade_pair, is_pro=is_pro):
                     disabled.append(entry)
                 else:
                     allowed.append(entry)
@@ -1044,6 +1063,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'disabled': disabled,
                 'total_allowed': len(allowed),
                 'total_disabled': len(disabled),
+                # Standard-tier class and portfolio caps (multiples of balance), keyed by tier
+                'standard_leverage_tiers': {
+                    'class': {
+                        str(tier): {cat.value: cap for cat, cap in row.items()}
+                        for tier, row in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER.items()
+                    },
+                    'portfolio': {
+                        str(tier): {asset_class.value: cap for asset_class, cap in row.items()}
+                        for tier, row in ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER.items()
+                    },
+                },
                 'timestamp': TimeUtil.now_in_millis(),
             })
         except Exception as e:
@@ -2379,9 +2409,19 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             asset_class = data['asset_class']
             collateral_exempt = data.get('collateral_exempt')
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
+            # account_type applies to Vanta-native subaccounts only
+            account_type = data.get('account_type', 'standard')
+            # Standard leverage tier 1 to 3; EntityManager applies the default when omitted
+            leverage_tier = data.get('leverage_tier')
 
             if collateral_exempt is not None and not isinstance(collateral_exempt, bool):
                 return jsonify({'error': 'collateral_exempt must be a boolean'}), 400
+
+            if leverage_tier is not None:
+                if is_hl:
+                    return jsonify({'error': 'leverage_tier is not supported for Hyperliquid subaccounts'}), 400
+                if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                    return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -2451,7 +2491,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
-                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria
+                    entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria,
+                    account_type=account_type, leverage_tier=leverage_tier
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
@@ -2540,6 +2581,243 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error retrieving all entities: {e}")
             return jsonify({'error': 'Internal server error retrieving entities'}), 500
+
+    def update_subaccount_leverage_tier(self):
+        """
+        Change a standard subaccount's leverage tier (1 to 3). The entity coldkey signs the sorted
+        JSON of every field except signature and version; nonce + timestamp make each signature
+        single use within a 5 minute window (NonceManager). Lowering the tier requires the
+        subaccount to have no open positions.
+
+        Example:
+        curl -X POST http://localhost:48888/entity/subaccount/leverage-tier \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "synthetic_hotkey": "5GhDr..._0",
+            "leverage_tier": 2,
+            "nonce": "3f9c1e...",
+            "timestamp": 1749234567890,
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'synthetic_hotkey', 'leverage_tier',
+                               'nonce', 'timestamp', 'signature']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            synthetic_hotkey = data['synthetic_hotkey']
+            leverage_tier = data['leverage_tier']
+            nonce = data['nonce']
+            timestamp = data['timestamp']
+
+            if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
+                return jsonify({'error': 'synthetic_hotkey must be a non-empty string'}), 400
+            if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
+            if not isinstance(nonce, str) or not nonce:
+                return jsonify({'error': 'nonce must be a non-empty string'}), 400
+            if not isinstance(timestamp, int) or isinstance(timestamp, bool):
+                return jsonify({'error': 'timestamp must be an integer in milliseconds'}), 400
+
+            # The signature binds the target subaccount and tier; nonce + timestamp make it single use
+            keypair = Keypair(ss58_address=entity_coldkey)
+            signed_message = json.dumps({
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey,
+                "synthetic_hotkey": synthetic_hotkey,
+                "leverage_tier": leverage_tier,
+                "nonce": nonce,
+                "timestamp": timestamp,
+            }, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(signed_message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Request unauthorized'}), 401
+
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Consume the nonce only after the signature and ownership checks pass
+            nonce_ok, nonce_error = self.nonce_manager.is_valid_request(
+                address=f"{entity_coldkey}::{entity_hotkey}", nonce=nonce, timestamp=timestamp
+            )
+            if not nonce_ok:
+                return jsonify({'error': nonce_error}), 401
+
+            success, message = self._entity_client.update_subaccount_leverage_tier(
+                entity_hotkey, synthetic_hotkey, leverage_tier
+            )
+
+            if success:
+                return jsonify({
+                    'status': 'success',
+                    'message': message,
+                    'synthetic_hotkey': synthetic_hotkey,
+                    'leverage_tier': leverage_tier,
+                }), 200
+            else:
+                return jsonify({'error': message}), 400
+
+        except Exception as e:
+            logger.error(f"Error updating subaccount leverage tier: {e}")
+            return jsonify({'error': 'Internal server error updating subaccount leverage tier'}), 500
+
+    def promote_pro_transition(self):
+        """
+        Promote a subaccount out of PRO_CHALLENGE_TRANSITION into PRO_CHALLENGE_FROM_STANDARD on the
+        miner's own request This closes every open position, cancels every pending limit order, and
+        restarts the ledgers on the pro account, so it is not reversible.
+
+        The entity coldkey signs the sorted JSON of every field except signature and version;
+        nonce + timestamp make each signature single use within a 5 minute window (NonceManager).
+
+        The subaccount is promoted on the pro account size the admin set when offering the transition.
+        A miner cannot choose or change it: a request that includes pro_account_size at all (even null)
+        is rejected with a 400 before the signature is checked or the nonce is consumed. Only the admin
+        endpoint POST /admin/miner-bucket/<hotkey> sets a pro account size.
+
+        Example:
+        curl -X POST http://localhost:48888/entity/subaccount/pro-transition \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "entity_hotkey": "5GhDr...",
+            "entity_coldkey": "5FxY...",
+            "synthetic_hotkey": "5GhDr..._0",
+            "nonce": "3f9c1e...",
+            "timestamp": 1749234567890,
+            "signature": "0x..."
+          }'
+        """
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            # The admin sets the pro account size; a miner never chooses one. Refused before any
+            # signature or nonce work, so the request's nonce stays unused.
+            if 'pro_account_size' in data:
+                return jsonify({'error': (
+                    'pro_account_size is not accepted: the pro account size is set by the admin when '
+                    'offering the pro track (POST /admin/miner-bucket/<hotkey>), and promoting out of '
+                    'PRO_CHALLENGE_TRANSITION keeps it'
+                )}), 400
+
+            required_fields = ['entity_coldkey', 'entity_hotkey', 'synthetic_hotkey',
+                               'nonce', 'timestamp', 'signature']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+            entity_coldkey = data['entity_coldkey']
+            entity_hotkey = data['entity_hotkey']
+            synthetic_hotkey = data['synthetic_hotkey']
+            nonce = data['nonce']
+            timestamp = data['timestamp']
+
+            if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
+                return jsonify({'error': 'synthetic_hotkey must be a non-empty string'}), 400
+            if not isinstance(nonce, str) or not nonce:
+                return jsonify({'error': 'nonce must be a non-empty string'}), 400
+            if not isinstance(timestamp, int) or isinstance(timestamp, bool):
+                return jsonify({'error': 'timestamp must be an integer in milliseconds'}), 400
+
+            parsed_entity_hotkey, _ = parse_synthetic_hotkey(synthetic_hotkey)
+            if parsed_entity_hotkey is None:
+                return jsonify({'error': f'{synthetic_hotkey} is not a subaccount'}), 400
+            if parsed_entity_hotkey != entity_hotkey:
+                return jsonify({'error': f'Subaccount {synthetic_hotkey} does not belong to entity {entity_hotkey}'}), 403
+
+            # The signature binds the target subaccount; nonce + timestamp make it single use.
+            signed_fields = {
+                "entity_coldkey": entity_coldkey,
+                "entity_hotkey": entity_hotkey,
+                "synthetic_hotkey": synthetic_hotkey,
+                "nonce": nonce,
+                "timestamp": timestamp,
+            }
+
+            keypair = Keypair(ss58_address=entity_coldkey)
+            signed_message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
+
+            is_valid = keypair.verify(signed_message, bytes.fromhex(data['signature']))
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Request unauthorized'}), 401
+
+            owns_hotkey = self._verify_coldkey_owns_hotkey(entity_coldkey, entity_hotkey)
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            # Consume the nonce only after the signature and ownership checks pass
+            nonce_ok, nonce_error = self.nonce_manager.is_valid_request(
+                address=f"{entity_coldkey}::{entity_hotkey}", nonce=nonce, timestamp=timestamp
+            )
+            if not nonce_ok:
+                return jsonify({'error': nonce_error}), 401
+
+            # Closes positions, cancels limit orders, restarts the ledgers, and moves the bucket. No size
+            # is passed, so the pro account keeps the size recorded when the admin offered the transition.
+            success, message = self._challenge_period_client.promote_pro_transition(
+                synthetic_hotkey, TimeUtil.now_in_millis()
+            )
+            if not success:
+                return jsonify({'error': message}), 400
+
+            subaccount = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}
+            logger.info(f"Pro transition promotion for {synthetic_hotkey}: {message}")
+            return jsonify({
+                'status': 'success',
+                'message': message,
+                'synthetic_hotkey': synthetic_hotkey,
+                'bucket': MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value,
+                'pro_account_size': subaccount.get('pro_account_size'),
+                'account_size': subaccount.get('account_size'),
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error promoting pro transition subaccount: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': 'Internal server error promoting pro transition subaccount'}), 500
 
     def eliminate_subaccount(self):
         """
@@ -2718,6 +2996,119 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
+    def set_miner_bucket_admin(self, hotkey: str):
+        """
+        Move a miner into an arbitrary bucket. This is the only way into the pro account track.
+
+        JSON body:
+          bucket: MinerBucket value string (required)
+          pro_account_size: USD size of the pro account. There is no network default: this endpoint is
+                            the only way to set one. When sent it must be a finite number within
+                            [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE]
+                            ($200,000 to $1,000,000 inclusive), whatever the bucket, or the request is
+                            a 400 before anything changes.
+                            - Required when entering the pro track (e.g. SUBACCOUNT_FUNDED ->
+                              PRO_CHALLENGE_TRANSITION), including a re-offer after a demotion: a size
+                              from an earlier pro journey is never reused.
+                            - Optional on a move within the pro track (e.g. to PRO_FUNDED): a new size
+                              replaces the recorded one, omitted keeps it.
+                            - Ignored for standard buckets, which never record a pro size.
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/miner-bucket/<hotkey>" \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"bucket": "PRO_CHALLENGE_TRANSITION", "pro_account_size": 500000}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Set miner bucket endpoint requires tier 500 access'}), 403
+
+        # Set once the sizing below is committed and cleared once the bucket move makes it correct;
+        # while it holds a snapshot the sizing must be rolled back on every way out (see below)
+        sizing_snapshot = None
+        try:
+            data = request.get_json(silent=True) or {}
+            bucket_str = data.get('bucket')
+            try:
+                bucket = MinerBucket(bucket_str)
+            except ValueError:
+                valid = [b.value for b in MinerBucket]
+                return jsonify({'error': f'Invalid bucket. Must be one of: {valid}'}), 400
+
+            # request.get_json() parses the literals NaN and Infinity, and NaN passes a plain range
+            # check, so the size must be a finite number within the pro range
+            pro_account_size = data.get('pro_account_size')
+            if pro_account_size is not None:
+                size_error = pro_account_size_error(pro_account_size)
+                if size_error:
+                    return jsonify({'error': size_error}), 400
+
+            if bucket.is_subaccount and not is_synthetic_hotkey(hotkey):
+                return jsonify({'error': f'{bucket.value} is a subaccount bucket; {hotkey} is not a subaccount'}), 400
+
+            # Check if modification is possible before changing anything
+            can_set, message = self._challenge_period_client.can_admin_set_bucket(hotkey, bucket)
+            if not can_set:
+                return jsonify({'error': message}), 400
+
+            # Point the subaccount at the account size the target bucket trades before the
+            # challenge period manager resets the account against it. This commits — it resizes the
+            # live account and writes the record to disk — so snapshot the sizing first: if the bucket
+            # move below then fails, the subaccount must not be left marked pro, which would both let
+            # the next size-less offer reuse this size and leave the account trading it outside the
+            # pro track.
+            if bucket.is_subaccount:
+                snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
+                success, message = self._entity_client.apply_bucket_account_size(
+                    hotkey, bucket, pro_account_size
+                )
+                if not success:
+                    return jsonify({'error': message}), 400
+                sizing_snapshot = snapshot
+
+            success, message = self._challenge_period_client.admin_set_bucket(
+                hotkey, bucket, TimeUtil.now_in_millis()
+            )
+            if not success:
+                self._restore_bucket_account_size(hotkey, sizing_snapshot)
+                return jsonify({'error': message}), 400
+            # The bucket moved, so the sizing is now the correct one and must survive anything below
+            sizing_snapshot = None
+            self._miner_account_client.set_miner_bucket(hotkey, bucket)
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'bucket': bucket.value,
+                'message': message,
+            }), 200
+
+        except Exception as e:
+            # An exception inside admin_set_bucket (its wind-down, its disk write) must not leave the
+            # sizing write landed behind a 500 either
+            self._restore_bucket_account_size(hotkey, sizing_snapshot)
+            logger.error(f"Error setting bucket for hotkey {hotkey}: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def _restore_bucket_account_size(self, hotkey: str, sizing_snapshot: Optional[dict]) -> None:
+        """Put a committed apply_bucket_account_size back when the bucket move it was for did not
+        happen. A no-op without a snapshot, and never allowed to mask the failure it is cleaning up."""
+        if not sizing_snapshot:
+            return
+        try:
+            restored, restore_message = self._entity_client.restore_bucket_account_size(
+                hotkey, sizing_snapshot
+            )
+            if not restored:
+                logger.error(f"Could not roll back the account size for {hotkey}: {restore_message}")
+        except Exception as restore_error:
+            logger.error(f"Could not roll back the account size for {hotkey}: {restore_error}")
+            logger.error(traceback.format_exc())
+
     def get_subaccount_dashboard(self, synthetic_hotkey):
         """
         Get comprehensive dashboard data for a subaccount.
@@ -2828,6 +3219,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         add_to_dashboard("challenge_period", self._challenge_period_client.get_dashboard)
         add_to_dashboard("drawdown", self._challenge_period_client.get_drawdown_stats)
+        add_to_dashboard("pro_stats", self._challenge_period_client.get_pro_stats)
         add_to_dashboard("elimination", self._elimination_client.get_dashboard)
         add_to_dashboard("account_size_data", self._miner_account_client.get_dashboard)
         add_to_dashboard("positions", self._position_client.get_dashboard, positions_time_ms)
@@ -2885,7 +3277,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     # Per-category positional leverage stand-in for the /hl-traders limits endpoint.
     # The endpoint only knows a subaccount's asset class, not a specific pair, so it
-    # cannot use the per-pair source of truth (leverage_utils.get_tier_positional_leverage,
+    # cannot use the per-pair source of truth (leverage_utils.get_legacy_tier_positional_leverage,
     # which is pair.subaccount_tier_base_leverage × tier). This table mirrors that result
     # for one canonical pair per class. Keep in sync with the order-entry path; once
     # per-pair bases diverge inside a class, switch this endpoint to per-pair reporting.
@@ -2937,7 +3329,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         asset_class = MinerAssetClass.HL_ALL
         in_challenge = challenge_bucket is None or challenge_bucket == MinerBucket.SUBACCOUNT_CHALLENGE.value
         _bucket = MinerBucket.SUBACCOUNT_CHALLENGE if in_challenge else MinerBucket.SUBACCOUNT_FUNDED
-        tier = get_leverage_tier(_bucket, account_size)
+        tier = get_legacy_leverage_tier(_bucket, account_size)
 
         ###### DEPRECATED TIER POSITIONAL LEVERAGE
         max_position_per_pair_usd = account_size * self._ENDPOINT_TIER_POSITIONAL_LEVERAGE[tier][asset_class]
@@ -2953,9 +3345,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'timestamp': TimeUtil.now_in_millis(),
         }
 
-        response_payload['max_portfolio_usd'] = account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
+        response_payload['max_portfolio_usd'] = account_size * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]
         response_payload['max_asset_class_usd'] = {
-            c.value: account_size * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
+            c.value: account_size * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier][c]
             for c in (
                 TradePairCategory.CRYPTO,
                 TradePairCategory.FOREX,

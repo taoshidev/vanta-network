@@ -32,14 +32,14 @@ ACCOUNT_SIZE = 50_000.0  # Tier 2 (<$200K)
 
 # Expected limits — Tier 2 (SUBACCOUNT_FUNDED, account_size < $200K), HL_ALL
 TIER2_POSITIONAL = ValidatorRestServer._ENDPOINT_TIER_POSITIONAL_LEVERAGE[2][MinerAssetClass.HL_ALL]   # 1.0x
-TIER2_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL]   # 7.0x
+TIER2_PORTFOLIO  = ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL]   # 7.0x
 
 EXPECTED_MAX_POSITION = ACCOUNT_SIZE * TIER2_POSITIONAL   # 50_000
 EXPECTED_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER2_PORTFOLIO   # 350_000
 
 # Expected limits — Tier 1 (SUBACCOUNT_CHALLENGE), HL_ALL
 TIER1_POSITIONAL = ValidatorRestServer._ENDPOINT_TIER_POSITIONAL_LEVERAGE[1][MinerAssetClass.HL_ALL]   # 0.5x
-TIER1_PORTFOLIO  = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL]   # 4.0x
+TIER1_PORTFOLIO  = ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL]   # 4.0x
 
 EXPECTED_CHALLENGE_MAX_POSITION = ACCOUNT_SIZE * TIER1_POSITIONAL  # 25_000
 EXPECTED_CHALLENGE_MAX_PORTFOLIO = ACCOUNT_SIZE * TIER1_PORTFOLIO   # 200_000
@@ -257,7 +257,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         )
 
     def test_hl_all_overall_cap_from_asset_class_table(self):
-        """HL_ALL max_portfolio_usd sources from the HL_ALL entry in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS."""
+        """HL_ALL max_portfolio_usd sources from the HL_ALL entry in LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS."""
         from vali_objects.vali_config import ValiConfig
         from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
@@ -268,11 +268,11 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         status, data = self._get(VALID_HL_ADDRESS)
 
         self.assertEqual(status, 200)
-        expected_overall = ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL]
+        expected_overall = ACCOUNT_SIZE * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[2][MinerAssetClass.HL_ALL]
         self.assertEqual(data['max_portfolio_usd'], expected_overall)
 
     def test_hl_all_per_class_values_match_table(self):
-        """Each per-class entry matches TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY for the right tier."""
+        """Each per-class entry matches LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY for the right tier."""
         from vali_objects.vali_config import ValiConfig
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             asset_class="hl_all",
@@ -290,11 +290,11 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
             ('indices',    TradePairCategory.INDICES),
             ('commodities', TradePairCategory.COMMODITIES),
         ):
-            expected = ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][cat]
+            expected = ACCOUNT_SIZE * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][cat]
             self.assertEqual(breakdown[cat_str], expected, f"per-class mismatch for {cat_str}")
 
     def test_hl_all_challenge_period_uses_tier_1(self):
-        """HL_ALL during challenge period uses tier-1 entry in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS."""
+        """HL_ALL during challenge period uses tier-1 entry in LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS."""
         from vali_objects.vali_config import ValiConfig
         from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
@@ -308,7 +308,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         self.assertTrue(data['in_challenge_period'])
         self.assertEqual(
             data['max_portfolio_usd'],
-            ACCOUNT_SIZE * ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL],
+            ACCOUNT_SIZE * ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL],
         )
 
     def test_stored_single_class_still_gets_full_breakdown(self):
@@ -329,7 +329,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
     # ==================== Leverage tier field ====================
 
     def test_tier_field_by_bucket_and_size(self):
-        """`tier` follows get_leverage_tier: challenge → 1; funded by size → 2/3/4."""
+        """`tier` follows get_legacy_leverage_tier: challenge → 1; funded by size → 2/3/4."""
         cases = (
             (MinerBucket.SUBACCOUNT_CHALLENGE.value, 50_000.0, 1),
             (MinerBucket.SUBACCOUNT_FUNDED.value, 50_000.0, 2),
@@ -361,7 +361,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         must resolve per-pair caps from /trade-pairs instead.
         """
         from vali_objects.vali_config import TradePair
-        from vali_objects.utils.leverage_utils import get_tier_positional_leverage
+        from vali_objects.utils.leverage_utils import get_legacy_tier_positional_leverage
         self.mock_entity.get_hl_subaccount_limits_data.return_value = _build_limits_data(
             challenge_bucket=MinerBucket.SUBACCOUNT_FUNDED.value,
         )
@@ -372,7 +372,7 @@ class TestHlTraderLimitsEndpoint(unittest.TestCase):
         endpoint_reported = data['max_position_per_pair_usd'] / ACCOUNT_SIZE
         self.assertEqual(endpoint_reported, TIER2_POSITIONAL)
         # GOLDUSDC's order-path cap is higher than the deprecated stand-in reports
-        gold_order_path = get_tier_positional_leverage(2, TradePair.GOLDUSDC)
+        gold_order_path = get_legacy_tier_positional_leverage(2, TradePair.GOLDUSDC)
         self.assertGreater(gold_order_path, endpoint_reported)
 
 

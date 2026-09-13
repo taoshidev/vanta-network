@@ -5,6 +5,7 @@ import math
 from enum import Enum
 
 from meta import load_version
+from shared_objects.log import logger
 
 BASE_DIR = base_directory = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 meta_dict = load_version(os.path.join(base_directory, "meta", "meta.json"))
@@ -47,6 +48,7 @@ from vali_objects.trade_pair import (  # noqa: E402,F401
     TradePairCategory,
     TradePairSource,
     InstrumentType,
+    StandardLeverageGroup,
 )
 
 
@@ -73,6 +75,39 @@ class InterpolatedValueFromDate():
         else:
             new_n = self.high - abs(self.increment) * intervals
             return max(self.target, new_n)
+
+# These knobs move consensus (promotion decisions and weekly penalties feed the weight
+# calculator), so a stray environment variable must never quietly change a validator's
+# view. Reading one requires an explicit opt-in, and neurons/validator.py refuses to
+# start on mainnet with any of them present.
+_ENV_OVERRIDES_ALLOWED = os.environ.get("PTN_ALLOW_CONFIG_OVERRIDES", "").strip() == "1"
+
+
+def _env_override(name: str, default, cast=float, maximum=None):
+    """Testnet knob: read a positive number from the environment variable `name` once at import.
+
+    Ignored unless `PTN_ALLOW_CONFIG_OVERRIDES=1` is set (testnet only). Unset (or blank)
+    keeps `default`; anything else must parse as a positive number no larger than `maximum`.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    if not _ENV_OVERRIDES_ALLOWED:
+        raise ValueError(
+            f"{name} is set but PTN_ALLOW_CONFIG_OVERRIDES=1 is not. {name} changes "
+            f"consensus-affecting config; unset it or opt in explicitly (testnet only)."
+        )
+    try:
+        value = cast(raw)
+    except ValueError as e:
+        raise ValueError(f"{name}={raw!r} must be a positive number") from e
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name}={raw!r} must be a positive number")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name}={raw!r} must be at most {maximum}")
+    logger.warning(f"[VALI_CONFIG] {name} overridden by environment: {value} (default {default})")
+    return value
+
 
 class ValiConfig:
     # versioning
@@ -232,6 +267,17 @@ class ValiConfig:
             "emission": 0.333,  # Total emission for equities
             "days_in_year": DAYS_IN_YEAR_CRYPTO,
         },
+    }
+
+    # Annualization factor per miner asset class (ASSET_CLASS_BREAKDOWN is keyed by trade pair category)
+    #TODO might be unnecessary
+    MINER_ASSET_CLASS_DAYS_IN_YEAR = {
+        MinerAssetClass.CRYPTO: DAYS_IN_YEAR_CRYPTO,
+        MinerAssetClass.FOREX: DAYS_IN_YEAR_FOREX,
+        MinerAssetClass.EQUITIES: DAYS_IN_YEAR_CRYPTO,
+        MinerAssetClass.COMMODITIES: DAYS_IN_YEAR_CRYPTO,
+        MinerAssetClass.HL_ALL: DAYS_IN_YEAR_CRYPTO,
+        MinerAssetClass.ALL_MARKETS: DAYS_IN_YEAR_CRYPTO,
     }
 
     # Time Configurations
@@ -432,6 +478,37 @@ class ValiConfig:
     SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # retired rule, no longer enforced — kept for dashboard/API payload compatibility
     SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: flat intraday-drawdown threshold for static accounts, regardless of bucket entry time
 
+    # Pro account (entity subaccount) rules. The promotion criteria and transition grace period can
+    # be overridden for testnet through environment variables of the same name (docs/entity_miner.md).
+    PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = _env_override("PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT", 0.06)
+    PRO_CHALLENGE_RETURNS_THRESHOLD = {
+        MinerAssetClass.CRYPTO: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.FOREX: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.EQUITIES: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.HL_ALL: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.ALL_MARKETS: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+        MinerAssetClass.COMMODITIES: PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
+    }
+    # Rule 1: intraday drop from day-open equity. Rule 2: drop from the highest EOD equity,
+    # measured against live equity rather than once a day.
+    PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
+    PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.08
+    PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
+    PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08 # Also affects promotion cost
+    PRO_STATIC_DRAWDOWN_THRESHOLD = 0.05
+    PRO_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05
+
+    # Pro promotion criteria.
+    PRO_CHALLENGE_MINIMUM_DAYS = _env_override("PRO_CHALLENGE_MINIMUM_DAYS", 90, int, maximum=3650)
+    PRO_CHALLENGE_CALMAR_THRESHOLD = _env_override("PRO_CHALLENGE_CALMAR_THRESHOLD", 1.75)  # All-time realized return over all-time max drawdown
+    PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD = _env_override("PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD", 0.2)  # Best day must be at most this share of total return
+    PRO_DAILY_RETURN_CAP = 0.015  # Each day's profit counts for at most this much toward the total
+    CALMAR_DRAWDOWN_MINIMUM = 0.001  # Floor on the calmar denominator, mirrors SHARPE_STDDEV_MINIMUM
+
+    # Grace period for traders transitioning from standard funded to pro
+    PRO_TRANSITION_GRACE_PERIOD_DAYS = _env_override("PRO_TRANSITION_GRACE_PERIOD_DAYS", 7, maximum=3650)  # fractional days allowed
+    PRO_TRANSITION_GRACE_PERIOD_MS = int(PRO_TRANSITION_GRACE_PERIOD_DAYS * DAILY_MS)
+
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
 
@@ -458,99 +535,108 @@ class ValiConfig:
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
 
-    # Account size thresholds for leverage tier progression (non-challenge entity subaccounts)
+    # Legacy leverage tiers 1 to 4 (HL-linked subaccounts, pro subaccounts, regular miners):
+    # tier 1 = subaccount challenge, then by account size. Standard subaccounts use the
+    # STANDARD_* tables below instead (see leverage_utils.is_standard_tiered).
     LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
 
-    # Cap leverage across an individual miner's entire portfolio, per pair.
-    # Keyed on (asset class, instrument type).
-    PORTFOLIO_LEVERAGE_CAP = {
-        (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 5,
-        (TradePairCategory.CRYPTO,      InstrumentType.PERP): 5,
-        (TradePairCategory.FOREX,       InstrumentType.SPOT): 20,
-        (TradePairCategory.FOREX,       InstrumentType.PERP): 20,
-        (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2,    # Reg T overnight
-        (TradePairCategory.EQUITIES,    InstrumentType.PERP): 5,
-        (TradePairCategory.INDICES,     InstrumentType.SPOT): 10,
-        (TradePairCategory.INDICES,     InstrumentType.PERP): 5,
-        (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 5,
-        (TradePairCategory.COMMODITIES, InstrumentType.PERP): 5,
-    }
-
-    # Per-tier portfolio leverage caps. Split into two dicts because the underlying lookup is
-    # semantically two different things:
-    #   *_BY_PAIR        : per-pair multiplier used when validating an incoming order in
-    #                      market_order_manager. Keyed on (asset class, instrument type).
-    #   *_BY_ASSET_CLASS : account-wide multiplier from the subaccount's own asset_class field
-    #                      (which can be HL_ALL). Keyed by single MinerAssetClass.
-    # XAUUSD/XAGUSD positions land in the FOREX subaccount asset_class bucket.
-    # Equity portfolio cap stays 2x from Tier 3 onward in the SPOT column (Reg T overnight).
-    TIER_PORTFOLIO_LEVERAGE_BY_PAIR = {
-        1: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 2.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 2.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 5.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 5.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 1.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 2.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 5.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 2.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 2.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 2.0,
-        },
-        2: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 2.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 2.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 10.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 10.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 1.5,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 2.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 10.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 2.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 2.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 2.0,
-        },
-        3: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 3.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 3.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 15.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 15.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 3.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 15.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 3.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 3.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 3.0,
-        },
-        4: {
-            (TradePairCategory.CRYPTO,      InstrumentType.SPOT): 4.0,
-            (TradePairCategory.CRYPTO,      InstrumentType.PERP): 4.0,
-            (TradePairCategory.FOREX,       InstrumentType.SPOT): 20.0,
-            (TradePairCategory.FOREX,       InstrumentType.PERP): 20.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.SPOT): 2.0,
-            (TradePairCategory.EQUITIES,    InstrumentType.PERP): 4.0,
-            (TradePairCategory.INDICES,     InstrumentType.SPOT): 20.0,
-            (TradePairCategory.INDICES,     InstrumentType.PERP): 4.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.SPOT): 4.0,
-            (TradePairCategory.COMMODITIES, InstrumentType.PERP): 4.0,
-        },
-    }
-
-    # Single-class per-category sub-caps. Multi-class subaccounts (HL_ALL, ALL_MARKETS) reuse
-    # these per-class entries for sub-cap enforcement, and pull their overall cross-class cap
-    # from the HL_ALL/ALL_MARKETS entries in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS below.
-    TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY = {
+    # Legacy per-tier portfolio caps. Single-class per-category sub-caps; multi-class subaccounts
+    # (HL_ALL, ALL_MARKETS) reuse these per-class entries for sub-cap enforcement and pull their
+    # overall cross-class cap from LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS below.
+    LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY = {
         1: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 5.0,  TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0,  TradePairCategory.COMMODITIES: 2.0},
         2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.5, TradePairCategory.INDICES: 6.0,  TradePairCategory.COMMODITIES: 2.0},
         3: {TradePairCategory.CRYPTO: 3.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 8.0,  TradePairCategory.COMMODITIES: 3.0},
         4: {TradePairCategory.CRYPTO: 4.0, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 10.0, TradePairCategory.COMMODITIES: 4.0},
     }
-    TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
+    LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS = {
         1: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 5.0,  MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 4.0,  MinerAssetClass.ALL_MARKETS: 6.0},
         2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.5, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.HL_ALL: 7.0, MinerAssetClass.ALL_MARKETS: 12.0},
         3: {MinerAssetClass.CRYPTO: 3.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.HL_ALL: 10.0, MinerAssetClass.ALL_MARKETS: 18.0},
         4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
     }
+
+    # Standard subaccount leverage tiers, per the Pro Launch spec §2a: 1 = Base, 2 = Boost I,
+    # 3 = Boost II (max). Challenge and funded share the same limits and account size does not
+    # change them. HL-linked and pro subaccounts never use these tables. A standard subaccount
+    # without a stored leverage_tier (created before tiers existed) counts as the default tier.
+    STANDARD_LEVERAGE_TIERS = (1, 2, 3)
+    STANDARD_LEVERAGE_TIER_DEFAULT = 1
+
+    @staticmethod
+    def is_valid_standard_leverage_tier(tier) -> bool:
+        """True for an int in STANDARD_LEVERAGE_TIERS; bools and floats are rejected."""
+        return isinstance(tier, int) and not isinstance(tier, bool) and tier in ValiConfig.STANDARD_LEVERAGE_TIERS
+
+    # Per-pair groups narrower than an asset class (see leverage_utils.get_standard_leverage_group).
+    STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}
+    STANDARD_FX_NZD_CROSS_IDS = {"EURNZD", "GBPNZD", "NZDJPY", "AUDNZD", "NZDCAD", "NZDCHF"}
+    STANDARD_INDEX_OTHER_IDS = {"EWYUSDC"}
+
+    # Per-pair positional leverage, as a multiple of balance.
+    STANDARD_POSITIONAL_LEVERAGE_BY_TIER = {
+        1: {
+            StandardLeverageGroup.CRYPTO_MAJORS:  1.5,
+            StandardLeverageGroup.CRYPTO_OTHER:   0.5,
+            StandardLeverageGroup.FX:             10.0,
+            StandardLeverageGroup.FX_NZD_CROSSES: 5.0,
+            StandardLeverageGroup.INDICES_US:     2.5,
+            StandardLeverageGroup.INDICES_OTHER:  1.0,
+            StandardLeverageGroup.COMMODITIES:    1.5,
+            StandardLeverageGroup.EQUITIES:       0.5,
+        },
+        2: {
+            StandardLeverageGroup.CRYPTO_MAJORS:  2.0,
+            StandardLeverageGroup.CRYPTO_OTHER:   0.75,
+            StandardLeverageGroup.FX:             15.0,
+            StandardLeverageGroup.FX_NZD_CROSSES: 7.5,
+            StandardLeverageGroup.INDICES_US:     4.0,
+            StandardLeverageGroup.INDICES_OTHER:  1.5,
+            StandardLeverageGroup.COMMODITIES:    2.0,
+            StandardLeverageGroup.EQUITIES:       1.0,
+        },
+        3: {
+            StandardLeverageGroup.CRYPTO_MAJORS:  2.5,
+            StandardLeverageGroup.CRYPTO_OTHER:   1.0,
+            StandardLeverageGroup.FX:             20.0,
+            StandardLeverageGroup.FX_NZD_CROSSES: 10.0,
+            StandardLeverageGroup.INDICES_US:     5.0,
+            StandardLeverageGroup.INDICES_OTHER:  2.0,
+            StandardLeverageGroup.COMMODITIES:    3.0,
+            StandardLeverageGroup.EQUITIES:       1.5,
+        },
+    }
+
+    # Per-asset-class exposure cap, as a multiple of balance.
+    STANDARD_CLASS_LEVERAGE_BY_TIER = {
+        1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 2.5, TradePairCategory.COMMODITIES: 1.5},
+        2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 4.0, TradePairCategory.COMMODITIES: 2.0},
+        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 5.0, TradePairCategory.COMMODITIES: 3.0},
+    }
+
+    # Overall portfolio cap keyed by the subaccount's own asset_class. Single-class subaccounts
+    # cap at their class row; all_markets caps across classes.
+    STANDARD_PORTFOLIO_LEVERAGE_BY_TIER = {
+        1: {MinerAssetClass.CRYPTO: 1.5, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 1.5, MinerAssetClass.ALL_MARKETS: 15.0},
+        2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.ALL_MARKETS: 20.0},
+        3: {MinerAssetClass.CRYPTO: 2.5, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 3.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.ALL_MARKETS: 25.0},
+    }
+
+    # Correlated-exposure limits, pro accounts only. Multiples of account balance, applied
+    # separately to the *gross long* and the *gross short* exposure summed across a correlation
+    # group (see leverage_utils)
+    PRO_CURRENCY_EXPOSURE_LIMITS = {
+        "USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0,
+        "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 20.0,
+    }
+    PRO_SECTOR_EXPOSURE_LIMIT = 3.0
+    PRO_US_INDEX_EXPOSURE_LIMIT = 25.0  # shared across the six instruments below
+    # US index pairs and broad US market ETFs carry the same beta, so they share one limit.
+    # EWY, single stocks, and all other ETFs are excluded.
+    PRO_US_INDEX_TRADE_PAIR_IDS = frozenset({
+        "SP500USDC", "XYZ100USDC", "SPY", "QQQ", "IWM", "DIA",
+    })
 
     # Collateral limits
     MIN_COLLATERAL_BALANCE_THETA = 300  # Required minimum total collateral balance per miner in Theta. Approx $150k capital account size
@@ -564,11 +650,54 @@ class ValiConfig:
     ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
     ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
+    # Allowed range in USD for a pro account size. There is no network default: the admin sets the
+    # size when offering the pro track (POST /admin/miner-bucket/<hotkey>), and the network enforces
+    # only this inclusive range (plus finite and positive), not any UI preset list.
+    MAX_PRO_ACCOUNT_SIZE = 1_000_000
+    MIN_PRO_ACCOUNT_SIZE = 200_000
+    if not 0 < MIN_PRO_ACCOUNT_SIZE <= MAX_PRO_ACCOUNT_SIZE:
+        raise ValueError(
+            f"MIN_PRO_ACCOUNT_SIZE ${MIN_PRO_ACCOUNT_SIZE} must be positive and at most "
+            f"MAX_PRO_ACCOUNT_SIZE ${MAX_PRO_ACCOUNT_SIZE}"
+        )
+
+    # Pro promotion price. The premium term buys the drawdown the entity is already exposed to on
+    # the standard account, priced in theta at the token's USD price; the second term charges
+    # registration's own per-dollar rate on the size granted above the standard account.
+    PRO_PROMOTION_PREMIUM_RATE = 0.10  # Share of the standard account's drawdown allowance charged up front
+    THETA_USD_PRICE = 7.0  # Assumed USD price of one theta
+
+    @staticmethod
+    def entity_cost_per_theta(account_size: float) -> float:
+        """USD of account size per theta that registration charges for an account of this size."""
+        return (ValiConfig.ENTITY_COST_PER_THETA_LOW
+                if (account_size or 0.0) <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD
+                else ValiConfig.ENTITY_COST_PER_THETA)
+
+    @staticmethod
+    def pro_promotion_fee_theta(pro_account_size: float, standard_account_size: float) -> float:
+        """
+        Theta owed to put a subaccount on a pro account of `pro_account_size`:
+
+            PREMIUM_RATE * (FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size) / THETA_USD_PRICE
+                + (pro_size - standard_size) / registration CPT
+
+        Registration already paid for `standard_account_size`, so only the size granted above it is
+        charged per dollar. Callers subtract the fee already assessed, so re-entering the pro track
+        at the same size is free and a larger grant costs only the increase.
+        """
+        standard_size = max(0.0, standard_account_size or 0.0)
+        size_granted = max(0.0, (pro_account_size or 0.0) - standard_size)
+
+        drawdown_allowance_usd = ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size
+        premium_theta = (ValiConfig.PRO_PROMOTION_PREMIUM_RATE * drawdown_allowance_usd
+                         / ValiConfig.THETA_USD_PRICE)
+        return premium_theta + size_granted / ValiConfig.entity_cost_per_theta(pro_account_size)
 
     # Entity margin collateral requirement (funded subaccounts only):
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
     #   for each funded subaccount with open positions (or placing this order)
-    # max_slash_usd = account_size * SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+    # max_slash_usd = account_size * the bucket's intraday drawdown threshold
     ENTITY_COLLATERAL_CPT_RISK = 35  # USD of remaining loss capacity per theta ($35 of capacity = 1 theta)
 
     # Hyperliquid tracking configuration

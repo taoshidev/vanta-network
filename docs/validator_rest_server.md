@@ -327,7 +327,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "trade_pair_source": "hyperliquid",
       "min_leverage": 0.01,
       "max_leverage": 1.0,
-      "subaccount_positional_leverage_by_tier": {"1": 0.5, "2": 1.0, "3": 1.5, "4": 2.0}
+      "subaccount_positional_leverage_by_tier": {"1": 0.5, "2": 1.0, "3": 1.5, "4": 2.0},
+      "standard_positional_leverage_by_tier": {"1": 1.5, "2": 2.0, "3": 2.5}
     },
     {
       "trade_pair_id": "EURUSD",
@@ -337,7 +338,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "trade_pair_source": "vanta",
       "min_leverage": 0.1,
       "max_leverage": 5,
-      "subaccount_positional_leverage_by_tier": {"1": 1.25, "2": 2.5, "3": 3.75, "4": 5.0}
+      "subaccount_positional_leverage_by_tier": {"1": 2.5, "2": 5.0, "3": 7.5, "4": 10.0},
+      "standard_positional_leverage_by_tier": {"1": 10.0, "2": 15.0, "3": 20.0}
     }
   ],
   "disabled": [
@@ -364,6 +366,18 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
   ],
   "total_allowed": 1100,
   "total_disabled": 24,
+  "standard_leverage_tiers": {
+    "class": {
+      "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "indices": 2.5, "commodities": 1.5},
+      "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "indices": 4.0, "commodities": 2.0},
+      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "indices": 5.0, "commodities": 3.0}
+    },
+    "portfolio": {
+      "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "commodities": 1.5, "all_markets": 15.0},
+      "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "commodities": 2.0, "all_markets": 20.0},
+      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "commodities": 3.0, "all_markets": 25.0}
+    }
+  },
   "timestamp": 1749234567890
 }
 ```
@@ -371,6 +385,7 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 **Response fields:**
 - `allowed`: Trade pairs that can open and close positions. Includes all active Vanta pairs and hardcoded HyperLiquid pairs (and, when `asset_class` is given, only those tradeable by that asset class).
 - `disabled`: Trade pairs that are fully blocked (`is_blocked`) or excluded by the `asset_class` filter — neither opening nor closing is permitted.
+- `standard_leverage_tiers`: Per-class and portfolio caps (multiples of balance) for standard subaccounts, keyed by leverage tier `1` to `3`; `portfolio` is keyed by the subaccount's own asset class. See [entity_miner.md](entity_miner.md#leverage-limits).
 - `timestamp`: Response timestamp in milliseconds
 
 **Per-pair fields:**
@@ -380,7 +395,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 - `trade_pair_category`: Asset class (`crypto`, `forex`, `equities`, `indices`, `commodities`)
 - `trade_pair_source`: Data source — `"vanta"` for standard pairs, `"hyperliquid"` for HL-sourced pairs
 - `min_leverage` / `max_leverage`: Leverage bounds for this pair
-- `subaccount_positional_leverage_by_tier`: Per-tier (1–4) positional leverage multiplier for the subaccount order path
+- `subaccount_positional_leverage_by_tier`: Legacy per-tier (1–4) positional leverage multiplier, used by HL-linked subaccounts
+- `standard_positional_leverage_by_tier`: Per-tier (1–3) positional leverage multiplier for standard subaccounts (a subaccount without a stored `leverage_tier` counts as tier 1)
 - `lot_size`: Present only for a handful of Hyperliquid commodity pairs (e.g. `GOLDUSDC`); UI convenience field, not used in any network calculation
 
 **Example:**
@@ -494,6 +510,73 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
 
 // 500 - internal error retrieving challenge period data
 { "error": "Internal server error retrieving challenge period data" }
+```
+
+### Set Miner Bucket (admin)
+
+`POST /admin/miner-bucket/<hotkey>`
+
+Moves a miner or subaccount into a specific bucket. This is the only way into the pro account
+track — see [entity_miner.md](entity_miner.md#account-types).
+
+Requires **tier 500** access. Like every `/admin/*` route, calls are recorded in the audit log.
+
+**Body:**
+- `bucket` (string, required): a `MinerBucket` value, e.g. `PRO_CHALLENGE_TRANSITION`.
+- `pro_account_size` (number): USD size of the pro account. There is no network default, and this
+  endpoint is the only way to set one. When sent it must be a finite number from $200,000 to
+  $1,000,000 inclusive (`ValiConfig.MIN_PRO_ACCOUNT_SIZE` to `ValiConfig.MAX_PRO_ACCOUNT_SIZE`),
+  whatever the bucket; `NaN`, `Infinity`, strings and booleans are rejected. The network enforces only
+  this range, not the Command Center presets.
+  - **Required when entering the pro track** from a standard account (e.g. `SUBACCOUNT_FUNDED` →
+    `PRO_CHALLENGE_TRANSITION`). A re-offer after a demotion needs a size again: a size recorded on an
+    earlier pro journey is never reused.
+  - **Optional on a move within the pro track** (e.g. promoting to `PRO_FUNDED`): a new size replaces
+    the recorded one; omitted, the recorded size is kept.
+  - **Ignored for standard buckets**, which never record a pro size.
+
+Entering the pro track snapshots the subaccount's existing size, which becomes its
+`standard_account_size` and the basis for payouts during the pro challenge, and records the size as
+`pro_account_size`. A rejected move changes nothing: an invalid or missing size is a 400 before the
+subaccount or its bucket is touched, and a move that fails *after* the sizing is applied rolls the
+sizing back, so a subaccount is never left marked pro in a bucket that did not change — which would
+both leave it trading the pro size off the pro track and let the next size-less offer reuse that size
+instead of demanding one.
+
+The miner's own promotion out of `PRO_CHALLENGE_TRANSITION` (`POST /entity/subaccount/pro-transition`)
+keeps the recorded size and rejects any request that includes `pro_account_size`.
+
+When the target bucket changes the account size, the subaccount's open positions are force closed,
+its pending limit orders are cancelled, and its ledgers restart against the new size.
+`PRO_CHALLENGE_TRANSITION` keeps the standard account, so nothing is reset when entering it.
+
+**Example:**
+```bash
+curl -X POST "http://localhost:48888/admin/miner-bucket/5GhDr3xy...abc_1" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"bucket": "PRO_CHALLENGE_TRANSITION", "pro_account_size": 500000}'
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "hotkey": "5GhDr3xy...abc_1",
+  "bucket": "PRO_CHALLENGE_TRANSITION",
+  "message": "5GhDr3xy...abc_1 moved to PRO_CHALLENGE_TRANSITION"
+}
+```
+
+**Error Responses:**
+```json
+// 400 - unknown bucket, pro_account_size missing when entering the pro track, pro_account_size not a
+//       finite number from $200,000 to $1,000,000, or miner already in that bucket
+{ "error": "pro_account_size is required to enter the pro track" }
+{ "error": "pro_account_size $2000000 is outside the allowed range $200,000 to $1,000,000" }
+
+// 403 - API key below tier 500
+{ "error": "Set miner bucket endpoint requires tier 500 access" }
 ```
 
 ### Validator Checkpoint 
@@ -1107,6 +1190,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules). Fixed for the life of the subaccount once created. HL-linked subaccounts always get `"trailing"` regardless of what's passed.
+- `account_type` (string, optional): must be `"standard"` (the default). Pro accounts are granted by admin promotion via `POST /admin/miner-bucket/<synthetic_hotkey>`, never at creation — see [entity_miner.md](entity_miner.md#account-types). Not part of the signed payload.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
 **Response:**
@@ -1145,6 +1229,116 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - Entity hotkeys cannot place orders directly (only subaccounts can trade)
 - New subaccounts are automatically broadcasted to all validators in the network
 - The entity miner gateway (`EntityMinerRestServer`) handles signing and forwarding — end users typically call the miner-side endpoint rather than this one directly
+
+### Update Subaccount Leverage Tier
+
+`POST /entity/subaccount/leverage-tier`
+
+Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [entity_miner.md](entity_miner.md#leverage-limits). Raising is allowed at any time. Lowering is rejected while the subaccount has open positions. HL-linked and pro subaccounts are rejected.
+
+**Authentication:** Coldkey signature (no API key required). Each signature is single use.
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "entity_coldkey": "5FxY...",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "leverage_tier": 2,
+  "nonce": "3f9c1e5a...",
+  "timestamp": 1749234567890,
+  "signature": "0x...",
+  "version": "2.2.1"
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `entity_coldkey` (string, required): The entity's coldkey SS58 address
+- `synthetic_hotkey` (string, required): The subaccount to change. Must belong to `entity_hotkey`.
+- `leverage_tier` (int, required): `1`, `2` or `3`
+- `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
+- `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
+- `signature` (string, required): Coldkey signature over the sorted-JSON of `{entity_coldkey, entity_hotkey, leverage_tier, nonce, synthetic_hotkey, timestamp}`. The signed payload names the subaccount and the tier and carries a single-use nonce, so a captured request cannot be replayed or redirected.
+- `version` (string, optional): vanta-cli version string for compatibility checking.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "leverage_tier updated to 2 for 5GhDr3xy...abc_0",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "leverage_tier": 2
+}
+```
+
+**Errors:**
+- `400`: missing or invalid field, or the change was rejected (unknown subaccount, HL-linked, `hl_all` or pro subaccount, subaccount not active, lowering with open positions)
+- `401`: invalid signature, reused nonce, or expired timestamp
+- `403`: coldkey does not own the hotkey
+
+**Important Notes:**
+- The entity miner gateway (`POST /api/update-subaccount-leverage-tier`) builds and signs this request. End users typically call the gateway rather than this endpoint directly.
+- The new tier is broadcast to all validators like a subaccount registration.
+
+### Promote Pro Transition Subaccount
+
+`POST /entity/subaccount/pro-transition`
+
+Start Pro Now: move a subaccount from `PRO_CHALLENGE_TRANSITION` to `PRO_CHALLENGE_FROM_STANDARD` on
+the miner's own request, instead of waiting for the end of the transition week, see
+[entity_miner.md](entity_miner.md#traders-who-have-already-passed-the-standard-challenge). Every open
+position is force closed, every pending limit order is cancelled, and the ledgers restart on the pro
+account, so this cannot be undone.
+
+The pro account is sized at the `pro_account_size` the admin set when offering the transition. A
+miner cannot choose or change it: a request that includes `pro_account_size` at all, even `null`, is
+rejected with a 400 before the signature is checked or the nonce is used, so the same nonce can still
+be sent without the field. Only `POST /admin/miner-bucket/<hotkey>` sets a pro account size.
+
+**Authentication:** Coldkey signature (no API key required). Each signature is single use.
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "entity_coldkey": "5FxY...",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "nonce": "3f9c1e5a...",
+  "timestamp": 1749234567890,
+  "signature": "0x...",
+  "version": "2.2.1"
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `entity_coldkey` (string, required): The entity's coldkey SS58 address
+- `synthetic_hotkey` (string, required): The subaccount to promote. Must belong to `entity_hotkey`.
+- `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
+- `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
+- `signature` (string, required): Coldkey signature over the sorted-JSON of `{entity_coldkey, entity_hotkey, nonce, synthetic_hotkey, timestamp}`.
+- `version` (string, optional): vanta-cli version string for compatibility checking.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "5GhDr3xy...abc_0 moved to PRO_CHALLENGE_FROM_STANDARD",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "bucket": "PRO_CHALLENGE_FROM_STANDARD",
+  "pro_account_size": 500000.0,
+  "account_size": 500000.0
+}
+```
+
+**Errors:**
+- `400`: the request includes `pro_account_size`, a field is missing or invalid, or the promotion was rejected (subaccount not in `PRO_CHALLENGE_TRANSITION`, or no recorded pro account size)
+- `401`: invalid signature, reused nonce, or expired timestamp
+- `403`: coldkey does not own the hotkey, or the subaccount belongs to another entity
+
+**Important Notes:**
+- The entity miner gateway (`POST /api/promote-pro-transition`) builds and signs this request and never sends a size. End users typically call the gateway rather than this endpoint directly.
 
 ### Set Entity Endpoint
 
@@ -1750,6 +1944,9 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "subaccount_uuid": "abc...789",
       "asset_class": "crypto",
       "account_size": 100000.0,
+      "standard_account_size": null,
+      "pro_account_size": null,
+      "account_type": "standard",
       "drawdown_criteria": "static",
       "status": "active",
       "created_at_ms": 1770657674533,
@@ -1917,6 +2114,9 @@ This is the only guaranteed section of the response. All other sections may be m
 - `subaccount_uuid`: Unique identifier for this subaccount
 - `asset_class`: Asset class (crypto, forex, etc.)
 - `account_size`: Current account size (in USD)
+- `standard_account_size`: Account size on the standard track, snapshotted when the subaccount entered the pro track (null until then)
+- `pro_account_size`: Pro account size the admin set when offering the subaccount the pro track, $200,000 to $1,000,000 (null until the subaccount is first offered the pro track; kept after a demotion)
+- `account_type`: `"standard"` or `"pro"`
 - `status`: Current status ("active", "eliminated", or "unknown")
 - `created_at_ms`: Timestamp when subaccount was created
 - `eliminated_at_ms`: Timestamp when eliminated (null if active)

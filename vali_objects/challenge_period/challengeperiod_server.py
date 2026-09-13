@@ -132,6 +132,18 @@ class ChallengePeriodServer(RPCServerBase):
     ) -> bool:
         return self._manager.set_miner_bucket(hotkey, bucket, start_time_ms, drawdown_criteria=drawdown_criteria)
 
+    def can_admin_set_bucket_rpc(self, hotkey: str, bucket: MinerBucket) -> Tuple[bool, str]:
+        return self._manager.can_admin_set_bucket(hotkey, bucket)
+
+    def admin_set_bucket_rpc(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> Tuple[bool, str]:
+        return self._manager.admin_set_bucket(hotkey, bucket, current_time_ms)
+
+    def promote_pro_transition_rpc(
+        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
+    ) -> Tuple[bool, str]:
+        """Promote a subaccount out of PRO_CHALLENGE_TRANSITION at the miner's request."""
+        return self._manager.promote_pro_transition(hotkey, current_time_ms, pro_account_size)
+
     def update_drawdown_criteria_rpc(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
         return self._manager.update_drawdown_criteria(hotkey, criteria)
 
@@ -170,6 +182,9 @@ class ChallengePeriodServer(RPCServerBase):
 
     def get_drawdown_stats_rpc(self, hotkey: str) -> dict | None:
         return self._manager.get_drawdown_stats(hotkey)
+
+    def get_pro_stats_rpc(self, hotkey: str) -> dict | None:
+        return self._manager.get_pro_stats(hotkey)
 
     def to_checkpoint_dict_rpc(self) -> dict:
         return self._manager.to_checkpoint_dict()
