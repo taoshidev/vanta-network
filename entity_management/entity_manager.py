@@ -1603,33 +1603,34 @@ class EntityManager(ValidatorBroadcastBase):
                     running_balance -= fees[idx_fee].amount
                     idx_fee += 1
 
-                # Prefer the end-of-week account snapshot (equity - balance) when available;
-                # fall back to the perf ledger checkpoint if no snapshot exists near end_time.
-                # end_time only increases week-over-week and the tolerance window (1 minute)
-                # is far smaller than a week, so idx_snap never needs to rewind.
-                snap_lo, snap_hi = end_time - DEFAULT_TOLERANCE_MS, end_time + DEFAULT_TOLERANCE_MS
-                while idx_snap < len(snapshots) and snapshots[idx_snap].snapshot_ms < snap_lo:
-                    idx_snap += 1
-                snapshot = None
-                best_delta = DEFAULT_TOLERANCE_MS + 1
-                j = idx_snap
-                while j < len(snapshots) and snapshots[j].snapshot_ms <= snap_hi:
-                    delta = abs(snapshots[j].snapshot_ms - end_time)
-                    if delta < best_delta:
-                        snapshot = snapshots[j]
-                        best_delta = delta
-                    j += 1
-                if snapshot is not None:
-                    unrealized_pnl = snapshot.equity - snapshot.balance
-                else:
-                    cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
-                    unrealized_pnl = cp.unrealized_pnl if cp else 0.0
-                    logger.warning(
-                        f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
-                        f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
-                    )
-                if end_time == end_time_ms and realtime:
+                if realtime and end_time == end_time_ms:
                     unrealized_pnl = realtime_unrealized
+                else:
+                    # Prefer the end-of-week account snapshot (equity - balance) when available;
+                    # fall back to the perf ledger checkpoint if no snapshot exists near end_time.
+                    # end_time only increases week-over-week and the tolerance window (1 minute)
+                    # is far smaller than a week, so idx_snap never needs to rewind.
+                    snap_lo, snap_hi = end_time - DEFAULT_TOLERANCE_MS, end_time + DEFAULT_TOLERANCE_MS
+                    while idx_snap < len(snapshots) and snapshots[idx_snap].snapshot_ms < snap_lo:
+                        idx_snap += 1
+                    snapshot = None
+                    best_delta = DEFAULT_TOLERANCE_MS + 1
+                    j = idx_snap
+                    while j < len(snapshots) and snapshots[j].snapshot_ms <= snap_hi:
+                        delta = abs(snapshots[j].snapshot_ms - end_time)
+                        if delta < best_delta:
+                            snapshot = snapshots[j]
+                            best_delta = delta
+                        j += 1
+                    if snapshot is not None:
+                        unrealized_pnl = snapshot.equity - snapshot.balance
+                    else:
+                        cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
+                        unrealized_pnl = cp.unrealized_pnl if cp else 0.0
+                        logger.warning(
+                            f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
+                            f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
+                        )
                 _record_week(week_start, end_time, running_balance, unrealized_pnl, week_orders)
                 week_start, week_end = week_end, week_end + MS_IN_WEEK
 
