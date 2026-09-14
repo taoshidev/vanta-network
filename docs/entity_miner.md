@@ -282,9 +282,9 @@ After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is
 
 ### Account Types
 
-Every subaccount is created as `standard`. A pro account is granted at Taoshi's discretion through
-the admin endpoint `POST /admin/miner-bucket/<synthetic_hotkey>` — there is no way to create one
-directly, and `account_type: "pro"` is rejected at subaccount creation.
+Every subaccount is created as `standard`. A pro account is reached by promoting an existing
+subaccount through `POST /api/promote` — there is no way to create one directly, and
+`account_type: "pro"` is rejected at subaccount creation.
 
 Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
 margin-interest rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs.
@@ -302,21 +302,16 @@ pro positions pay live HL funding plus the standard schedule.
 
 #### Pro account size
 
-There is no network default pro account size. The admin sets it when offering the pro track, through
-`POST /admin/miner-bucket/<synthetic_hotkey>` with a `pro_account_size`, and that endpoint is the
-only way to set one. The network accepts any finite amount from **$200,000** to **$1,000,000**
+There is no network default pro account size. The entity picks it in the `pro_account_size` of the
+promotion request. The network accepts any finite amount from **$200,000** to **$1,000,000**
 inclusive (`ValiConfig.MIN_PRO_ACCOUNT_SIZE` to `ValiConfig.MAX_PRO_ACCOUNT_SIZE`); the preset amounts
 offered in the Command Center are a UI choice, not a network rule.
 
-- **Entering the pro track** (e.g. `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, or
+- **Entering the pro track** (`SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, or
   `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`) requires a size. This includes a re-offer after a
   demotion: the size from the earlier pro journey is never reused.
-- **Moving within the pro track** keeps the recorded size. When promoting to `PRO_FUNDED` the admin
-  may send a new size (still within the range), which replaces it.
-- **Start Pro Now** (`POST /api/promote-pro-transition`, and the validator's
-  `POST /entity/subaccount/pro-transition` behind it) always keeps the recorded size. A miner cannot
-  choose or change its size: a request that includes `pro_account_size` at all is rejected with a 400
-  before anything is signed or a nonce is used.
+- **Moving within the pro track** (`PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD`) keeps
+  the recorded size, or takes a new one (still within the range) when the request sends one.
 - **Standard buckets** never record a pro size.
 
 The granted size is published as `subaccount_info.pro_account_size` in the v2 subaccount dashboard
@@ -335,9 +330,9 @@ A `SUBACCOUNT_FUNDED` trader offered a pro account is moved to `PRO_CHALLENGE_TR
 one-week wind-down window on their existing standard account. During that week they keep the
 `SUBACCOUNT_FUNDED` rules and keep earning payouts, but they cannot open new positions or increase
 existing ones — those orders are rejected and only closes and reductions are accepted. They move to
-`PRO_CHALLENGE_FROM_STANDARD` as soon as they are promoted again, or automatically at the end of
-the week, at which point any remaining positions are force closed, the account is resized to the
-pro account size, and the ledgers restart.
+`PRO_CHALLENGE_FROM_STANDARD` as soon as they promote again (`POST /api/promote`), or automatically
+at the end of the week, at which point any remaining positions are force closed, the account is
+resized to the pro account size, and the ledgers restart.
 
 Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro account but is paid on
 the size of the standard account they came from: `standard_account_size / pro_account_size × PnL`.
@@ -375,7 +370,8 @@ A drawdown breach in `PRO_CHALLENGE_FROM_STANDARD` demotes back to `SUBACCOUNT_F
 `PRO_CHALLENGE_DIRECT` demotes back to `SUBACCOUNT_CHALLENGE`; in both cases the account is resized
 back to the standard account size. A breach in `PRO_CHALLENGE_TRANSITION` (still the standard
 funded account) or in `PRO_FUNDED` eliminates the subaccount. Re-promotion to pro after passing the
-standard challenge again goes through the admin endpoint like any other pro promotion.
+standard challenge again goes through `POST /api/promote` like any other pro promotion, and needs a
+`pro_account_size` again: the size from the earlier pro journey is never reused.
 
 #### Testnet overrides
 
@@ -825,7 +821,34 @@ Response:
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/api/create-subaccount` | Create a standard subaccount (proxies to validator) |
+| POST | `/api/promote` | Promote a subaccount a step up the pro track (proxies to validator) |
 | GET | `/api/health` | Health check |
+
+#### POST /api/promote
+
+```json
+{
+  "synthetic_hotkey": "5GhDr..._0",
+  "pro_account_size": 500000
+}
+```
+
+Promotes one of this entity's subaccounts a step up the pro track. The gateway signs the request with
+the entity coldkey and forwards it to the validator's `POST /entity/subaccount/promote`, which proves
+the entity owns the subaccount before anything moves. The target bucket comes from the subaccount's
+current one, and only three hops exist: `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`,
+`SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, and `PRO_CHALLENGE_TRANSITION` →
+`PRO_CHALLENGE_FROM_STANDARD`.
+
+`pro_account_size` is required entering the pro track and optional on the hop within it (omitted
+keeps the recorded size) — see [Pro account size](#pro-account-size).
+
+Only the two hops onto a pro account wipe trading state: promoting into `PRO_CHALLENGE_DIRECT` or
+`PRO_CHALLENGE_FROM_STANDARD` force closes every open position, cancels every pending limit order and
+restarts the ledgers on the pro size, so neither can be undone. Promoting into
+`PRO_CHALLENGE_TRANSITION` keeps trading the standard account and wipes nothing — positions, limit
+orders and ledgers all carry on, and only the resting orders that could open or increase a position
+are cancelled.
 
 ### Miner REST Server (port 8088)
 

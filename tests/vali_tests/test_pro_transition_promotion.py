@@ -1,22 +1,18 @@
 """
-Unit tests for the miner-initiated promotion out of PRO_CHALLENGE_TRANSITION, and for the admin endpoint
-that sets the pro account size.
+Unit tests for the entity-initiated promotion up the pro track.
 
-The admin sets the pro account size when offering the pro track; a miner never chooses one.
+There is one promotion path on the network: the gateway's POST /api/promote signs the request with the
+entity coldkey and forwards it to the validator's POST /entity/subaccount/promote. The entity picks the
+pro account size it is buying; the validator proves the entity owns the subaccount before anything moves.
 
 Covers:
-  * ChallengePeriodManager.promote_pro_transition: the bucket guard, the account switch that closes
-    positions / cancels limit orders / restarts the ledgers, and the size recorded when the admin offered
-    the transition (through a real EntityManager), including the organic promotions and a re-offer after a
-    demotion.
-  * The admin endpoint POST /admin/miner-bucket/<hotkey>: a size is required to enter the pro track and must
-    be a finite number within [$200,000, $1,000,000]; PRO_FUNDED may re-set it; a bad size is refused before
-    anything moves (the literals NaN and Infinity, which Flask's JSON parser accepts, included).
-  * The validator HTTP endpoint: any request carrying pro_account_size is a 400 that never reaches the
-    challenge period client and never consumes its nonce; coldkey signature bound to every remaining field,
-    nonce + timestamp replay protection, field validation, and subaccount ownership.
-  * The gateway HTTP endpoint: the payload it signs and forwards never carries a size, a request with one is
-    refused before signing, and validator errors are passed through.
+  * ChallengePeriodManager.promote_subaccount: the three hops it allows and the buckets it refuses, the
+    account switch that closes positions / cancels limit orders / restarts the ledgers, and the sizing
+    (through a real EntityManager) including a re-offer after a demotion and the rollback of a failed move.
+  * The validator HTTP endpoint: coldkey signature bound to every field including the size, subaccount
+    ownership, nonce + timestamp replay protection, field and size validation, and the size it forwards.
+  * The gateway HTTP endpoint: the payload it signs and forwards, a bad size refused before signing, and
+    validator errors passed through.
 """
 import contextlib
 import json
@@ -35,6 +31,7 @@ from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_config import ValiConfig
 from tests.vali_tests.test_pro_account_size import (
     GRANTED_SIZE,
+    INVALID_SIZES,
     REQUIRED,
     STANDARD_SIZE,
     _add_demoted,
@@ -45,6 +42,24 @@ from tests.vali_tests.test_pro_account_size import (
 
 NOW_MS = 1_748_000_000_000
 HOTKEY = "entity_0"
+
+# The only bucket moves an entity can ask for, source -> target.
+HOPS = (
+    (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.PRO_CHALLENGE_DIRECT),
+    (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION),
+    (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD),
+)
+# Buckets with nowhere to promote to: the end of the pro track, the standard buckets off it, and
+# the regular (non-subaccount) miner buckets.
+NO_PROMOTION = (
+    MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+    MinerBucket.PRO_CHALLENGE_DIRECT,
+    MinerBucket.PRO_FUNDED,
+    MinerBucket.SUBACCOUNT_ALPHA,
+    MinerBucket.ELIMINATED,
+    MinerBucket.MAINCOMP,
+    MinerBucket.CHALLENGE,
+)
 
 _CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager.PerfLedgerClient",
@@ -61,7 +76,7 @@ _CLIENT_PATHS = [
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Section 1 — ChallengePeriodManager.promote_pro_transition
+# Section 1 — ChallengePeriodManager.promote_subaccount
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
@@ -75,28 +90,37 @@ def manager():
             yield mgr
 
 
-def _in_transition(manager, bucket=MinerBucket.PRO_CHALLENGE_TRANSITION):
+def _in_bucket(manager, bucket):
     manager.set_miner_bucket(HOTKEY, bucket, NOW_MS)
     return manager
 
 
-def test_promotion_moves_the_bucket_and_sends_no_size(manager):
-    """The miner does not choose a size: the entity manager keeps the one recorded at the transition."""
-    _in_transition(manager)
+@pytest.mark.parametrize("source,target", HOPS)
+def test_each_hop_moves_to_its_own_target(manager, source, target):
+    _in_bucket(manager, source)
 
-    success, message = manager.promote_pro_transition(HOTKEY, NOW_MS)
+    success, message = manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
 
     assert success, message
-    assert manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+    assert manager.miner_states[HOTKEY].current_bucket == target
+    manager._entity_client.apply_bucket_account_size.assert_any_call(HOTKEY, target, GRANTED_SIZE)
+
+
+def test_an_omitted_size_is_passed_through_as_none(manager):
+    """A hop within the track may leave the size out; the entity manager falls back to the recorded one."""
+    _in_bucket(manager, MinerBucket.PRO_CHALLENGE_TRANSITION)
+
+    assert manager.promote_subaccount(HOTKEY, NOW_MS)[0]
+
     manager._entity_client.apply_bucket_account_size.assert_any_call(
         HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, None
     )
 
 
 def test_promotion_winds_down_the_standard_account(manager):
-    _in_transition(manager)
+    _in_bucket(manager, MinerBucket.PRO_CHALLENGE_TRANSITION)
 
-    assert manager.promote_pro_transition(HOTKEY, NOW_MS)[0]
+    assert manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)[0]
 
     manager._position_client.close_all_positions.assert_called_once_with(
         hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION
@@ -108,6 +132,44 @@ def test_promotion_winds_down_the_standard_account(manager):
     manager._miner_account_client.reset_account.assert_called_once_with(
         HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD
     )
+
+
+def test_entering_the_transition_wipes_nothing_and_only_sweeps_entry_orders(manager):
+    """PRO_CHALLENGE_TRANSITION is a wind-down week on the standard account, so this hop keeps the
+    subaccount's positions, limit orders and ledgers. Only the resting orders that could open or
+    increase a position are cancelled; closes and reductions stay for the week."""
+    _in_bucket(manager, MinerBucket.SUBACCOUNT_FUNDED)
+
+    assert manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)[0]
+
+    assert manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+    manager._position_client.close_all_positions.assert_not_called()
+    manager._position_client.archive_positions_for_hotkey.assert_not_called()
+    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
+    manager._debt_ledger_client.delete_debt_ledger.assert_not_called()
+    manager._miner_account_client.reset_account.assert_not_called()
+    # the blanket "cancel everything" sweep belongs to an account switch; this hop is not one
+    manager._limit_order_client.cancel_limit_order.assert_not_called()
+    manager._limit_order_client.cancel_entry_orders.assert_called_once_with(
+        HOTKEY, NOW_MS, OrderSource.PRO_TRANSITION_CANCELLED
+    )
+
+
+@pytest.mark.parametrize("source,target", [h for h in HOPS if h[1] != MinerBucket.PRO_CHALLENGE_TRANSITION])
+def test_only_the_hops_onto_a_pro_account_wipe_trading_state(manager, source, target):
+    """The counterpart: both hops that land on a pro account do run the full wind-down."""
+    _in_bucket(manager, source)
+
+    assert manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)[0]
+
+    assert target.switches_account
+    manager._position_client.close_all_positions.assert_called_once_with(
+        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION
+    )
+    manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
+    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_called_once_with([HOTKEY])
+    manager._debt_ledger_client.delete_debt_ledger.assert_called_once_with(HOTKEY)
+    manager._limit_order_client.cancel_entry_orders.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -132,10 +194,10 @@ def test_pro_funded_always_starts_fresh(manager, challenge_bucket):
 
 def test_entity_rejection_blocks_the_promotion(manager):
     """When the entity manager cannot size the pro account, nothing is wound down."""
-    _in_transition(manager)
+    _in_bucket(manager, MinerBucket.PRO_CHALLENGE_TRANSITION)
     manager._entity_client.apply_bucket_account_size.return_value = (False, REQUIRED)
 
-    success, message = manager.promote_pro_transition(HOTKEY, NOW_MS)
+    success, message = manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
 
     assert not success
     assert REQUIRED in message
@@ -143,27 +205,69 @@ def test_entity_rejection_blocks_the_promotion(manager):
     manager._position_client.close_all_positions.assert_not_called()
 
 
-def _with_real_entity_manager(manager, hotkey_factory=_add_standard_subaccount):
+@pytest.mark.parametrize("bucket", NO_PROMOTION)
+def test_buckets_off_the_promotion_path_are_refused(manager, bucket):
+    _in_bucket(manager, bucket)
+
+    success, message = manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
+
+    assert not success
+    assert bucket.value in message
+    assert manager.miner_states[HOTKEY].current_bucket == bucket
+    manager._entity_client.apply_bucket_account_size.assert_not_called()
+    manager._position_client.close_all_positions.assert_not_called()
+
+
+def test_unknown_hotkey_is_rejected(manager):
+    success, message = manager.promote_subaccount("not_a_miner_0", NOW_MS, GRANTED_SIZE)
+
+    assert not success
+    assert "not found" in message
+    manager._entity_client.apply_bucket_account_size.assert_not_called()
+
+
+def test_promotion_stops_at_the_end_of_the_track(manager):
+    """Each hop is single use: the target of the last one has no promotion of its own."""
+    _in_bucket(manager, MinerBucket.PRO_CHALLENGE_TRANSITION)
+    assert manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)[0]
+
+    success, message = manager.promote_subaccount(HOTKEY, NOW_MS + 1000, GRANTED_SIZE)
+
+    assert not success
+    assert MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value in message
+
+
+# ==================== sizing through a real EntityManager ====================
+
+def _with_real_entity_manager(manager, bucket=MinerBucket.SUBACCOUNT_FUNDED,
+                              hotkey_factory=_add_standard_subaccount):
     """Swap the mocked entity client for a real in-memory EntityManager holding one standard
-    SUBACCOUNT_FUNDED subaccount. Returns (entity_manager, synthetic_hotkey)."""
+    subaccount. Returns (entity_manager, synthetic_hotkey)."""
     entity_manager = _bare_entity_manager()
     hotkey = hotkey_factory(entity_manager)
     manager._entity_client = entity_manager
-    manager.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS)
+    manager.set_miner_bucket(hotkey, bucket, NOW_MS)
     return entity_manager, hotkey
 
 
-def _admin_move_to_transition(manager, entity_manager, hotkey, pro_account_size=GRANTED_SIZE):
-    """What POST /admin/miner-bucket does: size the subaccount, then move the bucket."""
-    assert entity_manager.apply_bucket_account_size(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, pro_account_size)[0]
-    assert manager.admin_set_bucket(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)[0]
-
-
-def test_promotion_trades_the_size_the_admin_set(manager):
+def test_transition_records_the_size_without_trading_it(manager):
+    """Entering the transition records the pro size but keeps trading the standard account."""
     entity_manager, hotkey = _with_real_entity_manager(manager)
-    _admin_move_to_transition(manager, entity_manager, hotkey, pro_account_size=250_000)
 
-    success, message = manager.promote_pro_transition(hotkey, NOW_MS)
+    success, message = manager.promote_subaccount(hotkey, NOW_MS, 250_000)
+
+    assert success, message
+    info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
+    assert info.pro_account_size == 250_000
+    assert info.standard_account_size == STANDARD_SIZE
+    assert info.account_size == STANDARD_SIZE
+
+
+def test_promotion_out_of_the_transition_trades_the_pro_size(manager):
+    entity_manager, hotkey = _with_real_entity_manager(manager)
+    assert manager.promote_subaccount(hotkey, NOW_MS, 250_000)[0]
+
+    success, message = manager.promote_subaccount(hotkey, NOW_MS + 1000)
 
     assert success, message
     assert manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
@@ -174,17 +278,28 @@ def test_promotion_trades_the_size_the_admin_set(manager):
     assert entity_manager.get_payout_scale(hotkey) == pytest.approx(STANDARD_SIZE / 250_000)
 
 
-def test_promotion_without_a_recorded_size_is_rejected(manager):
+def test_direct_pro_challenge_trades_the_size_immediately(manager):
+    """The hop off the standard challenge goes straight onto the pro account."""
+    entity_manager, hotkey = _with_real_entity_manager(manager, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    assert manager.promote_subaccount(hotkey, NOW_MS, 450_000)[0]
+
+    assert manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_CHALLENGE_DIRECT
+    info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
+    assert info.pro_account_size == 450_000
+    assert info.account_size == 450_000
+
+
+def test_entering_the_track_without_a_size_is_rejected(manager):
     """A subaccount that never had a size set (nothing to fall back on) is not promoted onto a pro
     account of unknown size."""
     entity_manager, hotkey = _with_real_entity_manager(manager)
-    manager.set_miner_bucket(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)
 
-    success, message = manager.promote_pro_transition(hotkey, NOW_MS)
+    success, message = manager.promote_subaccount(hotkey, NOW_MS)
 
     assert not success
     assert REQUIRED in message
-    assert manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+    assert manager.miner_states[hotkey].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.pro_account_size is None
     assert info.account_size == STANDARD_SIZE
@@ -194,7 +309,7 @@ def test_promotion_without_a_recorded_size_is_rejected(manager):
 def test_organic_promotion_keeps_the_recorded_size(manager):
     """The end-of-week auto promotion and the pro funded promotion send no size either."""
     entity_manager, hotkey = _with_real_entity_manager(manager)
-    _admin_move_to_transition(manager, entity_manager, hotkey)
+    assert manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
 
     assert manager.promote_hotkeys([hotkey], NOW_MS)
     assert manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
@@ -212,15 +327,59 @@ def test_reoffer_after_a_demotion_needs_a_new_size(manager):
     entity_manager, hotkey = _with_real_entity_manager(manager, hotkey_factory=_add_demoted)
     assert entity_manager.get_subaccount_info_for_synthetic(hotkey).pro_account_size == GRANTED_SIZE
 
-    success, message = entity_manager.apply_bucket_account_size(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION)
+    success, message = manager.promote_subaccount(hotkey, NOW_MS)
     assert not success
     assert REQUIRED in message
 
-    _admin_move_to_transition(manager, entity_manager, hotkey, pro_account_size=200_000)
-    assert manager.promote_pro_transition(hotkey, NOW_MS)[0]
+    assert manager.promote_subaccount(hotkey, NOW_MS, 200_000)[0]
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.pro_account_size == 200_000
-    assert info.account_size == 200_000
+
+
+def test_an_out_of_range_size_never_reaches_the_account(manager):
+    """The REST layer checks the range first, but the entity manager is the last line of defence."""
+    entity_manager, hotkey = _with_real_entity_manager(manager)
+
+    for size, fragment in INVALID_SIZES:
+        success, message = manager.promote_subaccount(hotkey, NOW_MS, size)
+        assert not success, size
+        assert fragment in message, size
+        assert manager.miner_states[hotkey].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
+        assert entity_manager.get_subaccount_info_for_synthetic(hotkey).pro_account_size is None
+
+
+def test_promotion_target_is_never_the_bucket_the_miner_is_already_in(manager):
+    """Why promote_subaccount needs no "already in that bucket" precheck before it commits the
+    sizing: no hop is a self-loop, so that rejection is unreachable here by construction."""
+    for source, target in HOPS:
+        assert source != target
+
+
+def test_an_unaffordable_promotion_fee_is_refused_before_anything_is_written(manager):
+    """The fee is the one predictable failure that lives inside the committing call, so it has to be
+    checked before the write, not compensated after it."""
+    entity_manager, hotkey = _with_real_entity_manager(manager, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+    info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
+    info.reg_fee_theta = 1.0  # collateral-exempt subaccounts (0.0) never pay the promotion fee
+    entity_manager._entity_collateral_client = MagicMock()
+    entity_manager._entity_collateral_client.get_cached_collateral.return_value = 0.5
+
+    success, message = manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)
+
+    assert not success
+    assert "Insufficient collateral" in message
+    assert manager.miner_states[hotkey].current_bucket == MinerBucket.SUBACCOUNT_CHALLENGE
+    info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
+    assert info.account_type == "standard"
+    assert info.pro_account_size is None
+    assert info.standard_account_size is None
+    assert info.account_size == STANDARD_SIZE
+    assert info.pro_fee_theta == 0.0
+    assert info.pro_fee_theta_pending == 0.0
+    # neither the live account nor the collateral reservation was touched
+    entity_manager._miner_account_client.set_miner_account_size.assert_not_called()
+    entity_manager._entity_collateral_client.offset_collateral_cache.assert_not_called()
+    manager._position_client.close_all_positions.assert_not_called()
 
 
 def test_a_failed_promotion_rolls_back_the_pro_sizing(manager):
@@ -228,12 +387,12 @@ def test_a_failed_promotion_rolls_back_the_pro_sizing(manager):
     PRO_CHALLENGE_FROM_STANDARD trades the pro size, and a subaccount left holding it while still in
     PRO_CHALLENGE_TRANSITION is supposed to be trading the standard account."""
     entity_manager, hotkey = _with_real_entity_manager(manager)
-    _admin_move_to_transition(manager, entity_manager, hotkey)
+    assert manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
     before = entity_manager.get_subaccount_info_for_synthetic(hotkey).model_copy()
     assert before.account_size == STANDARD_SIZE
 
     with patch.object(manager, "admin_set_bucket", return_value=(False, "bucket move failed")):
-        success, message = manager.promote_pro_transition(hotkey, NOW_MS)
+        success, message = manager.promote_subaccount(hotkey, NOW_MS)
 
     assert not success
     assert "bucket move failed" in message
@@ -248,86 +407,96 @@ def test_a_failed_promotion_rolls_back_the_pro_sizing(manager):
     assert resized_to[-1] == STANDARD_SIZE
 
 
-@pytest.mark.parametrize("bucket", [
-    MinerBucket.SUBACCOUNT_CHALLENGE,
-    MinerBucket.SUBACCOUNT_FUNDED,
-    MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-    MinerBucket.PRO_FUNDED,
-    MinerBucket.ELIMINATED,
-])
-def test_only_transition_subaccounts_can_promote(manager, bucket):
-    _in_transition(manager, bucket)
+def test_a_crash_before_the_bucket_moves_rolls_the_sizing_back(manager):
+    """_switch_account runs before the bucket entry, so a crash there means no move happened."""
+    entity_manager, hotkey = _with_real_entity_manager(manager)
+    assert manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
 
-    success, message = manager.promote_pro_transition(HOTKEY, NOW_MS)
+    with patch.object(manager, "_switch_account", side_effect=RuntimeError("rpc down")):
+        with pytest.raises(RuntimeError):
+            manager.promote_subaccount(hotkey, NOW_MS + 1000)
 
+    assert manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+    info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
+    assert info.account_size == STANDARD_SIZE  # TRANSITION still trades the standard account
+
+
+def test_a_crash_after_the_bucket_moves_keeps_the_sizing(manager):
+    """The disk write and the entry-order sweep run after the bucket entry has landed. Rolling the
+    sizing back there would leave a pro bucket trading the standard size."""
+    entity_manager, hotkey = _with_real_entity_manager(manager)
+    assert manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
+
+    with patch.object(manager, "_save_to_disk", side_effect=RuntimeError("disk full")):
+        with pytest.raises(RuntimeError):
+            manager.promote_subaccount(hotkey, NOW_MS + 1000)
+
+    assert manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+    info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
+    assert info.account_type == "pro"
+    assert info.account_size == GRANTED_SIZE
+    assert info.pro_account_size == GRANTED_SIZE
+
+
+def test_a_failed_first_hop_leaves_no_pro_marking(manager):
+    """A subaccount left marked pro would trade the pro size in a standard bucket, and the next
+    size-less attempt would take the "recorded" branch instead of demanding a size."""
+    entity_manager, hotkey = _with_real_entity_manager(manager, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    with patch.object(manager, "admin_set_bucket", return_value=(False, "bucket move failed")):
+        assert not manager.promote_subaccount(hotkey, NOW_MS, 500_000)[0]
+
+    info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
+    assert info.account_type == "standard"
+    assert info.pro_account_size is None
+    assert info.standard_account_size is None
+    assert info.account_size == STANDARD_SIZE
+
+    # behavioural backstop: the promotion did not happen, so a size is still required
+    success, message = manager.promote_subaccount(hotkey, NOW_MS)
     assert not success
-    assert bucket.value in message
-    assert manager.miner_states[HOTKEY].current_bucket == bucket
-    manager._entity_client.apply_bucket_account_size.assert_not_called()
-    manager._position_client.close_all_positions.assert_not_called()
-
-
-def test_unknown_hotkey_is_rejected(manager):
-    success, message = manager.promote_pro_transition("not_a_miner_0", NOW_MS)
-
-    assert not success
-    assert "not found" in message
-    manager._entity_client.apply_bucket_account_size.assert_not_called()
-
-
-def test_promotion_is_not_repeatable(manager):
-    _in_transition(manager)
-    assert manager.promote_pro_transition(HOTKEY, NOW_MS)[0]
-
-    success, message = manager.promote_pro_transition(HOTKEY, NOW_MS + 1000)
-
-    assert not success
-    assert MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value in message
+    assert REQUIRED in message
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Section 2 — Validator endpoints
+# Section 2 — Validator endpoint
 # ═══════════════════════════════════════════════════════════════════════════════
 
-PRO_TRANSITION_SIGNED_FIELDS = ("entity_coldkey", "entity_hotkey", "synthetic_hotkey", "nonce", "timestamp")
-SIZE_REFUSED = "pro_account_size is not accepted"
-# Every kind of size a miner might send: in range, the bounds, out of range, wrong type, null, and the
-# non-finite floats json.dumps writes as the literals NaN / Infinity / -Infinity.
-EXPLICIT_SIZES = (
-    GRANTED_SIZE, ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE,
-    ValiConfig.MIN_PRO_ACCOUNT_SIZE - 1, ValiConfig.MAX_PRO_ACCOUNT_SIZE + 1, 1, 0, -1,
-    "500000", True, None, float("nan"), float("inf"), float("-inf"),
-)
+PROMOTE_SIGNED_FIELDS = ("entity_coldkey", "entity_hotkey", "synthetic_hotkey", "nonce", "timestamp")
 
 
-def _validator_pro_transition_client():
+def _validator_promote_client():
     """Flask test client for the validator endpoint with mocked clients and ownership check."""
     from vanta_api.nonce_manager import NonceManager
     from vanta_api.validator_rest_server import ValidatorRestServer
 
     server = object.__new__(ValidatorRestServer)
+    server._get_api_key_safe = MagicMock(return_value="key")
+    server.is_valid_api_key = MagicMock(return_value=True)
+    server.can_access_tier = MagicMock(return_value=True)
     server._entity_client = MagicMock()
     server._entity_client.get_subaccount_info_for_synthetic.return_value = {
         "pro_account_size": GRANTED_SIZE, "account_size": GRANTED_SIZE,
     }
     server._challenge_period_client = MagicMock()
-    server._challenge_period_client.promote_pro_transition.return_value = (True, "promoted")
+    server._challenge_period_client.promote_subaccount.return_value = (True, "promoted")
+    server._challenge_period_client.get_miner_bucket.return_value = MinerBucket.PRO_CHALLENGE_TRANSITION
     server._verify_coldkey_owns_hotkey = MagicMock(return_value=True)
     server.nonce_manager = NonceManager()
     app = Flask(__name__)
     app.config['TESTING'] = True
-    app.route("/entity/subaccount/pro-transition", methods=["POST"])(server.promote_pro_transition)
+    app.route("/entity/subaccount/promote", methods=["POST"])(server.promote_subaccount)
     return server, app.test_client()
 
 
-class TestValidatorProTransitionEndpoint(unittest.TestCase):
-    """POST /entity/subaccount/pro-transition on the validator, with mocked RPC clients."""
+class TestValidatorPromoteEndpoint(unittest.TestCase):
+    """POST /entity/subaccount/promote on the validator, with mocked RPC clients."""
 
     def setUp(self):
         self.coldkey = Keypair.create_from_uri("//Alice")
         self.hotkey = Keypair.create_from_uri("//Bob")
         self.synthetic = f"{self.hotkey.ss58_address}_0"
-        self.server, self.client = _validator_pro_transition_client()
+        self.server, self.client = _validator_promote_client()
 
     def _body(self, signed=None, drop=(), **tampered):
         """A correctly signed request. `signed` overrides or adds fields before signing (what a gateway
@@ -349,72 +518,86 @@ class TestValidatorProTransitionEndpoint(unittest.TestCase):
 
     def _post(self, body):
         # json.dumps writes NaN / Infinity as bare literals, exactly what request.get_json() parses back
-        resp = self.client.post("/entity/subaccount/pro-transition", data=json.dumps(body),
+        resp = self.client.post("/entity/subaccount/promote", data=json.dumps(body),
                                 content_type="application/json")
         return resp.status_code, json.loads(resp.data)
 
     def _promote(self):
-        return self.server._challenge_period_client.promote_pro_transition
+        return self.server._challenge_period_client.promote_subaccount
 
-    def test_valid_request_reaches_the_challenge_period_client_without_a_size(self):
-        """The promotion keeps the size the admin recorded: the endpoint never passes one."""
-        status, data = self._post(self._body())
-        self.assertEqual(status, 200)
-        self.assertEqual(data['bucket'], MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value)
+    def test_valid_request_forwards_the_requested_size(self):
+        status, data = self._post(self._body(signed={"pro_account_size": GRANTED_SIZE}))
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data['bucket'], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
         self.assertEqual(data['pro_account_size'], GRANTED_SIZE)
         self._promote().assert_called_once()
-        self.assertEqual(len(self._promote().call_args.args), 2)
-        hotkey, timestamp = self._promote().call_args.args
+        hotkey, timestamp, size = self._promote().call_args.args
         self.assertEqual(self._promote().call_args.kwargs, {})
         self.assertEqual(hotkey, self.synthetic)
+        self.assertEqual(size, GRANTED_SIZE)
         self.assertLess(abs(timestamp - TimeUtil.now_in_millis()), 60_000)
 
-    def _assert_size_refused_without_consuming_the_nonce(self, body):
-        """`body` carries a pro_account_size: it is a 400, and its nonce still works without the size."""
-        self._promote().reset_mock()
-        status, data = self._post(body)
-        self.assertEqual(status, 400, data)
-        self.assertIn(SIZE_REFUSED, data['error'])
-        self.assertIn("/admin/miner-bucket", data['error'])
+    def test_a_request_without_a_size_forwards_none(self):
+        """A hop within the pro track may omit the size; the recorded one is kept."""
+        status, data = self._post(self._body())
+        self.assertEqual(status, 200, data)
+        self.assertIsNone(self._promote().call_args.args[2])
+
+    def test_the_range_bounds_are_inclusive(self):
+        for size in (ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE):
+            with self.subTest(pro_account_size=size):
+                status, data = self._post(self._body(signed={"pro_account_size": size}))
+                self.assertEqual(status, 200, data)
+                self.assertEqual(self._promote().call_args.args[2], size)
+
+    def test_an_invalid_size_is_400_before_the_signature_and_ownership_checks(self):
+        """Refused on the size, and without consuming the nonce, so a corrected retry still works."""
+        for size, fragment in INVALID_SIZES:
+            with self.subTest(pro_account_size=size):
+                self._promote().reset_mock()
+                self.server._verify_coldkey_owns_hotkey.reset_mock()
+                body = self._body(signed={"pro_account_size": size})
+                status, data = self._post(body)
+                self.assertEqual(status, 400, data)
+                self.assertIn(fragment, data['error'])
+                self.server._verify_coldkey_owns_hotkey.assert_not_called()
+                self._promote().assert_not_called()
+
+                retry = self._body(signed={"nonce": body["nonce"], "timestamp": body["timestamp"],
+                                           "pro_account_size": GRANTED_SIZE})
+                self.assertEqual(self._post(retry)[0], 200)
+                self._promote().assert_called_once()
+
+    def test_a_size_added_to_a_signed_request_is_401(self):
+        """The size is part of what is signed, so one bolted on afterwards breaks the signature."""
+        status, _ = self._post(self._body(pro_account_size=GRANTED_SIZE))
+        self.assertEqual(status, 401)
         self._promote().assert_not_called()
 
-        retry = self._body(signed={"nonce": body["nonce"], "timestamp": body["timestamp"]})
-        self.assertNotIn("pro_account_size", retry)
-        status, data = self._post(retry)
-        self.assertEqual(status, 200, data)
-        self._promote().assert_called_once()
-
-    def test_any_signed_size_is_400(self):
-        """A correctly signed size is refused whatever its value: a miner never chooses its pro size."""
-        for size in EXPLICIT_SIZES:
-            with self.subTest(pro_account_size=size):
-                self._assert_size_refused_without_consuming_the_nonce(
-                    self._body(signed={"pro_account_size": size})
-                )
-
-    def test_a_size_added_to_a_signed_request_is_400(self):
-        """A size bolted onto a request signed without one is refused on the size, not the signature."""
-        for size in (ValiConfig.MAX_PRO_ACCOUNT_SIZE, 1, float("nan")):
-            with self.subTest(pro_account_size=size):
-                self._assert_size_refused_without_consuming_the_nonce(self._body(pro_account_size=size))
-
-    def test_size_is_refused_before_the_signature_and_ownership_checks(self):
-        other = Keypair.create_from_uri("//Charlie")
-        self.server._verify_coldkey_owns_hotkey.return_value = False
-        status, data = self._post(self._body(signed={"pro_account_size": GRANTED_SIZE},
-                                             signature=other.sign(b"anything").hex()))
-        self.assertEqual(status, 400)
-        self.assertIn(SIZE_REFUSED, data['error'])
-        self.server._verify_coldkey_owns_hotkey.assert_not_called()
+    def test_a_size_stripped_from_a_signed_request_is_401(self):
+        body = self._body(signed={"pro_account_size": GRANTED_SIZE})
+        del body["pro_account_size"]
+        status, _ = self._post(body)
+        self.assertEqual(status, 401)
         self._promote().assert_not_called()
 
     def test_manager_rejection_is_a_400(self):
-        self._promote().return_value = (
-            False, "entity_0 is in SUBACCOUNT_FUNDED, not PRO_CHALLENGE_TRANSITION"
-        )
+        self._promote().return_value = (False, "entity_0 cannot be promoted out of PRO_FUNDED")
         status, data = self._post(self._body())
         self.assertEqual(status, 400)
-        self.assertIn("not PRO_CHALLENGE_TRANSITION", data['error'])
+        self.assertIn("cannot be promoted out of PRO_FUNDED", data['error'])
+
+    def test_invalid_api_key_is_401_and_below_tier_200_is_403(self):
+        self.server.is_valid_api_key.return_value = False
+        self.assertEqual(self._post(self._body())[0], 401)
+
+        self.server.is_valid_api_key.return_value = True
+        self.server.can_access_tier.return_value = False
+        status, data = self._post(self._body())
+        self.assertEqual(status, 403)
+        self.assertIn("tier 200", data['error'])
+        self.server.can_access_tier.assert_called_with("key", 200)
+        self._promote().assert_not_called()
 
     def test_bad_signature_is_401(self):
         other = Keypair.create_from_uri("//Charlie")
@@ -439,6 +622,13 @@ class TestValidatorProTransitionEndpoint(unittest.TestCase):
         status, data = self._post(self._body(signed={"synthetic_hotkey": self.hotkey.ss58_address}))
         self.assertEqual(status, 400)
         self.assertIn("not a subaccount", data['error'])
+        self._promote().assert_not_called()
+
+    def test_unknown_subaccount_is_404(self):
+        self.server._entity_client.get_subaccount_info_for_synthetic.return_value = None
+        status, data = self._post(self._body())
+        self.assertEqual(status, 404)
+        self.assertIn("not found", data['error'])
         self._promote().assert_not_called()
 
     def test_missing_and_malformed_fields_are_400(self):
@@ -472,9 +662,10 @@ class TestValidatorProTransitionEndpoint(unittest.TestCase):
             ("synthetic_hotkey", f"{self.hotkey.ss58_address}_1"),
             ("nonce", uuid.uuid4().hex),
             ("timestamp", TimeUtil.now_in_millis() + 30_000),
+            ("pro_account_size", ValiConfig.MAX_PRO_ACCOUNT_SIZE),
         ):
             with self.subTest(tampered=field):
-                body = self._body()
+                body = self._body(signed={"pro_account_size": GRANTED_SIZE})
                 self.assertNotEqual(body[field], value)
                 body[field] = value
                 status, _ = self._post(body)
@@ -482,7 +673,7 @@ class TestValidatorProTransitionEndpoint(unittest.TestCase):
         self._promote().assert_not_called()
 
     def test_signature_covers_exactly_the_signed_fields(self):
-        """The validator rebuilds only PRO_TRANSITION_SIGNED_FIELDS: a signature over anything more fails."""
+        """The validator rebuilds only PROMOTE_SIGNED_FIELDS plus the size: more than that fails."""
         body = self._body(signed={"extra": "field"})
         del body["extra"]
         status, _ = self._post(body)
@@ -507,231 +698,12 @@ class TestValidatorProTransitionEndpoint(unittest.TestCase):
         self.assertEqual(self._post(body)[0], 200)
 
 
-class TestAdminMinerBucketProSize(unittest.TestCase):
-    """POST /admin/miner-bucket/<hotkey> sizing a pro move through a real in-memory EntityManager."""
-
-    def setUp(self):
-        from vanta_api.validator_rest_server import ValidatorRestServer
-
-        self.entity_manager = _bare_entity_manager()
-        self.hotkey = _add_standard_subaccount(self.entity_manager)
-        self.server = object.__new__(ValidatorRestServer)
-        self.server._get_api_key_safe = MagicMock(return_value="key")
-        self.server.is_valid_api_key = MagicMock(return_value=True)
-        self.server.can_access_tier = MagicMock(return_value=True)
-        self.server._entity_client = self.entity_manager
-        self.server._challenge_period_client = MagicMock()
-        self.server._challenge_period_client.can_admin_set_bucket.return_value = (True, "")
-        self.server._challenge_period_client.admin_set_bucket.return_value = (True, "moved")
-        self.server._miner_account_client = MagicMock()
-        app = Flask(__name__)
-        app.config['TESTING'] = True
-        app.route("/admin/miner-bucket/<hotkey>", methods=["POST"])(self.server.set_miner_bucket_admin)
-        self.client = app.test_client()
-
-    def _post(self, body, hotkey=None):
-        resp = self.client.post(f"/admin/miner-bucket/{hotkey or self.hotkey}", json=body)
-        return resp.status_code, json.loads(resp.data)
-
-    def _post_raw(self, raw_json, hotkey=None):
-        resp = self.client.post(f"/admin/miner-bucket/{hotkey or self.hotkey}", data=raw_json,
-                                content_type="application/json")
-        return resp.status_code, json.loads(resp.data)
-
-    def _info(self, hotkey=None):
-        return self.entity_manager.get_subaccount_info_for_synthetic(hotkey or self.hotkey)
-
-    def _assert_nothing_moved(self, hotkey=None):
-        info = self._info(hotkey)
-        self.assertIsNone(info.pro_account_size)
-        self.assertIsNone(info.standard_account_size)
-        self.assertEqual(info.account_size, STANDARD_SIZE)
-        self.assertEqual(info.account_type, "standard")
-        self.entity_manager._miner_account_client.set_miner_account_size.assert_not_called()
-        self.server._challenge_period_client.admin_set_bucket.assert_not_called()
-        self.server._miner_account_client.set_miner_bucket.assert_not_called()
-
-    def test_entering_the_track_without_a_size_is_400(self):
-        for bucket in (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_DIRECT):
-            with self.subTest(bucket=bucket):
-                status, data = self._post({"bucket": bucket.value})
-                self.assertEqual(status, 400)
-                self.assertEqual(data['error'], REQUIRED)
-                self._assert_nothing_moved()
-
-    def test_entering_the_track_with_a_size_records_it(self):
-        status, data = self._post({"bucket": MinerBucket.PRO_CHALLENGE_TRANSITION.value,
-                                   "pro_account_size": 450_000})
-        self.assertEqual(status, 200, data)
-        info = self._info()
-        self.assertEqual(info.pro_account_size, 450_000)
-        self.assertEqual(info.standard_account_size, STANDARD_SIZE)
-        self.assertEqual(info.account_size, STANDARD_SIZE)  # TRANSITION keeps the standard account
-        self.server._challenge_period_client.admin_set_bucket.assert_called_once()
-
-    def test_direct_pro_challenge_trades_the_size(self):
-        status, data = self._post({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value,
-                                   "pro_account_size": 450_000})
-        self.assertEqual(status, 200, data)
-        self.assertEqual(self._info().account_size, 450_000)
-
-    def test_range_bounds_are_inclusive(self):
-        for i, (size, accepted) in enumerate(((199_999, False), (200_000, True),
-                                              (1_000_000, True), (1_000_001, False)), start=10):
-            hotkey = _add_standard_subaccount(self.entity_manager, subaccount_id=i)
-            self.entity_manager._miner_account_client.reset_mock()
-            self.server._challenge_period_client.reset_mock()
-            self.server._challenge_period_client.can_admin_set_bucket.return_value = (True, "")
-            self.server._challenge_period_client.admin_set_bucket.return_value = (True, "moved")
-            self.server._miner_account_client.reset_mock()
-            with self.subTest(pro_account_size=size):
-                status, data = self._post({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value,
-                                           "pro_account_size": size}, hotkey=hotkey)
-                if accepted:
-                    self.assertEqual(status, 200, data)
-                    self.assertEqual(self._info(hotkey).pro_account_size, size)
-                else:
-                    self.assertEqual(status, 400, data)
-                    self.assertIn("outside the allowed range", data['error'])
-                    self._assert_nothing_moved(hotkey)
-
-    def test_non_finite_sizes_are_rejected_before_anything_moves(self):
-        """Flask's request.get_json() parses these literals, and NaN passes a plain range check."""
-        for bucket in (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_DIRECT,
-                       MinerBucket.SUBACCOUNT_CHALLENGE):
-            for literal in ("NaN", "Infinity", "-Infinity", "1e999"):
-                with self.subTest(bucket=bucket, pro_account_size=literal):
-                    status, data = self._post_raw(
-                        f'{{"bucket": "{bucket.value}", "pro_account_size": {literal}}}'
-                    )
-                    self.assertEqual(status, 400, data)
-                    self.assertIn("must be a finite number", data['error'])
-                    self._assert_nothing_moved()
-                    self.server._challenge_period_client.can_admin_set_bucket.assert_not_called()
-
-    def test_non_numeric_sizes_are_rejected_before_anything_moves(self):
-        for size in ("500000", True, False, [500_000]):
-            with self.subTest(pro_account_size=size):
-                status, data = self._post({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value,
-                                           "pro_account_size": size})
-                self.assertEqual(status, 400, data)
-                self.assertIn("must be a number", data['error'])
-                self._assert_nothing_moved()
-                self.server._challenge_period_client.can_admin_set_bucket.assert_not_called()
-
-    def test_pro_funded_may_re_set_the_size(self):
-        pro = _add_pro(self.entity_manager, pro_size=GRANTED_SIZE)
-
-        status, data = self._post({"bucket": MinerBucket.PRO_FUNDED.value,
-                                   "pro_account_size": 1_000_001}, hotkey=pro)
-        self.assertEqual(status, 400, data)
-        self.assertEqual(self._info(pro).pro_account_size, GRANTED_SIZE)
-
-        status, data = self._post({"bucket": MinerBucket.PRO_FUNDED.value,
-                                   "pro_account_size": 900_000}, hotkey=pro)
-        self.assertEqual(status, 200, data)
-        info = self._info(pro)
-        self.assertEqual(info.pro_account_size, 900_000)
-        self.assertEqual(info.account_size, 900_000)
-
-    def test_pro_funded_without_a_size_keeps_the_recorded_one(self):
-        pro = _add_pro(self.entity_manager, pro_size=GRANTED_SIZE)
-        status, data = self._post({"bucket": MinerBucket.PRO_FUNDED.value}, hotkey=pro)
-        self.assertEqual(status, 200, data)
-        info = self._info(pro)
-        self.assertEqual(info.pro_account_size, GRANTED_SIZE)
-        self.assertEqual(info.account_size, GRANTED_SIZE)
-
-    def test_reoffer_after_a_demotion_requires_a_size(self):
-        demoted = _add_demoted(self.entity_manager)
-
-        status, data = self._post({"bucket": MinerBucket.PRO_CHALLENGE_TRANSITION.value}, hotkey=demoted)
-        self.assertEqual(status, 400, data)
-        self.assertEqual(data['error'], REQUIRED)
-        self.assertEqual(self._info(demoted).account_type, "standard")
-        self.server._challenge_period_client.admin_set_bucket.assert_not_called()
-
-        status, data = self._post({"bucket": MinerBucket.PRO_CHALLENGE_TRANSITION.value,
-                                   "pro_account_size": 350_000}, hotkey=demoted)
-        self.assertEqual(status, 200, data)
-        self.assertEqual(self._info(demoted).pro_account_size, 350_000)
-
-    def test_standard_bucket_never_records_a_pro_size(self):
-        status, data = self._post({"bucket": MinerBucket.SUBACCOUNT_CHALLENGE.value,
-                                   "pro_account_size": 450_000})
-        self.assertEqual(status, 200, data)
-        self.assertIsNone(self._info().pro_account_size)
-        self.assertEqual(self.entity_manager.get_payout_scale(self.hotkey), 1.0)
-
-    def test_a_failed_bucket_move_leaves_no_pro_marking(self):
-        """The sizing is committed before the bucket moves, so a failed move must roll it back: a
-        subaccount left marked pro would trade the pro size in a standard bucket, and the next
-        size-less re-offer would take the "recorded" branch instead of demanding a size."""
-        for i, bucket in enumerate((MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_DIRECT),
-                                   start=20):
-            with self.subTest(bucket=bucket):
-                hotkey = _add_standard_subaccount(self.entity_manager, subaccount_id=i)
-                self.entity_manager._miner_account_client.reset_mock()
-                self.server._challenge_period_client.admin_set_bucket.return_value = (
-                    False, f"{hotkey} account size update failed, bucket unchanged")
-
-                status, data = self._post({"bucket": bucket.value, "pro_account_size": 500_000}, hotkey=hotkey)
-                self.assertEqual(status, 400, data)
-
-                info = self._info(hotkey)
-                self.assertEqual(info.account_type, "standard")
-                self.assertIsNone(info.pro_account_size)
-                self.assertIsNone(info.standard_account_size)
-                self.assertEqual(info.account_size, STANDARD_SIZE)
-                self.server._miner_account_client.set_miner_bucket.assert_not_called()
-                # PRO_CHALLENGE_DIRECT trades the pro size, so its resize was committed too and the
-                # live account must be put back; TRANSITION keeps the standard account and never moved it
-                sizes = [call.kwargs['account_size']
-                         for call in self.entity_manager._miner_account_client.set_miner_account_size.call_args_list]
-                self.assertEqual(sizes[-1] if sizes else STANDARD_SIZE, STANDARD_SIZE)
-
-                # behavioural backstop: the offer did not happen, so a size is still required
-                self.server._challenge_period_client.admin_set_bucket.return_value = (True, "moved")
-                status, data = self._post({"bucket": bucket.value}, hotkey=hotkey)
-                self.assertEqual(status, 400, data)
-                self.assertEqual(data['error'], REQUIRED)
-
-    def test_a_bucket_move_that_raises_leaves_no_pro_marking(self):
-        """The 500 path: an exception inside admin_set_bucket (its wind-down or its disk write) must
-        not leave the sizing write landed either."""
-        hotkey = _add_standard_subaccount(self.entity_manager, subaccount_id=30)
-        self.server._challenge_period_client.admin_set_bucket.side_effect = RuntimeError("disk full")
-
-        status, data = self._post({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value,
-                                   "pro_account_size": 500_000}, hotkey=hotkey)
-
-        self.assertEqual(status, 500, data)
-        info = self._info(hotkey)
-        self.assertEqual(info.account_type, "standard")
-        self.assertIsNone(info.pro_account_size)
-        self.assertEqual(info.account_size, STANDARD_SIZE)
-
-    def test_a_successful_move_is_never_rolled_back(self):
-        """set_miner_bucket runs after the bucket moved; if it raises, the sizing must stand."""
-        hotkey = _add_standard_subaccount(self.entity_manager, subaccount_id=31)
-        self.server._miner_account_client.set_miner_bucket.side_effect = RuntimeError("bookkeeping blew up")
-
-        status, data = self._post({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value,
-                                   "pro_account_size": 500_000}, hotkey=hotkey)
-
-        self.assertEqual(status, 500, data)
-        info = self._info(hotkey)
-        self.assertEqual(info.account_type, "pro")
-        self.assertEqual(info.pro_account_size, 500_000)
-        self.assertEqual(info.account_size, 500_000)
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Section 3 — Gateway endpoint
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestGatewayProTransitionEndpoint(unittest.TestCase):
-    """POST /api/promote-pro-transition on the gateway, with the validator call patched."""
+class TestGatewayPromoteEndpoint(unittest.TestCase):
+    """POST /api/promote on the gateway, with the validator call patched."""
 
     def setUp(self):
         from vanta_api.entity_miner_rest_server import EntityMinerRestServer
@@ -743,26 +715,28 @@ class TestGatewayProTransitionEndpoint(unittest.TestCase):
         self.gw._coldkey = self.coldkey
         self.gw._hotkey = self.hotkey
         self.gw._validator_url = "http://validator.test"
+        self.gw._api_key = "validator-key"
         self.gw._get_api_key_safe = MagicMock(return_value="key")
         self.gw.is_valid_api_key = MagicMock(return_value=True)
         app = Flask(__name__)
         app.config['TESTING'] = True
-        app.route("/api/promote-pro-transition", methods=["POST"])(self.gw.promote_pro_transition_endpoint)
+        app.route("/api/promote", methods=["POST"])(self.gw.promote_endpoint)
         self.client = app.test_client()
 
     def _post(self, body):
         # json.dumps writes NaN / Infinity as bare literals, exactly what request.get_json() parses back
-        resp = self.client.post("/api/promote-pro-transition", data=json.dumps(body),
-                                content_type="application/json")
+        resp = self.client.post("/api/promote", data=json.dumps(body), content_type="application/json")
         return resp.status_code, json.loads(resp.data)
 
     def _forward(self, body=None):
         """Post to the gateway with the validator call patched; returns (status, data, payload sent)."""
         validator_resp = MagicMock(status_code=200)
         validator_resp.json.return_value = {"status": "success", "pro_account_size": GRANTED_SIZE}
+        if body is None:
+            body = {"synthetic_hotkey": self.synthetic, "pro_account_size": GRANTED_SIZE}
         with patch("requests.post", return_value=validator_resp) as post:
-            status, data = self._post(body if body is not None else {"synthetic_hotkey": self.synthetic})
-        self.assertEqual(post.call_args.args[0], "http://validator.test/entity/subaccount/pro-transition")
+            status, data = self._post(body)
+        self.assertEqual(post.call_args.args[0], "http://validator.test/entity/subaccount/promote")
         return status, data, post.call_args.kwargs['json']
 
     def _assert_signed(self, payload, fields):
@@ -770,32 +744,46 @@ class TestGatewayProTransitionEndpoint(unittest.TestCase):
         self.assertTrue(Keypair(ss58_address=self.coldkey.ss58_address).verify(
             signed, bytes.fromhex(payload['signature'])))
 
-    def test_forwards_a_signed_payload_with_no_size(self):
+    def test_forwards_a_signed_payload_carrying_the_size(self):
         status, data, payload = self._forward()
         self.assertEqual(status, 200)
         self.assertEqual(data['pro_account_size'], GRANTED_SIZE)
         self.assertEqual(payload['entity_coldkey'], self.coldkey.ss58_address)
         self.assertEqual(payload['entity_hotkey'], self.hotkey.ss58_address)
         self.assertEqual(payload['synthetic_hotkey'], self.synthetic)
+        self.assertEqual(payload['pro_account_size'], GRANTED_SIZE)
         self.assertIsInstance(payload['nonce'], str)
         self.assertTrue(payload['nonce'])
         self.assertIsInstance(payload['timestamp'], int)
         self.assertLess(abs(payload['timestamp'] - TimeUtil.now_in_millis()), 60_000)
-        # No size is signed or sent: the payload is exactly the signed fields plus signature and version
-        self.assertEqual(set(payload), set(PRO_TRANSITION_SIGNED_FIELDS) | {"signature", "version"})
-        self._assert_signed(payload, PRO_TRANSITION_SIGNED_FIELDS)
+        self.assertEqual(set(payload),
+                         set(PROMOTE_SIGNED_FIELDS) | {"pro_account_size", "signature", "version"})
+        self._assert_signed(payload, PROMOTE_SIGNED_FIELDS + ("pro_account_size",))
 
-    def test_any_size_is_refused_before_signing(self):
-        """The admin owns the pro size, so the gateway never signs or forwards a miner-chosen one."""
+    def test_an_omitted_size_is_neither_signed_nor_sent(self):
+        """Omitted must not become a signed null: the validator rebuilds the dict without the key."""
+        _, _, payload = self._forward({"synthetic_hotkey": self.synthetic})
+        self.assertNotIn("pro_account_size", payload)
+        self.assertEqual(set(payload), set(PROMOTE_SIGNED_FIELDS) | {"signature", "version"})
+        self._assert_signed(payload, PROMOTE_SIGNED_FIELDS)
+
+    def test_an_invalid_size_is_refused_before_signing(self):
         self.gw._coldkey = MagicMock()
-        for size in EXPLICIT_SIZES:
+        for size, fragment in INVALID_SIZES:
             with self.subTest(pro_account_size=size), patch("requests.post") as post:
                 status, data = self._post({"synthetic_hotkey": self.synthetic, "pro_account_size": size})
                 self.assertEqual(status, 400, data)
-                self.assertIn(SIZE_REFUSED, data['message'])
-                self.assertIn("/admin/miner-bucket", data['message'])
+                self.assertIn(fragment, data['message'])
                 post.assert_not_called()
         self.gw._coldkey.sign.assert_not_called()
+
+    def test_forwards_the_validator_api_key(self):
+        """The validator endpoint needs tier 200, so the gateway sends its own key."""
+        validator_resp = MagicMock(status_code=200)
+        validator_resp.json.return_value = {"status": "success"}
+        with patch("requests.post", return_value=validator_resp) as post:
+            self._post({"synthetic_hotkey": self.synthetic})
+        self.assertEqual(post.call_args.kwargs['headers']["Authorization"], "Bearer validator-key")
 
     def test_each_request_gets_a_fresh_nonce(self):
         first = self._forward()[2]
@@ -804,25 +792,27 @@ class TestGatewayProTransitionEndpoint(unittest.TestCase):
         self.assertNotEqual(first['signature'], second['signature'])
 
     def test_gateway_payload_is_accepted_by_the_validator_endpoint(self):
-        payload = self._forward()[2]
-        server, client = _validator_pro_transition_client()
-        resp = client.post("/entity/subaccount/pro-transition", json=payload)
-        self.assertEqual(resp.status_code, 200, resp.data)
-        promote = server._challenge_period_client.promote_pro_transition
-        promote.assert_called_once()
-        self.assertEqual(promote.call_args.args[0], self.synthetic)
-        self.assertEqual(len(promote.call_args.args), 2)
-        self.assertEqual(promote.call_args.kwargs, {})
-        # The same bytes a second time are a replay
-        self.assertEqual(client.post("/entity/subaccount/pro-transition", json=payload).status_code, 401)
+        for body in ({"synthetic_hotkey": self.synthetic, "pro_account_size": GRANTED_SIZE},
+                     {"synthetic_hotkey": self.synthetic}):
+            with self.subTest(body=body):
+                payload = self._forward(body)[2]
+                server, client = _validator_promote_client()
+                resp = client.post("/entity/subaccount/promote", json=payload)
+                self.assertEqual(resp.status_code, 200, resp.data)
+                promote = server._challenge_period_client.promote_subaccount
+                promote.assert_called_once()
+                self.assertEqual(promote.call_args.args[0], self.synthetic)
+                self.assertEqual(promote.call_args.args[2], body.get("pro_account_size"))
+                # The same bytes a second time are a replay
+                self.assertEqual(client.post("/entity/subaccount/promote", json=payload).status_code, 401)
 
     def test_validator_error_is_passed_through(self):
         validator_resp = MagicMock(status_code=400)
-        validator_resp.json.return_value = {"error": "not PRO_CHALLENGE_TRANSITION"}
+        validator_resp.json.return_value = {"error": "cannot be promoted out of PRO_FUNDED"}
         with patch("requests.post", return_value=validator_resp):
             status, data = self._post({"synthetic_hotkey": self.synthetic})
         self.assertEqual(status, 400)
-        self.assertIn("not PRO_CHALLENGE_TRANSITION", data['message'])
+        self.assertIn("cannot be promoted out of PRO_FUNDED", data['message'])
 
     def test_invalid_input_never_reaches_validator(self):
         with patch("requests.post") as post:

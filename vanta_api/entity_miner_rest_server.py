@@ -17,7 +17,7 @@ Entity-specific endpoints:
     GET  /api/hl/<hl_address>/stream     - SSE real-time stream
     POST /api/create-subaccount          - Create standard subaccount
     POST /api/create-hl-subaccount       - Create HL-linked subaccount
-    POST /api/promote-pro-transition     - Close out a PRO_CHALLENGE_TRANSITION subaccount and start its pro account
+    POST /api/promote                    - Promote a subaccount a step up the pro track
     GET  /api/health                     - Health check (extended with WS status)
 """
 import asyncio
@@ -36,6 +36,7 @@ from typing import Dict, Optional, Set
 from flask import jsonify, request, Response
 
 from miner_config import MinerConfig
+from entity_management.entity_utils import pro_account_size_error
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vanta_api.miner_rest_server import MinerRestServer
@@ -391,7 +392,7 @@ class EntityMinerRestServer(MinerRestServer):
         self.app.route("/api/create-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/create-hl-subaccount", methods=["POST"])(self.create_subaccount_endpoint)
         self.app.route("/api/update-subaccount-leverage-tier", methods=["POST"])(self.update_subaccount_leverage_tier_endpoint)
-        self.app.route("/api/promote-pro-transition", methods=["POST"])(self.promote_pro_transition_endpoint)
+        self.app.route("/api/promote", methods=["POST"])(self.promote_endpoint)
         print("[ENTITY-GW-INIT] 10 endpoints registered (3 inherited + 7 entity-specific)")
 
     # ==================== HL Address Mapping ====================
@@ -1285,23 +1286,34 @@ class EntityMinerRestServer(MinerRestServer):
         error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
         return jsonify({'status': 'error', 'message': error_message}), resp.status_code
 
-    def promote_pro_transition_endpoint(self):
+    def promote_endpoint(self):
         """
-        POST /api/promote-pro-transition - Close out a subaccount's standard account and start its pro
-        account, moving it from PRO_CHALLENGE_TRANSITION to PRO_CHALLENGE_FROM_STANDARD via the validator.
+        POST /api/promote - Promote one of this entity's subaccounts a step up the pro track.
 
         Request body (JSON):
         {
-            "synthetic_hotkey": "<entity_hotkey>_<id>"   // Required
+            "synthetic_hotkey": "<entity_hotkey>_<id>",  // Required
+            "pro_account_size": 500000                   // Required entering the pro track, else optional
         }
 
-        The subaccount is promoted on the pro account size the admin set when offering the transition.
-        A miner cannot choose or change it: a request that includes "pro_account_size" at all (even null)
-        is rejected with a 400 before anything is signed or sent to the validator, which would reject it
-        too. Only the validator's admin endpoint POST /admin/miner-bucket/<hotkey> sets a pro account size.
+        The gateway signs the request with the entity coldkey and forwards it to the validator's
+        POST /entity/subaccount/promote, which verifies the signature, that the coldkey owns the
+        entity hotkey on chain, and that the subaccount belongs to that hotkey. The validator picks
+        the target bucket from the subaccount's current one and allows only these hops:
+          SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT
+          SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
+          PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
 
-        Every open position is closed, every pending limit order is cancelled, and the ledgers restart
-        on the pro account, so this cannot be undone.
+        pro_account_size is the pro size the entity is buying, $200,000 to $1,000,000. Send one the
+        first time a subaccount enters the pro track; afterwards sending one replaces the recorded
+        size and omitting it keeps it. The entity pays the promotion fee out of its collateral once
+        the pro account goes live.
+
+        Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
+        PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
+        restarts the ledgers, so neither can be undone. Promoting into PRO_CHALLENGE_TRANSITION keeps
+        trading the standard account and wipes nothing: positions, limit orders and ledgers all carry
+        on, and only the resting orders that could open or increase a position are cancelled.
         """
         import requests as http_requests
 
@@ -1317,20 +1329,19 @@ class EntityMinerRestServer(MinerRestServer):
         if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
             return jsonify({'status': 'error', 'message': 'synthetic_hotkey must be a non-empty string'}), 400
 
-        # The admin sets the pro account size; never sign or forward a miner-chosen one
-        if "pro_account_size" in request_data:
-            return jsonify({
-                'status': 'error',
-                'message': ('pro_account_size is not accepted: the pro account size is set by the admin when '
-                            'offering the pro track (validator POST /admin/miner-bucket/<hotkey>), and '
-                            'promoting out of PRO_CHALLENGE_TRANSITION keeps it'),
-            }), 400
+        # Checked here as well as on the validator so a bad size never costs a signature or a nonce
+        pro_account_size = request_data.get("pro_account_size")
+        if pro_account_size is not None:
+            size_error = pro_account_size_error(pro_account_size)
+            if size_error:
+                return jsonify({'status': 'error', 'message': size_error}), 400
 
         if not self._coldkey or not self._hotkey or not self._validator_url:
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
 
         try:
             # The validator rebuilds this exact dict to verify; nonce + timestamp make it single use.
+            # pro_account_size is signed only when sent, so an omitted size is not signed as null.
             signed_fields = {
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address,
@@ -1338,6 +1349,8 @@ class EntityMinerRestServer(MinerRestServer):
                 "nonce": uuid.uuid4().hex,
                 "timestamp": int(time.time() * 1000),
             }
+            if pro_account_size is not None:
+                signed_fields["pro_account_size"] = pro_account_size
             message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
         except Exception as e:
@@ -1347,13 +1360,14 @@ class EntityMinerRestServer(MinerRestServer):
         payload = {**signed_fields, "signature": signature, "version": "2.2.1"}
         try:
             resp = http_requests.post(
-                f"{self._validator_url}/entity/subaccount/pro-transition",
+                f"{self._validator_url}/entity/subaccount/promote",
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {self._api_key}"},
                 timeout=60,
             )
         except Exception as e:
-            logger.error(f"Error reaching validator for pro transition promotion: {e}")
+            logger.error(f"Error reaching validator for promotion: {e}")
             return jsonify({'status': 'error', 'message': f'Validator unreachable: {str(e)}'}), 502
 
         try:
@@ -1362,12 +1376,11 @@ class EntityMinerRestServer(MinerRestServer):
             return jsonify({'status': 'error', 'message': 'Invalid JSON response from validator'}), 500
 
         if resp.status_code == 200:
-            logger.info(f"[ENTITY-GW] pro transition completed for {synthetic_hotkey}: "
+            logger.info(f"[ENTITY-GW] promoted {synthetic_hotkey} to {response_data.get('bucket')}: "
                         f"pro_account_size={response_data.get('pro_account_size')}")
             return jsonify(response_data), 200
         error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
         return jsonify({'status': 'error', 'message': error_message}), resp.status_code
-
     def health_endpoint(self):
         """GET /api/health - Health check."""
         health = {

@@ -685,8 +685,8 @@ class ValiConfig:
     ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
     ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
-    # Allowed range in USD for a pro account size. There is no network default: the admin sets the
-    # size when offering the pro track (POST /admin/miner-bucket/<hotkey>), and the network enforces
+    # Allowed range in USD for a pro account size. There is no network default: the entity picks the
+    # size when it promotes onto the pro track (POST /entity/subaccount/promote), and the network enforces
     # only this inclusive range (plus finite and positive), not any UI preset list.
     MAX_PRO_ACCOUNT_SIZE = 1_000_000
     MIN_PRO_ACCOUNT_SIZE = 200_000

@@ -537,73 +537,6 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
 { "error": "Internal server error retrieving challenge period data" }
 ```
 
-### Set Miner Bucket (admin)
-
-`POST /admin/miner-bucket/<hotkey>`
-
-Moves a miner or subaccount into a specific bucket. This is the only way into the pro account
-track — see [entity_miner.md](entity_miner.md#account-types).
-
-Requires **tier 500** access. Like every `/admin/*` route, calls are recorded in the audit log.
-
-**Body:**
-- `bucket` (string, required): a `MinerBucket` value, e.g. `PRO_CHALLENGE_TRANSITION`.
-- `pro_account_size` (number): USD size of the pro account. There is no network default, and this
-  endpoint is the only way to set one. When sent it must be a finite number from $200,000 to
-  $1,000,000 inclusive (`ValiConfig.MIN_PRO_ACCOUNT_SIZE` to `ValiConfig.MAX_PRO_ACCOUNT_SIZE`),
-  whatever the bucket; `NaN`, `Infinity`, strings and booleans are rejected. The network enforces only
-  this range, not the Command Center presets.
-  - **Required when entering the pro track** from a standard account (e.g. `SUBACCOUNT_FUNDED` →
-    `PRO_CHALLENGE_TRANSITION`). A re-offer after a demotion needs a size again: a size recorded on an
-    earlier pro journey is never reused.
-  - **Optional on a move within the pro track** (e.g. promoting to `PRO_FUNDED`): a new size replaces
-    the recorded one; omitted, the recorded size is kept.
-  - **Ignored for standard buckets**, which never record a pro size.
-
-Entering the pro track snapshots the subaccount's existing size, which becomes its
-`standard_account_size` and the basis for payouts during the pro challenge, and records the size as
-`pro_account_size`. A rejected move changes nothing: an invalid or missing size is a 400 before the
-subaccount or its bucket is touched, and a move that fails *after* the sizing is applied rolls the
-sizing back, so a subaccount is never left marked pro in a bucket that did not change — which would
-both leave it trading the pro size off the pro track and let the next size-less offer reuse that size
-instead of demanding one.
-
-The miner's own promotion out of `PRO_CHALLENGE_TRANSITION` (`POST /entity/subaccount/pro-transition`)
-keeps the recorded size and rejects any request that includes `pro_account_size`.
-
-When the target bucket changes the account size, the subaccount's open positions are force closed,
-its pending limit orders are cancelled, and its ledgers restart against the new size.
-`PRO_CHALLENGE_TRANSITION` keeps the standard account, so nothing is reset when entering it.
-
-**Example:**
-```bash
-curl -X POST "http://localhost:48888/admin/miner-bucket/5GhDr3xy...abc_1" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"bucket": "PRO_CHALLENGE_TRANSITION", "pro_account_size": 500000}'
-```
-
-**Response:**
-```json
-{
-  "status": "success",
-  "hotkey": "5GhDr3xy...abc_1",
-  "bucket": "PRO_CHALLENGE_TRANSITION",
-  "message": "5GhDr3xy...abc_1 moved to PRO_CHALLENGE_TRANSITION"
-}
-```
-
-**Error Responses:**
-```json
-// 400 - unknown bucket, pro_account_size missing when entering the pro track, pro_account_size not a
-//       finite number from $200,000 to $1,000,000, or miner already in that bucket
-{ "error": "pro_account_size is required to enter the pro track" }
-{ "error": "pro_account_size $2000000 is outside the allowed range $200,000 to $1,000,000" }
-
-// 403 - API key below tier 500
-{ "error": "Set miner bucket endpoint requires tier 500 access" }
-```
-
 ### Validator Checkpoint 
 
 `GET /validator-checkpoint`
@@ -1215,7 +1148,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules). Fixed for the life of the subaccount once created. HL-linked subaccounts always get `"trailing"` regardless of what's passed.
-- `account_type` (string, optional): must be `"standard"` (the default). Pro accounts are granted by admin promotion via `POST /admin/miner-bucket/<synthetic_hotkey>`, never at creation — see [entity_miner.md](entity_miner.md#account-types). Not part of the signed payload.
+- `account_type` (string, optional): must be `"standard"` (the default). Pro accounts are reached by promotion via `POST /entity/subaccount/promote`, never at creation — see [entity_miner.md](entity_miner.md#account-types). Not part of the signed payload.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
 **Response:**
@@ -1306,22 +1239,31 @@ Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [ent
 - The entity miner gateway (`POST /api/update-subaccount-leverage-tier`) builds and signs this request. End users typically call the gateway rather than this endpoint directly.
 - The new tier is broadcast to all validators like a subaccount registration.
 
-### Promote Pro Transition Subaccount
+### Promote Subaccount
 
-`POST /entity/subaccount/pro-transition`
+`POST /entity/subaccount/promote`
 
-Start Pro Now: move a subaccount from `PRO_CHALLENGE_TRANSITION` to `PRO_CHALLENGE_FROM_STANDARD` on
-the miner's own request, instead of waiting for the end of the transition week, see
-[entity_miner.md](entity_miner.md#traders-who-have-already-passed-the-standard-challenge). Every open
-position is force closed, every pending limit order is cancelled, and the ledgers restart on the pro
-account, so this cannot be undone.
+Move one of an entity's subaccounts a step up the pro account track, on the entity's own request.
+This is the only way onto the pro track — see [entity_miner.md](entity_miner.md#account-types).
 
-The pro account is sized at the `pro_account_size` the admin set when offering the transition. A
-miner cannot choose or change it: a request that includes `pro_account_size` at all, even `null`, is
-rejected with a 400 before the signature is checked or the nonce is used, so the same nonce can still
-be sent without the field. Only `POST /admin/miner-bucket/<hotkey>` sets a pro account size.
+The target bucket is derived from the subaccount's current one, and only these three hops exist
+(`MinerBucket.promotion_target`):
 
-**Authentication:** Coldkey signature (no API key required). Each signature is single use.
+| From | To |
+| --- | --- |
+| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` |
+| `SUBACCOUNT_FUNDED` | `PRO_CHALLENGE_TRANSITION` |
+| `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
+
+A subaccount in any other bucket is rejected with a 400. Every other bucket change on the network
+happens organically (the end-of-week promotions, demotions and eliminations), not through this endpoint.
+
+Ownership is proven, not asserted: the entity coldkey signs the request, the coldkey must own
+`entity_hotkey` on chain, and `synthetic_hotkey` must be one of that hotkey's own subaccounts
+(a synthetic hotkey is `<entity_hotkey>_<subaccount_id>`). An entity therefore cannot promote a
+subaccount it does not own.
+
+**Authentication:** Tier 200 API key, plus a coldkey signature that is single use.
 
 **Request Body:**
 ```json
@@ -1329,6 +1271,7 @@ be sent without the field. Only `POST /admin/miner-bucket/<hotkey>` sets a pro a
   "entity_hotkey": "5GhDr3xy...abc",
   "entity_coldkey": "5FxY...",
   "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "pro_account_size": 500000,
   "nonce": "3f9c1e5a...",
   "timestamp": 1749234567890,
   "signature": "0x...",
@@ -1340,10 +1283,48 @@ be sent without the field. Only `POST /admin/miner-bucket/<hotkey>` sets a pro a
 - `entity_hotkey` (string, required): The entity's hotkey SS58 address
 - `entity_coldkey` (string, required): The entity's coldkey SS58 address
 - `synthetic_hotkey` (string, required): The subaccount to promote. Must belong to `entity_hotkey`.
+- `pro_account_size` (number, conditional): USD size of the pro account. There is no network default.
+  When sent it must be a finite number from $200,000 to $1,000,000 inclusive
+  (`ValiConfig.MIN_PRO_ACCOUNT_SIZE` to `ValiConfig.MAX_PRO_ACCOUNT_SIZE`); `NaN`, `Infinity`, strings
+  and booleans are rejected with a 400 before the signature is checked or the nonce is used, so the
+  same nonce can be retried with a corrected size. The network enforces only this range, not the
+  Command Center presets.
+  - **Required entering the pro track** (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`). A re-offer
+    after a demotion needs a size again: a size recorded on an earlier pro journey is never reused.
+  - **Optional on the hop within the track** (out of `PRO_CHALLENGE_TRANSITION`): a new size replaces
+    the recorded one; omitted, the recorded size is kept.
 - `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
 - `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
-- `signature` (string, required): Coldkey signature over the sorted-JSON of `{entity_coldkey, entity_hotkey, nonce, synthetic_hotkey, timestamp}`.
+- `signature` (string, required): Coldkey signature over the sorted-JSON of
+  `{entity_coldkey, entity_hotkey, nonce, synthetic_hotkey, timestamp}`, plus `pro_account_size` when
+  one is sent. A size omitted is not signed as `null`.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
+
+**What a promotion does.** Entering the pro track snapshots the subaccount's existing size, which
+becomes its `standard_account_size` and the basis for payouts during the pro challenge, and records
+the requested size as `pro_account_size`. The entity is charged the pro promotion fee out of its
+collateral once the pro account goes live — the hops into `PRO_CHALLENGE_DIRECT` and
+`PRO_CHALLENGE_FROM_STANDARD` — and the request fails if the entity's collateral cannot cover it.
+
+**Only the two hops onto a pro account wipe trading state.** A hop switches accounts when the target
+bucket changes the account size (`MinerBucket.switches_account`), and `PRO_CHALLENGE_TRANSITION` does
+not — it is a wind-down week on the standard account:
+
+| Hop | Positions | Limit orders | Ledgers |
+| --- | --- | --- | --- |
+| `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT` | force closed | all cancelled | restart on the pro size |
+| `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION` | **kept open** | **kept**, except entry orders | **kept** |
+| `PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD` | force closed | all cancelled | restart on the pro size |
+
+The two account-switching hops cannot be undone. Entering `PRO_CHALLENGE_TRANSITION` resets nothing:
+the subaccount keeps its positions, its perf and debt ledgers, and its account size, and only the
+resting orders that could open or increase a position are swept (`PRO_TRANSITION_CANCELLED`), leaving
+closes and reductions in place for the week.
+
+A rejected promotion changes nothing: an invalid or missing size is a 400 before the subaccount or its
+bucket is touched, and a move that fails *after* the sizing is applied rolls the sizing back, so a
+subaccount is never left marked pro in a bucket that did not change — which would both leave it trading
+the pro size off the pro track and let the next size-less attempt reuse that size instead of demanding one.
 
 **Response:**
 ```json
@@ -1358,12 +1339,13 @@ be sent without the field. Only `POST /admin/miner-bucket/<hotkey>` sets a pro a
 ```
 
 **Errors:**
-- `400`: the request includes `pro_account_size`, a field is missing or invalid, or the promotion was rejected (subaccount not in `PRO_CHALLENGE_TRANSITION`, or no recorded pro account size)
-- `401`: invalid signature, reused nonce, or expired timestamp
-- `403`: coldkey does not own the hotkey, or the subaccount belongs to another entity
+- `400`: a field or `pro_account_size` is missing or invalid, `synthetic_hotkey` is not a subaccount, or the promotion was rejected (the subaccount's bucket has no promotion target, no pro account size to use, or insufficient entity collateral for the promotion fee)
+- `401`: missing or invalid API key, invalid signature, reused nonce, or expired timestamp
+- `403`: API key below tier 200, coldkey does not own the hotkey, or the subaccount belongs to another entity
+- `404`: no such subaccount
 
 **Important Notes:**
-- The entity miner gateway (`POST /api/promote-pro-transition`) builds and signs this request and never sends a size. End users typically call the gateway rather than this endpoint directly.
+- The entity miner gateway (`POST /api/promote`) builds and signs this request. End users typically call the gateway rather than this endpoint directly.
 
 ### Set Entity Endpoint
 

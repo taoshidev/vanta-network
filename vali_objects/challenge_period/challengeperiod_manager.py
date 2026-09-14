@@ -754,44 +754,61 @@ class ChallengePeriodManager(CacheController):
 
         return state_changed
 
-    def promote_pro_transition(
+    def promote_subaccount(
         self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
     ) -> tuple[bool, str]:
-        """Promote a subaccount out of PRO_CHALLENGE_TRANSITION on the miner's own request
+        """Promote a subaccount one step up the pro track on the entity miner's request.
 
-        The pro account size is the one the admin set when offering the transition. The miner-signed
-        POST /entity/subaccount/pro-transition never passes pro_account_size (a request carrying one is
-        rejected before it gets here), so None keeps the recorded size; a subaccount with no recorded
-        size is rejected (see EntityManager.apply_bucket_account_size).
+        The only moves allowed are the three hops in MinerBucket.promotion_target; a subaccount in
+        any other bucket is rejected. pro_account_size is the size the entity asked for: entering the
+        pro track needs one, and None keeps the size already recorded (see
+        EntityManager.apply_bucket_account_size, which rejects a subaccount that has neither).
+
+        Only a target with switches_account wipes trading state, which is the two hops landing on a
+        pro account (PRO_CHALLENGE_DIRECT and PRO_CHALLENGE_FROM_STANDARD): positions closed, limit
+        orders cancelled, ledgers restarted. PRO_CHALLENGE_TRANSITION is a wind-down week on the
+        standard account, so the hop into it keeps the positions, limit orders and ledgers as they
+        are and only sweeps the entry orders (see admin_set_bucket).
         """
         state = self.miner_states.get(hotkey)
         if state is None:
             return False, f"{hotkey} not found in challenge period manager"
-        if state.current_bucket != MinerBucket.PRO_CHALLENGE_TRANSITION:
-            return False, (f"{hotkey} is in {state.current_bucket.value}, not "
-                           f"{MinerBucket.PRO_CHALLENGE_TRANSITION.value}")
 
-        target_bucket = MinerBucket.PRO_CHALLENGE_TRANSITION.next_bucket
-        logger.info(f"[CHALLENGE] pro transition requested (pro_account_size={pro_account_size}): {state}")
+        current_bucket = state.current_bucket
+        target_bucket = current_bucket.promotion_target
+        if target_bucket is None:
+            return False, f"{hotkey} cannot be promoted out of {current_bucket.value}"
+
+        logger.info(f"[CHALLENGE] promotion to {target_bucket.value} requested "
+                    f"(pro_account_size={pro_account_size}): {state}")
 
         # Record the granted pro size first: the account switch reads it back to size the new account.
-        # That commits, and PRO_CHALLENGE_FROM_STANDARD trades the pro size, so snapshot it first: a
-        # failed move would otherwise leave the subaccount holding the pro size while still in
-        # PRO_CHALLENGE_TRANSITION, which is supposed to keep trading the standard account.
+        # Every pro bucket past TRANSITION trades the pro size
         sizing_snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
         success, message = self._entity_client.apply_bucket_account_size(
             hotkey, target_bucket, pro_account_size
         )
         if not success:
-            logger.warning(f"[CHALLENGE] pro transition rejected for {hotkey}: {message}")
+            logger.warning(f"[CHALLENGE] promotion rejected for {hotkey}: {message}")
             return False, message
 
         try:
             success, message = self.admin_set_bucket(hotkey, target_bucket, current_time_ms)
         except Exception:
-            self._restore_bucket_account_size(hotkey, sizing_snapshot)
+            # admin_set_bucket can raise after the bucket entry has landed: its entry-order sweep
+            # and its disk write both run past that point. The sizing belongs to whichever side of
+            # that line the miner ended up on, so give it back only if the bucket did not move -
+            # restoring it after a move would strand a pro bucket on the standard size.
+            state = self.miner_states.get(hotkey)
+            if state is None or state.current_bucket != target_bucket:
+                self._restore_bucket_account_size(hotkey, sizing_snapshot)
+            else:
+                logger.error(f"[CHALLENGE] {hotkey} reached {target_bucket.value} before failing; "
+                             f"keeping the sizing that bucket trades")
             raise
         if not success:
+            # Every False return is from before the bucket entry (can_admin_set_bucket, the account
+            # switch), so the move definitely did not happen and the sizing always goes back.
             self._restore_bucket_account_size(hotkey, sizing_snapshot)
         return success, message
 

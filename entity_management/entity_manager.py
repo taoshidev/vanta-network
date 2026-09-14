@@ -787,16 +787,16 @@ class EntityManager(ValidatorBroadcastBase):
         charges the promotion fee for the size granted above the standard account.
         Returning to a standard bucket restores the standard size.
 
-        There is no network default pro size. The admin sets it when offering the pro track
-        (POST /admin/miner-bucket/<hotkey>), and this is the last check before it is stored:
+        There is no network default pro size. The entity picks it when it promotes the subaccount
+        (POST /entity/subaccount/promote), and this is the last check before it is stored:
           * An explicit pro_account_size, for any target, must be an int or float (not a bool),
             finite, and within [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE].
           * Entering the pro track from a subaccount whose account_type is not "pro" requires an
             explicit size. A size recorded on an earlier pro journey, which a demotion keeps, is never
             reused: a re-offer needs a size again.
-          * A move within the pro track uses the explicit size when one is sent (the admin re-setting
-            it, e.g. on PRO_FUNDED), else the size recorded when the subaccount entered the track
-            (Start Pro Now and the organic promotions send none). With neither, the move is rejected.
+          * A move within the pro track uses the explicit size when one is sent (the entity re-setting
+            it, e.g. promoting out of PRO_CHALLENGE_TRANSITION), else the size recorded when the
+            subaccount entered the track (the organic promotions send none). With neither, it is rejected.
           * A standard bucket never records a pro size; an explicit one is ignored.
 
         Nothing is stored until every step has succeeded, so a rejected or failed move leaves the
