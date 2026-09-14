@@ -91,13 +91,14 @@ def parse_synthetic_hotkey(synthetic_hotkey: str) -> Tuple[Optional[str], Option
         return None, None
 
 
-def pro_account_size_error(pro_account_size) -> Optional[str]:
+def pro_account_size_error(pro_account_size, standard_account_size=None) -> Optional[str]:
     """
     Why pro_account_size cannot be used as a pro account size, or None when it can.
 
-    A pro account size is an int or float (never a bool) that is finite and within
-    [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE] inclusive. The network enforces
-    only this range; the size presets offered by the Command Center are a UI concern.
+    A pro account size is an int or float (never a bool) that is finite, positive and at most
+    ValiConfig.MAX_PRO_ACCOUNT_SIZE. The size presets offered by the Command Center are a UI concern.
+
+    `standard_account_size`, when known, is the floor
 
     Sizes arrive as parsed JSON, and Python's JSON parser (so Flask's request.get_json) accepts the
     literals NaN, Infinity and -Infinity. NaN fails every ordered comparison, so a plain range check
@@ -108,10 +109,15 @@ def pro_account_size_error(pro_account_size) -> Optional[str]:
         return f"pro_account_size must be a number, got {type(pro_account_size).__name__}"
     if isinstance(pro_account_size, float) and not math.isfinite(pro_account_size):
         return f"pro_account_size must be a finite number, got {pro_account_size}"
-    if not ValiConfig.MIN_PRO_ACCOUNT_SIZE <= pro_account_size <= ValiConfig.MAX_PRO_ACCOUNT_SIZE:
+    if not 0 < pro_account_size <= ValiConfig.MAX_PRO_ACCOUNT_SIZE:
         return (
-            f"pro_account_size ${pro_account_size} is outside the allowed range "
-            f"${ValiConfig.MIN_PRO_ACCOUNT_SIZE:,} to ${ValiConfig.MAX_PRO_ACCOUNT_SIZE:,}"
+            f"pro_account_size ${pro_account_size} must be positive and at most "
+            f"${ValiConfig.MAX_PRO_ACCOUNT_SIZE:,}"
+        )
+    if standard_account_size is not None and pro_account_size < standard_account_size:
+        return (
+            f"pro_account_size ${pro_account_size:,} is below the subaccount's standard account size "
+            f"${standard_account_size:,}"
         )
     return None
 

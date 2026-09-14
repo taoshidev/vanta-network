@@ -790,7 +790,8 @@ class EntityManager(ValidatorBroadcastBase):
         There is no network default pro size. The entity picks it when it promotes the subaccount
         (POST /entity/subaccount/promote), and this is the last check before it is stored:
           * An explicit pro_account_size, for any target, must be an int or float (not a bool),
-            finite, and within [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE].
+            finite, positive, at most ValiConfig.MAX_PRO_ACCOUNT_SIZE, and never below the
+            subaccount's own standard account size: a promotion grants size, it never takes it away.
           * Entering the pro track from a subaccount whose account_type is not "pro" requires an
             explicit size. A size recorded on an earlier pro journey, which a demotion keeps, is never
             reused: a re-offer needs a size again.
@@ -810,15 +811,19 @@ class EntityManager(ValidatorBroadcastBase):
         if subaccount is None:
             return False, f"{synthetic_hotkey} is not a known subaccount"
 
-        if pro_account_size is not None:
-            size_error = pro_account_size_error(pro_account_size)
-            if size_error:
-                return False, size_error
-
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
 
         # Work out the new sizes and the fee they cost without touching the stored subaccount
         standard_account_size = subaccount.standard_account_size
+        # The standard account this subaccount trades, and so the floor for any pro size it is
+        # granted: the size snapshotted when it entered the pro track, else the size it trades today.
+        standard_size_floor = (standard_account_size if standard_account_size is not None
+                               else subaccount.account_size)
+        if pro_account_size is not None:
+            size_error = pro_account_size_error(pro_account_size, standard_size_floor)
+            if size_error:
+                return False, size_error
+
         promotion_fee_theta = 0.0
         # Where the pro size came from ("explicit" or "recorded"), for the log; None for standard buckets
         pro_size_source = None
@@ -841,16 +846,16 @@ class EntityManager(ValidatorBroadcastBase):
                     )
             else:
                 return False, "pro_account_size is required to enter the pro track"
-            if standard_account_size is None:
-                standard_account_size = subaccount.account_size
+            standard_account_size = standard_size_floor
             account_type = AccountType.PRO.value
 
             # The pro size only goes live outside TRANSITION, so that is when the grant is charged.
-            # Only the increase over the fee already assessed is billed, so a demotion and
-            # re-promotion at a size already paid for is free. Collateral-exempt subaccounts
-            # (reg_fee_theta == 0) stay exempt on the pro track.
+            # Only the increase over the fee already assessed is billed, and the charge floors at
+            # zero: a size already paid for is free rather than crediting theta back. Collateral-exempt
+            # subaccounts (reg_fee_theta == 0) stay exempt on the pro track.
             if target_bucket.is_pro and subaccount.reg_fee_theta > 0:
-                target_fee_theta = ValiConfig.pro_promotion_fee_theta(pro_account_size, standard_account_size)
+                target_fee_theta = max(0.0, ValiConfig.pro_promotion_fee_theta(pro_account_size,
+                                                                               standard_account_size))
                 promotion_fee_theta = max(0.0, target_fee_theta - subaccount.pro_fee_theta)
                 affordable, fee_error = self._verify_promotion_collateral(entity_hotkey, promotion_fee_theta)
                 if not affordable:
@@ -1015,8 +1020,8 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount.standard_account_size = snapshot.get("standard_account_size")
             subaccount.pro_account_size = snapshot.get("pro_account_size")
             subaccount.account_type = snapshot.get("account_type", AccountType.STANDARD.value)
-            subaccount.pro_fee_theta_pending -= refund_theta
-            subaccount.pro_fee_theta -= refund_theta
+            subaccount.pro_fee_theta_pending = max(0.0, subaccount.pro_fee_theta_pending - refund_theta)
+            subaccount.pro_fee_theta = max(0.0, subaccount.pro_fee_theta - refund_theta)
             entity_data = self.entities.get(entity_hotkey)
             if entity_data:
                 entity_data.subaccounts[subaccount_id] = subaccount
@@ -2723,11 +2728,12 @@ class EntityManager(ValidatorBroadcastBase):
         Args:
             entity_hotkey: The VANTA_ENTITY_HOTKEY
             subaccount_id: The subaccount ID
-            theta: Theta still owed for the pro promotion.
+            theta: Theta still owed for the pro promotion. Floored at zero; a fee owed is never negative.
 
         Returns:
             True if updated successfully, False if not found.
         """
+        theta = max(0.0, theta or 0.0)
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
             entity_data = self.entities.get(entity_hotkey)

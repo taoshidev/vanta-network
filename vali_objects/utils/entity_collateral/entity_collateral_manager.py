@@ -605,7 +605,9 @@ class EntityCollateralManager(CacheController):
                     reg_fee_slashed_ms = subaccount_info.get("reg_fee_slashed_ms")
                     if reg_fee_theta > 0 and reg_fee_slashed_ms is None:
                         pending_reg_theta[int(subaccount_id)] = reg_fee_theta
-                    pro_fee_theta = subaccount_info.get("pro_fee_theta_pending") or 0.0
+                    # Floored at zero so a bad record can never slash a negative promotion fee,
+                    # which would hand the entity collateral back.
+                    pro_fee_theta = max(0.0, subaccount_info.get("pro_fee_theta_pending") or 0.0)
                     if pro_fee_theta > 0:
                         pending_pro_theta[int(subaccount_id)] = pro_fee_theta
                 total_pending_reg_theta = sum(pending_reg_theta.values())

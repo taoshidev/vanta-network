@@ -1,18 +1,19 @@
 """
 The admin-set pro account size.
 
-There is no network default: the admin sets the size when offering the pro track, and the network enforces
-only the inclusive range [ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE] plus finite and
-numeric.
+There is no network default and no fixed minimum: the admin sets the size when offering the pro track, and
+the network enforces only that it is numeric, finite, positive, at most ValiConfig.MAX_PRO_ACCOUNT_SIZE, and
+never below the subaccount's own standard account size.
 
 Covers:
-  * ValiConfig: MIN_PRO_ACCOUNT_SIZE / MAX_PRO_ACCOUNT_SIZE are $200K / $1M, checked at import with a raise, and
-    the old network default PRO_ACCOUNT_SIZE is gone.
-  * pro_account_size_error: the shared check behind every entry point (range bounds, NaN / Infinity, bool, str).
+  * ValiConfig: MAX_PRO_ACCOUNT_SIZE is $1M, there is no MIN_PRO_ACCOUNT_SIZE, and the old network default
+    PRO_ACCOUNT_SIZE is gone.
+  * pro_account_size_error: the shared check behind every entry point (cap, positivity, the standard-size
+    floor when the caller knows it, NaN / Infinity, bool, str).
   * EntityManager.apply_bucket_account_size: a size is required to enter the pro track, including a re-offer
-    after a demotion; a move within the track uses an explicit size or the recorded one; PRO_FUNDED can re-set
-    the size within range; a standard target never records a size; a rejected or failed move changes nothing;
-    the log line names the size source.
+    after a demotion; a size below the subaccount's standard account size is refused; a move within the track
+    uses an explicit size or the recorded one; PRO_FUNDED can re-set the size; a standard target never records
+    a size; a rejected or failed move changes nothing; the log line names the size source.
   * Dashboards: subaccount_info no longer carries default_pro_account_size in the v1, v2, websocket or
     hl-traders payloads.
 
@@ -20,7 +21,6 @@ EntityManager is built with object.__new__ and only the attributes these methods
 are started.
 """
 import json
-import re
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -45,14 +45,14 @@ PRO_BUCKETS = (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_F
                MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
 STANDARD_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA)
 
-# Just outside the range, NaN / Infinity (which json.loads, so Flask's get_json, accepts), and wrong types.
-# Each is (size, fragment of the rejection message).
-OUT_OF_RANGE = "outside the allowed range"
+# Over the cap or non-positive, NaN / Infinity (which json.loads, so Flask's get_json, accepts), and wrong
+# types. Each is (size, fragment of the rejection message). These are refused on shape alone, so every entry
+# point rejects them whether or not it can see the subaccount's standard account size.
+OUT_OF_RANGE = "must be positive and at most"
+BELOW_STANDARD = "is below the subaccount's standard account size"
 NOT_FINITE = "must be a finite number"
 NOT_A_NUMBER = "must be a number"
 INVALID_SIZES = (
-    (199_999, OUT_OF_RANGE),
-    (199_999.99, OUT_OF_RANGE),
     (1_000_001, OUT_OF_RANGE),
     (1_000_000.01, OUT_OF_RANGE),
     (0, OUT_OF_RANGE),
@@ -152,36 +152,30 @@ def _no_section_clients():
 
 class TestProAccountSizeConfig(unittest.TestCase):
 
-    def test_range_is_200k_to_1m(self):
-        self.assertEqual(ValiConfig.MIN_PRO_ACCOUNT_SIZE, 200_000)
+    def test_the_cap_is_1m(self):
         self.assertEqual(ValiConfig.MAX_PRO_ACCOUNT_SIZE, 1_000_000)
 
     def test_there_is_no_network_default_size(self):
         self.assertFalse(hasattr(ValiConfig, "PRO_ACCOUNT_SIZE"))
 
-    def test_import_raises_for_an_invalid_range(self):
-        """MIN above MAX, or a non-positive MIN, breaks import with a ValueError (a raise, not an assert that
-        python -O would strip)."""
-        path = vali_config_module.__file__
-        with open(path) as f:
-            source = f.read()
-        assignment = re.compile(r"^(    MIN_PRO_ACCOUNT_SIZE = ).*$", re.M)
-        self.assertEqual(len(assignment.findall(source)), 1)
+    def test_there_is_no_fixed_minimum_size(self):
+        """The floor is the subaccount's own standard account size, not a network-wide constant."""
+        self.assertFalse(hasattr(ValiConfig, "MIN_PRO_ACCOUNT_SIZE"))
+        with open(vali_config_module.__file__) as f:
+            self.assertNotIn("MIN_PRO_ACCOUNT_SIZE", f.read())
 
-        for bad in ("MAX_PRO_ACCOUNT_SIZE + 1", "0", "-200_000"):
-            with self.subTest(MIN_PRO_ACCOUNT_SIZE=bad):
-                tampered = assignment.sub(lambda m: m.group(1) + bad, source)
-                with self.assertRaisesRegex(ValueError, "MIN_PRO_ACCOUNT_SIZE"):
-                    exec(compile(tampered, path, "exec"), {"__name__": "vali_config_probe", "__file__": path})
-
-        # MIN == MAX is a valid (single-size) range
-        equal = assignment.sub(lambda m: m.group(1) + "MAX_PRO_ACCOUNT_SIZE", source)
-        exec(compile(equal, path, "exec"), {"__name__": "vali_config_probe", "__file__": path})
-
-        # The untouched source imports cleanly, so the failures above come from the guard
-        namespace = {"__name__": "vali_config_probe", "__file__": path}
-        exec(compile(source, path, "exec"), namespace)
-        self.assertEqual(namespace["ValiConfig"].MIN_PRO_ACCOUNT_SIZE, ValiConfig.MIN_PRO_ACCOUNT_SIZE)
+    def test_the_promotion_fee_is_never_negative(self):
+        """A pro size at or below the standard size grants no dollars, so nothing is owed at the
+        registration rate and the fee is the premium alone - never a credit back."""
+        premium = (ValiConfig.PRO_PROMOTION_PREMIUM_RATE
+                   * ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD * STANDARD_SIZE
+                   / ValiConfig.THETA_USD_PRICE)
+        for pro_size in (STANDARD_SIZE, STANDARD_SIZE - 1, 1.0, 0.0):
+            with self.subTest(pro_account_size=pro_size):
+                fee = ValiConfig.pro_promotion_fee_theta(pro_size, STANDARD_SIZE)
+                self.assertGreaterEqual(fee, 0.0)
+                self.assertAlmostEqual(fee, premium)
+        self.assertGreaterEqual(ValiConfig.pro_promotion_fee_theta(0.0, 0.0), 0.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -190,10 +184,29 @@ class TestProAccountSizeConfig(unittest.TestCase):
 
 class TestProAccountSizeError(unittest.TestCase):
 
-    def test_accepts_the_inclusive_range(self):
-        for size in (200_000, 200_000.0, 250_000, 500_000.5, 999_999.99, 1_000_000, 1_000_000.0):
+    def test_accepts_any_positive_size_up_to_the_cap(self):
+        for size in (0.01, 1, 50_000, 200_000, 250_000, 500_000.5, 999_999.99, 1_000_000, 1_000_000.0):
             with self.subTest(size=size):
                 self.assertIsNone(pro_account_size_error(size))
+
+    def test_the_standard_account_size_is_the_floor_when_the_caller_knows_it(self):
+        """A promotion grants size; it never shrinks the account the subaccount already trades."""
+        for size in (STANDARD_SIZE - 0.01, STANDARD_SIZE / 2, 1):
+            with self.subTest(size=size):
+                error = pro_account_size_error(size, STANDARD_SIZE)
+                self.assertIn(BELOW_STANDARD, error)
+                self.assertIn("pro_account_size", error)
+        for size in (STANDARD_SIZE, STANDARD_SIZE + 0.01, GRANTED_SIZE, 1_000_000):
+            with self.subTest(size=size):
+                self.assertIsNone(pro_account_size_error(size, STANDARD_SIZE))
+
+    def test_no_floor_is_applied_when_the_standard_size_is_unknown(self):
+        self.assertIsNone(pro_account_size_error(1))
+        self.assertIsNone(pro_account_size_error(1, None))
+
+    def test_the_cap_still_wins_over_the_floor(self):
+        """An oversized request is refused on the cap even when it clears the standard account size."""
+        self.assertIn(OUT_OF_RANGE, pro_account_size_error(1_000_001, STANDARD_SIZE))
 
     def test_rejects_out_of_range_non_finite_and_non_numeric(self):
         for size, reason in INVALID_SIZES + ((None, NOT_A_NUMBER), ({"size": 500_000}, NOT_A_NUMBER)):
@@ -212,9 +225,9 @@ class TestProAccountSizeError(unittest.TestCase):
                 self.assertIsInstance(value, float)
                 self.assertIn(NOT_FINITE, pro_account_size_error(value))
 
-    def test_range_is_read_from_config_at_call_time(self):
-        with patch.object(ValiConfig, "MIN_PRO_ACCOUNT_SIZE", 300_000):
-            self.assertIn(OUT_OF_RANGE, pro_account_size_error(250_000))
+    def test_the_cap_is_read_from_config_at_call_time(self):
+        with patch.object(ValiConfig, "MAX_PRO_ACCOUNT_SIZE", 300_000):
+            self.assertIn(OUT_OF_RANGE, pro_account_size_error(300_001))
             self.assertIsNone(pro_account_size_error(300_000))
 
 
@@ -268,19 +281,25 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.set_size.assert_not_called()
 
     def test_range_bounds_are_inclusive(self):
-        for size, accepted in ((199_999, False), (200_000, True), (1_000_000, True), (1_000_001, False)):
+        """The floor is the subaccount's own standard size and the cap is MAX_PRO_ACCOUNT_SIZE; both inclusive."""
+        for size, reason in ((STANDARD_SIZE - 1, BELOW_STANDARD), (STANDARD_SIZE, None), (200_000, None),
+                             (1_000_000, None), (1_000_001, OUT_OF_RANGE)):
             with self.subTest(pro_account_size=size):
                 manager = self.manager = _bare_manager()
                 self.set_size = manager._miner_account_client.set_miner_account_size
                 hotkey = _add_standard(manager)
-                if not accepted:
-                    self._assert_rejected_unchanged(hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, size, OUT_OF_RANGE)
+                if reason is not None:
+                    self._assert_rejected_unchanged(hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, size, reason)
                     continue
                 success, message = manager.apply_bucket_account_size(hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, size)
                 self.assertTrue(success, message)
                 info = self._info(hotkey)
                 self.assertEqual(info.pro_account_size, size)
                 self.assertEqual(info.account_size, size)
+                if size == STANDARD_SIZE:
+                    # Already trading that size, so there is nothing to resize
+                    self.set_size.assert_not_called()
+                    continue
                 self.assertEqual(self.set_size.call_args.kwargs["account_size"], size)
                 self.assertEqual(self.set_size.call_args.kwargs["collateral_balance_theta"],
                                  size / ValiConfig.ENTITY_COST_PER_THETA)
@@ -294,6 +313,32 @@ class TestApplyBucketAccountSize(unittest.TestCase):
                         self._assert_rejected_unchanged(hotkey, bucket, size, reason)
         self.assertIsNone(self._info(self.standard).pro_account_size)
         self.assertEqual(self._info(pro).pro_account_size, GRANTED_SIZE)
+
+    def test_a_size_below_the_standard_account_is_rejected_for_every_target(self):
+        """Promoting grants size. A subaccount trading $100K cannot be put on a smaller pro account,
+        whether the standard size is the one it trades now or the one snapshotted on entry."""
+        pro = _add_pro(self.manager)
+        for hotkey in (self.standard, pro):
+            for bucket in PRO_BUCKETS + STANDARD_BUCKETS:
+                for size in (STANDARD_SIZE - 0.01, STANDARD_SIZE / 2, 1):
+                    with self.subTest(hotkey=hotkey, bucket=bucket, pro_account_size=size):
+                        self._assert_rejected_unchanged(hotkey, bucket, size, BELOW_STANDARD)
+        self.assertIsNone(self._info(self.standard).pro_account_size)
+        self.assertEqual(self._info(pro).pro_account_size, GRANTED_SIZE)
+
+    def test_a_pro_size_equal_to_the_standard_account_is_allowed(self):
+        success, message = self.manager.apply_bucket_account_size(
+            self.standard, MinerBucket.PRO_CHALLENGE_DIRECT, STANDARD_SIZE
+        )
+        self.assertTrue(success, message)
+        info = self._info(self.standard)
+        self.assertEqual(info.pro_account_size, STANDARD_SIZE)
+        self.assertEqual(info.standard_account_size, STANDARD_SIZE)
+        self.assertEqual(info.account_size, STANDARD_SIZE)
+        self.assertEqual(info.account_type, AccountType.PRO.value)
+        # Nothing to resize: the pro account is the size it was already trading
+        self.set_size.assert_not_called()
+        self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
 
     def test_reoffer_after_demotion_requires_a_size_again(self):
         """The size recorded on an earlier pro journey is never silently reused when re-entering the track."""
@@ -370,7 +415,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         pro = _add_pro(self.manager)
 
         self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, 1_000_001, OUT_OF_RANGE)
-        self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, 199_999, OUT_OF_RANGE)
+        self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, STANDARD_SIZE - 1, BELOW_STANDARD)
 
         success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED, 750_000)
         self.assertTrue(success, message)
@@ -380,10 +425,9 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.assertEqual(info.standard_account_size, STANDARD_SIZE)
 
     def test_recorded_size_is_not_rechecked_against_the_range(self):
-        """A size that was valid when granted keeps working if the range later moves past it."""
+        """A size that was valid when granted keeps working if the cap later moves past it."""
         pro = _add_pro(self.manager)
-        with patch.object(ValiConfig, "MAX_PRO_ACCOUNT_SIZE", 400_000), \
-                patch.object(ValiConfig, "MIN_PRO_ACCOUNT_SIZE", 300_000):
+        with patch.object(ValiConfig, "MAX_PRO_ACCOUNT_SIZE", 400_000):
             success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED)
         self.assertTrue(success, message)
         self.assertEqual(self._info(pro).account_size, GRANTED_SIZE)

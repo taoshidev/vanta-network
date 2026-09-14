@@ -1304,10 +1304,11 @@ class EntityMinerRestServer(MinerRestServer):
           SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
           PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
 
-        pro_account_size is the pro size the entity is buying, $200,000 to $1,000,000. Send one the
-        first time a subaccount enters the pro track; afterwards sending one replaces the recorded
-        size and omitting it keeps it. The entity pays the promotion fee out of its collateral once
-        the pro account goes live.
+        pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is not
+        below the subaccount's own standard account size. Send one the first time a subaccount enters
+        the pro track; afterwards sending one replaces the recorded size and omitting it keeps it. The
+        entity pays the promotion fee out of its collateral once the pro account goes live, and a pro
+        size equal to the standard size is charged nothing at the registration rate.
 
         Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
         PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
@@ -1329,7 +1330,9 @@ class EntityMinerRestServer(MinerRestServer):
         if not isinstance(synthetic_hotkey, str) or not synthetic_hotkey:
             return jsonify({'status': 'error', 'message': 'synthetic_hotkey must be a non-empty string'}), 400
 
-        # Checked here as well as on the validator so a bad size never costs a signature or a nonce
+        # Checked here as well as on the validator so a bad size never costs a signature or a nonce.
+        # The gateway cannot see the subaccount, so only the shape and the cap are checked here; the
+        # validator's entity_manager enforces the floor at the standard account size.
         pro_account_size = request_data.get("pro_account_size")
         if pro_account_size is not None:
             size_error = pro_account_size_error(pro_account_size)

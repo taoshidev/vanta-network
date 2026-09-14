@@ -544,7 +544,7 @@ class TestValidatorPromoteEndpoint(unittest.TestCase):
         self.assertIsNone(self._promote().call_args.args[2])
 
     def test_the_range_bounds_are_inclusive(self):
-        for size in (ValiConfig.MIN_PRO_ACCOUNT_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE):
+        for size in (STANDARD_SIZE, GRANTED_SIZE, ValiConfig.MAX_PRO_ACCOUNT_SIZE):
             with self.subTest(pro_account_size=size):
                 status, data = self._post(self._body(signed={"pro_account_size": size}))
                 self.assertEqual(status, 200, data)

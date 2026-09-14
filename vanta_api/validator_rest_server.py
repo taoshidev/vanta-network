@@ -2746,7 +2746,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Requires a tier 200 API key.
         Ownership is proven via entity coldkey
 
-        pro_account_size is the size the entity is asking for the request fails when the entity's
+        pro_account_size is the size the entity is asking for, capped at ValiConfig.MAX_PRO_ACCOUNT_SIZE
+        and never below the subaccount's own standard account size. The request fails when the entity's
         collateral cannot cover it and it is needed.
 
         Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
@@ -2816,7 +2817,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': 'timestamp must be an integer in milliseconds'}), 400
 
             # request.get_json() parses the literals NaN and Infinity, and NaN passes a plain range
-            # check, so the size must be a finite number within the pro range
+            # check, so the size must be a finite positive number within the pro cap. The floor at the
+            # subaccount's standard size is checked in entity_manager, which can see the subaccount.
             pro_account_size = data.get('pro_account_size')
             if pro_account_size is not None:
                 size_error = pro_account_size_error(pro_account_size)

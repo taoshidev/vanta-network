@@ -303,15 +303,16 @@ pro positions pay live HL funding plus the standard schedule.
 #### Pro account size
 
 There is no network default pro account size. The entity picks it in the `pro_account_size` of the
-promotion request. The network accepts any finite amount from **$200,000** to **$1,000,000**
-inclusive (`ValiConfig.MIN_PRO_ACCOUNT_SIZE` to `ValiConfig.MAX_PRO_ACCOUNT_SIZE`); the preset amounts
+promotion request. The network accepts any finite positive amount up to **$1,000,000**
+(`ValiConfig.MAX_PRO_ACCOUNT_SIZE`) that is not below the subaccount's own standard account size — a
+promotion grants size, it never shrinks the account the subaccount already trades. The preset amounts
 offered in the Command Center are a UI choice, not a network rule.
 
 - **Entering the pro track** (`SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, or
   `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`) requires a size. This includes a re-offer after a
   demotion: the size from the earlier pro journey is never reused.
 - **Moving within the pro track** (`PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD`) keeps
-  the recorded size, or takes a new one (still within the range) when the request sends one.
+  the recorded size, or takes a new one (still within the allowed range) when the request sends one.
 - **Standard buckets** never record a pro size.
 
 The granted size is published as `subaccount_info.pro_account_size` in the v2 subaccount dashboard

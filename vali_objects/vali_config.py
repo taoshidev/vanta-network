@@ -685,16 +685,11 @@ class ValiConfig:
     ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
     ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
-    # Allowed range in USD for a pro account size. There is no network default: the entity picks the
-    # size when it promotes onto the pro track (POST /entity/subaccount/promote), and the network enforces
-    # only this inclusive range (plus finite and positive), not any UI preset list.
+    # Largest pro account size in USD. There is no network default: the entity picks the size when it
+    # promotes onto the pro track (POST /entity/subaccount/promote), and the network enforces only that
+    # the size is finite, positive, at most this cap, and never below the subaccount's own standard
+    # account size - a pro account cannot shrink the account the subaccount already trades.
     MAX_PRO_ACCOUNT_SIZE = 1_000_000
-    MIN_PRO_ACCOUNT_SIZE = 200_000
-    if not 0 < MIN_PRO_ACCOUNT_SIZE <= MAX_PRO_ACCOUNT_SIZE:
-        raise ValueError(
-            f"MIN_PRO_ACCOUNT_SIZE ${MIN_PRO_ACCOUNT_SIZE} must be positive and at most "
-            f"MAX_PRO_ACCOUNT_SIZE ${MAX_PRO_ACCOUNT_SIZE}"
-        )
 
     # Pro promotion price. The premium term buys the drawdown the entity is already exposed to on
     # the standard account, priced in theta at the token's USD price; the second term charges
@@ -718,16 +713,21 @@ class ValiConfig:
                 + (pro_size - standard_size) / registration CPT
 
         Registration already paid for `standard_account_size`, so only the size granted above it is
-        charged per dollar. Callers subtract the fee already assessed, so re-entering the pro track
-        at the same size is free and a larger grant costs only the increase.
+        charged per dollar: a pro account the same size as the standard one grants no extra dollars
+        and so owes nothing at the registration rate. Callers subtract the fee already assessed, so
+        re-entering the pro track at the same size is free and a larger grant costs only the increase.
+
+        Never negative: both terms are clamped at zero, so a pro size at or below the standard size
+        can only ever cost the premium.
         """
         standard_size = max(0.0, standard_account_size or 0.0)
         size_granted = max(0.0, (pro_account_size or 0.0) - standard_size)
 
         drawdown_allowance_usd = ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size
-        premium_theta = (ValiConfig.PRO_PROMOTION_PREMIUM_RATE * drawdown_allowance_usd
-                         / ValiConfig.THETA_USD_PRICE)
-        return premium_theta + size_granted / ValiConfig.entity_cost_per_theta(pro_account_size)
+        premium_theta = max(0.0, ValiConfig.PRO_PROMOTION_PREMIUM_RATE * drawdown_allowance_usd
+                            / ValiConfig.THETA_USD_PRICE)
+        registration_theta = size_granted / ValiConfig.entity_cost_per_theta(pro_account_size)
+        return max(0.0, premium_theta + registration_theta)
 
     # Entity margin collateral requirement (funded subaccounts only):
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
