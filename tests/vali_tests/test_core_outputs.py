@@ -113,6 +113,7 @@ class TestCoreOutputs(TestBase):
 
             # Create a simple test position
             test_position = Position(
+                position_type=OrderType.LONG,
                 miner_hotkey=hotkey,
                 position_uuid=f"test_position_{hotkey}",
                 open_ms=current_time - 1000 * 60 * 60,  # 1 hour ago

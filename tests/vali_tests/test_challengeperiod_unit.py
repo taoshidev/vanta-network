@@ -127,7 +127,7 @@ def test_to_json_excludes_drawdown():
     state = _state(MinerBucket.CHALLENGE)
     state.drawdown = DrawdownStats(current_equity=1.5)
     state.rank = 3
-    json_list = state.to_json()
+    json_list = state.to_checkpoint_dict()["entries"]
     assert isinstance(json_list, list)
     assert len(json_list) == 1
     assert "bucket" in json_list[0]
@@ -280,13 +280,13 @@ def test_check_static_drawdown_at_threshold_survives():
 
 def test_check_static_drawdown_funded_reason():
     state = _state(MinerBucket.SUBACCOUNT_FUNDED)
-    state.drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT + 0.01)
+    state.drawdown = DrawdownStats(current_equity=1 - (STATIC_DD_PCT + 0.01) / 100)
     assert ChallengePeriodManager._check_static_drawdown(state) == EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN
 
 
 def test_check_static_drawdown_challenge_reason():
     state = _state(MinerBucket.SUBACCOUNT_CHALLENGE)
-    state.drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT + 0.01)
+    state.drawdown = DrawdownStats(current_equity=1 - (STATIC_DD_PCT + 0.01) / 100)
     assert ChallengePeriodManager._check_static_drawdown(state) == EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN
 
 
@@ -433,7 +433,7 @@ def test_refresh_eliminates_intraday_drawdown(manager):
     after_activation_ms = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS
     manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, after_activation_ms - DAILY_MS)
     manager.miner_states[hk].drawdown = DrawdownStats(
-        intraday_drawdown_pct=INTRADAY_THRESHOLD_PCT + 1.0
+        daily_open_equity=1 / (1 - (INTRADAY_THRESHOLD_PCT + 1.0) / 100)
     )
     _setup_refresh_clients(manager, hk)
 
@@ -483,7 +483,7 @@ def test_sync_elimination_miners_removes(manager):
 
 def test_sync_elimination_miners_empty(manager):
     manager.miner_states["hk1"] = _state(MinerBucket.CHALLENGE)
-    result = manager.sync_elimination_miners([])
+    result = manager.sync_elimination_miners([], NOW_MS)
     assert result is False
     assert "hk1" in manager.miner_states
 

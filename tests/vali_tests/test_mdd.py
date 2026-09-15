@@ -104,6 +104,7 @@ class TestMDDChecker(TestBase):
         self.DEFAULT_OPEN_MS = TimeUtil.now_in_millis()
         self.DEFAULT_ACCOUNT_SIZE = 100_000
         self.trade_pair_to_default_position = {x: Position(
+            position_type=OrderType.LONG,
             miner_hotkey=self.MINER_HOTKEY,
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + str(x.trade_pair_id),
             open_ms=self.DEFAULT_OPEN_MS,

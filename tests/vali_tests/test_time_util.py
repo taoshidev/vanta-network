@@ -109,6 +109,7 @@ class TestTimeUtil(TestBase):
 
             # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
             position = Position(
+                position_type=OrderType.LONG,
                 miner_hotkey=self.DEFAULT_MINER_HOTKEY,
                 position_uuid=self.DEFAULT_POSITION_UUID,
                 open_ms=self.DEFAULT_OPEN_MS,
@@ -141,6 +142,7 @@ class TestTimeUtil(TestBase):
 
         # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
         position = Position(
+            position_type=OrderType.LONG,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
@@ -202,6 +204,7 @@ class TestTimeUtil(TestBase):
 
             # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
             position = Position(
+                position_type=OrderType.LONG,
                 miner_hotkey=self.DEFAULT_MINER_HOTKEY,
                 position_uuid=self.DEFAULT_POSITION_UUID,
                 open_ms=self.DEFAULT_OPEN_MS,
