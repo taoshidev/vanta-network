@@ -530,8 +530,6 @@ class ChallengePeriodManager(CacheController):
     def _check_static_drawdown(cls, state: MinerBucketState) -> EliminationReason | None:
         bucket = state.current_bucket
         if bucket.is_pro:
-            # The pro track runs the intraday and EOD rules only. There is no pro static
-            # elimination reason to return, so refresh() must never route a pro bucket here.
             return None
         threshold_pct = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
         if state.drawdown.static_drawdown_pct > threshold_pct:
