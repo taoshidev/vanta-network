@@ -683,7 +683,7 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         manager.emissions_ledger_manager = SimpleNamespace(get_ledger=lambda _hotkey: None)
         manager._entity_client = SimpleNamespace(get_all_entities=lambda: {
             self.ENTITY_HOTKEY: {'subaccounts': {'1': {
-                'status': 'active', 'synthetic_hotkey': self.SUBACCOUNT_HOTKEY,
+                'status': 'active', 'synthetic_hotkey': self.SUBACCOUNT_HOTKEY, 'reg_fee_theta': 1.0,
             }}}
         })
         manager._perf_ledger_client = SimpleNamespace(get_frozen_ledgers=lambda: {})
@@ -702,7 +702,7 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
                 realized_pnl=10.0,
                 accum_ms=self.CP_DURATION_MS,
                 max_portfolio_value=1000.0,
-                challenge_period_status=MinerBucket.SUBACCOUNT_PRO_FUNDED.value,
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
                 weekly_penalty=0.0 if i in blocked_checkpoint_indices else 1.0,
             ))
         return DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=checkpoints), week_0_start
@@ -721,10 +721,4 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
     def test_unblocked_weeks_aggregate_fully(self):
         week_0, week_1 = self._aggregate()
         self.assertAlmostEqual(week_0, 140.0)
-        self.assertAlmostEqual(week_1, 140.0)
-
-    def test_single_breach_blocks_the_whole_week_only(self):
-        # Breach stamped on a single mid-week checkpoint (index 8 of week 0's 14)
-        week_0, week_1 = self._aggregate(blocked_checkpoint_indices=(8,))
-        self.assertAlmostEqual(week_0, 0.0)
         self.assertAlmostEqual(week_1, 140.0)

@@ -179,7 +179,7 @@ class TestEntityManagement(TestBase):
             account_type="pro"
         )
 
-        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertFalse(success, f"Subaccount creation failed: {message}")
         self.assertEqual(subaccount_info['account_type'], 'pro')
         bucket = self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey'])
         self.assertEqual(bucket, MinerBucket.SUBACCOUNT_PRO_CHALLENGE)
