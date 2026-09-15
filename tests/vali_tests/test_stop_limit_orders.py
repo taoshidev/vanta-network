@@ -11,7 +11,6 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
-from vali_objects.vali_dataclasses.position import Position
 
 
 class TestStopLimitOrders(TestBase):
@@ -54,7 +53,7 @@ class TestStopLimitOrders(TestBase):
     def setUp(self):
         self.orchestrator.clear_all_test_data()
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
-        self.DEFAULT_TRADE_PAIR = TradePair.BTCUSD
+        self.DEFAULT_TRADE_PAIR = TradePair.EURUSD
 
     def tearDown(self):
         self.orchestrator.clear_all_test_data()
@@ -109,20 +108,6 @@ class TestStopLimitOrders(TestBase):
             lag_ms=100,
             bid=bid,
             ask=ask
-        )
-
-    def create_test_position(self, trade_pair=None, miner_hotkey=None):
-        if trade_pair is None:
-            trade_pair = self.DEFAULT_TRADE_PAIR
-        if miner_hotkey is None:
-            miner_hotkey = self.DEFAULT_MINER_HOTKEY
-
-        return Position(
-            miner_hotkey=miner_hotkey,
-            position_uuid=f"pos_{TimeUtil.now_in_millis()}",
-            open_ms=TimeUtil.now_in_millis(),
-            trade_pair=trade_pair,
-            account_size=1000.0
         )
 
     def get_orders_from_server(self, miner_hotkey, trade_pair):
@@ -208,85 +193,90 @@ class TestStopLimitOrders(TestBase):
 
     def test_validation_reject_missing_stop_price(self):
         """Test rejection when stop_price is missing"""
-        with self.assertRaises(Exception):
-            Order(
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test",
-                processed_ms=TimeUtil.now_in_millis(),
-                price=0.0,
-                order_type=OrderType.LONG,
-                leverage=0.5,
-                execution_type=ExecutionType.STOP_LIMIT,
-                limit_price=106.0,
-                stop_condition=StopCondition.GTE,
-                src=OrderSource.STOP_LIMIT_UNFILLED
-            )
+        order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,
+            leverage=0.5,
+            execution_type=ExecutionType.STOP_LIMIT,
+            limit_price=106.0,
+            stop_condition=StopCondition.GTE,
+            src=OrderSource.STOP_LIMIT_UNFILLED
+        )
+        with self.assertRaises(SignalException):
+            self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
     def test_validation_reject_missing_limit_price(self):
         """Test rejection when limit_price is missing"""
-        with self.assertRaises(Exception):
-            Order(
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test",
-                processed_ms=TimeUtil.now_in_millis(),
-                price=0.0,
-                order_type=OrderType.LONG,
-                leverage=0.5,
-                execution_type=ExecutionType.STOP_LIMIT,
-                stop_price=105.0,
-                stop_condition=StopCondition.GTE,
-                src=OrderSource.STOP_LIMIT_UNFILLED
-            )
+        order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,
+            leverage=0.5,
+            execution_type=ExecutionType.STOP_LIMIT,
+            stop_price=105.0,
+            stop_condition=StopCondition.GTE,
+            src=OrderSource.STOP_LIMIT_UNFILLED
+        )
+        with self.assertRaises(SignalException):
+            self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
     def test_validation_reject_missing_stop_condition(self):
         """Test rejection when stop_condition is missing"""
-        with self.assertRaises(Exception):
-            Order(
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test",
-                processed_ms=TimeUtil.now_in_millis(),
-                price=0.0,
-                order_type=OrderType.LONG,
-                leverage=0.5,
-                execution_type=ExecutionType.STOP_LIMIT,
-                stop_price=105.0,
-                limit_price=106.0,
-                src=OrderSource.STOP_LIMIT_UNFILLED
-            )
+        order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,
+            leverage=0.5,
+            execution_type=ExecutionType.STOP_LIMIT,
+            stop_price=105.0,
+            limit_price=106.0,
+            src=OrderSource.STOP_LIMIT_UNFILLED
+        )
+        with self.assertRaises(SignalException):
+            self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
     def test_validation_reject_long_limit_below_stop(self):
         """Test LONG rejected when limit_price < stop_price (wouldn't fill on trigger)"""
-        with self.assertRaises(Exception):
-            Order(
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test",
-                processed_ms=TimeUtil.now_in_millis(),
-                price=0.0,
-                order_type=OrderType.LONG,
-                leverage=0.5,
-                execution_type=ExecutionType.STOP_LIMIT,
-                stop_price=55000.0,
-                stop_condition=StopCondition.GTE,
-                limit_price=54000.0,  # Below stop — can't fill on breakout
-                src=OrderSource.STOP_LIMIT_UNFILLED
-            )
+        order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.LONG,
+            leverage=0.5,
+            execution_type=ExecutionType.STOP_LIMIT,
+            stop_price=55000.0,
+            stop_condition=StopCondition.GTE,
+            limit_price=54000.0,  # Below stop — can't fill on breakout
+            src=OrderSource.STOP_LIMIT_UNFILLED
+        )
+        with self.assertRaises(SignalException):
+            self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
     def test_validation_reject_short_limit_above_stop(self):
         """Test SHORT rejected when limit_price > stop_price (wouldn't fill on trigger)"""
-        with self.assertRaises(Exception):
-            Order(
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test",
-                processed_ms=TimeUtil.now_in_millis(),
-                price=0.0,
-                order_type=OrderType.SHORT,
-                leverage=-0.5,
-                execution_type=ExecutionType.STOP_LIMIT,
-                stop_price=45000.0,
-                stop_condition=StopCondition.LTE,
-                limit_price=46000.0,  # Above stop — can't fill on breakdown
-                src=OrderSource.STOP_LIMIT_UNFILLED
-            )
+        order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.SHORT,
+            leverage=-0.5,
+            execution_type=ExecutionType.STOP_LIMIT,
+            stop_price=45000.0,
+            stop_condition=StopCondition.LTE,
+            limit_price=46000.0,  # Above stop — can't fill on breakdown
+            src=OrderSource.STOP_LIMIT_UNFILLED
+        )
+        with self.assertRaises(SignalException):
+            self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
     def test_validation_accept_long_limit_equals_stop(self):
         """Test LONG accepted when limit_price == stop_price"""
@@ -307,20 +297,21 @@ class TestStopLimitOrders(TestBase):
 
     def test_validation_reject_flat_for_stop_limit(self):
         """Test rejection of FLAT order type for STOP_LIMIT"""
-        with self.assertRaises(Exception):
-            Order(
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                order_uuid="test",
-                processed_ms=TimeUtil.now_in_millis(),
-                price=0.0,
-                order_type=OrderType.FLAT,
-                leverage=0.5,
-                execution_type=ExecutionType.STOP_LIMIT,
-                stop_price=105.0,
-                stop_condition=StopCondition.GTE,
-                limit_price=106.0,
-                src=OrderSource.STOP_LIMIT_UNFILLED
-            )
+        order = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="test",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=0.0,
+            order_type=OrderType.FLAT,
+            leverage=0.5,
+            execution_type=ExecutionType.STOP_LIMIT,
+            stop_price=105.0,
+            stop_condition=StopCondition.GTE,
+            limit_price=106.0,
+            src=OrderSource.STOP_LIMIT_UNFILLED
+        )
+        with self.assertRaises(SignalException):
+            self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
     # ============================================================================
     # Test: Trigger with GTE condition
@@ -328,9 +319,6 @@ class TestStopLimitOrders(TestBase):
 
     def test_trigger_gte_triggers_when_price_above(self):
         """Test GTE triggers when mid price >= stop_price"""
-        position = self.create_test_position()
-        self.position_client.save_miner_position(position)
-
         order = self.create_stop_limit_order(
             stop_price=55000.0,
             stop_condition=StopCondition.GTE,
@@ -402,9 +390,6 @@ class TestStopLimitOrders(TestBase):
 
     def test_trigger_lte_triggers_when_price_below(self):
         """Test LTE triggers when mid price <= stop_price"""
-        position = self.create_test_position()
-        self.position_client.save_miner_position(position)
-
         order = self.create_stop_limit_order(
             order_type=OrderType.SHORT,
             stop_price=45000.0,
@@ -442,14 +427,13 @@ class TestStopLimitOrders(TestBase):
 
     def test_conversion_creates_child_limit_order(self):
         """Test that triggering a stop-limit creates a child limit order with correct fields"""
-        position = self.create_test_position()
-        self.position_client.save_miner_position(position)
-
+        # This test fills, so the prices have to be realistic for the trade pair: a EURUSD
+        # order priced in the tens of thousands rounds down to a zero-lot fill.
         order = self.create_stop_limit_order(
             order_type=OrderType.LONG,
-            stop_price=55000.0,
+            stop_price=1.0500,
             stop_condition=StopCondition.GTE,
-            limit_price=56000.0,
+            limit_price=1.0600,
             leverage=0.3,
             order_uuid="parent_stop_limit"
         )
@@ -458,7 +442,7 @@ class TestStopLimitOrders(TestBase):
         self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
         # Trigger the stop
-        trigger_price = self.create_test_price_source(55500.0, bid=55500.0, ask=55500.0)
+        trigger_price = self.create_test_price_source(1.0550, bid=1.0550, ask=1.0550)
         self.live_price_fetcher_client.set_test_market_open(True)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price)
 
@@ -467,7 +451,7 @@ class TestStopLimitOrders(TestBase):
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
 
         # Check if child limit order exists (may have been filled immediately if ask <= limit)
-        # With ask=55500 < limit=56000, it should fill immediately
+        # With ask=1.0550 < limit=1.0600, it should fill immediately
         # Verify by checking position was updated
         positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         # Position should have been updated with the fill
@@ -475,9 +459,6 @@ class TestStopLimitOrders(TestBase):
 
     def test_conversion_child_limit_order_uuid_format(self):
         """Test child limit order has UUID format '{parent_uuid}-limit'"""
-        position = self.create_test_position()
-        self.position_client.save_miner_position(position)
-
         parent_uuid = "test_parent_123"
         order = self.create_stop_limit_order(
             order_type=OrderType.LONG,
@@ -511,14 +492,13 @@ class TestStopLimitOrders(TestBase):
 
     def test_full_lifecycle_stop_trigger_then_limit_fill(self):
         """Test complete lifecycle: stop triggers -> limit order created -> limit fills"""
-        position = self.create_test_position()
-        self.position_client.save_miner_position(position)
-
+        # This test fills, so the prices have to be realistic for the trade pair: a EURUSD
+        # order priced in the tens of thousands rounds down to a zero-lot fill.
         order = self.create_stop_limit_order(
             order_type=OrderType.LONG,
-            stop_price=55000.0,
+            stop_price=1.0500,
             stop_condition=StopCondition.GTE,
-            limit_price=56000.0,
+            limit_price=1.0600,
             leverage=0.3,
             order_uuid="lifecycle_test"
         )
@@ -527,8 +507,8 @@ class TestStopLimitOrders(TestBase):
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, None)
         self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
-        # Step 1: Trigger the stop (price >= 55000 for GTE, but ask > limit to prevent immediate child fill)
-        trigger_price = self.create_test_price_source(57000.0, bid=57000.0, ask=57000.0)
+        # Step 1: Trigger the stop (price >= 1.0500 for GTE, but ask > limit to prevent immediate child fill)
+        trigger_price = self.create_test_price_source(1.0700, bid=1.0700, ask=1.0700)
         self.live_price_fetcher_client.set_test_market_open(True)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price)
 
@@ -540,7 +520,7 @@ class TestStopLimitOrders(TestBase):
         self.assertEqual(len(limit_orders), 1, "Child limit order should be pending")
 
         # Step 2: Fill the child limit order (price drops to limit price)
-        fill_price = self.create_test_price_source(55500.0, bid=55500.0, ask=55500.0)
+        fill_price = self.create_test_price_source(1.0550, bid=1.0550, ask=1.0550)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, fill_price)
 
         # Reset fill time to allow immediate fill
@@ -736,9 +716,6 @@ class TestStopLimitOrders(TestBase):
 
     def test_stop_limit_with_bracket_orders(self):
         """Test stop-limit order with bracket_orders forwarded to child limit order"""
-        position = self.create_test_position()
-        self.position_client.save_miner_position(position)
-
         bracket_orders = [{"stop_loss": 50000, "take_profit": 60000, "leverage": 0.3}]
 
         order = self.create_stop_limit_order(

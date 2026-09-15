@@ -37,6 +37,7 @@ class SimpleNeuron:
     validator_trust: float
     axon_info: SimpleAxonInfo
     stake: object  # bt.Balance object
+    validator_permit: bool = False
 
 
 class TestMinerIntegration(TestBase):
@@ -126,7 +127,8 @@ class TestMinerIntegration(TestBase):
                 incentive=0.0,
                 validator_trust=0.0,
                 axon_info=SimpleAxonInfo(ip="127.0.0.1", port=8091, hotkey=self.TEST_MINER_HOTKEY),
-                stake=bt.Balance.from_tao(0)  # Miner with no stake
+                stake=bt.Balance.from_tao(0),  # Miner with no stake
+                validator_permit=False
             ),
             SimpleNeuron(
                 uid=1,
@@ -134,7 +136,8 @@ class TestMinerIntegration(TestBase):
                 incentive=0.1,
                 validator_trust=1.0,  # High trust validator for signal processing
                 axon_info=SimpleAxonInfo(ip="127.0.0.1", port=8092, hotkey=self.TEST_VALIDATOR_HOTKEY),
-                stake=bt.Balance.from_tao(10000)  # Validator with high stake
+                stake=bt.Balance.from_tao(10000),  # Validator with high stake
+                validator_permit=True
             ),
         ]
 
@@ -211,7 +214,7 @@ class TestMinerIntegration(TestBase):
             with self.assertRaises(AssertionError) as context:
                 miner = Miner(running_unit_tests=True)
 
-            self.assertIn("Taoshi runs on netuid 8 (mainnet) and 116 (testnet)", str(context.exception))
+            self.assertIn("Taoshi runs on netuid 8 (mainnet) and 116/171 (testnet)", str(context.exception))
 
     def test_miner_initialization_registered(self):
         """Test miner initialization with registered hotkey"""

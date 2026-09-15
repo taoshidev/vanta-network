@@ -1,11 +1,15 @@
-# developer: jbonilla
+# developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
 """
-Market order manager tests using modern client/server architecture.
-Tests all market order functionality with proper server/client separation.
-"""
-from unittest.mock import Mock
+Market order manager tests using the client/server architecture.
 
+MarketOrderManager's current surface is execute_order() (with internal
+_apply_order()), close_positions(), enforce_order_cooldown(),
+clear_order_cooldown_cache(), and the static _is_effective_close(). This
+covers all of them: pure-logic unit tests for cooldown/effective-close,
+and ServerOrchestrator-backed integration tests for order execution and
+position closing.
+"""
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
@@ -14,7 +18,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.market_order.market_order_manager import MarketOrderManager
-from vali_objects.utils.limit_order.order_utils import OrderSize, convert_order_sizes
+from vali_objects.utils.limit_order.order_utils import OrderSize
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
@@ -26,83 +30,61 @@ class TestMarketOrderManager(TestBase):
     """
     Integration tests for Market Order Manager using ServerOrchestrator.
 
-    Servers start once (via singleton orchestrator) and are shared across:
-    - All test methods in this class
-    - All test classes that use ServerOrchestrator
-
-    This eliminates redundant server spawning and dramatically reduces test startup time.
-    Per-test isolation is achieved by clearing data state (not restarting servers).
+    Servers start once (via singleton orchestrator) and are shared across
+    all test methods/classes; per-test isolation comes from clearing data
+    state rather than restarting servers.
     """
 
-    # Class-level references (set in setUpClass via ServerOrchestrator)
     orchestrator = None
     live_price_fetcher_client = None
     metagraph_client = None
     position_client = None
-    contract_client = None
     market_order_manager = None
 
-    # Test constants
     DEFAULT_MINER_HOTKEY = "test_miner"
-    DEFAULT_TRADE_PAIR = TradePair.BTCUSD
-    DEFAULT_ACCOUNT_SIZE = 1000.0
+    # BTCUSD is a blocked/deprecated native pair; MarketOrderManager itself doesn't
+    # enforce is_blocked (that lives in OrderProcessor.validate), but BTCUSDC keeps
+    # these tests aligned with the currently-tradable pair.
+    DEFAULT_TRADE_PAIR = TradePair.BTCUSDC
 
     @classmethod
     def setUpClass(cls):
-        """One-time setup: Start all servers using ServerOrchestrator (shared across all test classes)."""
-        # Get the singleton orchestrator and start all required servers
         cls.orchestrator = ServerOrchestrator.get_instance()
 
-        # Start all servers in TESTING mode (idempotent - safe if already started by another test class)
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         cls.orchestrator.start_all_servers(
             mode=ServerMode.TESTING,
             secrets=secrets
         )
 
-        # Get clients from orchestrator (servers guaranteed ready, no connection delays)
         cls.live_price_fetcher_client = cls.orchestrator.get_client('live_price_fetcher')
         cls.metagraph_client = cls.orchestrator.get_client('metagraph')
         cls.position_client = cls.orchestrator.get_client('position_manager')
-        cls.contract_client = cls.orchestrator.get_client('contract')
 
-        # Get market order manager instance from orchestrator
         cls.market_order_manager = MarketOrderManager(False, running_unit_tests=True)
 
-        # Initialize metagraph with test miners
         cls.metagraph_client.set_hotkeys([cls.DEFAULT_MINER_HOTKEY])
 
     @classmethod
     def tearDownClass(cls):
-        """
-        One-time teardown: No action needed.
-
-        Note: Servers and clients are managed by ServerOrchestrator singleton and shared
-        across all test classes. They will be shut down automatically at process exit.
-        """
         pass
 
     def setUp(self):
-        """Per-test setup: Reset data state (fast - no server restarts)."""
-        # NOTE: Skip super().setUp() to avoid killing ports (servers already running)
-
-        # Clear all data for test isolation (both memory and disk)
         self.orchestrator.clear_all_test_data()
-
-        # Clear market order manager cache
         self.market_order_manager.last_order_time_cache.clear()
+        self.live_price_fetcher_client.clear_test_market_open()
+        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
 
     def tearDown(self):
-        """Per-test teardown: Clear data for next test."""
         self.orchestrator.clear_all_test_data()
         self.market_order_manager.last_order_time_cache.clear()
+        self.live_price_fetcher_client.clear_test_market_open()
 
     # ============================================================================
     # Helper Methods
     # ============================================================================
 
     def create_test_price_source(self, price, bid=None, ask=None, start_ms=None):
-        """Helper to create a price source"""
         if start_ms is None:
             start_ms = TimeUtil.now_in_millis()
         if bid is None:
@@ -125,1021 +107,368 @@ class TestMarketOrderManager(TestBase):
             ask=ask
         )
 
-    def create_test_position(self, trade_pair=None, miner_hotkey=None, position_type=None):
-        """Helper to create test positions"""
+    def create_test_position(self, trade_pair=None, miner_hotkey=None, position_type=OrderType.LONG):
         if trade_pair is None:
             trade_pair = self.DEFAULT_TRADE_PAIR
         if miner_hotkey is None:
             miner_hotkey = self.DEFAULT_MINER_HOTKEY
 
-        position = Position(
+        return Position(
             miner_hotkey=miner_hotkey,
             position_uuid=f"pos_{TimeUtil.now_in_millis()}",
             open_ms=TimeUtil.now_in_millis(),
             trade_pair=trade_pair,
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+            position_type=position_type,
+            account_size=1000.0,
         )
-        if position_type:
-            position.position_type = position_type
-        return position
 
-    @staticmethod
-    def create_test_signal(order_type:OrderType=OrderType.LONG, leverage=0.3, execution_type:ExecutionType=ExecutionType.MARKET,
-                          limit_price=None, stop_loss=None, take_profit=None):
-        """Helper to create signal dict with optional execution parameters"""
-        signal = {
-            "order_type": order_type.name,
-            "leverage": leverage,
-            "execution_type": execution_type.name
-        }
-
-        # Add limit_price if execution_type is LIMIT (required by Order validation)
-        if execution_type == ExecutionType.LIMIT:
-            if limit_price is None:
-                # Default to a reasonable test value if not provided
-                limit_price = 50000.0
-            signal["limit_price"] = limit_price
-
-        # Add bracket parameters if execution_type is BRACKET
-        if execution_type == ExecutionType.BRACKET:
-            if stop_loss is not None:
-                signal["stop_loss"] = stop_loss
-            if take_profit is not None:
-                signal["take_profit"] = take_profit
-
-        # Allow explicit override of execution parameters even for MARKET orders
-        if limit_price is not None and execution_type != ExecutionType.LIMIT:
-            signal["limit_price"] = limit_price
-        if stop_loss is not None and execution_type != ExecutionType.BRACKET:
-            signal["stop_loss"] = stop_loss
-        if take_profit is not None and execution_type != ExecutionType.BRACKET:
-            signal["take_profit"] = take_profit
-
-        return signal
+    def execute(self, hotkey, order_uuid, order_type, price, value=None, leverage=None, quantity=None,
+                bracket_pct=None, now_ms=None, trade_pair=None, enforce_cooldown=False, **kwargs):
+        """Convenience wrapper: pass an explicit fill_price + price_sources so the
+        manager never needs to reach into the live price fetcher for a fill."""
+        if now_ms is None:
+            now_ms = TimeUtil.now_in_millis()
+        if trade_pair is None:
+            trade_pair = self.DEFAULT_TRADE_PAIR
+        price_source = self.create_test_price_source(price, start_ms=now_ms)
+        order_size = OrderSize(value=value, leverage=leverage, quantity=quantity, bracket_pct=bracket_pct)
+        return self.market_order_manager.execute_order(
+            hotkey, order_uuid, trade_pair, ExecutionType.MARKET, order_type, order_size,
+            fill_price=price, price_sources=[price_source], now_ms=now_ms,
+            enforce_cooldown=enforce_cooldown, **kwargs,
+        )
 
     # ============================================================================
     # Test: enforce_order_cooldown
     # ============================================================================
 
     def test_enforce_order_cooldown_first_order(self):
-        """Test that first order for a trade pair has no cooldown"""
         now_ms = TimeUtil.now_in_millis()
-
         msg = self.market_order_manager.enforce_order_cooldown(
-            self.DEFAULT_TRADE_PAIR.trade_pair_id,
-            now_ms,
-            self.DEFAULT_MINER_HOTKEY
+            self.DEFAULT_TRADE_PAIR.trade_pair_id, now_ms, self.DEFAULT_MINER_HOTKEY
         )
-
         self.assertIsNone(msg)
 
     def test_enforce_order_cooldown_within_cooldown_period(self):
-        """Test cooldown enforcement within cooldown period"""
         now_ms = TimeUtil.now_in_millis()
-
-        # Cache first order time
         cache_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
         self.market_order_manager.last_order_time_cache[cache_key] = now_ms
 
-        # Try to place order too soon
         second_order_ms = now_ms + (ValiConfig.ORDER_COOLDOWN_MS // 2)
-
         msg = self.market_order_manager.enforce_order_cooldown(
-            self.DEFAULT_TRADE_PAIR.trade_pair_id,
-            second_order_ms,
-            self.DEFAULT_MINER_HOTKEY
+            self.DEFAULT_TRADE_PAIR.trade_pair_id, second_order_ms, self.DEFAULT_MINER_HOTKEY
         )
 
         self.assertIsNotNone(msg)
         self.assertIn("too soon", msg)
 
     def test_enforce_order_cooldown_after_cooldown_period(self):
-        """Test cooldown allows order after cooldown period"""
         now_ms = TimeUtil.now_in_millis()
-
-        # Cache first order time
         cache_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
         self.market_order_manager.last_order_time_cache[cache_key] = now_ms
 
-        # Place order after cooldown
         second_order_ms = now_ms + ValiConfig.ORDER_COOLDOWN_MS + 1000
-
         msg = self.market_order_manager.enforce_order_cooldown(
-            self.DEFAULT_TRADE_PAIR.trade_pair_id,
-            second_order_ms,
-            self.DEFAULT_MINER_HOTKEY
+            self.DEFAULT_TRADE_PAIR.trade_pair_id, second_order_ms, self.DEFAULT_MINER_HOTKEY
         )
-
         self.assertIsNone(msg)
 
     def test_enforce_order_cooldown_different_trade_pairs(self):
-        """Test cooldown is isolated by trade pair"""
         now_ms = TimeUtil.now_in_millis()
-
-        # Cache order for BTCUSD
-        cache_key_btc = (self.DEFAULT_MINER_HOTKEY, TradePair.BTCUSD.trade_pair_id)
+        cache_key_btc = (self.DEFAULT_MINER_HOTKEY, TradePair.BTCUSDC.trade_pair_id)
         self.market_order_manager.last_order_time_cache[cache_key_btc] = now_ms
 
-        # Order for ETHUSD should have no cooldown
         msg = self.market_order_manager.enforce_order_cooldown(
-            TradePair.ETHUSD.trade_pair_id,
-            now_ms + 100,
-            self.DEFAULT_MINER_HOTKEY
+            TradePair.ETHUSDC.trade_pair_id, now_ms + 100, self.DEFAULT_MINER_HOTKEY
         )
-
         self.assertIsNone(msg)
 
+    def test_clear_order_cooldown_cache_requires_test_mode(self):
+        production_manager = MarketOrderManager(False, running_unit_tests=False)
+        with self.assertRaises(Exception):
+            production_manager.clear_order_cooldown_cache()
+
+    def test_clear_order_cooldown_cache_clears_entries(self):
+        cache_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
+        self.market_order_manager.last_order_time_cache[cache_key] = TimeUtil.now_in_millis()
+        self.market_order_manager.clear_order_cooldown_cache()
+        self.assertEqual(len(self.market_order_manager.last_order_time_cache), 0)
+
     # ============================================================================
-    # Test: _get_or_create_open_position_from_new_order
+    # Test: _is_effective_close (static)
     # ============================================================================
 
-    def test_get_or_create_open_position_creates_new_for_long(self):
-        """Test creating new position for LONG order"""
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        position = self.market_order_manager._get_or_create_open_position_from_new_order(
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_type=OrderType.LONG,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            miner_order_uuid="test_uuid",
-            now_ms=now_ms,
-            price_sources=price_sources,
-            miner_repo_version="1.0.0",
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+    def test_is_effective_close_flat_order_type_always_closes(self):
+        position = self.create_test_position(position_type=OrderType.LONG)
+        self.assertTrue(
+            MarketOrderManager._is_effective_close(position, OrderType.FLAT, -1.0, -100.0)
         )
 
+    def test_is_effective_close_no_existing_direction_is_never_close(self):
+        position = self.create_test_position(position_type=OrderType.LONG)
+        position.position_type = None
+        self.assertFalse(
+            MarketOrderManager._is_effective_close(position, OrderType.LONG, 1.0, 100.0)
+        )
+
+    def test_is_effective_close_same_direction_is_never_close(self):
+        position = self.create_test_position(position_type=OrderType.LONG)
+        self.assertFalse(
+            MarketOrderManager._is_effective_close(position, OrderType.LONG, 1.0, 100.0)
+        )
+
+    def test_is_effective_close_long_position_flips_to_flat_on_quantity_cross(self):
+        position = self.create_test_position(position_type=OrderType.LONG)
+        position.net_quantity = 1.0
+        position.net_value = 1000.0
+        position.unrealized_pnl = 0.0
+        # SHORT order that fully offsets net_quantity.
+        self.assertTrue(
+            MarketOrderManager._is_effective_close(position, OrderType.SHORT, -1.0, -1000.0)
+        )
+
+    def test_is_effective_close_long_position_partial_reduce_is_not_close(self):
+        position = self.create_test_position(position_type=OrderType.LONG)
+        position.net_quantity = 2.0
+        position.net_value = 2000.0
+        position.unrealized_pnl = 0.0
+        # SHORT order that only offsets part of net_quantity/net_value.
+        self.assertFalse(
+            MarketOrderManager._is_effective_close(position, OrderType.SHORT, -0.5, -500.0)
+        )
+
+    def test_is_effective_close_short_position_flips_to_flat_on_quantity_cross(self):
+        position = self.create_test_position(position_type=OrderType.SHORT)
+        position.net_quantity = -1.0
+        position.net_value = -1000.0
+        position.unrealized_pnl = 0.0
+        self.assertTrue(
+            MarketOrderManager._is_effective_close(position, OrderType.LONG, 1.0, 1000.0)
+        )
+
+    def test_is_effective_close_short_position_partial_reduce_is_not_close(self):
+        position = self.create_test_position(position_type=OrderType.SHORT)
+        position.net_quantity = -2.0
+        position.net_value = -2000.0
+        position.unrealized_pnl = 0.0
+        self.assertFalse(
+            MarketOrderManager._is_effective_close(position, OrderType.LONG, 0.5, 500.0)
+        )
+
+    # ============================================================================
+    # Test: execute_order
+    # ============================================================================
+
+    def test_execute_order_creates_new_position_for_long(self):
+        order, position = self.execute(self.DEFAULT_MINER_HOTKEY, "uuid_long", OrderType.LONG, 50000.0, value=500.0)
+
+        self.assertIsNotNone(order)
         self.assertIsNotNone(position)
         self.assertEqual(position.miner_hotkey, self.DEFAULT_MINER_HOTKEY)
         self.assertEqual(position.trade_pair, self.DEFAULT_TRADE_PAIR)
-        self.assertEqual(position.position_uuid, "test_uuid")
+        self.assertEqual(position.position_uuid, "uuid_long")
+        self.assertEqual(position.position_type, OrderType.LONG)
         self.assertFalse(position.is_closed_position)
+        self.assertEqual(order.order_type, OrderType.LONG)
+        self.assertEqual(order.price, 50000.0)
 
-    def test_get_or_create_open_position_creates_new_for_short(self):
-        """Test creating new position for SHORT order"""
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        position = self.market_order_manager._get_or_create_open_position_from_new_order(
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_type=OrderType.SHORT,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            miner_order_uuid="test_uuid",
-            now_ms=now_ms,
-            price_sources=price_sources,
-            miner_repo_version="1.0.0",
-            account_size=self.DEFAULT_ACCOUNT_SIZE
-        )
+    def test_execute_order_creates_new_position_for_short(self):
+        # SHORT orders arrive with a pre-negated size (Signal validation negates it
+        # upstream before MarketOrderManager ever sees it); OrderSize sign, not
+        # order_type, determines buy/sell direction inside _apply_order.
+        order, position = self.execute(self.DEFAULT_MINER_HOTKEY, "uuid_short", OrderType.SHORT, 50000.0, value=-500.0)
 
         self.assertIsNotNone(position)
+        self.assertEqual(position.position_type, OrderType.SHORT)
         self.assertFalse(position.is_closed_position)
 
-    def test_get_or_create_open_position_returns_existing(self):
-        """Test returns existing open position"""
-        # Create and save existing position
-        existing_position = self.create_test_position(position_type=OrderType.LONG)
-        self.position_client.save_miner_position(existing_position)
+    def test_execute_order_flat_with_no_position_returns_none(self):
+        result = self.execute(self.DEFAULT_MINER_HOTKEY, "uuid_flat", OrderType.FLAT, 50000.0, quantity=0.0)
+        self.assertIsNone(result)
 
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        position = self.market_order_manager._get_or_create_open_position_from_new_order(
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_type=OrderType.LONG,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            miner_order_uuid="new_uuid",
-            now_ms=now_ms,
-            price_sources=price_sources,
-            miner_repo_version="1.0.0",
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+    def test_execute_order_adds_to_existing_position(self):
+        _, position = self.execute(self.DEFAULT_MINER_HOTKEY, "uuid_1", OrderType.LONG, 50000.0, value=500.0)
+        now_ms2 = TimeUtil.now_in_millis() + 1
+        _, position2 = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "uuid_2", OrderType.LONG, 51000.0, value=300.0, now_ms=now_ms2
         )
 
-        self.assertEqual(position.position_uuid, existing_position.position_uuid)
+        self.assertEqual(position2.position_uuid, position.position_uuid)
+        self.assertEqual(len(position2.orders), 2)
 
-    def test_get_or_create_open_position_flat_returns_none(self):
-        """Test FLAT order with no position returns None"""
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        position = self.market_order_manager._get_or_create_open_position_from_new_order(
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_type=OrderType.FLAT,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            miner_order_uuid="test_uuid",
-            now_ms=now_ms,
-            price_sources=price_sources,
-            miner_repo_version="1.0.0",
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+    def test_execute_order_partial_reduce_keeps_position_open(self):
+        _, position = self.execute(self.DEFAULT_MINER_HOTKEY, "uuid_1", OrderType.LONG, 50000.0, value=800.0)
+        now_ms2 = TimeUtil.now_in_millis() + 1
+        _, position2 = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "uuid_2", OrderType.SHORT, 50000.0, value=-200.0, now_ms=now_ms2
         )
 
-        self.assertIsNone(position)
+        self.assertEqual(position2.position_uuid, position.position_uuid)
+        self.assertFalse(position2.is_closed_position)
+        self.assertEqual(position2.position_type, OrderType.LONG)
 
-    def test_get_or_create_open_position_max_orders_auto_closes(self):
-        """Test position auto-closes when MAX_ORDERS_PER_POSITION reached"""
-        # Create position with max orders
+    def test_execute_order_full_close_via_bracket_pct(self):
+        _, position = self.execute(self.DEFAULT_MINER_HOTKEY, "uuid_1", OrderType.LONG, 50000.0, value=500.0)
+        now_ms2 = TimeUtil.now_in_millis() + 1
+
+        order2, position2 = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "uuid_close", OrderType.FLAT, 50000.0, bracket_pct=1.0, now_ms=now_ms2
+        )
+
+        self.assertEqual(order2.order_type, OrderType.FLAT)
+        self.assertTrue(position2.is_closed_position)
+        self.assertEqual(position2.position_uuid, position.position_uuid)
+
+    def test_execute_order_enforces_cooldown(self):
+        self.execute(self.DEFAULT_MINER_HOTKEY, "uuid_1", OrderType.LONG, 50000.0, value=500.0, enforce_cooldown=True)
+
+        now_ms2 = TimeUtil.now_in_millis() + 100
+        with self.assertRaises(SignalException) as ctx:
+            self.execute(
+                self.DEFAULT_MINER_HOTKEY, "uuid_2", OrderType.LONG, 50000.0, value=500.0,
+                now_ms=now_ms2, enforce_cooldown=True,
+            )
+        self.assertIn("too soon", str(ctx.exception))
+
+    def test_execute_order_bypasses_cooldown_when_disabled(self):
+        self.execute(self.DEFAULT_MINER_HOTKEY, "uuid_1", OrderType.LONG, 50000.0, value=500.0, enforce_cooldown=True)
+
+        now_ms2 = TimeUtil.now_in_millis() + 100
+        # Should not raise, since enforce_cooldown=False bypasses the check.
+        order, position = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "uuid_2", OrderType.LONG, 50000.0, value=500.0,
+            now_ms=now_ms2, enforce_cooldown=False,
+        )
+        self.assertIsNotNone(order)
+
+    def test_execute_order_market_closed_raises(self):
+        self.live_price_fetcher_client.set_test_market_open(False)
+        with self.assertRaises(SignalException) as ctx:
+            self.execute(
+                self.DEFAULT_MINER_HOTKEY, "uuid_1", OrderType.LONG, 50000.0, value=500.0,
+                trade_pair=TradePair.EURUSD,
+            )
+        self.assertIn("currently closed", str(ctx.exception))
+
+    def test_execute_order_max_orders_per_position_auto_closes(self):
         existing_position = self.create_test_position(position_type=OrderType.LONG)
-
-        # Add orders up to max
         now_ms = TimeUtil.now_in_millis()
         for i in range(ValiConfig.MAX_ORDERS_PER_POSITION):
             order = Order(
                 trade_pair=self.DEFAULT_TRADE_PAIR,
                 order_type=OrderType.LONG,
-                leverage=0.1,
+                leverage=0.01,
                 price=50000.0,
-                processed_ms=now_ms + (i * 1000),
+                processed_ms=now_ms + i,
                 order_uuid=f"order_{i}",
-                execution_type=ExecutionType.MARKET
+                execution_type=ExecutionType.MARKET,
             )
             existing_position.orders.append(order)
-
-        # Rebuild position
         existing_position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
         self.position_client.save_miner_position(existing_position)
 
-        price_sources = [self.create_test_price_source(51000.0, start_ms=now_ms + 10000)]
-
-        # Try to add another order - should trigger auto-close
-        returned_position = self.market_order_manager._get_or_create_open_position_from_new_order(
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_type=OrderType.LONG,
-            order_time_ms=now_ms + 10000,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            miner_order_uuid="new_order",
-            now_ms=now_ms + 10000,
-            price_sources=price_sources,
-            miner_repo_version="1.0.0",
-            account_size=self.DEFAULT_ACCOUNT_SIZE
+        now_ms2 = now_ms + ValiConfig.MAX_ORDERS_PER_POSITION + 1000
+        new_order, new_position = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "new_order", OrderType.LONG, 51000.0, value=500.0, now_ms=now_ms2
         )
 
-        # Get updated position
-        updated_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
-        updated_position = next((p for p in updated_positions if p.trade_pair == self.DEFAULT_TRADE_PAIR), None)
-
-        # Should have auto-closed
-        self.assertIsNotNone(updated_position)
-        self.assertEqual(len(updated_position.orders), ValiConfig.MAX_ORDERS_PER_POSITION + 1)
-        last_order = updated_position.orders[-1]
-        self.assertEqual(last_order.order_type, OrderType.FLAT)
-        self.assertEqual(last_order.src, OrderSource.MAX_ORDERS_PER_POSITION_CLOSE)
-
-    def test_get_or_create_open_position_closed_position_creates_new(self):
-        """Test that closed positions are ignored and new position is created"""
-        # Create closed position
-        closed_position = self.create_test_position(position_type=OrderType.LONG)
-        closed_position.is_closed_position = True
-        self.position_client.save_miner_position(closed_position)
-
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        # Should create new position (closed ones ignored)
-        position = self.market_order_manager._get_or_create_open_position_from_new_order(
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            order_type=OrderType.LONG,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            miner_order_uuid="test_uuid",
-            now_ms=now_ms,
-            price_sources=price_sources,
-            miner_repo_version="1.0.0",
-            account_size=self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        self.assertIsNotNone(position)
-        self.assertNotEqual(position.position_uuid, closed_position.position_uuid)
-
-    # ============================================================================
-    # Test: _add_order_to_existing_position
-    # ============================================================================
-
-    def test_add_order_to_existing_position_long(self):
-        """Test adding LONG order to existing position"""
-        position = self.create_test_position()
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, bid=49990.0, ask=50010.0, start_ms=now_ms)]
-
-        initial_order_count = len(position.orders)
-
-        # Calculate order size from leverage
-        quantity, leverage, value = convert_order_sizes(
-            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        self.market_order_manager._add_order_to_existing_position(
-            existing_position=position,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            signal_order_type=OrderType.LONG,
-            quantity=quantity,
-            leverage=leverage,
-            value=value,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
-            miner_order_uuid="test_order",
-            miner_repo_version="1.0.0",
-            src=OrderSource.ORGANIC,
-            balance=self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        # Verify order was added
-        self.assertEqual(len(position.orders), initial_order_count + 1)
-
-        new_order = position.orders[-1]
-        self.assertEqual(new_order.order_type, OrderType.LONG)
-        self.assertGreater(new_order.leverage, 0)
-        self.assertLessEqual(new_order.leverage, 0.3)
-        self.assertEqual(new_order.order_uuid, "test_order")
-        self.assertEqual(new_order.src, OrderSource.ORGANIC)
-        self.assertEqual(new_order.price, 50000.0)
-        self.assertIsNotNone(new_order.slippage)
-
-    def test_add_order_to_existing_position_short(self):
-        """Test adding SHORT order to existing position"""
-        position = self.create_test_position(position_type=OrderType.SHORT)
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, bid=49990.0, ask=50010.0, start_ms=now_ms)]
-
-        # Calculate order size from leverage
-        quantity, leverage, value = convert_order_sizes(
-            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        print(f"{quantity}, {leverage}, {value}")
-
-        self.market_order_manager._add_order_to_existing_position(
-            existing_position=position,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            signal_order_type=OrderType.SHORT,
-            quantity=quantity,
-            leverage=leverage,
-            value=value,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
-            miner_order_uuid="test_order",
-            miner_repo_version="1.0.0",
-            src=OrderSource.ORGANIC,
-            balance=self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        new_order = position.orders[-1]
-        self.assertEqual(new_order.order_type, OrderType.SHORT)
-        self.assertEqual(new_order.price, 50000.0)
-
-    def test_add_order_to_existing_position_flat(self):
-        """Test adding FLAT order to close position"""
-        position = self.create_test_position(position_type=OrderType.LONG)
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(51000.0, bid=50990.0, ask=51010.0, start_ms=now_ms)]
-
-        # FLAT orders use 0.0 for all values
-        self.market_order_manager._add_order_to_existing_position(
-            existing_position=position,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            signal_order_type=OrderType.FLAT,
-            quantity=0.0,
-            leverage=0.0,
-            value=0.0,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
-            miner_order_uuid="flat_order",
-            miner_repo_version="1.0.0",
-            src=OrderSource.ORGANIC,
-            balance=self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        new_order = position.orders[-1]
-        self.assertEqual(new_order.order_type, OrderType.FLAT)
-        self.assertEqual(new_order.leverage, 0.0)
-
-    def test_add_order_updates_cooldown_cache(self):
-        """Test that adding order updates cooldown cache"""
-        position = self.create_test_position()
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        cache_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
-        self.assertNotIn(cache_key, self.market_order_manager.last_order_time_cache)
-
-        # Calculate order size from leverage
-        quantity, leverage, value = convert_order_sizes(
-            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        self.market_order_manager._add_order_to_existing_position(
-            existing_position=position,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            signal_order_type=OrderType.LONG,
-            quantity=quantity,
-            leverage=leverage,
-            value=value,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
-            miner_order_uuid="test_order",
-            miner_repo_version="1.0.0",
-            src=OrderSource.ORGANIC,
-            balance=self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        # Verify cooldown cache was updated
-        self.assertIn(cache_key, self.market_order_manager.last_order_time_cache)
-        self.assertEqual(self.market_order_manager.last_order_time_cache[cache_key], now_ms)
-
-    def test_add_order_saves_position(self):
-        """Test that adding order saves position to disk"""
-        position = self.create_test_position()
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        # Calculate order size from leverage
-        quantity, leverage, value = convert_order_sizes(
-            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        self.market_order_manager._add_order_to_existing_position(
-            existing_position=position,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            signal_order_type=OrderType.LONG,
-            quantity=quantity,
-            leverage=leverage,
-            value=value,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
-            miner_order_uuid="test_order",
-            miner_repo_version="1.0.0",
-            src=OrderSource.ORGANIC,
-            balance=self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        # Verify position was saved
-        saved_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
-        saved_position = next((p for p in saved_positions if p.trade_pair == self.DEFAULT_TRADE_PAIR), None)
-        self.assertIsNotNone(saved_position)
-        self.assertEqual(saved_position.position_uuid, position.position_uuid)
-
-    def test_add_order_with_limit_source(self):
-        """Test adding order with ORDER_SRC_LIMIT_FILLED source"""
-        position = self.create_test_position()
-        now_ms = TimeUtil.now_in_millis()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        # Calculate order size from leverage
-        quantity, leverage, value = convert_order_sizes(
-            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        self.market_order_manager._add_order_to_existing_position(
-            existing_position=position,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            signal_order_type=OrderType.LONG,
-            quantity=quantity,
-            leverage=leverage,
-            value=value,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
-            miner_order_uuid="limit_order",
-            miner_repo_version="1.0.0",
-            src=OrderSource.LIMIT_FILLED,
-            balance=self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        new_order = position.orders[-1]
-        self.assertEqual(new_order.src, OrderSource.LIMIT_FILLED)
-
-    # ============================================================================
-    # Test: _process_market_order (internal method)
-    # ============================================================================
-
-    def test_process_market_order_creates_new_position(self):
-        """Test processing market order creates new position"""
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        err_msg, position, created_order = self.market_order_manager._process_market_order(
-            miner_order_uuid="test_uuid",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources
-        )
-
-        self.assertIsNone(err_msg)
-        self.assertIsNotNone(position)
-        self.assertIsNotNone(created_order)
-        self.assertEqual(position.position_uuid, "test_uuid")
-        self.assertEqual(len(position.orders), 1)
-        self.assertEqual(position.orders[0].order_type, OrderType.LONG)
-
-    def test_process_market_order_adds_to_existing_position(self):
-        """Test processing market order adds to existing position"""
-        now_ms = TimeUtil.now_in_millis()
-
-        # Create first order
-        first_signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-        first_order_time = now_ms - ValiConfig.ORDER_COOLDOWN_MS - 1000
-        first_price_sources = [self.create_test_price_source(50000.0, start_ms=first_order_time)]
-
-        err_msg1, existing_position, _ = self.market_order_manager._process_market_order(
-            miner_order_uuid="first_order",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=first_order_time,
-            signal=first_signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=first_price_sources
-        )
-
-        self.assertIsNone(err_msg1)
-        self.assertIsNotNone(existing_position)
-        self.assertEqual(len(existing_position.orders), 1)
-
-        # Add second order
-        second_signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.2)
-        second_price_sources = [self.create_test_price_source(51000.0, start_ms=now_ms)]
-
-        err_msg2, position, _ = self.market_order_manager._process_market_order(
-            miner_order_uuid="second_order",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=second_signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=second_price_sources
-        )
-
-        self.assertIsNone(err_msg2)
-        self.assertIsNotNone(position)
-        self.assertEqual(position.position_uuid, existing_position.position_uuid)
-        self.assertEqual(len(position.orders), 2)
-
-    def test_process_market_order_no_price_sources_fails(self):
-        """Test processing market order fails when no price sources available"""
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-
-        # Pass empty list (not None) to simulate no prices available
-        # None would cause the code to fetch prices from live_price_fetcher
-        with self.assertRaises(SignalException) as context:
-            self.market_order_manager._process_market_order(
-                miner_order_uuid="test_uuid",
-                miner_repo_version="1.0.0",
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                now_ms=now_ms,
-                signal=signal,
-                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-                price_sources=[]  # Empty list, not None
-            )
-
-        self.assertIn("no live prices", str(context.exception).lower())
-
-    def test_process_market_order_cooldown_violation_fails(self):
-        """Test processing market order fails on cooldown violation"""
-        now_ms = TimeUtil.now_in_millis()
-
-        # Cache first order
-        cache_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
-        self.market_order_manager.last_order_time_cache[cache_key] = now_ms
-
-        # Try second order too soon
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms + 1000)]
-
-        err_msg, position, created_order = self.market_order_manager._process_market_order(
-            miner_order_uuid="second_order",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms + 1000,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources
-        )
-
-        self.assertIsNotNone(err_msg)
-        self.assertIn("too soon", err_msg)
-        self.assertIsNone(position)
-        self.assertIsNone(created_order)
-
-    def test_process_market_order_flat_no_position(self):
-        """Test FLAT order with no existing position returns None"""
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.FLAT, leverage=0.0)
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        err_msg, position, created_order = self.market_order_manager._process_market_order(
-            miner_order_uuid="flat_order",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources
-        )
-
-        # Should succeed but return None position
-        self.assertIsNone(err_msg)
-        self.assertIsNone(position)
-        self.assertIsNone(created_order)
-
-    def test_process_market_order_gets_account_size(self):
-        """Test that processing order retrieves account size"""
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        # Should not raise any errors (contract_client handles account size)
-        err_msg, position, _ = self.market_order_manager._process_market_order(
-            miner_order_uuid="test_uuid",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources
-        )
-
-        self.assertIsNone(err_msg)
-        self.assertIsNotNone(position)
-
-    def test_process_market_order_limit_execution_type(self):
-        """Test processing order with LIMIT execution type sets correct source"""
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(
-            order_type=OrderType.LONG,
-            leverage=0.3,
-            execution_type=ExecutionType.LIMIT
-        )
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        err_msg, position, created_order = self.market_order_manager._process_market_order(
-            miner_order_uuid="limit_uuid",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources
-        )
-
-        self.assertIsNone(err_msg)
-        self.assertIsNotNone(position)
-
-        # Verify order source is LIMIT_FILLED
-        new_order = position.orders[-1]
-        self.assertEqual(new_order.src, OrderSource.LIMIT_FILLED)
-
-    def test_process_market_order_market_execution_type(self):
-        """Test processing order with MARKET execution type sets correct source"""
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(
-            order_type=OrderType.LONG,
-            leverage=0.3,
-            execution_type=ExecutionType.MARKET
-        )
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        err_msg, position, created_order = self.market_order_manager._process_market_order(
-            miner_order_uuid="market_uuid",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources
-        )
-
-        self.assertIsNone(err_msg)
-        self.assertIsNotNone(position)
-
-        # Verify order source is ORGANIC
-        new_order = position.orders[-1]
-        self.assertEqual(new_order.src, OrderSource.ORGANIC)
-
-    # ============================================================================
-    # Test: process_market_order (public synapse interface)
-    # ============================================================================
-
-    def test_process_market_order_synapse_success(self):
-        """Test public synapse interface for market order processing"""
-        mock_synapse = Mock()
-        mock_synapse.successfully_processed = False
-        mock_synapse.error_message = None
-        mock_synapse.order_json = None
-
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        created_order = self.market_order_manager.process_market_order(
-            synapse=mock_synapse,
-            miner_order_uuid="test_uuid",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources
-        )
-
-        # Verify order was created
-        self.assertIsNotNone(created_order)
-        self.assertEqual(created_order.order_type, OrderType.LONG)
-
-    def test_process_market_order_synapse_error(self):
-        """Test public synapse interface handles errors"""
-        mock_synapse = Mock()
-        mock_synapse.successfully_processed = False
-        mock_synapse.error_message = None
-
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-
-        # Pass empty list for price_sources to trigger error
-        # process_market_order should raise SignalException
-        with self.assertRaises(SignalException):
-            self.market_order_manager.process_market_order(
-                synapse=mock_synapse,
-                miner_order_uuid="test_uuid",
-                miner_repo_version="1.0.0",
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                now_ms=now_ms,
-                signal=signal,
-                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-                price_sources=[]  # Empty list, not None
-            )
-
-    # ============================================================================
-    # Test: Multiple Miners and Trade Pairs
-    # ============================================================================
-
-    def test_process_market_order_multiple_miners_isolation(self):
-        """Test orders are isolated between miners"""
+        self.assertEqual(new_position.position_uuid, "new_order")
+        self.assertEqual(len(new_position.orders), 1)
+
+        all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
+        closed = [p for p in all_positions if p.position_uuid == existing_position.position_uuid]
+        self.assertEqual(len(closed), 1)
+        self.assertTrue(closed[0].is_closed_position)
+        self.assertEqual(closed[0].orders[-1].order_type, OrderType.FLAT)
+        self.assertEqual(closed[0].orders[-1].src, OrderSource.MAX_ORDERS_PER_POSITION_CLOSE)
+
+    def test_execute_order_multiple_miners_isolated(self):
         miner2 = "miner2"
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, miner2])
 
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
+        _, pos1 = self.execute(self.DEFAULT_MINER_HOTKEY, "m1_order", OrderType.LONG, 50000.0, value=500.0)
+        _, pos2 = self.execute(miner2, "m2_order", OrderType.LONG, 50000.0, value=500.0)
 
-        # Process order for miner 1
-        _, pos1, _ = self.market_order_manager._process_market_order(
-            miner_order_uuid="miner1_order",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources
-        )
-
-        # Process order for miner 2
-        _, pos2, _ = self.market_order_manager._process_market_order(
-            miner_order_uuid="miner2_order",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms + 1000,
-            signal=signal,
-            miner_hotkey=miner2,
-            price_sources=price_sources
-        )
-
-        # Verify separate positions
         self.assertNotEqual(pos1.miner_hotkey, pos2.miner_hotkey)
         self.assertNotEqual(pos1.position_uuid, pos2.position_uuid)
 
-    def test_process_market_order_multiple_trade_pairs(self):
-        """Test single miner can have positions in multiple trade pairs"""
-        now_ms = TimeUtil.now_in_millis()
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-
-        btc_price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-        eth_price_sources = [self.create_test_price_source(3000.0, start_ms=now_ms)]
-
-        # BTC position
-        _, btc_pos, _ = self.market_order_manager._process_market_order(
-            miner_order_uuid="btc_order",
-            miner_repo_version="1.0.0",
-            trade_pair=TradePair.BTCUSD,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=btc_price_sources
+    def test_execute_order_multiple_trade_pairs(self):
+        _, btc_pos = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "btc_order", OrderType.LONG, 50000.0, value=500.0,
+            trade_pair=TradePair.BTCUSDC,
+        )
+        now_ms2 = TimeUtil.now_in_millis() + 1
+        _, eth_pos = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "eth_order", OrderType.LONG, 3000.0, value=500.0,
+            trade_pair=TradePair.ETHUSDC, now_ms=now_ms2,
         )
 
-        # ETH position
-        _, eth_pos, _ = self.market_order_manager._process_market_order(
-            miner_order_uuid="eth_order",
-            miner_repo_version="1.0.0",
-            trade_pair=TradePair.ETHUSD,
-            now_ms=now_ms + 1000,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=eth_price_sources
-        )
-
-        # Verify different positions
         self.assertNotEqual(btc_pos.trade_pair, eth_pos.trade_pair)
         self.assertNotEqual(btc_pos.position_uuid, eth_pos.position_uuid)
-
-    # ============================================================================
-    # Test: Edge Cases and Error Handling
-    # ============================================================================
-
-    def test_process_market_order_missing_signal_keys(self):
-        """Test error handling when signal dict is missing required keys"""
-        now_ms = TimeUtil.now_in_millis()
-        invalid_signal = {"leverage": 0.3}  # Missing order_type
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        with self.assertRaises(KeyError):
-            self.market_order_manager._process_market_order(
-                miner_order_uuid="test_uuid",
-                miner_repo_version="1.0.0",
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                now_ms=now_ms,
-                signal=invalid_signal,
-                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-                price_sources=price_sources
-            )
-
-    def test_cooldown_cache_key_format(self):
-        """Test cooldown cache uses correct (hotkey, trade_pair_id) format"""
-        now_ms = TimeUtil.now_in_millis()
-
-        # Add order to populate cache
-        position = self.create_test_position()
-        price_sources = [self.create_test_price_source(50000.0, start_ms=now_ms)]
-
-        # Calculate order size from leverage
-        quantity, leverage, value = convert_order_sizes(
-            OrderSize(leverage=0.3), 1.0, self.DEFAULT_TRADE_PAIR, self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        self.market_order_manager._add_order_to_existing_position(
-            existing_position=position,
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            signal_order_type=OrderType.LONG,
-            quantity=quantity,
-            leverage=leverage,
-            value=value,
-            order_time_ms=now_ms,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
-            miner_order_uuid="test",
-            miner_repo_version="1.0.0",
-            src=OrderSource.ORGANIC,
-            balance=self.DEFAULT_ACCOUNT_SIZE
-        )
-
-        # Verify cache key format
-        expected_key = (self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR.trade_pair_id)
-        self.assertIn(expected_key, self.market_order_manager.last_order_time_cache)
 
     # ============================================================================
     # Test: close_positions
     # ============================================================================
 
-    def test_close_positions_closes_multiple_positions(self):
-        """Test close_positions with close_all=True closes all open positions for a miner"""
+    def test_close_positions_closes_all(self):
+        trade_pairs = [TradePair.BTCUSDC, TradePair.ETHUSDC, TradePair.SOLUSDC]
         now_ms = TimeUtil.now_in_millis()
 
-        trade_pairs = [TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD]
-
         for i, trade_pair in enumerate(trade_pairs):
-            signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.1)
-            price_sources = [self.create_test_price_source(50000.0 + i * 1000, start_ms=now_ms + i * 1000)]
-
-            err_msg, position, created_order = self.market_order_manager._process_market_order(
-                miner_order_uuid=f"position_{i}",
-                miner_repo_version="1.0.0",
-                trade_pair=trade_pair,
-                now_ms=now_ms + i * 1000,
-                signal=signal,
-                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-                price_sources=price_sources,
-                enforce_market_cooldown=False
+            self.execute(
+                self.DEFAULT_MINER_HOTKEY, f"position_{i}", OrderType.LONG, 1000.0 + i * 10, value=500.0,
+                trade_pair=trade_pair, now_ms=now_ms + i,
             )
 
-            self.assertIsNone(err_msg)
-            self.assertIsNotNone(position)
-            self.assertFalse(position.is_closed_position)
-
         open_positions_before = self.position_client.get_positions_for_hotkeys(
-            [self.DEFAULT_MINER_HOTKEY],
-            only_open_positions=True
+            [self.DEFAULT_MINER_HOTKEY], only_open_positions=True
         ).get(self.DEFAULT_MINER_HOTKEY)
-
         self.assertEqual(len(open_positions_before), 3)
 
-        close_time_ms = now_ms + 10000
         self.market_order_manager.close_positions(
-            hotkey=self.DEFAULT_MINER_HOTKEY,
-            close_all=True,
-            now_ms=close_time_ms
+            hotkey=self.DEFAULT_MINER_HOTKEY, close_all=True, now_ms=now_ms + 10000
         )
 
         all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
-
+        self.assertEqual(len(all_positions), 3)
         for position in all_positions:
             self.assertTrue(position.is_closed_position)
             last_order = position.orders[-1]
             self.assertEqual(last_order.order_type, OrderType.FLAT)
-            self.assertEqual(last_order.src, OrderSource.FLAT_ALL_CLOSE)
+            # close_positions() doesn't pass order_src, so execute_order's default (ORGANIC) applies.
+            self.assertEqual(last_order.src, OrderSource.ORGANIC)
 
-    def _reset_state_for_injection_case(self):
-
-        self.orchestrator.clear_all_test_data()
-        self.market_order_manager.last_order_time_cache.clear()
-        self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY])
-
-    def test_market_order_ignores_injected_entry_price(self):
-
+    def test_close_positions_closes_only_matching_uuids(self):
         now_ms = TimeUtil.now_in_millis()
-        market_price = 50000.0
-        injected_price = 45000.0  
-
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-        signal["price"] = injected_price  
-        price_sources = [self.create_test_price_source(market_price, start_ms=now_ms)]
-
-        err_msg, position, created_order = self.market_order_manager._process_market_order(
-            miner_order_uuid="vanta_uuid",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
+        _, pos1 = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "keep_open", OrderType.LONG, 1000.0, value=500.0,
+            trade_pair=TradePair.BTCUSDC, now_ms=now_ms,
+        )
+        _, pos2 = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "to_close", OrderType.LONG, 2000.0, value=500.0,
+            trade_pair=TradePair.ETHUSDC, now_ms=now_ms + 1,
         )
 
-        self.assertIsNone(err_msg)
-        self.assertIsNotNone(created_order)
-
-        self.assertEqual(created_order.price, market_price)
-        self.assertNotEqual(created_order.price, injected_price)
-        # bid/ask come from the real market source.
-        self.assertEqual(created_order.bid, price_sources[0].bid)
-        self.assertEqual(created_order.ask, price_sources[0].ask)
-
-    def test_market_order_ignores_injected_price_all_magnitudes(self):
-
-        market_price = 50000.0
-        injected_prices = [49500.0, 45000.0, 25000.0, 500.0, 0.01]
-
-        for i, injected_price in enumerate(injected_prices):
-            self._reset_state_for_injection_case()
-            now_ms = TimeUtil.now_in_millis()
-            signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-            signal["price"] = injected_price
-            price_sources = [self.create_test_price_source(market_price, start_ms=now_ms)]
-
-            err_msg, position, created_order = self.market_order_manager._process_market_order(
-                miner_order_uuid=f"vanta_sweep_{i}",
-                miner_repo_version="1.0.0",
-                trade_pair=self.DEFAULT_TRADE_PAIR,
-                now_ms=now_ms,
-                signal=signal,
-                miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-                price_sources=price_sources,
-            )
-
-            self.assertIsNone(err_msg, f"order unexpectedly rejected for injected price {injected_price}")
-            self.assertEqual(
-                created_order.price, market_price,
-                f"injected price {injected_price} leaked into the fill price",
-            )
-
-    def test_market_order_usd_conversion_ignores_injected_price(self):
-        
-        now_ms = TimeUtil.now_in_millis()
-        market_price = 50000.0
-        injected_price = 25000.0
-
-        signal = self.create_test_signal(order_type=OrderType.LONG, leverage=0.3)
-        signal["price"] = injected_price
-        price_sources = [self.create_test_price_source(market_price, start_ms=now_ms)]
-
-        _, _, created_order = self.market_order_manager._process_market_order(
-            miner_order_uuid="vanta_market_test_usd",
-            miner_repo_version="1.0.0",
-            trade_pair=self.DEFAULT_TRADE_PAIR,
-            now_ms=now_ms,
-            signal=signal,
-            miner_hotkey=self.DEFAULT_MINER_HOTKEY,
-            price_sources=price_sources,
+        self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=[pos2.position_uuid], now_ms=now_ms + 10000
         )
 
-        
-        self.assertAlmostEqual(created_order.usd_base_rate, 1.0 / market_price, places=12)
-        self.assertNotAlmostEqual(created_order.usd_base_rate, 1.0 / injected_price, places=12)
+        all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
+        by_uuid = {p.position_uuid: p for p in all_positions}
+        self.assertFalse(by_uuid[pos1.position_uuid].is_closed_position)
+        self.assertTrue(by_uuid[pos2.position_uuid].is_closed_position)
+
+    def test_close_positions_no_open_positions_is_noop(self):
+        # Should not raise even though the miner has no positions at all.
+        self.market_order_manager.close_positions(hotkey="miner_with_no_positions", close_all=True)
+
+    def test_close_positions_no_matching_uuids_is_noop(self):
+        now_ms = TimeUtil.now_in_millis()
+        _, pos = self.execute(self.DEFAULT_MINER_HOTKEY, "order_1", OrderType.LONG, 1000.0, value=500.0, now_ms=now_ms)
+
+        self.market_order_manager.close_positions(
+            hotkey=self.DEFAULT_MINER_HOTKEY, position_uuids=["not_a_real_uuid"], now_ms=now_ms + 10000
+        )
+
+        refreshed = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
+        self.assertFalse(next(p for p in refreshed if p.position_uuid == pos.position_uuid).is_closed_position)

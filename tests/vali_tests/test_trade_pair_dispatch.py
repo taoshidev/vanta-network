@@ -90,7 +90,7 @@ class TestConfigCompleteness(unittest.TestCase):
         for tier in self.ALL_TIERS:
             with self.subTest(tier=tier):
                 self.assertNotIn(
-                    TradePairCategory.HL_ALL,
+                    MinerAssetClass.HL_ALL,
                     ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[tier],
                 )
 
@@ -172,6 +172,7 @@ class TestGetTierPositionalLeverage(unittest.TestCase):
         because today's placeholder base = 0.5 lands tier 4 at exactly 2.0.
         """
         synthetic = types.SimpleNamespace(
+            trade_pair_id="SYNTHETIC_EQUITIES_SPOT",
             trade_pair_category=TradePairCategory.EQUITIES,
             instrument_type=InstrumentType.SPOT,
             subaccount_tier_base_leverage=1.0,  # tier 3 would give 3.0; Reg-T clips to 2.0
@@ -223,13 +224,18 @@ class TestGetPortfolioCaps(unittest.TestCase):
                 self.assertEqual(per_class, expected)
 
     def test_none_subaccount_class_uses_defensive_default(self):
+        """asset_class=None isn't a real production path (get_max_order_size raises
+        ValueError before calling get_portfolio_caps if asset_class is unset), so this
+        just pins the function's actual fallback: per_class_cap still resolves off
+        trade_pair_category, but overall_cap falls back to a flat 1.0 since None isn't a
+        key in TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS.
+        """
         per_class, overall = get_portfolio_caps(
             None, self.BUCKET, self.ACCT, TradePairCategory.CRYPTO,
         )
-        # asset_class=None goes to single-class branch keyed on trade_pair_category.
-        expected = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.CRYPTO]
-        self.assertEqual(per_class, expected)
-        self.assertEqual(overall, expected)
+        expected_per_class = ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[2][TradePairCategory.CRYPTO]
+        self.assertEqual(per_class, expected_per_class)
+        self.assertEqual(overall, 1.0)
 
     def test_challenge_bucket_uses_tier_1(self):
         per_class, _ = get_portfolio_caps(
@@ -264,7 +270,7 @@ class TestTradePairPropertyAccessors(unittest.TestCase):
     def test_subaccount_tier_base_via_named_tuple_scan(self):
         self.assertEqual(TradePair.BTCUSD.subaccount_tier_base_leverage, 0.5)
         self.assertEqual(TradePair.EURUSD.subaccount_tier_base_leverage, 2.5)
-        self.assertEqual(TradePair.GOLDUSDC.subaccount_tier_base_leverage, 0.5)
+        self.assertEqual(TradePair.GOLDUSDC.subaccount_tier_base_leverage, 1.0)
         self.assertEqual(TradePair.NVDA.subaccount_tier_base_leverage, 0.5)
 
     def test_subaccount_tier_base_wrapper_isolates_from_floats(self):

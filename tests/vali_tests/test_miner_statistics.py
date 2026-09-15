@@ -158,6 +158,7 @@ class TestMinerStatistics(TestBase):
                 position_uuid=f"test_position_{hotkey}",
                 open_ms=current_time - 1000 * 60 * 60,  # 1 hour ago
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 account_size=100_000,  # Required for scoring
                 orders=[
                     Order(
@@ -189,13 +190,10 @@ class TestMinerStatistics(TestBase):
             else:
                 raise AssertionError(f"Ledger data not found for {hotkey} after save/reload")
 
-        # Add miners to challenge period using batch update (matches reference test pattern)
-        miners_dict = {}
+        # Add miners to the main competition bucket
+        self.challenge_period_client.clear_test_state()
         for hotkey in self.test_hotkeys:
-            miners_dict[hotkey] = (MinerBucket.MAINCOMP, start_time, None, None)
-
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners(miners_dict)
+            self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, start_time)
         # Note: Data persistence handled automatically by server - no manual disk write needed
 
         # Inject account sizes data for all test miners (required for scoring penalty calculations)
@@ -435,6 +433,7 @@ class TestMinerStatistics(TestBase):
                 position_uuid=f"pos_{hotkey}",
                 open_ms=current_time - 1000 * 60 * 60,
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 account_size=200_000,
                 orders=[Order(
                     price=60000,
@@ -458,8 +457,9 @@ class TestMinerStatistics(TestBase):
             success_miner: (MinerBucket.MAINCOMP, start_time, None, None),  # In main competition
             probation_miner: (MinerBucket.PROBATION, current_time - 1000 * 60 * 60 * 24 * 5, None, None)  # 5 days in probation
         }
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners(miners_dict)
+        self.challenge_period_client.clear_test_state()
+        for hk, (bucket, bucket_start_ms, _, _) in miners_dict.items():
+            self.challenge_period_client.set_miner_bucket(hk, bucket, bucket_start_ms)
 
         # Inject account sizes
         miner_account_client = self.orchestrator.get_client('miner_account')
@@ -538,6 +538,7 @@ class TestMinerStatistics(TestBase):
                 position_uuid=f"pos_{hotkey}",
                 open_ms=current_time - 1000 * 60 * 60,
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 account_size=200_000,
                 orders=[Order(
                     price=60000,
@@ -557,8 +558,9 @@ class TestMinerStatistics(TestBase):
 
         # Add to challenge period
         miners_dict = {hk: (MinerBucket.MAINCOMP, start_time, None, None) for hk in miners}
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners(miners_dict)
+        self.challenge_period_client.clear_test_state()
+        for hk, (bucket, bucket_start_ms, _, _) in miners_dict.items():
+            self.challenge_period_client.set_miner_bucket(hk, bucket, bucket_start_ms)
 
         # Set different account sizes - one above minimum ($150k), one below
         # NOTE: Currently, min_collateral penalty is not applied in calculate_penalties_breakdown()
@@ -663,6 +665,7 @@ class TestMinerStatistics(TestBase):
                 position_uuid=f"pos_{hotkey}",
                 open_ms=current_time - 1000 * 60 * 60,
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 account_size=200_000,
                 orders=[Order(
                     price=60000,
@@ -681,8 +684,9 @@ class TestMinerStatistics(TestBase):
         self.perf_ledger_client.re_init_perf_ledger_data()
 
         miners_dict = {hk: (MinerBucket.MAINCOMP, start_time, None, None) for hk in miners}
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners(miners_dict)
+        self.challenge_period_client.clear_test_state()
+        for hk, (bucket, bucket_start_ms, _, _) in miners_dict.items():
+            self.challenge_period_client.set_miner_bucket(hk, bucket, bucket_start_ms)
 
         # Inject account sizes
         miner_account_client = self.orchestrator.get_client('miner_account')
@@ -760,6 +764,7 @@ class TestMinerStatistics(TestBase):
                 position_uuid=f"pos_{hotkey}",
                 open_ms=current_time - 1000 * 60 * 60,
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 account_size=200_000,
                 orders=[Order(
                     price=60000,
@@ -778,8 +783,9 @@ class TestMinerStatistics(TestBase):
         self.perf_ledger_client.re_init_perf_ledger_data()
 
         miners_dict = {hk: (MinerBucket.MAINCOMP, start_time, None, None) for hk in miners}
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners(miners_dict)
+        self.challenge_period_client.clear_test_state()
+        for hk, (bucket, bucket_start_ms, _, _) in miners_dict.items():
+            self.challenge_period_client.set_miner_bucket(hk, bucket, bucket_start_ms)
 
         miner_account_client = self.orchestrator.get_client('miner_account')
         account_sizes_data = {
@@ -845,6 +851,7 @@ class TestMinerStatistics(TestBase):
             position_uuid="solo_pos",
             open_ms=current_time - 1000 * 60 * 60,
             trade_pair=TradePair.BTCUSD,
+            position_type=OrderType.LONG,
             account_size=200_000,
             orders=[Order(
                 price=60000,
@@ -862,8 +869,8 @@ class TestMinerStatistics(TestBase):
         self.perf_ledger_client.save_perf_ledgers(ledgers)
         self.perf_ledger_client.re_init_perf_ledger_data()
 
-        self.challenge_period_client.clear_all_miners()
-        self.challenge_period_client.update_miners({solo_miner: (MinerBucket.MAINCOMP, start_time, None, None)})
+        self.challenge_period_client.clear_test_state()
+        self.challenge_period_client.set_miner_bucket(solo_miner, MinerBucket.MAINCOMP, start_time)
 
         miner_account_client = self.orchestrator.get_client('miner_account')
         miner_account_client.sync_miner_account_sizes_data({

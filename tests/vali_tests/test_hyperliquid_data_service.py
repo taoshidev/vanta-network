@@ -7,7 +7,7 @@ import requests
 
 from data_generator.hyperliquid_data_service import HyperliquidDataService, HYPERLIQUID_PROVIDER_NAME
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
 
 
 class TestHyperliquidDataService(unittest.TestCase):
@@ -36,20 +36,25 @@ class TestHyperliquidDataService(unittest.TestCase):
     # -- Coin mapping tests --
 
     def test_coin_mapping_contains_all_crypto(self):
-        expected_coins = {"BTC", "ETH", "SOL", "XRP", "DOGE", "ADA",
-                          "TAO", "HYPE", "ZEC", "BCH", "LINK", "XMR", "LTC"}
+        # The mapping covers every non-blocked Hyperliquid-sourced trade pair (crypto,
+        # plus equities/commodities on non-default dexes) — mirror the same filter
+        # the service builds it with, rather than a static snapshot that drifts.
+        expected_coins = {
+            tp.hl_coin for tp in TradePair
+            if tp.src == TradePairSource.HYPERLIQUID and not tp.is_blocked
+        }
         actual_coins = set(self.service._coin_to_trade_pair.keys())
         self.assertEqual(expected_coins, actual_coins)
 
     def test_coin_mapping_excludes_blocked(self):
         for tp in TradePair:
-            if tp.is_blocked and tp.is_crypto:
-                self.assertNotIn(tp.base, self.service._coin_to_trade_pair)
+            if tp.is_blocked and tp.src == TradePairSource.HYPERLIQUID:
+                self.assertNotIn(tp.hl_coin, self.service._coin_to_trade_pair)
 
     def test_coin_mapping_values(self):
-        self.assertEqual(self.service._coin_to_trade_pair["BTC"], TradePair.BTCUSD)
-        self.assertEqual(self.service._coin_to_trade_pair["ETH"], TradePair.ETHUSD)
-        self.assertEqual(self.service._coin_to_trade_pair["SOL"], TradePair.SOLUSD)
+        self.assertEqual(self.service._coin_to_trade_pair["BTC"], TradePair.BTCUSDC)
+        self.assertEqual(self.service._coin_to_trade_pair["ETH"], TradePair.ETHUSDC)
+        self.assertEqual(self.service._coin_to_trade_pair["SOL"], TradePair.SOLUSDC)
 
     # -- Enabled categories --
 
@@ -64,7 +69,7 @@ class TestHyperliquidDataService(unittest.TestCase):
 
         asyncio.run(self.service.handle_msg_full(msg))
 
-        symbol = TradePair.BTCUSD.trade_pair  # "BTC/USD"
+        symbol = TradePair.BTCUSDC.trade_pair  # "BTC/USDC"
         self.assertIn(symbol, self.service.latest_websocket_events)
 
         ps = self.service.latest_websocket_events[symbol]
@@ -79,21 +84,23 @@ class TestHyperliquidDataService(unittest.TestCase):
         msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
         asyncio.run(self.service.handle_msg_full(msg))
         self.assertIn("BTC", self.service._orderbooks_full)
-        self.assertNotIn("BTC", self.service._orderbooks_coarse)
+        for coarse_book in self.service._orderbooks_coarse_by_sigfigs.values():
+            self.assertNotIn("BTC", coarse_book)
 
     def test_handle_msg_coarse_updates_coarse_orderbook_only(self):
+        sig_figs = 5
         msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
-        asyncio.run(self.service.handle_msg_coarse(msg))
-        self.assertIn("BTC", self.service._orderbooks_coarse)
+        asyncio.run(self.service.handle_msg_coarse(sig_figs, msg))
+        self.assertIn("BTC", self.service._orderbooks_coarse_by_sigfigs[sig_figs])
         self.assertNotIn("BTC", self.service._orderbooks_full)
         # coarse handler must NOT update the price feed
-        self.assertNotIn(TradePair.BTCUSD.trade_pair, self.service.latest_websocket_events)
+        self.assertNotIn(TradePair.BTCUSDC.trade_pair, self.service.latest_websocket_events)
 
     def test_handle_msg_full_stores_in_recent_events(self):
         msg = self._make_l2book_msg(coin="ETH", bid="2000.0", ask="2001.0")
         asyncio.run(self.service.handle_msg_full(msg))
 
-        symbol = TradePair.ETHUSD.trade_pair
+        symbol = TradePair.ETHUSDC.trade_pair
         self.assertIn(symbol, self.service.trade_pair_to_recent_events)
 
         tracker = self.service.trade_pair_to_recent_events[symbol]
@@ -143,13 +150,13 @@ class TestHyperliquidDataService(unittest.TestCase):
         msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0", time_ms=now_ms)
         asyncio.run(self.service.handle_msg_full(msg))
 
-        results = self.service.get_closes_websocket([TradePair.BTCUSD], now_ms)
-        self.assertIn(TradePair.BTCUSD, results)
-        self.assertEqual(results[TradePair.BTCUSD].close, 30001.0)
+        results = self.service.get_closes_websocket([TradePair.BTCUSDC], now_ms)
+        self.assertIn(TradePair.BTCUSDC, results)
+        self.assertEqual(results[TradePair.BTCUSDC].close, 30001.0)
 
     def test_get_closes_websocket_empty_for_no_data(self):
-        results = self.service.get_closes_websocket([TradePair.BTCUSD], TimeUtil.now_in_millis())
-        self.assertNotIn(TradePair.BTCUSD, results)
+        results = self.service.get_closes_websocket([TradePair.BTCUSDC], TimeUtil.now_in_millis())
+        self.assertNotIn(TradePair.BTCUSDC, results)
 
     def test_multiple_coins(self):
         now_ms = TimeUtil.now_in_millis()
@@ -158,25 +165,28 @@ class TestHyperliquidDataService(unittest.TestCase):
             asyncio.run(self.service.handle_msg_full(msg))
 
         results = self.service.get_closes_websocket(
-            [TradePair.BTCUSD, TradePair.ETHUSD, TradePair.SOLUSD], now_ms
+            [TradePair.BTCUSDC, TradePair.ETHUSDC, TradePair.SOLUSDC], now_ms
         )
         self.assertEqual(len(results), 3)
-        self.assertEqual(results[TradePair.BTCUSD].close, 30001.0)
-        self.assertEqual(results[TradePair.ETHUSD].close, 2000.5)
-        self.assertEqual(results[TradePair.SOLUSD].close, 100.25)
+        self.assertEqual(results[TradePair.BTCUSDC].close, 30001.0)
+        self.assertEqual(results[TradePair.ETHUSDC].close, 2000.5)
+        self.assertEqual(results[TradePair.SOLUSDC].close, 100.25)
 
 
     # -- simulate_slippage tests --
 
-    def _inject_books(self, coin, fine_bids, fine_asks, coarse_bids, coarse_asks):
+    def _inject_books(self, coin, fine_bids, fine_asks, coarse_bids, coarse_asks, sig_figs=5):
         """Directly populate both orderbook caches."""
+        now_ms = TimeUtil.now_in_millis()
         if fine_bids is not None:
-            self.service._orderbooks_full[coin] = {"bids": fine_bids, "asks": fine_asks}
+            self.service._orderbooks_full[coin] = {"bids": fine_bids, "asks": fine_asks, "time": now_ms}
         if coarse_bids is not None:
-            self.service._orderbooks_coarse[coin] = {"bids": coarse_bids, "asks": coarse_asks}
+            self.service._orderbooks_coarse_by_sigfigs[sig_figs][coin] = {
+                "bids": coarse_bids, "asks": coarse_asks, "time": now_ms
+            }
 
     def test_simulate_slippage_returns_none_with_no_data(self):
-        self.assertIsNone(self.service.simulate_slippage(TradePair.BTCUSD, 1000.0, True))
+        self.assertIsNone(self.service.simulate_slippage(TradePair.BTCUSDC, 1000.0, True))
 
     def test_simulate_slippage_falls_back_to_coarse_only(self):
         # No fine book; coarse only
@@ -186,7 +196,7 @@ class TestHyperliquidDataService(unittest.TestCase):
             coarse_bids=[{"px": "29999.0", "sz": "1.0"}, {"px": "29998.0", "sz": "2.0"}],
             coarse_asks=[{"px": "30001.0", "sz": "1.0"}, {"px": "30002.0", "sz": "2.0"}],
         )
-        result = self.service.simulate_slippage(TradePair.BTCUSD, 1000.0, True)
+        result = self.service.simulate_slippage(TradePair.BTCUSDC, 1000.0, True)
         self.assertIsNotNone(result)
         self.assertGreaterEqual(result, 0.0)
 
@@ -200,7 +210,7 @@ class TestHyperliquidDataService(unittest.TestCase):
             coarse_asks=[{"px": "30010.0", "sz": "100.0"}],
         )
         # Buy $100 — fits in fine ask level at 30001, mid = 30000
-        result = self.service.simulate_slippage(TradePair.BTCUSD, 100.0, True)
+        result = self.service.simulate_slippage(TradePair.BTCUSDC, 100.0, True)
         self.assertIsNotNone(result)
         # slippage = (30001 - 30000) / 30000 ≈ 0.0000333
         self.assertAlmostEqual(result, 1.0 / 30000.0, places=6)
@@ -215,8 +225,8 @@ class TestHyperliquidDataService(unittest.TestCase):
             coarse_bids=[{"px": "29990.0", "sz": "100.0"}],
             coarse_asks=[{"px": "30002.0", "sz": "100.0"}, {"px": "30010.0", "sz": "100.0"}],
         )
-        result_small = self.service.simulate_slippage(TradePair.BTCUSD, 1000.0, True)
-        result_large = self.service.simulate_slippage(TradePair.BTCUSD, 60000.0, True)
+        result_small = self.service.simulate_slippage(TradePair.BTCUSDC, 1000.0, True)
+        result_large = self.service.simulate_slippage(TradePair.BTCUSDC, 60000.0, True)
         # Larger order should have equal or greater slippage
         self.assertGreaterEqual(result_large, result_small)
 
@@ -228,8 +238,8 @@ class TestHyperliquidDataService(unittest.TestCase):
             fine_asks=[{"px": "30001.0", "sz": "10.0"}],
             coarse_bids=None, coarse_asks=None,
         )
-        buy_slip = self.service.simulate_slippage(TradePair.BTCUSD, 100.0, True)
-        sell_slip = self.service.simulate_slippage(TradePair.BTCUSD, 100.0, False)
+        buy_slip = self.service.simulate_slippage(TradePair.BTCUSDC, 100.0, True)
+        sell_slip = self.service.simulate_slippage(TradePair.BTCUSDC, 100.0, False)
         self.assertIsNotNone(buy_slip)
         self.assertIsNotNone(sell_slip)
         self.assertAlmostEqual(buy_slip, sell_slip, places=8)
@@ -238,14 +248,14 @@ class TestHyperliquidDataService(unittest.TestCase):
 
     def test_get_price_rest_unit_test_mode(self):
         """In unit test mode, get_price_rest returns default fallback price sources."""
-        results = self.service.get_price_rest([TradePair.BTCUSD, TradePair.ETHUSD], TimeUtil.now_in_millis())
+        results = self.service.get_price_rest([TradePair.BTCUSDC, TradePair.ETHUSDC], TimeUtil.now_in_millis(), live=True)
         self.assertEqual(len(results), 2)
-        self.assertIn(TradePair.BTCUSD, results)
-        self.assertIn(TradePair.ETHUSD, results)
+        self.assertIn(TradePair.BTCUSDC, results)
+        self.assertIn(TradePair.ETHUSDC, results)
 
     def test_get_price_rest_ignores_non_crypto(self):
         """Non-crypto pairs should be ignored."""
-        results = self.service.get_price_rest([TradePair.EURUSD], TimeUtil.now_in_millis())
+        results = self.service.get_price_rest([TradePair.EURUSD], TimeUtil.now_in_millis(), live=True)
         # EURUSD is forex, not crypto — should not be in results (unit test mode returns for all passed pairs,
         # but the method filters to crypto only before the unit test shortcut)
         # Since running_unit_tests returns early for all trade_pairs before filtering, let's
@@ -254,12 +264,12 @@ class TestHyperliquidDataService(unittest.TestCase):
         with patch("data_generator.hyperliquid_data_service.requests.post") as mock_post:
             mock_post.return_value = MagicMock(status_code=200, json=lambda: {})
             mock_post.return_value.raise_for_status = MagicMock()
-            results = svc.get_price_rest([TradePair.EURUSD], TimeUtil.now_in_millis())
+            results = svc.get_price_rest([TradePair.EURUSD], TimeUtil.now_in_millis(), live=True)
         self.assertEqual(len(results), 0)
 
     def test_get_price_rest_single_pair(self):
         """get_price_rest should return a PriceSource for a single pair."""
-        result = self.service.get_price_rest(TradePair.BTCUSD, TimeUtil.now_in_millis())
+        result = self.service.get_price_rest([TradePair.BTCUSDC], TimeUtil.now_in_millis(), live=True)
         self.assertIsNotNone(result)
 
     @patch("data_generator.hyperliquid_data_service.requests.post")
@@ -273,14 +283,14 @@ class TestHyperliquidDataService(unittest.TestCase):
         mock_post.return_value = mock_response
 
         results = svc.get_price_rest(
-            [TradePair.BTCUSD, TradePair.ETHUSD], TimeUtil.now_in_millis()
+            [TradePair.BTCUSDC, TradePair.ETHUSDC], TimeUtil.now_in_millis(), live=True
         )
 
         self.assertEqual(len(results), 2)
-        self.assertAlmostEqual(results[TradePair.BTCUSD].close, 67500.5)
-        self.assertAlmostEqual(results[TradePair.ETHUSD].close, 3400.25)
-        self.assertEqual(results[TradePair.BTCUSD].source, f"{HYPERLIQUID_PROVIDER_NAME}_rest")
-        self.assertFalse(results[TradePair.BTCUSD].websocket)
+        self.assertAlmostEqual(results[TradePair.BTCUSDC].close, 67500.5)
+        self.assertAlmostEqual(results[TradePair.ETHUSDC].close, 3400.25)
+        self.assertEqual(results[TradePair.BTCUSDC].source, f"{HYPERLIQUID_PROVIDER_NAME}_rest")
+        self.assertFalse(results[TradePair.BTCUSDC].websocket)
 
     @patch("data_generator.hyperliquid_data_service.requests.post")
     def test_get_price_rest_falls_back_to_l2book(self, mock_post):
@@ -305,16 +315,16 @@ class TestHyperliquidDataService(unittest.TestCase):
         mock_post.side_effect = side_effect
 
         results = svc.get_price_rest(
-            [TradePair.BTCUSD, TradePair.ETHUSD], TimeUtil.now_in_millis()
+            [TradePair.BTCUSDC, TradePair.ETHUSDC], TimeUtil.now_in_millis(), live=True
         )
 
         self.assertEqual(len(results), 2)
         # BTC came from l2Book
-        self.assertAlmostEqual(results[TradePair.BTCUSD].close, 67001.0)
-        self.assertEqual(results[TradePair.BTCUSD].bid, 67000.0)
-        self.assertEqual(results[TradePair.BTCUSD].ask, 67002.0)
+        self.assertAlmostEqual(results[TradePair.BTCUSDC].close, 67001.0)
+        self.assertEqual(results[TradePair.BTCUSDC].bid, 67000.0)
+        self.assertEqual(results[TradePair.BTCUSDC].ask, 67002.0)
         # ETH came from allMids
-        self.assertAlmostEqual(results[TradePair.ETHUSD].close, 3400.0)
+        self.assertAlmostEqual(results[TradePair.ETHUSDC].close, 3400.0)
 
     @patch("data_generator.hyperliquid_data_service.requests.post")
     def test_get_price_rest_handles_api_failure(self, mock_post):
@@ -322,7 +332,7 @@ class TestHyperliquidDataService(unittest.TestCase):
         svc = HyperliquidDataService(disable_ws=True, running_unit_tests=False)
         mock_post.side_effect = Exception("Connection refused")
 
-        results = svc.get_price_rest([TradePair.BTCUSD], TimeUtil.now_in_millis())
+        results = svc.get_price_rest([TradePair.BTCUSDC], TimeUtil.now_in_millis(), live=True)
         self.assertEqual(len(results), 0)
 
     # -- fetch_candle_range tests --

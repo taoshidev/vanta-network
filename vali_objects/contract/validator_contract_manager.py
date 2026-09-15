@@ -429,7 +429,6 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             elimination = self._elimination_client.get_elimination(miner_hotkey)
             if not elimination or not elimination["collateral_slashed"]:
                 perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(miner_hotkey)
-                self._miner_account_client.rebuild_account_state_from_positions(miner_hotkey, positions)
                 account = self._miner_account_client.get_account(miner_hotkey)
 
                 max_return = 1.0
@@ -699,7 +698,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             logger.error(f"Failed to get slashed collateral: {e}")
             return 0
 
-    def _set_miner_account_size(self, hotkey: str, timestamp_ms: int = None, account_size: float = None) -> bool:
+    def _set_miner_account_size(self, hotkey: str, timestamp_ms: int | None = None, account_size: float | None = None) -> bool:
         """
         Set the account size for a miner by fetching collateral balance and updating via MinerAccountClient.
 

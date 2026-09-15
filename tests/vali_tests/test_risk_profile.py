@@ -87,6 +87,7 @@ class TestRiskProfile(TestBase):
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=self.DEFAULT_TRADE_PAIR,
+            position_type=self.DEFAULT_ORDER_DIRECTION,
             is_closed_position=self.DEFAULT_OPEN,
             account_size=self.DEFAULT_ACCOUNT_SIZE,
         )

@@ -113,6 +113,7 @@ class TestCoreOutputs(TestBase):
 
             # Create a simple test position
             test_position = Position(
+                position_type=OrderType.LONG,
                 miner_hotkey=hotkey,
                 position_uuid=f"test_position_{hotkey}",
                 open_ms=current_time - 1000 * 60 * 60,  # 1 hour ago
@@ -143,7 +144,7 @@ class TestCoreOutputs(TestBase):
         health = self.core_outputs_client.health_check()
         self.assertIsNotNone(health)
         self.assertEqual(health['status'], 'ok')
-        self.assertIn('cache_status', health)
+        self.assertEqual(health['service'], 'CoreOutputsServer')
 
     # ==================== Production Code Path Tests ====================
 
@@ -191,9 +192,11 @@ class TestCoreOutputs(TestBase):
         for hotkey in self.test_hotkeys:
             self.assertIn(hotkey, challengeperiod)
             miner_data = challengeperiod[hotkey]
-            self.assertIn('bucket', miner_data[0])
-            self.assertIn('bucket_start_time', miner_data[0])
-            self.assertEqual(miner_data[0]['bucket'], 'CHALLENGE')
+            self.assertIn('entries', miner_data)
+            bucket_entries = miner_data['entries']
+            self.assertIn('bucket', bucket_entries[0])
+            self.assertIn('bucket_start_time', bucket_entries[0])
+            self.assertEqual(bucket_entries[0]['bucket'], 'CHALLENGE')
 
         # Verify positions data structure
         positions = checkpoint_dict.get('positions', {})

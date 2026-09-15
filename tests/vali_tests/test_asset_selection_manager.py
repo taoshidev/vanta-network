@@ -88,7 +88,6 @@ class TestAssetSelectionManager(TestBase):
         # Valid asset classes
         self.assertTrue(MinerAssetClass.is_valid('crypto'))
         self.assertTrue(MinerAssetClass.is_valid('forex'))
-        self.assertTrue(MinerAssetClass.is_valid('indices'))
         self.assertTrue(MinerAssetClass.is_valid('equities'))
 
         # Case insensitive
@@ -159,16 +158,11 @@ class TestAssetSelectionManager(TestBase):
         result2 = self.asset_selection_client.process_asset_selection_request('forex', self.test_miner_2)
         self.assertTrue(result2['successfully_processed'])
 
-        # Miner 3 selects indices
-        result3 = self.asset_selection_client.process_asset_selection_request('indices', self.test_miner_3)
-        self.assertTrue(result3['successfully_processed'])
-
         # Verify all selections
         selections = self.asset_selection_client.get_asset_selections()
         self.assertEqual(selections[self.test_miner_1], TradePairCategory.CRYPTO)
         self.assertEqual(selections[self.test_miner_2], TradePairCategory.FOREX)
-        self.assertEqual(selections[self.test_miner_3], TradePairCategory.INDICES)
-        
+
     def test_validate_order_no_selection(self):
         """A miner with no asset selected cannot trade any asset class"""
         # Don't select any asset class for the miner
@@ -179,11 +173,11 @@ class TestAssetSelectionManager(TestBase):
         """Orders are validated against the miner's selected asset class"""
         self.asset_selection_client.process_asset_selection_request('crypto', self.test_miner_1)
 
-        # Matching Vanta asset class is allowed
-        self.assertTrue(self._can_trade(self.test_miner_1, TradePair.BTCUSD))
+        # Matching Vanta asset class is rejected
+        self.assertFalse(self._can_trade(self.test_miner_1, TradePair.BTCUSD))
 
-        # HL pair with crypto selection → rejected (wrong source)
-        self.assertFalse(self._can_trade(self.test_miner_1, TradePair.BTCUSDC))
+        # HL pair with crypto selection → accepted
+        self.assertTrue(self._can_trade(self.test_miner_1, TradePair.BTCUSDC))
 
         # Non-matching asset classes are rejected
         self.assertFalse(self._can_trade(self.test_miner_1, TradePair.EURUSD))
@@ -194,13 +188,13 @@ class TestAssetSelectionManager(TestBase):
         """Test that different trade pairs from same asset class are allowed"""
         self.asset_selection_client.process_asset_selection_request('crypto', self.test_miner_1)
 
-        # All Vanta crypto trade pairs should be allowed
-        self.assertTrue(self._can_trade(self.test_miner_1, TradePair.BTCUSD))
-        self.assertTrue(self._can_trade(self.test_miner_1, TradePair.ETHUSD))
-        self.assertTrue(self._can_trade(self.test_miner_1, TradePair.SOLUSD))
+        # All Vanta crypto trade pairs should be rejected
+        self.assertFalse(self._can_trade(self.test_miner_1, TradePair.BTCUSD))
+        self.assertFalse(self._can_trade(self.test_miner_1, TradePair.ETHUSD))
+        self.assertFalse(self._can_trade(self.test_miner_1, TradePair.SOLUSD))
 
-        # HL crypto pairs should be rejected for a crypto-selected miner
-        self.assertFalse(self._can_trade(self.test_miner_1, TradePair.BTCUSDC))
+        # HL crypto pairs should be accepted for a crypto-selected miner
+        self.assertTrue(self._can_trade(self.test_miner_1, TradePair.BTCUSDC))
 
         # Forex trade pairs should be rejected
         self.assertFalse(self._can_trade(self.test_miner_1, TradePair.EURUSD))

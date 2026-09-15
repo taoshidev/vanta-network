@@ -1,6 +1,7 @@
 # developer: trdougherty
 
 from tests.vali_tests.base_objects.test_base import TestBase
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.position_management.position_utils import PositionFiltering
 from vali_objects.vali_config import TradePair
@@ -25,6 +26,7 @@ class TestPositionFiltering(TestBase):
         # Helper function to create positions
         def create_position(uuid, open_ms, close_ms=None, return_at_close=1.01, is_closed=True):
             return Position(
+                position_type=OrderType.FLAT,
                 miner_hotkey=self.DEFAULT_MINER_HOTKEY,
                 position_uuid=uuid,
                 open_ms=open_ms,
@@ -170,6 +172,7 @@ class TestPositionFiltering(TestBase):
         """Test that open positions with return_at_close < 1 are included in the results."""
         # Create an open position with a return_at_close less than 1
         open_losing_position = Position(
+            position_type=OrderType.FLAT,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid="open_losing_position",
             open_ms=self.DEFAULT_OPEN_MS,

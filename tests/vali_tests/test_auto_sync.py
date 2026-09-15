@@ -1379,21 +1379,21 @@ class TestAutoSync(TestBase):
         candidate_data = self.positions_to_candidate_data([self.default_position])
         candidate_data['challengeperiod'] = {
             self.DEFAULT_MINER_HOTKEY: {
-                "bucket": MinerBucket.CHALLENGE.value,
-                "bucket_start_time": self.DEFAULT_OPEN_MS,
-                "previous_bucket": None,
-                "previous_bucket_start_time": None
+                "entries": [{
+                    "bucket": MinerBucket.CHALLENGE.value,
+                    "start_time_ms": self.DEFAULT_OPEN_MS
+                }]
             },
             test_hotkey2: {
-                "bucket": MinerBucket.MAINCOMP.value,
-                "bucket_start_time": self.DEFAULT_OPEN_MS - 1000 * 60 * 60 * 24,
-                "previous_bucket": None,
-                "previous_bucket_start_time": None
+                "entries": [{
+                    "bucket": MinerBucket.MAINCOMP.value,
+                    "start_time_ms": self.DEFAULT_OPEN_MS - 1000 * 60 * 60 * 24
+                }]
             }
         }
 
         # Clear any existing challengeperiod data
-        self.challenge_period_client.clear_all_miners()
+        self.challenge_period_client.clear_test_state()
 
         disk_positions = self.positions_to_disk_data([self.default_position])
         self.position_syncer.sync_positions(shadow_mode=False, candidate_data=candidate_data,
@@ -1426,7 +1426,7 @@ class TestAutoSync(TestBase):
         candidate_data['eliminations'] = [{
             'hotkey': eliminated_hotkey,
             'reason': 'Test elimination',
-            'timestamp': self.DEFAULT_OPEN_MS
+            'elimination_initiated_time_ms': self.DEFAULT_OPEN_MS
         }]
 
         # Include the eliminated miner's position in candidate data
@@ -1568,7 +1568,7 @@ class TestAutoSync(TestBase):
         # Simulate time passing
         self.position_syncer.last_signal_sync_time_ms = TimeUtil.now_in_millis() - 1000 * 60 * 31
         
-        # Test outside time window (hour=5 is not hour=0)
+        # Test outside time window (hour=5 is not hour=22)
         with patch('vali_objects.data_sync.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
             mock_dt.hour = 5  # Not 0
@@ -1579,10 +1579,10 @@ class TestAutoSync(TestBase):
                 self.position_syncer.sync_positions_with_cooldown(auto_sync_enabled=True)
                 mock_sync.assert_not_called()
         
-        # Test within time window (hour=0, minute between 7 and 17)
+        # Test within time window (hour=22, minute between 7 and 17)
         with patch('vali_objects.data_sync.auto_sync.TimeUtil.generate_start_timestamp') as mock_time:
             mock_dt = Mock()
-            mock_dt.hour = 0
+            mock_dt.hour = 22
             mock_dt.minute = 15  # Between 7 and 17
             mock_time.return_value = mock_dt
 
