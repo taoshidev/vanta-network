@@ -454,19 +454,21 @@ class TestDynamicMinimumDaysRobust(TestBase):
         self.assertEqual(result, expected_final)
 
     def test_exception_handling_exact(self):
-        """Test that invalid data is gracefully handled and treated as no participants."""
-        # Create invalid ledger structure - these entries will be filtered out gracefully
+        """Test that invalid data is gracefully handled via the conservative fallback."""
+        # Create invalid ledger structure - None is skipped, the bad type raises internally
         invalid_ledger_dict = {
-            "miner_001": None,  # Invalid (filtered out)
-            "miner_002": "not_a_ledger",  # Invalid type (filtered out)
+            "miner_001": None,  # Invalid (skipped)
+            "miner_002": "not_a_ledger",  # Invalid type (raises inside get_trading_days)
         }
 
         result_dict = LedgerUtils.calculate_dynamic_minimum_days_for_asset_classes(
             invalid_ledger_dict, [TradePairCategory.CRYPTO]
         )
 
-        # Invalid entries are filtered out, resulting in 0 participants -> returns floor
-        self.assertEqual(result_dict[TradePairCategory.CRYPTO], ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_FLOOR)
+        # The raised exception is caught and the conservative default (ceiling) is returned.
+        # Contrast with test_no_participating_miners_exact, where valid-but-empty ledgers are
+        # filtered to 0 participants and return the floor.
+        self.assertEqual(result_dict[TradePairCategory.CRYPTO], ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL)
 
     def test_portfolio_level_dynamic_minimum_integration(self):
         """Test integration with portfolio-level ledger tracking."""

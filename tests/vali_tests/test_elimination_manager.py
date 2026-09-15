@@ -10,10 +10,11 @@ from tests.shared_objects.test_utilities import (
     generate_winning_ledger,
 )
 from tests.vali_tests.base_objects.test_base import TestBase
-from time_util.time_util import TimeUtil
+from time_util.time_util import TimeUtil, MS_IN_24_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -94,19 +95,21 @@ class TestEliminationManager(TestBase):
         # Set up metagraph with test miners
         self.metagraph_client.set_hotkeys([self.MDD_MINER, self.REGULAR_MINER])
 
-        # Create initial positions for both miners
+        # Create initial positions for both miners. Orders must be recent enough that
+        # handle_idle_miners() doesn't eliminate the miners as INACTIVE.
+        position_time_ms = TimeUtil.now_in_millis() - MS_IN_24_HOURS
         for miner in [self.MDD_MINER, self.REGULAR_MINER]:
             mock_position = Position(
                 miner_hotkey=miner,
                 position_uuid=miner,
-                open_ms=1,
-                close_ms=2,
+                open_ms=position_time_ms,
+                close_ms=position_time_ms + 1,
                 trade_pair=TradePair.BTCUSD,
                 position_type=OrderType.LONG,
                 is_closed_position=False,
                 return_at_close=1.00,
                 account_size=self.DEFAULT_ACCOUNT_SIZE,
-                orders=[Order(price=60000, processed_ms=1, order_uuid="initial_order",
+                orders=[Order(price=60000, processed_ms=position_time_ms, order_uuid="initial_order",
                               trade_pair=TradePair.BTCUSD, order_type=OrderType.LONG, leverage=0.1)],
             )
             self.position_client.save_miner_position(mock_position)
@@ -122,19 +125,25 @@ class TestEliminationManager(TestBase):
         self.challenge_period_client.set_miner_bucket(self.REGULAR_MINER, MinerBucket.MAINCOMP, 0)
 
     def test_elimination_for_mdd(self):
-        """Test MDD elimination and zombie detection"""
+        """Test MDD detection and zombie detection
+
+        EliminationManager.handle_mdd_eliminations() has mdd elims disabled, edit this test
+        if mdd elims are enabled
+        """
         # Neither miner has been eliminated initially
         self.assertEqual(len(self.challenge_period_client.get_success_miners()), 2)
+
+        # The MDD miner's losing ledger is beyond max drawdown, so handle_mdd_eliminations detects it
+        ledger = self.perf_ledger_client.filtered_ledger_for_scoring(hotkeys=[self.MDD_MINER])[self.MDD_MINER]
+        miner_exceeds_mdd, _ = LedgerUtils.is_beyond_max_drawdown(ledger_element=ledger)
+        self.assertTrue(miner_exceeds_mdd)
 
         # Process eliminations (no position_locks parameter needed)
         self.elimination_client.process_eliminations()
 
-        # Check MDD miner was eliminated
+        # No elimination is recorded: the MDD elimination path is disabled
         eliminations = self.elimination_client.get_eliminations_from_disk()
-        self.assertEqual(len(eliminations), 1)
-        for elimination in eliminations:
-            self.assertEqual(elimination["hotkey"], self.MDD_MINER)
-            self.assertEqual(elimination["reason"], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
+        self.assertEqual(len(eliminations), 0)
 
         # Test zombie eliminations - remove all miners from metagraph
         self.metagraph_client.set_hotkeys([])
@@ -144,15 +153,13 @@ class TestEliminationManager(TestBase):
         eliminations = self.elimination_client.get_eliminations_from_disk()
         self.assertEqual(len(eliminations), 2)
 
-        for elimination in eliminations:
-            if elimination["hotkey"] == self.MDD_MINER:
-                # MDD miner keeps original MDD reason
-                self.assertEqual(elimination["reason"], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
-            elif elimination["hotkey"] == self.REGULAR_MINER:
-                # Regular miner becomes zombie
+        for hotkey, elimination_row in eliminations.items():
+            elimination = elimination_row.to_dict()
+            if hotkey in (self.MDD_MINER, self.REGULAR_MINER):
+                # Both miners become zombies once they leave the metagraph
                 self.assertEqual(elimination["reason"], EliminationReason.ZOMBIE.value)
             else:
-                raise Exception(f"Unexpected hotkey in eliminations: {elimination['hotkey']}")
+                raise Exception(f"Unexpected hotkey in eliminations: {hotkey}")
 
     # ==================== Race Condition Tests ====================
     # These tests demonstrate race conditions that exist due to missing lock usage.

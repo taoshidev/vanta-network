@@ -16,6 +16,7 @@ from time_util.time_util import TimeUtil, MS_IN_8_HOURS
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.elimination.elimination_manager import EliminationReason
+from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import MinerBucketState
 from shared_objects.locks.position_lock import PositionLocks
@@ -210,21 +211,31 @@ class TestEliminationCore(TestBase):
     # ========== Basic Elimination Tests (from test_elimination_manager.py) ==========
 
     def test_basic_mdd_elimination(self):
-        """Test basic MDD elimination functionality"""
+        """Test MDD detection in handle_mdd_eliminations (elimination itself is disabled)
+
+        EliminationManager.handle_mdd_eliminations() still detects miners beyond max drawdown
+        but its append_elimination_row call is commented out ("TODO enable mdd") -- drawdown
+        eliminations are issued by ChallengePeriodManager instead (FAILED_*_DRAWDOWN reasons).
+        Re-enabling the MDD path must flip this test back to asserting the elimination row.
+        """
         # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         # Initially no eliminations
         self.assertEqual(len(self.challenge_period_client.get_success_miners()), 4)
 
+        # The MDD miner's losing ledger is beyond max drawdown, so handle_mdd_eliminations detects it
+        ledger = self.perf_ledger_client.filtered_ledger_for_scoring(hotkeys=[self.MDD_MINER])[self.MDD_MINER]
+        miner_exceeds_mdd, _ = LedgerUtils.is_beyond_max_drawdown(ledger_element=ledger)
+        self.assertTrue(miner_exceeds_mdd)
+
         # Process eliminations
         self.elimination_client.process_eliminations()
 
-        # Check MDD miner was eliminated
+        # No elimination is recorded: the MDD elimination path is disabled
         eliminations = self.elimination_client.get_eliminations_from_disk()
-        self.assertEqual(len(eliminations), 1)
-        elimination = eliminations[self.MDD_MINER].to_dict()
-        self.assertEqual(elimination["hotkey"], self.MDD_MINER)
-        self.assertEqual(elimination["reason"], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
+        self.assertEqual(len(eliminations), 0)
+        self.assertNotIn(self.MDD_MINER, eliminations)
+        self.assertEqual(len(self.challenge_period_client.get_success_miners()), 4)
 
     def test_zombie_elimination_basic(self):
         """Test basic zombie elimination when miner leaves metagraph"""
@@ -254,14 +265,10 @@ class TestEliminationCore(TestBase):
         for miner in self.all_miners:
             self.assertIn(miner, eliminated_hotkeys)
 
-        # Verify reasons
+        # Verify reasons - every miner becomes a zombie, including the MDD miner
+        # (the MDD elimination path is disabled, so it has no prior elimination reason to keep)
         for elimination in eliminations.values():
-            if elimination["hotkey"] == self.MDD_MINER:
-                # MDD miner keeps original reason
-                self.assertEqual(elimination["reason"], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
-            else:
-                # Others become zombies
-                self.assertEqual(elimination["reason"], EliminationReason.ZOMBIE.value)
+            self.assertEqual(elimination["reason"], EliminationReason.ZOMBIE.value)
 
     # ========== Comprehensive Elimination Tests (from test_elimination_manager_comprehensive.py) ==========
 
@@ -431,6 +438,26 @@ class TestEliminationCore(TestBase):
         # Create an old elimination
         old_time = TimeUtil.now_in_millis() - ValiConfig.ELIMINATION_FILE_DELETION_DELAY_MS - MS_IN_8_HOURS
 
+        # Give the miner a position - _purge_expired_elimination only deletes the miner
+        # directory once it has positions to delete
+        self.position_client.save_miner_position(Position(
+            miner_hotkey='old_miner',
+            position_uuid='old_miner_position',
+            open_ms=old_time,
+            trade_pair=TradePair.BTCUSD,
+            position_type=OrderType.LONG,
+            is_closed_position=False,
+            account_size=self.DEFAULT_ACCOUNT_SIZE,
+            orders=[Order(
+                price=60000,
+                processed_ms=old_time,
+                order_uuid='order_old_miner',
+                trade_pair=TradePair.BTCUSD,
+                order_type=OrderType.LONG,
+                leverage=0.5
+            )]
+        ))
+
         self.elimination_client.append_elimination_row(
             'old_miner',
             EliminationReason.MAX_TOTAL_DRAWDOWN,
@@ -459,6 +486,14 @@ class TestEliminationCore(TestBase):
 
     def test_elimination_with_no_positions(self):
         """Test elimination handling when miner has no positions"""
+        # Record the drawdown elimination up front (ChallengePeriodManager issues these in
+        # production; EliminationManager's own MDD path is disabled)
+        self.elimination_client.append_elimination_row(
+            self.MDD_MINER,
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
+            elimination_drawdown_pct=0.15
+        )
+
         # Clear positions for MDD miner
         self.position_client.clear_all_miner_positions_and_disk(hotkey=self.MDD_MINER)
 
@@ -469,6 +504,7 @@ class TestEliminationCore(TestBase):
         eliminations = self.elimination_client.get_eliminations_from_memory()
         mdd_elim = next((e for e in eliminations if e['hotkey'] == self.MDD_MINER), None)
         self.assertIsNotNone(mdd_elim)
+        self.assertEqual(mdd_elim['reason'], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
 
     def test_elimination_first_refresh_handling(self):
         """Test first refresh behavior after validator start"""

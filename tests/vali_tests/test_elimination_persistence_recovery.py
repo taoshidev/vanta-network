@@ -197,8 +197,9 @@ class TestEliminationPersistenceRecovery(TestBase):
         # Write directly to disk (simulating previous session)
         self.elimination_client.write_eliminations_to_disk(test_eliminations)
 
-        # Simulate restart by reloading data from disk
-        self.elimination_client.load_eliminations_from_disk()
+        # Simulate restart by reloading data from disk.
+        recovered_rows = self.elimination_client.get_eliminations_from_disk()
+        self.elimination_client.sync_eliminations([row.to_dict() for row in recovered_rows.values()])
 
         # Verify eliminations were loaded
         loaded_eliminations = self.elimination_client.get_eliminations_from_memory()
@@ -251,9 +252,9 @@ class TestEliminationPersistenceRecovery(TestBase):
         # Restore from backup
         shutil.copy2(backup_file, original_file)
 
-        # Reload data from disk to simulate restart
-        # load_eliminations_from_disk() already clears memory before loading
-        self.elimination_client.load_eliminations_from_disk()
+        # Reload data from disk to simulate restart.
+        restored_rows = self.elimination_client.get_eliminations_from_disk()
+        self.elimination_client.sync_eliminations([row.to_dict() for row in restored_rows.values()])
 
         # Verify restoration
         restored_eliminations = self.elimination_client.get_eliminations_from_memory()
@@ -388,7 +389,7 @@ class TestEliminationPersistenceRecovery(TestBase):
         self.assertEqual(len(memory_elims), len(disk_elims))
         
         memory_hotkeys = sorted([e['hotkey'] for e in memory_elims])
-        disk_hotkeys = sorted([e['hotkey'] for e in disk_elims])
+        disk_hotkeys = sorted([row.hotkey for row in disk_elims.values()])
         self.assertEqual(memory_hotkeys, disk_hotkeys)
 
     def test_elimination_migration(self):

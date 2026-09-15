@@ -427,11 +427,13 @@ class TestStopLimitOrders(TestBase):
 
     def test_conversion_creates_child_limit_order(self):
         """Test that triggering a stop-limit creates a child limit order with correct fields"""
+        # This test fills, so the prices have to be realistic for the trade pair: a EURUSD
+        # order priced in the tens of thousands rounds down to a zero-lot fill.
         order = self.create_stop_limit_order(
             order_type=OrderType.LONG,
-            stop_price=55000.0,
+            stop_price=1.0500,
             stop_condition=StopCondition.GTE,
-            limit_price=56000.0,
+            limit_price=1.0600,
             leverage=0.3,
             order_uuid="parent_stop_limit"
         )
@@ -440,7 +442,7 @@ class TestStopLimitOrders(TestBase):
         self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
         # Trigger the stop
-        trigger_price = self.create_test_price_source(55500.0, bid=55500.0, ask=55500.0)
+        trigger_price = self.create_test_price_source(1.0550, bid=1.0550, ask=1.0550)
         self.live_price_fetcher_client.set_test_market_open(True)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price)
 
@@ -449,7 +451,7 @@ class TestStopLimitOrders(TestBase):
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
 
         # Check if child limit order exists (may have been filled immediately if ask <= limit)
-        # With ask=55500 < limit=56000, it should fill immediately
+        # With ask=1.0550 < limit=1.0600, it should fill immediately
         # Verify by checking position was updated
         positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         # Position should have been updated with the fill
@@ -490,11 +492,13 @@ class TestStopLimitOrders(TestBase):
 
     def test_full_lifecycle_stop_trigger_then_limit_fill(self):
         """Test complete lifecycle: stop triggers -> limit order created -> limit fills"""
+        # This test fills, so the prices have to be realistic for the trade pair: a EURUSD
+        # order priced in the tens of thousands rounds down to a zero-lot fill.
         order = self.create_stop_limit_order(
             order_type=OrderType.LONG,
-            stop_price=55000.0,
+            stop_price=1.0500,
             stop_condition=StopCondition.GTE,
-            limit_price=56000.0,
+            limit_price=1.0600,
             leverage=0.3,
             order_uuid="lifecycle_test"
         )
@@ -503,8 +507,8 @@ class TestStopLimitOrders(TestBase):
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, None)
         self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
 
-        # Step 1: Trigger the stop (price >= 55000 for GTE, but ask > limit to prevent immediate child fill)
-        trigger_price = self.create_test_price_source(57000.0, bid=57000.0, ask=57000.0)
+        # Step 1: Trigger the stop (price >= 1.0500 for GTE, but ask > limit to prevent immediate child fill)
+        trigger_price = self.create_test_price_source(1.0700, bid=1.0700, ask=1.0700)
         self.live_price_fetcher_client.set_test_market_open(True)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price)
 
@@ -516,7 +520,7 @@ class TestStopLimitOrders(TestBase):
         self.assertEqual(len(limit_orders), 1, "Child limit order should be pending")
 
         # Step 2: Fill the child limit order (price drops to limit price)
-        fill_price = self.create_test_price_source(55500.0, bid=55500.0, ask=55500.0)
+        fill_price = self.create_test_price_source(1.0550, bid=1.0550, ask=1.0550)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, fill_price)
 
         # Reset fill time to allow immediate fill
