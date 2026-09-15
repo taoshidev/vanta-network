@@ -125,7 +125,7 @@ class OrderProcessor:
 
 
         # Asset class check (FLAT market orders bypass this)
-        if trade_pair is not None and order_type != OrderType.FLAT and execution_type not in (ExecutionType.MARKET, ExecutionType.FLAT_ALL):
+        if trade_pair is not None and order_type != OrderType.FLAT and execution_type != ExecutionType.FLAT_ALL:
             if not miner_account.asset_class:
                 msg = (
                     f"No asset class selected for hotkey [{hotkey}]. "
