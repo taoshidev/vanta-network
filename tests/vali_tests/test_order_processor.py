@@ -140,8 +140,8 @@ class TestValidate(OrderProcessorTestBase):
         self.assertFalse(ok)
         self.assertIn("cannot submit orders for trade pair", msg)
 
-    def test_asset_class_check_bypassed_for_market_orders(self):
-        self.miner_account_client.get_account.return_value = self.make_miner_account(asset_class=None)
+    def test_asset_class_check_not_bypassed_for_market_orders(self):
+        self.miner_account_client.get_account.return_value = self.make_miner_account(asset_class=MinerAssetClass.CRYPTO)
         ok, msg, resolved = self.processor.validate(
             self.DEFAULT_MINER_HOTKEY, ExecutionType.MARKET, self.DEFAULT_TRADE_PAIR, OrderType.LONG
         )
