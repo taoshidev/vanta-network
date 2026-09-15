@@ -663,10 +663,10 @@ class ValiConfig:
     # group (see leverage_utils)
     PRO_CURRENCY_EXPOSURE_LIMITS = {
         "USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0,
-        "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 20.0,
+        "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 30.0,
     }
     PRO_SECTOR_EXPOSURE_LIMIT = 3.0
-    PRO_US_INDEX_EXPOSURE_LIMIT = 25.0  # shared across the six instruments below
+    PRO_US_INDEX_EXPOSURE_LIMIT = 10.0  # shared across the six instruments below, same as the indices class limit
     # US index pairs and broad US market ETFs carry the same beta, so they share one limit.
     # EWY, single stocks, and all other ETFs are excluded.
     PRO_US_INDEX_TRADE_PAIR_IDS = frozenset({

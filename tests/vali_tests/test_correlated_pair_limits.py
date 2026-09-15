@@ -178,11 +178,11 @@ class TestCorrelatedOrderSize(unittest.TestCase):
             self.room(TradePair.EURGBP, positions, position_type=OrderType.SHORT), 30.0 * BALANCE
         )
 
-    def test_nzd_has_a_tighter_limit(self):
+    def test_nzd_shares_the_standard_currency_limit(self):
         positions = [make_position(TradePair.NZDCAD, 5.0)]
-        # NZDJPY legs are NZD and JPY: NZD long side has 5x of 20x used, leaving 15x; JPY's short
+        # NZDJPY legs are NZD and JPY: NZD long side has 5x of 30x used, leaving 25x; JPY's short
         # side is empty, leaving its full 30x.
-        self.assertAlmostEqual(self.room(TradePair.NZDJPY, positions), 15.0 * BALANCE)
+        self.assertAlmostEqual(self.room(TradePair.NZDJPY, positions), 25.0 * BALANCE)
 
     def test_sector_exposure_is_capped(self):
         # Spec example: long NVDA 2x + long XLK 2x is 4x Information Technology, above 3x.
@@ -195,14 +195,14 @@ class TestCorrelatedOrderSize(unittest.TestCase):
 
     def test_us_index_instruments_share_one_limit(self):
         positions = [
-            make_position(TradePair.SPY, 10.0),
-            make_position(TradePair.QQQ, 5.0),
-            make_position(TradePair.SP500USDC, 5.0),
+            make_position(TradePair.SPY, 4.0),
+            make_position(TradePair.QQQ, 2.0),
+            make_position(TradePair.SP500USDC, 2.0),
         ]
-        self.assertAlmostEqual(self.room(TradePair.IWM, positions), 5.0 * BALANCE)
+        self.assertAlmostEqual(self.room(TradePair.IWM, positions), 2.0 * BALANCE)
 
     def test_ewy_is_outside_the_index_group(self):
-        positions = [make_position(TradePair.SPY, 25.0)]
+        positions = [make_position(TradePair.SPY, 10.0)]
         self.assertEqual(self.room(TradePair.EWYUSDC, positions), float("inf"))
 
     def test_opposing_sides_of_a_group_do_not_share_room(self):
@@ -436,7 +436,7 @@ class TestBindingCapIsReported(unittest.TestCase):
     def test_execution_result_still_unpacks_as_a_pair(self):
         from vali_objects.utils.market_order.market_order_manager import OrderExecution
 
-        result = OrderExecution("order", "position", "index:us exposure cap 25.0x")
+        result = OrderExecution("order", "position", "index:us exposure cap 10.0x")
         order, position = result
         self.assertEqual((order, position), ("order", "position"))
         self.assertIn("exposure cap", result.binding_cap)
