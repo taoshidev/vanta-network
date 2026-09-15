@@ -202,3 +202,6 @@ miner_objects/miner_dashboard/*.tsbuildinfo
 
 # Raw iShares Russell 1000 holdings export (input to runnable/generate_equity_universe.py; not committed)
 IWB_holdings.csv
+
+# Throwaway diagnostic spikes
+runnable/spike_*.py

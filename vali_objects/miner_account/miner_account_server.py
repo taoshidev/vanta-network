@@ -46,7 +46,8 @@ class MinerAccountServer(RPCServerBase):
         slack_notifier=None,
         start_server=True,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
-        collateral_balance_getter=None
+        collateral_balance_getter=None,
+        validator_hotkey: str = None
     ):
         """
         Initialize MinerAccountServer.
@@ -59,21 +60,29 @@ class MinerAccountServer(RPCServerBase):
             start_server: Whether to start RPC server immediately
             connection_mode: RPC or LOCAL mode
             collateral_balance_getter: Callable to get collateral balance for a hotkey
+            validator_hotkey: Optional hotkey ss58 string for the wallet-less path (vanta-state);
+                forwarded to the manager's ValidatorBroadcastBase so no wallet is loaded.
         """
         # Create mock config if running tests and config not provided
         if running_unit_tests:
             from shared_objects.rpc.test_mock_factory import TestMockFactory
             config = TestMockFactory.create_mock_config_if_needed(config, netuid=116, network="test")
 
-        # Derive is_testnet from config
-        is_testnet = config.subtensor.network == "test" if config else False
+        # Derive is_testnet from netuid (116/171 = testnet), matching entity_manager and
+        # asset_selection_manager. netuid is always present (in-core, and in the wallet-less
+        # vanta-state app which forwards --netuid). The old `subtensor.network == "test"` check
+        # silently mis-derived is_testnet in vanta-state — run.sh forwards --netuid but not
+        # --subtensor.* — which flipped is_mothership to the wrong network's mothership hotkey.
+        # netuid-based is consistent across the broadcast managers and equivalent for real configs.
+        is_testnet = (config.netuid in (116, 171)) if (config and hasattr(config, 'netuid')) else False
 
         # Create the manager FIRST, before RPCServerBase.__init__
         self._manager = MinerAccountManager(
             running_unit_tests=running_unit_tests,
             connection_mode=connection_mode,
             config=config,
-            is_testnet=is_testnet
+            is_testnet=is_testnet,
+            validator_hotkey=validator_hotkey
         )
 
         # Store is_mothership status (set by contract manager later)

@@ -63,10 +63,6 @@ class MarketOrderManager():
     ) -> tuple[Order, Position] | None:
         _start = TimeUtil.now_in_millis()
         now_ms = now_ms or _start
-        if enforce_cooldown:
-            err = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, hotkey)
-            if err:
-                raise SignalException(err)
 
         if not self._live_price_client.is_market_open(trade_pair):
             raise SignalException(f"The market for {trade_pair.trade_pair_id} is currently closed.")
@@ -81,6 +77,28 @@ class MarketOrderManager():
             miner_account = self._miner_account_client.get_or_create(hotkey)
             position = self._position_client.get_open_position_for_trade_pair(hotkey, trade_pair.trade_pair_id)
             position_type = position.position_type if position else order_type
+
+            # Idempotent replay guard: if this order_uuid is already committed to durable position
+            # state, return the committed result instead of applying again. This is what makes the
+            # RPC layer's at-least-once retry (and a placer resend after a lost ack) safe — the
+            # retry can land on a freshly restarted server whose in-memory caches (cooldown, dedup)
+            # are empty, so only the on-disk position can witness the first apply. Runs under the
+            # position lock, so it is serialized with all writers of this (hotkey, pair).
+            replayed = self._find_committed_order(hotkey, trade_pair.trade_pair_id, order_uuid, position)
+            if replayed is not None:
+                logger.warning(
+                    f"[ORDER_EXECUTION] {hotkey} {order_uuid} replay of an already-committed order "
+                    f"— returning the committed result (idempotent no-op)"
+                )
+                return replayed
+
+            # Cooldown is enforced under the lock (as its docstring requires) and AFTER the replay
+            # guard, so a legitimate replay is answered idempotently rather than bounced as
+            # "placed too soon" against its own first apply.
+            if enforce_cooldown:
+                err = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, hotkey)
+                if err:
+                    raise SignalException(err)
 
             if fill_price is None or not price_sources:
                 price_sources = self._live_price_client.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
@@ -137,6 +155,42 @@ class MarketOrderManager():
             )
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
             return order, position
+
+    def _find_committed_order(
+        self,
+        hotkey: str,
+        trade_pair_id: str,
+        order_uuid: str,
+        open_position: Position | None,
+    ) -> tuple[Order, Position] | None:
+        """
+        Return the committed (order, position) for order_uuid if a prior apply already persisted
+        it, else None. Caller must hold the position lock. The open position (already fetched by
+        the caller) answers the common case without extra I/O; the closed-position scan only runs
+        when the uuid might have closed its position (e.g. the first apply flattened it).
+        """
+        if not order_uuid:
+            return None
+        if open_position is not None:
+            for o in open_position.orders:
+                if o.order_uuid == order_uuid:
+                    return o, open_position
+        # Not in the open position: the first apply may have closed the position (FLAT or an
+        # effective close), leaving the uuid only in a closed position for this trade pair.
+        try:
+            all_positions = self._position_client.get_positions_for_one_hotkey(hotkey) or []
+        except Exception as e:
+            # Best-effort widening of the guard: if the lookup fails, fall through to the normal
+            # apply path (the open-position check above already covered the likeliest replay).
+            logger.warning(f"[ORDER_EXECUTION] {hotkey} {order_uuid} replay-guard closed-position lookup failed: {e}")
+            return None
+        for p in all_positions:
+            if p.trade_pair.trade_pair_id != trade_pair_id:
+                continue
+            for o in p.orders:
+                if o.order_uuid == order_uuid:
+                    return o, p
+        return None
 
     def _apply_order(
         self,
