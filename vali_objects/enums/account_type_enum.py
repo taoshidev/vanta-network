@@ -14,10 +14,3 @@ class AccountType(str, Enum):
         if not isinstance(account_type, str):
             return False
         return account_type.lower() in {t.value for t in AccountType}
-
-    @property
-    def challenge_bucket(self):
-        """The bucket a newly created subaccount starts in. Pro is not reachable at creation."""
-        # Deferred import: miner_bucket_enum pulls in ValiConfig.
-        from vali_objects.enums.miner_bucket_enum import MinerBucket
-        return MinerBucket.SUBACCOUNT_CHALLENGE

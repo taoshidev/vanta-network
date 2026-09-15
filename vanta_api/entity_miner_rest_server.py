@@ -978,7 +978,6 @@ class EntityMinerRestServer(MinerRestServer):
                 payout_address = request_data.get("payout_address")
                 asset_class = "hl_all"
                 drawdown_criteria = "trailing"
-                account_type = None
                 leverage_tier = None
                 if request_data.get("leverage_tier") is not None:
                     return jsonify({'status': 'error', 'message': 'leverage_tier is not supported for Hyperliquid subaccounts'}), 400
@@ -994,10 +993,6 @@ class EntityMinerRestServer(MinerRestServer):
                 drawdown_criteria = request_data.get("drawdown_criteria", "trailing")
                 if drawdown_criteria not in ("trailing", "static"):
                     return jsonify({'status': 'error', 'message': 'drawdown_criteria must be "trailing" or "static"'}), 400
-                # Pro accounts are granted by admin promotion, never at creation
-                account_type = request_data.get("account_type", "standard")
-                if account_type != "standard":
-                    return jsonify({'status': 'error', 'message': 'account_type must be "standard"'}), 400
                 # Standard leverage tier 1 to 3; the validator applies the default when omitted
                 leverage_tier = request_data.get("leverage_tier")
                 if leverage_tier is not None and not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
@@ -1093,8 +1088,6 @@ class EntityMinerRestServer(MinerRestServer):
             }
             if collateral_exempt:
                 payload["collateral_exempt"] = collateral_exempt
-            if account_type is not None:
-                payload["account_type"] = account_type
             if leverage_tier is not None:
                 payload["leverage_tier"] = leverage_tier
             if is_hl:

@@ -2455,8 +2455,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             asset_class = data['asset_class']
             collateral_exempt = data.get('collateral_exempt')
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
-            # account_type applies to Vanta-native subaccounts only
-            account_type = data.get('account_type', 'standard')
             # Standard leverage tier 1 to 3; EntityManager applies the default when omitted
             leverage_tier = data.get('leverage_tier')
 
@@ -2538,7 +2536,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
                     entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria,
-                    account_type=account_type, leverage_tier=leverage_tier
+                    leverage_tier=leverage_tier
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 

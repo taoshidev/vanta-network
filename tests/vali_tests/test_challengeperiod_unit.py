@@ -348,9 +348,8 @@ def test_pro_bucket_state_round_trips_through_checkpoint():
     assert restored.current_bucket is MinerBucket.PRO_FUNDED
 
 
-def test_account_type_selects_challenge_bucket():
-    assert AccountType.STANDARD.challenge_bucket is MinerBucket.SUBACCOUNT_CHALLENGE
-    assert AccountType.PRO.challenge_bucket is MinerBucket.SUBACCOUNT_CHALLENGE
+def test_account_type_validation():
+    assert AccountType.is_valid("standard") is True
     assert AccountType.is_valid("pro") is True
     assert AccountType.is_valid("nonsense") is False
 

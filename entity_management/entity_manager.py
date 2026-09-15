@@ -413,7 +413,6 @@ class EntityManager(ValidatorBroadcastBase):
         hl_address: Optional[str] = None,
         payout_address: Optional[str] = None,
         drawdown_criteria: str = "trailing",
-        account_type: str = "standard",
         leverage_tier: Optional[int] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """
@@ -436,11 +435,7 @@ class EntityManager(ValidatorBroadcastBase):
         """
         t_start = time.time()
 
-        if not AccountType.is_valid(account_type):
-            return False, None, f"Invalid account_type: {account_type}. Must be 'standard' or 'pro'"
-        if AccountType(account_type) == AccountType.PRO:
-            return False, None, "account_type 'pro' cannot be set at creation; pro accounts are granted by admin promotion"
-        initial_bucket = AccountType(account_type).challenge_bucket
+        initial_bucket = MinerBucket.SUBACCOUNT_CHALLENGE
 
         if hl_address:
             if leverage_tier is not None:
@@ -584,7 +579,6 @@ class EntityManager(ValidatorBroadcastBase):
                 reg_fee_slashed_ms=now_ms if collateral_exempt else None,
                 asset_class=asset_class,
                 drawdown_criteria=drawdown_criteria,
-                account_type=account_type,
                 leverage_tier=leverage_tier,
                 hl_address=hl_address,
                 payout_address=payout_address,

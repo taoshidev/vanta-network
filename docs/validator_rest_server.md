@@ -1148,7 +1148,6 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules). Fixed for the life of the subaccount once created. HL-linked subaccounts always get `"trailing"` regardless of what's passed.
-- `account_type` (string, optional): must be `"standard"` (the default). Pro accounts are reached by promotion via `POST /entity/subaccount/promote`, never at creation — see [entity_miner.md](entity_miner.md#account-types). Not part of the signed payload.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
 **Response:**

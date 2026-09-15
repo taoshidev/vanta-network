@@ -214,7 +214,6 @@ Authorization: Bearer <api_key>
 - `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, or `"hl_all"`
 - `account_size` (float, required): Account size in USD. Must be positive.
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [entity_miner.md](entity_miner.md#elimination). Fixed for the life of the subaccount once created. Always forced to `"trailing"` for HL-linked subaccounts (`hl_address` present), regardless of what's passed.
-- `account_type` (string, optional): must be `"standard"` (the default). Pro accounts are granted by admin promotion, never at creation — see [entity_miner.md](entity_miner.md#account-types).
 - `leverage_tier` (int, optional): standard leverage tier `1` (default), `2` or `3` — see [entity_miner.md](entity_miner.md#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later with `/api/update-subaccount-leverage-tier`.
 
 **Success Response (200):**

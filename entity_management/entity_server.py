@@ -154,7 +154,6 @@ class EntityServer(RPCServerBase):
         asset_class: str,
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
-        account_type: str = "standard",
         leverage_tier: Optional[int] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
@@ -166,7 +165,6 @@ class EntityServer(RPCServerBase):
             asset_class: Asset class selection
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
-            account_type: "standard" or "pro"
             leverage_tier: Standard leverage tier 1 to 3; None = default tier
 
         Returns:
@@ -174,7 +172,7 @@ class EntityServer(RPCServerBase):
         """
         success, subaccount_info, message = self._manager.create_subaccount(
             entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria,
-            account_type=account_type, leverage_tier=leverage_tier
+            leverage_tier=leverage_tier
         )
 
         # Convert SubaccountInfo to dict for RPC serialization

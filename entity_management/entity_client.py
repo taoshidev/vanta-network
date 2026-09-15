@@ -96,7 +96,6 @@ class EntityClient(RPCClientBase):
         asset_class: str,
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
-        account_type: str = "standard",
         leverage_tier: Optional[int] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
@@ -108,14 +107,13 @@ class EntityClient(RPCClientBase):
             asset_class: Asset class selection
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
-            account_type: "standard" or "pro"
             leverage_tier: Standard leverage tier 1 to 3; None = default tier
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
         return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
-                                                  drawdown_criteria=drawdown_criteria, account_type=account_type,
+                                                  drawdown_criteria=drawdown_criteria,
                                                   leverage_tier=leverage_tier)
 
     def create_hl_subaccount(

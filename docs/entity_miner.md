@@ -283,8 +283,7 @@ After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is
 ### Account Types
 
 Every subaccount is created as `standard`. A pro account is reached by promoting an existing
-subaccount through `POST /api/promote` — there is no way to create one directly, and
-`account_type: "pro"` is rejected at subaccount creation.
+subaccount through `POST /api/promote` — there is no way to create one directly.
 
 Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
 margin-interest rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs.
@@ -648,7 +647,6 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
 | `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
-| `account_type` | string | No | Must be `"standard"` (default). Pro accounts are granted by admin promotion — see [Account Types](#account-types). |
 | `leverage_tier` | int | No | Standard leverage tier `1` (default), `2` or `3` — see [Leverage Limits](#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later via [Change Leverage Tier](#change-leverage-tier). |
 
 #### Change Leverage Tier
