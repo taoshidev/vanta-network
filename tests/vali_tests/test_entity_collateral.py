@@ -87,7 +87,10 @@ class TestEntityCollateral(TestBase):
         ])
 
         # MDD percentage (same as manager uses)
-        self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
+        self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+
+        # max_slash for the $100K subaccounts used throughout the slash tests
+        self.max_slash_100k = 100_000 * self.mdd_percent
 
     def tearDown(self):
         """Per-test teardown: Clear data."""
@@ -201,8 +204,8 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Required delta: min(50K, 8K)/10 = 800 theta (first order, no existing positions)
-        # Set 5000 theta (well above 800)
+        # Required delta: min(50K, max_slash)/10 theta (first order, no existing positions).
+        # Set 5000 theta (well above that).
         self._set_collateral_cache(entity_hotkey, 5000.0)
 
         allowed, reason = self.entity_collateral_client.can_open_position(
@@ -218,7 +221,7 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Required delta: min(50K, 8K)/10 = 800 theta. Set only 10 theta → insufficient.
+        # Required delta: min(50K, max_slash)/10 theta. Set only 10 theta → insufficient.
         self._set_collateral_cache(entity_hotkey, 10.0)
 
         allowed, reason = self.entity_collateral_client.can_open_position(
@@ -255,7 +258,7 @@ class TestEntityCollateral(TestBase):
         synthetic_1 = sa_info_1['synthetic_hotkey']
         synthetic_2 = sa_info_2['synthetic_hotkey']
 
-        # Required delta: min(1K, 8K)/10 = 100 theta. Set 500 theta (sufficient).
+        # Required delta: min(1K, max_slash)/10 = 100 theta. Set 500 theta (sufficient).
         self._set_collateral_cache(self.ENTITY_HOTKEY, 500.0)
 
         # First subaccount with small order should work
@@ -273,7 +276,7 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)  # 100 theta
 
-        # Loss of $5,000 on an account with max_slash = $100K * 8% = $8K
+        # Loss of $5,000 on an account with max_slash = $100K * MDD%
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
@@ -321,21 +324,21 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $100K * 8% = $8K
+        max_slash = self.max_slash_100k  # $100K * MDD%
 
         # Trade 1: Lose $3K
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 3_000.0
         )
-        self.assertAlmostEqual(slashed_1, 3_000.0)
+        self.assertAlmostEqual(slashed_1, min(3_000.0, max_slash))
 
-        # Trade 2: Lose $4K (cumulative_loss = $7K, still under max $8K).
-        # Returns total pending slash (7K = min(7K, 8K) - 0), not incremental (4K),
+        # Trade 2: Lose $4K (cumulative_loss = $7K, capped at max_slash).
+        # Returns total pending slash (min(7K, max_slash) - 0), not incremental (4K),
         # because cumulative_slashed stays 0 until process_pending_slashes runs.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 4_000.0
         )
-        self.assertAlmostEqual(slashed_2, 7_000.0)
+        self.assertAlmostEqual(slashed_2, min(7_000.0, max_slash))
 
         # Verify cumulative tracking
         tracking = self._get_slash_tracking(synthetic_hotkey)
@@ -349,27 +352,27 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $100K * 8% = $8K
+        max_slash = self.max_slash_100k  # $100K * MDD%
 
-        # Trade 1: Lose $8K → exactly at cap, slash $8K
+        # Trade 1: Lose exactly max_slash → exactly at cap, slash max_slash
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
-            entity_hotkey, synthetic_hotkey, 8_000.0
+            entity_hotkey, synthetic_hotkey, max_slash
         )
-        self.assertAlmostEqual(slashed_1, 8_000.0)
+        self.assertAlmostEqual(slashed_1, max_slash)
 
-        # Trade 2: Lose $5K → still returns 8K (total pending, capped at max_slash).
+        # Trade 2: Lose $5K → still returns max_slash (total pending, capped at max_slash).
         # cumulative_slashed stays 0 until process_pending_slashes runs, so the
-        # pending remains at the cap (8K) rather than going to 0.
+        # pending remains at the cap rather than going to 0.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
-        self.assertAlmostEqual(slashed_2, 8_000.0)
+        self.assertAlmostEqual(slashed_2, max_slash)
 
         # cumulative_realized_loss tracks all losses; cumulative_slashed stays 0
         # until process_pending_slashes commits the on-chain slash.
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 13_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], max_slash + 5_000.0)
 
     def test_slash_completely_at_cap_returns_zero(self):
         """Test that no further slashing when already at cap."""
@@ -378,8 +381,9 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # Pre-fill tracking to exactly at cap ($8K = $100K * 8%)
-        self._set_slash_tracking(synthetic_hotkey, 8_000.0, 8_000.0)
+        # Pre-fill tracking to exactly at cap (max_slash = $100K * MDD%)
+        max_slash = self.max_slash_100k
+        self._set_slash_tracking(synthetic_hotkey, max_slash, max_slash)
 
         # Try to slash more — should return 0
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -389,8 +393,8 @@ class TestEntityCollateral(TestBase):
 
         # cumulative_realized_loss should still be updated
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 13_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], max_slash + 5_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], max_slash)
 
     def test_slash_no_account_size_returns_zero(self):
         """Test that slashing returns 0 when account has no size (max_slash=0)."""
@@ -469,8 +473,9 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # Pre-fill: already at cap ($8K = $100K * 8%)
-        self._set_slash_tracking(synthetic_hotkey, 8_000.0, 8_000.0)
+        # Pre-fill: already at cap (max_slash = $100K * MDD%)
+        max_slash = self.max_slash_100k
+        self._set_slash_tracking(synthetic_hotkey, max_slash, max_slash)
 
         # Another loss of $3K → no slash, but loss tracked
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -479,8 +484,8 @@ class TestEntityCollateral(TestBase):
         self.assertAlmostEqual(slashed, 0.0)
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 11_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], max_slash + 3_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], max_slash)
 
     # ==================== Cumulative Slashed Query Tests ====================
 
@@ -505,7 +510,7 @@ class TestEntityCollateral(TestBase):
         )
 
         max_slash = self.entity_collateral_client.get_max_slash(synthetic_hotkey)
-        expected = 100_000 * self.mdd_percent  # $8,000
+        expected = 100_000 * self.mdd_percent
         self.assertAlmostEqual(max_slash, expected)
 
     def test_get_max_slash_zero_for_unknown(self):
@@ -605,7 +610,7 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Entity has 5000 theta. $1K order delta: min(1K, 8K)/10 = 100 theta. 5000 > 100 → allowed.
+        # Entity has 5000 theta. $1K order delta: min(1K, max_slash)/10 = 100 theta. 5000 > 100 → allowed.
         self._set_collateral_cache(entity_hotkey, 5000.0)
 
         allowed, _ = self.entity_collateral_client.can_open_position(
@@ -644,15 +649,16 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $8K, loss exactly $8K
+        # loss exactly max_slash
+        max_slash = self.max_slash_100k
         slashed = self.entity_collateral_client.slash_on_realized_loss(
-            entity_hotkey, synthetic_hotkey, 8_000.0
+            entity_hotkey, synthetic_hotkey, max_slash
         )
-        self.assertAlmostEqual(slashed, 8_000.0)
+        self.assertAlmostEqual(slashed, max_slash)
 
-        # cumulative_realized_loss = 8K; cumulative_slashed stays 0 until process_pending_slashes
+        # cumulative_realized_loss = max_slash; cumulative_slashed stays 0 until process_pending_slashes
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], max_slash)
         self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     def test_slash_loss_exceeds_max_slash_single_trade(self):
@@ -662,11 +668,12 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $8K, loss = $50K → only slash $8K
+        # loss = $50K → only slash max_slash
+        max_slash = self.max_slash_100k
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 50_000.0
         )
-        self.assertAlmostEqual(slashed, 8_000.0)
+        self.assertAlmostEqual(slashed, max_slash)
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 50_000.0)
@@ -679,10 +686,10 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $8K
         # Each call returns total pending slash (min(cumulative_loss, max_slash) - cumulative_slashed).
         # Since cumulative_slashed stays 0 until process_pending_slashes, each return is
         # the running cumulative loss capped at max_slash.
+        max_slash = self.max_slash_100k
         losses = [1_000, 2_000, 3_000, 4_000, 5_000]
         last_slash = 0.0
         for loss in losses:
@@ -690,23 +697,38 @@ class TestEntityCollateral(TestBase):
                 entity_hotkey, synthetic_hotkey, float(loss)
             )
 
-        # Total losses = $15K > max_slash = $8K → last call returns 8K (at cap)
-        self.assertAlmostEqual(last_slash, 8_000.0)
+        # Total losses = $15K > max_slash → last call returns max_slash (at cap)
+        self.assertAlmostEqual(last_slash, min(15_000.0, max_slash))
 
         # All losses are tracked; cumulative_slashed stays 0 until process_pending_slashes
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 15_000.0)
         self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
-    # ==================== MarketOrderManager Wiring Tests ====================
+    # ==================== DebtLedgerManager Wiring Tests ====================
 
-    def test_market_order_manager_has_entity_collateral_client(self):
-        """Test that MarketOrderManager creates an EntityCollateralClient."""
-        from vali_objects.utils.market_order.market_order_manager import MarketOrderManager
-        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+    def test_debt_ledger_manager_has_entity_collateral_client(self):
+        """Test that DebtLedgerManager creates an EntityCollateralClient.
 
-        mom = MarketOrderManager(serve=False, running_unit_tests=True)
-        self.assertIsInstance(mom._entity_collateral_client, EntityCollateralClient)
+        Entity collateral is non-blocking: orders are no longer gated on it in
+        MarketOrderManager. The requirement is enforced as an emissions penalty on the
+        entity debt ledger instead, so the client lives on DebtLedgerManager.
+        """
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
+        import inspect
+        init_source = inspect.getsource(DebtLedgerManager.__init__)
+        self.assertIn("EntityCollateralClient", init_source)
+        self.assertIn("_entity_collateral_client", init_source)
+
+    def test_debt_ledger_manager_applies_entity_collateral_penalty(self):
+        """Test that entity ledger aggregation penalizes under-collateralized entities."""
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
+        import inspect
+        source = inspect.getsource(DebtLedgerManager.aggregate_entity_debt_ledgers)
+        self.assertIn("_entity_collateral_client", source)
+        self.assertIn("compute_entity_required_collateral", source)
+        self.assertIn("get_cached_collateral", source)
+        self.assertIn("entity_collateral_penalty", source)
 
     # ==================== EliminationManager Wiring Tests ====================
 
@@ -737,13 +759,25 @@ class TestEntityCollateral(TestBase):
         self.assertIn("_entity_client", source)
 
     def test_validator_contract_manager_withdrawal_blocking_code_exists(self):
-        """Test that process_withdrawal_request contains entity withdrawal blocking logic."""
+        """Test that the withdrawal path blocks withdrawals that break entity collateral.
+
+        The blocking checks live in query_withdrawal_request; process_withdrawal_request
+        must run them and bail out before withdrawing anything on-chain.
+        """
         from vali_objects.contract.validator_contract_manager import ValidatorContractManager
         import inspect
-        source = inspect.getsource(ValidatorContractManager.process_withdrawal_request)
-        self.assertIn("entity_data", source)
-        self.assertIn("required_theta", source)
-        self.assertIn("subaccount", source.lower())
+
+        process_source = inspect.getsource(ValidatorContractManager.process_withdrawal_request)
+        self.assertIn("query_withdrawal_request", process_source)
+        self.assertIn('if not query_result["successfully_processed"]', process_source)
+        self.assertIn("return query_result", process_source)
+
+        query_source = inspect.getsource(ValidatorContractManager.query_withdrawal_request)
+        # Withdrawal may not drop the entity below the collateral its subaccounts require
+        self.assertIn("compute_entity_required_collateral", query_source)
+        self.assertIn("required_min_theta", query_source)
+        # ...and open positions block the withdrawal outright
+        self.assertIn("is_open_position", query_source)
 
     # ==================== Validator.py Wiring Tests ====================
 
