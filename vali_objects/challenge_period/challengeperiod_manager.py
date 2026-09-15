@@ -61,10 +61,14 @@ class DrawdownStats:
 
     @property
     def eod_drawdown_pct(self) -> float:
+        if not self.eod_hwm:
+            return 0.0
         return (1.0 - self.last_eod_equity / self.eod_hwm) * 100.0
 
     @property
     def trailing_drawdown_pct(self) -> float:
+        if not self.eod_hwm:
+            return 0.0
         return (1.0 - self.current_equity / self.eod_hwm) * 100.0
 
     @property
@@ -368,7 +372,6 @@ class ChallengePeriodManager(CacheController):
         ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
         positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
         self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
-        # TODO: should this only recompute when perf ledgers are rebuilt, in case of retroactive ledger changes? If retroactive changes can't happen, reduce this to once a day.
         self._refresh_pro_stats(evaluation_hotkeys, ledgers, accounts)
         self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
 
@@ -391,8 +394,9 @@ class ChallengePeriodManager(CacheController):
                     self._record_breach(hotkey, state, reason, eliminations, demotions)
                     continue
 
-                # Rule 2: EOD trailing loss limit — equity cannot drop below the highest EOD equity
-                if reason := self._check_trailing_drawdown(state):
+                # Rule 2: EOD Trailing loss limit — the end-of-day equity cannot drop below the
+                # highest EOD equity. Checked once per UTC day, not in real time.
+                if reason := self._check_eod_drawdown(state):
                     self._record_breach(hotkey, state, reason, eliminations, demotions)
                     continue
             elif state.drawdown_criteria == DrawdownCriteria.STATIC:
@@ -487,7 +491,8 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def _drawdown_reason(bucket: MinerBucket, rule: str) -> EliminationReason:
-        """Map (bucket, drawdown rule) to the elimination reason for that account tier."""
+        """Map (bucket, drawdown rule) to the elimination reason for that account tier.
+        Pro buckets only ever pair with INTRADAY and EOD; the static rules are non-pro only."""
         if bucket == MinerBucket.PRO_FUNDED:
             tier = "PRO_FUNDED_PERIOD"
         elif bucket.is_pro:
@@ -513,25 +518,22 @@ class ChallengePeriodManager(CacheController):
             logger.warning(f"[CHALLENGE] BREACH EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
             return cls._drawdown_reason(state.current_bucket, "EOD")
 
+        # Live equity already past the limit: tonight's latch breaches unless the miner recovers
         if state.drawdown.trailing_drawdown_pct > state.eod_drawdown_threshold_pct:
             logger.info(f"[CHALLENGE] near trailing EOD with current equity {state.eod_drawdown_threshold_pct}%: {state}")
+        elif state.drawdown.eod_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
+            logger.info(f"[CHALLENGE] near EOD drawdown {state.eod_drawdown_threshold_pct}%: {state}")
 
-        return None
-
-    @classmethod
-    def _check_trailing_drawdown(cls, state: MinerBucketState) -> EliminationReason | None:
-        if state.drawdown.trailing_drawdown_pct > state.eod_drawdown_threshold_pct:
-            logger.warning(f"[CHALLENGE] BREACH trailing drawdown {state.eod_drawdown_threshold_pct}%: {state}")
-            return cls._drawdown_reason(state.current_bucket, "EOD")
-        elif state.drawdown.trailing_drawdown_pct > state.eod_drawdown_threshold_pct * 0.75:
-            logger.info(f"[CHALLENGE] near trailing drawdown {state.eod_drawdown_threshold_pct}%: {state}")
         return None
 
     @classmethod
     def _check_static_drawdown(cls, state: MinerBucketState) -> EliminationReason | None:
         bucket = state.current_bucket
-        threshold = ValiConfig.PRO_STATIC_DRAWDOWN_THRESHOLD if bucket.is_pro else ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD
-        threshold_pct = threshold * 100
+        if bucket.is_pro:
+            # The pro track runs the intraday and EOD rules only. There is no pro static
+            # elimination reason to return, so refresh() must never route a pro bucket here.
+            return None
+        threshold_pct = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100
         if state.drawdown.static_drawdown_pct > threshold_pct:
             logger.warning(f"[CHALLENGE] BREACH static drawdown {threshold_pct}%: {state}")
             return cls._drawdown_reason(bucket, "STATIC")
@@ -629,12 +631,8 @@ class ChallengePeriodManager(CacheController):
             is_pro = state.current_bucket.is_pro
             elimination_time_ms = current_time_ms
             if elimination_reason.is_eod_drawdown:
-                if is_pro:
-                    # Pro measures the trailing rule against live equity, so the breach happened now
-                    elimination_drawdown_pct = state.drawdown.trailing_drawdown_pct
-                else:
-                    elimination_drawdown_pct = state.drawdown.eod_drawdown_pct
-                    elimination_time_ms = state.drawdown.last_eod_checked_ms or current_time_ms
+                elimination_drawdown_pct = state.drawdown.eod_drawdown_pct
+                elimination_time_ms = state.drawdown.last_eod_checked_ms or current_time_ms
             elif elimination_reason.is_intraday_drawdown:
                 elimination_drawdown_pct = state.drawdown.intraday_drawdown_pct
             elif elimination_reason.is_static_drawdown:
@@ -645,15 +643,13 @@ class ChallengePeriodManager(CacheController):
             else:
                 elimination_drawdown_pct = max(state.drawdown.intraday_drawdown_pct, state.drawdown.eod_drawdown_pct)
 
-            is_static = state.drawdown_criteria == DrawdownCriteria.STATIC
+            # Pro runs the pro rules even on a static subaccount, so static reporting is non-pro only
+            is_static = state.drawdown_criteria == DrawdownCriteria.STATIC and not is_pro
             # intraday_drawdown_pct always holds the literal equity-vs-day-open number
             intraday_drawdown_pct = state.drawdown.intraday_drawdown_pct
-            # eod_drawdown_pct holds the account's other rule: the live equity-vs-high-water-mark check for pro,
-            # static equity-vs-starting-balance for static accounts, or the EOD-vs-high-water-mark check otherwise
-            if is_pro:
-                eod_drawdown_pct = state.drawdown.trailing_drawdown_pct
-            else:
-                eod_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
+            # eod_drawdown_pct holds the account's other rule: static equity-vs-starting-balance for
+            # static accounts, or the EOD-vs-high-water-mark check otherwise
+            eod_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
 
             self._elimination_client.append_elimination_row(
                 hotkey=hotkey,
@@ -960,6 +956,15 @@ class ChallengePeriodManager(CacheController):
             if not state.current_bucket.is_pro_track:
                 continue
 
+            # Worst live equity against the end-of-day high-water mark, in mdd ratio form.
+            # eod_hwm only advances at UTC midnight, so an intraday peak never deepens it.
+            max_drawdown = state.pro_stats.max_drawdown
+            if state.drawdown.eod_hwm > 0:
+                max_drawdown = min(max_drawdown, 1.0, state.drawdown.current_equity / state.drawdown.eod_hwm)
+            else:
+                logger.warning(f"[CHALLENGE] {hotkey} non-positive eod_hwm, holding ratchet: {state}")
+            state.pro_stats.max_drawdown = max_drawdown
+
             ledger = ledgers.get(hotkey)
             if ledger is None:
                 logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping pro stats")
@@ -970,9 +975,6 @@ class ChallengePeriodManager(CacheController):
                 logger.warning(f"[CHALLENGE] {hotkey} invalid account, skipping pro stats")
                 continue
 
-            # The perf ledger only retains a rolling window, so ratchet the worst drawdown to keep
-            # the calmar denominator all-time.
-            max_drawdown = min(state.pro_stats.max_drawdown, ledger.mdd)
             log_returns = LedgerUtils.daily_return_log(ledger)
             state.pro_stats = ProStats(
                 calmar=Metrics.all_time_calmar(

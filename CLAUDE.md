@@ -145,7 +145,7 @@ The system uses a distributed RPC architecture for inter-process communication:
   - PnL weight: 100% (other metrics set to 0 in current config)
   - Weights are set from the previous week's PnL (scaled by penalties); payout periods run midnight-to-midnight UTC, Sunday-to-Sunday
 - **Legacy Metrics** (configurable): Calmar, Sharpe, Omega, Sortino ratios + returns
-  - Weighted average with decay rate (0.075) for recent performance emphasis, 180-day target ledger window
+  - Weighted average with decay rate (0.075) for recent performance emphasis, 1000-day target ledger window
 - **Risk Management**:
   - 5% intraday drawdown elimination threshold, measured from the day's opening equity (FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05)
   - 8% end-of-day drawdown elimination threshold, measured from the highest-ever end-of-day equity (FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08)

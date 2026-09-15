@@ -318,9 +318,9 @@ The granted size is published as `subaccount_info.pro_account_size` in the v2 su
 (`GET /v2/entity/subaccount/<synthetic_hotkey>` and the websocket dashboard stream): null until the
 subaccount is first offered the pro track, and kept on the record after a demotion.
 
-Every pro bucket is subject to two drawdown rules, both checked continuously:
-- **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day.
-- **EOD trailing loss limit:** equity cannot drop **8%** below the end-of-day equity high-water mark.
+Every pro bucket is subject to two drawdown rules:
+- **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day. Checked continuously.
+- **EOD trailing loss limit:** end-of-day equity cannot drop **8%** below the end-of-day equity high-water mark. Evaluated once per UTC day against the midnight snapshot, not in real time — an intraday dip below the mark that recovers before midnight does not breach.
 
 `PRO_CHALLENGE_TRANSITION` is still trading the standard account, so it keeps the `SUBACCOUNT_FUNDED` rules instead.
 
@@ -349,11 +349,15 @@ soft breaches apply.
 
 Promotion from a pro challenge bucket to `PRO_FUNDED` requires all of:
 
-- **90 days** in the bucket.
+- **90 full calendar days since the account's first trade.** Counted from the ledger, which starts
+  at the first order on the pro account, so sitting in the bucket without trading earns nothing and
+  the partial first and current days do not count.
 - **6% return** on the account. Missing this target only prevents promotion — pro buckets have no
   time limit, so it never demotes or eliminates the trader.
 - **All-time Calmar of at least 1.75** — realized return since the start of the challenge divided by
-  the max drawdown over the same period.
+  the max drawdown over the same period. Max drawdown is the largest drop of live account equity
+  below the end-of-day equity high-water mark, so it tracks real-time equity against the marks
+  snapshotted at prior UTC midnights. It ratchets: once reached, it never recovers.
 - **Return consistency of at most 20%** — after capping each day's profit at 1.5%, no single day may
   account for more than 20% of the account's total return. The total is the sum of these capped daily
   returns, with losing days counted in full.
@@ -367,8 +371,9 @@ with.
 #### Failing the pro challenge
 
 A drawdown breach in `PRO_CHALLENGE_FROM_STANDARD` demotes back to `SUBACCOUNT_FUNDED`, and one in
-`PRO_CHALLENGE_DIRECT` demotes back to `SUBACCOUNT_CHALLENGE`; in both cases the account is resized
-back to the standard account size. A breach in `PRO_CHALLENGE_TRANSITION` (still the standard
+`PRO_CHALLENGE_DIRECT` demotes back to `SUBACCOUNT_CHALLENGE`; in both cases the demotion lands on a
+fresh account — resized back to the standard account size, open positions closed, limit orders
+cancelled, perf and debt ledgers wiped, and the ratcheted pro stats reset. A breach in `PRO_CHALLENGE_TRANSITION` (still the standard
 funded account) or in `PRO_FUNDED` eliminates the subaccount. Re-promotion to pro after passing the
 standard challenge again goes through `POST /api/promote` like any other pro promotion, and needs a
 `pro_account_size` again: the size from the earlier pro journey is never reused.

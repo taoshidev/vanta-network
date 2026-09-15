@@ -1296,7 +1296,7 @@ class TradePair(Enum):
     EWQ  = ["EWQ",  "EWQ",  0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5), False]
     EFA  = ["EFA",  "EFA",  0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5), True]
     IEMG = ["IEMG", "IEMG", 0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5), True]
-    INDA = ["INDA", "INDA", 0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5), True]
+    INDA = ["INDA", "INDA", 0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5), False]
     VT   = ["VT",   "VT",   0.00009, EQUITIES_MIN_LEVERAGE, EQUITIES_MAX_LEVERAGE, TradePairCategory.EQUITIES, InstrumentType.SPOT, SubaccountTierBaseLeverage(0.5), True]
 
     # indices (no longer allowed for trading as we moved to equities tickers instead)

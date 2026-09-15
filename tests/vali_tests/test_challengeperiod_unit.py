@@ -44,6 +44,8 @@ _CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager.CommonDataClient",
     "vali_objects.challenge_period.challengeperiod_manager.AssetSelectionClient",
     "vali_objects.challenge_period.challengeperiod_manager.DebtLedgerClient",
+    "vali_objects.challenge_period.challengeperiod_manager.LimitOrderClient",
+    "vali_objects.challenge_period.challengeperiod_manager.EntityClient",
 ]
 
 
@@ -270,10 +272,6 @@ def test_check_static_ignores_trailing_drawdown_pcts():
 # Section 3c — Pro account buckets
 # ═══════════════════════════════════════════════════════════════════════════════
 
-PRO_STATIC_DD_PCT = ValiConfig.PRO_STATIC_DRAWDOWN_THRESHOLD * 100
-PRO_STATIC_EOD_DD_PCT = ValiConfig.PRO_STATIC_EOD_DRAWDOWN_THRESHOLD * 100
-
-
 @pytest.mark.parametrize("bucket", [MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED])
 def test_pro_buckets_classified_as_subaccounts(bucket):
     assert bucket.is_pro is True
@@ -297,28 +295,6 @@ def test_pro_bucket_drawdown_thresholds_resolve():
 def test_pro_funded_is_earning_but_pro_challenge_is_not():
     assert MinerBucket.PRO_FUNDED.is_subaccount_earning is True
     assert MinerBucket.PRO_CHALLENGE_DIRECT.is_subaccount_earning is False
-
-
-def _breaching_static_drawdown(threshold_pct: float) -> DrawdownStats:
-    """static_drawdown_pct = (1 - current_equity) * 100, so drop equity past the threshold."""
-    return DrawdownStats(current_equity=1.0 - (threshold_pct / 100.0) - 0.001)
-
-
-def _breaching_static_eod_drawdown(threshold_pct: float) -> DrawdownStats:
-    """static_eod_drawdown_pct = (1 - last_eod_equity) * 100."""
-    return DrawdownStats(last_eod_equity=1.0 - (threshold_pct / 100.0) - 0.001)
-
-
-def test_pro_static_drawdown_reasons():
-    challenge = _state(MinerBucket.PRO_CHALLENGE_DIRECT)
-    challenge.drawdown = _breaching_static_drawdown(PRO_STATIC_DD_PCT)
-    assert (ChallengePeriodManager._check_static_drawdown(challenge)
-            == EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_STATIC_DRAWDOWN)
-
-    funded = _state(MinerBucket.PRO_FUNDED)
-    funded.drawdown = _breaching_static_drawdown(PRO_STATIC_DD_PCT)
-    assert (ChallengePeriodManager._check_static_drawdown(funded)
-            == EliminationReason.FAILED_PRO_FUNDED_PERIOD_STATIC_DRAWDOWN)
 
 
 def _breaching_legacy_drawdown() -> DrawdownStats:
@@ -410,6 +386,112 @@ def test_refresh_pro_stats_counts_full_tracked_days(manager):
     ledger.cps[-1].accum_ms = ValiConfig.TARGET_CHECKPOINT_DURATION_MS // 2
     manager._refresh_pro_stats([hk], {hk: ledger}, accounts)
     assert manager.miner_states[hk].pro_stats.trading_days == 4
+
+
+def _pro_state(manager, drawdown: DrawdownStats, hk: str = "test_hk") -> str:
+    """Seed a pro-bucket miner with a pinned drawdown cache, as refresh() would leave it."""
+    manager.miner_states[hk] = _state(PRO_CHALLENGE_BUCKET)
+    manager.miner_states[hk].drawdown = drawdown
+    return hk
+
+
+def _flat_pro_ledger():
+    """Five flat days. create_daily_checkpoints_with_pnl pins cp.mdd at 0.95 on every checkpoint,
+    which makes it a foil for proving the ratchet no longer reads the ledger."""
+    return create_daily_checkpoints_with_pnl([0.0] * 5, [0.0] * 5)
+
+
+def test_refresh_pro_stats_ratchets_against_eod_hwm(manager):
+    """0.96 equity under a 1.20 midnight mark is a 20% drawdown, deeper than the ledger's 0.95."""
+    hk = _pro_state(manager, DrawdownStats(current_equity=0.96, daily_open_equity=0.96,
+                                           eod_hwm=1.20, last_eod_equity=0.96))
+    accounts = {hk: SimpleNamespace(account_size=100_000.0)}
+
+    manager._refresh_pro_stats([hk], {hk: _flat_pro_ledger()}, accounts)
+    assert manager.miner_states[hk].pro_stats.max_drawdown == pytest.approx(0.80)
+
+
+def test_refresh_pro_stats_ignores_ledger_mdd(manager):
+    """Equity at the mark is no drawdown, however deep the ledger's own mdd went."""
+    hk = _pro_state(manager, DrawdownStats(current_equity=1.0, daily_open_equity=1.0,
+                                           eod_hwm=1.0, last_eod_equity=1.0))
+    ledger = _flat_pro_ledger()
+    for cp in ledger.cps:
+        cp.mdd = 0.50
+    accounts = {hk: SimpleNamespace(account_size=100_000.0)}
+
+    manager._refresh_pro_stats([hk], {hk: ledger}, accounts)
+    assert manager.miner_states[hk].pro_stats.max_drawdown == 1.0
+
+
+def test_refresh_pro_stats_ratchet_is_monotonic(manager):
+    """A recovery never gives the calmar denominator back."""
+    hk = _pro_state(manager, DrawdownStats(current_equity=0.90, daily_open_equity=0.90,
+                                           eod_hwm=1.0, last_eod_equity=0.90))
+    accounts = {hk: SimpleNamespace(account_size=100_000.0)}
+    manager._refresh_pro_stats([hk], {hk: _flat_pro_ledger()}, accounts)
+    assert manager.miner_states[hk].pro_stats.max_drawdown == pytest.approx(0.90)
+
+    manager.miner_states[hk].drawdown = DrawdownStats(current_equity=1.30, daily_open_equity=1.30,
+                                                      eod_hwm=1.30, last_eod_equity=1.30)
+    manager._refresh_pro_stats([hk], {hk: _flat_pro_ledger()}, accounts)
+    assert manager.miner_states[hk].pro_stats.max_drawdown == pytest.approx(0.90)
+
+
+def test_refresh_pro_stats_ratchet_clamps_at_par(manager):
+    """Equity above the midnight mark is not a negative drawdown."""
+    hk = _pro_state(manager, DrawdownStats(current_equity=1.50, daily_open_equity=1.50,
+                                           eod_hwm=1.20, last_eod_equity=1.50))
+    accounts = {hk: SimpleNamespace(account_size=100_000.0)}
+
+    manager._refresh_pro_stats([hk], {hk: _flat_pro_ledger()}, accounts)
+    assert manager.miner_states[hk].pro_stats.max_drawdown == 1.0
+
+
+def test_refresh_pro_stats_holds_ratchet_on_non_positive_hwm(manager):
+    """A corrupt high-water mark holds the ratchet rather than handing back a fresh denominator."""
+    hk = _pro_state(manager, DrawdownStats(current_equity=0.5, eod_hwm=0.0))
+    manager.miner_states[hk].pro_stats = ProStats(max_drawdown=0.9)
+    accounts = {hk: SimpleNamespace(account_size=100_000.0)}
+
+    manager._refresh_pro_stats([hk], {hk: _flat_pro_ledger()}, accounts)
+    assert manager.miner_states[hk].pro_stats.max_drawdown == pytest.approx(0.9)
+
+
+def test_refresh_pro_stats_calmar_uses_ratcheted_denominator(manager):
+    """6% realized over a 20% drawdown is a calmar of 0.30."""
+    hk = _pro_state(manager, DrawdownStats(current_equity=0.96, daily_open_equity=0.96,
+                                           eod_hwm=1.20, last_eod_equity=0.96))
+    ledger = _flat_pro_ledger()
+    ledger.cps[-1].prev_portfolio_realized_pnl = 6_000.0
+    ledger.cps[-1].cumulative_fees_usd = 0.0
+    accounts = {hk: SimpleNamespace(account_size=100_000.0)}
+
+    manager._refresh_pro_stats([hk], {hk: ledger}, accounts)
+    assert manager.miner_states[hk].pro_stats.calmar == pytest.approx(0.30)
+
+
+def test_refresh_pro_stats_ratchets_without_a_ledger(manager):
+    """A missing ledger skips calmar, but must not lose a drawdown that already happened."""
+    hk = _pro_state(manager, DrawdownStats(current_equity=0.9, daily_open_equity=0.9,
+                                           eod_hwm=1.0, last_eod_equity=0.9))
+
+    manager._refresh_pro_stats([hk], {}, {})
+    stats = manager.miner_states[hk].pro_stats
+    assert stats.max_drawdown == pytest.approx(0.9)
+    assert stats.calmar == 0.0
+    assert stats.trading_days == 0
+
+
+def test_switch_account_resets_pro_stats(manager):
+    """The ratchet must not survive onto the fresh account."""
+    hk = "test_hk"
+    manager.miner_states[hk] = _state(PRO_CHALLENGE_BUCKET)
+    manager.miner_states[hk].pro_stats = ProStats(calmar=2.0, daily_consistency=0.1,
+                                                  max_drawdown=0.8, trading_days=120)
+
+    assert manager._switch_account(hk, MinerBucket.PRO_FUNDED, NOW_MS) is True
+    assert manager.miner_states[hk].pro_stats == ProStats()
 
 
 def test_pro_thresholds_only_resolve_for_pro_buckets():

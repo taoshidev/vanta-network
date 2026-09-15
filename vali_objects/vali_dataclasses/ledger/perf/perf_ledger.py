@@ -112,6 +112,8 @@ class PerfLedger():
         if 'last_known_prices' not in x:
             x['last_known_prices'] = {}
         x.pop('tp_id', None)
+        # Adopt the configured window rather than the one this ledger was serialized with
+        x['target_ledger_window_ms'] = ValiConfig.TARGET_LEDGER_WINDOW_MS
         instance = cls(**x)
         return instance
 
