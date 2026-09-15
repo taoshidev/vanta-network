@@ -87,6 +87,21 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
 
+    def cancel_entry_orders(self, miner_hotkey: str, now_ms: int, order_src=None) -> dict:
+        """
+        Cancel every resting order that would open a position or add to one via RPC, leaving
+        brackets and resting exits in place.
+
+        Args:
+            miner_hotkey: Miner's hotkey
+            now_ms: Current timestamp
+            order_src: Optional OrderSource override — if specified, replaces the derived cancel src
+
+        Returns:
+            dict with cancellation details
+        """
+        return self._server.cancel_entry_orders(miner_hotkey, now_ms, order_src)
+
     # ==================== Query Methods ====================
 
     def get_limit_order_by_uuid(self, miner_hotkey: str, order_uuid: str) -> dict:

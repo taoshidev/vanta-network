@@ -138,6 +138,13 @@ class PerfLedger():
         return self.cps[-1].prev_portfolio_ret
 
     @property
+    def realized_pnl_net_usd(self):
+        # Cumulative realized PnL less all fees paid, in USD. Excludes unrealized marks.
+        if not self.cps:
+            return 0.0
+        return self.cps[-1].prev_portfolio_realized_pnl - self.cps[-1].cumulative_fees_usd
+
+    @property
     def start_time_ms(self):
         if len(self.cps) == 0:
             return 0

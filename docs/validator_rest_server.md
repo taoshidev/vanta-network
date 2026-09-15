@@ -327,7 +327,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "trade_pair_source": "hyperliquid",
       "min_leverage": 0.01,
       "max_leverage": 1.0,
-      "subaccount_positional_leverage_by_tier": {"1": 0.5, "2": 1.0, "3": 1.5, "4": 2.0}
+      "subaccount_positional_leverage_by_tier": {"1": 0.5, "2": 1.0, "3": 1.5, "4": 2.0},
+      "standard_positional_leverage_by_tier": {"1": 1.5, "2": 2.0, "3": 2.5}
     },
     {
       "trade_pair_id": "EURUSD",
@@ -337,7 +338,8 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "trade_pair_source": "vanta",
       "min_leverage": 0.1,
       "max_leverage": 5,
-      "subaccount_positional_leverage_by_tier": {"1": 1.25, "2": 2.5, "3": 3.75, "4": 5.0}
+      "subaccount_positional_leverage_by_tier": {"1": 2.5, "2": 5.0, "3": 7.5, "4": 10.0},
+      "standard_positional_leverage_by_tier": {"1": 10.0, "2": 15.0, "3": 20.0}
     }
   ],
   "disabled": [
@@ -364,6 +366,32 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
   ],
   "total_allowed": 1100,
   "total_disabled": 24,
+  "standard_leverage_tiers": {
+    "class": {
+      "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "indices": 2.5, "commodities": 1.5},
+      "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "indices": 4.0, "commodities": 2.0},
+      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "indices": 5.0, "commodities": 3.0}
+    },
+    "portfolio": {
+      "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "commodities": 1.5, "all_markets": 15.0},
+      "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "commodities": 2.0, "all_markets": 20.0},
+      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "commodities": 3.0, "all_markets": 25.0}
+    }
+  },
+  "is_pro": false,
+  "pro": {
+    "allowed_trade_pair_ids": ["EURUSD", "NVDA", "SPY", "..."],
+    "class_leverage": {"crypto": 6.0, "equities": 6.0, "commodities": 8.0, "indices": 10.0, "forex": 35.0},
+    "portfolio_leverage": 40.0,
+    "default_positional_leverage": 1.0,
+    "basis": "gross_per_side",
+    "denominator": "balance",
+    "correlation_limits": {"currency:USD": 30.0, "currency:NZD": 20.0, "sector:Information Technology": 3.0, "index:us": 25.0},
+    "currency_limits": {"USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0, "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 20.0},
+    "sector_limit": 3.0,
+    "us_index_limit": 25.0,
+    "us_index_trade_pair_ids": ["DIA", "IWM", "QQQ", "SP500USDC", "SPY", "XYZ100USDC"]
+  },
   "timestamp": 1749234567890
 }
 ```
@@ -371,6 +399,14 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 **Response fields:**
 - `allowed`: Trade pairs that can open and close positions. Includes all active Vanta pairs and hardcoded HyperLiquid pairs (and, when `asset_class` is given, only those tradeable by that asset class).
 - `disabled`: Trade pairs that are fully blocked (`is_blocked`) or excluded by the `asset_class` filter — neither opening nor closing is permitted.
+- `standard_leverage_tiers`: Per-class and portfolio caps (multiples of balance) for standard subaccounts, keyed by leverage tier `1` to `3`; `portfolio` is keyed by the subaccount's own asset class. See [entity_miner.md](entity_miner.md#leverage-limits).
+- `is_pro`: Echoes the resolved `is_pro` query flag, so a cached payload says which universe it describes.
+- `pro`: Everything a pro account is sized against.
+  - `allowed_trade_pair_ids`: The pro universe (`TradePair.is_pro`), reviewed quarterly.
+  - `class_leverage` / `portfolio_leverage`: Per-asset-class and overall caps. Pro runs its own **flat** tables — neither `standard_leverage_tiers` nor the legacy curve applies, and there is no tier to key on.
+  - `default_positional_leverage`: What a pro-tradable pair the spec does not name falls back to. See [pro_leverage_discrepancies.md](pro_leverage_discrepancies.md) for which pairs currently hit it.
+  - `correlation_limits`: Per-side cap for every correlation group, keyed the same way as each pair's `correlation_legs`. `currency_limits`, `sector_limit` and `us_index_limit` are the same values split by group type.
+  - `basis` / `denominator`: Correlated caps apply to **gross long and gross short independently** (never netted) as a multiple of the account's live `balance` — not `account_size` — and are checked **only on orders that open or increase** a position.
 - `timestamp`: Response timestamp in milliseconds
 
 **Per-pair fields:**
@@ -380,7 +416,12 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 - `trade_pair_category`: Asset class (`crypto`, `forex`, `equities`, `indices`, `commodities`)
 - `trade_pair_source`: Data source — `"vanta"` for standard pairs, `"hyperliquid"` for HL-sourced pairs
 - `min_leverage` / `max_leverage`: Leverage bounds for this pair
-- `subaccount_positional_leverage_by_tier`: Per-tier (1–4) positional leverage multiplier for the subaccount order path
+- `subaccount_positional_leverage_by_tier`: Legacy per-tier (1–4) positional leverage multiplier, used by HL-linked subaccounts
+- `standard_positional_leverage_by_tier`: Per-tier (1–3) positional leverage multiplier for standard subaccounts (a subaccount without a stored `leverage_tier` counts as tier 1)
+- `pro_positional_leverage`: Positional leverage multiplier for pro accounts. A single value, not a per-tier map — the pro curve is flat
+- `exposure_group`: The pair's correlated-exposure sector (e.g. `"Information Technology"`), or `null` for pairs in no sector. Broad-market and country ETFs (SPY, QQQ, EFA, VT, …) are deliberately in none
+- `correlation_legs`: What a **long** position in this pair contributes to, as `[{"group", "direction"}]`. Forex contributes base `+1` / quote `-1` for the eight limited currencies only (so `USDMXN` yields a USD leg alone, and `XAUUSD`/`XAGUSD` yield a `-1` USD leg); equities contribute one sector leg; US index pairs and broad US ETFs contribute one `index:us` leg. Empty for pairs in no group
+- `pro_carry_fee_rate_per_interval`: Carry rate a pro account pays on this pair. `0` for Hyperliquid-sourced pairs, which pay live HL funding instead. Pro transaction/spread fees are identical to standard
 - `lot_size`: Present only for a handful of Hyperliquid commodity pairs (e.g. `GOLDUSDC`); UI convenience field, not used in any network calculation
 
 **Example:**
@@ -1107,6 +1148,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules). Fixed for the life of the subaccount once created. HL-linked subaccounts always get `"trailing"` regardless of what's passed.
+- `account_type` (string, optional): must be `"standard"` (the default). Pro accounts are reached by promotion via `POST /entity/subaccount/promote`, never at creation — see [entity_miner.md](entity_miner.md#account-types). Not part of the signed payload.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
 **Response:**
@@ -1145,6 +1187,165 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - Entity hotkeys cannot place orders directly (only subaccounts can trade)
 - New subaccounts are automatically broadcasted to all validators in the network
 - The entity miner gateway (`EntityMinerRestServer`) handles signing and forwarding — end users typically call the miner-side endpoint rather than this one directly
+
+### Update Subaccount Leverage Tier
+
+`POST /entity/subaccount/leverage-tier`
+
+Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [entity_miner.md](entity_miner.md#leverage-limits). Raising is allowed at any time. Lowering is rejected while the subaccount has open positions. HL-linked and pro subaccounts are rejected.
+
+**Authentication:** Coldkey signature (no API key required). Each signature is single use.
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "entity_coldkey": "5FxY...",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "leverage_tier": 2,
+  "nonce": "3f9c1e5a...",
+  "timestamp": 1749234567890,
+  "signature": "0x...",
+  "version": "2.2.1"
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `entity_coldkey` (string, required): The entity's coldkey SS58 address
+- `synthetic_hotkey` (string, required): The subaccount to change. Must belong to `entity_hotkey`.
+- `leverage_tier` (int, required): `1`, `2` or `3`
+- `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
+- `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
+- `signature` (string, required): Coldkey signature over the sorted-JSON of `{entity_coldkey, entity_hotkey, leverage_tier, nonce, synthetic_hotkey, timestamp}`. The signed payload names the subaccount and the tier and carries a single-use nonce, so a captured request cannot be replayed or redirected.
+- `version` (string, optional): vanta-cli version string for compatibility checking.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "leverage_tier updated to 2 for 5GhDr3xy...abc_0",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "leverage_tier": 2
+}
+```
+
+**Errors:**
+- `400`: missing or invalid field, or the change was rejected (unknown subaccount, HL-linked, `hl_all` or pro subaccount, subaccount not active, lowering with open positions)
+- `401`: invalid signature, reused nonce, or expired timestamp
+- `403`: coldkey does not own the hotkey
+
+**Important Notes:**
+- The entity miner gateway (`POST /api/update-subaccount-leverage-tier`) builds and signs this request. End users typically call the gateway rather than this endpoint directly.
+- The new tier is broadcast to all validators like a subaccount registration.
+
+### Promote Subaccount
+
+`POST /entity/subaccount/promote`
+
+Move one of an entity's subaccounts a step up the pro account track, on the entity's own request.
+This is the only way onto the pro track — see [entity_miner.md](entity_miner.md#account-types).
+
+The target bucket is derived from the subaccount's current one, and only these three hops exist
+(`MinerBucket.promotion_target`):
+
+| From | To |
+| --- | --- |
+| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` |
+| `SUBACCOUNT_FUNDED` | `PRO_CHALLENGE_TRANSITION` |
+| `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
+
+A subaccount in any other bucket is rejected with a 400. Every other bucket change on the network
+happens organically (the end-of-week promotions, demotions and eliminations), not through this endpoint.
+
+Ownership is proven, not asserted: the entity coldkey signs the request, the coldkey must own
+`entity_hotkey` on chain, and `synthetic_hotkey` must be one of that hotkey's own subaccounts
+(a synthetic hotkey is `<entity_hotkey>_<subaccount_id>`). An entity therefore cannot promote a
+subaccount it does not own.
+
+**Authentication:** Tier 200 API key, plus a coldkey signature that is single use.
+
+**Request Body:**
+```json
+{
+  "entity_hotkey": "5GhDr3xy...abc",
+  "entity_coldkey": "5FxY...",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "pro_account_size": 500000,
+  "nonce": "3f9c1e5a...",
+  "timestamp": 1749234567890,
+  "signature": "0x...",
+  "version": "2.2.1"
+}
+```
+
+**Parameters:**
+- `entity_hotkey` (string, required): The entity's hotkey SS58 address
+- `entity_coldkey` (string, required): The entity's coldkey SS58 address
+- `synthetic_hotkey` (string, required): The subaccount to promote. Must belong to `entity_hotkey`.
+- `pro_account_size` (number, conditional): USD size of the pro account. There is no network default.
+  When sent it must be a finite positive number no greater than $1,000,000
+  (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`) and no smaller than the subaccount's standard account size;
+  `NaN`, `Infinity`, strings and booleans are rejected with a 400 before the signature is checked or
+  the nonce is used, so the same nonce can be retried with a corrected size. The network enforces only
+  this range, not the Command Center presets.
+  - **Required entering the pro track** (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`). A re-offer
+    after a demotion needs a size again: a size recorded on an earlier pro journey is never reused.
+  - **Optional on the hop within the track** (out of `PRO_CHALLENGE_TRANSITION`): a new size replaces
+    the recorded one; omitted, the recorded size is kept.
+- `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
+- `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
+- `signature` (string, required): Coldkey signature over the sorted-JSON of
+  `{entity_coldkey, entity_hotkey, nonce, synthetic_hotkey, timestamp}`, plus `pro_account_size` when
+  one is sent. A size omitted is not signed as `null`.
+- `version` (string, optional): vanta-cli version string for compatibility checking.
+
+**What a promotion does.** Entering the pro track snapshots the subaccount's existing size, which
+becomes its `standard_account_size` and the basis for payouts during the pro challenge, and records
+the requested size as `pro_account_size`. The entity is charged the pro promotion fee out of its
+collateral once the pro account goes live — the hops into `PRO_CHALLENGE_DIRECT` and
+`PRO_CHALLENGE_FROM_STANDARD` — and the request fails if the entity's collateral cannot cover it.
+
+**Only the two hops onto a pro account wipe trading state.** A hop switches accounts when the target
+bucket changes the account size (`MinerBucket.switches_account`), and `PRO_CHALLENGE_TRANSITION` does
+not — it is a wind-down week on the standard account:
+
+| Hop | Positions | Limit orders | Ledgers |
+| --- | --- | --- | --- |
+| `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT` | force closed | all cancelled | restart on the pro size |
+| `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION` | **kept open** | **kept**, except entry orders | **kept** |
+| `PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD` | force closed | all cancelled | restart on the pro size |
+
+The two account-switching hops cannot be undone. Entering `PRO_CHALLENGE_TRANSITION` resets nothing:
+the subaccount keeps its positions, its perf and debt ledgers, and its account size, and only the
+resting orders that could open or increase a position are swept (`PRO_TRANSITION_CANCELLED`), leaving
+closes and reductions in place for the week.
+
+A rejected promotion changes nothing: an invalid or missing size is a 400 before the subaccount or its
+bucket is touched, and a move that fails *after* the sizing is applied rolls the sizing back, so a
+subaccount is never left marked pro in a bucket that did not change — which would both leave it trading
+the pro size off the pro track and let the next size-less attempt reuse that size instead of demanding one.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "5GhDr3xy...abc_0 moved to PRO_CHALLENGE_FROM_STANDARD",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "bucket": "PRO_CHALLENGE_FROM_STANDARD",
+  "pro_account_size": 500000.0,
+  "account_size": 500000.0
+}
+```
+
+**Errors:**
+- `400`: a field or `pro_account_size` is missing or invalid, `synthetic_hotkey` is not a subaccount, or the promotion was rejected (the subaccount's bucket has no promotion target, no pro account size to use, or insufficient entity collateral for the promotion fee)
+- `401`: missing or invalid API key, invalid signature, reused nonce, or expired timestamp
+- `403`: API key below tier 200, coldkey does not own the hotkey, or the subaccount belongs to another entity
+- `404`: no such subaccount
+
+**Important Notes:**
+- The entity miner gateway (`POST /api/promote`) builds and signs this request. End users typically call the gateway rather than this endpoint directly.
 
 ### Set Entity Endpoint
 
@@ -1750,6 +1951,9 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "subaccount_uuid": "abc...789",
       "asset_class": "crypto",
       "account_size": 100000.0,
+      "standard_account_size": null,
+      "pro_account_size": null,
+      "account_type": "standard",
       "drawdown_criteria": "static",
       "status": "active",
       "created_at_ms": 1770657674533,
@@ -1789,7 +1993,25 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "capital_used": 0.0,
       "balance": 98339.3684339573,
       "buying_power": 122924.21054244661,
-      "max_return": 1.0
+      "max_return": 1.0,
+      // Which leverage curve this account trades and where it sits on it. `leverage_tier` is the
+      // *standard* tier and is null for pro accounts, so size against `tier` + `tier_curve`
+      // instead, pairing them with the matching table in GET /trade-pairs.
+      "is_pro": false,
+      "tier_curve": "standard",
+      "tier": 1,
+      "portfolio_multiplier": 15.0,
+      // Raw gross [long, short] USD per correlation group. Pro accounts only; see
+      // `correlated_exposures` below for the same data with limits and remaining room.
+      "correlated_exposure_by_group": {},
+      // Pro accounts only. Omitted entirely for non-pro; present with an empty `groups` for a
+      // pro account carrying no exposure. Caps are per side against `balance`.
+      "correlated_exposures": {
+        "basis": "gross_per_side",
+        "denominator": "balance",
+        "balance": 98339.37,
+        "groups": {}
+      }
     },
     "positions": {
       // positions is only included if there are open positions or closed positions newer
@@ -1917,6 +2139,9 @@ This is the only guaranteed section of the response. All other sections may be m
 - `subaccount_uuid`: Unique identifier for this subaccount
 - `asset_class`: Asset class (crypto, forex, etc.)
 - `account_size`: Current account size (in USD)
+- `standard_account_size`: Account size on the standard track, snapshotted when the subaccount entered the pro track (null until then)
+- `pro_account_size`: Pro account size the admin set when offering the subaccount the pro track, at least the subaccount's standard account size and at most $1,000,000 (null until the subaccount is first offered the pro track; kept after a demotion)
+- `account_type`: `"standard"` or `"pro"`
 - `status`: Current status ("active", "eliminated", or "unknown")
 - `created_at_ms`: Timestamp when subaccount was created
 - `eliminated_at_ms`: Timestamp when eliminated (null if active)
@@ -2383,6 +2608,72 @@ Returns the trading limits for a Hyperliquid subaccount based on its account siz
 **Example:**
 ```bash
 curl http://localhost:48888/hl-traders/0xabcd1234.../limits
+```
+
+<a id="get-subaccount-limits"></a>
+### Get Subaccount Limits
+
+`GET /subaccounts/<synthetic_hotkey>/limits`
+
+Every limit an order against this subaccount is sized against, in one call. This is the Vanta-native counterpart to `GET /hl-traders/<hl_address>/limits`, which is reachable only by Hyperliquid address and so cannot serve pro accounts (they are Vanta-native and have no `hl_address`).
+
+All USD figures are against the live `balance`, which is what the order path applies — **not** the static `account_size`. Per-pair caps are not repeated here: pair the `tier_curve` below with the matching table in [`GET /trade-pairs`](#get-allowed-trade-pairs) — `pro_positional_leverage` on the pro curve, `standard_positional_leverage_by_tier` on the standard one, `subaccount_positional_leverage_by_tier` on the legacy one.
+
+**Authentication:** API key required (same tier as the v2 dashboard). Unlike the HL limits endpoint this one is authenticated, because it reports entity collateral.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "account_type": "pro",
+  "bucket": "PRO_FUNDED",
+  "asset_class": "all_markets",
+  "account_size": 400000.0,
+  "balance": 412350.11,
+  "buying_power": 7422301.98,
+  "in_challenge_period": false,
+  "is_pro": true,
+  "tier_curve": "pro",
+  "tier": null,
+  "portfolio_multiplier": 40.0,
+  "max_portfolio_usd": 16494004.4,
+  "max_asset_class_usd": {"crypto": 2474100.66, "equities": 2474100.66, "commodities": 3298800.88, "indices": 4123501.1, "forex": 14432253.85},
+  "capital_used": 0.0,
+  "capital_used_by_class": {},
+  "correlation_limits": {
+    "basis": "gross_per_side",
+    "denominator": "balance",
+    "balance": 412350.11,
+    "groups": {
+      "currency:EUR": {
+        "limit_multiplier": 30.0, "limit_usd": 12370503.3,
+        "gross_long_usd": 8247002.2, "gross_short_usd": 0.0,
+        "long_room_usd": 4123501.1, "short_room_usd": 12370503.3
+      }
+    }
+  },
+  "entity_collateral": {
+    "entity_hotkey": "entity_alpha",
+    "headroom_theta": 100.0,
+    "headroom_usd": 3500.0,
+    "subaccount_margin_usd": 1234.0
+  },
+  "timestamp": 1702345690000
+}
+```
+
+**Response fields:**
+- `tier_curve`: `"pro"`, `"standard"` or `"legacy"` — which table in `/trade-pairs` to size against. Every pro bucket is `"pro"`; `PRO_CHALLENGE_TRANSITION` is `"standard"`, because it still trades the standard account.
+- `tier`: The effective tier on that curve, and **`null` on the pro curve**, which is flat and has no tier dimension — do not fall back to a tiered table for it. Note this is not `leverage_tier`, which is the *standard* tier and is `null` for pro accounts.
+- `max_asset_class_usd`: Per-asset-class exposure cap in USD, from the account's own curve.
+- `correlation_limits`: Present for pro accounts only. Groups with no exposure are omitted — they are at full room, which a client fills from `pro.correlation_limits` in `/trade-pairs`. A pro account with no exposure at all still returns the block with an empty `groups`, so "pro with nothing open" is distinguishable from "not pro".
+- `entity_collateral.headroom_theta`: The parent entity's spare collateral (deposited minus what all its subaccounts require). **`null` means the entity's balance is unknown, not that there is no headroom** — do not render it as zero.
+
+**Example:**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+     http://localhost:48888/subaccounts/5GhDr3xy...abc_0/limits
 ```
 
 ### Get HL Leaderboard

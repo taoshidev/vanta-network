@@ -127,9 +127,17 @@ class EntityCollateralServer(RPCServerBase):
         """Get cumulative slashed amount for a subaccount (RPC method)."""
         return self._manager.get_cumulative_slashed(synthetic_hotkey)
 
-    def get_max_slash_rpc(self, synthetic_hotkey: str) -> float:
+    def get_max_slash_rpc(self, synthetic_hotkey: str, bucket=None) -> float:
         """Get max slashable amount for a subaccount (RPC method)."""
-        return self._manager.get_max_slash(synthetic_hotkey)
+        return self._manager.get_max_slash(synthetic_hotkey, bucket)
+
+    def compute_subaccount_margin_requirement_rpc(self, synthetic_hotkey: str, bucket=None) -> float:
+        """Compute a single subaccount's margin requirement in USD (RPC method)."""
+        return self._manager.compute_subaccount_margin_requirement(synthetic_hotkey, bucket)
+
+    def get_entity_collateral_headroom_rpc(self, entity_hotkey: str) -> Optional[float]:
+        """Get an entity's spare collateral in theta, or None if its balance is unknown (RPC method)."""
+        return self._manager.get_entity_collateral_headroom(entity_hotkey)
 
     # ==================== Test Helper RPC Methods ====================
 

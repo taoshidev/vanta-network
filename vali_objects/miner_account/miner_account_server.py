@@ -281,6 +281,10 @@ class MinerAccountServer(RPCServerBase):
         """Set the HL address on an account."""
         self._manager.set_hl_address(hotkey, hl_address)
 
+    def set_leverage_tier(self, hotkey: str, leverage_tier: Optional[int]) -> None:
+        """Set the standard leverage tier on an account."""
+        self._manager.set_leverage_tier(hotkey, leverage_tier)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._manager.get_all_hotkeys()
@@ -305,13 +309,13 @@ class MinerAccountServer(RPCServerBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float, trade_pair_category: Optional[TradePairCategory] = None) -> None:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float, trade_pair_category: Optional[TradePairCategory] = None, trade_pair=None, position_type=None) -> None:
         """Process buy order cash/margin."""
-        self._manager.process_order_buy(hotkey, order_value_usd, borrowed_amount, fee_usd, trade_pair_category)
+        self._manager.process_order_buy(hotkey, order_value_usd, borrowed_amount, fee_usd, trade_pair_category, trade_pair, position_type)
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0) -> None:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0, trade_pair=None, position_type=None) -> None:
         """Process sell/close order."""
-        self._manager.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd, trade_pair_category, unrealized_pnl_released)
+        self._manager.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd, trade_pair_category, unrealized_pnl_released, trade_pair, position_type)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""

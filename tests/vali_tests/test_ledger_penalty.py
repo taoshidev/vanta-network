@@ -3,9 +3,18 @@ import time
 
 from tests.shared_objects.test_utilities import generate_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
+from vali_objects.position_management.position_utils import PositionPenalties
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
-from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import PenaltyLedgerManager, PenaltyLedger, PenaltyCheckpoint
+from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import (
+    PenaltyApplicationScope,
+    PenaltyLedgerManager,
+    PenaltyLedger,
+    PenaltyCheckpoint,
+)
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
+
+ACCOUNT_SIZE = 100_000.0
 
 
 class TestLedgerPenalty(TestBase):
@@ -71,6 +80,119 @@ class TestLedgerPenalty(TestBase):
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l2_ledger), (True, 11))
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l3_ledger), (True, 11))
         self.assertEqual(LedgerUtils.is_beyond_max_drawdown(l4_ledger), (True, 11))
+
+    def test_all_time_calmar_penalty(self):
+        # 7.1% realized return against a 4% all-time drawdown clears 1.75; the same return against 5% does not
+        passing = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        passing.cps[-1].prev_portfolio_realized_pnl = 7_100.0
+        failing = copy.deepcopy(passing)
+
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(passing, 0.96, ACCOUNT_SIZE), 1.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(failing, 0.95, ACCOUNT_SIZE), 0.0)
+
+    def test_all_time_calmar_penalty_uses_ratcheted_drawdown(self):
+        # The ledger's own mdd is shallow, but the passed-in all-time value governs
+        ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.999)
+        ledger.cps[-1].prev_portfolio_realized_pnl = 7_000.0
+
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.999, ACCOUNT_SIZE), 1.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.90, ACCOUNT_SIZE), 0.0)
+
+    def test_all_time_calmar_penalty_ignores_unrealized_gains(self):
+        # Paper gains on an open position must not clear the gate
+        ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        ledger.cps[-1].unrealized_pnl = 20_000.0
+        ledger.cps[-1].prev_portfolio_unrealized_pnl = 20_000.0
+        ledger.cps[-1].prev_portfolio_ret = 1.20
+
+        self.assertEqual(LedgerUtils.realized_return(ledger, ACCOUNT_SIZE), 0.0)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.96, ACCOUNT_SIZE), 0.0)
+
+    def test_all_time_calmar_penalty_nets_fees(self):
+        # 8.1% gross less 1% of fees is the 7.1% that clears a 4% drawdown
+        ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        ledger.cps[-1].prev_portfolio_realized_pnl = 8_100.0
+        ledger.cps[-1].cumulative_fees_usd = 1_000.0
+
+        self.assertAlmostEqual(LedgerUtils.realized_return(ledger, ACCOUNT_SIZE), 0.071)
+        self.assertEqual(PositionPenalties.all_time_calmar_penalty(ledger, 0.96, ACCOUNT_SIZE), 1.0)
+
+    def test_realized_return_matches_account_balance(self):
+        # The numerator is the same quantity as MinerAccount.balance / account_size - 1.0
+        ledger = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        ledger.cps[-1].prev_portfolio_realized_pnl = 8_000.0
+        ledger.cps[-1].cumulative_fees_usd = 1_000.0
+
+        # Synthetic hotkey so account_size is the granted subaccount size, as it is for pro accounts
+        account = MinerAccount(miner_hotkey="hk_parity_1", total_realized_pnl=8_000.0, total_fees_paid=1_000.0)
+        account.add_collateral_record(CollateralRecord(ACCOUNT_SIZE, 0, 0, is_first_record=True))
+
+        self.assertAlmostEqual(
+            LedgerUtils.realized_return(ledger, ACCOUNT_SIZE),
+            account.balance / ACCOUNT_SIZE - 1.0,
+        )
+
+    def test_realized_return_handles_empty_inputs(self):
+        self.assertEqual(LedgerUtils.realized_return(None, ACCOUNT_SIZE), 0.0)
+        self.assertEqual(LedgerUtils.realized_return(generate_ledger(gain=0.0, loss=0.0), 0.0), 0.0)
+
+    def test_daily_consistency_penalty(self):
+        # Evenly distributed gains pass; a flat ledger has no profit and fails closed
+        passing = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
+        no_profit = generate_ledger(gain=0.0, loss=-0.001, mdd=0.99)
+
+        self.assertEqual(PositionPenalties.daily_consistency_penalty(passing), 1.0)
+        self.assertEqual(PositionPenalties.daily_consistency_penalty(no_profit), 0.0)
+
+    def test_daily_consistency_penalty_caps_the_best_day(self):
+        # Two days: one huge, one small. Capping the big day at 1.5% still leaves it
+        # over 20% of a thin total, so the week is withheld.
+        spiky = generate_ledger(gain=0.0, loss=0.0, mdd=0.99, nterms=4)
+        spiky.cps[0].gain = 0.09
+        spiky.cps[2].gain = 0.005
+
+        self.assertEqual(PositionPenalties.daily_consistency_penalty(spiky), 0.0)
+
+    def test_weekly_penalties_configured_for_pro_buckets_only(self):
+        for name in ('all_time_calmar', 'daily_consistency'):
+            config = PenaltyLedgerManager.PENALTIES_CONFIG[name]
+            self.assertEqual(config.application_scope, PenaltyApplicationScope.WEEKLY)
+            self.assertEqual(set(config.buckets), {b for b in MinerBucket if b.soft_breach_applies})
+
+        # Pre-existing penalties keep per-checkpoint scope and apply to every bucket
+        for name in ('drawdown_threshold', 'risk_profile', 'min_collateral'):
+            config = PenaltyLedgerManager.PENALTIES_CONFIG[name]
+            self.assertEqual(config.application_scope, PenaltyApplicationScope.PER_CHECKPOINT)
+            self.assertIsNone(config.buckets)
+
+    def test_weekly_penalty_serialization_round_trip(self):
+        target_cp_duration_ms = 43200000
+        ledger = PenaltyLedger("hotkey1")
+        ledger.add_checkpoint(
+            PenaltyCheckpoint(
+                last_processed_ms=target_cp_duration_ms,
+                all_time_calmar_penalty=0.0,
+                daily_consistency_penalty=1.0,
+                total_penalty=0.5,
+                weekly_penalty=0.0,
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
+            ),
+            target_cp_duration_ms,
+        )
+
+        restored = PenaltyLedger.from_dict(ledger.to_dict()).checkpoints[0]
+        self.assertEqual(restored.all_time_calmar_penalty, 0.0)
+        self.assertEqual(restored.daily_consistency_penalty, 1.0)
+        self.assertEqual(restored.weekly_penalty, 0.0)
+        # weekly_penalty is tracked separately so the withheld amount stays derivable
+        self.assertEqual(restored.total_penalty, 0.5)
+
+        # Checkpoints written before this field existed default to no weekly penalty
+        legacy = PenaltyLedger.from_dict({
+            'hotkey': 'hotkey1',
+            'checkpoints': [{'last_processed_ms': target_cp_duration_ms}],
+        }).checkpoints[0]
+        self.assertEqual(legacy.weekly_penalty, 1.0)
 
     def test_penalty_ledger_manager_metadata_persistence(self):
         """Test that last_full_rebuild_ms is properly saved and loaded"""
