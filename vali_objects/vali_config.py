@@ -548,6 +548,7 @@ class ValiConfig:
     # STANDARD_* tables below instead (see leverage_utils.is_standard_tiered).
     LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
+    LEGACY_LEVERAGE_TIERS = (1, 2, 3, 4)
 
     # Legacy per-tier portfolio caps. Single-class per-category sub-caps; multi-class subaccounts
     # (HL_ALL, ALL_MARKETS) reuse these per-class entries for sub-cap enforcement and pull their
@@ -573,8 +574,8 @@ class ValiConfig:
     STANDARD_LEVERAGE_TIER_DEFAULT = STANDARD_LEVERAGE_TIER_BASE  # new registrations
     # A standard subaccount with no stored leverage_tier (created before tiers existed) trades
     # tier 0: each per-pair, class and portfolio limit is max(its legacy curve value, Base), so the
-    # tier rollout lowers nothing. Not selectable through any endpoint
-    # (see leverage_utils.get_grandfathered_*).
+    # tier rollout lowers nothing. Not selectable through any endpoint. Reported to clients as
+    # -legacy_tier (-1 to -4), the key of its rows in /trade-pairs (see leverage_utils.get_grandfathered_*).
     STANDARD_LEVERAGE_TIER_GRANDFATHERED = 0
 
     @staticmethod

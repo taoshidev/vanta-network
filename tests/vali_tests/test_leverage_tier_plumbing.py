@@ -812,17 +812,27 @@ class TestTradePairsEndpointStandardTiers(unittest.TestCase):
         data = json.loads(resp.data)
         by_id = {entry['trade_pair_id']: entry for entry in data['allowed'] + data['disabled']}
 
+        # Keys 1 to 3 are the selectable tiers; -1 to -4 are the tier 0 floor (max of legacy tier N
+        # and Base) that a subaccount with no stored tier reports as its `tier`.
         btc = by_id['BTCUSDC']
-        self.assertEqual(btc['standard_positional_leverage_by_tier'], {"1": 1.5, "2": 2.0, "3": 2.5})
+        self.assertEqual(btc['standard_positional_leverage_by_tier'],
+                         {"1": 1.5, "2": 2.0, "3": 2.5, "-1": 1.5, "-2": 1.5, "-3": 1.5, "-4": 2.0})
         self.assertEqual(set(btc['subaccount_positional_leverage_by_tier']), {"1", "2", "3", "4"})
-        self.assertEqual(by_id['EURNZD']['standard_positional_leverage_by_tier'], {"1": 5.0, "2": 7.5, "3": 10.0})
-        self.assertEqual(by_id['NVDA']['standard_positional_leverage_by_tier'], {"1": 0.5, "2": 1.0, "3": 1.5})
+        self.assertEqual(by_id['EURNZD']['standard_positional_leverage_by_tier'],
+                         {"1": 5.0, "2": 7.5, "3": 10.0, "-1": 5.0, "-2": 5.0, "-3": 7.5, "-4": 10.0})
+        self.assertEqual(by_id['NVDA']['standard_positional_leverage_by_tier'],
+                         {"1": 0.5, "2": 1.0, "3": 1.5, "-1": 0.5, "-2": 1.0, "-3": 1.5, "-4": 2.0})
 
         tiers = data['standard_leverage_tiers']
         self.assertEqual(tiers['class']['1']['crypto'], 1.5)
         self.assertEqual(tiers['class']['3']['equities'], 3.0)
+        self.assertEqual(tiers['class']['-2']['indices'], 6.0)
         self.assertEqual(tiers['portfolio']['3']['all_markets'], 25.0)
+        self.assertEqual(tiers['portfolio']['-1']['all_markets'], 15.0)
+        self.assertEqual(set(tiers['class']), {"1", "2", "3", "-1", "-2", "-3", "-4"})
+        self.assertEqual(set(tiers['portfolio']), set(tiers['class']))
         self.assertNotIn('hl_all', tiers['portfolio']['1'])
+        self.assertNotIn('hl_all', tiers['portfolio']['-2'])
 
 
 class TestLeverageTierModels(unittest.TestCase):

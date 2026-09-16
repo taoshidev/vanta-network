@@ -31,11 +31,13 @@ from vali_objects.utils.leverage_utils import (
     get_grandfathered_class_leverage,
     get_grandfathered_portfolio_leverage,
     get_grandfathered_positional_leverage,
+    get_grandfathered_tier_key,
     get_legacy_leverage_tier,
     get_legacy_tier_positional_leverage,
     get_max_order_size,
     get_max_position_leverage,
     get_per_class_leverage_cap,
+    get_standard_account_tier_key,
     get_standard_class_leverage,
     get_standard_leverage_group,
     get_standard_portfolio_leverage,
@@ -274,6 +276,14 @@ class TestTier0Floor(unittest.TestCase):
                 self.assertLessEqual(get_grandfathered_class_leverage(legacy_tier, category),
                                      get_grandfathered_portfolio_leverage(legacy_tier, MinerAssetClass.ALL_MARKETS))
 
+    def test_tier_key_is_minus_the_legacy_tier_and_never_a_selectable_tier(self):
+        for legacy_tier in self.LEGACY_TIERS:
+            key = get_grandfathered_tier_key(legacy_tier)
+            self.assertEqual(key, -legacy_tier)
+            self.assertNotIn(key, ValiConfig.STANDARD_LEVERAGE_TIERS)
+            self.assertFalse(ValiConfig.is_valid_standard_leverage_tier(key))
+        self.assertEqual(ValiConfig.LEGACY_LEVERAGE_TIERS, self.LEGACY_TIERS)
+
     def test_rows_the_rollout_would_have_lowered(self):
         # funded < $200K (legacy tier 2): Base cut these, the floor keeps them ...
         self.assertEqual(get_grandfathered_positional_leverage(2, TradePair.NVDA), 1.0)
@@ -354,14 +364,17 @@ class TestStandardTierOrderPath(unittest.TestCase):
                     ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[legacy_tier][MinerAssetClass.HL_ALL],
                 )
 
-    def test_effective_tier_is_0_when_not_stored(self):
-        account = self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.CRYPTO)
+    def test_effective_tier_is_0_when_not_stored_and_reported_as_minus_legacy_tier(self):
+        account = self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.CRYPTO)  # $100K funded: legacy tier 2
         self.assertEqual(get_effective_leverage_tier(account), ValiConfig.STANDARD_LEVERAGE_TIER_GRANDFATHERED)
+        self.assertEqual(get_standard_account_tier_key(account), -2)
         self.assertEqual(account.leverage_limits(), {
-            "is_pro": False, "tier_curve": "standard", "tier": 0, "portfolio_multiplier": account.multiplier,
+            "is_pro": False, "tier_curve": "standard", "tier": -2, "portfolio_multiplier": account.multiplier,
         })
         account = self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.CRYPTO, leverage_tier=3)
         self.assertEqual(get_effective_leverage_tier(account), 3)
+        self.assertEqual(get_standard_account_tier_key(account), 3)
+        self.assertEqual(account.leverage_limits()["tier"], 3)
 
     # (bucket, account size) -> the legacy tier the tier 0 floor is taken against
     TIER_0_CASES = (
@@ -379,6 +392,8 @@ class TestStandardTierOrderPath(unittest.TestCase):
         for bucket, size, legacy_tier in self.TIER_0_CASES:
             account = self._account(bucket, MinerAssetClass.ALL_MARKETS, size=size)
             self.assertEqual(get_legacy_leverage_tier(bucket, size), legacy_tier)
+            with self.subTest(bucket=bucket, size=size, limit="tier key"):
+                self.assertEqual(account.leverage_limits()["tier"], -legacy_tier)
             with self.subTest(bucket=bucket, size=size, limit="portfolio"):
                 expected = max(ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[legacy_tier][MinerAssetClass.ALL_MARKETS],
                                get_standard_portfolio_leverage(base, MinerAssetClass.ALL_MARKETS))

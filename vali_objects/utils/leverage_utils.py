@@ -208,6 +208,22 @@ def get_standard_account_portfolio_leverage(account: MinerAccount) -> float:
     return get_standard_portfolio_leverage(tier, account.asset_class)
 
 
+def get_grandfathered_tier_key(legacy_tier: int) -> int:
+    """Wire form of the tier 0 floor at one legacy tier: -1 to -4. Negative so it never collides
+    with a stored tier; /trade-pairs publishes the floor rows under these keys, so a client keys
+    them with the `tier` it already reads from /subaccounts/<hk>/limits."""
+    return -legacy_tier
+
+
+def get_standard_account_tier_key(account: MinerAccount) -> int:
+    """The `tier` a standard-tiered account reports: its stored tier, or the negative key of its
+    tier 0 floor."""
+    tier = get_effective_leverage_tier(account)
+    if tier == ValiConfig.STANDARD_LEVERAGE_TIER_GRANDFATHERED:
+        return get_grandfathered_tier_key(_legacy_tier_of(account))
+    return tier
+
+
 def get_max_position_leverage(account: MinerAccount, trade_pair: TradePair) -> float:
     """Per-pair positional leverage cap the order path applies to this account, on whichever
     curve it is on. Regular miners are bound by the pair's own max_leverage."""

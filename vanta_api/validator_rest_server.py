@@ -45,6 +45,10 @@ from vali_objects.utils.leverage_utils import (
     build_correlated_exposure_report,
     get_all_correlation_group_limits,
     get_correlation_legs,
+    get_grandfathered_class_leverage,
+    get_grandfathered_portfolio_leverage,
+    get_grandfathered_positional_leverage,
+    get_grandfathered_tier_key,
     get_legacy_leverage_tier,
     get_legacy_tier_positional_leverage,
     get_max_position_leverage,
@@ -1026,9 +1030,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         is_pro = str(is_pro_arg).strip().lower() == 'true'
         # Per-pair positional leverage (multipliers, not USD), resolved by the same functions the
         # order path enforces. Legacy tiers 1 to 4: HL-linked subaccounts (tier 1 == challenge).
-        # Standard tiers 1 to 3: standard subaccounts. Tier 0 (no stored tier) is per account and
-        # has no row here; /subaccounts/<synthetic_hotkey>/limits publishes it resolved.
-        subaccount_tiers = (1, 2, 3, 4)
+        # Standard tiers 1 to 3: standard subaccounts, plus the tier 0 floor of a subaccount with no
+        # stored tier under keys -1 to -4 (minus its legacy tier), the `tier` such an account
+        # reports from /subaccounts/<synthetic_hotkey>/limits.
+        subaccount_tiers = ValiConfig.LEGACY_LEVERAGE_TIERS
 
         # These lot sizes are not used in any network calculation; they're included in
         # this API response purely for UI convenience.
@@ -1060,7 +1065,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     str(tier): get_legacy_tier_positional_leverage(tier, tp) for tier in subaccount_tiers
                 },
                 'standard_positional_leverage_by_tier': {
-                    str(tier): get_standard_positional_leverage(tier, tp) for tier in ValiConfig.STANDARD_LEVERAGE_TIERS
+                    **{str(tier): get_standard_positional_leverage(tier, tp) for tier in ValiConfig.STANDARD_LEVERAGE_TIERS},
+                    **{str(get_grandfathered_tier_key(t)): get_grandfathered_positional_leverage(t, tp)
+                       for t in subaccount_tiers},
                 },
                 # Pro accounts run a flat table of their own -- no tier dimension.
                 'pro_positional_leverage': get_pro_positional_leverage(tp),
@@ -1083,6 +1090,23 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 else:
                     allowed.append(entry)
 
+            base = ValiConfig.STANDARD_LEVERAGE_TIER_BASE
+            # Tier 0 floor rows (no stored tier), under the negative keys such an account reports
+            floor_class = {
+                str(get_grandfathered_tier_key(t)): {
+                    cat.value: get_grandfathered_class_leverage(t, cat)
+                    for cat in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER[base]
+                }
+                for t in subaccount_tiers
+            }
+            floor_portfolio = {
+                str(get_grandfathered_tier_key(t)): {
+                    asset_class.value: get_grandfathered_portfolio_leverage(t, asset_class)
+                    for asset_class in ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[base]
+                }
+                for t in subaccount_tiers
+            }
+
             return jsonify({
                 'allowed': allowed,
                 'disabled': disabled,
@@ -1090,15 +1114,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'total_disabled': len(disabled),
                 # Echoed so a cached payload says which universe it describes
                 'is_pro': is_pro,
-                # Standard-tier class and portfolio caps (multiples of balance), keyed by tier
+                # Standard-tier class and portfolio caps (multiples of balance), keyed by tier:
+                # 1 to 3, plus -1 to -4 for the tier 0 floor
                 'standard_leverage_tiers': {
                     'class': {
-                        str(tier): {cat.value: cap for cat, cap in row.items()}
-                        for tier, row in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER.items()
+                        **{str(tier): {cat.value: cap for cat, cap in row.items()}
+                           for tier, row in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER.items()},
+                        **floor_class,
                     },
                     'portfolio': {
-                        str(tier): {asset_class.value: cap for asset_class, cap in row.items()}
-                        for tier, row in ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER.items()
+                        **{str(tier): {asset_class.value: cap for asset_class, cap in row.items()}
+                           for tier, row in ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER.items()},
+                        **floor_portfolio,
                     },
                 },
                 # Everything a pro account is sized against. Pro runs its own flat tables --
@@ -3373,7 +3400,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         All USD figures are against the live `balance`, which is what the order path applies --
         not the static account_size. Per-pair caps come back resolved in `positional_leverage`;
-        `tier` and `tier_curve` say which GET /trade-pairs table they match (none for tier 0).
+        `tier` and `tier_curve` also key the matching GET /trade-pairs table (a negative `tier`
+        is the tier 0 floor of a subaccount with no stored tier, published there too).
 
         Example:
         curl -H "Authorization: Bearer YOUR_API_KEY" \
@@ -3407,7 +3435,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         asset_class = account.asset_class
 
         # Per-class and per-pair caps resolved by the same functions the order path applies, so
-        # tier 0 (per account, no /trade-pairs row) comes out right here.
+        # the tier 0 floor (per account) comes out right here as well as under its /trade-pairs key.
         class_caps = {cat.value: get_per_class_leverage_cap(account, cat) for cat in TradePairCategory}
         positional_leverage = {} if asset_class is None else {
             tp.trade_pair_id: get_max_position_leverage(account, tp)

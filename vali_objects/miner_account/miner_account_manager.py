@@ -150,13 +150,13 @@ class MinerAccount:
         miners). This resolves the curve and the effective tier the order path actually applies,
         so a client can pick the matching table out of /trade-pairs.
 
-        `tier` is None on the pro curve, which is flat and has no tier dimension. It is 0 for a
-        standard subaccount with no stored leverage_tier: its per-pair caps are max(legacy, Base)
-        and so per account, with no /trade-pairs row (see /subaccounts/<hk>/limits).
+        `tier` is None on the pro curve, which is flat and has no tier dimension. It is negative
+        (-1 to -4, minus the legacy tier) for a standard subaccount with no stored leverage_tier:
+        its caps are max(legacy, Base) and /trade-pairs publishes those rows under the same key.
         """
         from vali_objects.utils.leverage_utils import (
-            get_effective_leverage_tier,
             get_legacy_leverage_tier,
+            get_standard_account_tier_key,
             is_pro_leveraged,
             is_standard_tiered,
         )
@@ -165,7 +165,7 @@ class MinerAccount:
         if pro:
             tier_curve, tier = "pro", None
         elif standard:
-            tier_curve, tier = "standard", get_effective_leverage_tier(self)
+            tier_curve, tier = "standard", get_standard_account_tier_key(self)
         else:
             tier_curve, tier = "legacy", get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
         return {

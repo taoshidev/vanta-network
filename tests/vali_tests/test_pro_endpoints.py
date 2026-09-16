@@ -44,6 +44,8 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
 from vali_objects.utils.leverage_utils import (
     get_all_correlation_group_limits,
+    get_grandfathered_class_leverage,
+    get_grandfathered_portfolio_leverage,
     get_grandfathered_positional_leverage,
     get_legacy_leverage_tier,
     get_legacy_tier_positional_leverage,
@@ -484,6 +486,7 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
         self.app.route("/subaccounts/<synthetic_hotkey>/limits", methods=["GET"])(
             self.server.get_subaccount_limits
         )
+        self.app.route("/trade-pairs", methods=["GET"])(self.server.get_allowed_trade_pairs)
         self.client = self.app.test_client()
 
     def _get(self, hotkey=LIMITS_HOTKEY):
@@ -543,9 +546,10 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
         _, data = self._get()
 
         self.assertEqual(data["tier_curve"], "standard")
-        self.assertEqual(data["tier"], 0)
         legacy_tier = get_legacy_leverage_tier(MinerBucket.SUBACCOUNT_FUNDED, PRO_ACCOUNT_SIZE)
         self.assertEqual(legacy_tier, 3)
+        # Reported as minus the legacy tier, the key of its floor rows in /trade-pairs
+        self.assertEqual(data["tier"], -3)
         caps = data["positional_leverage"]
         self.assertEqual(caps["NVDA"], get_grandfathered_positional_leverage(legacy_tier, TradePair.NVDA))
         self.assertEqual(caps["NVDA"], 1.5)     # legacy 0.5 x 3 beats Base 0.5
@@ -553,6 +557,26 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
         self.assertEqual(len(caps), sum(1 for tp in TradePair if MinerAssetClass.ALL_MARKETS.can_trade(tp)))
         self.assertAlmostEqual(data["max_asset_class_usd"]["indices"], PRO_ACCOUNT_SIZE * 8.0)  # legacy 8 beats Base 2.5
         self.assertAlmostEqual(data["max_portfolio_usd"], PRO_ACCOUNT_SIZE * 18.0)  # legacy 18 beats Base 15
+
+    def test_pre_tier_account_tier_keys_its_floor_rows_in_trade_pairs(self):
+        # The UI contract: the `tier` limits reports keys the same rows in /trade-pairs that the
+        # limits payload resolves, for per-pair, class and portfolio caps alike.
+        self.server._entity_client.get_subaccount_dashboard.return_value = {"account_type": "standard"}
+        self.server._miner_account_client.get_account.return_value = _pro_account(bucket=MinerBucket.SUBACCOUNT_FUNDED)
+        _, limits = self._get()
+        key = str(limits["tier"])
+        self.assertEqual(key, "-3")
+
+        pairs = json.loads(self.client.get("/trade-pairs").data)
+        by_id = {entry["trade_pair_id"]: entry for entry in pairs["allowed"] + pairs["disabled"]}
+        self.assertGreater(len(limits["positional_leverage"]), 1000)
+        for pair_id, cap in limits["positional_leverage"].items():
+            self.assertEqual(by_id[pair_id]["standard_positional_leverage_by_tier"][key], cap, pair_id)
+        for category, usd in limits["max_asset_class_usd"].items():
+            self.assertAlmostEqual(pairs["standard_leverage_tiers"]["class"][key][category] * PRO_ACCOUNT_SIZE, usd)
+        self.assertAlmostEqual(
+            pairs["standard_leverage_tiers"]["portfolio"][key]["all_markets"] * PRO_ACCOUNT_SIZE, limits["max_portfolio_usd"]
+        )
 
     def test_per_pair_caps_for_a_stored_tier_and_a_legacy_account(self):
         stored = _pro_account(bucket=MinerBucket.SUBACCOUNT_FUNDED)
@@ -628,6 +652,36 @@ class TestTradePairsEndpointProUniverse(unittest.TestCase):
                 self.assertEqual(
                     get_pro_positional_leverage(TradePair.from_trade_pair_id(trade_pair_id)), leverage
                 )
+
+    def test_tier_0_floor_rows_are_published_under_negative_keys(self):
+        data = self._get()
+        by_id = {entry['trade_pair_id']: entry for entry in data['allowed'] + data['disabled']}
+        floor_keys = {"-1", "-2", "-3", "-4"}
+
+        for legacy_tier in (1, 2, 3, 4):
+            key = str(-legacy_tier)
+            for trade_pair_id in ('BTCUSDC', 'ADAUSDC', 'EURUSD', 'EURNZD', 'SP500USDC', 'EWYUSDC', 'GOLDUSDC', 'NVDA'):
+                with self.subTest(key=key, trade_pair=trade_pair_id):
+                    tp = TradePair.from_trade_pair_id(trade_pair_id)
+                    self.assertEqual(by_id[trade_pair_id]['standard_positional_leverage_by_tier'][key],
+                                     get_grandfathered_positional_leverage(legacy_tier, tp))
+            class_row = data['standard_leverage_tiers']['class'][key]
+            portfolio_row = data['standard_leverage_tiers']['portfolio'][key]
+            self.assertEqual(class_row, {cat.value: get_grandfathered_class_leverage(legacy_tier, cat)
+                                         for cat in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER[1]})
+            self.assertEqual(portfolio_row, {ac.value: get_grandfathered_portfolio_leverage(legacy_tier, ac)
+                                             for ac in ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[1]})
+
+        # the tiers a client could select are still exactly 1 to 3 next to the floor keys
+        self.assertEqual(set(by_id['BTCUSDC']['standard_positional_leverage_by_tier']), {"1", "2", "3"} | floor_keys)
+        self.assertEqual(set(data['standard_leverage_tiers']['class']), {"1", "2", "3"} | floor_keys)
+        self.assertEqual(set(data['standard_leverage_tiers']['portfolio']), {"1", "2", "3"} | floor_keys)
+        # spot values: old funded (-2) keeps NVDA 1.0 and the indices class cap 6.0, old challenge (-1) NVDA 0.5
+        self.assertEqual(by_id['NVDA']['standard_positional_leverage_by_tier']['-2'], 1.0)
+        self.assertEqual(by_id['NVDA']['standard_positional_leverage_by_tier']['-1'], 0.5)
+        self.assertEqual(by_id['EURUSD']['standard_positional_leverage_by_tier']['-1'], 10.0)
+        self.assertEqual(data['standard_leverage_tiers']['class']['-2']['indices'], 6.0)
+        self.assertEqual(data['standard_leverage_tiers']['portfolio']['-2']['all_markets'], 15.0)
 
     def test_is_pro_restricts_the_allowed_list_to_the_pro_universe(self):
         default = self._get()
