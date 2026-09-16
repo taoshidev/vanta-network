@@ -42,7 +42,14 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
-from vali_objects.utils.leverage_utils import get_all_correlation_group_limits, get_pro_positional_leverage
+from vali_objects.utils.leverage_utils import (
+    get_all_correlation_group_limits,
+    get_grandfathered_positional_leverage,
+    get_legacy_leverage_tier,
+    get_legacy_tier_positional_leverage,
+    get_pro_positional_leverage,
+    get_standard_positional_leverage,
+)
 from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
 from vanta_api.validator_rest_server import ValidatorRestServer
 
@@ -520,6 +527,49 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
 
         self.assertNotIn("correlation_limits", data)
         self.assertNotEqual(data["tier_curve"], "pro")
+
+    def test_per_pair_caps_are_published_resolved_on_the_pro_curve(self):
+        _, data = self._get()
+
+        caps = data["positional_leverage"]
+        self.assertEqual(caps["BTCUSDC"], get_pro_positional_leverage(TradePair.BTCUSDC))
+        self.assertEqual(len(caps), sum(1 for tp in TradePair if MinerAssetClass.ALL_MARKETS.can_trade(tp, is_pro=True)))
+
+    def test_pre_tier_standard_account_reports_tier_0_and_its_resolved_caps(self):
+        # No stored leverage_tier on a $400K funded standard account: tier 0 against legacy tier 3.
+        self.server._entity_client.get_subaccount_dashboard.return_value = {"account_type": "standard"}
+        self.server._miner_account_client.get_account.return_value = _pro_account(bucket=MinerBucket.SUBACCOUNT_FUNDED)
+
+        _, data = self._get()
+
+        self.assertEqual(data["tier_curve"], "standard")
+        self.assertEqual(data["tier"], 0)
+        legacy_tier = get_legacy_leverage_tier(MinerBucket.SUBACCOUNT_FUNDED, PRO_ACCOUNT_SIZE)
+        self.assertEqual(legacy_tier, 3)
+        caps = data["positional_leverage"]
+        self.assertEqual(caps["NVDA"], get_grandfathered_positional_leverage(legacy_tier, TradePair.NVDA))
+        self.assertEqual(caps["NVDA"], 1.5)     # legacy 0.5 x 3 beats Base 0.5
+        self.assertEqual(caps["EURUSD"], 10.0)  # Base 10 beats legacy 2.5 x 3
+        self.assertEqual(len(caps), sum(1 for tp in TradePair if MinerAssetClass.ALL_MARKETS.can_trade(tp)))
+        self.assertAlmostEqual(data["max_asset_class_usd"]["indices"], PRO_ACCOUNT_SIZE * 8.0)  # legacy 8 beats Base 2.5
+        self.assertAlmostEqual(data["max_portfolio_usd"], PRO_ACCOUNT_SIZE * 18.0)  # legacy 18 beats Base 15
+
+    def test_per_pair_caps_for_a_stored_tier_and_a_legacy_account(self):
+        stored = _pro_account(bucket=MinerBucket.SUBACCOUNT_FUNDED)
+        stored.leverage_tier = 2
+        self.server._miner_account_client.get_account.return_value = stored
+        _, data = self._get()
+        self.assertEqual((data["tier_curve"], data["tier"]), ("standard", 2))
+        self.assertEqual(data["positional_leverage"]["BTCUSDC"], get_standard_positional_leverage(2, TradePair.BTCUSDC))
+
+        hl = _pro_account(bucket=MinerBucket.SUBACCOUNT_FUNDED)
+        hl.asset_class = MinerAssetClass.HL_ALL
+        hl.hl_address = "0x" + "a" * 40
+        self.server._miner_account_client.get_account.return_value = hl
+        _, data = self._get()
+        self.assertEqual((data["tier_curve"], data["tier"]), ("legacy", 3))
+        self.assertEqual(data["positional_leverage"]["BTCUSDC"], get_legacy_tier_positional_leverage(3, TradePair.BTCUSDC))
+        self.assertEqual(data["positional_leverage"]["BTCUSDC"], 1.5)
 
     def test_unknown_entity_balance_is_not_reported_as_zero_headroom(self):
         self.server._entity_collateral_client.get_entity_collateral_headroom.return_value = None

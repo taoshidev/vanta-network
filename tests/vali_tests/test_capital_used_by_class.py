@@ -28,6 +28,7 @@ from vali_objects.vali_config import (
     TradePairCategory,
     ValiConfig,
 )
+from vali_objects.utils.leverage_utils import get_grandfathered_portfolio_leverage, get_legacy_leverage_tier
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.order_type_enum import OrderType
 
@@ -68,15 +69,20 @@ class TestMinerAccountMultiplier(unittest.TestCase):
         account = MinerAccount(miner_hotkey="hk", asset_class=None)
         self.assertEqual(account.multiplier, 1)
 
-    def test_multiplier_single_class_standard_subaccount_uses_default_standard_tier(self):
+    def test_multiplier_single_class_standard_subaccount_without_tier_uses_the_tier_0_floor(self):
         account = MinerAccount(
             miner_hotkey="hk",
             asset_class=MinerAssetClass.CRYPTO,
             miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
-        # No stored leverage_tier: a standard subaccount trades at the default standard tier
-        expected = ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT][MinerAssetClass.CRYPTO]
-        self.assertEqual(account.multiplier, expected)
+        # No stored leverage_tier: tier 0, max(legacy value at its own legacy tier, Base)
+        legacy_tier = get_legacy_leverage_tier(MinerBucket.SUBACCOUNT_FUNDED, account.account_size)
+        self.assertEqual(account.multiplier, get_grandfathered_portfolio_leverage(legacy_tier, MinerAssetClass.CRYPTO))
+        self.assertEqual(
+            account.multiplier,
+            max(ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[legacy_tier][MinerAssetClass.CRYPTO],
+                ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[ValiConfig.STANDARD_LEVERAGE_TIER_BASE][MinerAssetClass.CRYPTO]),
+        )
 
     def test_multiplier_multi_class_reads_overall_cap_table(self):
         account = MinerAccount(
@@ -96,8 +102,7 @@ class TestMinerAccountMultiplier(unittest.TestCase):
         )
         self.assertEqual(account.multiplier, ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[1][MinerAssetClass.HL_ALL])
 
-    def test_multiplier_standard_subaccount_without_tier_uses_default_standard_tier(self):
-        tier = ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
+    def test_multiplier_standard_subaccount_without_tier_uses_the_tier_0_floor(self):
         for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED):
             with self.subTest(bucket=bucket):
                 account = MinerAccount(
@@ -105,9 +110,15 @@ class TestMinerAccountMultiplier(unittest.TestCase):
                     asset_class=MinerAssetClass.ALL_MARKETS,
                     miner_bucket=bucket,
                 )
+                legacy_tier = get_legacy_leverage_tier(bucket, account.account_size)
                 self.assertEqual(
                     account.multiplier,
-                    ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[tier][MinerAssetClass.ALL_MARKETS],
+                    get_grandfathered_portfolio_leverage(legacy_tier, MinerAssetClass.ALL_MARKETS),
+                )
+                self.assertEqual(
+                    account.multiplier,
+                    max(ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[legacy_tier][MinerAssetClass.ALL_MARKETS],
+                        ValiConfig.STANDARD_PORTFOLIO_LEVERAGE_BY_TIER[ValiConfig.STANDARD_LEVERAGE_TIER_BASE][MinerAssetClass.ALL_MARKETS]),
                 )
 
     def test_buying_power_multi_class_uses_overall_cap(self):

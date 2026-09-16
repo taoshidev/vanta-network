@@ -45,12 +45,11 @@ from vali_objects.utils.leverage_utils import (
     build_correlated_exposure_report,
     get_all_correlation_group_limits,
     get_correlation_legs,
-    get_legacy_portfolio_caps,
-    get_pro_class_leverage,
-    get_pro_positional_leverage,
-    get_standard_class_leverage,
     get_legacy_leverage_tier,
     get_legacy_tier_positional_leverage,
+    get_max_position_leverage,
+    get_per_class_leverage_cap,
+    get_pro_positional_leverage,
     get_standard_positional_leverage,
 )
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
@@ -1027,7 +1026,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         is_pro = str(is_pro_arg).strip().lower() == 'true'
         # Per-pair positional leverage (multipliers, not USD), resolved by the same functions the
         # order path enforces. Legacy tiers 1 to 4: HL-linked subaccounts (tier 1 == challenge).
-        # Standard tiers 1 to 3: standard subaccounts (no stored tier counts as tier 1).
+        # Standard tiers 1 to 3: standard subaccounts. Tier 0 (no stored tier) is per account and
+        # has no row here; /subaccounts/<synthetic_hotkey>/limits publishes it resolved.
         subaccount_tiers = (1, 2, 3, 4)
 
         # These lot sizes are not used in any network calculation; they're included in
@@ -2631,8 +2631,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Change a standard subaccount's leverage tier (1 to 3). The entity coldkey signs the sorted
         JSON of every field except signature and version; nonce + timestamp make each signature
-        single use within a 5 minute window (NonceManager). Lowering the tier requires the
-        subaccount to have no open positions.
+        single use within a 5 minute window (NonceManager). Lowering the tier, or leaving tier 0
+        (no stored tier), requires the subaccount to have no open positions.
 
         Example:
         curl -X POST http://localhost:48888/entity/subaccount/leverage-tier \\
@@ -3372,8 +3372,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Every limit an order against this subaccount is sized against, in one call.
 
         All USD figures are against the live `balance`, which is what the order path applies --
-        not the static account_size. Per-pair caps are not repeated here; pair the `tier` and
-        `tier_curve` below with the matching table in GET /trade-pairs.
+        not the static account_size. Per-pair caps come back resolved in `positional_leverage`;
+        `tier` and `tier_curve` say which GET /trade-pairs table they match (none for tier 0).
 
         Example:
         curl -H "Authorization: Bearer YOUR_API_KEY" \
@@ -3406,19 +3406,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         bucket = account.miner_bucket
         asset_class = account.asset_class
 
-        # Per-class caps come from whichever curve this account is on.
-        if leverage['tier_curve'] == 'pro':
-            class_caps = {cat.value: get_pro_class_leverage(cat) for cat in ValiConfig.PRO_CLASS_LEVERAGE}
-        elif leverage['tier_curve'] == 'standard':
-            class_caps = {
-                cat.value: get_standard_class_leverage(leverage['tier'], cat)
-                for cat in ValiConfig.STANDARD_CLASS_LEVERAGE_BY_TIER[leverage['tier']]
-            }
-        else:
-            class_caps = {
-                cat.value: get_legacy_portfolio_caps(asset_class, bucket, account.account_size, cat)[0]
-                for cat in ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_CATEGORY[leverage['tier']]
-            }
+        # Per-class and per-pair caps resolved by the same functions the order path applies, so
+        # tier 0 (per account, no /trade-pairs row) comes out right here.
+        class_caps = {cat.value: get_per_class_leverage_cap(account, cat) for cat in TradePairCategory}
+        positional_leverage = {} if asset_class is None else {
+            tp.trade_pair_id: get_max_position_leverage(account, tp)
+            for tp in TradePair if asset_class.can_trade(tp, is_pro=leverage['is_pro'])
+        }
 
         payload = {
             'status': 'success',
@@ -3433,6 +3427,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             **leverage,
             'max_portfolio_usd': balance * leverage['portfolio_multiplier'],
             'max_asset_class_usd': {cat: cap * balance for cat, cap in class_caps.items()},
+            'positional_leverage': positional_leverage,
             'capital_used': account.capital_used,
             'capital_used_by_class': {cat.value: amt for cat, amt in account.capital_used_by_class.items()},
             'timestamp': TimeUtil.now_in_millis(),

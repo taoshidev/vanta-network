@@ -78,7 +78,7 @@ class SubaccountInfo(BaseModel):
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
-    leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades at the default tier")
+    leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades tier 0 (each limit is max of its legacy value and Base)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
 
@@ -1333,7 +1333,8 @@ class EntityManager(ValidatorBroadcastBase):
     ) -> Tuple[bool, str]:
         """Change a standard subaccount's leverage tier and push it to the MinerAccount and other
         validators. Lowering the tier requires no open positions because the new caps may sit below
-        the current exposure. A subaccount without a stored tier counts as the default tier."""
+        the current exposure; so does leaving tier 0 (no stored tier), since a funded account's tier 0
+        values can exceed even Boost II on some rows (EWY, the indices class cap, equities >= $200K)."""
         if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
             return False, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
         if not is_synthetic_hotkey(synthetic_hotkey):
@@ -1362,11 +1363,10 @@ class EntityManager(ValidatorBroadcastBase):
 
             same_tier = subaccount.leverage_tier == leverage_tier
             if not same_tier:
-                current_tier = (
-                    subaccount.leverage_tier if subaccount.leverage_tier is not None
-                    else ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
-                )
-                if leverage_tier < current_tier:
+                # No stored tier = tier 0 (max of legacy and Base). A funded account's tier 0 can
+                # exceed any tier on some rows, so leaving it counts as lowering
+                lowering = subaccount.leverage_tier is None or leverage_tier < subaccount.leverage_tier
+                if lowering:
                     open_positions = self._position_client.get_positions_for_one_hotkey(
                         synthetic_hotkey, only_open_positions=True
                     )

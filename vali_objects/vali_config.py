@@ -567,10 +567,15 @@ class ValiConfig:
 
     # Standard subaccount leverage tiers, per the Pro Launch spec §2a: 1 = Base, 2 = Boost I,
     # 3 = Boost II (max). Challenge and funded share the same limits and account size does not
-    # change them. HL-linked and pro subaccounts never use these tables. A standard subaccount
-    # without a stored leverage_tier (created before tiers existed) counts as the default tier.
+    # change them. HL-linked and pro subaccounts never use these tables.
     STANDARD_LEVERAGE_TIERS = (1, 2, 3)
-    STANDARD_LEVERAGE_TIER_DEFAULT = 1
+    STANDARD_LEVERAGE_TIER_BASE = 1
+    STANDARD_LEVERAGE_TIER_DEFAULT = STANDARD_LEVERAGE_TIER_BASE  # new registrations
+    # A standard subaccount with no stored leverage_tier (created before tiers existed) trades
+    # tier 0: each per-pair, class and portfolio limit is max(its legacy curve value, Base), so the
+    # tier rollout lowers nothing. Not selectable through any endpoint
+    # (see leverage_utils.get_grandfathered_*).
+    STANDARD_LEVERAGE_TIER_GRANDFATHERED = 0
 
     @staticmethod
     def is_valid_standard_leverage_tier(tier) -> bool:

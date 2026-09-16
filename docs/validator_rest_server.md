@@ -417,7 +417,7 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 - `trade_pair_source`: Data source — `"vanta"` for standard pairs, `"hyperliquid"` for HL-sourced pairs
 - `min_leverage` / `max_leverage`: Leverage bounds for this pair
 - `subaccount_positional_leverage_by_tier`: Legacy per-tier (1–4) positional leverage multiplier, used by HL-linked subaccounts
-- `standard_positional_leverage_by_tier`: Per-tier (1–3) positional leverage multiplier for standard subaccounts (a subaccount without a stored `leverage_tier` counts as tier 1)
+- `standard_positional_leverage_by_tier`: Per-tier (1–3) positional leverage multiplier for standard subaccounts. A subaccount without a stored `leverage_tier` trades tier 0, which has no row here because each of its values is the higher of its own legacy-curve value and tier 1: read `positional_leverage` from [`GET /subaccounts/<synthetic_hotkey>/limits`](#get-subaccount-limits)
 - `pro_positional_leverage`: Positional leverage multiplier for pro accounts. A single value, not a per-tier map — the pro curve is flat
 - `exposure_group`: The pair's correlated-exposure sector (e.g. `"Information Technology"`), or `null` for pairs in no sector. Broad-market and country ETFs (SPY, QQQ, EFA, VT, …) are deliberately in none
 - `correlation_legs`: What a **long** position in this pair contributes to, as `[{"group", "direction"}]`. Forex contributes base `+1` / quote `-1` for the eight limited currencies only (so `USDMXN` yields a USD leg alone, and `XAUUSD`/`XAGUSD` yield a `-1` USD leg); equities contribute one sector leg; US index pairs and broad US ETFs contribute one `index:us` leg. Empty for pairs in no group
@@ -1191,7 +1191,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 
 `POST /entity/subaccount/leverage-tier`
 
-Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [entity_miner.md](entity_miner.md#leverage-limits). Raising is allowed at any time. Lowering is rejected while the subaccount has open positions. HL-linked and pro subaccounts are rejected.
+Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [entity_miner.md](entity_miner.md#leverage-limits). Raising is allowed at any time. Lowering is rejected while the subaccount has open positions, and so is any move off tier 0 (no stored tier), since some of its limits can exceed the target tier's. HL-linked and pro subaccounts are rejected.
 
 **Authentication:** Coldkey signature (no API key required). Each signature is single use.
 
@@ -2615,7 +2615,7 @@ curl http://localhost:48888/hl-traders/0xabcd1234.../limits
 
 Every limit an order against this subaccount is sized against, in one call. This is the Vanta-native counterpart to `GET /hl-traders/<hl_address>/limits`, which is reachable only by Hyperliquid address and so cannot serve pro accounts (they are Vanta-native and have no `hl_address`).
 
-All USD figures are against the live `balance`, which is what the order path applies — **not** the static `account_size`. Per-pair caps are not repeated here: pair the `tier_curve` below with the matching table in [`GET /trade-pairs`](#get-allowed-trade-pairs) — `pro_positional_leverage` on the pro curve, `standard_positional_leverage_by_tier` on the standard one, `subaccount_positional_leverage_by_tier` on the legacy one.
+All USD figures are against the live `balance`, which is what the order path applies — **not** the static `account_size`. Per-pair caps come back resolved in `positional_leverage`, one multiplier per pair this subaccount may trade, from the same functions the order path applies. `tier_curve` and `tier` still say which [`GET /trade-pairs`](#get-allowed-trade-pairs) table they match — `pro_positional_leverage` on the pro curve, `standard_positional_leverage_by_tier` on the standard one, `subaccount_positional_leverage_by_tier` on the legacy one — except tier 0, which has no row anywhere: read `positional_leverage`.
 
 **Authentication:** API key required (same tier as the v2 dashboard). Unlike the HL limits endpoint this one is authenticated, because it reports entity collateral.
 
@@ -2637,6 +2637,7 @@ All USD figures are against the live `balance`, which is what the order path app
   "portfolio_multiplier": 40.0,
   "max_portfolio_usd": 16494004.4,
   "max_asset_class_usd": {"crypto": 2474100.66, "equities": 2474100.66, "commodities": 3298800.88, "indices": 4123501.1, "forex": 14432253.85},
+  "positional_leverage": {"BTCUSDC": 5.0, "EURUSD": 20.0, "NVDA": 2.0},
   "capital_used": 0.0,
   "capital_used_by_class": {},
   "correlation_limits": {
@@ -2663,7 +2664,8 @@ All USD figures are against the live `balance`, which is what the order path app
 
 **Response fields:**
 - `tier_curve`: `"pro"`, `"standard"` or `"legacy"` — which table in `/trade-pairs` to size against. Every pro bucket is `"pro"`; `PRO_CHALLENGE_TRANSITION` is `"standard"`, because it still trades the standard account.
-- `tier`: The effective tier on that curve, and **`null` on the pro curve**, which is flat and has no tier dimension — do not fall back to a tiered table for it. Note this is not `leverage_tier`, which is the *standard* tier and is `null` for pro accounts.
+- `tier`: The effective tier on that curve, and **`null` on the pro curve**, which is flat and has no tier dimension — do not fall back to a tiered table for it. Note this is not `leverage_tier`, which is the *standard* tier and is `null` for pro accounts. **`0` on the standard curve** is a subaccount created before tiers existed: each of its limits is the higher of its legacy-curve value and tier 1 (Base), so it has no `/trade-pairs` row — use `positional_leverage`.
+- `positional_leverage`: Per-pair positional leverage multiplier, keyed by `trade_pair_id`, for every pair this subaccount's asset class may trade (blocked pairs omitted). Exactly what the order path caps against; multiply by `balance` for USD.
 - `max_asset_class_usd`: Per-asset-class exposure cap in USD, from the account's own curve.
 - `correlation_limits`: Present for pro accounts only. Groups with no exposure are omitted — they are at full room, which a client fills from `pro.correlation_limits` in `/trade-pairs`. A pro account with no exposure at all still returns the block with an empty `groups`, so "pro with nothing open" is distinguishable from "not pro".
 - `entity_collateral.headroom_theta`: The parent entity's spare collateral (deposited minus what all its subaccounts require). **`null` means the entity's balance is unknown, not that there is no headroom** — do not render it as zero.
