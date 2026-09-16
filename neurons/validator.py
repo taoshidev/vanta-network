@@ -105,6 +105,26 @@ class Validator(ValidatorBase):
         self.orders_app = getattr(self.config, 'orders_app', False)
         self.split_state = getattr(self.config, 'split_state', False)
         self.is_mainnet = self.config.netuid == 8
+        # Consensus-affecting testnet knobs (vali_objects/vali_config.py) are inherited
+        # through the environment, so a testnet deploy file copied onto a mainnet host
+        # would silently diverge this validator's weights. Refuse to start instead.
+        if self.is_mainnet:
+            _config_overrides = [
+                name for name in (
+                    "PRO_CHALLENGE_MINIMUM_DAYS",
+                    "PRO_CHALLENGE_CALMAR_THRESHOLD",
+                    "PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD",
+                    "PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT",
+                    "PRO_TRANSITION_GRACE_PERIOD_DAYS",
+                    "PTN_ALLOW_CONFIG_OVERRIDES",
+                )
+                if os.environ.get(name, "").strip()
+            ]
+            if _config_overrides:
+                raise ValueError(
+                    f"Refusing to start on netuid 8 with consensus config overrides in the "
+                    f"environment: {_config_overrides}. Unset them before running on mainnet."
+                )
 
         # Migrations + tmp clear mutate on-disk state, which the client-only orders app does not
         # own. Under --split-state, MIGRATIONS belong to vanta-state (run_state_server.py): it

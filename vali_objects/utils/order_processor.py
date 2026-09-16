@@ -202,6 +202,7 @@ class OrderProcessor:
             return OrderProcessingResult(ExecutionType.MARKET)
 
         created_order, updated_position = result
+        binding_cap = getattr(result, 'binding_cap', None)
         # POST-COMMIT side effects: the position write above is durable. A failure past this point
         # must NOT propagate — the handler's except path treats any exception as "apply failed",
         # releases the uuid claim, and invites the placer to resend, which would double-apply a

@@ -451,6 +451,8 @@ class LimitOrderManager(CacheController):
                 )
                 return {"status": "success", "order_uuid": order_uuid, "replayed": True}
 
+            self._reject_if_transitioning_to_pro(miner_hotkey, order, open_position)
+
             # Validate order using shared validation logic (business rules)
             if order.execution_type == ExecutionType.BRACKET:
                 self._validate_bracket_order(order, open_position)
