@@ -1629,12 +1629,14 @@ class EntityManager(ValidatorBroadcastBase):
             # that have already been settled come back exactly as they were settled, so rebuilding
             # the ledgers cannot move one between paid and withheld.
             sealed_weeks = self._debt_ledger_client.get_sealed_weeks(synthetic_hotkey)
+            live_payout_scale = self.get_payout_scale(synthetic_hotkey)
             week_context = (
-                debt_ledger.weekly_payout_context(
-                    self.get_payout_scale(synthetic_hotkey), sealed=sealed_weeks
-                )
+                debt_ledger.weekly_payout_context(live_payout_scale, sealed=sealed_weeks)
                 if debt_ledger else {}
             )
+            # A week the ledger says nothing about was never sealed, so it is priced at the
+            # account's current ratio rather than at an unscaled 1.0.
+            default_week = WeeklyPayoutContext(payout_scale=live_payout_scale)
 
             weekly_settlements = []
             deferred_balance = 0.0
@@ -1645,9 +1647,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             def _record_segment(start_ms, end_ms, balance, eow_unrealized, segment_orders, bucket):
                 nonlocal deferred_balance, payout_hwm
-                week = week_context.get(
-                    TimeUtil.ms_at_start_of_week(start_ms), WeeklyPayoutContext()
-                )
+                week = week_context.get(TimeUtil.ms_at_start_of_week(start_ms), default_week)
                 # Unrealized losses count against the payable balance, unrealized gains do not
                 payable = min(balance, balance + eow_unrealized)
 
@@ -1667,8 +1667,10 @@ class EntityManager(ValidatorBroadcastBase):
                     # The high water mark advances on gross terms
                     gross_payout = max(0.0, payable - payout_hwm)
                     payout_hwm = max(payout_hwm, payable)
-                    # Segments never straddle a bucket change, so one scale governs the whole of it
-                    scale = (self.get_payout_scale(synthetic_hotkey)
+                    # Segments never straddle a bucket change, so one scale governs the whole of
+                    # it. The ratio comes from the week, not from a live read of the account's
+                    # sizes, so resizing the account cannot reprice a week that already settled.
+                    scale = (week.payout_scale
                              if bucket is not None and bucket.payout_scale_applies else 1.0)
 
                 owed = gross_payout * scale

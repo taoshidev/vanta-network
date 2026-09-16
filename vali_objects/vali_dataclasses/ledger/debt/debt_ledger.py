@@ -63,7 +63,9 @@ class WeeklyPayoutContext:
     """Everything the payout paths need to know about one Monday-anchored payout week."""
     # A breach is stamped on a single checkpoint, so the worst value in the week governs it
     weekly_penalty: float = 1.0
-    # The scale in force at the end of the week, matching how the bucket itself is read
+    # The subaccount's standard/pro payout ratio for this week, *before* the per-bucket gate.
+    # Callers apply the gate themselves - per checkpoint, or per settlement segment - so a
+    # mid-week promotion is still priced per day rather than at one scale for the whole week.
     payout_scale: float = 1.0
     track: WeekTrack = WeekTrack.NO_DATA
     # First earning checkpoint of the week - where a checkpoint-indexed caller releases escrow
@@ -424,15 +426,18 @@ class DebtLedger:
         A checkpoint stamped exactly at Monday 00:00 covers the 12 hours *ending* then, so it
         belongs to the week that just closed - hence the `- 1` when finding the week start.
 
-        `payout_scale` is the week-level fallback; callers settling an individual checkpoint should
-        use `checkpoint_payout_scale` so a promotion mid-week is priced per day.
+        `payout_scale` is carried through ungated: it is the ratio that *would* apply, and the
+        caller gates it on the bucket it is settling - `checkpoint_payout_scale` per checkpoint,
+        or `payout_scale_applies` per settlement segment - so a promotion mid-week is priced per
+        day. A sealed week hands back the ratio it settled at, which is what stops an account
+        resize from repricing weeks that are already paid.
 
         Args:
-            payout_scale: standard_account_size / pro_account_size for this subaccount, applied
-                only in weeks whose bucket has payout_scale_applies
+            payout_scale: PRO_TRANSITION_PAYOUT_MULTIPLIER * standard_account_size /
+                pro_account_size for this subaccount, ungated
             sealed: week_start_ms -> SealedWeek from WeeklySealLedger. A sealed week is settled
                 money and is returned verbatim instead of being recomputed, so rebuilding the
-                ledgers cannot move a week between paid and withheld.
+                ledgers cannot move a week between paid and withheld, or reprice it.
 
         Returns:
             week_start_ms -> WeeklyPayoutContext, for every week with at least one checkpoint
@@ -442,13 +447,12 @@ class DebtLedger:
             week_start_ms = TimeUtil.ms_at_start_of_week(cp.timestamp_ms - 1)
             week = context.get(week_start_ms)
             if week is None:
-                week = WeeklyPayoutContext()
+                week = WeeklyPayoutContext(payout_scale=payout_scale)
                 context[week_start_ms] = week
 
             bucket = self._bucket_from_status(cp.challenge_period_status)
             week.weekly_penalty = min(week.weekly_penalty, cp.weekly_penalty)
 
-            week.payout_scale = payout_scale if bucket.payout_scale_applies else 1.0
             week.track = WeekTrack.ON_TRACK if bucket.soft_breach_applies else WeekTrack.OFF_TRACK
             if week.first_earning_ms is None and bucket.is_subaccount_earning:
                 week.first_earning_ms = cp.timestamp_ms

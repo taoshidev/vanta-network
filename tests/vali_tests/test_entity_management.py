@@ -1009,6 +1009,31 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
         self.assertEqual(result['deferred_balance'], 0.0)
 
+    def test_a_sealed_week_keeps_its_payout_scale_after_the_account_is_resized(self):
+        """Account sizes are read live, so only the seal stops a resize repricing a paid week.
+
+        Week 0 settled at a 0.2 ratio. The pro account has since been resized to put the live
+        ratio at 0.5, but the sealed week is still paid at 0.2.
+        """
+        from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek
+
+        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+        sealed = {week_0_start: SealedWeek(
+            week_start_ms=week_0_start,
+            weekly_penalty=1.0,
+            payout_scale=0.2,
+            track='OFF_TRACK',
+            first_earning_ms=None,
+            sealed_ms=0,
+        )}
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 1: MinerBucket.PRO_FUNDED},
+            payout_scale=0.5,
+            sealed_weeks=sealed,
+        )
+        self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [0.2, 1.0])
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [28.0, 140.0])
+
 
 if __name__ == '__main__':
     unittest.main()

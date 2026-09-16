@@ -936,13 +936,15 @@ class DebtLedgerManager():
                         logger.info(f"Entity {entity_hotkey} has no active subaccounts or frozen ledgers - skipping")
                     continue
 
-                # Get debt ledgers for all active subaccounts
-                subaccount_ledgers = []
                 # A miner completing the pro challenge after passing the standard challenge trades
                 # the larger pro account but is paid on their original standard account, uplifted
                 # by ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER.
+                #
+                # Built over every subaccount rather than only the active ones. An eliminated
+                # subaccount still reaches this aggregation through its frozen ledger, and its
+                # closed weeks get sealed below;
                 subaccount_payout_scale = {}
-                for subaccount in active_subaccounts:
+                for subaccount in entity_data.get('subaccounts', {}).values():
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
                     if not synthetic_hotkey:
                         continue
@@ -952,6 +954,13 @@ class DebtLedgerManager():
                     )
                     if scale != 1.0:
                         subaccount_payout_scale[synthetic_hotkey] = scale
+
+                # Get debt ledgers for all active subaccounts
+                subaccount_ledgers = []
+                for subaccount in active_subaccounts:
+                    synthetic_hotkey = subaccount.get('synthetic_hotkey')
+                    if not synthetic_hotkey:
+                        continue
 
                     ledger = self.debt_ledgers.get(synthetic_hotkey)
                     if ledger and ledger.checkpoints:
@@ -1022,6 +1031,14 @@ class DebtLedgerManager():
                     )
                     for synthetic_hotkey, ledger in subaccount_ledgers
                 }
+                # A week with no checkpoints of its own has no sealed ratio to honor, so it falls
+                # back to the account's current one rather than to an unscaled 1.0.
+                subaccount_default_week = {
+                    synthetic_hotkey: WeeklyPayoutContext(
+                        payout_scale=subaccount_payout_scale.get(synthetic_hotkey, 1.0)
+                    )
+                    for synthetic_hotkey, _ledger in subaccount_ledgers
+                }
 
                 # Create aggregated checkpoints for each timestamp
                 aggregated_checkpoints = []
@@ -1038,7 +1055,7 @@ class DebtLedgerManager():
                         if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
                             checkpoints_at_time.append(checkpoint)
                             week = subaccount_week_context[synthetic_hotkey].get(
-                                week_start_ms, WeeklyPayoutContext()
+                                week_start_ms, subaccount_default_week[synthetic_hotkey]
                             )
 
                             # Settle the escrow on the week's first earning checkpoint. Releasing
@@ -1071,9 +1088,13 @@ class DebtLedgerManager():
 
                                 # Price the delta at the scale in force at *this* checkpoint, not
                                 # the week's: a subaccount promoting mid-week trades part of it on
-                                # the standard payout basis and the rest on the pro one.
+                                # the standard payout basis and the rest on the pro one. The ratio
+                                # comes from the week rather than the live map so that a sealed
+                                # week keeps paying at the ratio it settled at even after the
+                                # account is resized; the per-checkpoint bucket gate still decides
+                                # whether it applies at all.
                                 scale = DebtLedger.checkpoint_payout_scale(
-                                    checkpoint, subaccount_payout_scale.get(synthetic_hotkey, 1.0)
+                                    checkpoint, week.payout_scale
                                 )
                                 # The HWM advances on gross terms; the blocked portion is held in
                                 # escrow instead, so netting the HWM down would pay it twice.

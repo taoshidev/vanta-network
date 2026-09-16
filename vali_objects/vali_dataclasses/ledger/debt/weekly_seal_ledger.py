@@ -9,8 +9,9 @@ from the perf ledger on a schedule and deleted outright by several admin operati
     drawdown and today's account size
   * `delete_debt_ledger` drops the debt *and* penalty ledgers, and runs on revert-elimination,
     /admin/reset and every account switch
-  * `get_payout_scale` reads the subaccount's sizes live, so resizing an account rewrites the scale
-    that applied to every past week
+  * `get_payout_scale` reads the subaccount's sizes live, so resizing an account would rewrite the
+    scale that applied to every past week - the sealed ratio is what both payout paths gate on
+    instead, so only the bucket a checkpoint actually held still comes from the ledgers
 
 Any one of those can silently move a closed week between "paid" and "withheld". This ledger pins the
 classification - not the dollar amount, which legitimately moves when positions are corrected - so a
@@ -38,7 +39,7 @@ class SealedWeek:
     """How one Monday-anchored payout week was classified, as settled."""
     week_start_ms: int
     weekly_penalty: float           # 0.0 withheld, 1.0 paid - the min over the week
-    payout_scale: float             # standard/pro in a scaled bucket, else 1.0
+    payout_scale: float             # the account's standard/pro ratio, ungated by bucket
     track: str                      # WeekTrack name: NO_DATA / ON_TRACK / OFF_TRACK
     first_earning_ms: Optional[int]
     sealed_ms: int
