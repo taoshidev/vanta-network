@@ -182,6 +182,7 @@ class PositionPenalties:
     def daily_consistency_penalty(ledger: PerfLedger) -> float:
         """
         Binary penalty: 0 if a single day accounts for too much of the total return, else 1.
+        (Does not actively soft breach funded pro accounts)
         """
         log_returns = LedgerUtils.daily_return_log(ledger)
         consistency = Metrics.return_consistency(log_returns)

@@ -954,6 +954,20 @@ def test_a_clean_day_is_never_latched(manager):
     assert manager.miner_states[HOTKEY].pro_stats.soft_breach_days == []
 
 
+def test_a_consistency_breach_alone_is_never_latched(manager):
+    """Daily consistency only gates promotion into PRO_FUNDED. Once funded, a lumpy week is not a
+    soft breach and the payout stands - calmar is the only rule that withholds it."""
+    _seed(manager, HOTKEY, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+    manager.miner_states[HOTKEY].pro_stats = ProStats(
+        calmar=CALMAR_THRESHOLD, daily_consistency=CONSISTENCY_THRESHOLD + 0.5,
+        max_drawdown=0.96, trading_days=MIN_DAYS)
+
+    manager._latch_soft_breaches([HOTKEY], NOW_MS)
+
+    assert manager.miner_states[HOTKEY].soft_breach is False
+    assert manager.miner_states[HOTKEY].pro_stats.soft_breach_days == []
+
+
 @pytest.mark.parametrize("bucket", [MinerBucket.SUBACCOUNT_FUNDED,
                                     MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
                                     MinerBucket.PRO_CHALLENGE_TRANSITION])

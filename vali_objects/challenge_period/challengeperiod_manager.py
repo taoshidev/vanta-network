@@ -107,10 +107,10 @@ class ProStats:
     daily_consistency: float = 1.0
     max_drawdown: float = 1.0  # Monotonic all-time worst drawdown, in mdd ratio form
     trading_days: int = 0  # Full days of tracked returns on this account
-    # UTC day starts (ms) on which calmar or daily_consistency was broken at any point. Those two
-    # are evaluated every refresh but only persisted onto 12h checkpoints, so a breach that heals
-    # inside a checkpoint would never withhold the week. Latching the day makes the weekly defer
-    # decision read "breached at any point when checked".
+    # UTC day starts (ms) on which calmar was broken at any point. Calmar is evaluated every
+    # refresh but only persisted onto 12h checkpoints, so a breach that heals inside a checkpoint
+    # would never withhold the week. Latching the day makes the weekly defer decision read
+    # "breached at any point when checked".
     soft_breach_days: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -282,19 +282,19 @@ class MinerBucketState:
 
     @property
     def soft_breach(self) -> bool:
-        """True when a pro rule is currently breached in a bucket that withholds the week's payout."""
+        """True when a pro rule is currently breached in a bucket that withholds the week's payout.
+        """
         bucket = self.current_bucket
         if not bucket.soft_breach_applies:
             return False
-        return (self.pro_stats.calmar < bucket.calmar_threshold
-                or self.pro_stats.daily_consistency > bucket.daily_consistency_threshold)
+        return self.pro_stats.calmar < bucket.calmar_threshold
 
     def latch_soft_breach(self, current_time_ms: int) -> bool:
         """Record today as breached when a pro rule is currently broken.
 
-        The pro metrics move every refresh but are only persisted onto 12h checkpoints, so a breach
-        that opens and heals between two checkpoints would never reach the payout. Latching the UTC
-        day makes the weekly decision read "breached at any point when checked".
+        Calmar moves every refresh but is only persisted onto 12h checkpoints, so a breach that
+        opens and heals between two checkpoints would never reach the payout. Latching the UTC day
+        makes the weekly decision read "breached at any point when checked".
 
         Returns True when a new day was latched (the caller must persist the state).
         """

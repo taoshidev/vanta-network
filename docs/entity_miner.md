@@ -342,9 +342,8 @@ Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro accoun
 **twice** the size of the standard account they came from:
 `PRO_TRANSITION_PAYOUT_MULTIPLIER × standard_account_size / pro_account_size × PnL`, with the
 multiplier at `2.0`. So $5K of eligible PnL on a $500K pro account pays a $100K standard account
-`(5K / 500K) × 2 × 100K = $2K`. A soft breach (all-time Calmar or return consistency) does **not**
-withhold their payout during either of these two buckets. Scaling stops once they reach
-`PRO_FUNDED`.
+`(5K / 500K) × 2 × 100K = $2K`. A soft breach (all-time Calmar) does **not** withhold their payout
+during either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
 
 #### Traders who have not passed the standard challenge
 
@@ -367,13 +366,14 @@ Promotion from a pro challenge bucket to `PRO_FUNDED` requires all of:
   snapshotted at prior UTC midnights. It ratchets: once reached, it never recovers.
 - **Return consistency of at most 20%** — after capping each day's profit at 1.5%, no single day may
   account for more than 20% of the account's total return. The total is the sum of these capped daily
-  returns, with losing days counted in full.
+  returns, with losing days counted in full. This one is a promotion gate only.
 
-The last two are also **soft breaches**: in `PRO_FUNDED` (`MinerBucket.soft_breach_applies`), breaching
-either one defers that week's payout without eliminating the trader. Both resolve by continuing
-to trade until the value recovers past its threshold. Calmar is measured over the account's whole
+All-time Calmar is also a **soft breach**: in `PRO_FUNDED` (`MinerBucket.soft_breach_applies`),
+breaching it defers that week's payout without eliminating the trader. It resolves by continuing to
+trade until the ratio recovers past its threshold. Calmar is measured over the account's whole
 history from the first day of the challenge onward, so a funded account keeps the ratio it passed
-with.
+with. Return consistency is **not** a soft breach: it decides whether a trader reaches `PRO_FUNDED`
+and nothing after that, so a funded trader's lumpy week is still paid in full.
 
 Passing the pro challenge **keeps the account**. Balance, equity, open positions, pending limit
 orders and every ledger carry over unchanged into `PRO_FUNDED`; unlike the two hops *onto* a pro
@@ -383,10 +383,10 @@ A `PRO_CHALLENGE_DIRECT` trader is therefore paid nothing for the challenge, and
 `PRO_CHALLENGE_FROM_STANDARD` trader keeps what they were already paid at standard scale without
 being paid for it a second time.
 
-Both rules are evaluated continuously rather than only when a checkpoint closes. Any UTC day on
-which either is broken at any point is recorded, and a payout week containing even one such day is
-deferred in full — a breach that heals before the next 12-hour checkpoint still holds the week. The
-deferred amount is released on the first later week that is clean and still on the pro track.
+Calmar is evaluated continuously rather than only when a checkpoint closes. Any UTC day on which it
+is broken at any point is recorded, and a payout week containing even one such day is deferred in
+full — a breach that heals before the next 12-hour checkpoint still holds the week. The deferred
+amount is released on the first later week that is clean and still on the pro track.
 
 #### Failing the pro challenge
 
@@ -414,7 +414,7 @@ validator started on netuid 8 (mainnet) with any of these names in its environme
 | `PRO_CHALLENGE_MINIMUM_DAYS` | `90` | Full trading days required in a pro challenge bucket before promotion (integer, at most 3650). |
 | `PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT` | `0.06` | Return required for promotion, applied to every asset class. |
 | `PRO_CHALLENGE_CALMAR_THRESHOLD` | `1.75` | Minimum all-time Calmar for promotion; also the soft-breach line. |
-| `PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD` | `0.2` | Maximum return consistency for promotion; also the soft-breach line. |
+| `PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD` | `0.2` | Maximum return consistency for promotion. Promotion only — it is not a soft breach. |
 | `PRO_TRANSITION_GRACE_PERIOD_DAYS` | `7` | Length of the `PRO_CHALLENGE_TRANSITION` wind-down window (fractional days allowed, at most 3650). |
 
 ## Getting Started

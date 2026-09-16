@@ -285,12 +285,6 @@ class PenaltyLedgerManager:
             input_type=PenaltyInputType.LEDGER_MAX_DRAWDOWN,
             buckets={b for b in MinerBucket if b.soft_breach_applies},
             application_scope=PenaltyApplicationScope.WEEKLY
-        ),
-        'daily_consistency': PenaltyConfig(
-            function=PositionPenalties.daily_consistency_penalty,
-            input_type=PenaltyInputType.LEDGER,
-            buckets={b for b in MinerBucket if b.soft_breach_applies},
-            application_scope=PenaltyApplicationScope.WEEKLY
         )
     }
 
@@ -897,8 +891,8 @@ class PenaltyLedgerManager:
 
             # ProStats is maintained by ChallengePeriodManager. The all-time drawdown is ratcheted
             # there since the perf ledger only retains a rolling window, and soft_breach_days holds
-            # the UTC days on which it saw calmar or consistency broken at any point. Empty when
-            # the miner has no pro stats yet.
+            # the UTC days on which it saw calmar broken at any point. Empty when the miner has no
+            # pro stats yet.
             miner_pro_stats = (challenge_period_data.get(miner_hotkey) or {}).get('pro_stats') or {}
             miner_max_drawdown = miner_pro_stats.get('max_drawdown')
             miner_soft_breach_days = {int(d) for d in (miner_pro_stats.get('soft_breach_days') or [])}

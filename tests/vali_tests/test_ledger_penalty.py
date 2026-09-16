@@ -140,28 +140,13 @@ class TestLedgerPenalty(TestBase):
         self.assertEqual(LedgerUtils.realized_return(None, ACCOUNT_SIZE), 0.0)
         self.assertEqual(LedgerUtils.realized_return(generate_ledger(gain=0.0, loss=0.0), 0.0), 0.0)
 
-    def test_daily_consistency_penalty(self):
-        # Evenly distributed gains pass; a flat ledger has no profit and fails closed
-        passing = generate_ledger(gain=0.005, loss=-0.001, mdd=0.99)
-        no_profit = generate_ledger(gain=0.0, loss=-0.001, mdd=0.99)
-
-        self.assertEqual(PositionPenalties.daily_consistency_penalty(passing), 1.0)
-        self.assertEqual(PositionPenalties.daily_consistency_penalty(no_profit), 0.0)
-
-    def test_daily_consistency_penalty_caps_the_best_day(self):
-        # Two days: one huge, one small. Capping the big day at 1.5% still leaves it
-        # over 20% of a thin total, so the week is withheld.
-        spiky = generate_ledger(gain=0.0, loss=0.0, mdd=0.99, nterms=4)
-        spiky.cps[0].gain = 0.09
-        spiky.cps[2].gain = 0.005
-
-        self.assertEqual(PositionPenalties.daily_consistency_penalty(spiky), 0.0)
-
     def test_weekly_penalties_configured_for_pro_buckets_only(self):
-        for name in ('all_time_calmar', 'daily_consistency'):
-            config = PenaltyLedgerManager.PENALTIES_CONFIG[name]
-            self.assertEqual(config.application_scope, PenaltyApplicationScope.WEEKLY)
-            self.assertEqual(set(config.buckets), {b for b in MinerBucket if b.soft_breach_applies})
+        # Daily consistency is no longer a penalty at all - it only gates promotion to PRO_FUNDED
+        self.assertNotIn('daily_consistency', PenaltyLedgerManager.PENALTIES_CONFIG)
+
+        config = PenaltyLedgerManager.PENALTIES_CONFIG['all_time_calmar']
+        self.assertEqual(config.application_scope, PenaltyApplicationScope.WEEKLY)
+        self.assertEqual(set(config.buckets), {b for b in MinerBucket if b.soft_breach_applies})
 
         # Pre-existing penalties keep per-checkpoint scope and apply to every bucket
         for name in ('drawdown_threshold', 'risk_profile', 'min_collateral'):
