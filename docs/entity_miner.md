@@ -11,14 +11,14 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 1. Entity hotkeys must be registered on the Bittensor network and have sufficient Theta collateral.
 2. An entity pays a one-time registration fee of **1,000 Theta**, which is permanently slashed on registration.
 3. Each subaccount requires collateral proportional to its account size (see [Collateral Requirements](#collateral-requirements)).
-4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, `commodities`, or `hl_all`) at creation. This **cannot be changed**. HyperLiquid-linked subaccounts always use `hl_all`.
-5. New subaccounts enter a **challenge period** with stricter thresholds and reduced leverage (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
+4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, `commodities`, `hl_all`, or `all_markets`) at creation. It **cannot be changed by the entity**; the one exception is promotion onto a pro account, which moves the subaccount to `all_markets` (see [Pro account size](#pro-account-size)). HyperLiquid-linked subaccounts always use `hl_all`.
+5. New subaccounts enter a **challenge period** with stricter thresholds; HL-linked subaccounts also trade at reduced leverage during it (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
 7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours, rate limits, etc.
 8. A maximum of **10 entities** can be registered on the network at any time.
 9. Each entity supports multiple subaccounts.
 10. **CRITICAL**: Never reuse synthetic hotkeys from eliminated subaccounts. Eliminated synthetic hotkeys are permanently blacklisted.
-11. Subaccounts are eliminated for inactivity: a subaccount in `SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED` that goes **60 days** without submitting a single order is eliminated with reason `INACTIVE`, the same rule applied to regular miners. This does not apply to the entity hotkey itself, which never submits orders.
+11. Subaccounts are eliminated for inactivity: a subaccount in any trading bucket — `SUBACCOUNT_CHALLENGE`, `SUBACCOUNT_FUNDED`, `SUBACCOUNT_ALPHA`, or any pro bucket — that goes **60 days** without submitting a single order is eliminated with reason `INACTIVE`, the same rule applied to regular miners. This does not apply to the entity hotkey itself, which never submits orders.
 
 ## Collateral Requirements
 
@@ -49,18 +49,18 @@ If the entity's balance is below the required theta, subaccount creation is reje
 
 ### Cross-Margin Requirement
 
-After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all funded subaccounts. Each funded subaccount's margin is capped at 8% of its account size (the max drawdown threshold), and theta is consumed at a rate of **35 USD per theta**. Challenge period subaccounts are fully exempt, and do not require or consume any margin collateral.
+After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all *earning* subaccounts — `SUBACCOUNT_FUNDED`, `SUBACCOUNT_ALPHA`, `PRO_FUNDED`, `PRO_CHALLENGE_TRANSITION` and `PRO_CHALLENGE_FROM_STANDARD` (`MinerBucket.is_subaccount_earning`). Each one's margin is capped at its bucket's **intraday** drawdown threshold — **5%** of account size for every earning bucket today — and theta is consumed at a rate of **35 USD per theta**. The challenge buckets (`SUBACCOUNT_CHALLENGE` and `PRO_CHALLENGE_DIRECT`) are fully exempt, and do not require or consume any margin collateral.
 
 Incoming orders from funded subaccounts are blocked if the projected required collateral would exceed the entity's deposited balance. The validator reads deposited balances from an on-chain cache refreshed every ~30 minutes — if the cache has no entry for the entity, orders are rejected.
 
-Collateral is slashed proportionally to realized losses each time a position closes at a loss, up to a maximum of 8% of the subaccount's account size. If a subaccount is eliminated, all remaining collateral headroom is slashed in a single call. Withdrawals are rejected if they would leave the entity below its current cross-margin requirement.
+Collateral is slashed proportionally to realized losses each time a position closes at a loss, up to a maximum of 5% of the subaccount's account size. If a subaccount is eliminated, all remaining collateral headroom is slashed in a single call. Withdrawals are rejected if they would leave the entity below its current cross-margin requirement.
 
 ### Cross-Margin Formulas
 
 Per-subaccount margin (USD):
 
 ```
-max_slash_usd      = account_size × 8%
+max_slash_usd      = account_size × the bucket's intraday drawdown threshold (5%)
 remaining_headroom = max_slash_usd - cumulative_slashed_usd
 margin_usd         = min(total_open_position_value, remaining_headroom)
 ```
@@ -68,7 +68,7 @@ margin_usd         = min(total_open_position_value, remaining_headroom)
 Entity-level required collateral (theta):
 
 ```
-required_theta = sum(margin_usd across all funded subaccounts) / 35
+required_theta = sum(margin_usd across all earning subaccounts) / 35
 ```
 
 <details>
@@ -76,14 +76,14 @@ required_theta = sum(margin_usd across all funded subaccounts) / 35
 
 ### Cross-Margin Example
 
-Entity has three subaccounts. `CPT_RISK = 35`, `MDD = 8%`.
+Entity has three subaccounts. `CPT_RISK = 35`, intraday drawdown threshold `= 5%`.
 
-| Subaccount | Account Size | Max Slash (8%) | Cum. Slashed | Remaining Headroom | Open Position Value | Margin (USD) | Margin (theta) |
+| Subaccount | Account Size | Max Slash (5%) | Cum. Slashed | Remaining Headroom | Open Position Value | Margin (USD) | Margin (theta) |
 |-----------|-------------|---------------|-------------|-------------------|---------------------|-------------|---------------|
-| A (funded)     | $100,000    | $8,000        | $2,000      | $6,000             | $50,000             | $6,000       | 171.4 theta   |
-| B (funded)     | $25,000     | $2,000        | $0          | $2,000             | $800                | $800         | 22.9 theta    |
-| C (challenge)  | $50,000     | $4,000        | $0          | $4,000             | $30,000             | **$0** (exempt) | 0 theta   |
-| **Total**  |             |               |             |                    |                     |             | **194.3 theta** |
+| A (funded)     | $100,000    | $5,000        | $2,000      | $3,000             | $50,000             | $3,000       | 85.7 theta   |
+| B (funded)     | $25,000     | $1,250        | $0          | $1,250             | $800                | $800         | 22.9 theta    |
+| C (challenge)  | $50,000     | $2,500        | $0          | $2,500             | $30,000             | **$0** (exempt) | 0 theta   |
+| **Total**  |             |               |             |                    |                     |             | **108.6 theta** |
 
 ### Order Blocking Formula
 
@@ -108,13 +108,13 @@ if slash_delta > 0:
     cumulative_slashed += slash_delta
 ```
 
-**Example** (\$25,000 account, 8% MDD → \$2,000 max slash, CPT_RISK = 35):
+**Example** (\$25,000 account, 5% intraday threshold → \$1,250 max slash, CPT_RISK = 35):
 
 | Trade | Loss   | Cum. Loss | Target Slash | Cum. Slashed | Slash Delta | Theta Slashed |
 |-------|--------|-----------|-------------|-------------|-------------|---------------|
-| 1     | $800   | $800      | $800        | $0          | $800        | 22.9 theta |
-| 2     | $900   | $1,700    | $1,700      | $800        | $900        | 25.7 theta |
-| 3     | $1,200 | $2,900    | $2,000 (cap)| $1,700      | $300        | 8.6 theta (eliminated) |
+| 1     | $400   | $400      | $400        | $0          | $400        | 11.4 theta |
+| 2     | $500   | $900      | $900        | $400        | $500        | 14.3 theta |
+| 3     | $600   | $1,500    | $1,250 (cap)| $900        | $350        | 10.0 theta (eliminated) |
 
 ### Slashing on Elimination
 
@@ -142,7 +142,7 @@ If the entity has no open positions, `required_theta = 0` and the full balance i
 | `ENTITY_COST_PER_THETA_LOW_THRESHOLD` | $10,000 | Account size threshold for two-tier CPT |
 | `MAX_SUBACCOUNT_ACCOUNT_SIZE` | $100,000 | Maximum USD account size per subaccount |
 | `ENTITY_MAX_SUBACCOUNTS` | 10,000 | Maximum subaccounts per entity |
-| `SUBACCOUNT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD` | 8% | MDD cap applied to funded subaccounts |
+| `FUNDED_INTRADAY_DRAWDOWN_THRESHOLD` | 5% | Intraday drawdown threshold; also the slash/margin cap applied to earning subaccounts |
 | `ENTITY_COLLATERAL_CPT_RISK` | 35 | USD of loss capacity per theta (used for margin and slash-to-theta conversion) |
 | `ENTITY_COLLATERAL_CACHE_REFRESH_S` | 1800 | Seconds between on-chain collateral cache refreshes (30 min) |
 
@@ -160,8 +160,8 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
 
 | Stage | Bucket | Description |
 |---|---|---|
-| SUBACCOUNT_CHALLENGE | 1× dust | Challenge phase — reduced leverage, no payout |
-| SUBACCOUNT_FUNDED | earning | Passed challenge — full leverage, earns payouts |
+| SUBACCOUNT_CHALLENGE | 1× dust | Challenge phase — no payout (HL-linked: reduced leverage) |
+| SUBACCOUNT_FUNDED | earning | Passed challenge — earns payouts |
 | eliminated | — | Permanently removed from competition |
 
 ### Challenge Period Requirements
@@ -179,24 +179,243 @@ Passing is evaluated continuously — a subaccount is promoted immediately once 
 - **Trailing** (default): eliminated if intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaches **5%**.
 - **Static**: eliminated if equity (including unrealized PnL) drops more than **5%** below the subaccount's starting balance, or if intraday drawdown from the day's opening equity reaches **5%** (same intraday drawdown check as trailing, with a flat 5% threshold).
 
-**Portfolio leverage limits:** A subaccount's maximum portfolio leverage (the sum of all open position leverages) is capped by tier. **Tier 1** applies to any subaccount in `SUBACCOUNT_CHALLENGE`, regardless of account size. Once promoted to `SUBACCOUNT_FUNDED`, the tier is instead determined by account size, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
+### Leverage Limits
 
-| Tier | Bucket                              | Crypto | Forex | Commodities | Equities | HL All | All Markets |
-|------|--------------------------------------|--------|-------|-------------|----------|--------|-------------|
-| 1    | SUBACCOUNT_CHALLENGE (any size)      | 2.0x   | 5.0x  | 2.0x        | 1.0x     | 4.0x   | 6.0x        |
-| 2    | SUBACCOUNT_FUNDED, <$200K            | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
-| 3    | SUBACCOUNT_FUNDED, $200K–$1M         | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
-| 4    | SUBACCOUNT_FUNDED, ≥$1M              | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
+Standard subaccounts carry a `leverage_tier` (1 = Base, 2 = Boost I, 3 = Boost II), set at creation (default 1) and changeable later (see [Change Leverage Tier](#change-leverage-tier)). Challenge and funded share the same limits, and account size does not change them. All values are multiples of the subaccount balance; an order is capped by the tightest of the per-pair, per-class and portfolio limits.
+
+Per-pair positional leverage:
+
+| Pairs | Tier 1 | Tier 2 | Tier 3 |
+|---|---|---|---|
+| Crypto majors (BTC, ETH, SOL, XRP, DOGE) | 1.5x | 2x | 2.5x |
+| All other coins | 0.5x | 0.75x | 1x |
+| FX, all pairs except the NZD crosses | 10x | 15x | 20x |
+| FX NZD crosses (EURNZD, GBPNZD, NZDJPY, AUDNZD, NZDCAD, NZDCHF) | 5x | 7.5x | 10x |
+| Indices SP500, XYZ100 | 2.5x | 4x | 5x |
+| Indices EWY | 1x | 1.5x | 2x |
+| Commodities | 1.5x | 2x | 3x |
+| Equities | 0.5x | 1x | 1.5x |
+
+Per-class and portfolio caps:
+
+| | Tier 1 | Tier 2 | Tier 3 |
+|---|---|---|---|
+| Crypto | 1.5x | 2x | 2.5x |
+| Forex | 10x | 15x | 20x |
+| Commodities | 1.5x | 2x | 3x |
+| Indices | 2.5x | 4x | 5x |
+| Equities | 1x | 2x | 3x |
+| Portfolio (`all_markets`) | 15x | 20x | 25x |
+
+Single-class subaccounts (`crypto`, `forex`, `equities`, `commodities`) use their class row as the portfolio cap. The tables live in `ValiConfig.STANDARD_*_LEVERAGE_BY_TIER`; `GET /trade-pairs` on the validator exposes the per-pair values under `standard_positional_leverage_by_tier` and the class and portfolio caps under `standard_leverage_tiers`.
+
+Standard subaccounts created before tiers existed have no stored `leverage_tier` and trade at Tier 1 (Base) until the entity sets one.
+
+**Legacy curve.** HL-linked subaccounts keep the legacy tier 1 to 4 curve below: **Tier 1** during `SUBACCOUNT_CHALLENGE`, then by account size once promoted, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
+
+| Tier | Bucket                                                      | Crypto | Forex | Commodities | Equities | HL All | All Markets |
+|------|--------------------------------------------------------------|--------|-------|-------------|----------|--------|-------------|
+| 1    | HL-linked, SUBACCOUNT_CHALLENGE (any size)                   | 2.0x   | 5.0x  | 2.0x        | 1.0x     | 4.0x   | 6.0x        |
+| 2    | HL-linked FUNDED, <$200K                                     | 2.0x   | 10.0x | 2.0x        | 1.5x     | 7.0x   | 12.0x       |
+| 3    | HL-linked FUNDED, $200K–$1M                                  | 3.0x   | 15.0x | 3.0x        | 2.0x     | 10.0x  | 18.0x       |
+| 4    | HL-linked FUNDED, ≥$1M                                       | 4.0x   | 20.0x | 4.0x        | 2.0x     | 12.0x  | 24.0x       |
+
+### Pro account leverage
+
+**Pro accounts run neither curve above.** They have their own flat table with no tier dimension: account size does not change it, and every pro bucket gets the same limits. `PRO_CHALLENGE_TRANSITION` is the exception — it still trades the standard account, so it keeps the standard tier tables.
+
+Per-pair positional leverage (multiples of balance):
+
+| Asset class | Leverage | Pairs |
+|---|---|---|
+| Crypto | 5x | BTC, ETH, SOL, XRP, DOGE |
+| | 2x | HYPE, SUI, BNB |
+| | 1.5x | kPEPE, ADA, ZEC, LINK |
+| | 1x | LTC, AVAX, TRX |
+| Equities | 2x | all pro-tradable US stocks and ETFs |
+| Commodities | 8x | WTI, COPPER, GOLD, NATGAS |
+| | 5x | SILVER, PLATINUM |
+| Indices | 10x | SP500, XYZ100 |
+| | 5x | EWY |
+| Forex | 20x | the 22 majors and crosses |
+| | 10x | the six NZD crosses (EURNZD, GBPNZD, NZDJPY, AUDNZD, NZDCAD, NZDCHF) |
+
+Per-asset-class and portfolio caps:
+
+| Crypto | Equities | Commodities | Indices | FX | Portfolio |
+|---|---|---|---|---|---|
+| 6x | 6x | 8x | 10x | 35x | 40x |
+
+All of these apply to **gross** exposure — offsetting positions never free up room. A pro-tradable pair the table does not name falls back to `ValiConfig.PRO_DEFAULT_POSITIONAL_LEVERAGE` (1x); see [pro_leverage_discrepancies.md](pro_leverage_discrepancies.md).
+
+The tables live in `ValiConfig.PRO_*`. `GET /trade-pairs` publishes the per-pair value as `pro_positional_leverage` and the caps under the `pro` block; `GET /subaccounts/<synthetic_hotkey>/limits` reports which curve a given subaccount is on (`tier_curve`, with `tier` null for pro).
+
+### Correlated-exposure caps (pro accounts only)
+
+On top of the per-pair, per-class and portfolio caps, a pro account's exposure is capped across *correlated* instruments:
+
+| Group | Cap (multiple of balance) |
+|---|---|
+| Each of USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD | 30x |
+| Each equity sector (11 GICS sectors) | 3x |
+| US index — `SP500USDC`, `XYZ100USDC`, `SPY`, `QQQ`, `IWM`, `DIA` combined | 10x |
+
+Three rules matter for sizing:
+- **Per side, never netted.** Gross long and gross short are capped independently, so a group may carry up to its full cap in each direction at once, and an offsetting position never frees room on the opposite side.
+- **Against `balance`, not `account_size`.** The live balance (account size + realized PnL − fees).
+- **Only on open/increase.** Closes and reductions are never checked against these caps.
+
+A long forex pair contributes `+1` to its base currency and `−1` to its quote, for the eight capped currencies only — so `USDMXN` contributes a USD leg alone, and `XAUUSD`/`XAGUSD` (both forex) contribute a `−1` USD leg. Equities contribute one sector leg; broad-market and country ETFs belong to no sector. `GET /trade-pairs` publishes each pair's `exposure_group` and `correlation_legs`, and the caps under `pro.correlation_limits`, so a client never has to reproduce these assignments.
+
+An order that would breach a cap is **clamped to the room left**, not rejected; it is only rejected when there is no room at all, with `" exposure cap "` in the message. When a cap does shrink an order, the order response carries `binding_cap` naming it.
 
 `HL All` and `All Markets` apply to multi-class subaccounts (Hyperliquid-linked and standard subaccounts using those asset classes, respectively) as the overall cap across all asset classes; single-class subaccounts (crypto, forex, equities, commodities) use only their own column.
 
 ### After the Challenge Period
 
 Once in SUBACCOUNT_FUNDED, the subaccount keeps the same `drawdown_criteria` it was created with:
-- **Trailing** (default): standard **8% max drawdown** elimination applies (same as regular miners) — intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaching **8%**.
+- **Trailing** (default): the same two rules as regular miners — eliminated at a **5%** intraday drawdown from the day's opening equity, or an **8%** drawdown from the end-of-day equity high-water mark. Subaccounts registered before the cutoffs in `ValiConfig.FUNDED_V0_CUTOFF_MS` / `FUNDED_V1_CUTOFF_MS` keep the looser thresholds they were registered under.
 - **Static**: still eliminated at **5%** below starting balance, or **5%** intraday drawdown from the day's opening equity, same thresholds as during challenge — this rule set does not loosen after funding.
 
 After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is eligible for additional funding.
+
+### Account Types
+
+Every subaccount is created as `standard`. A pro account is reached by promoting an existing
+subaccount through `POST /api/promote` — there is no way to create one directly.
+
+Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
+margin-interest rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs.
+Hyperliquid *subaccounts* have no pro tier, but the pro universe itself is not Vanta-only: its
+crypto, commodities and indices pairs are all Hyperliquid-sourced. Note that the pro fee schedule
+applies only to Vanta-sourced positions (`position.py` gates it on `src == VANTA`), so HL-sourced
+pro positions pay live HL funding plus the standard schedule.
+
+| Bucket                        | Account traded | Earns payouts | Payout basis            |
+|-------------------------------|----------------|---------------|-------------------------|
+| `PRO_CHALLENGE_TRANSITION`    | standard       | yes           | standard account size   |
+| `PRO_CHALLENGE_FROM_STANDARD` | pro            | yes           | 2x standard account size |
+| `PRO_CHALLENGE_DIRECT`        | pro            | no            | —                       |
+| `PRO_FUNDED`                  | pro            | yes           | pro account size        |
+
+#### Pro account size
+
+There is no network default pro account size. The entity picks it in the `pro_account_size` of the
+promotion request. The network accepts any finite positive amount up to **$1,000,000**
+(`ValiConfig.MAX_PRO_ACCOUNT_SIZE`) that is not below the subaccount's own standard account size — a
+promotion grants size, it never shrinks the account the subaccount already trades. The preset amounts
+offered in the Command Center are a UI choice, not a network rule.
+
+- **Entering the pro track** (`SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, or
+  `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`) requires a size.
+- **Moving within the pro track** (`PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD`) keeps
+  the recorded size, or takes a new one (still within the allowed range) when the request sends one.
+- **Standard buckets** never record a pro size.
+
+The granted size is published as `subaccount_info.pro_account_size` in the v2 subaccount dashboard
+(`GET /v2/entity/subaccount/<synthetic_hotkey>` and the websocket dashboard stream): null until the
+subaccount is first offered the pro track.
+
+Promoting into a bucket that trades the pro account (`PRO_CHALLENGE_DIRECT` or
+`PRO_CHALLENGE_FROM_STANDARD`) also moves the subaccount's asset class to `all_markets`, whatever it
+was registered under: the pro universe spans every asset class and a single-class subaccount could
+otherwise reach only part of it. `PRO_CHALLENGE_TRANSITION` is still on the standard account, so it
+keeps its registered class.
+
+Every pro bucket is subject to two drawdown rules:
+- **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day. Checked continuously.
+- **EOD trailing loss limit:** end-of-day equity cannot drop **8%** below the end-of-day equity high-water mark. Evaluated once per UTC day against the midnight snapshot, not in real time — an intraday dip below the mark that recovers before midnight does not breach.
+
+`PRO_CHALLENGE_TRANSITION` is still trading the standard account, so it keeps the `SUBACCOUNT_FUNDED` rules instead.
+
+#### Traders who have already passed the standard challenge
+
+A `SUBACCOUNT_FUNDED` trader offered a pro account is moved to `PRO_CHALLENGE_TRANSITION`, a
+one-week wind-down window on their existing standard account. During that week they keep the
+`SUBACCOUNT_FUNDED` rules and keep earning payouts, but they cannot open new positions or increase
+existing ones — those orders are rejected and only closes and reductions are accepted. They move to
+`PRO_CHALLENGE_FROM_STANDARD` as soon as they promote again (`POST /api/promote`), or automatically
+at the end of the week, at which point any remaining positions are force closed, the account is
+resized to the pro account size, and the ledgers restart.
+
+Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro account but is paid on
+**twice** the size of the standard account they came from:
+`PRO_TRANSITION_PAYOUT_MULTIPLIER × standard_account_size / pro_account_size × PnL`, with the
+multiplier at `2.0`. So $5K of eligible PnL on a $500K pro account pays a $100K standard account
+`(5K / 500K) × 2 × 100K = $2K`. A soft breach (all-time Calmar) does **not** withhold their payout
+during either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
+
+#### Traders who have not passed the standard challenge
+
+A `SUBACCOUNT_CHALLENGE` trader offered a pro account is moved to `PRO_CHALLENGE_DIRECT` and starts
+the pro challenge from scratch on the pro account. They earn no payouts until `PRO_FUNDED`, so a soft
+breach has nothing to withhold while they are in this bucket.
+
+#### Passing the pro challenge
+
+Promotion from a pro challenge bucket to `PRO_FUNDED` requires all of:
+
+- **90 full calendar days since the account's first trade.** Counted from the ledger, which starts
+  at the first order on the pro account, so sitting in the bucket without trading earns nothing and
+  the partial first and current days do not count.
+- **6% return** on the account. Missing this target only prevents promotion — pro buckets have no
+  time limit, so it never eliminates the trader.
+- **All-time Calmar of at least 1.75** — realized return since the start of the challenge divided by
+  the max drawdown over the same period. Max drawdown is the largest drop of live account equity
+  below the end-of-day equity high-water mark, so it tracks real-time equity against the marks
+  snapshotted at prior UTC midnights. It ratchets: once reached, it never recovers.
+- **Return consistency of at most 20%** — after capping each day's profit at 1.5%, no single day may
+  account for more than 20% of the account's total return. The total is the sum of these capped daily
+  returns, with losing days counted in full. This one is a promotion gate only.
+
+All-time Calmar is also a **soft breach**: in `PRO_FUNDED` (`MinerBucket.soft_breach_applies`),
+breaching it defers that week's payout without eliminating the trader. It resolves by continuing to
+trade until the ratio recovers past its threshold. Calmar is measured over the account's whole
+history from the first day of the challenge onward, so a funded account keeps the ratio it passed
+with. Return consistency is **not** a soft breach: it decides whether a trader reaches `PRO_FUNDED`
+and nothing after that, so a funded trader's lumpy week is still paid in full.
+
+Passing the pro challenge **keeps the account**. Balance, equity, open positions, pending limit
+orders and every ledger carry over unchanged into `PRO_FUNDED`; unlike the two hops *onto* a pro
+account, this one wipes nothing. What resets is the payout basis: the high-water mark rebases at the
+promotion, so returns earned during the challenge move the balance but are never paid at pro scale.
+A `PRO_CHALLENGE_DIRECT` trader is therefore paid nothing for the challenge, and a
+`PRO_CHALLENGE_FROM_STANDARD` trader keeps what they were already paid at standard scale without
+being paid for it a second time.
+
+Calmar is evaluated continuously rather than only when a checkpoint closes. Any UTC day on which it
+is broken at any point is recorded, and a payout week containing even one such day is deferred in
+full — a breach that heals before the next 12-hour checkpoint still holds the week. The deferred
+amount is released on the first later week that is clean and still on the pro track.
+
+#### Failing the pro challenge
+
+Both drawdown rules are hard breaches on every pro bucket: breaching either in
+`PRO_CHALLENGE_DIRECT`, `PRO_CHALLENGE_FROM_STANDARD` or `PRO_FUNDED` eliminates the subaccount
+outright — there is no fall back to the standard track. A breach in `PRO_CHALLENGE_TRANSITION` is
+judged against the standard funded account it is still trading, and also eliminates.
+
+Missing the 6% return target or a soft breach never eliminates: pro buckets have no time limit, so a
+trader who has not passed simply stays in the challenge bucket.
+
+#### Testnet overrides
+
+The promotion criteria and the transition grace period are read from `ValiConfig` once at import
+and can be overridden on a testnet validator through environment variables of the same name. Each
+value must be a positive number; the validator logs a warning for every override in force.
+
+These values move consensus — they decide promotions and the weekly penalties the weight
+calculator reads — so an override is only honored when `PTN_ALLOW_CONFIG_OVERRIDES=1` is also set.
+A knob present without that flag fails the import rather than quietly changing the validator, and a
+validator started on netuid 8 (mainnet) with any of these names in its environment refuses to run.
+
+| Environment variable | Default | Controls |
+|----------------------|---------|----------|
+| `PRO_CHALLENGE_MINIMUM_DAYS` | `90` | Full trading days required in a pro challenge bucket before promotion (integer, at most 3650). |
+| `PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT` | `0.06` | Return required for promotion, applied to every asset class. |
+| `PRO_CHALLENGE_CALMAR_THRESHOLD` | `1.75` | Minimum all-time Calmar for promotion; also the soft-breach line. |
+| `PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD` | `0.2` | Maximum return consistency for promotion. Promotion only — it is not a soft breach. |
+| `PRO_TRANSITION_GRACE_PERIOD_DAYS` | `7` | Length of the `PRO_CHALLENGE_TRANSITION` wind-down window (fractional days allowed, at most 3650). |
 
 ## Getting Started
 
@@ -453,6 +672,20 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
 | `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
+| `leverage_tier` | int | No | Standard leverage tier `1` (default), `2` or `3` — see [Leverage Limits](#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later via [Change Leverage Tier](#change-leverage-tier). |
+
+#### Change Leverage Tier
+
+A standard subaccount's `leverage_tier` can be changed after creation through the Entity Miner Gateway:
+
+```bash
+curl -X POST http://localhost:8088/api/update-subaccount-leverage-tier \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"synthetic_hotkey": "5GhDr..._0", "leverage_tier": 2}'
+```
+
+Raising the tier is allowed at any time. Lowering it is rejected while the subaccount has open positions, because the new caps may sit below the current exposure. A subaccount created before tiers existed counts as tier 1. HL-linked, pro and pre-migration `hl_all` subaccounts do not use standard leverage tiers and are rejected.
 
 ### 12. Submit Orders
 
@@ -612,7 +845,60 @@ Response:
 | Method | Endpoint | Description |
 |---|---|---|
 | POST | `/api/create-subaccount` | Create a standard subaccount (proxies to validator) |
+| POST | `/api/promote` | Promote a subaccount a step up the pro track (proxies to validator) |
 | GET | `/api/health` | Health check |
+
+#### POST /api/promote
+
+```json
+{
+  "synthetic_hotkey": "5GhDr..._0",
+  "pro_account_size": 500000
+}
+```
+
+Promotes one of this entity's subaccounts a step up the pro track. The gateway signs the request with
+the entity coldkey and forwards it to the validator's `POST /entity/subaccount/promote`, which proves
+the entity owns the subaccount before anything moves. The target bucket comes from the subaccount's
+current one, and only three hops exist: `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`,
+`SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, and `PRO_CHALLENGE_TRANSITION` →
+`PRO_CHALLENGE_FROM_STANDARD`.
+
+`pro_account_size` is required entering the pro track and optional on the hop within it (omitted
+keeps the recorded size) — see [Pro account size](#pro-account-size).
+
+Only the two hops onto a pro account wipe trading state: promoting into `PRO_CHALLENGE_DIRECT` or
+`PRO_CHALLENGE_FROM_STANDARD` force closes every open position, cancels every pending limit order and
+restarts the ledgers on the pro size, so neither can be undone. Promoting into
+`PRO_CHALLENGE_TRANSITION` keeps trading the standard account and wipes nothing — positions, limit
+orders and ledgers all carry on, and only the resting orders that could open or increase a position
+are cancelled. The automatic promotion to `PRO_FUNDED` also wipes nothing: it is the same account,
+already on the pro size, and only the payout basis moves (see
+[Passing the pro challenge](#passing-the-pro-challenge)).
+
+#### Settled payout weeks
+
+Once a payout week closes, the decision it was settled on — paid or withheld, at which account-size
+scale, on or off the pro track — is recorded and never recomputed. Rebuilding the perf, penalty or
+debt ledgers replays that record instead of re-deriving it, so a later change to a trader's account
+size, to the ratcheted drawdown, or to their bucket history cannot retroactively turn a week that
+paid into a week that was withheld. Only the week still in progress is live. A validator operator
+can force a specific week to be recomputed with `POST /admin/unseal-week/<hotkey>?week_start_ms=…`
+(tier 500), which is the only way to change one.
+
+Reverting an elimination on the pro track restores the account rather than resetting it. The
+`ELIMINATED` entry stays in the bucket history as the record that it happened, but is marked
+reverted so it never governs a timestamp — bucket history is replayed to stamp historical
+checkpoints, and a reverted span left governing its window would reclassify every checkpoint inside
+it and change weeks that were already settled. The ratcheted drawdown, the latched soft-breach days
+and the end-of-day equity high-water mark all survive the revert.
+
+Both restorations are scoped to the pro track. A standard subaccount reverts exactly as it did
+before pro accounts existed: the eliminated span still governs its window and the drawdown cache is
+cleared outright.
+
+The entity collateral slashed on elimination is **not** returned automatically for either; the
+revert response reports `collateral_slashed` so it can be settled by hand.
 
 ### Miner REST Server (port 8088)
 

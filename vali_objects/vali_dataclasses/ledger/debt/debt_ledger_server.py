@@ -269,6 +269,31 @@ class DebtLedgerServer(RPCServerBase):
     # PENALTY LEDGER RPC METHODS (delegate to manager's sub-manager)
     # ========================================================================
 
+    def get_sealed_weeks_rpc(self, hotkey: str) -> dict:
+        """
+        Get the settled payout-week records for a hotkey (RPC method).
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            Dict mapping week_start_ms to SealedWeek
+        """
+        return self._manager.get_sealed_weeks(hotkey)
+
+    def unseal_week_rpc(self, hotkey: str, week_start_ms: int) -> bool:
+        """
+        Drop one settled payout-week record so the next build reseals it (RPC method).
+
+        Args:
+            hotkey: The miner's hotkey
+            week_start_ms: Monday 00:00 UTC of the week to unseal
+
+        Returns:
+            True if a record was removed
+        """
+        return self._manager.unseal_week(hotkey, week_start_ms)
+
     def get_penalty_ledger_rpc(self, hotkey: str):
         """
         Get penalty ledger for a specific hotkey (RPC method).

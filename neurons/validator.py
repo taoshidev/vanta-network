@@ -98,6 +98,26 @@ class Validator(ValidatorBase):
 
         self.config = self.get_config()
         self.is_mainnet = self.config.netuid == 8
+        # Consensus-affecting testnet knobs (vali_objects/vali_config.py) are inherited
+        # through the environment, so a testnet deploy file copied onto a mainnet host
+        # would silently diverge this validator's weights. Refuse to start instead.
+        if self.is_mainnet:
+            _config_overrides = [
+                name for name in (
+                    "PRO_CHALLENGE_MINIMUM_DAYS",
+                    "PRO_CHALLENGE_CALMAR_THRESHOLD",
+                    "PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD",
+                    "PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT",
+                    "PRO_TRANSITION_GRACE_PERIOD_DAYS",
+                    "PTN_ALLOW_CONFIG_OVERRIDES",
+                )
+                if os.environ.get(name, "").strip()
+            ]
+            if _config_overrides:
+                raise ValueError(
+                    f"Refusing to start on netuid 8 with consensus config overrides in the "
+                    f"environment: {_config_overrides}. Unset them before running on mainnet."
+                )
         # ValiConfig.HL_USE_TESTNET = not self.is_mainnet
         # Ensure the directory for logging exists, else create one.
         if not os.path.exists(self.config.full_path):

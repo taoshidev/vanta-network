@@ -1,5 +1,6 @@
 """
-Focused unit tests for ChallengePeriodManager and related dataclasses.
+Focused unit tests for ChallengePeriodManager and related dataclasses, on the standard track.
+The pro account buckets and their promotion criteria live in test_challengeperiod_pro.py.
 No RPC connections, no disk I/O, no daemon simulation.
 Each test uses a manager fixture with all RPC clients mocked and
 is_backtesting=True to skip all file system access.
@@ -38,6 +39,8 @@ _CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager.CommonDataClient",
     "vali_objects.challenge_period.challengeperiod_manager.AssetSelectionClient",
     "vali_objects.challenge_period.challengeperiod_manager.DebtLedgerClient",
+    "vali_objects.challenge_period.challengeperiod_manager.LimitOrderClient",
+    "vali_objects.challenge_period.challengeperiod_manager.EntityClient",
 ]
 
 
@@ -258,7 +261,6 @@ def test_check_static_ignores_trailing_drawdown_pcts():
     assert state.drawdown.intraday_drawdown_pct == pytest.approx(12.0)
     assert state.drawdown.eod_drawdown_pct == pytest.approx(9.0)
     assert ChallengePeriodManager._check_static_drawdown(state) is None
-
 
 
 def test_should_demote_non_maincomp():

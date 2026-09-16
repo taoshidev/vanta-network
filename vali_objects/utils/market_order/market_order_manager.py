@@ -11,6 +11,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -24,6 +25,25 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from shared_objects.locks.position_lock_client import PositionLockClient
 from shared_objects.log import logger
+
+
+class OrderExecution:
+    """Result of execute_order: the filled order, its position, and what capped its size.
+
+    Iterates as (order, position) so existing two-value unpacking keeps working; `binding_cap`
+    is set only when a cap actually shrank the order, and is how a client learns an order was
+    sized down rather than filled as requested.
+    """
+
+    __slots__ = ("order", "position", "binding_cap")
+
+    def __init__(self, order, position, binding_cap=None):
+        self.order = order
+        self.position = position
+        self.binding_cap = binding_cap
+
+    def __iter__(self):
+        return iter((self.order, self.position))
 
 
 class MarketOrderManager():
@@ -126,9 +146,10 @@ class MarketOrderManager():
                     position_type=order_type,
                     account_size=miner_account.account_size,
                     is_hl=is_hl,
+                    is_pro=bool(miner_account.miner_bucket and miner_account.miner_bucket.is_pro),
                 )
 
-            order = self._apply_order(
+            order, binding_cap = self._apply_order(
                 position, miner_account,
                 execution_type, order_type, order_size,
                 order_uuid, now_ms, price_sources, order_src,
@@ -136,7 +157,7 @@ class MarketOrderManager():
                 slippage, is_hl_taker
             )
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
-            return order, position
+            return OrderExecution(order, position, binding_cap)
 
     def _apply_order(
         self,
@@ -188,16 +209,29 @@ class MarketOrderManager():
             quantity, leverage, value = -position.net_quantity, -position.net_leverage, -position.net_value
 
         is_buy = order_type == position.position_type
+        # add_order can flip this to FLAT, and correlated exposure has to be released from the
+        # side the position was actually on.
+        prev_position_type = position.position_type
+
+        if is_buy and miner_account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
+            raise SignalException(
+                "Your account is transitioning to a Pro Account. You cannot open new positions or increase "
+                "existing ones - close your open positions to begin trading your Pro Account."
+            )
+
+        binding_cap = None
         if is_buy:
             max_order_value, binding_cap = get_max_order_size(miner_account, position)
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} max_order_value=${max_order_value:.4f}")
+
             if max_order_value <= 0:
                 msg = f"No buying power remaining for {trade_pair.trade_pair_id} (capped by {binding_cap})"
                 logger.error(f"[ORDER_EXECUTION] {hotkey} {order_uuid} {msg}")
                 raise SignalException(msg)
-            sign = -1 if order_type == OrderType.SHORT else 1
-            clamped_value = sign * min(abs(value), max_order_value)
-            if abs(clamped_value) < abs(value):
+
+            if abs(value) > max_order_value:
+                sign = 1 if value >= 0 else -1
+                clamped_value = sign * max_order_value
                 logger.info(
                     f"[ORDER_EXECUTION] {hotkey} {order_uuid} order value clamped from ${value:.4f} to ${clamped_value:.4f} by {binding_cap}"
                 )
@@ -207,6 +241,9 @@ class MarketOrderManager():
                     use_floor=True,
                     use_nano_increment=use_nano_increment,
                 )
+            else:
+                # Nothing was cut, so there is no cap worth reporting.
+                binding_cap = None
 
         if abs(value) < 1e-9 or abs(quantity) < 1e-9:
             raise SignalException("Error processing order: 0 order size after clamping")
@@ -248,7 +285,8 @@ class MarketOrderManager():
 
         if is_buy:
             self._miner_account_client.process_order_buy(
-                hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category
+                hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category,
+                trade_pair=trade_pair, position_type=prev_position_type,
             )
         else:
             entry_value = abs(order.quantity) * trade_pair.lot_size * position.average_entry_price * order.quote_usd_rate
@@ -256,6 +294,7 @@ class MarketOrderManager():
             self._miner_account_client.process_order_sell(
                 hotkey, entry_value, realized_pnl, loan_repaid, transaction_fee, trade_pair.trade_pair_category,
                 unrealized_pnl_released=unrealized_pnl_released,
+                trade_pair=trade_pair, position_type=prev_position_type,
             )
 
         self._position_client.save_miner_position(position)
@@ -265,7 +304,7 @@ class MarketOrderManager():
         if self.serve:
             self.websocket_notifier.broadcast_position_update(position)
 
-        return order
+        return order, binding_cap
 
     def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
         logger.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")

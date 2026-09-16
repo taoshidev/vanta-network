@@ -250,6 +250,7 @@ Internal Error (500):
 - `high_trust_succeeded`: Number of high-trust validators that accepted the order
 - `all_high_trust_succeeded`: Boolean indicating if all high-trust validators succeeded
 - `created_orders`: When verbose=false, contains the Taoshi validator's response; when verbose=true, contains a dictionary mapping all validator hotkeys to their responses
+  - `binding_cap`: Present only when a leverage or exposure cap **shrank** the order. An order that exceeds a cap is clamped to the room left and still succeeds, so this is the only signal that the fill is smaller than requested; compare the returned `value`/`quantity` against what you sent. The string names the cap, e.g. `"per class cap equities 1.0x"`, `"overall portfolio cap 15.0x"`, or `"currency:EUR exposure cap 30.0x"` for a pro account's correlated-exposure cap. An order with *no* room at all is rejected instead, with the same text in `error_messages`.
 - `error_messages`: When verbose=false, contains Taoshi validator errors if any; when verbose=true, contains all validator errors
 - `processing_time`: Total time in seconds for the request processing
 - `message`: Human-readable description of the result

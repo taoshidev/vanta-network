@@ -14,20 +14,36 @@ Architecture:
 - Tests verify production integration of all three data sources
 """
 import time
+from types import SimpleNamespace
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from time_util.time_util import TimeUtil
+from time_util.time_util import MS_IN_WEEK, TimeUtil
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger, WeekTrack, apply_deferral
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
+from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek, WeeklySealLedger
 import logging
+import os
 from shared_objects.log import logger
 
 logger.setLevel(logging.INFO)
+
+
+def _clear_seal_ledger():
+    """Drop the on-disk seal ledger so each test starts with nothing settled.
+
+    The seal ledger deliberately outlives every other ledger, including across process restarts,
+    so a test that seals a week would otherwise pin that decision for every later test and run.
+    """
+    path = WeeklySealLedger(running_unit_tests=True)._get_path()
+    if os.path.exists(path):
+        os.remove(path)
 
 
 class TestDebtLedgers(TestBase):
@@ -632,3 +648,442 @@ class TestDebtLedgers(TestBase):
         logger.info("="*80)
         logger.info("Production integration smoke test completed successfully")
         logger.info("="*80)
+
+
+class TestApplyDeferral(TestBase):
+    """One payout week of escrow bookkeeping: every dollar is released, carried, or forfeited."""
+
+    def test_clean_pro_week_releases_balance(self):
+        self.assertEqual(apply_deferral(100.0, 0.0, track=WeekTrack.ON_TRACK, week_penalty=1.0), (100.0, 0.0, 0.0))
+
+    def test_breach_week_holds_balance_and_withheld(self):
+        self.assertEqual(apply_deferral(100.0, 40.0, track=WeekTrack.ON_TRACK, week_penalty=0.0), (0.0, 140.0, 0.0))
+
+    def test_quiet_week_carries_balance(self):
+        self.assertEqual(apply_deferral(100.0, 0.0, track=WeekTrack.NO_DATA, week_penalty=1.0), (0.0, 100.0, 0.0))
+
+    def test_off_track_week_forfeits_balance_and_withheld(self):
+        self.assertEqual(apply_deferral(100.0, 40.0, track=WeekTrack.OFF_TRACK, week_penalty=0.0), (0.0, 0.0, 140.0))
+
+    def test_off_track_week_with_nothing_held_forfeits_nothing(self):
+        self.assertEqual(apply_deferral(0.0, 0.0, track=WeekTrack.OFF_TRACK, week_penalty=1.0), (0.0, 0.0, 0.0))
+
+    def test_forfeited_escrow_does_not_return_when_the_account_comes_back_on_track(self):
+        # Breach week holds 140; leaving the track forfeits it all
+        released, balance, forfeited = apply_deferral(0.0, 140.0, track=WeekTrack.ON_TRACK, week_penalty=0.0)
+        self.assertEqual((released, balance, forfeited), (0.0, 140.0, 0.0))
+        released, balance, forfeited = apply_deferral(balance, 0.0, track=WeekTrack.OFF_TRACK, week_penalty=1.0)
+        self.assertEqual((released, balance, forfeited), (0.0, 0.0, 140.0))
+        # Back on the track: a new breach holds only its own withheld amount
+        released, balance, forfeited = apply_deferral(balance, 30.0, track=WeekTrack.ON_TRACK, week_penalty=0.0)
+        self.assertEqual((released, balance, forfeited), (0.0, 30.0, 0.0))
+        # ... and the next clean week releases only that, never the forfeited 140
+        released, balance, forfeited = apply_deferral(balance, 0.0, track=WeekTrack.ON_TRACK, week_penalty=1.0)
+        self.assertEqual((released, balance, forfeited), (30.0, 0.0, 0.0))
+
+
+class TestEntityWeeklyPenaltyAggregation(TestBase):
+    """Entity aggregation honors a subaccount's weekly penalty for the whole payout week."""
+
+    ENTITY_HOTKEY = "entity"
+    SUBACCOUNT_HOTKEY = "entity_1"
+    CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+    def setUp(self):
+        super().setUp()
+        _clear_seal_ledger()
+
+    def _build_manager(self, subaccount_ledger):
+        """Bare manager with only the collaborators aggregate_entity_debt_ledgers touches."""
+        manager = object.__new__(DebtLedgerManager)
+        # Keeps the lazily built weekly seal ledger inside the test validation directory
+        manager.running_unit_tests = True
+        manager.debt_ledgers = {self.SUBACCOUNT_HOTKEY: subaccount_ledger}
+        manager.emissions_ledger_manager = SimpleNamespace(get_ledger=lambda _hotkey: None)
+        manager._entity_client = SimpleNamespace(get_all_entities=lambda: {
+            self.ENTITY_HOTKEY: {'subaccounts': {'1': {
+                'status': 'active', 'synthetic_hotkey': self.SUBACCOUNT_HOTKEY, 'reg_fee_theta': 1.0,
+            }}}
+        })
+        manager._perf_ledger_client = SimpleNamespace(get_frozen_ledgers=lambda: {})
+        manager._challengeperiod_client = SimpleNamespace(
+            get_miner_bucket=lambda _hotkey: MinerBucket.ENTITY
+        )
+        return manager
+
+    def _subaccount_ledger(self, blocked_checkpoint_indices=()):
+        """One earning checkpoint per 12h for two weeks, each realizing 10 USD."""
+        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+        checkpoints = []
+        for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS):
+            checkpoints.append(DebtCheckpoint(
+                timestamp_ms=week_0_start + (i + 1) * self.CP_DURATION_MS,
+                realized_pnl=10.0,
+                accum_ms=self.CP_DURATION_MS,
+                max_portfolio_value=1000.0,
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
+                weekly_penalty=0.0 if i in blocked_checkpoint_indices else 1.0,
+            ))
+        return DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=checkpoints), week_0_start
+
+    def _aggregate(self, blocked_checkpoint_indices=()):
+        ledger, week_0_start = self._subaccount_ledger(blocked_checkpoint_indices)
+        manager = self._build_manager(ledger)
+        manager.aggregate_entity_debt_ledgers(self.CP_DURATION_MS)
+
+        entity_ledger = manager.debt_ledgers[self.ENTITY_HOTKEY]
+        per_week = [0.0, 0.0]
+        for cp in entity_ledger.checkpoints:
+            per_week[(cp.timestamp_ms - 1 - week_0_start) // MS_IN_WEEK] += cp.realized_pnl
+        return per_week
+
+    def test_unblocked_weeks_aggregate_fully(self):
+        week_0, week_1 = self._aggregate()
+        self.assertAlmostEqual(week_0, 140.0)
+        self.assertAlmostEqual(week_1, 140.0)
+
+
+def _frozen_subaccount_manager(
+    *,
+    subaccount_status='eliminated',
+    standard_account_size=100_000.0,
+    pro_account_size=500_000.0,
+    bucket_by_index=None,
+    entity_hotkey='entity',
+    subaccount_hotkey='entity_1',
+):
+    """A manager whose only subaccount reaches the aggregation through a frozen ledger.
+
+    Two closed payout weeks of 12h checkpoints realizing 10 USD each. `bucket_by_index` overrides
+    the bucket stamped on individual checkpoints; the rest are PRO_CHALLENGE_FROM_STANDARD, the
+    one bucket whose payouts are scaled by the standard/pro ratio.
+    """
+    cp_duration = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+    week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+    bucket_by_index = bucket_by_index or {}
+    timestamps = [
+        week_0_start + (i + 1) * cp_duration
+        for i in range(2 * MS_IN_WEEK // cp_duration)
+    ]
+
+    perf_ledger = SimpleNamespace(cps=[
+        SimpleNamespace(
+            last_update_ms=ts, accum_ms=cp_duration, realized_pnl=10.0, cumulative_fees_usd=0.0,
+            mpv=1000.0, mdd=1.0, gain=0.0, open_ms=cp_duration, n_updates=1,
+        )
+        for ts in timestamps
+    ])
+    # The frozen ledger takes its buckets from the penalty ledger, which outlives elimination
+    penalty_cps = {
+        ts: SimpleNamespace(
+            timestamp_ms=ts, weekly_penalty=1.0,
+            challenge_period_status=bucket_by_index.get(
+                i, MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+            ).value,
+        )
+        for i, ts in enumerate(timestamps)
+    }
+    penalty_ledger = SimpleNamespace(
+        checkpoints=list(penalty_cps.values()),
+        get_checkpoint_at_time=lambda ts, _duration: penalty_cps.get(ts),
+    )
+
+    manager = object.__new__(DebtLedgerManager)
+    # Keeps the lazily built weekly seal ledger inside the test validation directory
+    manager.running_unit_tests = True
+    manager.debt_ledgers = {}
+    manager.emissions_ledger_manager = SimpleNamespace(get_ledger=lambda _hotkey: None)
+    manager.penalty_ledger_manager = SimpleNamespace(get_penalty_ledger=lambda _hotkey: penalty_ledger)
+    manager._entity_client = SimpleNamespace(get_all_entities=lambda: {
+        entity_hotkey: {'subaccounts': {'1': {
+            'status': subaccount_status,
+            'synthetic_hotkey': subaccount_hotkey,
+            'reg_fee_theta': 1.0,
+            'standard_account_size': standard_account_size,
+            'pro_account_size': pro_account_size,
+        }}}
+    })
+    manager._perf_ledger_client = SimpleNamespace(
+        get_frozen_ledgers=lambda: {subaccount_hotkey: perf_ledger}
+    )
+    manager._challengeperiod_client = SimpleNamespace(
+        get_miner_bucket=lambda _hotkey: MinerBucket.ENTITY
+    )
+    return manager, week_0_start
+
+
+class TestEliminatedSubaccountPayoutScale(TestBase):
+    """An eliminated subaccount's closed weeks are sealed at its real payout scale.
+
+    An eliminated subaccount still reaches the aggregation through its frozen ledger, and its
+    closed weeks are sealed there. Sealing them at the default 1.0 would pin the wrong scale into
+    settled history, and revert-elimination could not undo it: `seal` is write-once and a later
+    build computing the right scale would only log the disagreement.
+    """
+
+    ENTITY_HOTKEY = "entity"
+    SUBACCOUNT_HOTKEY = "entity_1"
+    CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+    STANDARD_ACCOUNT_SIZE = 100_000.0
+    PRO_ACCOUNT_SIZE = 500_000.0
+
+    @property
+    def expected_scale(self):
+        return (ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
+                * self.STANDARD_ACCOUNT_SIZE / self.PRO_ACCOUNT_SIZE)
+
+    def setUp(self):
+        super().setUp()
+        _clear_seal_ledger()
+
+    def tearDown(self):
+        _clear_seal_ledger()
+        super().tearDown()
+
+    def _aggregate(self, subaccount_status):
+        manager, week_0_start = _frozen_subaccount_manager(
+            subaccount_status=subaccount_status,
+            standard_account_size=self.STANDARD_ACCOUNT_SIZE,
+            pro_account_size=self.PRO_ACCOUNT_SIZE,
+            entity_hotkey=self.ENTITY_HOTKEY,
+            subaccount_hotkey=self.SUBACCOUNT_HOTKEY,
+        )
+        manager.aggregate_entity_debt_ledgers(self.CP_DURATION_MS)
+
+        sealed = manager.weekly_seal_ledger.get_sealed(self.SUBACCOUNT_HOTKEY)
+        realized = sum(cp.realized_pnl for cp in manager.debt_ledgers[self.ENTITY_HOTKEY].checkpoints)
+        return sealed, realized, week_0_start
+
+    def test_eliminated_subaccount_seals_its_real_payout_scale(self):
+        sealed, _realized, week_0_start = self._aggregate('eliminated')
+        self.assertEqual(sorted(sealed), [week_0_start, week_0_start + MS_IN_WEEK])
+        for week in sealed.values():
+            self.assertAlmostEqual(week.payout_scale, self.expected_scale)
+
+    def test_elimination_does_not_change_what_gets_sealed(self):
+        """Revert-elimination replays the sealed weeks, so they must match the active verdict."""
+        active_sealed, active_realized, _ = self._aggregate('active')
+        _clear_seal_ledger()
+        eliminated_sealed, eliminated_realized, _ = self._aggregate('eliminated')
+
+        self.assertEqual(
+            {ms: week.payout_scale for ms, week in eliminated_sealed.items()},
+            {ms: week.payout_scale for ms, week in active_sealed.items()},
+        )
+        self.assertAlmostEqual(eliminated_realized, active_realized)
+
+    def test_the_sealed_scale_is_what_the_entity_is_paid_on(self):
+        _sealed, realized, _ = self._aggregate('eliminated')
+        # 28 checkpoints realizing 10 USD each, paid on the standard account's basis
+        self.assertAlmostEqual(realized, 280.0 * self.expected_scale)
+
+
+class TestSealedScaleGovernsPayment(TestBase):
+    """The ratio a week settled at is the ratio it keeps being paid at.
+
+    `get_payout_scale` reads the subaccount's sizes live, so without the seal, resizing a pro
+    account silently reprices every week it ever traded.
+    """
+
+    ENTITY_HOTKEY = "entity"
+    SUBACCOUNT_HOTKEY = "entity_1"
+    CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+    STANDARD = 100_000.0
+    PRO = 500_000.0
+    # PRO_TRANSITION_PAYOUT_MULTIPLIER * 100k / 500k
+    RATIO = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * 0.2
+    # ... and the ratio after the pro account is doubled to 1M
+    RESIZED_RATIO = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * 0.1
+
+    def setUp(self):
+        super().setUp()
+        _clear_seal_ledger()
+
+    def tearDown(self):
+        _clear_seal_ledger()
+        super().tearDown()
+
+    def _aggregate(self, pro_account_size, bucket_by_index=None):
+        manager, week_0_start = _frozen_subaccount_manager(
+            standard_account_size=self.STANDARD,
+            pro_account_size=pro_account_size,
+            bucket_by_index=bucket_by_index,
+            entity_hotkey=self.ENTITY_HOTKEY,
+            subaccount_hotkey=self.SUBACCOUNT_HOTKEY,
+        )
+        manager.aggregate_entity_debt_ledgers(self.CP_DURATION_MS)
+        sealed = manager.weekly_seal_ledger.get_sealed(self.SUBACCOUNT_HOTKEY)
+        realized = sum(cp.realized_pnl for cp in manager.debt_ledgers[self.ENTITY_HOTKEY].checkpoints)
+        return sealed, realized, week_0_start
+
+    def test_a_resize_cannot_reprice_a_sealed_week(self):
+        _sealed, first_realized, week_0_start = self._aggregate(self.PRO)
+        self.assertAlmostEqual(first_realized, 280.0 * self.RATIO)
+
+        # The pro account is doubled, halving the live ratio. Both weeks already settled.
+        sealed, realized, _ = self._aggregate(2 * self.PRO)
+        self.assertAlmostEqual(realized, 280.0 * self.RATIO)
+        self.assertAlmostEqual(sealed[week_0_start].payout_scale, self.RATIO)
+
+    def test_the_same_resize_does_reprice_a_week_that_was_never_sealed(self):
+        """The seal is what holds the ratio - without it the rebuild follows the new sizes."""
+        _sealed, realized, _ = self._aggregate(2 * self.PRO)
+        self.assertAlmostEqual(realized, 280.0 * self.RESIZED_RATIO)
+
+    def test_a_mid_week_promotion_is_still_priced_per_checkpoint(self):
+        """A week-level seal must not flatten the per-checkpoint bucket gate.
+
+        The account promotes halfway through week 0: the first half is paid on the standard
+        basis, everything after it at full pro scale.
+        """
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        promoted = {i: MinerBucket.PRO_FUNDED for i in range(cps_per_week // 2, 2 * cps_per_week)}
+        sealed, realized, week_0_start = self._aggregate(self.PRO, bucket_by_index=promoted)
+
+        scaled_cps, funded_cps = cps_per_week // 2, 2 * cps_per_week - cps_per_week // 2
+        self.assertAlmostEqual(realized, 10.0 * scaled_cps * self.RATIO + 10.0 * funded_cps)
+        # The week still seals the account's ratio, ungated: the gate is the checkpoint's bucket
+        self.assertAlmostEqual(sealed[week_0_start].payout_scale, self.RATIO)
+
+
+class TestWeeklySealLedger(TestBase):
+    """A closed payout week is settled money: rebuilding the ledgers must not move it between
+    paid and withheld, and deleting the ledgers must not lose the record that it was settled."""
+
+    HOTKEY = "entity_1"
+
+    def setUp(self):
+        super().setUp()
+        _clear_seal_ledger()
+        self.week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - MS_IN_WEEK
+        self.ledger = WeeklySealLedger(running_unit_tests=True)
+
+    def tearDown(self):
+        _clear_seal_ledger()
+        super().tearDown()
+
+    def _seal(self, ledger, weekly_penalty=1.0, payout_scale=1.0, track='ON_TRACK'):
+        return ledger.seal(
+            self.HOTKEY, self.week_start_ms,
+            weekly_penalty=weekly_penalty, payout_scale=payout_scale, track=track,
+        )
+
+    def test_first_seal_records_the_week(self):
+        self.assertTrue(self._seal(self.ledger, weekly_penalty=0.0))
+        sealed = self.ledger.get_sealed(self.HOTKEY)[self.week_start_ms]
+        self.assertEqual(sealed.weekly_penalty, 0.0)
+        self.assertEqual(sealed.track, 'ON_TRACK')
+
+    def test_a_disagreeing_rebuild_never_overwrites_the_sealed_week(self):
+        """The whole point: a later build computing a different verdict keeps the settled one."""
+        self._seal(self.ledger, weekly_penalty=0.0)
+        # A rebuild against a worse ratcheted drawdown / a resized account now says "clean"
+        self.assertFalse(self._seal(self.ledger, weekly_penalty=1.0, payout_scale=0.2))
+        sealed = self.ledger.get_sealed(self.HOTKEY)[self.week_start_ms]
+        self.assertEqual(sealed.weekly_penalty, 0.0)
+        self.assertEqual(sealed.payout_scale, 1.0)
+
+    def test_sealed_weeks_survive_losing_every_other_ledger(self):
+        """delete_debt_ledger drops the debt and penalty ledgers; the seals outlive that."""
+        self._seal(self.ledger, weekly_penalty=0.0)
+        self.ledger.save_to_disk()
+
+        reloaded = WeeklySealLedger(running_unit_tests=True)
+        self.assertEqual(reloaded.get_sealed(self.HOTKEY)[self.week_start_ms].weekly_penalty, 0.0)
+
+    def test_unseal_allows_a_deliberate_correction(self):
+        self._seal(self.ledger, weekly_penalty=0.0)
+        self.assertTrue(self.ledger.unseal(self.HOTKEY, self.week_start_ms))
+        self.assertEqual(self.ledger.get_sealed(self.HOTKEY), {})
+        # Now a rebuild is free to record a new verdict
+        self.assertTrue(self._seal(self.ledger, weekly_penalty=1.0))
+
+    def test_unseal_of_an_unknown_week_is_a_no_op(self):
+        self.assertFalse(self.ledger.unseal(self.HOTKEY, self.week_start_ms))
+
+    def test_weekly_payout_context_replays_the_sealed_verdict(self):
+        """A breached ledger still reads as paid when the week was sealed clean, and vice versa."""
+        cp_duration = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+        checkpoints = [
+            DebtCheckpoint(
+                timestamp_ms=self.week_start_ms + (i + 1) * cp_duration,
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
+                weekly_penalty=0.0,
+            )
+            for i in range(MS_IN_WEEK // cp_duration)
+        ]
+        debt_ledger = DebtLedger(self.HOTKEY, checkpoints=checkpoints)
+
+        recomputed = debt_ledger.weekly_payout_context()
+        self.assertEqual(recomputed[self.week_start_ms].weekly_penalty, 0.0)
+
+        sealed = {self.week_start_ms: SealedWeek(
+            week_start_ms=self.week_start_ms, weekly_penalty=1.0, payout_scale=1.0,
+            track='ON_TRACK', first_earning_ms=None, sealed_ms=0,
+        )}
+        replayed = debt_ledger.weekly_payout_context(sealed=sealed)
+        self.assertEqual(replayed[self.week_start_ms].weekly_penalty, 1.0)
+        self.assertIs(replayed[self.week_start_ms].track, WeekTrack.ON_TRACK)
+
+
+class TestDebtLedgerBucketHelpers(TestBase):
+    """The payout paths read each checkpoint's own bucket instead of wiping challenge history."""
+
+    HOTKEY = "entity_1"
+    CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+    def _ledger(self, statuses, fees=None):
+        fees = fees or [0.0] * len(statuses)
+        base_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - MS_IN_WEEK
+        return DebtLedger(self.HOTKEY, checkpoints=[
+            DebtCheckpoint(
+                timestamp_ms=base_ms + (i + 1) * self.CP_DURATION_MS,
+                challenge_period_status=status.value,
+                cumulative_fees_usd=fee,
+            )
+            for i, (status, fee) in enumerate(zip(statuses, fees))
+        ]), base_ms
+
+    def test_first_earning_checkpoint_skips_the_challenge(self):
+        ledger, base_ms = self._ledger([
+            MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_DIRECT,
+            MinerBucket.PRO_FUNDED,
+        ])
+        self.assertEqual(ledger.first_earning_checkpoint_ms(), base_ms + 3 * self.CP_DURATION_MS)
+
+    def test_fee_baseline_excludes_fees_paid_during_the_challenge(self):
+        """Fees run cumulatively from inception while realized PnL restarts at the first earning
+        checkpoint, so the challenge's fees must not be charged against funded earnings."""
+        ledger, _ = self._ledger(
+            [MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED],
+            fees=[5.0, 12.0, 20.0],
+        )
+        # The baseline is the checkpoint *before* the first earning one: fees inside the first
+        # earning window still count against it
+        self.assertEqual(ledger.fee_baseline_at_first_earning(), 12.0)
+
+    def test_fee_baseline_is_zero_when_the_account_earned_from_the_start(self):
+        ledger, _ = self._ledger([MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_FUNDED],
+                                 fees=[3.0, 7.0])
+        self.assertEqual(ledger.fee_baseline_at_first_earning(), 0.0)
+
+    def test_bucket_change_times_marks_the_promotion_boundary(self):
+        ledger, base_ms = self._ledger([
+            MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED, MinerBucket.PRO_FUNDED,
+        ])
+        # The switch happened at the end of the last challenge window
+        self.assertEqual(ledger.bucket_change_times(), [base_ms + self.CP_DURATION_MS])
+
+    def test_bucket_change_times_is_empty_for_a_stable_account(self):
+        ledger, _ = self._ledger([MinerBucket.SUBACCOUNT_FUNDED] * 4)
+        self.assertEqual(ledger.bucket_change_times(), [])
+
+    def test_bucket_at_reads_the_segment_that_starts_on_a_boundary(self):
+        ledger, base_ms = self._ledger([
+            MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
+        ])
+        boundary_ms = base_ms + self.CP_DURATION_MS
+        # An event exactly on the boundary belongs to the window that just closed...
+        self.assertIs(ledger.bucket_at(boundary_ms), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        # ...while the segment starting there is governed by the next one
+        self.assertIs(ledger.bucket_at(boundary_ms + 1), MinerBucket.PRO_FUNDED)

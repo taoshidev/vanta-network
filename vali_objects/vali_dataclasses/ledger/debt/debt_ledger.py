@@ -39,10 +39,71 @@ Edit the configuration variables at the top of that file to customize behavior.
 
 """
 from dataclasses import dataclass
-from typing import List, Optional
+from enum import Enum, auto
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 from time_util.time_util import TimeUtil
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+
+
+class WeekTrack(Enum):
+    """Whether a payout week carries evidence about the pro soft-breach track.
+
+    The distinction matters because a week with no checkpoints is not the same as a week that
+    proves the subaccount left the track: the former must hold a deferred balance, the latter
+    must forfeit it.
+    """
+    NO_DATA = auto()    # no debt checkpoints fall in this week
+    ON_TRACK = auto()   # the week's governing bucket withholds payouts on a soft breach
+    OFF_TRACK = auto()  # checkpoints exist, but the governing bucket is off the pro track
+
+
+@dataclass
+class WeeklyPayoutContext:
+    """Everything the payout paths need to know about one Monday-anchored payout week."""
+    # A breach is stamped on a single checkpoint, so the worst value in the week governs it
+    weekly_penalty: float = 1.0
+    # The subaccount's standard/pro payout ratio for this week, *before* the per-bucket gate.
+    # Callers apply the gate themselves - per checkpoint, or per settlement segment - so a
+    # mid-week promotion is still priced per day rather than at one scale for the whole week.
+    payout_scale: float = 1.0
+    track: WeekTrack = WeekTrack.NO_DATA
+    # First earning checkpoint of the week - where a checkpoint-indexed caller releases escrow
+    first_earning_ms: Optional[int] = None
+
+
+def apply_deferral(
+    balance: float,
+    withheld: float,
+    *,
+    track: WeekTrack,
+    week_penalty: float,
+) -> Tuple[float, float, float]:
+    """Advance the deferred-payout escrow by one week.
+
+    A soft breach defers the week's payout rather than forfeiting it: the withheld amount is
+    held and settled in full on the first later week that is clean and still on the pro track.
+    Leaving the track - eliminated, demoted, or moved off it by an admin - forfeits the balance,
+    along with anything withheld in the week the account left. The forfeited amount is reported
+    so the settlement can show it rather than have the escrow vanish silently.
+
+    Args:
+        balance: escrow carried in from earlier weeks
+        withheld: the portion of this week's payout blocked by its weekly penalty
+        track: what this week's checkpoints say about the pro soft-breach track
+        week_penalty: the worst weekly penalty stamped in this week
+
+    Returns:
+        (released_this_week, balance_carried_forward, forfeited_this_week)
+    """
+    if track is WeekTrack.NO_DATA:
+        # No evidence either way: a quiet week must not settle an unresolved breach
+        return 0.0, balance, 0.0
+    if track is WeekTrack.OFF_TRACK:
+        return 0.0, 0.0, balance + withheld
+    if week_penalty >= 1.0:
+        return balance, 0.0, 0.0
+    return 0.0, balance + withheld, 0.0
 
 
 @dataclass
@@ -118,7 +179,10 @@ class DebtCheckpoint:
     risk_profile_penalty: float = 1.0
     min_collateral_penalty: float = 1.0
     risk_adjusted_performance_penalty: float = 1.0
+    all_time_calmar_penalty: float = 1.0
+    daily_consistency_penalty: float = 1.0
     total_penalty: float = 1.0
+    weekly_penalty: float = 1.0
     challenge_period_status: str = None
 
     def __post_init__(self):
@@ -175,7 +239,10 @@ class DebtCheckpoint:
                 'risk_profile': self.risk_profile_penalty,
                 'min_collateral': self.min_collateral_penalty,
                 'risk_adjusted_performance': self.risk_adjusted_performance_penalty,
+                'all_time_calmar': self.all_time_calmar_penalty,
+                'daily_consistency': self.daily_consistency_penalty,
                 'cumulative': self.total_penalty,
+                'weekly': self.weekly_penalty,
                 'challenge_period_status': self.challenge_period_status,
             },
 
@@ -266,6 +333,141 @@ class DebtLedger:
     def get_latest_checkpoint(self) -> Optional[DebtCheckpoint]:
         """Get the most recent checkpoint"""
         return self.checkpoints[-1] if self.checkpoints else None
+
+    @staticmethod
+    def _bucket_from_status(challenge_period_status: str) -> MinerBucket:
+        """Convert a stored status string to a MinerBucket, tolerating unknown/legacy values."""
+        try:
+            return MinerBucket(challenge_period_status)
+        except ValueError:
+            return MinerBucket.UNKNOWN
+
+    def checkpoint_bucket(self, cp: DebtCheckpoint) -> MinerBucket:
+        """The bucket this checkpoint was stamped with."""
+        return self._bucket_from_status(cp.challenge_period_status)
+
+    @staticmethod
+    def checkpoint_payout_scale(cp: DebtCheckpoint, payout_scale: float) -> float:
+        """The scale that applied to *this* checkpoint, not to the week it sits in.
+
+        A subaccount promoting mid-week trades part of it at standard scale and the rest at pro
+        scale, so reading one scale for the whole week would pay the pre-promotion days at the
+        wrong size.
+        """
+        bucket = DebtLedger._bucket_from_status(cp.challenge_period_status)
+        return payout_scale if bucket.payout_scale_applies else 1.0
+
+    def first_earning_checkpoint_ms(self) -> Optional[int]:
+        """Timestamp of the first checkpoint stamped with a bucket that earns payouts.
+
+        This is where the payout basis starts. Everything before it - a standard challenge, or a
+        pro challenge run directly on the pro account - moved the balance but is never paid.
+        """
+        for cp in self.checkpoints:
+            if self._bucket_from_status(cp.challenge_period_status).is_subaccount_earning:
+                return cp.timestamp_ms
+        return None
+
+    def bucket_at(self, timestamp_ms: int) -> MinerBucket:
+        """The bucket governing an event at `timestamp_ms`.
+
+        A checkpoint stamped at T covers the window *ending* at T, so an order is governed by the
+        checkpoint its timestamp snaps forward to - the same lookup the payout paths use to find an
+        order's penalty. Events past the last checkpoint inherit the last known bucket.
+        """
+        if not self.checkpoints:
+            return MinerBucket.UNKNOWN
+        aligned_ms = TimeUtil.align_to_12hour_checkpoint_boundary(timestamp_ms)
+        if aligned_ms >= self.checkpoints[-1].timestamp_ms:
+            return self._bucket_from_status(self.checkpoints[-1].challenge_period_status)
+        for cp in self.checkpoints:
+            if cp.timestamp_ms >= aligned_ms:
+                return self._bucket_from_status(cp.challenge_period_status)
+        return MinerBucket.UNKNOWN
+
+    def bucket_change_times(self) -> List[int]:
+        """Timestamps at which the governing bucket changes, oldest first.
+
+        A checkpoint stamped at T covers the window ending at T, so when checkpoint i carries a
+        different bucket from checkpoint i-1 the switch happened at checkpoint i-1's timestamp -
+        the boundary between the two windows. Payout settlements are split here so a segment is
+        never a mix of two buckets trading at two different payout scales.
+        """
+        boundaries: List[int] = []
+        previous_bucket = None
+        for index, cp in enumerate(self.checkpoints):
+            bucket = self._bucket_from_status(cp.challenge_period_status)
+            if previous_bucket is not None and bucket != previous_bucket:
+                boundaries.append(self.checkpoints[index - 1].timestamp_ms)
+            previous_bucket = bucket
+        return boundaries
+
+    def fee_baseline_at_first_earning(self) -> float:
+        """`cumulative_fees_usd` as of the checkpoint *before* the first earning one.
+
+        `cumulative_fees_usd` runs from ledger inception while realized PnL is only accumulated
+        from the first earning checkpoint onward. Subtracting the raw cumulative figure would
+        charge a pro challenge's fees against the funded account's first earnings. Fees inside the
+        first earning checkpoint's own window do count, so the baseline is the *previous*
+        checkpoint's total.
+        """
+        baseline = 0.0
+        for cp in self.checkpoints:
+            if self._bucket_from_status(cp.challenge_period_status).is_subaccount_earning:
+                return baseline
+            baseline = cp.cumulative_fees_usd
+        return baseline
+
+    def weekly_payout_context(
+        self, payout_scale: float = 1.0, sealed: Optional[dict] = None
+    ) -> Dict[int, WeeklyPayoutContext]:
+        """Summarize this ledger one payout week at a time, keyed by Monday 00:00 UTC.
+
+        A checkpoint stamped exactly at Monday 00:00 covers the 12 hours *ending* then, so it
+        belongs to the week that just closed - hence the `- 1` when finding the week start.
+
+        `payout_scale` is carried through ungated: it is the ratio that *would* apply, and the
+        caller gates it on the bucket it is settling - `checkpoint_payout_scale` per checkpoint,
+        or `payout_scale_applies` per settlement segment - so a promotion mid-week is priced per
+        day. A sealed week hands back the ratio it settled at, which is what stops an account
+        resize from repricing weeks that are already paid.
+
+        Args:
+            payout_scale: PRO_TRANSITION_PAYOUT_MULTIPLIER * standard_account_size /
+                pro_account_size for this subaccount, ungated
+            sealed: week_start_ms -> SealedWeek from WeeklySealLedger. A sealed week is settled
+                money and is returned verbatim instead of being recomputed, so rebuilding the
+                ledgers cannot move a week between paid and withheld, or reprice it.
+
+        Returns:
+            week_start_ms -> WeeklyPayoutContext, for every week with at least one checkpoint
+        """
+        context: Dict[int, WeeklyPayoutContext] = {}
+        for cp in self.checkpoints:
+            week_start_ms = TimeUtil.ms_at_start_of_week(cp.timestamp_ms - 1)
+            week = context.get(week_start_ms)
+            if week is None:
+                week = WeeklyPayoutContext(payout_scale=payout_scale)
+                context[week_start_ms] = week
+
+            bucket = self._bucket_from_status(cp.challenge_period_status)
+            week.weekly_penalty = min(week.weekly_penalty, cp.weekly_penalty)
+
+            week.track = WeekTrack.ON_TRACK if bucket.soft_breach_applies else WeekTrack.OFF_TRACK
+            if week.first_earning_ms is None and bucket.is_subaccount_earning:
+                week.first_earning_ms = cp.timestamp_ms
+
+        for week_start_ms, seal in (sealed or {}).items():
+            week = context.get(week_start_ms)
+            if week is None:
+                continue
+            week.weekly_penalty = seal.weekly_penalty
+            week.payout_scale = seal.payout_scale
+            week.track = WeekTrack[seal.track]
+            if seal.first_earning_ms is not None:
+                week.first_earning_ms = seal.first_earning_ms
+
+        return context
 
     def get_checkpoint_at_time(self, timestamp_ms: int, target_cp_duration_ms: int) -> Optional[DebtCheckpoint]:
         """
@@ -441,7 +643,10 @@ class DebtLedger:
                     risk_profile_penalty=penalties.get('risk_profile', 1.0),
                     min_collateral_penalty=penalties.get('min_collateral', 1.0),
                     risk_adjusted_performance_penalty=penalties.get('risk_adjusted_performance', 1.0),
+                    all_time_calmar_penalty=penalties.get('all_time_calmar', 1.0),
+                    daily_consistency_penalty=penalties.get('daily_consistency', 1.0),
                     total_penalty=penalties.get('cumulative', 1.0),
+                    weekly_penalty=penalties.get('weekly', 1.0),
                     challenge_period_status=penalties.get('challenge_period_status', MinerBucket.UNKNOWN.value),
                 )
             else:
@@ -468,7 +673,10 @@ class DebtLedger:
                     risk_profile_penalty=cp_dict.get('risk_profile_penalty', 1.0),
                     min_collateral_penalty=cp_dict.get('min_collateral_penalty', 1.0),
                     risk_adjusted_performance_penalty=cp_dict.get('risk_adjusted_performance_penalty', 1.0),
+                    all_time_calmar_penalty=cp_dict.get('all_time_calmar_penalty', 1.0),
+                    daily_consistency_penalty=cp_dict.get('daily_consistency_penalty', 1.0),
                     total_penalty=cp_dict.get('total_penalty', 1.0),
+                    weekly_penalty=cp_dict.get('weekly_penalty', 1.0),
                     challenge_period_status=cp_dict.get('challenge_period_status', MinerBucket.UNKNOWN.value),
                 )
 

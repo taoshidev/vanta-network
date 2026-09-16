@@ -26,6 +26,7 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from shared_objects.log import logger
@@ -80,12 +81,14 @@ class MinerAccount:
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
+    leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = default tier for standard subaccounts, unused by HL and pro
     max_return: float = 1.0  # High water mark for portfolio return
     unrealized_pnl: float = 0.0  # Current unrealized PNL from open positions
     # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
     # (HL_ALL) for per-class portfolio cap enforcement. Empty for older checkpoints;
     # lazy-backfilled on next rebuild_account_state_from_positions call.
     capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
+    correlated_exposure_by_group: Dict[str, List[float]] = field(default_factory=dict)
     daily_open_snapshot: Optional[AccountSnapshot] = None
 
     def __post_init__(self):
@@ -116,16 +119,59 @@ class MinerAccount:
     def multiplier(self) -> float:
         """Subaccount-wide portfolio cap multiplier used by `buying_power`.
 
-        Returns TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
+        Pro accounts read the flat PRO_PORTFOLIO_LEVERAGE; standard subaccounts read
+        STANDARD_PORTFOLIO_LEVERAGE_BY_TIER at their (effective) tier; everyone else reads
+        LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
         subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling; per-class
-        sub-caps are enforced separately at order entry via get_portfolio_caps.
+        sub-caps are enforced separately at order entry.
         """
         if not self.asset_class:
             return 1
 
-        from vali_objects.utils.leverage_utils import get_leverage_tier
-        tier = get_leverage_tier(self.miner_bucket, self.get_account_size())
-        return ValiConfig.TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
+        from vali_objects.utils.leverage_utils import (
+            get_effective_leverage_tier,
+            get_legacy_leverage_tier,
+            get_standard_portfolio_leverage,
+            is_pro_leveraged,
+            is_standard_tiered,
+        )
+        if is_pro_leveraged(self):
+            return ValiConfig.PRO_PORTFOLIO_LEVERAGE
+        if is_standard_tiered(self):
+            return get_standard_portfolio_leverage(get_effective_leverage_tier(self), self.asset_class)
+        tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
+        return ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
+
+    def leverage_limits(self) -> dict:
+        """Which leverage curve this account trades on, and where it sits on it.
+
+        `leverage_tier` alone is not enough for a client to size an order: it is the standard
+        tier and is None for every account off the standard curve (pro, HL-linked, regular
+        miners). This resolves the curve and the effective tier the order path actually applies,
+        so a client can pick the matching table out of /trade-pairs.
+
+        `tier` is None on the pro curve, which is flat and has no tier dimension.
+        """
+        from vali_objects.utils.leverage_utils import (
+            get_effective_leverage_tier,
+            get_legacy_leverage_tier,
+            is_pro_leveraged,
+            is_standard_tiered,
+        )
+        pro = is_pro_leveraged(self)
+        standard = is_standard_tiered(self)
+        if pro:
+            tier_curve, tier = "pro", None
+        elif standard:
+            tier_curve, tier = "standard", get_effective_leverage_tier(self)
+        else:
+            tier_curve, tier = "legacy", get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
+        return {
+            "is_pro": pro,
+            "tier_curve": tier_curve,
+            "tier": tier,
+            "portfolio_multiplier": self.multiplier,
+        }
 
     @property
     def account_size(self) -> float:
@@ -171,6 +217,7 @@ class MinerAccount:
         self.total_dividend_income = 0
         self.unrealized_pnl = 0.0
         self.capital_used_by_class = {}
+        self.correlated_exposure_by_group = {}
 
     def to_dict(self, include_collateral_records: bool = False) -> dict:
         """
@@ -195,11 +242,13 @@ class MinerAccount:
             'total_dividend_income': self.total_dividend_income,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
             'hl_address': self.hl_address,
+            'leverage_tier': self.leverage_tier,
             'max_return': self.max_return,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
             # JSON keys must be str; convert TradePairCategory enum to its .value
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
+            'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'daily_open_snapshot': self.daily_open_snapshot.to_dict() if self.daily_open_snapshot else None,
         }
 
@@ -221,6 +270,9 @@ class MinerAccount:
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
+            'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
+            'leverage_tier': self.leverage_tier,
+            **self.leverage_limits(),
         }
 
 
@@ -388,9 +440,11 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_dividend_income = last_record.get("total_dividend_income", 0.0)
                     miner_bucket_str = last_record.get("miner_bucket")
                     hl_address = last_record.get("hl_address")
+                    leverage_tier = last_record.get("leverage_tier")
                     max_return = last_record.get("max_return", 1.0)
                     unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
+                    correlated_exposure_raw = last_record.get("correlated_exposure_by_group", {})
                     daily_open_snapshot_raw = last_record.get("daily_open_snapshot")
                 else:
                     total_realized_pnl = None
@@ -400,9 +454,11 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_dividend_income = 0.0
                     miner_bucket_str = None
                     hl_address = None
+                    leverage_tier = None
                     max_return = 1.0
                     unrealized_pnl = 0.0
                     capital_used_by_class_raw = {}
+                    correlated_exposure_raw = {}
                     daily_open_snapshot_raw = None
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
@@ -414,6 +470,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
                         capital_used_by_class[TradePairCategory(cat_str)] = float(amount)
                     except ValueError:
                         logger.warning(f"Unknown asset_class '{cat_str}' in capital_used_by_class for {hotkey}; skipping")
+
+                # Same treatment for correlated exposure: group key → [gross_long, gross_short].
+                correlated_exposure_by_group: Dict[str, List[float]] = {}
+                for group_key, sides in (correlated_exposure_raw or {}).items():
+                    try:
+                        longs, shorts = sides
+                        correlated_exposure_by_group[group_key] = [float(longs), float(shorts)]
+                    except (TypeError, ValueError):
+                        logger.warning(f"Malformed correlated exposure for group '{group_key}' on {hotkey}; skipping")
 
                 # Parse collateral records
                 for record_data in records_list:
@@ -467,9 +532,11 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     collateral_records=collateral_records,
                     miner_bucket=miner_bucket,
                     hl_address=hl_address,
+                    leverage_tier=leverage_tier,
                     max_return=max_return,
                     unrealized_pnl=unrealized_pnl,
                     capital_used_by_class=capital_used_by_class,
+                    correlated_exposure_by_group=correlated_exposure_by_group,
                     daily_open_snapshot=daily_open_snapshot,
                 )
 
@@ -767,6 +834,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.hl_address = hl_address
             self._save_accounts_to_disk()
 
+    def set_leverage_tier(self, hotkey: str, leverage_tier: Optional[int]) -> None:
+        """Set the standard leverage tier on an account. Called by EntityManager when a subaccount is created/synced."""
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            account.leverage_tier = leverage_tier
+            self._save_accounts_to_disk()
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         with self._accounts_lock:
@@ -787,7 +861,26 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
+    @staticmethod
+    def _apply_correlated_exposure(account: MinerAccount, trade_pair, position_type, value_usd: float, opening: bool) -> None:
+        """Move `value_usd` of this pair's correlated exposure onto (opening) or off (closing) the account.
+
+        Mirrors the bucketing in leverage_utils.compute_correlated_exposures: each leg's signed
+        contribution lands on the gross long or gross short side, and the two are never netted.
+        No-op for pairs in no correlation group, or when the caller did not supply the pair.
+        """
+        if trade_pair is None or position_type is None:
+            return
+        from vali_objects.utils.leverage_utils import get_correlation_legs
+        signed_value = abs(value_usd) if position_type == OrderType.LONG else -abs(value_usd)
+        for group_key, direction in get_correlation_legs(trade_pair):
+            contribution = direction * signed_value
+            sides = account.correlated_exposure_by_group.setdefault(group_key, [0.0, 0.0])
+            side = 0 if contribution >= 0 else 1
+            magnitude = abs(contribution)
+            sides[side] = sides[side] + magnitude if opening else max(0.0, sides[side] - magnitude)
+
+    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, trade_pair=None, position_type=None) -> None:
         """
         Process buy order. Check buying_power and track capital_used.
 
@@ -799,6 +892,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
             trade_pair_category: Asset class of the order's trade pair. Required to maintain
                 capital_used_by_class. Optional for backward compat with callers that haven't
                 been updated yet; if None, capital_used_by_class is not updated for this order.
+            trade_pair: The order's trade pair, and position_type its direction. Required to
+                maintain correlated_exposure_by_group; if either is None it is left untouched.
 
         Raises: SignalException if insufficient buying power
         """
@@ -822,6 +917,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account.capital_used_by_class[trade_pair_category] = (
                     account.capital_used_by_class.get(trade_pair_category, 0.0) + order_value_usd
                 )
+            self._apply_correlated_exposure(account, trade_pair, position_type, order_value_usd, opening=True)
 
             self._save_accounts_to_disk()
 
@@ -830,7 +926,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0) -> None:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0, trade_pair=None, position_type=None) -> None:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -843,6 +939,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             trade_pair_category: Asset class of the position being closed. Required to maintain
                 capital_used_by_class. Optional for backward compat; if None, the per-class
                 bookkeeping is not adjusted for this close.
+            trade_pair: The closed position's trade pair, and position_type its direction.
+                Required to release correlated_exposure_by_group; if either is None it is
+                left untouched.
             unrealized_pnl_released: The portion of account.unrealized_pnl attributable to the
                 closed quantity (prev position unrealized_pnl minus remaining after close).
         """
@@ -860,6 +959,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account.capital_used_by_class[trade_pair_category] = max(
                     0.0, account.capital_used_by_class.get(trade_pair_category, 0.0) - entry_value_usd
                 )
+            self._apply_correlated_exposure(account, trade_pair, position_type, entry_value_usd, opening=False)
 
             if account.asset_class == MinerAssetClass.EQUITIES and loan_repaid > 0:
                 # Clamp to actual borrowed amount and repay
@@ -908,7 +1008,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Snapshot account state at the current (or given) UTC day open.
 
         Args:
-            hotkey: If provided, snapshot only this account. If None, snapshot all accounts.
+            hotkey: If provided, snapshot only this account (returns 0 if it does not exist).
+                    If None, snapshot all non-eliminated accounts.
             timestamp_ms: Timestamp used to derive day_open_ms. Defaults to now.
             reset_snapshot: If True, unconditionally overwrite daily_open_snapshot
                              (e.g. new/reset accounts).
@@ -925,13 +1026,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         to_log: list[tuple[str, dict]] = []
         with self._accounts_lock:
-            targets = (
-                [self.accounts[hotkey]] if hotkey and hotkey in self.accounts
-                else self.accounts.values()
-            )
+            if hotkey is not None:
+                account = self.accounts.get(hotkey)
+                if account is None:
+                    logger.warning(f"[MINER_ACCOUNT] take_account_snapshot: unknown hotkey {hotkey}, no snapshot taken")
+                    return 0
+                targets = [account]
+            else:
+                targets = [a for a in self.accounts.values() if a.miner_bucket != MinerBucket.ELIMINATED]
             for account in targets:
-                if hotkey is None and account.miner_bucket == MinerBucket.ELIMINATED:
-                    continue
                 snapshot = AccountSnapshot(
                     snapshot_ms=timestamp_ms,
                     account_size=account.get_account_size(),
@@ -966,20 +1069,27 @@ class MinerAccountManager(ValidatorBroadcastBase):
         """Compute position-derived account state from a list of positions.
 
         Returns a MinerAccount populated with realized PnL, fees, capital used,
-        borrowed amount, and per-class capital breakdown. All other fields are
-        left at their defaults (collateral_records, asset_class, etc. are not set).
+        borrowed amount, per-class capital breakdown and correlated exposure. All other
+        fields are left at their defaults (collateral_records, asset_class, etc. are not set).
         """
+        from vali_objects.utils.leverage_utils import compute_correlated_exposures
         account = MinerAccount(miner_hotkey=hotkey)
+        open_positions = []
         for position in positions:
             account.total_realized_pnl += position.realized_pnl
             account.unrealized_pnl += position.unrealized_pnl
             account.total_fees_paid += position.total_fees
             if not position.is_closed_position:
+                open_positions.append(position)
                 position_value = abs(position.net_value)
                 account.capital_used += position_value
                 account.total_borrowed_amount += position.margin_loan
                 category = position.trade_pair.trade_pair_category
                 account.capital_used_by_class[category] = account.capital_used_by_class.get(category, 0.0) + position_value
+        account.correlated_exposure_by_group = {
+            group_key: [longs, shorts]
+            for group_key, (longs, shorts) in compute_correlated_exposures(open_positions).items()
+        }
         return account
 
     def rebuild_account_state_from_positions(self, hotkey: str, positions: List['Position']) -> None:
@@ -1000,6 +1110,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.capital_used = computed.capital_used
             account.total_borrowed_amount = computed.total_borrowed_amount
             account.capital_used_by_class = computed.capital_used_by_class
+            account.correlated_exposure_by_group = computed.correlated_exposure_by_group
             self._save_accounts_to_disk()
 
         logger.info(

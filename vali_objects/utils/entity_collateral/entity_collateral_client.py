@@ -167,17 +167,41 @@ class EntityCollateralClient(RPCClientBase):
         """
         return self._server.get_cumulative_slashed_rpc(synthetic_hotkey)
 
-    def get_max_slash(self, synthetic_hotkey: str) -> float:
+    def get_max_slash(self, synthetic_hotkey: str, bucket=None) -> float:
         """
         Get max slashable amount for a subaccount (account_balance * MDD%).
 
         Args:
             synthetic_hotkey: The subaccount's synthetic hotkey.
+            bucket: The subaccount's bucket; pass it when already known so the bucket's own
+                drawdown threshold is used without an extra lookup.
 
         Returns:
             Max slash amount in USD.
         """
-        return self._server.get_max_slash_rpc(synthetic_hotkey)
+        return self._server.get_max_slash_rpc(synthetic_hotkey, bucket)
+
+    def compute_subaccount_margin_requirement(self, synthetic_hotkey: str, bucket=None) -> float:
+        """
+        Compute a single subaccount's margin requirement.
+
+        Args:
+            synthetic_hotkey: The subaccount's synthetic hotkey.
+            bucket: The subaccount's bucket, when already known.
+
+        Returns:
+            Margin requirement in USD.
+        """
+        return self._server.compute_subaccount_margin_requirement_rpc(synthetic_hotkey, bucket)
+
+    def get_entity_collateral_headroom(self, entity_hotkey: str) -> Optional[float]:
+        """
+        Get an entity's spare collateral in theta (deposited minus required).
+
+        Returns:
+            Headroom in theta, or None if the entity's balance is unknown.
+        """
+        return self._server.get_entity_collateral_headroom_rpc(entity_hotkey)
 
     # ==================== Utility ====================
 

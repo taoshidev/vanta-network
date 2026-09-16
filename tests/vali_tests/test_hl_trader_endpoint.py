@@ -68,6 +68,7 @@ class TestHlTraderEndpoint(unittest.TestCase):
         self.mock_challenge_period = MagicMock()
         self.mock_challenge_period.get_dashboard.return_value = None
         self.mock_challenge_period.get_drawdown_stats.return_value = None
+        self.mock_challenge_period.get_pro_stats.return_value = None
         self.server._challenge_period_client = self.mock_challenge_period
 
         self.mock_elimination = MagicMock()

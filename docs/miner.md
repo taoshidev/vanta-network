@@ -21,28 +21,32 @@ A long position is a bet that the trade pair will increase, while a short positi
 5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
    it can't flip SHORT. If you try and have it flip SHORT (using more leverage SHORT than exists LONG) it will close out
    the position. You'll then need to open a second position which is SHORT with the difference.
-6. Position leverage is bound per trade pair and scales with your leverage tier. Tier is determined purely by account size: **Tier 2** applies below $200K; **Tier 3** applies from $200K to $1M; **Tier 4** applies at $1M and above. Minimum order leverage is 0.001. Positional leverage limits by tier:
+6. Position leverage is capped per trade pair, at that pair's own `max_leverage` in [`vali_objects/trade_pair.py`](../vali_objects/trade_pair.py). For a regular miner this cap does **not** vary with account size:
 
-   | Tier | Crypto | Forex  | Commodities | Equities |
-   |------|--------|--------|-------------|----------|
-   | 2 (<$200K)    | 1.0x | 5.0x  | 1.0x | 1.0x |
-   | 3 ($200K–$1M) | 1.5x | 7.5x  | 1.5x | 1.5x |
-   | 4 (≥$1M)      | 2.0x | 10.0x | 2.0x | 2.0x |
+   | Asset class | Per-pair leverage range |
+   |------|--------|
+   | Crypto (Hyperliquid USDC perps) | 0.01x – 1.0x |
+   | Forex | 0.1x – 10x |
+   | Equities | 0.01x – 2x |
+   | Commodities (Hyperliquid USDC perps) | 0.01x – 1.0x |
 
-7. Portfolio leverage (the sum of all open position leverages) is also capped by tier.
+7. Portfolio leverage (the sum of all open position leverages) is capped by your leverage tier, which is determined purely by account size: **Tier 2** applies below $200K, **Tier 3** from $200K to $1M, and **Tier 4** at $1M and above.
 
    | Tier | Crypto | Forex  | Commodities | Equities |
    |------|--------|--------|-------------|----------|
    | 2 (<$200K)    | 2.0x | 10.0x | 2.0x | 1.5x |
    | 3 ($200K–$1M) | 3.0x | 15.0x | 3.0x | 2.0x |
    | 4 (≥$1M)      | 4.0x | 20.0x | 4.0x | 2.0x |
+
+   An order that would push you past a cap is **clamped to the room left** rather than rejected, and the order response carries `binding_cap` naming the cap that shrank it. An order with no room at all is rejected.
+
 8. You can take profit on an open position using LONG and SHORT. Say you have an open LONG position with .5x
    leverage and you want to reduce it to a .25x leverage position to start taking profit on it. You would send in a SHORT signal
    of size .25x leverage to reduce the size of the position. LONG and SHORT signals can be thought of working in opposite
    directions in this way.
 9. Miners that have passed the challenge period will be eliminated for exceeding a 5% intraday drawdown (measured from the day-open equity) or an 8% EOD drawdown (measured from the highest-ever end-of-day equity).
 10. Miners in main competition who fall below the top 25 in each asset class will be observed under a probation period.
-   - Miners in probation have 60 days from time of demotion to be promoted back into main competition.
+   - Miners in probation have 90 days from time of demotion to be promoted back into main competition (`ValiConfig.PROBATION_MAXIMUM_DAYS`).
    - Promotion requires cumulative returns above 10% (crypto/equities/commodities) or 8% (forex) and ranking back into the top 25.
    - If they fail to do so within this window, they will be eliminated.
 11. Miners are eliminated for inactivity: if a miner in challenge period, main competition, or probation goes **60 days** without submitting a single order, it is eliminated with reason `INACTIVE`. This is checked continuously alongside the other elimination checks.
@@ -253,6 +257,7 @@ The following pairs are defined in the system but currently disabled:
 | VIX          | Indices     | Disabled indices                                  |
 | FTSE         | Indices     | Disabled indices                                  |
 | GDAXI        | Indices     | Disabled indices                                  |
+| NSA          | Equities    | De-listed 2026-07-22                              |
 
 ## Scoring Details
 
@@ -292,7 +297,7 @@ The miner risk used in the risk adjusted returns is the miner’s maximum portfo
 
 _Average Daily PnL_ will look at the average USD change in portfolio value for full trading days. The PnL values are based on the account sizes of miners which are calculated from deposited collateral.
 
-_Calmar Ratio_ will look at daily returns in the prior 120 days and is normalized by the max drawdown.
+_Calmar Ratio_ looks at the daily returns held in the performance ledger (`ValiConfig.TARGET_LEDGER_WINDOW_DAYS`, currently 1000 days) and is normalized by the max drawdown.
 
 $$
 \text{Return / Drawdown} = \frac{(\frac{365}{n}\sum_{i=0}^n{R_i}) - R_{rf}}{\sum_i^{n}{\text{MDD}_i} / n}
@@ -356,7 +361,7 @@ Cost of carry is reflective of real exchanges, and how they manage the cost of h
 
 Slippage costs are modeled to estimate the difference between a trade's expected price (typically the last traded price or mid-price between the best bid and ask) and its actual execution price. This cost is higher for larger orders, as well as for assets with lower liquidity and higher volatility. Slippage is only applied to market orders. Read more in [proposal 16](https://docs.taoshi.io/tips/p16/).
 
-Spread fee is applied to crypto pairs only and is calculated as 0.1% multiplied by the leverage of each order. This fee simulates a transaction cost that a normal exchange would add.
+Spread fee is applied to crypto, equities and commodities orders and is calculated as a percentage of the order's USD value (see the table below). This fee simulates a transaction cost that a normal exchange would add.
 
 ##### Implementation Details
 
@@ -389,33 +394,36 @@ The rate depends only on asset class — market and limit orders, and both legs 
 
 ### Leverage Limits
 
-We also set limits on leverage usage, to ensure that the network has a level of risk protection and mitigation of naive strategies. The [positional leverage limits](https://docs.taoshi.io/tips/p5/) scale with your leverage tier, which is determined by your miner status and account size:
+We also set limits on leverage usage, to ensure that the network has a level of risk protection and mitigation of naive strategies. Two caps apply to every order, and an order is sized down to whichever is tighter.
 
-Leverage tier is determined purely by account size:
+**[Positional leverage limit](https://docs.taoshi.io/tips/p5/)** — the cap on a single position, taken from the trade pair's own `max_leverage`. For a regular miner this does not scale with account size:
+
+| Asset class | Per-pair leverage range |
+|------|--------|
+| Crypto (Hyperliquid USDC perps) | 0.01x – 1.0x |
+| Forex | 0.1x – 10x |
+| Equities | 0.01x – 2x |
+| Commodities (Hyperliquid USDC perps) | 0.01x – 1.0x |
+
+The authoritative per-pair values are in [`vali_objects/trade_pair.py`](../vali_objects/trade_pair.py) and are published per pair by `GET /trade-pairs` as `min_leverage` / `max_leverage`.
+
+**[Portfolio leverage limit](https://docs.taoshi.io/tips/p10/)** — the sum of all open position leverages. This one *does* scale with your leverage tier, which is determined purely by account size:
 
 - **Tier 2**: account size < $200K
 - **Tier 3**: $200K ≤ account size < $1M
 - **Tier 4**: account size ≥ $1M
 
-**Positional leverage limits by tier:**
-
-| Tier | Crypto | Forex  | Commodities | Equities | Indices |
-|------|--------|--------|-------------|----------|---------|
-| 2 (<$200K)    | 1.0x | 5.0x  | 1.0x | 1.0x | 5.0x  |
-| 3 ($200K–$1M) | 1.5x | 7.5x  | 1.5x | 1.5x | 7.5x  |
-| 4 (≥$1M)      | 2.0x | 10.0x | 2.0x | 2.0x | 10.0x |
-
-We also implement a [portfolio level leverage limit](https://docs.taoshi.io/tips/p10/), which is the sum of all the leverages from each open position. This limit also scales with tier:
-
-**Portfolio leverage caps by tier:**
-
-| Tier | Crypto | Forex  | Commodities | Equities | Indices |
-|------|--------|--------|-------------|----------|---------|
-| 2 (<$200K)    | 2.0x | 10.0x | 2.0x | 1.5x | 10.0x |
-| 3 ($200K–$1M) | 3.0x | 15.0x | 3.0x | 2.0x | 15.0x |
-| 4 (≥$1M)      | 4.0x | 20.0x | 4.0x | 2.0x | 20.0x |
+| Tier | Crypto | Forex  | Commodities | Equities |
+|------|--------|--------|-------------|----------|
+| 2 (<$200K)    | 2.0x | 10.0x | 2.0x | 1.5x |
+| 3 ($200K–$1M) | 3.0x | 15.0x | 3.0x | 2.0x |
+| 4 (≥$1M)      | 4.0x | 20.0x | 4.0x | 2.0x |
 
 For example, a Tier 4 forex miner can open 20 positions at 1x leverage each, or 10 positions at 2x leverage each.
+
+These tables are `ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS`. Entity subaccounts run different curves entirely — see [entity_miner.md](entity_miner.md#leverage-limits).
+
+An order that would breach a cap is **clamped to the room left** rather than rejected; the order response carries `binding_cap` naming the cap that shrank it. An order with no room at all is rejected with the same text in `error_messages`.
 
 ## Incentive Distribution
 

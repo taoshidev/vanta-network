@@ -236,6 +236,10 @@ class MinerAccountClient(RPCClientBase):
         """Set the HL address on an account."""
         self._server.set_hl_address(hotkey, hl_address)
 
+    def set_leverage_tier(self, hotkey: str, leverage_tier: Optional[int]) -> None:
+        """Set the standard leverage tier on an account."""
+        self._server.set_leverage_tier(hotkey, leverage_tier)
+
     def get_all_hotkeys(self) -> list:
         """Get all hotkeys with accounts."""
         return self._server.get_all_hotkeys()
@@ -253,7 +257,7 @@ class MinerAccountClient(RPCClientBase):
 
     # ==================== Margin/Cash Processing Methods ====================
 
-    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None) -> None:
+    def process_order_buy(self, hotkey: str, order_value_usd: float, borrowed_amount: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, trade_pair=None, position_type=None) -> None:
         """
         Process buy order cash/margin.
 
@@ -264,12 +268,14 @@ class MinerAccountClient(RPCClientBase):
             fee_usd: Transaction fee in USD
             trade_pair_category: Asset class of the order's trade pair, for capital_used_by_class
                 tracking. Optional for backward compat with callers that haven't been updated.
+            trade_pair / position_type: The order's pair and direction, for correlated exposure
+                tracking. Optional; if either is None correlated exposure is left untouched.
 
         Raises: SignalException if insufficient funds for margin
         """
-        self._server.process_order_buy(hotkey, order_value_usd, borrowed_amount, fee_usd, trade_pair_category)
+        self._server.process_order_buy(hotkey, order_value_usd, borrowed_amount, fee_usd, trade_pair_category, trade_pair, position_type)
 
-    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0) -> None:
+    def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0, trade_pair=None, position_type=None) -> None:
         """
         Process sell/close order. Free capital_used, compound realized PNL to balance.
 
@@ -281,10 +287,12 @@ class MinerAccountClient(RPCClientBase):
             fee_usd: Transaction fee in USD
             trade_pair_category: Asset class of the position being closed, for capital_used_by_class
                 tracking. Optional for backward compat with callers that haven't been updated.
+            trade_pair / position_type: The closed position's pair and direction, for correlated
+                exposure tracking. Optional; if either is None it is left untouched.
             unrealized_pnl_released: The portion of account.unrealized_pnl attributable to the
                 closed quantity (prev position unrealized_pnl minus remaining after close).
         """
-        self._server.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd, trade_pair_category, unrealized_pnl_released)
+        self._server.process_order_sell(hotkey, entry_value_usd, realized_pnl, loan_repaid, fee_usd, trade_pair_category, unrealized_pnl_released, trade_pair, position_type)
 
     def get_total_borrowed_amount(self, hotkey: str) -> float:
         """Get total borrowed amount for a miner."""
