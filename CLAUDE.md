@@ -64,14 +64,17 @@ npm run preview  # Preview production build
   - `validator_base.py` - Base validator functionality
   - `backtest_manager.py` - Backtesting utilities
 - **`vali_objects/`** - Validator logic and services
-  - `challenge_period/` - Challenge period management for new miners
-  - `plagiarism/` - Plagiarism detection and scoring
+  - `challenge_period/` - Bucket state machine: challenge, probation, promotion/demotion, and the pro account track
+  - `plagiarism/` - Polls the external plagiarism service and tracks flagged miners
   - `position_management/` - Position tracking and management
   - `price_fetcher/` - Real-time price data services
+  - `miner_account/` - Per-miner account state: balance, account size, asset class, leverage tier, capital used
+  - `hl_funding/` - Live Hyperliquid funding rates for HL-sourced positions
   - `scoring/` - Performance metrics calculation
   - `statistics/` - Miner performance statistics
-  - `utils/` - Utility services (elimination, asset selection, MDD checking, limit orders)
-  - `vali_dataclasses/` - Data structures for positions, orders, ledgers
+  - `utils/` - Utility services (elimination, asset selection, MDD checking, limit orders, market orders, entity collateral)
+  - `utils/leverage_utils.py` - Resolves which leverage curve (legacy / standard tier / pro) an account is on and clamps order size
+  - `vali_dataclasses/` - Data structures for positions, orders, and the perf/debt/penalty/weekly-seal ledgers
 - **`shared_objects/`** - Common infrastructure
   - `rpc/` - RPC architecture (server_orchestrator, rpc_server_base, rpc_client_base)
   - `locks/` - Position locking mechanisms
@@ -81,6 +84,7 @@ npm run preview  # Preview production build
   - `miner_dashboard/` - React/TypeScript dashboard for monitoring
   - `prop_net_order_placer.py` - Order placement utilities
   - `position_inspector.py` - Position analysis tools
+- **`entity_management/`** - Entity miners: entity registration, subaccount creation, bucket promotion, and payout calculation
 - **`template/`** - Bittensor protocol definitions and base classes
 
 ### Data Infrastructure
@@ -95,7 +99,8 @@ npm run preview  # Preview production build
   - `processed_signals/` - Validated and processed signals
 - **`validation/`** - Validator state persistence
   - `miners/` - Per-miner performance and position data
-  - `plagiarism/` - Plagiarism detection cache
+  - `entities/` - Entity and subaccount records (`ValiConfig.ENTITY_DATA_DIR`)
+  - `challengeperiod.json`, `eliminations.json`, `perf_ledgers.json`, `miner_account_sizes.json` - Checkpointed service state
   - `tmp/` - Temporary processing files
 - **`runnable/`** - Utility scripts and analysis tools
   - Portfolio analytics, debt ledger management, elimination analysis
@@ -108,8 +113,8 @@ npm run preview  # Preview production build
 ### RPC Architecture
 The system uses a distributed RPC architecture for inter-process communication:
 - **Server Orchestrator**: Manages lifecycle of all RPC servers
-- **18+ RPC Services**: Position management, elimination, plagiarism, price fetching, ledgers, etc.
-- **Port Range**: 50000-50022 (centrally managed in vali_config.py)
+- **23 RPC Services** (registered in `server_orchestrator.py`): Position management, elimination, plagiarism, price fetching, ledgers, miner accounts, entities, entity collateral, market orders, HL funding, etc.
+- **Port Range**: 50000-50027 (centrally managed in vali_config.py)
 - **Connection Modes**: LOCAL (direct/testing) and RPC (network/production)
 
 ### Key Configuration Files
@@ -120,25 +125,25 @@ The system uses a distributed RPC architecture for inter-process communication:
   - Challenge period and elimination thresholds
 - **`miner_config.py`** - Miner configuration
 - **`requirements.txt`** - Python dependencies (Bittensor 10.3.0, Pydantic 2.10.3, financial APIs)
-- **`meta/meta.json`** - Version management (subnet_version: 8.15.3)
+- **`meta/meta.json`** - Version management (subnet_version: 8.16.0)
 - **`setup.py`** - Package setup (taoshi-prop-net)
 
 ## Trading System Architecture
 
 ### Signal Flow
 1. Miners submit LONG/SHORT/FLAT signals via Vanta API (REST/WebSocket)
-2. Validators receive and validate signals through `vanta_api/rest_server.py`
+2. Validators receive and validate signals through `vanta_api/validator_rest_server.py`
 3. Real-time price validation using multiple data sources (Polygon, Tiingo, Binance, Bybit, Kraken)
 4. Position tracking via RPC services with leverage limits and slippage modeling
 5. Performance calculation using debt-based scoring system
 
 ### Supported Assets
 - **Crypto**: BTC/USDC, ETH/USDC, SOL/USDC, XRP/USDC, DOGE/USDC, ADA/USDC, etc. (Hyperliquid USDC pairs; native USD-denominated equivalents are blocked in favor of these)
-- **Forex**: 32 major currency pairs (EUR/USD, GBP/USD, USD/JPY, etc.)
+- **Forex**: 28 tradable currency pairs (EUR/USD, GBP/USD, USD/JPY, etc.); USDMXN is blocked
   - Grouped into G1-G5 subcategories by liquidity/volume
 - **Equities**: Russell 1000 single stocks plus HL-matched additions (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD, SPCX) - enabled via Polygon/Databento
-- **Indices**: 6 global indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) - currently blocked
-- **Commodities**: XAU/USD, XAG/USD - currently blocked
+- **Indices**: Hyperliquid index perps SP500USDC, XYZ100USDC, EWYUSDC. The 6 Vanta-native indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) are blocked. There is no `indices` MinerAssetClass — index perps are reached through `hl_all`, `all_markets` or a pro account
+- **Commodities**: Hyperliquid perps GOLDUSDC, SILVERUSDC, COPPERUSDC, NATGASUSDC, PLATINUMUSDC, WTIOILUSDC. Vanta-native spot XAU/USD and XAG/USD are blocked in their favor
 
 ### Performance Evaluation
 - **Current Scoring**: Debt-based system tracking emissions, performance, and penalties
@@ -169,14 +174,15 @@ The system uses a distributed RPC architecture for inter-process communication:
 - **Max Drawdown**: Automatic elimination at a 5% intraday drawdown (from the day's opening equity) or an 8% end-of-day drawdown (from the highest-ever end-of-day equity)
   - Continuous monitoring via `challenge_period/challengeperiod_manager.py`
   - 30-second refresh interval
-- **Challenge Period**: New miners enter 61-90 day challenge period
-  - Must reach 75th percentile to enter main competition
+- **Challenge Period**: New miners enter a 61-90 day challenge period (`CHALLENGE_PERIOD_MINIMUM_DAYS` / `CHALLENGE_PERIOD_MAXIMUM_DAYS`)
+  - To promote to MAINCOMP a miner must serve the 61-day minimum, clear its asset class's returns threshold, and rank at or above `PROMOTION_THRESHOLD_RANK` (25) in that class; failing to do so by day 90 eliminates
   - Minimal weights during challenge period
+  - Entity subaccounts run a separate returns-based challenge (10% crypto/equities/commodities/multi-class, 8% forex) with no rank requirement and no time limit
 - **Probation**: Miners below rank 25 in asset class
   - 90-day probation period
   - Must achieve rank 25 or better to avoid elimination
 - **Inactivity**: Automatic elimination (`INACTIVE`) after 60 days without a submitted order
-  - Applies to MAINCOMP, CHALLENGE, and PROBATION miners, and to entity-miner subaccounts in SUBACCOUNT_CHALLENGE/SUBACCOUNT_FUNDED/SUBACCOUNT_ALPHA
+  - Applies to every regular-miner bucket (MAINCOMP, CHALLENGE, PROBATION) and every subaccount bucket, standard (SUBACCOUNT_CHALLENGE/SUBACCOUNT_FUNDED/SUBACCOUNT_ALPHA) and pro (PRO_CHALLENGE_TRANSITION/PRO_CHALLENGE_FROM_STANDARD/PRO_CHALLENGE_DIRECT/PRO_FUNDED)
   - Does not apply to the entity hotkey itself (`ENTITY` bucket), which never submits orders directly
 
 ## Development Patterns
@@ -242,8 +248,8 @@ client.set_direct_server(server_instance)
 - **Data Visualization**: matplotlib 3.9.0
 - **Cloud Services**: Google Cloud Storage 2.17.0, Secret Manager 2.21.1
 - **Taoshi SDKs**:
-  - collateral_sdk@1.0.9 - Collateral management
-  - vanta-cli@3.0.1 - Vanta network CLI tools
+  - collateral_sdk@1.0.10 - Collateral management
+  - vanta-cli@3.0.3 - Vanta network CLI tools
 
 ## Production Deployment
 
@@ -257,7 +263,7 @@ The `run.sh` script provides production deployment with:
 - Minimum uptime: 5 minutes, Max restarts: 5
 
 ### Version Management
-- Current version: 8.15.3 (in `meta/meta.json`)
+- Current version: 8.16.0 (in `meta/meta.json`)
 - Version checking against GitHub API
 - Automatic pip install and package updates
 - Safe rollback: git pull only if version is newer
@@ -269,13 +275,13 @@ The `run.sh` script provides production deployment with:
 - **Persistence**:
   - Position data per miner in `validation/miners/`
   - Performance ledgers (RPC service)
-  - Debt ledgers (RPC service)
+  - Debt, penalty, and weekly-seal ledgers (RPC service)
   - Elimination tracking (RPC service)
-  - Plagiarism scores in `validation/plagiarism/`
+  - Plagiarism flags held in memory by the plagiarism RPC service, refreshed from `ValiConfig.PLAGIARISM_URL`
 - **Recovery**: State regeneration via `restore_validator_from_backup.py`
 
 ### RPC Service Management
-- Server orchestrator manages 18+ RPC services
+- Server orchestrator manages 23 RPC services
 - Health monitoring and automatic restarts
 - Exponential backoff for failed connections
 - Port conflict detection and resolution
@@ -325,7 +331,7 @@ python -m pytest tests/vali_tests/test_elimination_manager.py -v
 - **Network**:
   - Registration: 2.5 TAO on mainnet
   - Stable internet connection for API access
-  - Open ports: 50000-50022 (RPC services), 48888 (REST API), 8765 (WebSocket)
+  - Open ports: 50000-50027 (RPC services), 48888 (REST API), 8765 (WebSocket)
 - **Software**:
   - PM2 for process management
   - jq for JSON parsing (required by run.sh)

@@ -141,8 +141,8 @@ class MinerBucket(Enum):
 
     @property
     def is_subaccount_funded(self) -> bool:
-        """True for either subaccount track's funded bucket (the promotion target)."""
-        return self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_FUNDED)
+        """True for either subaccount track's funded buckets."""
+        return self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION)
 
     @property
     def is_subaccount_earning(self) -> bool:

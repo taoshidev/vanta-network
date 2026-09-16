@@ -386,10 +386,10 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
     "default_positional_leverage": 1.0,
     "basis": "gross_per_side",
     "denominator": "balance",
-    "correlation_limits": {"currency:USD": 30.0, "currency:NZD": 20.0, "sector:Information Technology": 3.0, "index:us": 25.0},
-    "currency_limits": {"USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0, "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 20.0},
+    "correlation_limits": {"currency:USD": 30.0, "currency:NZD": 30.0, "sector:Information Technology": 3.0, "index:us": 10.0},
+    "currency_limits": {"USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0, "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 30.0},
     "sector_limit": 3.0,
-    "us_index_limit": 25.0,
+    "us_index_limit": 10.0,
     "us_index_trade_pair_ids": ["DIA", "IWM", "QQQ", "SP500USDC", "SPY", "XYZ100USDC"]
   },
   "timestamp": 1749234567890

@@ -211,7 +211,7 @@ Authorization: Bearer <api_key>
 ```
 
 **Parameters:**
-- `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, or `"hl_all"`
+- `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, or `"all_markets"`. `"hl_all"` is accepted on this route and mapped to `"all_markets"` — it is reserved for HL-linked subaccounts, which are forced to it by `/api/create-hl-subaccount`.
 - `account_size` (float, required): Account size in USD. Must be positive.
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [entity_miner.md](entity_miner.md#elimination). Fixed for the life of the subaccount once created. Always forced to `"trailing"` for HL-linked subaccounts (`hl_address` present), regardless of what's passed.
 - `leverage_tier` (int, optional): standard leverage tier `1` (default), `2` or `3` — see [entity_miner.md](entity_miner.md#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later with `/api/update-subaccount-leverage-tier`.
@@ -292,6 +292,92 @@ Changes a standard subaccount's `leverage_tier` (see [entity_miner.md](entity_mi
 
 **Notes:**
 - Raising the tier is allowed at any time. Lowering it requires every position on that subaccount to be closed first. A subaccount created before tiers existed counts as tier 1.
+
+### Promote Subaccount to the Pro Track
+
+`POST /api/promote`
+
+Moves one of this entity's subaccounts one step up the pro account track. The server signs the
+request with the entity coldkey and forwards it to the validator's
+`POST /entity/subaccount/promote`, which verifies the signature, that the coldkey owns the entity
+hotkey on chain, and that the subaccount belongs to that hotkey. See
+[entity_miner.md](entity_miner.md#account-types) for what each bucket means.
+
+The validator picks the target bucket from the subaccount's current one, and only these three hops
+exist (`MinerBucket.promotion_target`):
+
+| From | To |
+|------|----|
+| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` |
+| `SUBACCOUNT_FUNDED` | `PRO_CHALLENGE_TRANSITION` |
+| `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
+
+**Authentication:** API key required.
+
+**Request Body:**
+```json
+{
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "pro_account_size": 500000
+}
+```
+
+**Parameters:**
+- `synthetic_hotkey` (string, required): The subaccount to promote. Must belong to this entity.
+- `pro_account_size` (number, conditional): USD size of the pro account. Must be finite and
+  positive, at most `$1,000,000` (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`), and not below the
+  subaccount's own standard account size. **Required** when entering the pro track
+  (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`); **optional** on the hop out of
+  `PRO_CHALLENGE_TRANSITION`, where sending one replaces the recorded size and omitting it keeps
+  it. The gateway rejects a malformed size with a 400 before signing, so no signature or nonce is
+  spent on a bad request.
+
+**Success Response (200):** the validator response.
+
+```json
+{
+  "status": "success",
+  "message": "5GhDr3xy...abc_0 account size set to $500000",
+  "synthetic_hotkey": "5GhDr3xy...abc_0",
+  "bucket": "PRO_CHALLENGE_DIRECT",
+  "pro_account_size": 500000,
+  "account_size": 500000,
+  "pro_fee_theta": 194.29,
+  "pro_fee_theta_pending": 194.29
+}
+```
+
+(`194.29` is `ValiConfig.pro_promotion_fee_theta(500_000, 100_000)` — the premium on the standard
+account's drawdown allowance plus the registration rate on the $400K of size granted above it.)
+
+- `pro_fee_theta`: Total theta assessed for this subaccount's pro account so far
+- `pro_fee_theta_pending`: The portion charged but not yet slashed on-chain by the collateral daemon
+
+**Error Responses:**
+
+| Code | Cause |
+|------|-------|
+| 400 | Missing/invalid `synthetic_hotkey` or `pro_account_size`, or the validator rejected the promotion: a bucket with no promotion target, a size below the standard account size, missing size when entering the track, or insufficient entity collateral for the promotion fee |
+| 401 | Invalid or missing API key, or a rejected signature/nonce at the validator |
+| 403 | API key below tier 200, or the coldkey does not own the entity hotkey / the subaccount |
+| 404 | Subaccount not found |
+| 500 | Wallet not configured or signing error |
+| 502 | Validator unreachable |
+| 503 | Entity management not available on the validator |
+
+**Notes:**
+- Only the two hops **onto** a pro account (`PRO_CHALLENGE_DIRECT`, `PRO_CHALLENGE_FROM_STANDARD`)
+  switch accounts: every open position is closed, every pending limit order is cancelled, and the
+  ledgers restart on the pro size. Neither can be undone.
+- Promoting into `PRO_CHALLENGE_TRANSITION` keeps trading the standard account and wipes nothing —
+  positions, limit orders and ledgers all carry on, and only resting orders that could open or
+  increase a position are cancelled (`PRO_TRANSITION_CANCELLED`).
+- The entity pays the promotion fee out of its collateral once the pro account goes live, and only
+  the increase over the fee already assessed is billed — so re-entering the pro track at the same
+  size is free, and a pro size equal to the standard size is charged nothing at the registration
+  rate. A collateral-exempt subaccount (`reg_fee_theta == 0`) stays exempt on the pro track.
+- A subaccount left in `PRO_CHALLENGE_TRANSITION` is advanced automatically once the grace period
+  (`PRO_TRANSITION_GRACE_PERIOD_DAYS`, default 7) expires.
 
 ### Create Hyperliquid-Linked Subaccount
 
