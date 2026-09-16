@@ -350,7 +350,7 @@ class TestMarketOrderManager(TestBase):
             )
         self.assertIn("currently closed", str(ctx.exception))
 
-    def test_execute_order_max_orders_per_position_auto_closes(self):
+    def test_execute_order_max_orders_per_position_rejects(self):
         existing_position = self.create_test_position(position_type=OrderType.LONG)
         now_ms = TimeUtil.now_in_millis()
         for i in range(ValiConfig.MAX_ORDERS_PER_POSITION):
@@ -368,19 +368,18 @@ class TestMarketOrderManager(TestBase):
         self.position_client.save_miner_position(existing_position)
 
         now_ms2 = now_ms + ValiConfig.MAX_ORDERS_PER_POSITION + 1000
-        new_order, new_position = self.execute(
-            self.DEFAULT_MINER_HOTKEY, "new_order", OrderType.LONG, 51000.0, value=500.0, now_ms=now_ms2
-        )
+        with self.assertRaises(SignalException) as ctx:
+            self.execute(
+                self.DEFAULT_MINER_HOTKEY, "new_order", OrderType.LONG, 51000.0, value=500.0, now_ms=now_ms2
+            )
+        self.assertIn("order limit", str(ctx.exception))
 
-        self.assertEqual(new_position.position_uuid, "new_order")
-        self.assertEqual(len(new_position.orders), 1)
-
+        # The position is left untouched: no new position, no auto-close order.
         all_positions = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
-        closed = [p for p in all_positions if p.position_uuid == existing_position.position_uuid]
-        self.assertEqual(len(closed), 1)
-        self.assertTrue(closed[0].is_closed_position)
-        self.assertEqual(closed[0].orders[-1].order_type, OrderType.FLAT)
-        self.assertEqual(closed[0].orders[-1].src, OrderSource.MAX_ORDERS_PER_POSITION_CLOSE)
+        self.assertEqual(len(all_positions), 1)
+        self.assertEqual(all_positions[0].position_uuid, existing_position.position_uuid)
+        self.assertFalse(all_positions[0].is_closed_position)
+        self.assertEqual(len(all_positions[0].orders), ValiConfig.MAX_ORDERS_PER_POSITION)
 
     def test_execute_order_multiple_miners_isolated(self):
         miner2 = "miner2"
