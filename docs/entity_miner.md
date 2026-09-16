@@ -368,6 +368,19 @@ to trade until the value recovers past its threshold. Calmar is measured over th
 history from the first day of the challenge onward, so a funded account keeps the ratio it passed
 with.
 
+Passing the pro challenge **keeps the account**. Balance, equity, open positions, pending limit
+orders and every ledger carry over unchanged into `PRO_FUNDED`; unlike the two hops *onto* a pro
+account, this one wipes nothing. What resets is the payout basis: the high-water mark rebases at the
+promotion, so returns earned during the challenge move the balance but are never paid at pro scale.
+A `PRO_CHALLENGE_DIRECT` trader is therefore paid nothing for the challenge, and a
+`PRO_CHALLENGE_FROM_STANDARD` trader keeps what they were already paid at standard scale without
+being paid for it a second time.
+
+Both rules are evaluated continuously rather than only when a checkpoint closes. Any UTC day on
+which either is broken at any point is recorded, and a payout week containing even one such day is
+deferred in full — a breach that heals before the next 12-hour checkpoint still holds the week. The
+deferred amount is released on the first later week that is clean and still on the pro track.
+
 #### Failing the pro challenge
 
 A drawdown breach in `PRO_CHALLENGE_FROM_STANDARD` demotes back to `SUBACCOUNT_FUNDED`, and one in
@@ -852,7 +865,33 @@ Only the two hops onto a pro account wipe trading state: promoting into `PRO_CHA
 restarts the ledgers on the pro size, so neither can be undone. Promoting into
 `PRO_CHALLENGE_TRANSITION` keeps trading the standard account and wipes nothing — positions, limit
 orders and ledgers all carry on, and only the resting orders that could open or increase a position
-are cancelled.
+are cancelled. The automatic promotion to `PRO_FUNDED` also wipes nothing: it is the same account,
+already on the pro size, and only the payout basis moves (see
+[Passing the pro challenge](#passing-the-pro-challenge)).
+
+#### Settled payout weeks
+
+Once a payout week closes, the decision it was settled on — paid or withheld, at which account-size
+scale, on or off the pro track — is recorded and never recomputed. Rebuilding the perf, penalty or
+debt ledgers replays that record instead of re-deriving it, so a later change to a trader's account
+size, to the ratcheted drawdown, or to their bucket history cannot retroactively turn a week that
+paid into a week that was withheld. Only the week still in progress is live. A validator operator
+can force a specific week to be recomputed with `POST /admin/unseal-week/<hotkey>?week_start_ms=…`
+(tier 500), which is the only way to change one.
+
+Reverting an elimination on the pro track restores the account rather than resetting it. The
+`ELIMINATED` entry stays in the bucket history as the record that it happened, but is marked
+reverted so it never governs a timestamp — bucket history is replayed to stamp historical
+checkpoints, and a reverted span left governing its window would reclassify every checkpoint inside
+it and change weeks that were already settled. The ratcheted drawdown, the latched soft-breach days
+and the end-of-day equity high-water mark all survive the revert.
+
+Both restorations are scoped to the pro track. A standard subaccount reverts exactly as it did
+before pro accounts existed: the eliminated span still governs its window and the drawdown cache is
+cleared outright.
+
+The entity collateral slashed on elimination is **not** returned automatically for either; the
+revert response reports `collateral_slashed` so it can be settled by hand.
 
 ### Miner REST Server (port 8088)
 

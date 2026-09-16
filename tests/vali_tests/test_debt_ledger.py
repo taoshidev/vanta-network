@@ -27,10 +27,23 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger, WeekTrack, apply_deferral
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
+from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek, WeeklySealLedger
 import logging
+import os
 from shared_objects.log import logger
 
 logger.setLevel(logging.INFO)
+
+
+def _clear_seal_ledger():
+    """Drop the on-disk seal ledger so each test starts with nothing settled.
+
+    The seal ledger deliberately outlives every other ledger, including across process restarts,
+    so a test that seals a week would otherwise pin that decision for every later test and run.
+    """
+    path = WeeklySealLedger(running_unit_tests=True)._get_path()
+    if os.path.exists(path):
+        os.remove(path)
 
 
 class TestDebtLedgers(TestBase):
@@ -676,9 +689,15 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
     SUBACCOUNT_HOTKEY = "entity_1"
     CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 
+    def setUp(self):
+        super().setUp()
+        _clear_seal_ledger()
+
     def _build_manager(self, subaccount_ledger):
         """Bare manager with only the collaborators aggregate_entity_debt_ledgers touches."""
         manager = object.__new__(DebtLedgerManager)
+        # Keeps the lazily built weekly seal ledger inside the test validation directory
+        manager.running_unit_tests = True
         manager.debt_ledgers = {self.SUBACCOUNT_HOTKEY: subaccount_ledger}
         manager.emissions_ledger_manager = SimpleNamespace(get_ledger=lambda _hotkey: None)
         manager._entity_client = SimpleNamespace(get_all_entities=lambda: {
@@ -722,3 +741,146 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         week_0, week_1 = self._aggregate()
         self.assertAlmostEqual(week_0, 140.0)
         self.assertAlmostEqual(week_1, 140.0)
+
+
+class TestWeeklySealLedger(TestBase):
+    """A closed payout week is settled money: rebuilding the ledgers must not move it between
+    paid and withheld, and deleting the ledgers must not lose the record that it was settled."""
+
+    HOTKEY = "entity_1"
+
+    def setUp(self):
+        super().setUp()
+        _clear_seal_ledger()
+        self.week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - MS_IN_WEEK
+        self.ledger = WeeklySealLedger(running_unit_tests=True)
+
+    def tearDown(self):
+        _clear_seal_ledger()
+        super().tearDown()
+
+    def _seal(self, ledger, weekly_penalty=1.0, payout_scale=1.0, track='ON_TRACK'):
+        return ledger.seal(
+            self.HOTKEY, self.week_start_ms,
+            weekly_penalty=weekly_penalty, payout_scale=payout_scale, track=track,
+        )
+
+    def test_first_seal_records_the_week(self):
+        self.assertTrue(self._seal(self.ledger, weekly_penalty=0.0))
+        sealed = self.ledger.get_sealed(self.HOTKEY)[self.week_start_ms]
+        self.assertEqual(sealed.weekly_penalty, 0.0)
+        self.assertEqual(sealed.track, 'ON_TRACK')
+
+    def test_a_disagreeing_rebuild_never_overwrites_the_sealed_week(self):
+        """The whole point: a later build computing a different verdict keeps the settled one."""
+        self._seal(self.ledger, weekly_penalty=0.0)
+        # A rebuild against a worse ratcheted drawdown / a resized account now says "clean"
+        self.assertFalse(self._seal(self.ledger, weekly_penalty=1.0, payout_scale=0.2))
+        sealed = self.ledger.get_sealed(self.HOTKEY)[self.week_start_ms]
+        self.assertEqual(sealed.weekly_penalty, 0.0)
+        self.assertEqual(sealed.payout_scale, 1.0)
+
+    def test_sealed_weeks_survive_losing_every_other_ledger(self):
+        """delete_debt_ledger drops the debt and penalty ledgers; the seals outlive that."""
+        self._seal(self.ledger, weekly_penalty=0.0)
+        self.ledger.save_to_disk()
+
+        reloaded = WeeklySealLedger(running_unit_tests=True)
+        self.assertEqual(reloaded.get_sealed(self.HOTKEY)[self.week_start_ms].weekly_penalty, 0.0)
+
+    def test_unseal_allows_a_deliberate_correction(self):
+        self._seal(self.ledger, weekly_penalty=0.0)
+        self.assertTrue(self.ledger.unseal(self.HOTKEY, self.week_start_ms))
+        self.assertEqual(self.ledger.get_sealed(self.HOTKEY), {})
+        # Now a rebuild is free to record a new verdict
+        self.assertTrue(self._seal(self.ledger, weekly_penalty=1.0))
+
+    def test_unseal_of_an_unknown_week_is_a_no_op(self):
+        self.assertFalse(self.ledger.unseal(self.HOTKEY, self.week_start_ms))
+
+    def test_weekly_payout_context_replays_the_sealed_verdict(self):
+        """A breached ledger still reads as paid when the week was sealed clean, and vice versa."""
+        cp_duration = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+        checkpoints = [
+            DebtCheckpoint(
+                timestamp_ms=self.week_start_ms + (i + 1) * cp_duration,
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
+                weekly_penalty=0.0,
+            )
+            for i in range(MS_IN_WEEK // cp_duration)
+        ]
+        debt_ledger = DebtLedger(self.HOTKEY, checkpoints=checkpoints)
+
+        recomputed = debt_ledger.weekly_payout_context()
+        self.assertEqual(recomputed[self.week_start_ms].weekly_penalty, 0.0)
+
+        sealed = {self.week_start_ms: SealedWeek(
+            week_start_ms=self.week_start_ms, weekly_penalty=1.0, payout_scale=1.0,
+            track='ON_TRACK', first_earning_ms=None, sealed_ms=0,
+        )}
+        replayed = debt_ledger.weekly_payout_context(sealed=sealed)
+        self.assertEqual(replayed[self.week_start_ms].weekly_penalty, 1.0)
+        self.assertIs(replayed[self.week_start_ms].track, WeekTrack.ON_TRACK)
+
+
+class TestDebtLedgerBucketHelpers(TestBase):
+    """The payout paths read each checkpoint's own bucket instead of wiping challenge history."""
+
+    HOTKEY = "entity_1"
+    CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+    def _ledger(self, statuses, fees=None):
+        fees = fees or [0.0] * len(statuses)
+        base_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - MS_IN_WEEK
+        return DebtLedger(self.HOTKEY, checkpoints=[
+            DebtCheckpoint(
+                timestamp_ms=base_ms + (i + 1) * self.CP_DURATION_MS,
+                challenge_period_status=status.value,
+                cumulative_fees_usd=fee,
+            )
+            for i, (status, fee) in enumerate(zip(statuses, fees))
+        ]), base_ms
+
+    def test_first_earning_checkpoint_skips_the_challenge(self):
+        ledger, base_ms = self._ledger([
+            MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_DIRECT,
+            MinerBucket.PRO_FUNDED,
+        ])
+        self.assertEqual(ledger.first_earning_checkpoint_ms(), base_ms + 3 * self.CP_DURATION_MS)
+
+    def test_fee_baseline_excludes_fees_paid_during_the_challenge(self):
+        """Fees run cumulatively from inception while realized PnL restarts at the first earning
+        checkpoint, so the challenge's fees must not be charged against funded earnings."""
+        ledger, _ = self._ledger(
+            [MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED],
+            fees=[5.0, 12.0, 20.0],
+        )
+        # The baseline is the checkpoint *before* the first earning one: fees inside the first
+        # earning window still count against it
+        self.assertEqual(ledger.fee_baseline_at_first_earning(), 12.0)
+
+    def test_fee_baseline_is_zero_when_the_account_earned_from_the_start(self):
+        ledger, _ = self._ledger([MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_FUNDED],
+                                 fees=[3.0, 7.0])
+        self.assertEqual(ledger.fee_baseline_at_first_earning(), 0.0)
+
+    def test_bucket_change_times_marks_the_promotion_boundary(self):
+        ledger, base_ms = self._ledger([
+            MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED, MinerBucket.PRO_FUNDED,
+        ])
+        # The switch happened at the end of the last challenge window
+        self.assertEqual(ledger.bucket_change_times(), [base_ms + self.CP_DURATION_MS])
+
+    def test_bucket_change_times_is_empty_for_a_stable_account(self):
+        ledger, _ = self._ledger([MinerBucket.SUBACCOUNT_FUNDED] * 4)
+        self.assertEqual(ledger.bucket_change_times(), [])
+
+    def test_bucket_at_reads_the_segment_that_starts_on_a_boundary(self):
+        ledger, base_ms = self._ledger([
+            MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
+        ])
+        boundary_ms = base_ms + self.CP_DURATION_MS
+        # An event exactly on the boundary belongs to the window that just closed...
+        self.assertIs(ledger.bucket_at(boundary_ms), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        # ...while the segment starting there is governed by the next one
+        self.assertIs(ledger.bucket_at(boundary_ms + 1), MinerBucket.PRO_FUNDED)

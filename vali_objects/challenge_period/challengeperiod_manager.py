@@ -107,6 +107,11 @@ class ProStats:
     daily_consistency: float = 1.0
     max_drawdown: float = 1.0  # Monotonic all-time worst drawdown, in mdd ratio form
     trading_days: int = 0  # Full days of tracked returns on this account
+    # UTC day starts (ms) on which calmar or daily_consistency was broken at any point. Those two
+    # are evaluated every refresh but only persisted onto 12h checkpoints, so a breach that heals
+    # inside a checkpoint would never withhold the week. Latching the day makes the weekly defer
+    # decision read "breached at any point when checked".
+    soft_breach_days: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -116,7 +121,10 @@ class ProStats:
         if not d:
             return cls()
         valid_keys = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in valid_keys and v is not None})
+        parsed = {k: v for k, v in d.items() if k in valid_keys and v is not None}
+        if 'soft_breach_days' in parsed:
+            parsed['soft_breach_days'] = sorted({int(day) for day in parsed['soft_breach_days']})
+        return cls(**parsed)
 
 
 @dataclass
@@ -149,15 +157,19 @@ class MinerBucketState:
         return None
 
     def bucket(self, time_ms: int | None = None) -> MinerBucket:
+        """The bucket in force, now or at a point in time."""
         if time_ms is None:
             return self.entries[-1].bucket
         for entry in reversed(self.entries):
+            if entry.is_reverted:
+                continue
             if entry.start_time_ms <= time_ms:
                 return entry.bucket
         return MinerBucket.UNKNOWN
 
     def to_checkpoint_dict(self) -> dict:
-        """Serialize full state (entries + drawdown + drawdown_criteria + rank + pro_stats) for on-disk checkpoint."""
+        """Serialize full state (entries + drawdown + drawdown_criteria + rank + pro_stats) for
+        on-disk checkpoint. The latched soft-breach days ride along inside pro_stats."""
         return {
             "entries": [entry.to_dict() for entry in self.entries],
             "drawdown": self.drawdown.to_dict(),
@@ -277,6 +289,35 @@ class MinerBucketState:
         return (self.pro_stats.calmar < bucket.calmar_threshold
                 or self.pro_stats.daily_consistency > bucket.daily_consistency_threshold)
 
+    def latch_soft_breach(self, current_time_ms: int) -> bool:
+        """Record today as breached when a pro rule is currently broken.
+
+        The pro metrics move every refresh but are only persisted onto 12h checkpoints, so a breach
+        that opens and heals between two checkpoints would never reach the payout. Latching the UTC
+        day makes the weekly decision read "breached at any point when checked".
+
+        Returns True when a new day was latched (the caller must persist the state).
+        """
+        if not self.soft_breach:
+            return False
+
+        latched = self.pro_stats.soft_breach_days
+        day_ms = TimeUtil.get_start_of_day_ms(current_time_ms)
+        if latched and latched[-1] == day_ms:
+            return False
+        if day_ms in latched:
+            return False
+
+        latched.append(day_ms)
+        latched.sort()
+        cutoff_ms = day_ms - ValiConfig.PRO_SOFT_BREACH_LATCH_RETENTION_DAYS * ValiConfig.DAILY_MS
+        self.pro_stats.soft_breach_days = [d for d in latched if d >= cutoff_ms]
+        return True
+
+    def is_soft_breach_latched(self, day_ms: int) -> bool:
+        """True when the UTC day starting at day_ms was latched as breached."""
+        return day_ms in self.pro_stats.soft_breach_days
+
 
 
 class ChallengePeriodManager(CacheController):
@@ -373,6 +414,8 @@ class ChallengePeriodManager(CacheController):
         positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
         self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
         self._refresh_pro_stats(evaluation_hotkeys, ledgers, accounts)
+        # Latch before any bucket move below: soft_breach reads the bucket the miner traded today
+        self._latch_soft_breaches(evaluation_hotkeys, current_time_ms)
         self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
 
         eliminations: dict[str, EliminationReason] = {}
@@ -702,7 +745,9 @@ class ChallengePeriodManager(CacheController):
         self._debt_ledger_client.delete_debt_ledger(hotkey)
         # Reset drawdown cache
         self._reset_drawdown_stats_cache(hotkey)
-        # Reset pro stats so the ratcheted drawdown does not carry into the new account
+        # Reset pro stats so neither the ratcheted drawdown nor the latched breach days carry into
+        # the new account. This never runs on the PRO_FUNDED hop, which keeps the same account and
+        # so keeps both.
         self.miner_states[hotkey].pro_stats = ProStats()
         return True
 
@@ -840,6 +885,18 @@ class ChallengePeriodManager(CacheController):
         if bucket.switches_account and not self._switch_account(hotkey, bucket, current_time_ms):
             return False, f"{hotkey} account size update failed, bucket unchanged"
 
+        # PRO_FUNDED keeps the account, so it never runs the switch that sizes one. An organic
+        # promotion arrives there already on the pro size, but an admin can move a subaccount
+        # straight in from a standard bucket, and a pro bucket has to trade the pro size.
+        if not bucket.switches_account and bucket.is_pro and is_synthetic_hotkey(hotkey):
+            sized, message = self._entity_client.apply_bucket_account_size(hotkey, bucket)
+            if not sized:
+                logger.error(
+                    f"[CHALLENGE] {hotkey} bucket change to {bucket.value} ABORTED - "
+                    f"account size not updated: {message}"
+                )
+                return False, f"{hotkey} account size update failed, bucket unchanged: {message}"
+
         with self._buckets_lock:
             state.add_bucket_entry(bucket, current_time_ms)
 
@@ -854,6 +911,23 @@ class ChallengePeriodManager(CacheController):
         return True, f"{hotkey} moved to {bucket.value}"
 
     def revert_elimination(self, hotkey: str) -> bool:
+        """Undo an elimination, leaving the account as though it had never happened.
+
+        The ELIMINATED entry is always kept as the record that it happened, and the previous bucket
+        is appended on top.
+
+        On the pro track it is additionally marked reverted. Bucket history is replayed
+        point-in-time when the penalty and debt ledgers are rebuilt
+        (PenaltyLedgerManager._get_status_for_checkpoint), so a reverted span that still governed
+        its window would reclassify every checkpoint inside it as non-earning and off the pro
+        soft-breach track - forfeiting escrow for an elimination that was undone. Marking it keeps
+        both the audit trail and the original classification. Pro also keeps its end-of-day high
+        water mark, so the trailing loss limit is not silently reset, and pro_stats carries the
+        ratcheted drawdown and the latched soft-breach days so breached weeks stay breached.
+
+        Standard subaccounts and regular miners get none of that: their revert behaves exactly as
+        it did before the pro track existed.
+        """
         miner_state = self.miner_states.get(hotkey)
         if not miner_state:
             return False
@@ -865,11 +939,24 @@ class ChallengePeriodManager(CacheController):
             if len(miner_state.entries) < 2:
                 return False
 
+            now_ms = TimeUtil.now_in_millis()
             prev_bucket = miner_state.entries[-2].bucket
+            # Both restorations below are scoped to the pro track. Everything they change - the
+            # replayed classification of the eliminated span, and the end-of-day high water mark -
+            # behaved differently for standard subaccounts and regular miners before pro accounts
+            # existed, and those rules are meant to stay exactly as they were.
+            restores_pro_account = prev_bucket.is_pro_track
 
-            miner_state.add_bucket_entry(prev_bucket, TimeUtil.now_in_millis())
+            # The ELIMINATED entry stays as the record that it happened, but is marked reverted so
+            # replaying this history never stamps a checkpoint inside the span with it
+            if restores_pro_account:
+                miner_state.entries[-1].reverted_ms = now_ms
+            miner_state.add_bucket_entry(prev_bucket, now_ms)
+            logger.info(
+                f"[CHALLENGE] reverted elimination, restored to {miner_state.current_bucket.value}: {miner_state}"
+            )
 
-        self._reset_drawdown_stats_cache(hotkey)
+        self._reset_drawdown_stats_cache(hotkey, preserve_eod=restores_pro_account)
         self._sync_buckets_to_accounts(hotkeys=[hotkey])
         self._save_to_disk()
         return True
@@ -980,7 +1067,27 @@ class ChallengePeriodManager(CacheController):
                 daily_consistency=Metrics.return_consistency(log_returns),
                 max_drawdown=max_drawdown,
                 trading_days=len(log_returns),
+                # Recomputed metrics, but the latch is a history: carry it, or every refresh would
+                # erase the days that withhold this week's payout
+                soft_breach_days=state.pro_stats.soft_breach_days,
             )
+
+    def _latch_soft_breaches(self, hotkeys: list[str], current_time_ms: int) -> None:
+        """Record today as breached for every miner currently breaking a pro rule.
+
+        Runs on the same cadence as the rest of the refresh loop, so a breach is caught the moment
+        it appears rather than only when the next 12h checkpoint closes. Latched days are read back
+        by PenaltyLedgerManager to withhold the whole payout week.
+        """
+        for hotkey in hotkeys:
+            state = self.miner_states.get(hotkey)
+            if state is None or not state.current_bucket.soft_breach_applies:
+                continue
+            if state.latch_soft_breach(current_time_ms):
+                logger.warning(
+                    f"[CHALLENGE] SOFT BREACH latched for {TimeUtil.millis_to_formatted_date_str(current_time_ms)}: "
+                    f"{state}"
+                )
 
     def _refresh_rank_cache(
         self,
@@ -1028,9 +1135,25 @@ class ChallengePeriodManager(CacheController):
             for i, (hotkey, _) in enumerate(sorted_scores):
                 self.miner_states[hotkey].rank = i + 1
 
-    def _reset_drawdown_stats_cache(self, hotkey: str) -> None:
-        """Reset a hotkey's drawdown stats cache to neutral default values. """
-        self.miner_states[hotkey].drawdown = DrawdownStats()
+    def _reset_drawdown_stats_cache(self, hotkey: str, preserve_eod: bool = False) -> None:
+        """Reset a hotkey's drawdown stats cache to neutral default values.
+
+        preserve_eod keeps the end-of-day high water mark and the last EOD reading. Use it whenever
+        the account itself survives the reset (reverting an elimination), since eod_hwm is the
+        denominator of the trailing loss limit and clearing it hands the miner a fresh 8% of room.
+        The live equity fields are always cleared; the next refresh repopulates them.
+        """
+        state = self.miner_states[hotkey]
+        if not preserve_eod:
+            state.drawdown = DrawdownStats()
+            return
+
+        previous = state.drawdown
+        state.drawdown = DrawdownStats(
+            eod_hwm=previous.eod_hwm,
+            last_eod_equity=previous.last_eod_equity,
+            last_eod_checked_ms=previous.last_eod_checked_ms,
+        )
 
 
     # ==================== Sync Methods ====================

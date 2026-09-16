@@ -153,6 +153,43 @@ class DebtLedgerClient(RPCClientBase):
             logger.debug(f"DebtLedgerClient: Health check failed: {e}")
             return None
 
+    def get_sealed_weeks(self, hotkey: str) -> dict:
+        """
+        Settled payout-week records for a hotkey, keyed by Monday 00:00 UTC.
+
+        A sealed week is replayed verbatim by the payout paths instead of being recomputed, so a
+        ledger rebuild cannot move it between paid and withheld. An empty dict on failure means the
+        caller recomputes, which is the pre-seal behavior.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            Dict mapping week_start_ms to SealedWeek, empty on error
+        """
+        try:
+            return self._server.get_sealed_weeks_rpc(hotkey)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Get sealed weeks failed: {e}")
+            return {}
+
+    def unseal_week(self, hotkey: str, week_start_ms: int) -> bool:
+        """
+        Drop one settled payout-week record so the next build reseals it.
+
+        Args:
+            hotkey: The miner's hotkey
+            week_start_ms: Monday 00:00 UTC of the week to unseal
+
+        Returns:
+            True if a record was removed
+        """
+        try:
+            return self._server.unseal_week_rpc(hotkey, week_start_ms)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Unseal week failed: {e}")
+            return False
+
     def delete_debt_ledger(self, hotkey: str) -> bool:
         """
         Delete the debt ledger for a specific hotkey.

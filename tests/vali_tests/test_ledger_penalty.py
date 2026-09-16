@@ -1,6 +1,10 @@
 import copy
 import time
+from types import SimpleNamespace
 
+from time_util.time_util import MS_IN_WEEK, TimeUtil
+from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint, PerfLedger
 from tests.shared_objects.test_utilities import generate_ledger
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.position_management.position_utils import PositionPenalties
@@ -359,3 +363,167 @@ class TestLedgerPenalty(TestBase):
         retrieved_checkpoint = manager.penalty_ledgers["hotkey1"].get_latest_checkpoint()
         self.assertEqual(retrieved_checkpoint.last_processed_ms, target_cp_duration_ms * 2)
         self.assertEqual(retrieved_checkpoint.challenge_period_status, MinerBucket.MAINCOMP.value)
+
+
+class TestPenaltyLedgerWeeklyScope(TestBase):
+    """The weekly-scope penalties are the only lever that withholds a pro subaccount's payout, so
+    they must catch a breach the 12h samples missed and must never be recomputed once settled."""
+
+    HOTKEY = "entity_1"
+    CP_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+    def _manager(self, perf_ledger, soft_breach_days=(), existing=None, bucket=MinerBucket.PRO_FUNDED):
+        """Bare manager with only the collaborators build_penalty_ledgers touches."""
+        manager = object.__new__(PenaltyLedgerManager)
+        manager.running_unit_tests = True
+        manager.penalty_ledgers = dict(existing or {})
+        manager._perf_ledger_client = SimpleNamespace(
+            get_perf_ledgers=lambda: {self.HOTKEY: perf_ledger}
+        )
+        manager._position_client = SimpleNamespace(
+            get_positions_for_all_miners=lambda: {self.HOTKEY: []}
+        )
+        manager._miner_account_client = SimpleNamespace(
+            get_miner_account_size=lambda _hk: ACCOUNT_SIZE
+        )
+        # NOTE: a real epoch timestamp, not 0 - _get_status_for_checkpoint reads start_time_ms with
+        # an `or` fallback, so a zero start time is treated as missing and the entry is skipped.
+        bucket_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 52 * MS_IN_WEEK
+        manager._challengeperiod_client = SimpleNamespace(to_checkpoint_dict=lambda: {
+            self.HOTKEY: {
+                "entries": [{"bucket": bucket.value, "start_time_ms": bucket_start_ms}],
+                "pro_stats": {
+                    "max_drawdown": 0.96,
+                    "soft_breach_days": list(soft_breach_days),
+                },
+            }
+        })
+        manager.save_to_disk = lambda *_a, **_k: None
+        return manager
+
+    def _perf_ledger(self, n_checkpoints, start_ms):
+        cps = [
+            PerfCheckpoint(
+                last_update_ms=start_ms + (i + 1) * self.CP_MS,
+                prev_portfolio_ret=1.0,
+                accum_ms=self.CP_MS,
+                gain=0.001,
+                loss=0.0,
+                mdd=1.0,
+            )
+            for i in range(n_checkpoints)
+        ]
+        # A comfortably passing realized return on every checkpoint, not just the last: the penalty
+        # loop truncates the ledger at each checkpoint in turn, so a running total left at zero
+        # until the end would make calmar - not the latch - the reason a checkpoint is withheld.
+        for cp in cps:
+            cp.prev_portfolio_realized_pnl = 50_000.0
+        return PerfLedger(initialization_time_ms=start_ms, cps=cps)
+
+    def test_a_latched_day_withholds_the_week_even_when_every_sample_is_clean(self):
+        """The metrics are evaluated continuously but only persisted every 12h. Without the latch a
+        breach that opened and healed inside a checkpoint would pay out in full.
+
+        The ledger carries 40 even days so calmar and consistency both clear on their own, which
+        makes the latch the only thing that can zero a checkpoint.
+        """
+        week_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+        ledger_start = week_start - 40 * ValiConfig.DAILY_MS
+        ledger = self._perf_ledger(84, ledger_start)  # 40 days of history, then two more days
+        latched_day = week_start + ValiConfig.DAILY_MS  # the second day of the current week
+
+        manager = self._manager(ledger, soft_breach_days=[latched_day])
+        manager.build_penalty_ledgers(delta_update=False)
+
+        penalties = {cp.last_processed_ms: cp.weekly_penalty
+                     for cp in manager.penalty_ledgers[self.HOTKEY].checkpoints}
+        # Both 12h checkpoints covering the latched day are withheld
+        self.assertEqual(penalties[latched_day + self.CP_MS], 0.0)
+        self.assertEqual(penalties[latched_day + 2 * self.CP_MS], 0.0)
+        # The day before it is untouched
+        self.assertEqual(penalties[week_start + self.CP_MS], 1.0)
+        self.assertEqual(penalties[week_start + 2 * self.CP_MS], 1.0)
+
+    def test_a_latched_day_is_ignored_outside_the_soft_breach_buckets(self):
+        """Standard subaccounts never have a payout withheld by a pro rule."""
+        week_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+        ledger = self._perf_ledger(4, week_start)
+        latched_day = TimeUtil.get_start_of_day_ms(week_start + 2 * self.CP_MS)
+
+        manager = self._manager(ledger, soft_breach_days=[latched_day],
+                                bucket=MinerBucket.SUBACCOUNT_FUNDED)
+        manager.build_penalty_ledgers(delta_update=False)
+
+        for cp in manager.penalty_ledgers[self.HOTKEY].checkpoints:
+            self.assertEqual(cp.weekly_penalty, 1.0)
+
+    def test_a_closed_week_is_carried_forward_not_recomputed(self):
+        """A full rebuild must not move settled money: last week's verdict is copied verbatim even
+        though today's ratchet and account size would produce a different one."""
+        last_week_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - MS_IN_WEEK
+        ledger = self._perf_ledger(2, last_week_start)
+
+        settled = PenaltyLedger(self.HOTKEY)
+        for i in range(2):
+            settled.add_checkpoint(PenaltyCheckpoint(
+                last_processed_ms=last_week_start + (i + 1) * self.CP_MS,
+                all_time_calmar_penalty=0.0,
+                daily_consistency_penalty=1.0,
+                weekly_penalty=0.0,
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
+            ), self.CP_MS)
+
+        manager = self._manager(ledger, existing={self.HOTKEY: settled})
+        manager.build_penalty_ledgers(delta_update=False)
+
+        for cp in manager.penalty_ledgers[self.HOTKEY].checkpoints:
+            self.assertEqual(cp.weekly_penalty, 0.0)
+            self.assertEqual(cp.all_time_calmar_penalty, 0.0)
+
+    def test_the_current_week_is_still_recomputed(self):
+        """Freezing applies to closed weeks only; the week in progress tracks the live metrics."""
+        week_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+        ledger = self._perf_ledger(2, week_start)
+
+        stale = PenaltyLedger(self.HOTKEY)
+        for i in range(2):
+            stale.add_checkpoint(PenaltyCheckpoint(
+                last_processed_ms=week_start + (i + 1) * self.CP_MS,
+                all_time_calmar_penalty=0.0,
+                weekly_penalty=0.0,
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
+            ), self.CP_MS)
+
+        manager = self._manager(ledger, existing={self.HOTKEY: stale})
+        manager.build_penalty_ledgers(delta_update=False)
+
+        # 50k realized on a 100k account against a 0.96 ratchet is calmar 12.5, comfortably clear
+        self.assertEqual(manager.penalty_ledgers[self.HOTKEY].checkpoints[-1].all_time_calmar_penalty, 1.0)
+
+    def test_a_failed_challenge_period_fetch_aborts_instead_of_paying_in_full(self):
+        """An empty bucket map makes every checkpoint UNKNOWN, which skips the pro penalties and
+        silently pays a breaching week. The build has to fail and let the daemon retry."""
+        week_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+        manager = self._manager(self._perf_ledger(2, week_start))
+
+        def _boom():
+            raise ConnectionError("rpc down")
+
+        manager._challengeperiod_client = SimpleNamespace(to_checkpoint_dict=_boom)
+
+        with self.assertRaises(RuntimeError):
+            manager.build_penalty_ledgers(delta_update=False)
+
+    def test_week_is_closed_uses_the_payout_week_convention(self):
+        """A checkpoint stamped exactly at Monday 00:00 covers the week that just closed."""
+        monday = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+        self.assertTrue(PenaltyLedgerManager._week_is_closed(monday, monday + 1))
+        self.assertFalse(PenaltyLedgerManager._week_is_closed(monday + self.CP_MS, monday + 1))
+
+    def test_carry_forward_fails_closed_with_no_history(self):
+        """Nothing to carry means the rule is unproven, which must not read as a clean week."""
+        empty = PenaltyLedger(self.HOTKEY)
+        self.assertEqual(
+            PenaltyLedgerManager._carry_forward_penalty(empty, "all_time_calmar", self.HOTKEY, 0),
+            0.0,
+        )

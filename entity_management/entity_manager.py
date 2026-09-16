@@ -1533,25 +1533,53 @@ class EntityManager(ValidatorBroadcastBase):
             if not orders:
                 return EMPTY_RESPONSE
 
-            # Weekly-scope penalties, and the account-size scale that applied in each week.
+            # Weekly-scope penalties, and the account-size scale that applied in each week. Weeks
+            # that have already been settled come back exactly as they were settled, so rebuilding
+            # the ledgers cannot move one between paid and withheld.
+            sealed_weeks = self._debt_ledger_client.get_sealed_weeks(synthetic_hotkey)
             week_context = (
-                debt_ledger.weekly_payout_context(self.get_payout_scale(synthetic_hotkey))
+                debt_ledger.weekly_payout_context(
+                    self.get_payout_scale(synthetic_hotkey), sealed=sealed_weeks
+                )
                 if debt_ledger else {}
             )
 
             weekly_settlements = []
             deferred_balance = 0.0
+            # The balance level above which payouts start. Rebased whenever the account moves from
+            # a non-earning bucket into an earning one, so a standard challenge or a pro challenge
+            # run directly on this account moves the balance but is never paid out.
+            payout_hwm = 0.0
 
-            def _record_week(start_ms, end_ms, balance, eow_unrealized, week_orders):
-                nonlocal deferred_balance
-                # The high water mark advances on gross terms; a week withheld by a soft breach
-                # is remembered in deferred_balance instead, so netting it down here would pay
-                # the same money twice once the balance is released.
-                previous_payouts = sum(s['gross_payout'] for s in weekly_settlements)
-                week = week_context.get(start_ms, WeeklyPayoutContext())
-                gross_payout = max(0, min(balance, balance + eow_unrealized) - previous_payouts)
+            def _record_segment(start_ms, end_ms, balance, eow_unrealized, segment_orders, bucket):
+                nonlocal deferred_balance, payout_hwm
+                week = week_context.get(
+                    TimeUtil.ms_at_start_of_week(start_ms), WeeklyPayoutContext()
+                )
+                # Unrealized losses count against the payable balance, unrealized gains do not
+                payable = min(balance, balance + eow_unrealized)
 
-                owed = gross_payout * week.payout_scale
+                if bucket is not None and not bucket.is_subaccount_earning:
+                    # Nothing earned in a non-earning bucket is ever paid.
+                    gross_payout = 0.0
+                    scale = 1.0
+                    if bucket != MinerBucket.ELIMINATED:
+                        # A challenge phase: what was earned there must not become payable later
+                        # either, so the basis restarts from wherever this segment ends.
+                        payout_hwm = payable
+                    # An eliminated span is a stop, not a phase before funding. It only appears
+                    # here at all when the elimination was reverted, so the basis is held and the
+                    # account resumes exactly where it left off rather than being re-based on the
+                    # force-close.
+                else:
+                    # The high water mark advances on gross terms
+                    gross_payout = max(0.0, payable - payout_hwm)
+                    payout_hwm = max(payout_hwm, payable)
+                    # Segments never straddle a bucket change, so one scale governs the whole of it
+                    scale = (self.get_payout_scale(synthetic_hotkey)
+                             if bucket is not None and bucket.payout_scale_applies else 1.0)
+
+                owed = gross_payout * scale
                 earned = owed * week.weekly_penalty
                 released, deferred_balance, forfeited = apply_deferral(
                     deferred_balance,
@@ -1562,6 +1590,7 @@ class EntityManager(ValidatorBroadcastBase):
                 weekly_settlements.append({
                     'start_ms': start_ms,
                     'end_ms': end_ms,
+                    'bucket': bucket.value if bucket is not None else None,
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
                     'gross_payout': gross_payout,
@@ -1571,8 +1600,8 @@ class EntityManager(ValidatorBroadcastBase):
                     'deferred_forfeited': forfeited,
                     'deferred_balance': deferred_balance,
                     'weekly_penalty': week.weekly_penalty,
-                    'payout_scale': week.payout_scale,
-                    'orders': [o.to_python_dict() for o in week_orders],
+                    'payout_scale': scale,
+                    'orders': [o.to_python_dict() for o in segment_orders],
                 })
 
             running_balance = 0
@@ -1585,13 +1614,26 @@ class EntityManager(ValidatorBroadcastBase):
             week_start = (first_day_index - days_since_monday) * MS_IN_24_HOURS
             week_end = week_start + MS_IN_WEEK
 
+            # A settlement also closes wherever the bucket changes, so one never mixes a stretch of
+            # challenge trading with funded trading or two different payout scales. A subaccount
+            # that never changes bucket produces exactly the Monday-to-Monday weeks it did before.
+            bucket_boundaries = debt_ledger.bucket_change_times() if debt_ledger else []
+
             # Read the snapshot history once; per-week lookups below scan this in-memory
             # list instead of re-reading the file on every iteration.
             snapshots = read_all_snapshots(synthetic_hotkey, running_unit_tests=self.running_unit_tests)
 
             idx_order, idx_fee, idx_snap = 0, 0, 0
-            while week_start < end_time_ms:
-                end_time = min(week_end, end_time_ms)
+            segment_start = week_start
+            while segment_start < end_time_ms:
+                next_boundary = next(
+                    (b for b in bucket_boundaries if segment_start < b < week_end), None
+                )
+                segment_end = week_end if next_boundary is None else next_boundary
+                end_time = min(segment_end, end_time_ms)
+                # +1 because a checkpoint stamped at T closes the window *ending* at T: the segment
+                # starting at T is governed by the next checkpoint, not the one that just closed
+                segment_bucket = debt_ledger.bucket_at(segment_start + 1) if debt_ledger else None
                 week_orders = []
                 while idx_order < len(orders) and orders[idx_order].processed_ms < end_time:
                     running_balance += orders[idx_order].realized_pnl
@@ -1630,10 +1672,14 @@ class EntityManager(ValidatorBroadcastBase):
                             f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
                             f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
                         )
-                _record_week(week_start, end_time, running_balance, unrealized_pnl, week_orders)
-                week_start, week_end = week_end, week_end + MS_IN_WEEK
+                _record_segment(
+                    segment_start, end_time, running_balance, unrealized_pnl, week_orders, segment_bucket
+                )
+                segment_start = segment_end
+                if segment_start >= week_end:
+                    week_start, week_end = week_end, week_end + MS_IN_WEEK
 
-            # Only sum weeks that fall within the requested period.
+            # Only sum settlements that fall within the requested period.
             payout = sum(w['payout'] for w in weekly_settlements if w['start_ms'] >= start_time_ms)
 
             return {

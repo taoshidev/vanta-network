@@ -816,10 +816,11 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
     CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 
     def _payout_result(self, blocked_checkpoint_indices=(), week_buckets=None,
-                       current_bucket=MinerBucket.PRO_FUNDED):
+                       current_bucket=MinerBucket.PRO_FUNDED, payout_scale=1.0,
+                       sealed_weeks=None):
         """Two payout weeks of 12h checkpoints. `week_buckets` maps a payout-week index (0 or 1) to
         the bucket stamped on that week's checkpoints (default PRO_FUNDED); `current_bucket` is the
-        bucket at end_time_ms."""
+        bucket at end_time_ms; `payout_scale` is standard_account_size / pro_account_size."""
         from entity_management.entity_manager import EntityManager
 
         week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
@@ -849,9 +850,11 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         manager.running_unit_tests = True
         manager.get_synthetic_hotkey_from_uuid = lambda _uuid: self.SUBACCOUNT_HOTKEY
         manager.get_entity_data = lambda _hk: SimpleNamespace(subaccounts={1: {'id': 1}})
-        manager.get_payout_scale = lambda _hk: 1.0
+        manager.get_payout_scale = lambda _hk: payout_scale
         manager._debt_ledger_client = SimpleNamespace(
-            get_ledger=lambda _hk: DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=debt_checkpoints)
+            get_ledger=lambda _hk: DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=debt_checkpoints),
+            # Nothing sealed by default: every week is recomputed, which is what most cases exercise
+            get_sealed_weeks=lambda _hk: sealed_weeks or {},
         )
         manager._perf_ledger_client = SimpleNamespace(
             get_perf_ledger_for_hotkey=lambda hk: {
@@ -940,6 +943,71 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertEqual(result['deferred_balance'], 0.0)
         self.assertEqual(result['deferred_forfeited'], 0.0)
         self.assertTrue(result['off_track'])
+
+    def test_pro_challenge_direct_gains_are_never_paid_after_promotion(self):
+        """A pro challenge run directly on the pro account earns nothing.
+
+        Passing it keeps the account - balance, positions and ledgers all carry over - so the
+        payout basis has to rebase at the promotion instead. Week 0 is PRO_CHALLENGE_DIRECT and
+        realizes 140 USD; only week 1's 140 is payable.
+        """
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_DIRECT, 1: MinerBucket.PRO_FUNDED}
+        )
+        per_week = [w['payout'] for w in result['weekly_settlements']]
+        self.assertEqual(per_week, [0.0, 140.0])
+        self.assertAlmostEqual(result['payout'], 140.0)
+
+    def test_pro_challenge_from_standard_is_paid_on_the_standard_account_size(self):
+        """PRO_CHALLENGE_FROM_STANDARD trades the pro account but is paid on the standard one.
+
+        With a 100k standard account inside a 500k pro account the scale is 0.2, so week 0's
+        140 USD of gross PnL pays 28. On promotion the scale goes to 1.0 and the gross high water
+        mark carries, so week 1's next 140 of gross gain pays 140 - the trader is never paid twice
+        for the same dollars, and never at pro scale for pre-promotion gains.
+        """
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 1: MinerBucket.PRO_FUNDED},
+            payout_scale=0.2,
+        )
+        per_week = [w['payout'] for w in result['weekly_settlements']]
+        self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [0.2, 1.0])
+        self.assertEqual(per_week, [28.0, 140.0])
+        self.assertAlmostEqual(result['payout'], 168.0)
+
+    def test_standard_subaccount_payouts_are_unchanged(self):
+        """A standard funded subaccount is untouched by any of the pro machinery."""
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.SUBACCOUNT_FUNDED, 1: MinerBucket.SUBACCOUNT_FUNDED},
+            current_bucket=MinerBucket.SUBACCOUNT_FUNDED,
+        )
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
+        self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [1.0, 1.0])
+        self.assertEqual([w['weekly_penalty'] for w in result['weekly_settlements']], [1.0, 1.0])
+        self.assertAlmostEqual(result['payout'], 280.0)
+        self.assertEqual(result['deferred_balance'], 0.0)
+        self.assertEqual(result['deferred_forfeited'], 0.0)
+
+    def test_sealed_week_survives_a_rebuild_that_would_have_changed_it(self):
+        """A settled week replays as settled even when the ledgers now say otherwise.
+
+        Week 0 is breached in the ledger, but it was sealed clean. The sealed record wins, so the
+        rebuild cannot retroactively withhold a week that was already paid.
+        """
+        from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek
+
+        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+        sealed = {week_0_start: SealedWeek(
+            week_start_ms=week_0_start,
+            weekly_penalty=1.0,
+            payout_scale=1.0,
+            track='ON_TRACK',
+            first_earning_ms=None,
+            sealed_ms=0,
+        )}
+        result = self._payout_result(blocked_checkpoint_indices=(0,), sealed_weeks=sealed)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
+        self.assertEqual(result['deferred_balance'], 0.0)
 
 
 if __name__ == '__main__':

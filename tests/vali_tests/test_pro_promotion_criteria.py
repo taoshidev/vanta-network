@@ -440,9 +440,12 @@ def test_refresh_promotes_to_pro_funded_when_every_gate_clears(manager, bucket):
 
     _run_refresh(manager, hk, ledger=ledger)
 
-    # Promotion runs the account switch, which resets the stats it promoted on
+    # The PRO_FUNDED hop keeps the account, so the funded miner carries the ratio it passed with
+    # rather than restarting at calmar 0 (which would read as an immediate soft breach)
     assert manager.get_miner_bucket(hk) == MinerBucket.PRO_FUNDED
-    assert manager.miner_states[hk].pro_stats == ProStats()
+    assert manager.miner_states[hk].pro_stats.calmar == pytest.approx(2.0)
+    assert manager.miner_states[hk].pro_stats.max_drawdown == pytest.approx(0.96)
+    assert manager.miner_states[hk].pro_stats.trading_days == MIN_DAYS
 
 
 @pytest.mark.parametrize("bucket", PRO_CHALLENGE_BUCKETS)
@@ -716,3 +719,303 @@ def test_realized_return_is_all_time_and_not_windowed():
     assert before == pytest.approx(0.07)
     assert LedgerUtils.realized_return(ledger, ACCOUNT_SIZE) == pytest.approx(0.07)
     assert Metrics.all_time_calmar(before, 0.96) == pytest.approx(CALMAR_THRESHOLD)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 7 — the daily soft-breach latch
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _breaching_pro_stats() -> ProStats:
+    """Below the calmar line, so `soft_breach` is true in PRO_FUNDED."""
+    return ProStats(calmar=CALMAR_THRESHOLD - 0.5, daily_consistency=CONSISTENCY_THRESHOLD,
+                    max_drawdown=0.96, trading_days=MIN_DAYS)
+
+
+def test_latch_records_the_utc_day_a_pro_rule_broke(manager):
+    """The pro metrics move continuously but only land on 12h checkpoints, so a breach that heals
+    inside a checkpoint would never withhold the week unless the day is latched."""
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+    manager.miner_states[hk].pro_stats = _breaching_pro_stats()
+
+    manager._latch_soft_breaches([hk], NOW_MS)
+
+    assert manager.miner_states[hk].pro_stats.soft_breach_days == [MIDNIGHT_MS]
+    assert manager.miner_states[hk].is_soft_breach_latched(MIDNIGHT_MS)
+
+
+def test_latch_is_idempotent_within_a_day(manager):
+    """The refresh loop runs every 30s; a day is recorded once, not once per tick."""
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+    manager.miner_states[hk].pro_stats = _breaching_pro_stats()
+
+    for offset_ms in (0, 30_000, 60_000):
+        manager._latch_soft_breaches([hk], NOW_MS + offset_ms)
+
+    assert manager.miner_states[hk].pro_stats.soft_breach_days == [MIDNIGHT_MS]
+
+
+def test_a_breach_that_heals_still_leaves_the_day_latched(manager):
+    """The whole point of latching: recovering before the next 12h sample does not un-withhold
+    the week."""
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+    manager.miner_states[hk].pro_stats = _breaching_pro_stats()
+    manager._latch_soft_breaches([hk], NOW_MS)
+
+    # Calmar recovers past the line before the next 12h checkpoint closes
+    manager.miner_states[hk].pro_stats.calmar = CALMAR_THRESHOLD
+    manager._latch_soft_breaches([hk], NOW_MS + 60_000)
+
+    assert manager.miner_states[hk].soft_breach is False
+    assert manager.miner_states[hk].pro_stats.soft_breach_days == [MIDNIGHT_MS]
+
+
+def test_refreshing_pro_stats_carries_the_latch(manager):
+    """_refresh_pro_stats rebuilds ProStats from the ledger on every pass. The metrics are derived
+    and should be recomputed, but the latch is a history - losing it would erase the days holding
+    this week's payout twice a minute."""
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+    manager.miner_states[hk].pro_stats = _breaching_pro_stats()
+    manager._latch_soft_breaches([hk], NOW_MS)
+
+    manager._refresh_pro_stats([hk], {hk: _even_ledger(MIN_DAYS, realized_pnl_usd=8_000.0)},
+                               {hk: SimpleNamespace(account_size=ACCOUNT_SIZE)})
+
+    assert manager.miner_states[hk].pro_stats.trading_days == MIN_DAYS  # metrics did recompute
+    assert manager.miner_states[hk].pro_stats.soft_breach_days == [MIDNIGHT_MS]
+
+
+def test_a_clean_day_is_never_latched(manager):
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+    manager.miner_states[hk].pro_stats = _passing_pro_stats()
+
+    manager._latch_soft_breaches([hk], NOW_MS)
+
+    assert manager.miner_states[hk].pro_stats.soft_breach_days == []
+
+
+@pytest.mark.parametrize("bucket", [MinerBucket.SUBACCOUNT_FUNDED,
+                                    MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+                                    MinerBucket.PRO_CHALLENGE_TRANSITION])
+def test_buckets_without_soft_breaches_are_never_latched(manager, bucket):
+    """Standard subaccounts and the two buckets that keep earning through a breach are untouched."""
+    hk = "pro_hk"
+    _seed(manager, hk, bucket, _healthy_drawdown())
+    manager.miner_states[hk].pro_stats = _breaching_pro_stats()
+
+    manager._latch_soft_breaches([hk], NOW_MS)
+
+    assert manager.miner_states[hk].pro_stats.soft_breach_days == []
+
+
+def test_latched_days_are_pruned_to_the_retention_window(manager):
+    """Bounded so the challenge period checkpoint cannot grow without limit."""
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+    manager.miner_states[hk].pro_stats = _breaching_pro_stats()
+    retention = ValiConfig.PRO_SOFT_BREACH_LATCH_RETENTION_DAYS
+
+    stale_day = MIDNIGHT_MS - (retention + 5) * DAILY_MS
+    manager.miner_states[hk].pro_stats.soft_breach_days = [stale_day]
+    manager._latch_soft_breaches([hk], NOW_MS)
+
+    assert stale_day not in manager.miner_states[hk].pro_stats.soft_breach_days
+    assert manager.miner_states[hk].pro_stats.soft_breach_days == [MIDNIGHT_MS]
+
+
+def test_latched_days_round_trip_through_the_checkpoint(manager):
+    """The penalty ledger reads the latch out of the challenge period checkpoint, so it has to
+    survive serialization and a validator restart."""
+    state = _state(MinerBucket.PRO_FUNDED)
+    state.pro_stats.soft_breach_days = [MIDNIGHT_MS - DAILY_MS, MIDNIGHT_MS]
+
+    restored = MinerBucketState.from_checkpoint_dict("pro_hk", state.to_checkpoint_dict())
+
+    assert restored.pro_stats.soft_breach_days == [MIDNIGHT_MS - DAILY_MS, MIDNIGHT_MS]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 8 — reverting an elimination restores the account, it does not reset it
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _eliminated_state(manager, hk: str, bucket=MinerBucket.PRO_FUNDED) -> MinerBucketState:
+    """An account carrying pro history that was then eliminated out of `bucket`."""
+    state = MinerBucketState(hk, [BucketEntry(bucket, NOW_MS - 10 * DAILY_MS)])
+    state.drawdown = _healthy_drawdown(1.07)
+    state.pro_stats = _passing_pro_stats()
+    state.pro_stats.soft_breach_days = [MIDNIGHT_MS - DAILY_MS]
+    manager.miner_states[hk] = state
+    state.add_bucket_entry(MinerBucket.ELIMINATED, NOW_MS)
+    return state
+
+
+def _eliminated_pro_state(manager, hk: str) -> MinerBucketState:
+    return _eliminated_state(manager, hk, MinerBucket.PRO_FUNDED)
+
+
+def test_revert_elimination_keeps_the_eliminated_entry_as_a_record(manager):
+    """The elimination stays in the history - it did happen and the audit trail keeps it."""
+    hk = "pro_hk"
+    state = _eliminated_pro_state(manager, hk)
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"):
+        assert manager.revert_elimination(hk)
+
+    assert state.current_bucket == MinerBucket.PRO_FUNDED
+    assert [e.bucket for e in state.entries] == [
+        MinerBucket.PRO_FUNDED, MinerBucket.ELIMINATED, MinerBucket.PRO_FUNDED
+    ]
+    assert state.entries[1].is_reverted
+
+
+def test_a_reverted_elimination_never_governs_a_timestamp(manager):
+    """Bucket history is replayed point-in-time when the ledgers rebuild. A reverted ELIMINATED
+    span that still governed its window would reclassify every checkpoint inside it as non-earning
+    and off the soft-breach track, forfeiting escrow for an elimination that was undone."""
+    hk = "pro_hk"
+    state = _eliminated_pro_state(manager, hk)
+    eliminated_at_ms = state.entries[-1].start_time_ms
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"):
+        assert manager.revert_elimination(hk)
+
+    # Inside the eliminated window, and before it, the account reads as PRO_FUNDED throughout
+    assert state.bucket(eliminated_at_ms) == MinerBucket.PRO_FUNDED
+    assert state.bucket(NOW_MS - DAILY_MS) == MinerBucket.PRO_FUNDED
+
+
+def test_the_penalty_ledger_skips_a_reverted_span_when_stamping_checkpoints(manager):
+    """The penalty ledger replays the serialized history, so the revert has to survive the round
+    trip into the challenge period checkpoint."""
+    from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import PenaltyLedgerManager
+
+    hk = "pro_hk"
+    state = _eliminated_pro_state(manager, hk)
+    eliminated_at_ms = state.entries[-1].start_time_ms
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"):
+        assert manager.revert_elimination(hk)
+
+    bucket_data = state.to_checkpoint_dict()
+    status = PenaltyLedgerManager._get_status_for_checkpoint(
+        PenaltyLedgerManager, eliminated_at_ms + 1, bucket_data
+    )
+    assert status == MinerBucket.PRO_FUNDED.value
+
+
+def test_revert_elimination_keeps_pro_stats_and_the_latched_breaches(manager):
+    """A week that was breached before the elimination stays breached after the revert."""
+    hk = "pro_hk"
+    state = _eliminated_pro_state(manager, hk)
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"):
+        assert manager.revert_elimination(hk)
+
+    expected = _passing_pro_stats()
+    expected.soft_breach_days = [MIDNIGHT_MS - DAILY_MS]
+    assert state.pro_stats == expected
+
+
+def test_revert_elimination_keeps_the_trailing_loss_limit(manager):
+    """eod_hwm is the denominator of the 8% trailing rule; clearing it would hand the miner a
+    fresh 8% of room for free."""
+    hk = "pro_hk"
+    state = _eliminated_pro_state(manager, hk)
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"):
+        assert manager.revert_elimination(hk)
+
+    assert state.drawdown.eod_hwm == pytest.approx(1.07)
+    assert state.drawdown.last_eod_equity == pytest.approx(1.07)
+    assert state.drawdown.last_eod_checked_ms == MIDNIGHT_MS
+
+
+def test_revert_elimination_is_a_no_op_for_a_live_miner(manager):
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.PRO_FUNDED, _healthy_drawdown())
+
+    assert manager.revert_elimination(hk) is False
+
+
+def test_switch_account_still_clears_the_latch(manager):
+    """A hop that really does start a new account gets a new breach history, unlike PRO_FUNDED."""
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.PRO_CHALLENGE_DIRECT, _healthy_drawdown())
+    manager.miner_states[hk].pro_stats.soft_breach_days = [MIDNIGHT_MS]
+
+    assert manager._switch_account(hk, MinerBucket.PRO_CHALLENGE_DIRECT, NOW_MS)
+
+    assert manager.miner_states[hk].pro_stats.soft_breach_days == []
+    assert manager.miner_states[hk].pro_stats == ProStats()
+
+
+def test_admin_move_to_pro_funded_sizes_the_account(manager):
+    """PRO_FUNDED no longer runs the account switch, so the sizing it used to do has to happen
+    explicitly - an admin can drop a subaccount straight in from a standard bucket."""
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.SUBACCOUNT_FUNDED, _healthy_drawdown())
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"), \
+            patch("vali_objects.challenge_period.challengeperiod_manager.is_synthetic_hotkey",
+                  return_value=True):
+        success, _ = manager.admin_set_bucket(hk, MinerBucket.PRO_FUNDED, NOW_MS)
+
+    assert success
+    manager._entity_client.apply_bucket_account_size.assert_called_once_with(hk, MinerBucket.PRO_FUNDED)
+    # ...and it is a sizing call only: the account itself is untouched
+    manager._position_client.close_all_positions.assert_not_called()
+    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
+
+
+def test_admin_move_to_pro_funded_aborts_when_sizing_fails(manager):
+    """A subaccount with no granted pro size must not end up in a pro bucket on a standard size."""
+    hk = "pro_hk"
+    _seed(manager, hk, MinerBucket.SUBACCOUNT_FUNDED, _healthy_drawdown())
+    manager._entity_client.apply_bucket_account_size.return_value = (False, "pro_account_size is required")
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"), \
+            patch("vali_objects.challenge_period.challengeperiod_manager.is_synthetic_hotkey",
+                  return_value=True):
+        success, message = manager.admin_set_bucket(hk, MinerBucket.PRO_FUNDED, NOW_MS)
+
+    assert not success
+    assert "pro_account_size is required" in message
+    assert manager.miner_states[hk].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
+
+
+@pytest.mark.parametrize("bucket", [MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_CHALLENGE,
+                                    MinerBucket.MAINCOMP])
+def test_standard_revert_is_unchanged_from_before_the_pro_track(manager, bucket):
+    """Neither restoration applies off the pro track: a standard subaccount or a regular miner
+    reverts exactly the way it did before pro accounts existed - the eliminated span still governs
+    its window, and the drawdown cache is cleared outright."""
+    hk = "std_hk"
+    state = _eliminated_state(manager, hk, bucket)
+    eliminated_at_ms = state.entries[-1].start_time_ms
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"):
+        assert manager.revert_elimination(hk)
+
+    assert state.current_bucket == bucket
+    assert not state.entries[1].is_reverted
+    assert state.bucket(eliminated_at_ms) == MinerBucket.ELIMINATED
+    # Full reset, as on main - no preserved end-of-day high water mark
+    assert state.drawdown == DrawdownStats()
+
+
+@pytest.mark.parametrize("bucket", PRO_CHALLENGE_BUCKETS + (MinerBucket.PRO_FUNDED,
+                                                            MinerBucket.PRO_CHALLENGE_TRANSITION))
+def test_pro_revert_marks_and_preserves(manager, bucket):
+    """Every bucket on the pro journey gets both restorations."""
+    hk = "pro_hk"
+    state = _eliminated_state(manager, hk, bucket)
+
+    with patch.object(manager, "_save_to_disk"), patch.object(manager, "_sync_buckets_to_accounts"):
+        assert manager.revert_elimination(hk)
+
+    assert state.entries[1].is_reverted
+    assert state.drawdown.eod_hwm == pytest.approx(1.07)

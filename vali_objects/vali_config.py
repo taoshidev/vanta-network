@@ -502,6 +502,11 @@ class ValiConfig:
     PRO_DAILY_RETURN_CAP = 0.015  # Each day's profit counts for at most this much toward the total
     CALMAR_DRAWDOWN_MINIMUM = 0.001  # Floor on the calmar denominator, mirrors SHARPE_STDDEV_MINIMUM
 
+    # Days of latched soft-breach history kept per miner. The payout only ever reads the current and
+    # previous payout week; the rest is retained for operator forensics and bounded here so the
+    # challenge period checkpoint cannot grow without limit.
+    PRO_SOFT_BREACH_LATCH_RETENTION_DAYS = 60
+
     # Grace period for traders transitioning from standard funded to pro
     PRO_TRANSITION_GRACE_PERIOD_DAYS = _env_override("PRO_TRANSITION_GRACE_PERIOD_DAYS", 7, maximum=3650)  # fractional days allowed
     PRO_TRANSITION_GRACE_PERIOD_MS = int(PRO_TRANSITION_GRACE_PERIOD_DAYS * DAILY_MS)

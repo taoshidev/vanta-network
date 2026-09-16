@@ -114,6 +114,11 @@ class DebtLedgerManager():
             validator_hotkey=validator_hotkey
         )
 
+        # Survives every ledger rebuild and every ledger deletion; it is what makes a closed payout
+        # week reproduce the same paid/withheld decision no matter what else is recomputed.
+        # Built lazily by the property below so a partially constructed manager still works.
+        self._weekly_seal_ledger = None
+
         self.slack_notifier = SlackNotifier(webhook_url=slack_webhook_url, hotkey=validator_hotkey)
         self.running_unit_tests = running_unit_tests
         self.is_mainnet = is_mainnet
@@ -170,6 +175,8 @@ class DebtLedgerManager():
         if not entity_utils.is_synthetic_hotkey(hotkey):
             logger.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only subaccount (synthetic) hotkeys can have their ledgers deleted")
             return False
+        # NOTE: weekly_seal_ledger is deliberately untouched. Deleting the ledgers is exactly the
+        # case the seals exist for - a rebuilt ledger must replay into the same settled weeks.
         self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
         if hotkey in self.debt_ledgers:
             del self.debt_ledgers[hotkey]
@@ -177,6 +184,56 @@ class DebtLedgerManager():
             self.save_to_disk(create_backup=False)
             return True
         return False
+
+    @property
+    def weekly_seal_ledger(self):
+        """The settled-week record, built on first use.
+
+        Lazy so a manager assembled without __init__ (unit tests, one-off tooling) still reaches a
+        working seal ledger rather than an AttributeError in the middle of aggregation.
+        """
+        existing = getattr(self, '_weekly_seal_ledger', None)
+        if existing is None:
+            from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import WeeklySealLedger
+            existing = WeeklySealLedger(running_unit_tests=getattr(self, 'running_unit_tests', False))
+            self._weekly_seal_ledger = existing
+        return existing
+
+    def _seal_closed_weeks(self, subaccount_ledgers: list, subaccount_payout_scale: dict) -> None:
+        """Pin the classification of every payout week that has closed.
+
+        The context is computed fresh here on purpose: `seal` refuses to overwrite a week that is
+        already settled and logs when the fresh values disagree, which is how a rebuild that would
+        have rewritten history announces itself instead of doing it silently.
+        """
+        current_week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+        newly_sealed = 0
+        for synthetic_hotkey, ledger in subaccount_ledgers:
+            context = ledger.weekly_payout_context(subaccount_payout_scale.get(synthetic_hotkey, 1.0))
+            for week_start_ms, week in context.items():
+                if week_start_ms >= current_week_start_ms:
+                    continue
+                if self.weekly_seal_ledger.seal(
+                    synthetic_hotkey,
+                    week_start_ms,
+                    weekly_penalty=week.weekly_penalty,
+                    payout_scale=week.payout_scale,
+                    track=week.track.name,
+                    first_earning_ms=week.first_earning_ms,
+                ):
+                    newly_sealed += 1
+
+        if newly_sealed:
+            self.weekly_seal_ledger.save_to_disk()
+            logger.info(f"[DEBT_LEDGER] Sealed {newly_sealed} newly closed payout weeks")
+
+    def get_sealed_weeks(self, hotkey: str) -> dict:
+        """Sealed payout weeks for one hotkey, keyed by Monday 00:00 UTC."""
+        return self.weekly_seal_ledger.get_sealed(hotkey)
+
+    def unseal_week(self, hotkey: str, week_start_ms: int) -> bool:
+        """Drop one sealed week so the next build reseals it. Deliberate corrections only."""
+        return self.weekly_seal_ledger.unseal(hotkey, week_start_ms)
 
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
         dashboard: dict | None = None
@@ -822,6 +879,16 @@ class DebtLedgerManager():
                 penalty_ledger = self.penalty_ledger_manager.get_penalty_ledger(synthetic_hotkey)
 
                 debt_checkpoints = []
+                # Ledgers are only frozen for earning buckets, so a checkpoint the penalty ledger
+                # did not stamp with an earning status inherits the last earning one this hotkey
+                # actually held. Hard-coding SUBACCOUNT_FUNDED here would silently move a frozen
+                # PRO_FUNDED subaccount off the soft-breach track and forfeit its escrow.
+                last_earning_status = MinerBucket.SUBACCOUNT_FUNDED.value
+                if penalty_ledger:
+                    for penalty_cp in penalty_ledger.checkpoints:
+                        if penalty_cp.challenge_period_status in _earning_statuses:
+                            last_earning_status = penalty_cp.challenge_period_status
+
                 for cp in perf_ledger.cps:
                     if cp.accum_ms != target_cp_duration_ms:
                         continue
@@ -829,9 +896,7 @@ class DebtLedgerManager():
                         penalty_ledger.get_checkpoint_at_time(cp.last_update_ms, target_cp_duration_ms)
                         if penalty_ledger else None
                     )
-                    # Ledgers are only frozen for earning buckets, so fall back to the canonical
-                    # earning status whenever the penalty ledger did not record an earning one
-                    frozen_status = MinerBucket.SUBACCOUNT_FUNDED.value
+                    frozen_status = last_earning_status
                     if penalty_cp and penalty_cp.challenge_period_status in _earning_statuses:
                         frozen_status = penalty_cp.challenge_period_status
 
@@ -933,13 +998,25 @@ class DebtLedgerManager():
                 subaccount_cum_realized = {hk: 0.0 for hk, _ in subaccount_ledgers}
                 subaccount_hwm = {hk: 0.0 for hk, _ in subaccount_ledgers}
                 subaccount_escrow = {hk: 0.0 for hk, _ in subaccount_ledgers}
+                # cumulative_fees_usd runs from ledger inception, but cum_realized only starts
+                # accumulating at the first earning checkpoint. Without a baseline, a subaccount
+                # that ran a pro challenge on this account would have the challenge's fees
+                # subtracted from its funded earnings.
+                subaccount_fee_baseline = {
+                    hk: ledger.fee_baseline_at_first_earning() for hk, ledger in subaccount_ledgers
+                }
 
-                # Widen each subaccount's weekly penalty and payout scale across its whole payout
-                # week. A breach is only stamped on the breaching checkpoint, so the worst value in
-                # a week governs it.
+                # Pin every week that has already closed before reading the context back, so the
+                # decision this build would make becomes the settled one exactly once.
+                self._seal_closed_weeks(subaccount_ledgers, subaccount_payout_scale)
+
+                # Widen each subaccount's weekly penalty across its whole payout week: a breach is
+                # only stamped on the breaching checkpoint, so the worst value in a week governs it.
+                # Sealed weeks come back verbatim rather than recomputed.
                 subaccount_week_context = {
                     synthetic_hotkey: ledger.weekly_payout_context(
-                        subaccount_payout_scale.get(synthetic_hotkey, 1.0)
+                        subaccount_payout_scale.get(synthetic_hotkey, 1.0),
+                        sealed=self.weekly_seal_ledger.get_sealed(synthetic_hotkey),
                     )
                     for synthetic_hotkey, ledger in subaccount_ledgers
                 }
@@ -981,14 +1058,24 @@ class DebtLedgerManager():
 
                             subaccount_cum_realized[synthetic_hotkey] += checkpoint.realized_pnl
 
-                            net_realized = subaccount_cum_realized[synthetic_hotkey] - checkpoint.cumulative_fees_usd
+                            fees_since_earning = (
+                                checkpoint.cumulative_fees_usd - subaccount_fee_baseline[synthetic_hotkey]
+                            )
+
+                            net_realized = subaccount_cum_realized[synthetic_hotkey] - fees_since_earning
                             if net_realized > subaccount_hwm[synthetic_hotkey]:
                                 delta = net_realized - subaccount_hwm[synthetic_hotkey]
                                 subaccount_hwm[synthetic_hotkey] = net_realized
 
+                                # Price the delta at the scale in force at *this* checkpoint, not
+                                # the week's: a subaccount promoting mid-week trades part of it on
+                                # the standard payout basis and the rest on the pro one.
+                                scale = DebtLedger.checkpoint_payout_scale(
+                                    checkpoint, subaccount_payout_scale.get(synthetic_hotkey, 1.0)
+                                )
                                 # The HWM advances on gross terms; the blocked portion is held in
                                 # escrow instead, so netting the HWM down would pay it twice.
-                                owed = delta * week.payout_scale
+                                owed = delta * scale
                                 earned = owed * week.weekly_penalty
                                 agg_realized_pnl += earned
                                 if week.track is WeekTrack.ON_TRACK:

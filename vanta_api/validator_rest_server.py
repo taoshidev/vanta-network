@@ -352,6 +352,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["DELETE"])(self.delete_position)
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
         self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
+        self.app.route("/admin/unseal-week/<hotkey>", methods=["POST"])(self.unseal_week)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
@@ -3010,6 +3011,51 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error reverting elimination for {hotkey}: {e}")
             logger.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def unseal_week(self, hotkey: str):
+        """
+        Drop one settled payout-week record so the next ledger build recomputes it.
+
+        A closed payout week is sealed with the paid/withheld decision it was settled on, and every
+        rebuild replays that record instead of recomputing it. This is the deliberate door for
+        correcting one: use it only when the sealed week is known to be wrong, because the next
+        build will re-derive it from whatever the ledgers say at that point.
+
+        Query params:
+          week_start_ms: Monday 00:00 UTC of the week to unseal (required)
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/unseal-week/<hotkey>?week_start_ms=1700000000000" \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Unseal week endpoint requires tier 500 access'}), 403
+
+        raw_week_start = request.args.get('week_start_ms')
+        try:
+            week_start_ms = int(raw_week_start)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'week_start_ms is required and must be an integer'}), 400
+
+        if week_start_ms != TimeUtil.ms_at_start_of_week(week_start_ms):
+            return jsonify({
+                'error': f'week_start_ms must be Monday 00:00 UTC; got {week_start_ms}'
+            }), 400
+
+        try:
+            removed = self._debt_ledger_client.unseal_week(hotkey, week_start_ms)
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'week_start_ms': week_start_ms,
+                'unsealed': removed,
+            }), 200
+        except Exception as e:
+            logger.error(f"Error unsealing week for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def eliminate_hotkey(self, hotkey: str):

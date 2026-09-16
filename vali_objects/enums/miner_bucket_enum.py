@@ -199,10 +199,15 @@ class MinerBucket(Enum):
     @property
     def switches_account(self) -> bool:
         """True when moving *into* this bucket requires closing
-        positions, cancelling limit orders, and restarting the ledgers."""
+        positions, cancelling limit orders, and restarting the ledgers.
+
+        PRO_FUNDED is deliberately absent: passing the pro challenge keeps the same account, so
+        balance, equity, positions and the ledgers carry over and all-time calmar keeps the ratio
+        it passed with. Nothing earned before the promotion is paid at pro scale - the payout paths
+        exclude it by reading each checkpoint's own bucket instead of wiping the history.
+        """
         return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                        MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT,
-                        MinerBucket.PRO_FUNDED)
+                        MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT)
 
     @property
     def max_time_ms(self) -> int | None:
@@ -251,13 +256,23 @@ class MinerBucket(Enum):
 class BucketEntry:
     bucket: MinerBucket
     start_time_ms: int
+    # When set, this span was undone (an elimination that was reverted). The entry is kept as the
+    # record that it happened, but point-in-time lookups skip it: bucket history is replayed to
+    # stamp historical checkpoints, so leaving a reverted span visible would permanently reclassify
+    # every checkpoint inside it and change payout weeks that were already settled.
+    reverted_ms: int | None = None
+
+    @property
+    def is_reverted(self) -> bool:
+        return self.reverted_ms is not None
 
     def to_dict(self) -> dict:
         """Convert to dict for serialization."""
         return {
             'bucket': self.bucket.value,
             'start_time_ms': self.start_time_ms,
-            'bucket_start_time': self.start_time_ms  # for backwards compatibility TODO remove
+            'bucket_start_time': self.start_time_ms,  # for backwards compatibility TODO remove
+            'reverted_ms': self.reverted_ms,
         }
 
     @classmethod
@@ -268,5 +283,6 @@ class BucketEntry:
             bucket = MinerBucket(bucket)
         return cls(
             bucket=bucket,
-            start_time_ms=d.get('start_time_ms') or d.get('bucket_start_time', 0)
+            start_time_ms=d.get('start_time_ms') or d.get('bucket_start_time', 0),
+            reverted_ms=d.get('reverted_ms'),
         )

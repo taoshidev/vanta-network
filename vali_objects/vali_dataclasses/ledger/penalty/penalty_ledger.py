@@ -742,6 +742,32 @@ class PenaltyLedgerManager:
         except ValueError:
             return MinerBucket.UNKNOWN
 
+    @staticmethod
+    def _week_is_closed(checkpoint_ms: int, now_ms: int) -> bool:
+        """True when this checkpoint belongs to a payout week that has already ended.
+
+        A checkpoint stamped exactly at Monday 00:00 covers the 12 hours *ending* then, so it
+        belongs to the week that just closed - hence the -1, matching DebtLedger.weekly_payout_context.
+        """
+        return TimeUtil.ms_at_start_of_week(checkpoint_ms - 1) < TimeUtil.ms_at_start_of_week(now_ms)
+
+    @staticmethod
+    def _carry_forward_penalty(
+        penalty_ledger: 'PenaltyLedger', penalty_name: str, miner_hotkey: str, checkpoint_ms: int
+    ) -> float:
+        """The last recorded value for a weekly penalty, or 0.0 when there is nothing to carry.
+
+        Used when a pro rule cannot be evaluated. Defaulting to 1.0 would read as "clean" and
+        release a week that may still be in breach, so this fails closed instead.
+        """
+        previous = penalty_ledger.get_latest_checkpoint()
+        carried = getattr(previous, f"{penalty_name}_penalty", 0.0) if previous else 0.0
+        logger.warning(
+            f"[PENALTY_LEDGER] Could not evaluate {penalty_name} for {miner_hotkey} at "
+            f"{TimeUtil.millis_to_formatted_date_str(checkpoint_ms)}; carrying {carried}"
+        )
+        return carried
+
     def _get_status_for_checkpoint(self, checkpoint_ms: int, bucket_data: dict) -> str:
         """
         Determine the challenge period status for a checkpoint from pre-fetched bucket data.
@@ -764,6 +790,11 @@ class PenaltyLedgerManager:
         entries = bucket_data.get("entries", [])
         # Iterate newest-first so we return the most recent bucket that started before checkpoint_ms
         for entry in reversed(entries):
+            # A reverted elimination is kept in the history but never governed anything: stamping
+            # checkpoints inside that span with ELIMINATED would drop them out of the earning
+            # statuses and off the pro soft-breach track, changing weeks that were already settled
+            if entry.get("reverted_ms") is not None:
+                continue
             start_time_ms = entry.get("start_time_ms") or entry.get("bucket_start_time")
             if start_time_ms is not None and checkpoint_ms >= start_time_ms:
                 return self._bucket_from_status(entry.get("bucket", MinerBucket.UNKNOWN.value)).value
@@ -787,6 +818,9 @@ class PenaltyLedgerManager:
         """
         # Create separate candidate ledgers for full rebuild (don't clear old ledgers yet)
         new_penalty_ledgers = {} if not delta_update else None
+        # One anchor for the whole build, so a rebuild that straddles a Monday boundary classifies
+        # every checkpoint against the same "current week"
+        build_time_ms = TimeUtil.now_in_millis()
 
         if not delta_update:
             logger.info("[PENALTY_LEDGER] Full rebuild mode: building new ledgers while preserving old ones")
@@ -811,7 +845,13 @@ class PenaltyLedgerManager:
                     if bucket_data
                 }
             except Exception as e:
-                logger.warning(f"[PENALTY_LEDGER] Failed to fetch challenge period data via RPC: {e}")
+                # Without this data every checkpoint resolves to UNKNOWN, which silently skips the
+                # pro weekly penalties (a breaching week pays in full) and drops every subaccount out
+                # of the earning statuses downstream. Fail the build so the daemon retries instead.
+                raise RuntimeError(
+                    "[PENALTY_LEDGER] Failed to fetch challenge period data via RPC; refusing to "
+                    f"build penalty ledgers with unknown buckets: {e}"
+                ) from e
 
         logger.info(
             f"[PENALTY_LEDGER] Building penalty ledgers for {len(all_perf_ledgers)} hotkeys "
@@ -855,9 +895,13 @@ class PenaltyLedgerManager:
             if miner_account_size is None:
                 miner_account_size = 0
 
-            # All-time drawdown is ratcheted by ChallengePeriodManager, since the perf ledger only
-            # retains a rolling window. None when the miner has no pro stats yet.
-            miner_max_drawdown = (challenge_period_data.get(miner_hotkey) or {}).get('pro_stats', {}).get('max_drawdown')
+            # ProStats is maintained by ChallengePeriodManager. The all-time drawdown is ratcheted
+            # there since the perf ledger only retains a rolling window, and soft_breach_days holds
+            # the UTC days on which it saw calmar or consistency broken at any point. Empty when
+            # the miner has no pro stats yet.
+            miner_pro_stats = (challenge_period_data.get(miner_hotkey) or {}).get('pro_stats') or {}
+            miner_max_drawdown = miner_pro_stats.get('max_drawdown')
+            miner_soft_breach_days = {int(d) for d in (miner_pro_stats.get('soft_breach_days') or [])}
 
             # Iterate through checkpoints in the portfolio ledger (only new ones if delta_update)
             checkpoints_processed = 0
@@ -883,6 +927,7 @@ class PenaltyLedgerManager:
                 # For delta updates: always use backfilling logic
                 challenge_period_status = MinerBucket.UNKNOWN.value
 
+                old_checkpoint = None
                 if not delta_update:
                     # Full rebuild: try to preserve challenge_period_status from old ledger
                     old_ledger = self.penalty_ledgers.get(miner_hotkey)
@@ -907,6 +952,11 @@ class PenaltyLedgerManager:
 
                 checkpoint_bucket = self._bucket_from_status(challenge_period_status)
 
+                # A closed payout week has already been settled. Carry its weekly penalties forward
+                sealed_weekly = None
+                if old_checkpoint is not None and self._week_is_closed(checkpoint_ms, build_time_ms):
+                    sealed_weekly = old_checkpoint
+
                 # Calculate each penalty
                 penalties = {}
                 total_penalty = 1.0
@@ -917,6 +967,13 @@ class PenaltyLedgerManager:
 
                     if penalty_config.buckets is not None and checkpoint_bucket not in penalty_config.buckets:
                         penalties[penalty_name] = penalty_value
+                        continue
+
+                    if (sealed_weekly is not None
+                            and penalty_config.application_scope == PenaltyApplicationScope.WEEKLY):
+                        penalty_value = getattr(sealed_weekly, f"{penalty_name}_penalty", 1.0)
+                        penalties[penalty_name] = penalty_value
+                        weekly_penalty *= penalty_value
                         continue
 
                     try:
@@ -934,6 +991,13 @@ class PenaltyLedgerManager:
                                 penalty_value = penalty_config.function(temp_ledger)
                             elif miner_max_drawdown is not None and miner_account_size:
                                 penalty_value = penalty_config.function(temp_ledger, miner_max_drawdown, miner_account_size)
+                            else:
+                                # No ratchet or no account size: the rule cannot be evaluated. Hold
+                                # the previous verdict rather than defaulting to a pass, which would
+                                # quietly release a week that is still in breach.
+                                penalty_value = self._carry_forward_penalty(
+                                    penalty_ledger, penalty_name, miner_hotkey, checkpoint_ms
+                                )
 
                         elif penalty_config.input_type == PenaltyInputType.POSITIONS:
                             penalty_value = penalty_config.function(miner_positions_at_checkpoint)
@@ -946,7 +1010,13 @@ class PenaltyLedgerManager:
                             logger.warning(
                                 f"Error computing {penalty_name} for miner {miner_hotkey} at {checkpoint_ms}: {e}"
                             )
-                        penalty_value = 1.0
+                        if penalty_config.application_scope == PenaltyApplicationScope.WEEKLY:
+                            # A failed pro rule check must not read as a clean week
+                            penalty_value = self._carry_forward_penalty(
+                                penalty_ledger, penalty_name, miner_hotkey, checkpoint_ms
+                            )
+                        else:
+                            penalty_value = 1.0
 
                     penalties[penalty_name] = penalty_value
 
@@ -958,6 +1028,13 @@ class PenaltyLedgerManager:
                             total_penalty *= penalty_value
                     else:
                         total_penalty *= penalty_value
+
+                # A day the live loop saw broken withholds the week even if every 12h sample that
+                # week looks clean. Sealed weeks keep whatever they were settled with.
+                if (sealed_weekly is None
+                        and checkpoint_bucket.soft_breach_applies
+                        and TimeUtil.get_start_of_day_ms(checkpoint_ms - 1) in miner_soft_breach_days):
+                    weekly_penalty = 0.0
 
                 if is_synthetic_hotkey(miner_hotkey):
                     # Only the per-checkpoint product is waived for subaccounts - weekly_penalty

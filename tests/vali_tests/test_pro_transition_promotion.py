@@ -176,20 +176,25 @@ def test_only_the_hops_onto_a_pro_account_wipe_trading_state(manager, source, ta
     "challenge_bucket",
     [MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD],
 )
-def test_pro_funded_always_starts_fresh(manager, challenge_bucket):
-    """A pro funded account starts from scratch, so challenge-period gains are never payable."""
+def test_pro_funded_keeps_the_account_it_passed_on(manager, challenge_bucket):
+    """Passing the pro challenge keeps the same account.
+
+    Balance, equity, positions and the ledgers all carry over, so all-time calmar keeps the ratio
+    the miner passed with. Challenge-period gains are kept out of the payout by the payout paths
+    reading each checkpoint's own bucket, not by wiping the history.
+    """
     manager.set_miner_bucket(HOTKEY, challenge_bucket, NOW_MS)
 
     assert manager.promote_hotkeys([HOTKEY], NOW_MS)
 
     assert manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_FUNDED
-    manager._position_client.close_all_positions.assert_called_once_with(
-        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION
-    )
-    manager._position_client.archive_positions_for_hotkey.assert_called_once_with(HOTKEY, archive_all=True)
-    manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
-    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_called_once_with([HOTKEY])
-    manager._debt_ledger_client.delete_debt_ledger.assert_called_once_with(HOTKEY)
+    assert not MinerBucket.PRO_FUNDED.switches_account
+    manager._position_client.close_all_positions.assert_not_called()
+    manager._position_client.archive_positions_for_hotkey.assert_not_called()
+    manager._limit_order_client.cancel_limit_order.assert_not_called()
+    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
+    manager._debt_ledger_client.delete_debt_ledger.assert_not_called()
+    manager._miner_account_client.reset_account.assert_not_called()
 
 
 def test_entity_rejection_blocks_the_promotion(manager):
