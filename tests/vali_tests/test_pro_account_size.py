@@ -14,8 +14,11 @@ Covers:
     after a demotion; a size below the subaccount's standard account size is refused; a move within the track
     uses an explicit size or the recorded one; PRO_FUNDED can re-set the size; a standard target never records
     a size; a rejected or failed move changes nothing; the log line names the size source.
-  * Dashboards: subaccount_info no longer carries default_pro_account_size in the v1, v2, websocket or
-    hl-traders payloads.
+
+This file also owns the shared pro fixtures (_bare_manager, _add_standard / _add_pro / _add_demoted,
+INVALID_SIZES) that test_challengeperiod_pro.py and test_pro_endpoints.py build on. The bucket moves that
+call apply_bucket_account_size are in test_challengeperiod_pro.py; the payloads that report the granted size
+are in test_pro_endpoints.py.
 
 EntityManager is built with object.__new__ and only the attributes these methods touch, so no RPC servers
 are started.
@@ -25,15 +28,9 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from flask import Flask
-
 import vali_objects.vali_config as vali_config_module
 from entity_management.entity_manager import EntityData, EntityManager, SubaccountInfo
-from entity_management.entity_utils import (
-    create_subaccount_dashboard,
-    pro_account_size_error,
-    pro_payout_scale,
-)
+from entity_management.entity_utils import pro_account_size_error, pro_payout_scale
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
@@ -43,7 +40,6 @@ ENTITY_HOTKEY = "entity_alpha"
 STANDARD_SIZE = 100_000.0
 GRANTED_SIZE = 500_000.0
 PAYOUT_MULTIPLIER = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
-REMOVED_FIELD = "default_pro_account_size"
 REQUIRED = "pro_account_size is required to enter the pro track"
 
 PRO_BUCKETS = (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
@@ -139,20 +135,6 @@ def _add_demoted(manager, subaccount_id=2, pro_size=GRANTED_SIZE):
     info.account_size = STANDARD_SIZE
     info.account_type = AccountType.STANDARD.value
     return hotkey
-
-
-def _no_section_clients():
-    """Dashboard section clients that have nothing to report, so only subaccount_info is built."""
-    clients = {name: MagicMock() for name in (
-        "challenge_period", "elimination", "miner_account", "position", "limit_order", "debt_ledger",
-        "statistics",
-    )}
-    clients["challenge_period"].get_dashboard.return_value = None
-    clients["challenge_period"].get_drawdown_stats.return_value = None
-    clients["challenge_period"].get_pro_stats.return_value = None
-    for name in ("elimination", "miner_account", "position", "limit_order", "debt_ledger", "statistics"):
-        clients[name].get_dashboard.return_value = None
-    return clients
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -582,21 +564,19 @@ class TestApplyBucketAccountSizeLog(unittest.TestCase):
         self.assertEqual(len(lines), 1, lines)
         return lines[0]
 
-    def test_explicit_size(self):
-        line = self._logged(self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE)
-        self.assertIn("pro size source: explicit", line)
-        self.assertIn(f"pro=${GRANTED_SIZE}", line)
-
-    def test_recorded_size(self):
+    def test_the_line_names_the_size_and_where_it_came_from(self):
+        """Which of the two branches ran is the thing an operator cannot otherwise tell apart when
+        a subaccount ends up on the wrong size."""
         pro = _add_pro(self.manager)
-        line = self._logged(pro, MinerBucket.PRO_FUNDED)
-        self.assertIn("pro size source: recorded", line)
-        self.assertIn(f"pro=${GRANTED_SIZE}", line)
-
-    def test_explicit_re_set_within_the_track(self):
-        pro = _add_pro(self.manager)
-        line = self._logged(pro, MinerBucket.PRO_FUNDED, 750_000)
-        self.assertIn("pro size source: explicit", line)
+        for hotkey, bucket, size, source, logged_size in (
+            (self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE, "explicit", GRANTED_SIZE),
+            (pro, MinerBucket.PRO_FUNDED, None, "recorded", GRANTED_SIZE),
+            (pro, MinerBucket.PRO_FUNDED, 750_000, "explicit", 750_000),
+        ):
+            with self.subTest(bucket=bucket, pro_account_size=size):
+                line = self._logged(hotkey, bucket, size)
+                self.assertIn(f"pro size source: {source}", line)
+                self.assertIn(f"pro=${logged_size}", line)
 
     def test_standard_bucket_names_no_source(self):
         pro = _add_pro(self.manager)
@@ -604,137 +584,6 @@ class TestApplyBucketAccountSizeLog(unittest.TestCase):
                                      (self.standard, MinerBucket.SUBACCOUNT_CHALLENGE, GRANTED_SIZE)):
             with self.subTest(bucket=bucket):
                 self.assertNotIn("source", self._logged(hotkey, bucket, size))
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Dashboards: no default_pro_account_size
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestDashboardsCarryNoDefaultProAccountSize(unittest.TestCase):
-
-    def setUp(self):
-        self.manager = _bare_manager()
-        self.standard = _add_standard(self.manager)
-        self.pro = _add_pro(self.manager)
-        self.hl = _add_standard(self.manager, subaccount_id=2)
-        self.manager.get_subaccount_info_for_synthetic(self.hl).hl_address = "0x" + "ab" * 20
-
-    def _v1_info(self, hotkey):
-        return self.manager.get_subaccount_dashboard_data(hotkey)["subaccount_info"]
-
-    def _v2_info(self, hotkey):
-        clients = _no_section_clients()
-        dashboard = create_subaccount_dashboard(
-            hotkey,
-            self.manager.get_subaccount_dashboard(hotkey),
-            clients["challenge_period"], clients["elimination"], clients["miner_account"],
-            clients["position"], clients["limit_order"], clients["debt_ledger"], clients["statistics"],
-            0, 0, 0, 0,
-        )
-        return dashboard["subaccount_info"]
-
-    def test_v1_subaccount_info(self):
-        for hotkey in (self.standard, self.pro, self.hl):
-            with self.subTest(hotkey=hotkey):
-                self.assertNotIn(REMOVED_FIELD, self._v1_info(hotkey))
-
-    def test_v2_subaccount_info_keeps_the_granted_size(self):
-        for hotkey, granted in ((self.standard, None), (self.pro, GRANTED_SIZE), (self.hl, None)):
-            with self.subTest(hotkey=hotkey):
-                info = self._v2_info(hotkey)
-                self.assertNotIn(REMOVED_FIELD, info)
-                self.assertEqual(info["pro_account_size"], granted)
-
-
-class TestDashboardEndpointsCarryNoDefaultProAccountSize(unittest.TestCase):
-    """On the wire, through the real validator REST handlers and websocket frame builder."""
-
-    def setUp(self):
-        from vanta_api.validator_rest_server import ValidatorRestServer
-
-        self.manager = _bare_manager()
-        self.standard = _add_standard(self.manager)
-        self.pro = _add_pro(self.manager)
-
-        server = object.__new__(ValidatorRestServer)
-        server._get_api_key_safe = MagicMock(return_value="key")
-        server.is_valid_api_key = MagicMock(return_value=True)
-        server.can_access_tier = MagicMock(return_value=True)
-        server._entity_client = MagicMock()
-        server._entity_client.get_subaccount_dashboard.side_effect = self.manager.get_subaccount_dashboard
-        server._entity_client.get_subaccount_dashboard_data.side_effect = self.manager.get_subaccount_dashboard_data
-        clients = _no_section_clients()
-        server._challenge_period_client = clients["challenge_period"]
-        server._elimination_client = clients["elimination"]
-        server._miner_account_client = clients["miner_account"]
-        server._position_client = clients["position"]
-        server._limit_order_client = clients["limit_order"]
-        server._debt_ledger_client = clients["debt_ledger"]
-        server._statistics_client = clients["statistics"]
-        self.server = server
-        app = Flask(__name__)
-        app.config["TESTING"] = True
-        app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(server.get_subaccount_dashboard)
-        app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(server.v2_get_subaccount_dashboard)
-        app.route("/hl-traders/<hl_address>", methods=["GET"])(server.get_hl_trader)
-        self.client = app.test_client()
-
-    def _get(self, path):
-        resp = self.client.get(path)
-        self.assertEqual(resp.status_code, 200, resp.data)
-        return json.loads(resp.data)["dashboard"]["subaccount_info"]
-
-    def test_v1_endpoint(self):
-        for hotkey in (self.standard, self.pro):
-            with self.subTest(hotkey=hotkey):
-                self.assertNotIn(REMOVED_FIELD, self._get(f"/entity/subaccount/{hotkey}"))
-
-    def test_v2_endpoint(self):
-        for hotkey, granted in ((self.standard, None), (self.pro, GRANTED_SIZE)):
-            with self.subTest(hotkey=hotkey):
-                info = self._get(f"/v2/entity/subaccount/{hotkey}")
-                self.assertNotIn(REMOVED_FIELD, info)
-                self.assertEqual(info["pro_account_size"], granted)
-
-    def test_hl_traders_endpoint(self):
-        self.server._entity_client.get_synthetic_hotkey_for_hl_address.return_value = self.standard
-        info = self._get("/hl-traders/0x" + "ab" * 20)
-        self.assertEqual(info["synthetic_hotkey"], self.standard)
-        self.assertNotIn(REMOVED_FIELD, info)
-
-    def test_websocket_frames(self):
-        """The websocket rebuilds subaccount_info in full on each frame, including incremental ones."""
-        from vanta_api.websocket_server import DashboardSubscription, WebSocketServer, WebSocketServerClient
-
-        server = object.__new__(WebSocketServer)
-        server._event_loop = MagicMock()
-        server._entity_client = MagicMock()
-        server._entity_client.get_subaccount_dashboard.side_effect = self.manager.get_subaccount_dashboard
-        clients = _no_section_clients()
-        server._challenge_period_client = clients["challenge_period"]
-        server._elimination_client = clients["elimination"]
-        server._miner_account_client = clients["miner_account"]
-        server._position_client = clients["position"]
-        server._limit_order_client = clients["limit_order"]
-        server._debt_ledger_client = clients["debt_ledger"]
-        server._statistics_client = clients["statistics"]
-        server._send_serialized = MagicMock()
-
-        for hotkey, granted in ((self.standard, None), (self.pro, GRANTED_SIZE)):
-            ws_client = WebSocketServerClient(client_id=1, websocket=MagicMock(), api_key="k", tier=200)
-            subscription = DashboardSubscription()
-            for frame in ("initial", "incremental"):
-                with self.subTest(hotkey=hotkey, frame=frame), \
-                        patch("vanta_api.websocket_server.asyncio.run_coroutine_threadsafe"):
-                    if frame == "incremental":
-                        subscription.positions_time_ms = NOW_MS
-                        subscription.checkpoints_time_ms = NOW_MS
-                    server._send_serialized.reset_mock()
-                    server._send_dashboard_update(hotkey, ws_client, subscription)
-                    _client, serialized = server._send_serialized.call_args.args
-                    info = json.loads(serialized)["data"]["dashboard"]["subaccount_info"]
-                    self.assertNotIn(REMOVED_FIELD, info)
-                    self.assertEqual(info["pro_account_size"], granted)
 
 
 if __name__ == "__main__":
