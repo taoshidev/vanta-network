@@ -2885,6 +2885,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'bucket': bucket.value if bucket else None,
                 'pro_account_size': subaccount.get('pro_account_size'),
                 'account_size': subaccount.get('account_size'),
+                'pro_fee_theta': subaccount.get('pro_fee_theta'),
+                'pro_fee_theta_pending': subaccount.get('pro_fee_theta_pending'),
             }), 200
 
         except Exception as e:
