@@ -1205,7 +1205,7 @@ class ChallengePeriodManager(CacheController):
         for hotkey, state in self.miner_states.items():
             if hotkey not in hotkeys:
                 bucket = state.current_bucket
-                if bucket.is_subaccount or bucket in (MinerBucket.ENTITY, MinerBucket.ELIMINATED):
+                if bucket.is_pro or bucket in (MinerBucket.ENTITY, MinerBucket.ELIMINATED, MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED):
                     continue
                 hotkeys_prune.append(hotkey)
                 logger.warning(f"[CHALLENGE] {hotkey} pruned from {bucket.value}: no longer in metagraph")
