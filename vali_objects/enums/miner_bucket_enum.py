@@ -150,7 +150,6 @@ class MinerBucket(Enum):
         subject to entity collateral slashing."""
         return self.is_subaccount_funded or self in (
             MinerBucket.SUBACCOUNT_ALPHA,
-            MinerBucket.PRO_CHALLENGE_TRANSITION,
             MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
         )
 
