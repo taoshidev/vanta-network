@@ -126,7 +126,7 @@ class MinerBucket(Enum):
     def soft_breach_applies(self) -> bool:
         """True for buckets where a pro-rule breach withholds the week's payout.
         Miners who already passed the standard challenge keep earning through a soft breach."""
-        return self in (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
+        return self == MinerBucket.PRO_FUNDED
 
     @property
     def payout_scale_applies(self) -> bool:
@@ -184,16 +184,6 @@ class MinerBucket(Enum):
             return MinerBucket.PRO_CHALLENGE_TRANSITION
         elif self == MinerBucket.PRO_CHALLENGE_TRANSITION:
             return MinerBucket.PRO_CHALLENGE_FROM_STANDARD
-        return None
-
-    @property
-    def demotion_bucket(self) -> "MinerBucket | None":
-        """Where a miner lands when they fail out of this bucket instead of being eliminated.
-        A pro challenge failure returns the miner to the standard track they came from."""
-        if self == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
-            return MinerBucket.SUBACCOUNT_FUNDED
-        elif self == MinerBucket.PRO_CHALLENGE_DIRECT:
-            return MinerBucket.SUBACCOUNT_CHALLENGE
         return None
 
     @property

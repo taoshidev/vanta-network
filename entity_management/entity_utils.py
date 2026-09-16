@@ -122,6 +122,23 @@ def pro_account_size_error(pro_account_size, standard_account_size=None) -> Opti
     return None
 
 
+def pro_payout_scale(standard_account_size, pro_account_size) -> float:
+    """
+    Multiplier applied to a pro account's PnL when the subaccount is paid on its standard size.
+
+    A trader running the pro challenge after passing the standard challenge trades the larger pro
+    account but is paid on their standard account, uplifted by
+    ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 when either size is missing, so a
+    subaccount that never entered the pro track is paid on its own PnL unchanged.
+
+    Both payout paths (EntityManager.get_payout_scale and the debt-ledger aggregation) read this,
+    so the number a trader is quoted is the number the weight calculator pays.
+    """
+    if not standard_account_size or not pro_account_size:
+        return 1.0
+    return ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * standard_account_size / pro_account_size
+
+
 def attach_correlated_exposure_report(account_size_data: dict | None) -> None:
     """Expand a pro account's stored correlated exposure into limits and remaining room.
 

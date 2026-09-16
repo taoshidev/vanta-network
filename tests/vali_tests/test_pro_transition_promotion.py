@@ -280,7 +280,8 @@ def test_promotion_out_of_the_transition_trades_the_pro_size(manager):
     assert info.pro_account_size == 250_000
     assert info.account_size == 250_000
     assert info.standard_account_size == STANDARD_SIZE
-    assert entity_manager.get_payout_scale(hotkey) == pytest.approx(STANDARD_SIZE / 250_000)
+    assert entity_manager.get_payout_scale(hotkey) == pytest.approx(
+        ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * STANDARD_SIZE / 250_000)
 
 
 def test_direct_pro_challenge_trades_the_size_immediately(manager):
@@ -293,6 +294,25 @@ def test_direct_pro_challenge_trades_the_size_immediately(manager):
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.pro_account_size == 450_000
     assert info.account_size == 450_000
+
+
+def test_a_live_pro_account_moves_to_all_markets(manager):
+    """The pro universe spans every asset class, so the registered class is widened on promotion."""
+    entity_manager, hotkey = _with_real_entity_manager(manager, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+    assert entity_manager.get_subaccount_info_for_synthetic(hotkey).asset_class == "forex"
+
+    assert manager.promote_subaccount(hotkey, NOW_MS, 450_000)[0]
+
+    assert entity_manager.get_subaccount_info_for_synthetic(hotkey).asset_class == "all_markets"
+
+
+def test_the_transition_keeps_the_registered_asset_class(manager):
+    """PRO_CHALLENGE_TRANSITION still trades the standard account, so it keeps its own class."""
+    entity_manager, hotkey = _with_real_entity_manager(manager)
+
+    assert manager.promote_subaccount(hotkey, NOW_MS, 250_000)[0]
+
+    assert entity_manager.get_subaccount_info_for_synthetic(hotkey).asset_class == "forex"
 
 
 def test_entering_the_track_without_a_size_is_rejected(manager):
@@ -456,6 +476,8 @@ def test_a_failed_first_hop_leaves_no_pro_marking(manager):
     assert info.pro_account_size is None
     assert info.standard_account_size is None
     assert info.account_size == STANDARD_SIZE
+    # and the widened asset class goes back with the sizing
+    assert info.asset_class == "forex"
 
     # behavioural backstop: the promotion did not happen, so a size is still required
     success, message = manager.promote_subaccount(hotkey, NOW_MS)

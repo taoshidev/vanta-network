@@ -434,39 +434,39 @@ class ChallengePeriodManager(CacheController):
             if state.current_bucket.is_pro:
                 # Rule 1: Daily loss limit — equity cannot drop below the day's opening equity
                 if reason := self._check_intraday_drawdown(state):
-                    self._record_breach(hotkey, state, reason, eliminations, demotions)
+                    eliminations[hotkey] = reason
                     continue
 
                 # Rule 2: EOD Trailing loss limit — the end-of-day equity cannot drop below the
                 # highest EOD equity. Checked once per UTC day, not in real time.
                 if reason := self._check_eod_drawdown(state):
-                    self._record_breach(hotkey, state, reason, eliminations, demotions)
+                    eliminations[hotkey] = reason
                     continue
             elif state.drawdown_criteria == DrawdownCriteria.STATIC:
                 # Static rules for subaccounts registered after the effective time (Hyperscaled excluded)
                 # Rule 1: Static drawdown — equity (including unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
-                    self._record_breach(hotkey, state, reason, eliminations, demotions)
+                    eliminations[hotkey] = reason
                     continue
 
                 # Rule 2: Daily loss limit — equity cannot drop more than the flat static threshold
                 # below today's opening equity
                 if reason := self._check_intraday_drawdown(state):
                     if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
-                        self._record_breach(hotkey, state, reason, eliminations, demotions)
+                        eliminations[hotkey] = reason
                     continue
             else:
                 # Trailing rules: subaccounts eliminate immediately; regular miners only after activation
                 # Rule 1: Intraday drawdown — current equity cannot drop below from today's opening equity
                 if reason := self._check_intraday_drawdown(state):
                     if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
-                        self._record_breach(hotkey, state, reason, eliminations, demotions)
+                        eliminations[hotkey] = reason
                     continue
 
                 # Rule 2: EOD trailing drawdown — last EOD equity cannot drop below threshold from highest-ever EOD equity
                 if reason := self._check_eod_drawdown(state):
                     if state.current_bucket.is_subaccount or current_time_ms > self.DRAWDOWN_ACTIVATION_MS:
-                        self._record_breach(hotkey, state, reason, eliminations, demotions)
+                        eliminations[hotkey] = reason
                     continue
 
             # Grace period expiry advances the miner to next_bucket regardless of performance
@@ -581,23 +581,6 @@ class ChallengePeriodManager(CacheController):
         elif state.drawdown.static_drawdown_pct > threshold_pct * 0.75:
             logger.info(f"[CHALLENGE] near static drawdown {threshold_pct}%: {state}")
         return None
-
-    @staticmethod
-    def _record_breach(
-        hotkey: str,
-        state: MinerBucketState,
-        reason: EliminationReason,
-        eliminations: dict[str, EliminationReason],
-        demotions: dict[str, MinerBucket],
-    ) -> None:
-        """Route a drawdown breach. Pro challenge buckets fall back to the standard track they
-        came from; every other bucket is eliminated."""
-        demotion_bucket = state.current_bucket.demotion_bucket
-        if demotion_bucket is not None:
-            logger.info(f"[CHALLENGE] breach {reason.value} demoting to {demotion_bucket.value}: {state}")
-            demotions[hotkey] = demotion_bucket
-        else:
-            eliminations[hotkey] = reason
 
     @staticmethod
     def _check_grace_period_expiry(state: MinerBucketState, current_time_ms: int) -> bool:

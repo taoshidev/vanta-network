@@ -1288,8 +1288,7 @@ subaccount it does not own.
   `NaN`, `Infinity`, strings and booleans are rejected with a 400 before the signature is checked or
   the nonce is used, so the same nonce can be retried with a corrected size. The network enforces only
   this range, not the Command Center presets.
-  - **Required entering the pro track** (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`). A re-offer
-    after a demotion needs a size again: a size recorded on an earlier pro journey is never reused.
+  - **Required entering the pro track** (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`).
   - **Optional on the hop within the track** (out of `PRO_CHALLENGE_TRANSITION`): a new size replaces
     the recorded one; omitted, the recorded size is kept.
 - `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
@@ -2139,7 +2138,7 @@ This is the only guaranteed section of the response. All other sections may be m
 - `asset_class`: Asset class (crypto, forex, etc.)
 - `account_size`: Current account size (in USD)
 - `standard_account_size`: Account size on the standard track, snapshotted when the subaccount entered the pro track (null until then)
-- `pro_account_size`: Pro account size the admin set when offering the subaccount the pro track, at least the subaccount's standard account size and at most $1,000,000 (null until the subaccount is first offered the pro track; kept after a demotion)
+- `pro_account_size`: Pro account size the admin set when offering the subaccount the pro track, at least the subaccount's standard account size and at most $1,000,000 (null until the subaccount is first offered the pro track)
 - `account_type`: `"standard"` or `"pro"`
 - `status`: Current status ("active", "eliminated", or "unknown")
 - `created_at_ms`: Timestamp when subaccount was created

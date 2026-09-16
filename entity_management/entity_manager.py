@@ -31,6 +31,7 @@ from entity_management.entity_utils import (
     is_synthetic_hotkey,
     parse_synthetic_hotkey,
     pro_account_size_error,
+    pro_payout_scale,
 )
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.miner_account.account_snapshot import read_all_snapshots, DEFAULT_TOLERANCE_MS
@@ -787,8 +788,8 @@ class EntityManager(ValidatorBroadcastBase):
             finite, positive, at most ValiConfig.MAX_PRO_ACCOUNT_SIZE, and never below the
             subaccount's own standard account size: a promotion grants size, it never takes it away.
           * Entering the pro track from a subaccount whose account_type is not "pro" requires an
-            explicit size. A size recorded on an earlier pro journey, which a demotion keeps, is never
-            reused: a re-offer needs a size again.
+            explicit size. A size recorded on an earlier pro journey, which a move back to a standard
+            bucket keeps, is never reused: a re-offer needs a size again.
           * A move within the pro track uses the explicit size when one is sent (the entity re-setting
             it, e.g. promoting out of PRO_CHALLENGE_TRANSITION), else the size recorded when the
             subaccount entered the track (the organic promotions send none). With neither, it is rejected.
@@ -894,6 +895,15 @@ class EntityManager(ValidatorBroadcastBase):
             # until it does, so the same theta cannot be spent twice in the meantime.
             self._entity_collateral_client.offset_collateral_cache(entity_hotkey, -promotion_fee_theta)
 
+        # A live pro account trades the whole pro universe, so it moves to all_markets whatever it
+        # was registered under.
+        if target_bucket.is_pro:
+            self._apply_pro_asset_class(synthetic_hotkey, target_bucket)
+
+        # Hand the sizing to the other validators.
+        if not self.running_unit_tests:
+            self.broadcast_subaccount_registration(entity_hotkey, subaccount)
+
         pro_size_note = f" (pro size source: {pro_size_source})" if pro_size_source else ""
         fee_note = (f", promotion_fee={promotion_fee_theta:.4f} theta "
                     f"(assessed {subaccount.pro_fee_theta:.4f} theta total)") if promotion_fee_theta else ""
@@ -902,6 +912,72 @@ class EntityManager(ValidatorBroadcastBase):
             f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}{fee_note}"
         )
         return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
+
+    def _apply_pro_asset_class(self, synthetic_hotkey: str, target_bucket: MinerBucket) -> None:
+        """Move a subaccount onto all_markets as it starts trading a pro account.
+
+        The pro universe spans every asset class (TradePair.is_pro covers crypto, forex, equities,
+        commodities and indices), and only all_markets can reach all of them, so a subaccount
+        registered under a single class would otherwise keep that class's restriction on the pro
+        account. The caller broadcasts the result; the order path enforces the class on every
+        validator, not just the one that ran the promotion.
+        """
+        target = MinerAssetClass.ALL_MARKETS.value
+        subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        if subaccount is None or subaccount.asset_class == target:
+            return
+
+        previous = subaccount.asset_class
+        success, message = self.update_subaccount_asset_selection(synthetic_hotkey, target)
+        if not success:
+            logger.error(
+                f"[ENTITY_MANAGER] {synthetic_hotkey} promoted to {target_bucket.value} but the asset "
+                f"class is still '{previous}': {message}. The pro account can only trade that class "
+                f"until the selection is repaired."
+            )
+            return
+
+        logger.info(
+            f"[ENTITY_MANAGER] {synthetic_hotkey} asset class '{previous}' -> '{target}' for "
+            f"{target_bucket.value}"
+        )
+
+    # Fields a pro promotion writes onto SubaccountInfo. They are only ever set by the validator
+    # handling the promote request (apply_bucket_account_size / restore_bucket_account_size), never
+    # derived locally, so a peer adopts the sender's values wholesale.
+    _PRO_SIZING_FIELDS = ("account_size", "standard_account_size", "pro_account_size", "account_type")
+
+    @staticmethod
+    def adopt_pro_sizing(local_sub: SubaccountInfo, incoming_sub: SubaccountInfo,
+                         allow_clear: bool = False) -> bool:
+        """Copy an incoming subaccount's pro sizing onto the local record. Returns True if anything
+        changed.
+
+        The four fields move as one unit. account_size and account_type are never None, so copying
+        field by field would let a stale record half-revert a promotion - account_type back to
+        "standard" beside a live pro_account_size, which reads as "not on the pro track" to
+        apply_bucket_account_size while still scaling the payout.
+
+        `allow_clear` picks how much the sender is trusted, which differs by channel:
+          * A broadcast is the validator that just made the change saying so, so it is authoritative
+            and replaces the set outright - that is how a rolled back promotion reverts on the peers
+            that already adopted it.
+          * A checkpoint sync is a snapshot that may predate the promotion, so it only fills the gap
+            on a peer that has not heard about the promotion at all. It never downgrades a pro
+            subaccount back to standard, which a stale checkpoint would otherwise do.
+        """
+        if not allow_clear:
+            on_pro_track = incoming_sub.account_type == AccountType.PRO.value
+            if not on_pro_track or local_sub.account_type == AccountType.PRO.value:
+                return False
+
+        changed = False
+        for field in EntityManager._PRO_SIZING_FIELDS:
+            incoming = getattr(incoming_sub, field, None)
+            if getattr(local_sub, field, None) != incoming:
+                setattr(local_sub, field, incoming)
+                changed = True
+        return changed
 
     def _verify_promotion_collateral(self, entity_hotkey: str, promotion_fee_theta: float) -> Tuple[bool, str]:
         """
@@ -941,7 +1017,8 @@ class EntityManager(ValidatorBroadcastBase):
 
         Take one before an apply and hand it to restore_bucket_account_size if the bucket move that
         follows then fails. A plain dict, so it crosses the EntityClient RPC hop unchanged. The two
-        promotion-fee fields ride along so a rolled back promotion also gives the fee back.
+        promotion-fee fields ride along so a rolled back promotion also gives the fee back, and
+        asset_class so a rolled back promotion does not leave a standard account on all_markets.
         """
         subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
         if subaccount is None:
@@ -951,6 +1028,7 @@ class EntityManager(ValidatorBroadcastBase):
             "standard_account_size": subaccount.standard_account_size,
             "pro_account_size": subaccount.pro_account_size,
             "account_type": subaccount.account_type,
+            "asset_class": subaccount.asset_class,
             "pro_fee_theta": subaccount.pro_fee_theta,
             "pro_fee_theta_pending": subaccount.pro_fee_theta_pending,
         }
@@ -971,7 +1049,7 @@ class EntityManager(ValidatorBroadcastBase):
         is put back first and the record is left untouched if that fails: a record restored behind a
         still-resized account is a silent divergence no later move heals (a move back to the recorded
         size finds nothing to do), whereas a subaccount left marked pro is loudly wrong and re-syncs on
-        the next demotion.
+        the next move back to a standard bucket.
         """
         subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
         if subaccount is None:
@@ -1024,6 +1102,22 @@ class EntityManager(ValidatorBroadcastBase):
         if refund_theta > 0:
             self._entity_collateral_client.offset_collateral_cache(entity_hotkey, refund_theta)
 
+        # Put the registered asset class back: a promotion that did not happen must not leave a
+        # standard account holding the pro account's all_markets access.
+        previous_asset_class = snapshot.get("asset_class")
+        if previous_asset_class and previous_asset_class != subaccount.asset_class:
+            restored, message = self.update_subaccount_asset_selection(synthetic_hotkey, previous_asset_class)
+            if not restored:
+                logger.error(
+                    f"[ENTITY_MANAGER] {synthetic_hotkey} asset class still "
+                    f"'{subaccount.asset_class}', could not restore '{previous_asset_class}': {message}"
+                )
+
+        # apply_bucket_account_size already broadcast the promoted sizing, so the peers that
+        # adopted it have to hear the rollback too.
+        if not self.running_unit_tests:
+            self.broadcast_subaccount_registration(entity_hotkey, subaccount)
+
         fee_note = f", promotion fee refunded={refund_theta:.4f} theta" if refund_theta else ""
         logger.info(
             f"[ENTITY_MANAGER] {synthetic_hotkey} sizing rolled back after a failed bucket move: "
@@ -1037,16 +1131,14 @@ class EntityManager(ValidatorBroadcastBase):
         Multiplier applied to this subaccount's PnL when it is folded into the entity's payout.
 
         A miner completing the pro challenge after passing the standard challenge trades the
-        larger pro account but is paid on the size of the standard account they came from.
-        Returns 1.0 for every other subaccount.
+        larger pro account but is paid on the size of the standard account they came from,
+        uplifted by ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 for every other
+        subaccount.
         """
         subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
         if subaccount is None:
             return 1.0
-        standard_size, pro_size = subaccount.standard_account_size, subaccount.pro_account_size
-        if not standard_size or not pro_size:
-            return 1.0
-        return standard_size / pro_size
+        return pro_payout_scale(subaccount.standard_account_size, subaccount.pro_account_size)
 
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
         """
@@ -2318,6 +2410,25 @@ class EntityManager(ValidatorBroadcastBase):
                                     local_sub.leverage_tier = incoming_sub.leverage_tier
                                     stats['subaccounts_updated'] += 1
 
+                                # Adopt a pro promotion: the sizing the payout scale is built from,
+                                # and the asset class the pro account trades under
+                                if self.adopt_pro_sizing(local_sub, incoming_sub):
+                                    logger.info(
+                                        f"[ENTITY_MANAGER] Synced pro sizing for {incoming_sub.synthetic_hotkey}: "
+                                        f"account_size=${local_sub.account_size}, "
+                                        f"standard=${local_sub.standard_account_size}, "
+                                        f"pro=${local_sub.pro_account_size}, type={local_sub.account_type}"
+                                    )
+                                    stats['subaccounts_updated'] += 1
+                                if incoming_sub.asset_class and local_sub.asset_class != incoming_sub.asset_class:
+                                    local_sub.asset_class = incoming_sub.asset_class
+                                    self._asset_selection_client.process_asset_selection_request(
+                                        asset_selection=incoming_sub.asset_class,
+                                        miner=incoming_sub.synthetic_hotkey,
+                                        overwrite=True,
+                                    )
+                                    stats['subaccounts_updated'] += 1
+
                         # Update next_subaccount_id to prevent ID collisions
                         if incoming_entity.next_subaccount_id > local_entity.next_subaccount_id:
                             local_entity.next_subaccount_id = incoming_entity.next_subaccount_id
@@ -2485,6 +2596,29 @@ class EntityManager(ValidatorBroadcastBase):
                             existing_sub.payout_address = payout_address
                             logger.info(
                                 f"[ENTITY_MANAGER] Set payout_address {payout_address} for subaccount {synthetic_hotkey}"
+                            )
+                            changed = True
+                        # Adopt the sender's asset class. It is immutable for a standard subaccount,
+                        # but a pro promotion moves it to all_markets and every validator has to
+                        # enforce the same universe.
+                        if asset_class and existing_sub.asset_class != asset_class:
+                            logger.info(
+                                f"[ENTITY_MANAGER] Updating subaccount {synthetic_hotkey} asset_class: "
+                                f"{existing_sub.asset_class} -> {asset_class}"
+                            )
+                            existing_sub.asset_class = asset_class
+                            self._asset_selection_client.process_asset_selection_request(
+                                asset_selection=asset_class, miner=synthetic_hotkey, overwrite=True
+                            )
+                            changed = True
+                        # Adopt a pro promotion's sizing, which the payout scale is built from.
+                        # Authoritative: a rolled back promotion clears here too.
+                        if self.adopt_pro_sizing(existing_sub, subaccount_info, allow_clear=True):
+                            logger.info(
+                                f"[ENTITY_MANAGER] Updating subaccount {synthetic_hotkey} pro sizing: "
+                                f"account_size=${existing_sub.account_size}, "
+                                f"standard=${existing_sub.standard_account_size}, "
+                                f"pro=${existing_sub.pro_account_size}, type={existing_sub.account_type}"
                             )
                             changed = True
                         # Adopt the sender's tier; the MinerAccount is checked even when the tier is

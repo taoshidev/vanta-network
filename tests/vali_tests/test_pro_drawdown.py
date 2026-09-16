@@ -235,18 +235,14 @@ def test_refresh_eliminates_pro_funded_on_daily_loss_limit(manager):
     assert kwargs["reason"] == EliminationReason.FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN
 
 
-def test_refresh_demotes_pro_challenge_from_standard_on_eod_drawdown(manager):
-    _refresh_pro(manager, "pro_hk", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, _eod_breach())
+@pytest.mark.parametrize("bucket", [MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT])
+def test_refresh_eliminates_pro_challenge_on_eod_drawdown(manager, bucket):
+    """A drawdown rule is a hard breach on the challenge track too: no fall back to standard."""
+    _refresh_pro(manager, "pro_hk", bucket, _eod_breach())
 
-    assert manager.get_miner_bucket("pro_hk") == MinerBucket.SUBACCOUNT_FUNDED
-    manager._elimination_client.append_elimination_row.assert_not_called()
-
-
-def test_refresh_demotes_pro_challenge_direct_on_eod_drawdown(manager):
-    _refresh_pro(manager, "pro_hk", MinerBucket.PRO_CHALLENGE_DIRECT, _eod_breach())
-
-    assert manager.get_miner_bucket("pro_hk") == MinerBucket.SUBACCOUNT_CHALLENGE
-    manager._elimination_client.append_elimination_row.assert_not_called()
+    assert manager.get_miner_bucket("pro_hk") == MinerBucket.ELIMINATED
+    kwargs = manager._elimination_client.append_elimination_row.call_args.kwargs
+    assert kwargs["reason"] == EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_EOD_DRAWDOWN
 
 
 def test_refresh_applies_pro_rules_to_static_pro_subaccount(manager):

@@ -29,7 +29,11 @@ from flask import Flask
 
 import vali_objects.vali_config as vali_config_module
 from entity_management.entity_manager import EntityData, EntityManager, SubaccountInfo
-from entity_management.entity_utils import create_subaccount_dashboard, pro_account_size_error
+from entity_management.entity_utils import (
+    create_subaccount_dashboard,
+    pro_account_size_error,
+    pro_payout_scale,
+)
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
@@ -38,6 +42,7 @@ NOW_MS = 1_748_000_000_000
 ENTITY_HOTKEY = "entity_alpha"
 STANDARD_SIZE = 100_000.0
 GRANTED_SIZE = 500_000.0
+PAYOUT_MULTIPLIER = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
 REMOVED_FIELD = "default_pro_account_size"
 REQUIRED = "pro_account_size is required to enter the pro track"
 
@@ -92,6 +97,10 @@ def _bare_manager():
     manager._statistics_client.get_miner_statistics_for_hotkey.return_value = None
     manager._elimination_client = MagicMock()
     manager._elimination_client.get_elimination.return_value = None
+    manager._asset_selection_client = MagicMock()
+    manager._asset_selection_client.process_asset_selection_request.return_value = {
+        "successfully_processed": True
+    }
     return manager
 
 
@@ -176,6 +185,63 @@ class TestProAccountSizeConfig(unittest.TestCase):
                 self.assertGreaterEqual(fee, 0.0)
                 self.assertAlmostEqual(fee, premium)
         self.assertGreaterEqual(ValiConfig.pro_promotion_fee_theta(0.0, 0.0), 0.0)
+
+
+class TestAdoptProSizing(unittest.TestCase):
+    """A promotion runs on one validator; the sizing every validator builds the payout scale from
+    has to reach the rest. Both merge paths (checkpoint sync, broadcast) call this."""
+
+    def _pair(self):
+        manager = _bare_manager()
+        local = manager.get_subaccount_info_for_synthetic(_add_standard(manager))
+        promoted = manager.get_subaccount_info_for_synthetic(_add_pro(manager))
+        return local, promoted
+
+    def test_a_promotion_is_adopted(self):
+        local, promoted = self._pair()
+        self.assertTrue(EntityManager.adopt_pro_sizing(local, promoted))
+        self.assertEqual(local.pro_account_size, GRANTED_SIZE)
+        self.assertEqual(local.standard_account_size, STANDARD_SIZE)
+        self.assertEqual(local.account_size, GRANTED_SIZE)
+        self.assertEqual(local.account_type, AccountType.PRO.value)
+        self.assertAlmostEqual(pro_payout_scale(local.standard_account_size, local.pro_account_size),
+                               PAYOUT_MULTIPLIER * STANDARD_SIZE / GRANTED_SIZE)
+        # idempotent: a re-sync of the same record is not a change
+        self.assertFalse(EntityManager.adopt_pro_sizing(local, promoted))
+
+    def test_a_stale_checkpoint_cannot_undo_a_promotion(self):
+        """Auto-sync snapshots can predate the promotion, so they fill the gap but never downgrade.
+        account_size and account_type are never None, so a field-by-field merge would half-revert."""
+        stale, promoted = self._pair()
+        self.assertFalse(EntityManager.adopt_pro_sizing(promoted, stale))
+        self.assertEqual(promoted.pro_account_size, GRANTED_SIZE)
+        self.assertEqual(promoted.account_size, GRANTED_SIZE)
+        self.assertEqual(promoted.account_type, AccountType.PRO.value)
+
+    def test_a_broadcast_reverts_a_rolled_back_promotion(self):
+        """The broadcast is the validator that just made the change, so it is allowed to clear."""
+        rolled_back, promoted = self._pair()
+        self.assertTrue(EntityManager.adopt_pro_sizing(promoted, rolled_back, allow_clear=True))
+        self.assertIsNone(promoted.pro_account_size)
+        self.assertIsNone(promoted.standard_account_size)
+        self.assertEqual(promoted.account_size, STANDARD_SIZE)
+        self.assertEqual(promoted.account_type, AccountType.STANDARD.value)
+        self.assertEqual(pro_payout_scale(promoted.standard_account_size, promoted.pro_account_size), 1.0)
+
+
+class TestProPayoutScale(unittest.TestCase):
+    """PnL on the pro account pays the standard account, uplifted by the transition multiplier."""
+
+    def test_scaled_to_a_multiple_of_the_standard_account(self):
+        # $5K on a $500K pro account pays a $100K standard account 2 * (5/500) * 100K = $2K
+        self.assertAlmostEqual(pro_payout_scale(STANDARD_SIZE, GRANTED_SIZE),
+                               PAYOUT_MULTIPLIER * STANDARD_SIZE / GRANTED_SIZE)
+        self.assertAlmostEqual(5_000 * pro_payout_scale(STANDARD_SIZE, GRANTED_SIZE), 2_000)
+
+    def test_a_subaccount_off_the_pro_track_is_unscaled(self):
+        for standard, pro in ((None, GRANTED_SIZE), (STANDARD_SIZE, None), (None, None), (0, 0)):
+            with self.subTest(standard=standard, pro=pro):
+                self.assertEqual(pro_payout_scale(standard, pro), 1.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -338,7 +404,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.assertEqual(info.account_type, AccountType.PRO.value)
         # Nothing to resize: the pro account is the size it was already trading
         self.set_size.assert_not_called()
-        self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
+        self.assertAlmostEqual(self.manager.get_payout_scale(self.standard), PAYOUT_MULTIPLIER)
 
     def test_reoffer_after_demotion_requires_a_size_again(self):
         """The size recorded on an earlier pro journey is never silently reused when re-entering the track."""
@@ -375,7 +441,8 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.assertEqual(info.pro_account_size, 250_000)
         self.assertEqual(info.account_size, 250_000)
         self.assertEqual(info.standard_account_size, STANDARD_SIZE)
-        self.assertAlmostEqual(self.manager.get_payout_scale(hotkey), STANDARD_SIZE / 250_000)
+        self.assertAlmostEqual(self.manager.get_payout_scale(hotkey),
+                               PAYOUT_MULTIPLIER * STANDARD_SIZE / 250_000)
 
     # ==================== within the pro track ====================
 
@@ -402,7 +469,8 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         info = self._info(self.standard)
         self.assertEqual(info.account_size, GRANTED_SIZE)
         self.assertEqual(self.set_size.call_args.kwargs["account_size"], GRANTED_SIZE)
-        self.assertAlmostEqual(self.manager.get_payout_scale(self.standard), STANDARD_SIZE / GRANTED_SIZE)
+        self.assertAlmostEqual(self.manager.get_payout_scale(self.standard),
+                               PAYOUT_MULTIPLIER * STANDARD_SIZE / GRANTED_SIZE)
 
     def test_move_within_the_track_with_no_recorded_size_is_rejected(self):
         pro = _add_pro(self.manager)
@@ -509,7 +577,8 @@ class TestApplyBucketAccountSizeLog(unittest.TestCase):
         with patch("entity_management.entity_manager.logger") as logger:
             success, message = self.manager.apply_bucket_account_size(hotkey, bucket, pro_account_size)
         self.assertTrue(success, message)
-        lines = [call.args[0] for call in logger.info.call_args_list if "[ENTITY_MANAGER]" in call.args[0]]
+        # The asset-class switch onto all_markets logs its own lines; only the sizing line is under test
+        lines = [call.args[0] for call in logger.info.call_args_list if "account_size=$" in call.args[0]]
         self.assertEqual(len(lines), 1, lines)
         return lines[0]
 

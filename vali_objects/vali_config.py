@@ -511,6 +511,12 @@ class ValiConfig:
     PRO_TRANSITION_GRACE_PERIOD_DAYS = _env_override("PRO_TRANSITION_GRACE_PERIOD_DAYS", 7, maximum=3650)  # fractional days allowed
     PRO_TRANSITION_GRACE_PERIOD_MS = int(PRO_TRANSITION_GRACE_PERIOD_DAYS * DAILY_MS)
 
+    # Payout basis for a trader running the pro challenge after passing the standard challenge
+    # (PRO_CHALLENGE_FROM_STANDARD). PnL earned on the pro account is paid as though it had been
+    # earned on this multiple of their standard account size: at 2.0, $5K of eligible PnL on a
+    # $500K pro account pays a $100K standard account (5K / 500K) * 2 * 100K = $2K.
+    PRO_TRANSITION_PAYOUT_MULTIPLIER = 2.0
+
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
 

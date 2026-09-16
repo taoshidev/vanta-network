@@ -308,15 +308,20 @@ promotion grants size, it never shrinks the account the subaccount already trade
 offered in the Command Center are a UI choice, not a network rule.
 
 - **Entering the pro track** (`SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, or
-  `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`) requires a size. This includes a re-offer after a
-  demotion: the size from the earlier pro journey is never reused.
+  `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`) requires a size.
 - **Moving within the pro track** (`PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD`) keeps
   the recorded size, or takes a new one (still within the allowed range) when the request sends one.
 - **Standard buckets** never record a pro size.
 
 The granted size is published as `subaccount_info.pro_account_size` in the v2 subaccount dashboard
 (`GET /v2/entity/subaccount/<synthetic_hotkey>` and the websocket dashboard stream): null until the
-subaccount is first offered the pro track, and kept on the record after a demotion.
+subaccount is first offered the pro track.
+
+Promoting into a bucket that trades the pro account (`PRO_CHALLENGE_DIRECT` or
+`PRO_CHALLENGE_FROM_STANDARD`) also moves the subaccount's asset class to `all_markets`, whatever it
+was registered under: the pro universe spans every asset class and a single-class subaccount could
+otherwise reach only part of it. `PRO_CHALLENGE_TRANSITION` is still on the standard account, so it
+keeps its registered class.
 
 Every pro bucket is subject to two drawdown rules:
 - **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day. Checked continuously.
@@ -335,9 +340,12 @@ at the end of the week, at which point any remaining positions are force closed,
 resized to the pro account size, and the ledgers restart.
 
 Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro account but is paid on
-the size of the standard account they came from: `standard_account_size / pro_account_size × PnL`.
-A soft breach (all-time Calmar or return consistency) does **not** withhold their payout during
-either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
+**twice** the size of the standard account they came from:
+`PRO_TRANSITION_PAYOUT_MULTIPLIER × standard_account_size / pro_account_size × PnL`, with the
+multiplier at `2.0`. So $5K of eligible PnL on a $500K pro account pays a $100K standard account
+`(5K / 500K) × 2 × 100K = $2K`. A soft breach (all-time Calmar or return consistency) does **not**
+withhold their payout during either of these two buckets. Scaling stops once they reach
+`PRO_FUNDED`.
 
 #### Traders who have not passed the standard challenge
 
@@ -353,7 +361,7 @@ Promotion from a pro challenge bucket to `PRO_FUNDED` requires all of:
   at the first order on the pro account, so sitting in the bucket without trading earns nothing and
   the partial first and current days do not count.
 - **6% return** on the account. Missing this target only prevents promotion — pro buckets have no
-  time limit, so it never demotes or eliminates the trader.
+  time limit, so it never eliminates the trader.
 - **All-time Calmar of at least 1.75** — realized return since the start of the challenge divided by
   the max drawdown over the same period. Max drawdown is the largest drop of live account equity
   below the end-of-day equity high-water mark, so it tracks real-time equity against the marks
@@ -363,7 +371,7 @@ Promotion from a pro challenge bucket to `PRO_FUNDED` requires all of:
   returns, with losing days counted in full.
 
 The last two are also **soft breaches**: in `PRO_CHALLENGE_DIRECT` and `PRO_FUNDED`, breaching either
-one defers that week's payout without eliminating or demoting the trader. Both resolve by continuing
+one defers that week's payout without eliminating the trader. Both resolve by continuing
 to trade until the value recovers past its threshold. Calmar is measured over the account's whole
 history from the first day of the challenge onward, so a funded account keeps the ratio it passed
 with.
@@ -383,13 +391,13 @@ deferred amount is released on the first later week that is clean and still on t
 
 #### Failing the pro challenge
 
-A drawdown breach in `PRO_CHALLENGE_FROM_STANDARD` demotes back to `SUBACCOUNT_FUNDED`, and one in
-`PRO_CHALLENGE_DIRECT` demotes back to `SUBACCOUNT_CHALLENGE`; in both cases the demotion lands on a
-fresh account — resized back to the standard account size, open positions closed, limit orders
-cancelled, perf and debt ledgers wiped, and the ratcheted pro stats reset. A breach in `PRO_CHALLENGE_TRANSITION` (still the standard
-funded account) or in `PRO_FUNDED` eliminates the subaccount. Re-promotion to pro after passing the
-standard challenge again goes through `POST /api/promote` like any other pro promotion, and needs a
-`pro_account_size` again: the size from the earlier pro journey is never reused.
+Both drawdown rules are hard breaches on every pro bucket: breaching either in
+`PRO_CHALLENGE_DIRECT`, `PRO_CHALLENGE_FROM_STANDARD` or `PRO_FUNDED` eliminates the subaccount
+outright — there is no fall back to the standard track. A breach in `PRO_CHALLENGE_TRANSITION` is
+judged against the standard funded account it is still trading, and also eliminates.
+
+Missing the 6% return target or a soft breach never eliminates: pro buckets have no time limit, so a
+trader who has not passed simply stays in the challenge bucket.
 
 #### Testnet overrides
 

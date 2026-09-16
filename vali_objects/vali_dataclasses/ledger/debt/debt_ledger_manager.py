@@ -939,17 +939,19 @@ class DebtLedgerManager():
                 # Get debt ledgers for all active subaccounts
                 subaccount_ledgers = []
                 # A miner completing the pro challenge after passing the standard challenge trades
-                # the larger pro account but is paid on the size of their original standard account.
+                # the larger pro account but is paid on their original standard account, uplifted
+                # by ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER.
                 subaccount_payout_scale = {}
                 for subaccount in active_subaccounts:
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
                     if not synthetic_hotkey:
                         continue
 
-                    standard_size = subaccount.get('standard_account_size')
-                    pro_size = subaccount.get('pro_account_size')
-                    if standard_size and pro_size:
-                        subaccount_payout_scale[synthetic_hotkey] = standard_size / pro_size
+                    scale = entity_utils.pro_payout_scale(
+                        subaccount.get('standard_account_size'), subaccount.get('pro_account_size')
+                    )
+                    if scale != 1.0:
+                        subaccount_payout_scale[synthetic_hotkey] = scale
 
                     ledger = self.debt_ledgers.get(synthetic_hotkey)
                     if ledger and ledger.checkpoints:

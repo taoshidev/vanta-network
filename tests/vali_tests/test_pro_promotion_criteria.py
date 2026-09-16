@@ -9,7 +9,8 @@ all four gates:
      the end-of-day equity high-water mark
   4. daily return consistency of at most 20%, computed after capping each day's return at 1.5%
 
-Failing either drawdown rule demotes them back onto a fresh standard account instead.
+Failing either drawdown rule is a hard breach: the subaccount is eliminated, on the challenge
+track as well as the funded one.
 No RPC connections, no disk I/O, no daemon simulation.
 """
 import contextlib
@@ -48,11 +49,16 @@ DAILY_CAP = ValiConfig.PRO_DAILY_RETURN_CAP                         # 0.015
 INTRADAY_THRESHOLD = ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD  # 0.05
 EOD_THRESHOLD = ValiConfig.PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD            # 0.08
 
-# The two buckets the spec names. Both promote to PRO_FUNDED and both demote on a breach.
+# The two buckets the spec names. Both promote to PRO_FUNDED and both eliminate on a breach.
 PRO_CHALLENGE_BUCKETS = (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
-DEMOTION_TARGET = {
-    MinerBucket.PRO_CHALLENGE_DIRECT: MinerBucket.SUBACCOUNT_CHALLENGE,
-    MinerBucket.PRO_CHALLENGE_FROM_STANDARD: MinerBucket.SUBACCOUNT_FUNDED,
+ALL_PRO_BUCKETS = (*PRO_CHALLENGE_BUCKETS, MinerBucket.PRO_FUNDED)
+CHALLENGE_REASON = {
+    "INTRADAY": EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN,
+    "EOD": EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_EOD_DRAWDOWN,
+}
+FUNDED_REASON = {
+    "INTRADAY": EliminationReason.FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
+    "EOD": EliminationReason.FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN,
 }
 
 LEDGER_START_MS = 1_735_689_600_000  # 2025-01-01 00:00:00 UTC, a midnight boundary
@@ -493,7 +499,7 @@ def test_refresh_holds_in_bucket_when_one_day_carries_the_return(manager):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Section 6 — the two drawdown rules demote onto a fresh standard account
+# Section 6 — the two drawdown rules eliminate
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _intraday_breach() -> DrawdownStats:
@@ -508,47 +514,39 @@ def _eod_breach() -> DrawdownStats:
                          eod_hwm=1.0, last_eod_equity=0.919, last_eod_checked_ms=MIDNIGHT_MS)
 
 
-def _assert_fresh_account(manager, hk: str) -> None:
-    """The demotion must restart the account rather than carry the pro one across."""
-    manager._position_client.close_all_positions.assert_called_once()
-    manager._position_client.archive_positions_for_hotkey.assert_called_once()
-    manager._limit_order_client.cancel_limit_order.assert_called_once()
-    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_called_once_with([hk])
-    manager._debt_ledger_client.delete_debt_ledger.assert_called_once_with(hk)
-    manager._miner_account_client.reset_account.assert_called_once()
-    assert manager.miner_states[hk].pro_stats == ProStats()
-    assert manager.miner_states[hk].drawdown == DrawdownStats()
+def _expected_reason(bucket: MinerBucket, rule: str) -> EliminationReason:
+    return FUNDED_REASON[rule] if bucket == MinerBucket.PRO_FUNDED else CHALLENGE_REASON[rule]
 
 
-@pytest.mark.parametrize("bucket", PRO_CHALLENGE_BUCKETS)
-def test_daily_loss_limit_demotes_onto_a_fresh_standard_account(manager, bucket):
+@pytest.mark.parametrize("bucket", ALL_PRO_BUCKETS)
+def test_daily_loss_limit_eliminates(manager, bucket):
     hk = "pro_hk"
     _seed(manager, hk, bucket, _intraday_breach())
     manager.miner_states[hk].pro_stats = _passing_pro_stats()
 
     _run_refresh(manager, hk, ledger=_even_ledger(MIN_DAYS, realized_pnl_usd=7_000.0))
 
-    assert manager.get_miner_bucket(hk) == DEMOTION_TARGET[bucket]
-    manager._elimination_client.append_elimination_row.assert_not_called()
-    _assert_fresh_account(manager, hk)
+    assert manager.get_miner_bucket(hk) == MinerBucket.ELIMINATED
+    kwargs = manager._elimination_client.append_elimination_row.call_args.kwargs
+    assert kwargs["reason"] == _expected_reason(bucket, "INTRADAY")
 
 
-@pytest.mark.parametrize("bucket", PRO_CHALLENGE_BUCKETS)
-def test_trailing_loss_limit_demotes_onto_a_fresh_standard_account(manager, bucket):
+@pytest.mark.parametrize("bucket", ALL_PRO_BUCKETS)
+def test_trailing_loss_limit_eliminates(manager, bucket):
     hk = "pro_hk"
     _seed(manager, hk, bucket, _eod_breach())
     manager.miner_states[hk].pro_stats = _passing_pro_stats()
 
     _run_refresh(manager, hk, ledger=_even_ledger(MIN_DAYS, realized_pnl_usd=7_000.0))
 
-    assert manager.get_miner_bucket(hk) == DEMOTION_TARGET[bucket]
-    manager._elimination_client.append_elimination_row.assert_not_called()
-    _assert_fresh_account(manager, hk)
+    assert manager.get_miner_bucket(hk) == MinerBucket.ELIMINATED
+    kwargs = manager._elimination_client.append_elimination_row.call_args.kwargs
+    assert kwargs["reason"] == _expected_reason(bucket, "EOD")
 
 
 @pytest.mark.parametrize("bucket", PRO_CHALLENGE_BUCKETS)
 def test_a_breach_beats_a_promotion_in_the_same_pass(manager, bucket):
-    """Every gate clears, but the day's loss limit is gone: the miner demotes, never promotes."""
+    """Every gate clears, but the day's loss limit is gone: the miner is eliminated, never promoted."""
     hk = "pro_hk"
     ledger = _even_ledger(MIN_DAYS, realized_pnl_usd=7_000.0)
     _seed(manager, hk, bucket, _intraday_breach())
@@ -556,7 +554,20 @@ def test_a_breach_beats_a_promotion_in_the_same_pass(manager, bucket):
 
     _run_refresh(manager, hk, ledger=ledger)
 
-    assert manager.get_miner_bucket(hk) == DEMOTION_TARGET[bucket]
+    assert manager.get_miner_bucket(hk) == MinerBucket.ELIMINATED
+
+
+@pytest.mark.parametrize("bucket", PRO_CHALLENGE_BUCKETS)
+def test_a_breach_does_not_fall_back_to_the_standard_track(manager, bucket):
+    """No demotion path: nothing resizes the subaccount back onto a standard account."""
+    hk = "entity_hk_1"
+    _seed(manager, hk, bucket, _intraday_breach())
+
+    _run_refresh(manager, hk, ledger=_even_ledger(10))
+
+    assert manager.get_miner_bucket(hk) == MinerBucket.ELIMINATED
+    manager._entity_client.apply_bucket_account_size.assert_not_called()
+    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
 
 
 @pytest.mark.parametrize("bucket", PRO_CHALLENGE_BUCKETS)
@@ -601,43 +612,6 @@ def test_the_trailing_limit_is_not_real_time(manager, bucket):
 
     assert manager.get_miner_bucket(hk) == bucket
     manager._position_client.close_all_positions.assert_not_called()
-
-
-def test_demotion_resizes_a_synthetic_subaccount_before_wiping_it(manager):
-    """A real subaccount is pointed at the standard size first, so the fresh account is sized right."""
-    hk = "entity_hk_1"
-    _seed(manager, hk, MinerBucket.PRO_CHALLENGE_DIRECT, _intraday_breach())
-
-    _run_refresh(manager, hk, ledger=_even_ledger(10))
-
-    manager._entity_client.apply_bucket_account_size.assert_called_once_with(
-        hk, MinerBucket.SUBACCOUNT_CHALLENGE)
-    assert manager.get_miner_bucket(hk) == MinerBucket.SUBACCOUNT_CHALLENGE
-
-
-def test_demotion_is_abandoned_when_the_account_cannot_be_resized(manager):
-    """A failed resize leaves the miner on the pro account rather than stranding them mid-switch."""
-    hk = "entity_hk_1"
-    _seed(manager, hk, MinerBucket.PRO_CHALLENGE_DIRECT, _intraday_breach())
-    manager._entity_client.apply_bucket_account_size.return_value = (False, "no standard size on record")
-
-    _run_refresh(manager, hk, ledger=_even_ledger(10))
-
-    assert manager.get_miner_bucket(hk) == MinerBucket.PRO_CHALLENGE_DIRECT
-    manager._position_client.close_all_positions.assert_not_called()
-    manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
-
-
-def test_pro_funded_is_eliminated_rather_than_demoted(manager):
-    """Only the two challenge buckets fall back to a standard account; PRO_FUNDED has nowhere to go."""
-    hk = "pro_hk"
-    _seed(manager, hk, MinerBucket.PRO_FUNDED, _intraday_breach())
-
-    _run_refresh(manager, hk, ledger=_even_ledger(10))
-
-    assert manager.get_miner_bucket(hk) == MinerBucket.ELIMINATED
-    kwargs = manager._elimination_client.append_elimination_row.call_args.kwargs
-    assert kwargs["reason"] == EliminationReason.FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN
 
 
 def test_pro_buckets_never_run_the_static_drawdown_rule():
