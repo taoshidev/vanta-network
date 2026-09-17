@@ -624,9 +624,9 @@ class ValiConfig:
 
     # Per-asset-class exposure cap, as a multiple of balance.
     STANDARD_CLASS_LEVERAGE_BY_TIER = {
-        1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 2.5, TradePairCategory.COMMODITIES: 1.5},
-        2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 4.0, TradePairCategory.COMMODITIES: 2.0},
-        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 5.0, TradePairCategory.COMMODITIES: 3.0},
+        1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0, TradePairCategory.COMMODITIES: 1.5},
+        2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 6.0, TradePairCategory.COMMODITIES: 2.0},
+        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 8.0, TradePairCategory.COMMODITIES: 3.0},
     }
 
     # Overall portfolio cap keyed by the subaccount's own asset_class. Single-class subaccounts

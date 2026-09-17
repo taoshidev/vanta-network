@@ -175,7 +175,7 @@ class TestValuesMatchSpec(unittest.TestCase):
         TradePairCategory.CRYPTO:      (1.5, 2.0, 2.5),
         TradePairCategory.FOREX:       (10.0, 15.0, 20.0),
         TradePairCategory.COMMODITIES: (1.5, 2.0, 3.0),
-        TradePairCategory.INDICES:     (2.5, 4.0, 5.0),
+        TradePairCategory.INDICES:     (3.0, 6.0, 8.0),  # raised from the spec's 2.5 / 4 / 5 on 2026-09-17
         TradePairCategory.EQUITIES:    (1.0, 2.0, 3.0),
     }
     PORTFOLIO_ALL_MARKETS = (15.0, 20.0, 25.0)
@@ -297,7 +297,7 @@ class TestTier0Floor(unittest.TestCase):
         self.assertEqual(get_grandfathered_positional_leverage(2, TradePair.EURUSD), 10.0)
         self.assertEqual(get_grandfathered_positional_leverage(2, TradePair.BTCUSDC), 1.5)
         self.assertEqual(get_grandfathered_portfolio_leverage(2, MinerAssetClass.ALL_MARKETS), 15.0)
-        # challenge (legacy tier 1) is Base except EWY and the crypto / indices / commodities class caps
+        # challenge (legacy tier 1) is Base except EWY and the crypto / commodities class caps
         self.assertEqual(get_grandfathered_positional_leverage(1, TradePair.NVDA), 0.5)
         self.assertEqual(get_grandfathered_positional_leverage(1, TradePair.EWYUSDC), 1.5)
         self.assertEqual(get_grandfathered_class_leverage(1, TradePairCategory.CRYPTO), 2.0)

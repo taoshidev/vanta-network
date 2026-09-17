@@ -368,9 +368,9 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
   "total_disabled": 24,
   "standard_leverage_tiers": {
     "class": {
-      "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "indices": 2.5, "commodities": 1.5},
-      "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "indices": 4.0, "commodities": 2.0},
-      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "indices": 5.0, "commodities": 3.0},
+      "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "indices": 3.0, "commodities": 1.5},
+      "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "indices": 6.0, "commodities": 2.0},
+      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "indices": 8.0, "commodities": 3.0},
       "-1": {"crypto": 2.0, "forex": 10.0, "equities": 1.0, "indices": 3.0, "commodities": 2.0},
       "-2": {"crypto": 2.0, "forex": 10.0, "equities": 1.5, "indices": 6.0, "commodities": 2.0},
       "-3": {"crypto": 3.0, "forex": 15.0, "equities": 2.0, "indices": 8.0, "commodities": 3.0},

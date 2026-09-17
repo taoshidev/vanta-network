@@ -555,7 +555,7 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
         self.assertEqual(caps["NVDA"], 1.5)     # legacy 0.5 x 3 beats Base 0.5
         self.assertEqual(caps["EURUSD"], 10.0)  # Base 10 beats legacy 2.5 x 3
         self.assertEqual(len(caps), sum(1 for tp in TradePair if MinerAssetClass.ALL_MARKETS.can_trade(tp)))
-        self.assertAlmostEqual(data["max_asset_class_usd"]["indices"], PRO_ACCOUNT_SIZE * 8.0)  # legacy 8 beats Base 2.5
+        self.assertAlmostEqual(data["max_asset_class_usd"]["indices"], PRO_ACCOUNT_SIZE * 8.0)  # legacy 8 beats Base 3
         self.assertAlmostEqual(data["max_portfolio_usd"], PRO_ACCOUNT_SIZE * 18.0)  # legacy 18 beats Base 15
 
     def test_pre_tier_account_tier_keys_its_floor_rows_in_trade_pairs(self):
