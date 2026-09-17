@@ -391,6 +391,25 @@ class TestMarketOrderManager(TestBase):
         self.assertNotEqual(pos1.miner_hotkey, pos2.miner_hotkey)
         self.assertNotEqual(pos1.position_uuid, pos2.position_uuid)
 
+    def test_execute_order_trigger_price_caps_unfavorable_slippage(self):
+        # Slippage would push the LONG fill from 100 to 110, past the trigger (limit/TP/SL)
+        # boundary of 105 - the fill must be capped at the boundary with slippage zeroed out.
+        order, _ = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "uuid_capped", OrderType.LONG, 100.0, value=1000.0,
+            slippage=0.10, trigger_price=105.0,
+        )
+        self.assertEqual(order.price, 105.0)
+        self.assertEqual(order.slippage, 0)
+
+        # Same slippage, but the trigger boundary (200) is beyond the natural fill (110) -
+        # the more favorable natural market price passes through untouched.
+        order2, _ = self.execute(
+            self.DEFAULT_MINER_HOTKEY, "uuid_uncapped", OrderType.LONG, 100.0, value=1000.0,
+            slippage=0.10, trigger_price=200.0, trade_pair=TradePair.ETHUSDC,
+        )
+        self.assertEqual(order2.price, 100.0)
+        self.assertEqual(order2.slippage, 0.10)
+
     def test_execute_order_multiple_trade_pairs(self):
         _, btc_pos = self.execute(
             self.DEFAULT_MINER_HOTKEY, "btc_order", OrderType.LONG, 50000.0, value=500.0,
