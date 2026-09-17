@@ -115,14 +115,14 @@ class BaseDataService(ABC):
         """
         ...
 
-    def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
+    def is_market_open(self, trade_pair: TradePair, time_ms=None, allow_extended_hours: bool = False) -> bool:
         # Check test override first
         if self._test_market_open_override is not None:
             return self._test_market_open_override
 
         if time_ms is None:
             time_ms = TimeUtil.now_in_millis()
-        return self.market_calendar.is_market_open(trade_pair, time_ms)
+        return self.market_calendar.is_market_open(trade_pair, time_ms, allow_extended_hours)
 
     @ErrorUtils.require_test_mode
     def set_test_market_open(self, is_open: bool) -> None:
@@ -335,7 +335,9 @@ class BaseDataService(ABC):
             # Market check first
             # Get a representative trade pair for the category
             trade_pair = self.get_first_trade_pair_in_category(tpc)
-            if trade_pair and not self.is_market_open(trade_pair):
+            # allow_extended_hours=True so the equities connection stays up through pre-market/after-hours,
+            # since that's exactly when live trade/quote data is needed to price extended-hours fills.
+            if trade_pair and not self.is_market_open(trade_pair, allow_extended_hours=True):
                 if task and not task.done():
                     logger.info(f"{self.provider_name}[{tpc}] market closed, stopping")
                     task.cancel()

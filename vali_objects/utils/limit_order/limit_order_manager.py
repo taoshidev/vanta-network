@@ -447,7 +447,7 @@ class LimitOrderManager(CacheController):
             # Skip immediate fill for STOP_LIMIT orders - they should only trigger via daemon
             if order.execution_type != ExecutionType.STOP_LIMIT:
                 price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
-                if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
+                if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms, allow_extended_hours=True):
                     _ps = price_sources[0]
                     _, trigger_price, _ = evaluate_order_trigger(miner_hotkey, order, open_position, [_ps])
                     should_fill_immediately = trigger_price is not None
@@ -897,8 +897,8 @@ class LimitOrderManager(CacheController):
             if trade_pair.is_blocked or not hotkey_dict:
                 continue
 
-            # Check if market is open
-            if not self.live_price_fetcher.is_market_open(trade_pair, now_ms):
+            # Check if market is open (equities also trade pre-market/after-hours)
+            if not self.live_price_fetcher.is_market_open(trade_pair, now_ms, allow_extended_hours=True):
                 if self.running_unit_tests:
                     print(f"[CHECK_ORDERS DEBUG] Market closed for {trade_pair.trade_pair_id}")
                 logger.debug(f"Market closed for {trade_pair.trade_pair_id}, skipping")

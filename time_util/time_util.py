@@ -169,6 +169,52 @@ class IndicesMarketCalendar:
         schedule = market_calendar.schedule(start_date=tsn, end_date=tsn)
         return schedule
 
+    @lru_cache(maxsize=3000)
+    def schedule_from_cache_extended(self, tsn, market_name):
+        # Same as schedule_from_cache but also includes the pre-market/post-market columns,
+        # needed to classify which equities session (pre/regular/post) a timestamp falls in.
+        if market_name == 'CBOE_Index_Options':
+            market_calendar = self.cboe_calendar
+        elif market_name == 'NYSE':
+            market_calendar = self.nyse_calendar
+        elif market_name == 'NASDAQ':
+            market_calendar = self.nasdaq_calendar
+        else:
+            raise ValueError(f"Market calendar not supported {market_name}")
+        schedule = market_calendar.schedule(start_date=tsn, end_date=tsn, start='pre', end='post')
+        return schedule
+
+    def get_equity_session(self, ticker, timestamp_ms):
+        """
+        Classifies timestamp_ms into one of 'pre', 'regular', 'post', or 'closed' for the given
+        equity ticker. Unlike is_market_open (regular session only), this recognizes the standard
+        Nasdaq/NYSE extended-hours windows (~4:00am-9:30am ET pre-market, ~4:00pm-8:00pm ET after-hours).
+        """
+        if ticker in ['SPX', 'DJI', 'NDX', 'VIX', 'GDAXI', 'FTSE']:
+            return 'closed'
+
+        market_calendar = self.get_market_calendar(ticker)
+        timestamp = pd.Timestamp(timestamp_ms, unit='ms', tz='UTC')
+        tsn = timestamp.normalize()
+        schedule = self.schedule_from_cache_extended(tsn, market_calendar.name)
+
+        if schedule.empty:
+            return 'closed'
+
+        pre_ms = TimeUtil.timestamp_to_millis(schedule.iloc[0]['pre'])
+        open_ms = TimeUtil.timestamp_to_millis(schedule.iloc[0]['market_open'])
+        close_ms = TimeUtil.timestamp_to_millis(schedule.iloc[0]['market_close'])
+        post_ms = TimeUtil.timestamp_to_millis(schedule.iloc[0]['post'])
+
+        if pre_ms <= timestamp_ms < open_ms:
+            return 'pre'
+        elif open_ms <= timestamp_ms < close_ms:
+            return 'regular'
+        elif close_ms <= timestamp_ms < post_ms:
+            return 'post'
+        else:
+            return 'closed'
+
 
     def is_market_open(self, ticker, timestamp_ms):
         # Indices in this list never trade; check this before touching the cache
@@ -253,7 +299,7 @@ class UnifiedMarketCalendar:
         self.indices_calendar = IndicesMarketCalendar()
         self.forex_calendar = ForexHolidayCalendar()
 
-    def is_market_open(self, trade_pair, timestamp_ms:int):
+    def is_market_open(self, trade_pair, timestamp_ms:int, allow_extended_hours: bool = False):
         #t0 = time.time()
         if not trade_pair:
             raise ValueError("Trade pair is required")
@@ -271,13 +317,22 @@ class UnifiedMarketCalendar:
             return ans
         elif trade_pair.is_indices or trade_pair.is_equities:
             ticker = trade_pair.trade_pair_id  # Use the trade_pair_id as the ticker
-            ans = self.indices_calendar.is_market_open(ticker, timestamp_ms)
+            if allow_extended_hours and trade_pair.is_equities:
+                # Pre-market/after-hours are only recognized for equities, not indices
+                ans = self.indices_calendar.get_equity_session(ticker, timestamp_ms) in ('pre', 'regular', 'post')
+            else:
+                ans = self.indices_calendar.is_market_open(ticker, timestamp_ms)
             #tf = time.time()
             #print(f"found index {ticker} in {tf - t0}")
             # Check if the index market is open using the indices calendar
             return ans
         else:
             raise ValueError("Unsupported trade pair category")
+
+    def get_equity_session(self, trade_pair, timestamp_ms: int) -> str:
+        """Returns 'pre', 'regular', 'post', or 'closed' for equities. Only meaningful for equities."""
+        ticker = trade_pair.trade_pair_id
+        return self.indices_calendar.get_equity_session(ticker, timestamp_ms)
 
 class TimeUtil:
 

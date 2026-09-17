@@ -88,7 +88,10 @@ class MarketOrderManager():
             if err:
                 raise SignalException(err)
 
-        if not self._live_price_client.is_market_open(trade_pair):
+        # Equities also trade during Nasdaq/NYSE pre-market and after-hours sessions now that live
+        # pricing (Nasdaq Basic trades/quotes, FMV fallback) covers those windows; other asset classes
+        # are unaffected since allow_extended_hours is only consulted for the equities branch.
+        if not self._live_price_client.is_market_open(trade_pair, allow_extended_hours=True):
             raise SignalException(f"The market for {trade_pair.trade_pair_id} is currently closed.")
 
         logger.info(

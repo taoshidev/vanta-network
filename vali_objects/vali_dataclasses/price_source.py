@@ -33,6 +33,7 @@ class PriceSource:
     lag_ms: int = 0
     bid: Optional[float] = 0.0
     ask: Optional[float] = 0.0
+    is_quote: bool = False  # True when bid/ask are a real two-sided quote (e.g. Nasdaq Basic NBBO), not a single-value tick
 
     def to_dict(self):
         """Convert to dictionary (compatibility method for serialization)."""
@@ -106,8 +107,8 @@ class PriceSource:
 
     def parse_appropriate_price(self, now_ms: int, is_forex: bool, order_type: OrderType, position_type: OrderType) -> float:
         ans = None
-        # Only secondly candles have bid/ask
-        if is_forex and self.timespan_ms == 1000:
+        # Only secondly forex candles and real two-sided quotes (e.g. equities NBBO) have a usable bid/ask spread
+        if (is_forex and self.timespan_ms == 1000) or self.is_quote:
             if order_type == OrderType.LONG:
                 ans = self.ask
             elif order_type == OrderType.SHORT:

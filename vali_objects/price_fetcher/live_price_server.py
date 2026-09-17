@@ -243,8 +243,8 @@ class LivePriceFetcherServer(RPCServerBase):
         """Delegate to fetcher."""
         return self._fetcher.simulate_avg_fill_price(trade_pair, size_usd, is_buy)
 
-    def is_market_open(self, trade_pair: TradePair, time_ms: int) -> bool:
-        return self._fetcher.is_market_open(trade_pair, time_ms)
+    def is_market_open(self, trade_pair: TradePair, time_ms: int, allow_extended_hours: bool = False) -> bool:
+        return self._fetcher.is_market_open(trade_pair, time_ms, allow_extended_hours)
 
 
 

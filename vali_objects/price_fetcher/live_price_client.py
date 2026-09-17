@@ -49,23 +49,24 @@ class LivePriceFetcherClient(RPCClientBase):
 
     # ========== Local methods (no RPC) ==========
 
-    def is_market_open(self, trade_pair: TradePair, time_ms=None) -> bool:
+    def is_market_open(self, trade_pair: TradePair, time_ms=None, allow_extended_hours: bool = False) -> bool:
         """
         Check if market is open for a trade pair. Executes locally (no RPC).
 
         Args:
             trade_pair: The trade pair to check
             time_ms: Optional timestamp in milliseconds (defaults to now)
+            allow_extended_hours: If True, equities pre-market/after-hours sessions also count as open
 
         Returns:
             bool: True if market is open, False otherwise
         """
         if self.running_unit_tests:
-            return self._server.is_market_open(trade_pair, time_ms)
+            return self._server.is_market_open(trade_pair, time_ms, allow_extended_hours)
 
         if time_ms is None:
             time_ms = TimeUtil.now_in_millis()
-        return self._market_calendar.is_market_open(trade_pair, time_ms)
+        return self._market_calendar.is_market_open(trade_pair, time_ms, allow_extended_hours)
 
     # ========== RPC proxy methods ==========
 

@@ -338,6 +338,12 @@ class ValiConfig:
     # Controls how much history to store for price data which is used in retroactive updates
     RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS = 300000 # 5 minutes
 
+    # Max age of a Nasdaq Basic equities trade/quote tick before it's considered too stale to fill against.
+    # Quotes update continuously even without a trade, so they can use a tight window. Trades are sparser,
+    # especially in extended hours, so they need a looser window or nothing would ever be "fresh".
+    EQUITIES_QUOTE_STALENESS_MS = 5000  # 5 seconds
+    EQUITIES_TRADE_STALENESS_MS = 60000  # 60 seconds
+
     # Risk Profiling
     RISK_PROFILING_STEPS_MIN_LEVERAGE = 0.01  # min of category MIN_LEVERAGE values in vali_objects/trade_pair.py
     RISK_PROFILING_STEPS_CRITERIA = 3

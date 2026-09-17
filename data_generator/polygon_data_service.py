@@ -3,16 +3,17 @@ import traceback
 
 import requests
 
+from collections import defaultdict
 from typing import List
 
 from vali_objects.vali_dataclasses.order import Order
-from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
+from polygon.websocket import Market, EquityAgg, EquityTrade, EquityQuote, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME
 from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig
 import time
 
 from vali_objects.utils.vali_utils import ValiUtils
@@ -239,8 +240,17 @@ class PolygonDataService(BaseDataService):
         self.N_CANDLES_LIMIT = 50000
         self.tp_to_mfs = {}
         self.is_backtesting = is_backtesting
-        # Use Business feed for equities to get FMV data
-        self.stocks_feed = Feed.Business
+        # Use the Nasdaq Basic Business feed for equities: carries the T./Q. trades+quotes this account
+        # is entitled to, and FMV is expected to still be available on this same connection/subscription.
+        self.stocks_feed = Feed.NasdaqBasicBusiness
+
+        # Dedicated per-type trackers for equities (Nasdaq Basic trades/quotes + FMV), keyed by symbol.
+        # Kept separate from trade_pair_to_recent_events (which mixes all message types) so live fills
+        # can deliberately prefer one type over another (e.g. trades over quotes after-hours) instead of
+        # just taking whichever type happened to arrive most recently.
+        self.equity_trade_events = defaultdict(RecentEventTracker)
+        self.equity_quote_events = defaultdict(RecentEventTracker)
+        self.equity_fmv_events = defaultdict(RecentEventTracker)
 
         # Test price source registry (only used when running_unit_tests=True)
         # Allows tests to inject specific price sources via IPC instead of hardcoded values
@@ -497,24 +507,33 @@ class PolygonDataService(BaseDataService):
                     open = close = vwap = high = low = bid
 
             elif tp.is_equities:
+                equities_source_type = None
                 if isinstance(m, FairMarketValue):
-                    # FMV messages: use fmv field as the price for open/close
+                    # FMV messages: last-resort fallback when neither trades nor quotes are fresh
                     start_timestamp = m.timestamp // 1000000  # convert nanoseconds to milliseconds
                     end_timestamp = None
                     open = close = vwap = high = low = m.fmv
-                    bid = ask = m.fmv  # Temporary compromise for trigger logic (tied to bid/ask)
+                    bid = ask = m.fmv  # Single-value tick; no real spread to report
+                    equities_source_type = 'fmv'
+                elif isinstance(m, EquityTrade):
+                    # Nasdaq Basic trade print (SIP timestamp already in Unix ms)
+                    start_timestamp = m.timestamp
+                    end_timestamp = None
+                    open = close = vwap = high = low = m.price
+                    bid = ask = m.price  # Single-value tick; no real spread to report
+                    equities_source_type = 'trade'
+                elif isinstance(m, EquityQuote):
+                    # Nasdaq Basic NBBO quote (SIP timestamp already in Unix ms)
+                    if not m.bid_price or not m.ask_price or m.bid_price <= 0 or m.ask_price <= 0:
+                        return None, None
+                    start_timestamp = m.timestamp
+                    end_timestamp = None
+                    bid = m.bid_price
+                    ask = m.ask_price
+                    open = close = vwap = high = low = (bid + ask) / 2.0
+                    equities_source_type = 'quote'
                 else:
                     return None, None
-                #if m.exchange != self.equities_mapping['nasdaq']:
-                #    #print(f"Skipping equity trade from exchange {m.exchange} for {tp.trade_pair}")
-                #    return None, None
-                #if isinstance(m, EquityTrade) and isinstance(m.conditions, list) and 12 in m.conditions:
-                #    #print(f"Skipping Polygon websocket trade with afterhours condition for {m}")
-                #    self.n_equity_events_skipped_afterhours += 1
-                #    return None, None
-                #start_timestamp = round(m.timestamp, -3)  # round to nearest second which allows aggresssive filtering via dup logic
-                #end_timestamp = None
-                #open = close = vwap = high = low = m.price
             elif tp.is_crypto:
                 if m.exchange != self.crypto_mapping['coinbase']:
                     #print(f"Skipping crypto trade from exchange {m.exchange} for {tp.trade_pair}")
@@ -533,8 +552,10 @@ class PolygonDataService(BaseDataService):
                 #print(f'Received message {symbol} price {close} time {TimeUtil.millis_to_formatted_date_str(start_timestamp)}')
 
             now_ms = TimeUtil.now_in_millis()
+            source_name = f'{POLYGON_PROVIDER_NAME}_ws_{equities_source_type}' if tp.is_equities else f'{POLYGON_PROVIDER_NAME}_ws'
+            is_quote = tp.is_equities and equities_source_type == 'quote'
             price_source1 = PriceSource(
-                source=f'{POLYGON_PROVIDER_NAME}_ws',
+                source=source_name,
                 timespan_ms=0,
                 open=open,
                 close=open,
@@ -545,7 +566,8 @@ class PolygonDataService(BaseDataService):
                 websocket=True,
                 lag_ms=now_ms - start_timestamp,
                 bid=bid,
-                ask=ask
+                ask=ask,
+                is_quote=is_quote
             )
 
             if tp.is_equities or tp.is_crypto:
@@ -580,6 +602,8 @@ class PolygonDataService(BaseDataService):
                     tp = self.symbol_to_trade_pair(m.pair)
                 elif isinstance(m, EquityTrade):
                     tp = self.symbol_to_trade_pair(m.symbol)
+                elif isinstance(m, EquityQuote):
+                    tp = self.symbol_to_trade_pair(m.symbol)
                 elif isinstance(m, FairMarketValue):
                     tp = self.symbol_to_trade_pair(m.ticker)
                 else:
@@ -603,6 +627,16 @@ class PolygonDataService(BaseDataService):
                     if symbol not in self.trade_pair_to_recent_events:
                         self.trade_pair_to_recent_events_realtime[symbol] = RecentEventTracker()
                     self.trade_pair_to_recent_events[symbol].add_event(ps, tp.is_forex, f"{self.provider_name}:{tp.trade_pair}")
+
+                    if tp.is_equities:
+                        # Also track by type so live fills can deliberately prefer trade vs. quote vs. FMV
+                        # depending on session, instead of just taking whichever type arrived most recently.
+                        if ps.source.endswith('_trade'):
+                            self.equity_trade_events[symbol].add_event(ps, False, f"{self.provider_name}:{tp.trade_pair}:trade")
+                        elif ps.source.endswith('_quote'):
+                            self.equity_quote_events[symbol].add_event(ps, False, f"{self.provider_name}:{tp.trade_pair}:quote")
+                        elif ps.source.endswith('_fmv'):
+                            self.equity_fmv_events[symbol].add_event(ps, False, f"{self.provider_name}:{tp.trade_pair}:fmv")
 
                 if DEBUG:
                     formatted_time = TimeUtil.millis_to_formatted_date_str(TimeUtil.now_in_millis())
@@ -645,9 +679,14 @@ class PolygonDataService(BaseDataService):
             elif tp.is_equities:
                 if tp.src != TradePairSource.VANTA:
                     continue
-                symbol = "FMV." + tp.trade_pair
-                subbed.append(symbol)
-                self.WEBSOCKET_OBJECTS[TradePairCategory.EQUITIES].subscribe(symbol)
+                # FMV stays subscribed as the last-resort fallback; Nasdaq Basic trades/quotes are now
+                # the primary live pricing inputs (see msg_to_price_sources and get_closes_websocket).
+                fmv_symbol = "FMV." + tp.trade_pair
+                trade_symbol = "T." + tp.trade_pair
+                quote_symbol = "Q." + tp.trade_pair
+                for symbol in (fmv_symbol, trade_symbol, quote_symbol):
+                    subbed.append(symbol)
+                    self.WEBSOCKET_OBJECTS[TradePairCategory.EQUITIES].subscribe(symbol)
             elif tp.is_indices:
                 continue
             else:
@@ -664,6 +703,45 @@ class PolygonDataService(BaseDataService):
         if not tp:
             raise ValueError(f"Unknown symbol: {symbol}")
         return tp
+
+    def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict:
+        """
+        Same contract as BaseDataService.get_closes_websocket, but for equities picks between
+        Nasdaq Basic trades/quotes/FMV based on session and staleness instead of just returning
+        whichever message type happened to arrive most recently.
+        """
+        equities_pairs = [tp for tp in trade_pairs if tp.is_equities]
+        other_pairs = [tp for tp in trade_pairs if not tp.is_equities]
+
+        events = super().get_closes_websocket(other_pairs, time_ms) if other_pairs else {}
+
+        for tp in equities_pairs:
+            symbol = tp.trade_pair
+            session = self.market_calendar.get_equity_session(tp, time_ms)
+
+            trade_event = self.equity_trade_events[symbol].get_closest_event(time_ms) if symbol in self.equity_trade_events else None
+            if trade_event is not None and trade_event.time_delta_from_now_ms(time_ms) > ValiConfig.EQUITIES_TRADE_STALENESS_MS:
+                trade_event = None
+
+            quote_event = self.equity_quote_events[symbol].get_closest_event(time_ms) if symbol in self.equity_quote_events else None
+            if quote_event is not None and quote_event.time_delta_from_now_ms(time_ms) > ValiConfig.EQUITIES_QUOTE_STALENESS_MS:
+                quote_event = None
+
+            fmv_event = self.equity_fmv_events[symbol].get_closest_event(time_ms) if symbol in self.equity_fmv_events else None
+
+            if session == 'regular':
+                # Regular hours: NBBO quote is the primary reference price, trade is the fallback.
+                candidates = [quote_event, trade_event, fmv_event]
+            else:
+                # Pre-market/after-hours/closed: prefer the last trade print over quotes, per plan -
+                # thin after-hours books can have wide or stale NBBO from a single market maker.
+                candidates = [trade_event, quote_event, fmv_event]
+
+            winning_event = next((e for e in candidates if e is not None), None)
+            if winning_event:
+                events[tp] = winning_event
+
+        return events
 
     def get_price_rest(
         self,
@@ -726,7 +804,7 @@ class PolygonDataService(BaseDataService):
         if test_price:
             return test_price
 
-        if not self.is_market_open(trade_pair, time_ms=timestamp_ms):
+        if not self.is_market_open(trade_pair, time_ms=timestamp_ms, allow_extended_hours=True):
             return self.get_event_before_market_close(trade_pair, timestamp_ms)
 
         prev_timestamp = None
