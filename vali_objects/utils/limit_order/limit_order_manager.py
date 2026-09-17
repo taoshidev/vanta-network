@@ -1213,7 +1213,6 @@ class LimitOrderManager(CacheController):
         new_src = OrderSource.ORGANIC if is_market_order else OrderSource.get_fill(order.src)
         slippage = None if is_market_order else 0
         is_taker = True if is_market_order else is_taker
-        fill_price = None if is_market_order else trigger_price
         try:
             if order.execution_type == ExecutionType.BRACKET:
                 order_type = OrderType.opposite_order_type(order.order_type)
@@ -1233,7 +1232,6 @@ class LimitOrderManager(CacheController):
             result = self.market_order_client.execute_order(
                 miner_hotkey, order.order_uuid, trade_pair,
                 order.execution_type, order_type, order_size,
-                fill_price=fill_price,
                 trigger_price=trigger_price,
                 price_sources=[price_source],
                 order_src=new_src,
@@ -1252,7 +1250,7 @@ class LimitOrderManager(CacheController):
             order.value = filled_order.value
             order.quantity = filled_order.quantity
             order.price_sources = filled_order.price_sources
-            order.price = fill_price if fill_price else filled_order.price
+            order.price = filled_order.price
             order.bid = filled_order.bid
             order.ask = filled_order.ask
             order.slippage = filled_order.slippage
