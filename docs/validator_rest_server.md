@@ -2021,6 +2021,8 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
           "o": 1770727691818, // open_ms
           "r": 1.0001031522298502, // current_return
           "nl": 0.1, // net_leverage (if not zero)
+          "nv": 1000.0, // net_value in USD, signed (if not zero)
+          "nq": 11.926, // net_quantity in lot units, signed (if not zero)
           "ap": 83.88350685527055, // average_entry_price
           "rp": 10.315222985026267, // realized_pnl
           "c": 1770727882140, // close_ms (if closed)
