@@ -462,7 +462,7 @@ class LimitOrderManager(CacheController):
                     if o.order_uuid == order_uuid:
                         orders_list.pop(i)
                         break
-            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, is_market_order=True)
+            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], trigger_price, is_market_order=True)
             if fill_error:
                 raise SignalException(fill_error)
             logger.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
@@ -1193,7 +1193,7 @@ class LimitOrderManager(CacheController):
                 order.src = OrderSource.STOP_LIMIT_CANCELLED
                 self._write_to_disk(miner_hotkey, order)
 
-    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, is_market_order=False, is_taker=None):
+    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, trigger_price, is_market_order=False, is_taker=None):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
         from vali_objects.utils.limit_order.order_utils import OrderSize
         trade_pair = order.trade_pair
@@ -1212,8 +1212,8 @@ class LimitOrderManager(CacheController):
 
         new_src = OrderSource.ORGANIC if is_market_order else OrderSource.get_fill(order.src)
         slippage = None if is_market_order else 0
-        # An order that fills on submission crossed the spread, so it took liquidity.
         is_taker = True if is_market_order else is_taker
+        fill_price = None if is_market_order else trigger_price
         try:
             if order.execution_type == ExecutionType.BRACKET:
                 order_type = OrderType.opposite_order_type(order.order_type)
@@ -1234,6 +1234,7 @@ class LimitOrderManager(CacheController):
                 miner_hotkey, order.order_uuid, trade_pair,
                 order.execution_type, order_type, order_size,
                 fill_price=fill_price,
+                trigger_price=trigger_price,
                 price_sources=[price_source],
                 order_src=new_src,
                 now_ms=fill_time,
