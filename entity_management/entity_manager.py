@@ -1328,6 +1328,55 @@ class EntityManager(ValidatorBroadcastBase):
         logger.info(f"[ENTITY_MANAGER] drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}")
         return True, f"drawdown_criteria updated to '{criteria}' for {synthetic_hotkey}"
 
+    def update_subaccount_account_size(self, synthetic_hotkey: str, account_size: float) -> Tuple[bool, str]:
+        """
+        Directly set a standard subaccount's live account size: pushes the new size to the
+        MinerAccount (via miner_account_client) and mirrors it onto the stored SubaccountInfo, then
+        broadcasts to other validators.
+
+        Unlike apply_bucket_account_size, this does not move buckets, charge a promotion fee, or
+        touch pro sizing -- it is the admin-repair path (e.g. after an admin reset) for pointing a
+        subaccount at an explicit size out of band.
+        """
+        if not is_synthetic_hotkey(synthetic_hotkey):
+            return False, f"{synthetic_hotkey} is not a synthetic hotkey"
+        if (isinstance(account_size, bool) or not isinstance(account_size, (int, float))
+                or not math.isfinite(account_size) or account_size <= 0):
+            return False, f"account_size must be a finite positive number, got {account_size!r}"
+
+        entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        entity_lock = self._get_entity_lock(entity_hotkey)
+        with entity_lock:
+            entity_data = self.entities.get(entity_hotkey)
+            if not entity_data:
+                return False, f"Entity {entity_hotkey} not found"
+            subaccount = entity_data.subaccounts.get(subaccount_id)
+            if not subaccount:
+                return False, f"Subaccount {subaccount_id} not found for entity {entity_hotkey}"
+            if AccountType(subaccount.account_type) == AccountType.PRO:
+                return False, "Pro accounts are resized via subaccount promotion, not this endpoint"
+
+            cpt = ValiConfig.entity_cost_per_theta(account_size)
+            record = self._miner_account_client.set_miner_account_size(
+                synthetic_hotkey,
+                collateral_balance_theta=account_size / cpt,
+                timestamp_ms=TimeUtil.now_in_millis(),
+                account_size=account_size,
+            )
+            if not record:
+                return False, f"Failed to set account size for {synthetic_hotkey}"
+
+            subaccount.account_size = account_size
+            subaccount.standard_account_size = account_size
+            entity_data.subaccounts[subaccount_id] = subaccount
+        self._write_entities_from_memory_to_disk()
+
+        if not self.running_unit_tests:
+            self.broadcast_subaccount_registration(entity_hotkey, subaccount)
+
+        logger.info(f"[ENTITY_MANAGER] account_size updated to ${account_size} for {synthetic_hotkey}")
+        return True, f"account_size updated to ${account_size} for {synthetic_hotkey}"
+
     def update_subaccount_leverage_tier(
         self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
     ) -> Tuple[bool, str]:
