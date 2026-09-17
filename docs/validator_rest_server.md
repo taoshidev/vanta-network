@@ -2192,6 +2192,8 @@ This section is only included if the subaccount is eliminated.
   - `open_ms`: When position was opened (timestamp)
   - `current_return`: Current return multiplier (1.0235 = 2.35% gain)
   - `net_leverage`: Current leverage (positive = LONG, negative = SHORT, 0 = FLAT)
+  - `net_value`: Current position value in USD, signed like `net_leverage` (omitted when zero)
+  - `net_quantity`: Current position size in the pair's lot unit (`TradePair.lot_size`: forex 100,000 units, XAUUSD 100 oz, XAGUSD 5,000 oz, everything else 1), i.e. the same unit an order's `quantity` is submitted in; signed like `net_leverage` (omitted when zero, or on a legacy position that has not been rebuilt on the quantity system)
   - `average_entry_price`: Average price across all entries
   - `close_ms`: When position was closed (only included if closed)
   - `return_at_close`: Final return when position closes (only included if closed)
