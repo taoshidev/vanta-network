@@ -61,7 +61,8 @@ class WeekTrack(Enum):
 @dataclass
 class WeeklyPayoutContext:
     """Everything the payout paths need to know about one Monday-anchored payout week."""
-    # A breach is stamped on a single checkpoint, so the worst value in the week governs it
+    # A breach is stamped on a single checkpoint, so the worst value in the week governs it.
+    # weekly_penalty currently only applies to pro_funded, pnl prior to a mid-week promotion is unaffected
     weekly_penalty: float = 1.0
     # The subaccount's standard/pro payout ratio for this week, *before* the per-bucket gate.
     # Callers apply the gate themselves - per checkpoint, or per settlement segment - so a
@@ -357,6 +358,12 @@ class DebtLedger:
         bucket = DebtLedger._bucket_from_status(cp.challenge_period_status)
         return payout_scale if bucket.payout_scale_applies else 1.0
 
+    @staticmethod
+    def checkpoint_weekly_penalty(cp: DebtCheckpoint, weekly_penalty: float) -> float:
+        """The week's penalty, gated on the bucket *this* checkpoint was stamped with."""
+        bucket = DebtLedger._bucket_from_status(cp.challenge_period_status)
+        return weekly_penalty if bucket.soft_breach_applies else 1.0
+
     def first_earning_checkpoint_ms(self) -> Optional[int]:
         """Timestamp of the first checkpoint stamped with a bucket that earns payouts.
 
@@ -425,12 +432,6 @@ class DebtLedger:
 
         A checkpoint stamped exactly at Monday 00:00 covers the 12 hours *ending* then, so it
         belongs to the week that just closed - hence the `- 1` when finding the week start.
-
-        `payout_scale` is carried through ungated: it is the ratio that *would* apply, and the
-        caller gates it on the bucket it is settling - `checkpoint_payout_scale` per checkpoint,
-        or `payout_scale_applies` per settlement segment - so a promotion mid-week is priced per
-        day. A sealed week hands back the ratio it settled at, which is what stops an account
-        resize from repricing weeks that are already paid.
 
         Args:
             payout_scale: PRO_TRANSITION_PAYOUT_MULTIPLIER * standard_account_size /

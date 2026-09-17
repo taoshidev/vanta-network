@@ -27,7 +27,10 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger, WeekTrack, apply_deferral
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
-from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek, WeeklySealLedger
+from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
+from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import (
+    SealedWeek, SettledSegment, WeeklySealLedger,
+)
 import logging
 import os
 from shared_objects.log import logger
@@ -649,6 +652,32 @@ class TestDebtLedgers(TestBase):
         logger.info("Production integration smoke test completed successfully")
         logger.info("="*80)
 
+    def test_settled_segments_survive_deleting_the_debt_ledger(self):
+        """The wipe _switch_account runs: the debt and penalty ledgers go, the settled money stays.
+
+        Exercises the real RPC path the promotion uses, so a settled segment is proven to outlive
+        the delete that happens moments after it is written.
+        """
+        _clear_seal_ledger()
+        hotkey = "wounddown_1"
+        week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+        promotion_ms = week_start_ms + MS_IN_WEEK // 2
+        try:
+            self.assertTrue(self.debt_ledger_client.record_settled_segment(
+                hotkey, week_start_ms, week_start_ms, promotion_ms,
+                MinerBucket.PRO_CHALLENGE_TRANSITION.value, 1843.20, 1843.20, 1.0, 1.0,
+            ))
+
+            self.debt_ledger_client.delete_debt_ledger(hotkey)
+
+            segments = self.debt_ledger_client.get_settled_segments(hotkey)
+            self.assertEqual(len(segments), 1)
+            self.assertEqual(segments[0].payout_usd, 1843.20)
+            self.assertEqual(segments[0].bucket, MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        finally:
+            self.debt_ledger_client.remove_settled_segment(hotkey, promotion_ms)
+            _clear_seal_ledger()
+
 
 class TestApplyDeferral(TestBase):
     """One payout week of escrow bookkeeping: every dollar is released, carried, or forfeited."""
@@ -711,9 +740,14 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         )
         return manager
 
-    def _subaccount_ledger(self, blocked_checkpoint_indices=()):
-        """One earning checkpoint per 12h for two weeks, each realizing 10 USD."""
+    def _subaccount_ledger(self, blocked_checkpoint_indices=(), bucket_by_index=None):
+        """One earning checkpoint per 12h for two weeks, each realizing 10 USD.
+
+        `bucket_by_index` overrides the bucket stamped on individual checkpoints, which is how a
+        promotion lands mid-week; everything else is PRO_FUNDED.
+        """
         week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+        bucket_by_index = bucket_by_index or {}
         checkpoints = []
         for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS):
             checkpoints.append(DebtCheckpoint(
@@ -721,13 +755,13 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
                 realized_pnl=10.0,
                 accum_ms=self.CP_DURATION_MS,
                 max_portfolio_value=1000.0,
-                challenge_period_status=MinerBucket.PRO_FUNDED.value,
+                challenge_period_status=bucket_by_index.get(i, MinerBucket.PRO_FUNDED).value,
                 weekly_penalty=0.0 if i in blocked_checkpoint_indices else 1.0,
             ))
         return DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=checkpoints), week_0_start
 
-    def _aggregate(self, blocked_checkpoint_indices=()):
-        ledger, week_0_start = self._subaccount_ledger(blocked_checkpoint_indices)
+    def _aggregate(self, blocked_checkpoint_indices=(), bucket_by_index=None):
+        ledger, week_0_start = self._subaccount_ledger(blocked_checkpoint_indices, bucket_by_index)
         manager = self._build_manager(ledger)
         manager.aggregate_entity_debt_ledgers(self.CP_DURATION_MS)
 
@@ -741,6 +775,88 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         week_0, week_1 = self._aggregate()
         self.assertAlmostEqual(week_0, 140.0)
         self.assertAlmostEqual(week_1, 140.0)
+
+    def test_a_breach_after_a_mid_week_promotion_keeps_the_pre_promotion_pnl_in_its_own_week(self):
+        """The weight-setting half of the same rule: a breach cannot reach back past the promotion.
+
+        The account promotes halfway through week 0 and breaches after. Week 0 still pays the
+        70 USD it earned under the challenge rules; only the 70 earned under the pro rules is
+        held, and week 1 - clean and still on track - settles it alongside its own 140.
+        """
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        promoted_at = cps_per_week // 2
+        week_0, week_1 = self._aggregate(
+            blocked_checkpoint_indices=(promoted_at + 3,),
+            bucket_by_index={
+                i: MinerBucket.PRO_CHALLENGE_FROM_STANDARD for i in range(promoted_at)
+            },
+        )
+        self.assertAlmostEqual(week_0, 70.0)
+        self.assertAlmostEqual(week_1, 210.0)
+
+    def test_the_pre_promotion_pnl_reaches_the_weight_setter_in_its_own_week(self):
+        """The gate has to move weights, not just the payout report.
+
+        WeightCalculatorManager._compute_miner_weights prices an entity week as the difference
+        between calculate_payout_from_checkpoints run through this week and through the prior one,
+        over exactly the aggregated ledger this test builds. Reproduced here: withholding the
+        pre-promotion stretch would push its 70 USD out of week 0 and into week 1, moving the
+        emissions target for both weeks.
+        """
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        promoted_at = cps_per_week // 2
+        ledger, week_0_start = self._subaccount_ledger(
+            blocked_checkpoint_indices=(promoted_at + 3,),
+            bucket_by_index={
+                i: MinerBucket.PRO_CHALLENGE_FROM_STANDARD for i in range(promoted_at)
+            },
+        )
+        manager = self._build_manager(ledger)
+        manager.aggregate_entity_debt_ledgers(self.CP_DURATION_MS)
+        entity_checkpoints = manager.debt_ledgers[self.ENTITY_HOTKEY].checkpoints
+
+        def weekly_target(week_close_ms):
+            """The weight setter's own arithmetic: this week's cumulative minus the prior one's."""
+            through_this = DebtBasedScoring.calculate_payout_from_checkpoints(
+                [cp for cp in entity_checkpoints if cp.timestamp_ms <= week_close_ms]
+            )
+            through_prior = DebtBasedScoring.calculate_payout_from_checkpoints(
+                [cp for cp in entity_checkpoints if cp.timestamp_ms <= week_close_ms - MS_IN_WEEK]
+            )
+            return max(0.0, through_this - through_prior)
+
+        # The Monday after the promotion week: the challenge half is the week's whole target
+        self.assertAlmostEqual(weekly_target(week_0_start + MS_IN_WEEK), 70.0)
+        # ...and the following Monday pays week 1 plus the escrow the breach deferred
+        self.assertAlmostEqual(weekly_target(week_0_start + 2 * MS_IN_WEEK), 210.0)
+
+    def test_a_settled_segment_reaches_the_entity_aggregate(self):
+        """The weight-setting half: money settled at an account switch still reaches the entity
+        aggregate, in the payout week it was earned in, even though the subaccount ledger it was
+        computed from was deleted by that switch."""
+        ledger, week_0_start = self._subaccount_ledger()
+        manager = self._build_manager(ledger)
+        manager.weekly_seal_ledger.record_settled(
+            self.SUBACCOUNT_HOTKEY,
+            week_start_ms=week_0_start,
+            segment_start_ms=week_0_start,
+            segment_end_ms=week_0_start + MS_IN_WEEK // 2,
+            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            payout_usd=1000.0,
+            gross_payout_usd=1000.0,
+            weekly_penalty=1.0,
+            payout_scale=1.0,
+        )
+        try:
+            manager.aggregate_entity_debt_ledgers(self.CP_DURATION_MS)
+
+            per_week = [0.0, 0.0]
+            for cp in manager.debt_ledgers[self.ENTITY_HOTKEY].checkpoints:
+                per_week[(cp.timestamp_ms - 1 - week_0_start) // MS_IN_WEEK] += cp.realized_pnl
+            self.assertAlmostEqual(per_week[0], 140.0 + 1000.0)
+            self.assertAlmostEqual(per_week[1], 140.0)
+        finally:
+            _clear_seal_ledger()
 
 
 def _frozen_subaccount_manager(
@@ -1078,6 +1194,22 @@ class TestDebtLedgerBucketHelpers(TestBase):
         ledger, _ = self._ledger([MinerBucket.SUBACCOUNT_FUNDED] * 4)
         self.assertEqual(ledger.bucket_change_times(), [])
 
+    def test_checkpoint_weekly_penalty_only_bites_where_the_soft_breach_rule_applies(self):
+        """The week hands over one penalty; the checkpoint's own bucket decides if it applies.
+
+        Without this, a breach committed after a mid-week promotion would withhold the earnings
+        the subaccount made before it, under rules that did not govern it at the time.
+        """
+        ledger, _ = self._ledger([
+            MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
+        ])
+        challenge_cp, funded_cp = ledger.checkpoints
+        self.assertEqual(DebtLedger.checkpoint_weekly_penalty(challenge_cp, 0.0), 1.0)
+        self.assertEqual(DebtLedger.checkpoint_weekly_penalty(funded_cp, 0.0), 0.0)
+        # A clean week passes through untouched either way
+        self.assertEqual(DebtLedger.checkpoint_weekly_penalty(challenge_cp, 1.0), 1.0)
+        self.assertEqual(DebtLedger.checkpoint_weekly_penalty(funded_cp, 1.0), 1.0)
+
     def test_bucket_at_reads_the_segment_that_starts_on_a_boundary(self):
         ledger, base_ms = self._ledger([
             MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
@@ -1087,3 +1219,124 @@ class TestDebtLedgerBucketHelpers(TestBase):
         self.assertIs(ledger.bucket_at(boundary_ms), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
         # ...while the segment starting there is governed by the next one
         self.assertIs(ledger.bucket_at(boundary_ms + 1), MinerBucket.PRO_FUNDED)
+
+
+class TestSettledSegment(TestBase):
+    """A subaccount promoted mid-week traded part of that week on the account the promotion wipes.
+
+    The switch archives its positions and deletes its perf, debt and penalty ledgers, so nothing
+    can recompute what it earned. The settled segment is the only surviving record of that money,
+    which makes surviving a rebuild the whole point of it.
+    """
+
+    HOTKEY = "settledsub_1"
+
+    def setUp(self):
+        super().setUp()
+        _clear_seal_ledger()
+        self.week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
+        self.promotion_ms = self.week_start_ms + MS_IN_WEEK // 2
+        self.ledger = WeeklySealLedger(running_unit_tests=True)
+
+    def tearDown(self):
+        _clear_seal_ledger()
+        super().tearDown()
+
+    def _settle(self, ledger, payout_usd=1843.20):
+        return ledger.record_settled(
+            self.HOTKEY,
+            week_start_ms=self.week_start_ms,
+            segment_start_ms=self.week_start_ms,
+            segment_end_ms=self.promotion_ms,
+            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            payout_usd=payout_usd,
+            gross_payout_usd=payout_usd,
+            weekly_penalty=1.0,
+            payout_scale=1.0,
+        )
+
+    def test_a_settled_segment_records_the_wound_down_week(self):
+        self.assertTrue(self._settle(self.ledger))
+        segment = self.ledger.get_settled(self.HOTKEY)[0]
+        self.assertEqual(segment.payout_usd, 1843.20)
+        self.assertEqual(segment.bucket, MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertEqual(segment.segment_end_ms, self.promotion_ms)
+
+    def test_resettling_the_same_switch_never_double_pays(self):
+        """A retried promotion must not settle the same stretch twice."""
+        self._settle(self.ledger, payout_usd=1843.20)
+        self.assertFalse(self._settle(self.ledger, payout_usd=9999.99))
+        segments = self.ledger.get_settled(self.HOTKEY)
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0].payout_usd, 1843.20)
+
+    def test_a_retried_switch_settles_the_week_once(self):
+        """A switch that fails after settling is retried with a fresh timestamp. The week and
+        bucket are already settled, so the retry must not file the same dollars again."""
+        self._settle(self.ledger)
+        self.promotion_ms += 30_000
+        self.assertFalse(self._settle(self.ledger))
+        segments = self.ledger.get_settled(self.HOTKEY)
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0].payout_usd, 1843.20)
+
+    def test_settled_segments_survive_a_reload(self):
+        """The rebuild case: every other ledger is regenerated, this one is replayed from disk."""
+        self._settle(self.ledger)
+        reloaded = WeeklySealLedger(running_unit_tests=True)
+        self.assertEqual(reloaded.get_settled(self.HOTKEY)[0].payout_usd, 1843.20)
+
+    def test_a_seal_file_written_before_settled_segments_still_loads(self):
+        """Format 1.0 has no `settled` key; it must load as a ledger with no segments."""
+        import gzip
+        import json
+        path = self.ledger._get_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with gzip.open(path, 'wt', encoding='utf-8') as f:
+            json.dump({
+                "format_version": "1.0",
+                "last_update_ms": TimeUtil.now_in_millis(),
+                "sealed": {self.HOTKEY: {str(self.week_start_ms): SealedWeek(
+                    week_start_ms=self.week_start_ms, weekly_penalty=1.0, payout_scale=1.0,
+                    track='ON_TRACK', first_earning_ms=None, sealed_ms=0,
+                ).to_dict()}},
+            }, f)
+
+        reloaded = WeeklySealLedger(running_unit_tests=True)
+        self.assertEqual(reloaded.get_settled(self.HOTKEY), [])
+        self.assertEqual(reloaded.get_sealed(self.HOTKEY)[self.week_start_ms].weekly_penalty, 1.0)
+        # A segment recorded onto it upgrades the file rather than tripping over the old shape
+        self.assertTrue(self._settle(reloaded))
+        self.assertEqual(
+            WeeklySealLedger(running_unit_tests=True).get_settled(self.HOTKEY)[0].payout_usd, 1843.20
+        )
+
+    def test_amend_and_remove_allow_a_deliberate_correction(self):
+        """Nothing recomputes these records, so the tier-500 door is the only way to fix one."""
+        self._settle(self.ledger)
+        self.assertTrue(self.ledger.amend_settled(self.HOTKEY, self.promotion_ms, 500.0))
+        amended = self.ledger.get_settled(self.HOTKEY)[0]
+        self.assertEqual(amended.payout_usd, 500.0)
+        self.assertIsNotNone(amended.amended_ms)
+        # The correction is on disk, not just in memory
+        self.assertEqual(
+            WeeklySealLedger(running_unit_tests=True).get_settled(self.HOTKEY)[0].payout_usd, 500.0
+        )
+
+        self.assertTrue(self.ledger.remove_settled(self.HOTKEY, self.promotion_ms))
+        self.assertEqual(self.ledger.get_settled(self.HOTKEY), [])
+        self.assertFalse(self.ledger.remove_settled(self.HOTKEY, self.promotion_ms))
+
+    def test_a_segment_round_trips_through_serialization(self):
+        segment = SettledSegment(
+            week_start_ms=self.week_start_ms,
+            segment_start_ms=self.week_start_ms,
+            segment_end_ms=self.promotion_ms,
+            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            payout_usd=1843.20,
+            gross_payout_usd=1843.20,
+            weekly_penalty=1.0,
+            payout_scale=1.0,
+            recorded_ms=123,
+        )
+        self.assertEqual(SettledSegment.from_dict(segment.to_dict()), segment)

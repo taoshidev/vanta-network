@@ -190,6 +190,113 @@ class DebtLedgerClient(RPCClientBase):
             logger.debug(f"DebtLedgerClient: Unseal week failed: {e}")
             return False
 
+    def record_settled_segment(
+        self,
+        hotkey: str,
+        week_start_ms: int,
+        segment_start_ms: int,
+        segment_end_ms: int,
+        bucket: str,
+        payout_usd: float,
+        gross_payout_usd: float,
+        weekly_penalty: float,
+        payout_scale: float,
+    ) -> bool:
+        """
+        Pin a payout settled early by an account switch.
+
+        The caller runs this mid-wipe, so there is no second chance: everything this record
+        describes is deleted moments later. A failure is therefore logged at error level rather
+        than swallowed quietly like the reads on this client.
+
+        Args:
+            hotkey: The miner's hotkey
+            week_start_ms: Monday 00:00 UTC of the week the segment falls in
+            segment_start_ms: Start of the settled stretch
+            segment_end_ms: The account switch; names the record for a later correction
+            bucket: The bucket being wound down
+            payout_usd: Settled payout, what both payout paths add
+            gross_payout_usd: Pre-penalty payout, for audit
+            weekly_penalty: The penalty applied
+            payout_scale: The standard/pro ratio applied
+
+        Returns:
+            True if a new record was written, False if this week and bucket were already
+            settled - a retried switch - or on error
+        """
+        try:
+            return self._server.record_settled_segment_rpc(
+                hotkey,
+                week_start_ms,
+                segment_start_ms,
+                segment_end_ms,
+                bucket,
+                payout_usd,
+                gross_payout_usd,
+                weekly_penalty,
+                payout_scale,
+            )
+        except Exception as e:
+            logger.error(
+                f"DebtLedgerClient: Record settled segment failed for {hotkey} "
+                f"(${payout_usd:.2f} ending {segment_end_ms}): {e}"
+            )
+            return False
+
+    def get_settled_segments(self, hotkey: str) -> list:
+        """
+        Segments settled early for a hotkey, oldest first.
+
+        These are payouts whose source data was destroyed by an account switch, so the recorded
+        dollars are all that remains of them.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            List of SettledSegment, empty on error
+        """
+        try:
+            return self._server.get_settled_segments_rpc(hotkey)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Get settled segments failed: {e}")
+            return []
+
+    def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
+        """
+        Correct a settled segment's amount. Deliberate corrections only.
+
+        Args:
+            hotkey: The miner's hotkey
+            segment_end_ms: The account switch that identifies the record
+            payout_usd: The corrected payout
+
+        Returns:
+            True if a record was amended
+        """
+        try:
+            return self._server.amend_settled_segment_rpc(hotkey, segment_end_ms, payout_usd)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Amend settled segment failed: {e}")
+            return False
+
+    def remove_settled_segment(self, hotkey: str, segment_end_ms: int) -> bool:
+        """
+        Drop a settled segment entirely. Deliberate corrections only.
+
+        Args:
+            hotkey: The miner's hotkey
+            segment_end_ms: The account switch that identifies the record
+
+        Returns:
+            True if a record was removed
+        """
+        try:
+            return self._server.remove_settled_segment_rpc(hotkey, segment_end_ms)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Remove settled segment failed: {e}")
+            return False
+
     def delete_debt_ledger(self, hotkey: str) -> bool:
         """
         Delete the debt ledger for a specific hotkey.

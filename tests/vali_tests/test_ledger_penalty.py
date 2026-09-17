@@ -465,6 +465,35 @@ class TestPenaltyLedgerWeeklyScope(TestBase):
             self.assertEqual(cp.weekly_penalty, 0.0)
             self.assertEqual(cp.all_time_calmar_penalty, 0.0)
 
+    def test_a_closed_week_withheld_only_by_the_latch_stays_withheld(self):
+        """The latch fires precisely when every 12h sample is clean, so the settled week carries
+        weekly_penalty=0.0 with all_time_calmar_penalty=1.0 behind it. Re-deriving the product from
+        the named penalties would pay a week the live loop withheld, and the debt daemon would then
+        seal that release permanently.
+
+        The latched day is still well inside the 60 day retention here, which is the realistic
+        state for a week that closed seven days ago. It makes no difference: a closed week takes
+        the carry-forward branch, and that branch gates the latch off entirely.
+        """
+        last_week_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - MS_IN_WEEK
+        ledger = self._perf_ledger(2, last_week_start)
+
+        settled = PenaltyLedger(self.HOTKEY)
+        for i in range(2):
+            settled.add_checkpoint(PenaltyCheckpoint(
+                last_processed_ms=last_week_start + (i + 1) * self.CP_MS,
+                all_time_calmar_penalty=1.0,  # every sample that week looked clean
+                weekly_penalty=0.0,           # ...and the latch withheld it anyway
+                challenge_period_status=MinerBucket.PRO_FUNDED.value,
+            ), self.CP_MS)
+
+        manager = self._manager(ledger, soft_breach_days=[last_week_start],
+                                existing={self.HOTKEY: settled})
+        manager.build_penalty_ledgers(delta_update=False)
+
+        for cp in manager.penalty_ledgers[self.HOTKEY].checkpoints:
+            self.assertEqual(cp.weekly_penalty, 0.0)
+
     def test_the_current_week_is_still_recomputed(self):
         """Freezing applies to closed weeks only; the week in progress tracks the live metrics."""
         week_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())

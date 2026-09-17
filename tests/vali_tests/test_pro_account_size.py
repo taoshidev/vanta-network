@@ -307,6 +307,13 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.set_size.assert_not_called()
         write.assert_not_called()
 
+    def test_an_unknown_subaccount_pays_nothing_rather_than_at_the_best_ratio(self):
+        """The scale multiplies real money and 1.0 is the most generous value it can take, so an
+        account we know nothing about must fail closed."""
+        self.assertEqual(self.manager.get_payout_scale("entity_does_not_exist"), 0.0)
+        # A known standard subaccount is unaffected - it is still paid unscaled
+        self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
+
     # ==================== entering the pro track ====================
 
     def test_entering_the_track_requires_a_size(self):

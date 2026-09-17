@@ -965,9 +965,10 @@ class PenaltyLedgerManager:
 
                     if (sealed_weekly is not None
                             and penalty_config.application_scope == PenaltyApplicationScope.WEEKLY):
-                        penalty_value = getattr(sealed_weekly, f"{penalty_name}_penalty", 1.0)
-                        penalties[penalty_name] = penalty_value
-                        weekly_penalty *= penalty_value
+                        # Copied for the audit trail only. The week's weekly_penalty is restored
+                        # wholesale below rather than re-multiplied from these, because the latch
+                        # has no named penalty behind it.
+                        penalties[penalty_name] = getattr(sealed_weekly, f"{penalty_name}_penalty", 1.0)
                         continue
 
                     try:
@@ -1023,11 +1024,22 @@ class PenaltyLedgerManager:
                     else:
                         total_penalty *= penalty_value
 
-                # A day the live loop saw broken withholds the week even if every 12h sample that
-                # week looks clean. Sealed weeks keep whatever they were settled with.
-                if (sealed_weekly is None
-                        and checkpoint_bucket.soft_breach_applies
+                if sealed_weekly is not None:
+                    # A closed week is settled: restore the product that was settled rather than
+                    # re-deriving it from the named penalties. The latch below sets weekly_penalty
+                    # directly with no named penalty behind it - which is the case it exists for,
+                    # since it only fires when the 12h samples all look clean - so re-multiplying
+                    # would release a week the live loop withheld.
+                    #
+                    # WeeklySealLedger pins this downstream once the week is sealed, but sealing
+                    # happens at the tail of the debt build while this runs on its own daemon, so a
+                    # full rebuild landing between the week closing and the debt daemon sealing it
+                    # would otherwise get the released value sealed in permanently.
+                    weekly_penalty = sealed_weekly.weekly_penalty
+                elif (checkpoint_bucket.soft_breach_applies
                         and TimeUtil.get_start_of_day_ms(checkpoint_ms - 1) in miner_soft_breach_days):
+                    # A day the live loop saw broken withholds the week even if every 12h sample
+                    # that week looks clean.
                     weekly_penalty = 0.0
 
                 if is_synthetic_hotkey(miner_hotkey):
