@@ -175,9 +175,7 @@ class DebtLedgerManager():
         if not entity_utils.is_synthetic_hotkey(hotkey):
             logger.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only subaccount (synthetic) hotkeys can have their ledgers deleted")
             return False
-        # NOTE: weekly_seal_ledger is deliberately untouched. Deleting the ledgers is exactly the
-        # case the seals exist for - a rebuilt ledger must replay into the same settled weeks, and
-        # its settled segments are the only surviving record of what the wound-down account earned.
+        # NOTE: weekly_seal_ledger is deliberately untouched.
         self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
         if hotkey in self.debt_ledgers:
             del self.debt_ledgers[hotkey]
@@ -991,10 +989,6 @@ class DebtLedgerManager():
                         logger.info(f"Entity {entity_hotkey} has no active subaccounts or frozen ledgers - skipping")
                     continue
 
-                # A miner completing the pro challenge after passing the standard challenge trades
-                # the larger pro account but is paid on their original standard account, uplifted
-                # by ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER.
-                #
                 # Built over every subaccount rather than only the active ones. An eliminated
                 # subaccount still reaches this aggregation through its frozen ledger, and its
                 # closed weeks get sealed below;
@@ -1073,9 +1067,7 @@ class DebtLedgerManager():
                 }
 
                 # Payouts settled early because an account switch was about to wipe the account
-                # they were traded on. Built over every subaccount rather than only the ones with a
-                # ledger: the switch that settled a segment also deleted the ledger it came from,
-                # so the subaccount that most needs this is the one missing from subaccount_ledgers.
+                # they were traded on.
                 pending_settled = {}
                 for subaccount in entity_data.get('subaccounts', {}).values():
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
@@ -1165,12 +1157,10 @@ class DebtLedgerManager():
                                 scale = DebtLedger.checkpoint_payout_scale(
                                     checkpoint, week.payout_scale
                                 )
-                                # The breach is gated the same way: it withholds only in the
-                                # buckets it governs, so a subaccount promoted mid-week is paid in
+                                # Withholds only in the buckets it governs, so
+                                # a subaccount promoted mid-week is paid in
                                 # full for the stretch it traded before the pro rules applied to
-                                # it. Releasing the escrow still turns on the whole week - a week
-                                # that breached at all is not a clean one - which is why
-                                # apply_deferral above keeps reading week.weekly_penalty.
+                                # it.
                                 penalty = DebtLedger.checkpoint_weekly_penalty(
                                     checkpoint, week.weekly_penalty
                                 )

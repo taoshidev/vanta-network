@@ -784,9 +784,6 @@ class PenaltyLedgerManager:
         entries = bucket_data.get("entries", [])
         # Iterate newest-first so we return the most recent bucket that started before checkpoint_ms
         for entry in reversed(entries):
-            # A reverted elimination is kept in the history but never governed anything: stamping
-            # checkpoints inside that span with ELIMINATED would drop them out of the earning
-            # statuses and off the pro soft-breach track, changing weeks that were already settled
             if entry.get("reverted_ms") is not None:
                 continue
             start_time_ms = entry.get("start_time_ms") or entry.get("bucket_start_time")
@@ -889,10 +886,7 @@ class PenaltyLedgerManager:
             if miner_account_size is None:
                 miner_account_size = 0
 
-            # ProStats is maintained by ChallengePeriodManager. The all-time drawdown is ratcheted
-            # there since the perf ledger only retains a rolling window, and soft_breach_days holds
-            # the UTC days on which it saw calmar broken at any point. Empty when the miner has no
-            # pro stats yet.
+            # ProStats is maintained by ChallengePeriodManager.
             miner_pro_stats = (challenge_period_data.get(miner_hotkey) or {}).get('pro_stats') or {}
             miner_max_drawdown = miner_pro_stats.get('max_drawdown')
             miner_soft_breach_days = {int(d) for d in (miner_pro_stats.get('soft_breach_days') or [])}
@@ -988,8 +982,7 @@ class PenaltyLedgerManager:
                                 penalty_value = penalty_config.function(temp_ledger, miner_max_drawdown, miner_account_size)
                             else:
                                 # No ratchet or no account size: the rule cannot be evaluated. Hold
-                                # the previous verdict rather than defaulting to a pass, which would
-                                # quietly release a week that is still in breach.
+                                # the previous verdict rather than defaulting to a pass
                                 penalty_value = self._carry_forward_penalty(
                                     penalty_ledger, penalty_name, miner_hotkey, checkpoint_ms
                                 )
@@ -1025,16 +1018,7 @@ class PenaltyLedgerManager:
                         total_penalty *= penalty_value
 
                 if sealed_weekly is not None:
-                    # A closed week is settled: restore the product that was settled rather than
-                    # re-deriving it from the named penalties. The latch below sets weekly_penalty
-                    # directly with no named penalty behind it - which is the case it exists for,
-                    # since it only fires when the 12h samples all look clean - so re-multiplying
-                    # would release a week the live loop withheld.
-                    #
-                    # WeeklySealLedger pins this downstream once the week is sealed, but sealing
-                    # happens at the tail of the debt build while this runs on its own daemon, so a
-                    # full rebuild landing between the week closing and the debt daemon sealing it
-                    # would otherwise get the released value sealed in permanently.
+                    # A closed week is settled
                     weekly_penalty = sealed_weekly.weekly_penalty
                 elif (checkpoint_bucket.soft_breach_applies
                         and TimeUtil.get_start_of_day_ms(checkpoint_ms - 1) in miner_soft_breach_days):
