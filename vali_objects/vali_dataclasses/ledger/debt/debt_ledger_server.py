@@ -351,6 +351,37 @@ class DebtLedgerServer(RPCServerBase):
         """
         return self._manager.remove_settled_segment(hotkey, segment_end_ms)
 
+    def get_weekly_seals_checkpoint_dict_rpc(self) -> dict:
+        """
+        Get every sealed week and settled segment for the validator checkpoint (RPC method).
+
+        Returns:
+            Dict with 'sealed' and 'settled' maps, both keyed by hotkey
+        """
+        return self._manager.get_weekly_seals_checkpoint_dict()
+
+    def sync_weekly_seals_rpc(self, weekly_seals_dict: dict) -> dict:
+        """
+        Merge a checkpoint's weekly seal records into this validator (RPC method).
+
+        Args:
+            weekly_seals_dict: Dict with 'sealed' and 'settled' maps from the checkpoint
+
+        Returns:
+            dict: Sync statistics (sealed_added, sealed_replaced, settled_added,
+                  settled_replaced, errors)
+        """
+        return self._manager.sync_weekly_seals(weekly_seals_dict)
+
+    def clear_weekly_seals_for_test_rpc(self) -> bool:
+        """
+        Drop every seal record, in memory and on disk (RPC method). Unit tests only.
+
+        Returns:
+            True once cleared
+        """
+        return self._manager.clear_weekly_seals_for_test()
+
     def get_penalty_ledger_rpc(self, hotkey: str):
         """
         Get penalty ledger for a specific hotkey (RPC method).

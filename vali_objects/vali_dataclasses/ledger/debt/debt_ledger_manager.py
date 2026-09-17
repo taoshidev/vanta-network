@@ -277,6 +277,19 @@ class DebtLedgerManager():
         """Drop a settled segment entirely. Deliberate corrections only."""
         return self.weekly_seal_ledger.remove_settled(hotkey, segment_end_ms)
 
+    def get_weekly_seals_checkpoint_dict(self) -> dict:
+        """Every sealed week and settled segment, JSON-ready, for the validator checkpoint."""
+        return self.weekly_seal_ledger.to_checkpoint_dict()
+
+    def sync_weekly_seals(self, weekly_seals_dict: dict) -> dict:
+        """Merge the checkpoint's seal records so validators agree on what was sealed."""
+        return self.weekly_seal_ledger.sync_from_checkpoint(weekly_seals_dict)
+
+    def clear_weekly_seals_for_test(self) -> bool:
+        """Drop every seal record, in memory and on disk. Unit tests only."""
+        self.weekly_seal_ledger.clear_for_test()
+        return True
+
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
         dashboard: dict | None = None
         snapshot_time_ms = checkpoints_time_ms

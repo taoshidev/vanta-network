@@ -297,6 +297,47 @@ class DebtLedgerClient(RPCClientBase):
             logger.debug(f"DebtLedgerClient: Remove settled segment failed: {e}")
             return False
 
+    def get_weekly_seals_checkpoint_dict(self) -> dict:
+        """
+        Every sealed week and settled segment, JSON-ready, for the validator checkpoint.
+
+        An empty dict on failure means the checkpoint ships without seal records, which peers
+        treat as "nothing to merge" - the pre-autosync behavior.
+
+        Returns:
+            Dict with 'sealed' and 'settled' maps keyed by hotkey, empty on error
+        """
+        try:
+            return self._server.get_weekly_seals_checkpoint_dict_rpc()
+        except Exception as e:
+            logger.warning(f"DebtLedgerClient: Get weekly seals checkpoint dict failed: {e}")
+            return {}
+
+    def sync_weekly_seals(self, weekly_seals_dict: dict) -> dict:
+        """
+        Merge a checkpoint's weekly seal records so validators agree on what was sealed.
+
+        Args:
+            weekly_seals_dict: Dict with 'sealed' and 'settled' maps from the checkpoint
+
+        Returns:
+            dict: Sync statistics, empty on error
+        """
+        try:
+            return self._server.sync_weekly_seals_rpc(weekly_seals_dict)
+        except Exception as e:
+            logger.error(f"DebtLedgerClient: Sync weekly seals failed: {e}")
+            return {}
+
+    def clear_weekly_seals_for_test(self) -> bool:
+        """
+        Drop every seal record, in memory and on disk. Unit tests only.
+
+        Returns:
+            True once cleared
+        """
+        return self._server.clear_weekly_seals_for_test_rpc()
+
     def delete_debt_ledger(self, hotkey: str) -> bool:
         """
         Delete the debt ledger for a specific hotkey.
