@@ -268,6 +268,10 @@ class EntityClient(RPCClientBase):
         """Update drawdown_criteria for a subaccount in EntityManager."""
         return self._server.update_subaccount_drawdown_criteria_rpc(synthetic_hotkey, criteria)
 
+    def update_subaccount_account_size(self, synthetic_hotkey: str, account_size: float) -> Tuple[bool, str]:
+        """Directly set a standard subaccount's live account size. Returns (success, message)."""
+        return self._server.update_subaccount_account_size_rpc(synthetic_hotkey, account_size)
+
     # ==================== Query Methods ====================
 
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
