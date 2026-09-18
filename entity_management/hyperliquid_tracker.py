@@ -23,7 +23,7 @@ import threading
 import time
 import traceback
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Dict, List, Optional, Set
 
 import requests
@@ -364,6 +364,15 @@ class HyperliquidTracker:
         # Dedup: ordered dict of fill_hash -> True (bounded, oldest evicted first)
         self._processed_hashes: OrderedDict[str, bool] = OrderedDict()
 
+        # Fills whose dispatch hit a TRANSIENT infra failure (vanta-state restarting), queued for
+        # replay. Without this the fill was dropped forever: its hash is recorded pre-dispatch,
+        # HL WS fills are push-once, and the backup poll advances its watermark unconditionally —
+        # so a state-tier deploy while an entity trades silently diverged the tracked position
+        # from the real HL account. Drained from the orchestrator loop (every
+        # ADDRESS_REFRESH_INTERVAL_S). Guarded by _fill_retry_lock.
+        self._pending_fill_retries: deque = deque()
+        self._fill_retry_lock = threading.Lock()
+
         # Shard state
         self._shards: Dict[int, HyperliquidTracker._WebSocketShard] = {}
         self._address_to_shard: Dict[str, int] = {}
@@ -575,6 +584,7 @@ class HyperliquidTracker:
                     self._assign_addresses_to_shards()
                     self._ensure_shard_tasks()
                     self._probe_unhealthy_ports()
+                    self._drain_pending_fill_retries()
                 except Exception as e:
                     logger.error(f"[HL_TRACKER] Orchestrator error: {e}")
                     logger.error(traceback.format_exc())
@@ -1305,8 +1315,19 @@ class HyperliquidTracker:
         trade_pair_id: str,
         fill_hash: str,
         on_failure_clear_szi: Optional[tuple] = None,
+        retry_attempt: int = 0,
     ) -> bool:
-        """Submit one order leg and handle broadcast + errors. Returns True on success."""
+        """Submit one order leg and handle broadcast + errors. Returns True on success.
+
+        R2.5b / KNOWN GAP (vanta-orders split): this HL fill is NOT yet routed through the
+        order/sync gate (self._order_sync.begin_order), so a fill applied while a core position sync
+        is rewriting the checkpoint can race it. It cannot be naively gated: the fill hash is
+        _record_hash'd BEFORE dispatch (see _handle_user_fills / the backup poll), HL WS fills are
+        push-once (not redelivered), and the backup poll advances its watermark unconditionally — so
+        a "defer on sync" that returns early would LOSE the fill. Correct gating = defer-and-replay
+        coordinated across the WS path, the backup-poll path, hash-recording, and the watermark. See
+        the vanta-orders spec R2.5b. Deliberately deferred rather than shipped as a fill-losing gate.
+        """
         try:
             self._order_processor.process_hyperliquid_order(
                 synthetic_hotkey,
@@ -1332,6 +1353,30 @@ class HyperliquidTracker:
             logger.warning(f"[HL_TRACKER] Signal rejected for {synthetic_hotkey}: {e}")
             self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
         except Exception as e:
+            from shared_objects.error_utils import ErrorUtils
+            if ErrorUtils.is_transient_rpc_error(e):
+                # TRANSIENT infra failure (state tier restarting): this fill is push-once and its
+                # hash is already recorded, so dropping it here loses it forever. Queue for replay
+                # instead of rejecting; no szi-clear (the fill WILL apply).
+                self._enqueue_fill_retry(
+                    dict(
+                        synthetic_hotkey=synthetic_hotkey,
+                        order_uuid=order_uuid,
+                        trade_pair=trade_pair,
+                        order_type_enum=order_type_enum,
+                        quantity=quantity,
+                        fill_price=fill_price,
+                        price_sources=price_sources,
+                        is_taker=is_taker,
+                        now_ms=now_ms,
+                        trade_pair_id=trade_pair_id,
+                        fill_hash=fill_hash,
+                        on_failure_clear_szi=on_failure_clear_szi,
+                    ),
+                    retry_attempt,
+                    e,
+                )
+                return False
             logger.error(f"[HL_TRACKER] Order processing error for {synthetic_hotkey}: {e}")
             logger.error(traceback.format_exc())
             self._broadcast_rejection(synthetic_hotkey, f"Order rejected: {e}")
@@ -1343,6 +1388,65 @@ class HyperliquidTracker:
                     del cached[coin]
                     self._save_observed_szi()
         return False
+
+    # Replay budget for transiently-failed fills: one attempt per orchestrator cycle (60s),
+    # so 60 attempts ≈ 1 hour of state-tier outage tolerance before a fill is declared lost.
+    _FILL_RETRY_MAX_ATTEMPTS = 60
+
+    def _enqueue_fill_retry(self, dispatch_kwargs: dict, prior_attempts: int, err: Exception) -> None:
+        attempts = prior_attempts + 1
+        hotkey = dispatch_kwargs.get("synthetic_hotkey")
+        fill_hash = dispatch_kwargs.get("fill_hash")
+        if attempts > self._FILL_RETRY_MAX_ATTEMPTS:
+            # Terminal: give up loudly (mirrors the non-transient failure branch).
+            logger.error(
+                f"[HL_TRACKER] Giving up on fill {fill_hash} for {hotkey} after "
+                f"{prior_attempts} replay attempts: {err}"
+            )
+            self._broadcast_rejection(hotkey, f"Order rejected after retries: {err}")
+            on_failure_clear_szi = dispatch_kwargs.get("on_failure_clear_szi")
+            if on_failure_clear_szi:
+                addr, coin = on_failure_clear_szi
+                key = addr.lower() if isinstance(addr, str) else addr
+                cached = self._last_observed_szi.get(key)
+                if cached and coin in cached:
+                    del cached[coin]
+                    self._save_observed_szi()
+            return
+        with self._fill_retry_lock:
+            self._pending_fill_retries.append({"kwargs": dispatch_kwargs, "attempts": attempts})
+            backlog = len(self._pending_fill_retries)
+        logger.warning(
+            f"[HL_TRACKER] Transient dispatch failure for fill {fill_hash} ({hotkey}) — queued "
+            f"for replay (attempt {attempts}/{self._FILL_RETRY_MAX_ATTEMPTS}): {err}"
+        )
+        # No maxlen on the queue by design — evicting would LOSE fills, the exact bug this queue
+        # exists to fix; entries self-expire via the attempt cap instead. But a large backlog
+        # means a sustained state-tier outage with live entity trading: alert loudly.
+        if backlog > 1_000 and backlog % 500 == 1:
+            logger.error(
+                f"[HL_TRACKER] Fill replay backlog abnormal: {backlog} queued fills — state tier "
+                f"has been unreachable for an extended period while entities trade"
+            )
+
+    def _drain_pending_fill_retries(self) -> None:
+        """Replay transiently-failed fills, oldest first (order matters for position deltas).
+        A still-failing replay re-enqueues itself via _dispatch_order's transient branch."""
+        with self._fill_retry_lock:
+            n = len(self._pending_fill_retries)
+        if n == 0:
+            return
+        logger.info(f"[HL_TRACKER] Replaying {n} queued fill(s) after transient dispatch failure")
+        for _ in range(n):
+            with self._fill_retry_lock:
+                if not self._pending_fill_retries:
+                    return
+                entry = self._pending_fill_retries.popleft()
+            ok = self._dispatch_order(**entry["kwargs"], retry_attempt=entry["attempts"])
+            if not ok:
+                # Dispatch failed again (re-enqueued or terminal); stop this cycle — the state
+                # tier is likely still down, and later entries would just churn.
+                return
 
     def _process_fill(self, hl_address: str, fill: dict, account_state: Optional[dict] = None):
         """

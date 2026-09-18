@@ -91,6 +91,74 @@ class CommonDataClient(RPCClientBase):
         """Set sync epoch to specific value."""
         self.call("set_sync_epoch_rpc", value)
 
+    # ============ Order/Sync Coordination Methods (cross-process OrderSyncState, R2.1) ============
+
+    def begin_order(self, label: str = None):
+        """
+        Atomically gate + register an in-flight order. Returns a token (int) to pass back to
+        end_order(), or None if a sync is in progress (caller must reject the order, should_retry).
+        `label` is a free-form debug string (e.g. order_uuid + context) surfaced on reap/introspection.
+        """
+        return self.call("begin_order_rpc", label)
+
+    def end_order(self, token: int = None) -> int:
+        """Deregister the in-flight order for `token`; wakes sync waiter at 0. Returns live count."""
+        return self.call("end_order_rpc", token)
+
+    def get_order_count(self) -> int:
+        """Current number of live (non-expired) in-flight orders."""
+        return self.call("get_order_count_rpc")
+
+    def is_sync_waiting(self) -> bool:
+        """True if a sync is waiting for orders to drain."""
+        return self.call("is_sync_waiting_rpc")
+
+    def set_sync_waiting(self, value: bool) -> None:
+        """Set the sync_waiting flag directly."""
+        self.call("set_sync_waiting_rpc", value)
+
+    def wait_for_orders(self, timeout_seconds: float = None) -> bool:
+        """Block until in-flight orders drain to 0; returns False on timeout."""
+        return self.call("wait_for_orders_rpc", timeout_seconds)
+
+    def renew_sync_lease(self) -> bool:
+        """Heartbeat the sync gate's lease (sync owner only). False => the gate is no longer held."""
+        return self.call("renew_sync_lease_rpc")
+
+    def mark_sync_complete(self) -> None:
+        """Clear sync_waiting (orders may resume)."""
+        self.call("mark_sync_complete_rpc")
+
+    def get_order_sync_state(self) -> dict:
+        """Snapshot of the order/sync coordination state."""
+        return self.call("get_order_sync_state_rpc")
+
+    # ============ Order UUID Dedup Methods (authoritative, R2.6) ============
+
+    def check_and_add_order_uuid(self, uuid) -> bool:
+        """Atomic claim: True if newly claimed (apply the order), False if duplicate (reject)."""
+        return self.call("check_and_add_order_uuid_rpc", uuid)
+
+    def confirm_order_uuid(self, uuid) -> None:
+        """Promote a provisional claim to the permanent dedup set (order committed)."""
+        self.call("confirm_order_uuid_rpc", uuid)
+
+    def release_order_uuid(self, uuid) -> None:
+        """Undo a claim after an apply failure so the retry can re-claim."""
+        self.call("release_order_uuid_rpc", uuid)
+
+    def order_uuid_exists(self, uuid) -> bool:
+        """Read-only membership check."""
+        return self.call("order_uuid_exists_rpc", uuid)
+
+    def seed_order_uuids(self, uuids) -> int:
+        """Bulk-add uuids from committed positions at boot. Returns resulting set size."""
+        return self.call("seed_order_uuids_rpc", uuids)
+
+    def order_uuid_count(self) -> int:
+        """Number of tracked order uuids."""
+        return self.call("order_uuid_count_rpc")
+
     # ==================== Combined State Methods ====================
 
     def get_all_state(self) -> dict:
