@@ -267,7 +267,7 @@ Subnet 8 uses a commit-reveal mechanism in mainnet for weight setting:
 1. **Rate Limiting**: Run a local subtensor to avoid rate limit issues on finney that prevent weights from being set
    - [Subtensor installation guide](https://github.com/opentensor/subtensor)
 
-2. **Consensus config overrides**: The `PRO_CHALLENGE_*` and `PRO_TRANSITION_GRACE_PERIOD_DAYS` environment variables — and the `PTN_ALLOW_CONFIG_OVERRIDES=1` opt-in that unlocks them — are **testnet-only** knobs that change promotion decisions and the weekly penalties the weight calculator reads. A validator started on netuid 8 with any of them set in its environment refuses to start. See [entity_miner.md](entity_miner.md#testnet-overrides).
+2. **Consensus config overrides**: The `PRO_CHALLENGE_*` environment variables — and the `PTN_ALLOW_CONFIG_OVERRIDES=1` opt-in that unlocks them — are **testnet-only** knobs that change promotion decisions and the weekly penalties the weight calculator reads. A validator started on netuid 8 with any of them set in its environment refuses to start. See [entity_miner.md](entity_miner.md#testnet-overrides).
 
 3. **Testnet Configuration**: Always include `--subtensor.network test` and `--netuid 116` for testnet
 

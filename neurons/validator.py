@@ -108,7 +108,6 @@ class Validator(ValidatorBase):
                     "PRO_CHALLENGE_CALMAR_THRESHOLD",
                     "PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD",
                     "PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT",
-                    "PRO_TRANSITION_GRACE_PERIOD_DAYS",
                     "PTN_ALLOW_CONFIG_OVERRIDES",
                 )
                 if os.environ.get(name, "").strip()
