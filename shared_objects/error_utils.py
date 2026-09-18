@@ -21,17 +21,16 @@ class ErrorUtils:
         must NOT be retried. OSError covers the connection family
         (ConnectionRefusedError/ConnectionResetError, BrokenPipeError, TimeoutError all subclass
         it); EOFError is what a multiprocessing BaseManager proxy raises when the server dies
-        mid-call; AuthenticationError can surface on a racing reconnect.
-
-        NOTE: should_retry=True only actually helps once the RPC client can re-establish a live
-        connection on the placer's retry (rpc_client_base has no reconnect-on-failure today — see
-        vanta-orders-extraction spec R4.1b) AND writes are idempotent across the retry (spec R2.6
-        server-side UUID dedup). This classifier is the safe, standalone first step.
+        mid-call; AuthenticationError can surface on a racing reconnect; RemoteError is a stale proxy
+        token after the server restarted at the same address (genuine business exceptions arrive as
+        their original type, so they still return False). RemoteError is ambiguous, so _invoke_rpc
+        probes the transport to tell a dead proxy from a real server-side RemoteError.
         """
         if exc is None:
             return False
         from multiprocessing.context import AuthenticationError
-        return isinstance(exc, (OSError, EOFError, AuthenticationError))
+        from multiprocessing.managers import RemoteError
+        return isinstance(exc, (OSError, EOFError, AuthenticationError, RemoteError))
 
 
     @staticmethod
