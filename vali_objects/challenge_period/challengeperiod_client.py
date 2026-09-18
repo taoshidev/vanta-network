@@ -119,7 +119,11 @@ class ChallengePeriodClient(RPCClientBase):
     ) -> Tuple[bool, str]:
         """Promote a subaccount into its bucket's promotion_target at the entity's request, running
         the account switch the target requires. Returns (success, message)."""
-        return self._server.promote_subaccount_rpc(hotkey, current_time_ms, pro_account_size)
+        # fail-fast (retry=False): promotion advances the bucket and triggers a pro-fee / account
+        # switch — irreversible and NOT idempotent (a re-execution over-promotes to a further stage).
+        # Its only caller is a top-level entity request, so surfacing the failure is safe.
+        return self._invoke_rpc("promote_subaccount_rpc",
+                                args=(hotkey, current_time_ms, pro_account_size), retry=False)
 
     def update_drawdown_criteria(self, hotkey: str, criteria: DrawdownCriteria) -> Tuple[bool, str]:
         """Update drawdown_criteria for an existing miner state."""
