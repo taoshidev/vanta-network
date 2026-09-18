@@ -291,7 +291,7 @@ Changes a standard subaccount's `leverage_tier` (see [entity_miner.md](entity_mi
 | 502 | Validator unreachable |
 
 **Notes:**
-- Raising the tier is allowed at any time. Lowering it requires every position on that subaccount to be closed first. A subaccount created before tiers existed counts as tier 1.
+- Raising the tier is allowed at any time. Lowering it requires every position on that subaccount to be closed first. A subaccount created before tiers existed trades a grandfathered floor (each limit is the higher of its old limit and Base, reported as a negative `tier`); moving it to any tier also requires a flat book.
 
 ### Promote Subaccount to the Pro Track
 

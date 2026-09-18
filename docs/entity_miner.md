@@ -203,13 +203,13 @@ Per-class and portfolio caps:
 | Crypto | 1.5x | 2x | 2.5x |
 | Forex | 10x | 15x | 20x |
 | Commodities | 1.5x | 2x | 3x |
-| Indices | 2.5x | 4x | 5x |
+| Indices | 3x | 6x | 8x |
 | Equities | 1x | 2x | 3x |
 | Portfolio (`all_markets`) | 15x | 20x | 25x |
 
 Single-class subaccounts (`crypto`, `forex`, `equities`, `commodities`) use their class row as the portfolio cap. The tables live in `ValiConfig.STANDARD_*_LEVERAGE_BY_TIER`; `GET /trade-pairs` on the validator exposes the per-pair values under `standard_positional_leverage_by_tier` and the class and portfolio caps under `standard_leverage_tiers`.
 
-Standard subaccounts created before tiers existed have no stored `leverage_tier` and trade at Tier 1 (Base) until the entity sets one.
+Standard subaccounts created before tiers existed have no stored `leverage_tier` and keep a **grandfathered floor** until the entity sets one: every per-pair, class and portfolio limit is the higher of the legacy-curve value they already had (tier 1 in challenge, then by account size, see below) and the Tier 1 (Base) value, so the tier rollout lowered nothing. Such a subaccount reports a negative `tier` from `GET /subaccounts/<synthetic_hotkey>/limits`, minus its legacy tier (`-1` in challenge, `-2` once funded), and `GET /trade-pairs` publishes the floor rows under those keys next to `1` to `3`; the limits payload also carries the resolved per-pair caps in `positional_leverage`. Because a funded account's floor exceeds even Boost II on EWY, moving off it requires a flat book.
 
 **Legacy curve.** HL-linked subaccounts keep the legacy tier 1 to 4 curve below: **Tier 1** during `SUBACCOUNT_CHALLENGE`, then by account size once promoted, using the same $200K / $1M breakpoints as regular miners (see [miner.md](miner.md#leverage-limits)).
 
@@ -685,7 +685,7 @@ curl -X POST http://localhost:8088/api/update-subaccount-leverage-tier \
   -d '{"synthetic_hotkey": "5GhDr..._0", "leverage_tier": 2}'
 ```
 
-Raising the tier is allowed at any time. Lowering it is rejected while the subaccount has open positions, because the new caps may sit below the current exposure. A subaccount created before tiers existed counts as tier 1. HL-linked, pro and pre-migration `hl_all` subaccounts do not use standard leverage tiers and are rejected.
+Raising the tier is allowed at any time. Lowering it is rejected while the subaccount has open positions, because the new caps may sit below the current exposure. A subaccount created before tiers existed trades the grandfathered floor (negative `tier`, see [Leverage Limits](#leverage-limits)); moving it to any tier is treated as lowering and needs a flat book too. HL-linked, pro and pre-migration `hl_all` subaccounts do not use standard leverage tiers and are rejected.
 
 ### 12. Submit Orders
 

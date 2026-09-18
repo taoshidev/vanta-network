@@ -548,6 +548,7 @@ class ValiConfig:
     # STANDARD_* tables below instead (see leverage_utils.is_standard_tiered).
     LEVERAGE_TIER3_MIN_ACCOUNT_SIZE = 200_000    # $200K: Tier 2 → Tier 3
     LEVERAGE_TIER4_MIN_ACCOUNT_SIZE = 1_000_000  # $1M:   Tier 3 → Tier 4
+    LEGACY_LEVERAGE_TIERS = (1, 2, 3, 4)
 
     # Legacy per-tier portfolio caps. Single-class per-category sub-caps; multi-class subaccounts
     # (HL_ALL, ALL_MARKETS) reuse these per-class entries for sub-cap enforcement and pull their
@@ -567,10 +568,15 @@ class ValiConfig:
 
     # Standard subaccount leverage tiers, per the Pro Launch spec §2a: 1 = Base, 2 = Boost I,
     # 3 = Boost II (max). Challenge and funded share the same limits and account size does not
-    # change them. HL-linked and pro subaccounts never use these tables. A standard subaccount
-    # without a stored leverage_tier (created before tiers existed) counts as the default tier.
+    # change them. HL-linked and pro subaccounts never use these tables.
     STANDARD_LEVERAGE_TIERS = (1, 2, 3)
-    STANDARD_LEVERAGE_TIER_DEFAULT = 1
+    STANDARD_LEVERAGE_TIER_BASE = 1
+    STANDARD_LEVERAGE_TIER_DEFAULT = STANDARD_LEVERAGE_TIER_BASE  # new registrations
+    # A standard subaccount with no stored leverage_tier (created before tiers existed) trades
+    # tier 0: each per-pair, class and portfolio limit is max(its legacy curve value, Base), so the
+    # tier rollout lowers nothing. Not selectable through any endpoint. Reported to clients as
+    # -legacy_tier (-1 to -4), the key of its rows in /trade-pairs (see leverage_utils.get_grandfathered_*).
+    STANDARD_LEVERAGE_TIER_GRANDFATHERED = 0
 
     @staticmethod
     def is_valid_standard_leverage_tier(tier) -> bool:
@@ -618,9 +624,9 @@ class ValiConfig:
 
     # Per-asset-class exposure cap, as a multiple of balance.
     STANDARD_CLASS_LEVERAGE_BY_TIER = {
-        1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 2.5, TradePairCategory.COMMODITIES: 1.5},
-        2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 4.0, TradePairCategory.COMMODITIES: 2.0},
-        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 5.0, TradePairCategory.COMMODITIES: 3.0},
+        1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0, TradePairCategory.COMMODITIES: 1.5},
+        2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 6.0, TradePairCategory.COMMODITIES: 2.0},
+        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 8.0, TradePairCategory.COMMODITIES: 3.0},
     }
 
     # Overall portfolio cap keyed by the subaccount's own asset_class. Single-class subaccounts

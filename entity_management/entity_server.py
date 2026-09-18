@@ -165,7 +165,7 @@ class EntityServer(RPCServerBase):
             asset_class: Asset class selection
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
-            leverage_tier: Standard leverage tier 1 to 3; None = default tier
+            leverage_tier: Standard leverage tier 1 to 3; None = tier 0 (max of legacy limits and Base)
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)

@@ -81,7 +81,7 @@ class MinerAccount:
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
-    leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = default tier for standard subaccounts, unused by HL and pro
+    leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = tier 0 (pre-tier floor) for standard subaccounts, unused by HL and pro
     max_return: float = 1.0  # High water mark for portfolio return
     unrealized_pnl: float = 0.0  # Current unrealized PNL from open positions
     # Per-asset-class breakdown of capital_used. Required by multi-class subaccounts
@@ -120,7 +120,8 @@ class MinerAccount:
         """Subaccount-wide portfolio cap multiplier used by `buying_power`.
 
         Pro accounts read the flat PRO_PORTFOLIO_LEVERAGE; standard subaccounts read
-        STANDARD_PORTFOLIO_LEVERAGE_BY_TIER at their (effective) tier; everyone else reads
+        STANDARD_PORTFOLIO_LEVERAGE_BY_TIER at their effective tier (tier 0, a pre-tier account,
+        is max(legacy, Base)); everyone else reads
         LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier][asset_class]. For multi-class
         subaccounts (HL_ALL, ALL_MARKETS) this is the cross-class overall ceiling; per-class
         sub-caps are enforced separately at order entry.
@@ -129,16 +130,15 @@ class MinerAccount:
             return 1
 
         from vali_objects.utils.leverage_utils import (
-            get_effective_leverage_tier,
             get_legacy_leverage_tier,
-            get_standard_portfolio_leverage,
+            get_standard_account_portfolio_leverage,
             is_pro_leveraged,
             is_standard_tiered,
         )
         if is_pro_leveraged(self):
             return ValiConfig.PRO_PORTFOLIO_LEVERAGE
         if is_standard_tiered(self):
-            return get_standard_portfolio_leverage(get_effective_leverage_tier(self), self.asset_class)
+            return get_standard_account_portfolio_leverage(self)
         tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
         return ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
@@ -150,11 +150,13 @@ class MinerAccount:
         miners). This resolves the curve and the effective tier the order path actually applies,
         so a client can pick the matching table out of /trade-pairs.
 
-        `tier` is None on the pro curve, which is flat and has no tier dimension.
+        `tier` is None on the pro curve, which is flat and has no tier dimension. It is negative
+        (-1 to -4, minus the legacy tier) for a standard subaccount with no stored leverage_tier:
+        its caps are max(legacy, Base) and /trade-pairs publishes those rows under the same key.
         """
         from vali_objects.utils.leverage_utils import (
-            get_effective_leverage_tier,
             get_legacy_leverage_tier,
+            get_standard_account_tier_key,
             is_pro_leveraged,
             is_standard_tiered,
         )
@@ -163,7 +165,7 @@ class MinerAccount:
         if pro:
             tier_curve, tier = "pro", None
         elif standard:
-            tier_curve, tier = "standard", get_effective_leverage_tier(self)
+            tier_curve, tier = "standard", get_standard_account_tier_key(self)
         else:
             tier_curve, tier = "legacy", get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
         return {

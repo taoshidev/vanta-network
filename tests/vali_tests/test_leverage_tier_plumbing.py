@@ -280,6 +280,7 @@ class TestLeverageTierUpdate(TestBase):
         self.assertTrue(success, msg)
         self.assertEqual(self._account_tier(), 2)
 
+
     # ==================== guards ====================
 
     def test_lower_tier_with_open_position_is_rejected(self):
@@ -348,21 +349,27 @@ class TestLeverageTierUpdate(TestBase):
         self.assertIsNone(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[synthetic_suffix].leverage_tier)
         return receiver, synthetic, data
 
-    def test_legacy_subaccount_counts_as_default_tier_when_changed(self):
-        # A pre-tier subaccount already trades at the default tier, so recording tier 1 or raising
-        # to tier 2 is never a lowering and works even with open positions.
+    def test_leaving_tier_0_with_open_position_is_rejected(self):
+        # A pre-tier subaccount trades tier 0, max(legacy, Base); a funded account's floor exceeds
+        # every tier on some rows, so any move off it may lower a cap and needs a flat book
         receiver, synthetic, _ = self._receiver_with_legacy_subaccount(0)
         self._open_position(synthetic)
-        success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, 1)
-        self.assertTrue(success, msg)
-        self.assertEqual(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[0].leverage_tier, 1)
-        self.assertEqual(self._account_tier(synthetic), 1)
+        for tier in ValiConfig.STANDARD_LEVERAGE_TIERS:
+            with self.subTest(tier=tier):
+                success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, tier)
+                self.assertFalse(success)
+                self.assertIn("open position", msg)
+        self.assertIsNone(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[0].leverage_tier)
+        self.assertIsNone(self._account_tier(synthetic))
 
-        receiver, synthetic, _ = self._receiver_with_legacy_subaccount(1)
-        self._open_position(synthetic)
-        success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, 2)
-        self.assertTrue(success, msg)
-        self.assertEqual(self._account_tier(synthetic), 2)
+    def test_leaving_tier_0_with_a_flat_book_is_allowed(self):
+        for suffix, tier in ((0, 1), (1, 3)):
+            with self.subTest(tier=tier):
+                receiver, synthetic, _ = self._receiver_with_legacy_subaccount(suffix)
+                success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, tier)
+                self.assertTrue(success, msg)
+                self.assertEqual(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[suffix].leverage_tier, tier)
+                self.assertEqual(self._account_tier(synthetic), tier)
 
     # ==================== propagation ====================
 
@@ -805,17 +812,27 @@ class TestTradePairsEndpointStandardTiers(unittest.TestCase):
         data = json.loads(resp.data)
         by_id = {entry['trade_pair_id']: entry for entry in data['allowed'] + data['disabled']}
 
+        # Keys 1 to 3 are the selectable tiers; -1 to -4 are the tier 0 floor (max of legacy tier N
+        # and Base) that a subaccount with no stored tier reports as its `tier`.
         btc = by_id['BTCUSDC']
-        self.assertEqual(btc['standard_positional_leverage_by_tier'], {"1": 1.5, "2": 2.0, "3": 2.5})
+        self.assertEqual(btc['standard_positional_leverage_by_tier'],
+                         {"1": 1.5, "2": 2.0, "3": 2.5, "-1": 1.5, "-2": 1.5, "-3": 1.5, "-4": 2.0})
         self.assertEqual(set(btc['subaccount_positional_leverage_by_tier']), {"1", "2", "3", "4"})
-        self.assertEqual(by_id['EURNZD']['standard_positional_leverage_by_tier'], {"1": 5.0, "2": 7.5, "3": 10.0})
-        self.assertEqual(by_id['NVDA']['standard_positional_leverage_by_tier'], {"1": 0.5, "2": 1.0, "3": 1.5})
+        self.assertEqual(by_id['EURNZD']['standard_positional_leverage_by_tier'],
+                         {"1": 5.0, "2": 7.5, "3": 10.0, "-1": 5.0, "-2": 5.0, "-3": 7.5, "-4": 10.0})
+        self.assertEqual(by_id['NVDA']['standard_positional_leverage_by_tier'],
+                         {"1": 0.5, "2": 1.0, "3": 1.5, "-1": 0.5, "-2": 1.0, "-3": 1.5, "-4": 2.0})
 
         tiers = data['standard_leverage_tiers']
         self.assertEqual(tiers['class']['1']['crypto'], 1.5)
         self.assertEqual(tiers['class']['3']['equities'], 3.0)
+        self.assertEqual(tiers['class']['-2']['indices'], 6.0)
         self.assertEqual(tiers['portfolio']['3']['all_markets'], 25.0)
+        self.assertEqual(tiers['portfolio']['-1']['all_markets'], 15.0)
+        self.assertEqual(set(tiers['class']), {"1", "2", "3", "-1", "-2", "-3", "-4"})
+        self.assertEqual(set(tiers['portfolio']), set(tiers['class']))
         self.assertNotIn('hl_all', tiers['portfolio']['1'])
+        self.assertNotIn('hl_all', tiers['portfolio']['-2'])
 
 
 class TestLeverageTierModels(unittest.TestCase):
