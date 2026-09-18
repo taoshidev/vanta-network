@@ -1001,6 +1001,7 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         self.manager._challenge_period_client.get_miner_bucket.return_value = MinerBucket.PRO_FUNDED
         self.manager._position_client = MagicMock()
         self.manager._position_client.get_positions_for_one_hotkey.return_value = []
+        self.manager._entity_client = MagicMock()
 
     def _with_pro_threshold(self):
         return patch.object(ValiConfig, "PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD", self.PRO_MDD)
@@ -1047,6 +1048,74 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
             margin = self.manager.compute_subaccount_margin_requirement("entity_0", MinerBucket.PRO_FUNDED)
 
         self.assertAlmostEqual(margin, 1_000.0)
+
+    def _promoted_from_standard(self, standard_account_size=100_000, pro_account_size=1_000_000):
+        """A subaccount trading a pro account it was promoted onto from a standard one."""
+        self.manager._miner_account_client.get_miner_account_size.return_value = pro_account_size
+        self.manager._entity_client.get_subaccount_info_for_synthetic.return_value = {
+            "synthetic_hotkey": "entity_0",
+            "standard_account_size": standard_account_size,
+            "pro_account_size": pro_account_size,
+        }
+
+    def test_pro_challenge_from_standard_is_exposed_at_the_standard_size(self):
+        """The pro challenge trades the pro account but is paid as though it were still on the
+        standard one, so the entity stays exposed to the standard account it collateralized."""
+        self._promoted_from_standard()
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+
+        self.assertAlmostEqual(max_slash, 100_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    def test_pro_funded_is_exposed_at_the_pro_size(self):
+        """Only a funded pro account is charged against the size it was granted."""
+        self._promoted_from_standard()
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_FUNDED)
+
+        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.manager._entity_client.get_subaccount_info_for_synthetic.assert_not_called()
+
+    def test_margin_requirement_steps_up_only_on_promotion_to_pro_funded(self):
+        """One open position, margined at the standard ceiling in challenge and the pro ceiling once funded."""
+        self._promoted_from_standard()
+        self.manager._position_client.get_positions_for_one_hotkey.return_value = [
+            SimpleNamespace(net_value=900_000.0)
+        ]
+
+        in_challenge = self.manager.compute_subaccount_margin_requirement(
+            "entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+        )
+        funded = self.manager.compute_subaccount_margin_requirement("entity_0", MinerBucket.PRO_FUNDED)
+
+        self.assertAlmostEqual(in_challenge, 100_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertAlmostEqual(funded, 1_000_000 * ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertLess(in_challenge, funded)
+
+    def test_exposure_falls_back_to_the_traded_account_without_a_recorded_standard_size(self):
+        """A record carrying no standard size charges the account actually being traded."""
+        self._promoted_from_standard(standard_account_size=None)
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+
+        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    def test_exposure_falls_back_to_the_traded_account_when_the_entity_lookup_fails(self):
+        """An unreachable entity service charges the pro account rather than under-collateralizing."""
+        self._promoted_from_standard()
+        self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = RuntimeError("rpc down")
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+
+        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    def test_exposure_never_exceeds_the_traded_account(self):
+        """A stale standard size above the pro account cannot inflate the exposure."""
+        self._promoted_from_standard(standard_account_size=5_000_000)
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+
+        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
 
 
 class TestProPromotionFeeSlashing(unittest.TestCase):

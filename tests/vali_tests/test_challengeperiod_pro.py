@@ -1069,15 +1069,33 @@ def test_a_pro_revert_keeps_the_stats_the_latch_and_the_trailing_loss_limit(mana
     assert state.drawdown.last_eod_checked_ms == MIDNIGHT_MS
 
 
-@pytest.mark.parametrize("bucket", (*ALL_PRO_BUCKETS, MinerBucket.PRO_CHALLENGE_TRANSITION))
-def test_every_bucket_on_the_pro_journey_gets_both_restorations(manager, bucket):
-    state = _eliminated_state(manager, HOTKEY, bucket)
+def test_only_pro_funded_gets_both_restorations(manager):
+    """PRO_FUNDED has finished the pro challenge, so a reverted elimination leaves it as though
+    the elimination never happened - the span earns again and the trailing loss limit is kept."""
+    state = _eliminated_state(manager, HOTKEY, MinerBucket.PRO_FUNDED)
 
     with _quiet(manager):
         assert manager.revert_elimination(HOTKEY)
 
     assert state.entries[1].is_reverted
     assert state.drawdown.eod_hwm == pytest.approx(1.07)
+
+
+@pytest.mark.parametrize("bucket", (*PRO_CHALLENGE_BUCKETS, MinerBucket.PRO_CHALLENGE_TRANSITION))
+def test_a_pro_challenge_revert_does_not_pay_for_the_eliminated_span(manager, bucket):
+    """Marking the span reverted makes it earn again, so it is withheld from every bucket that has
+    not finished the pro challenge: an account let back in restarts from the elimination rather
+    than being paid for the time it spent there."""
+    state = _eliminated_state(manager, HOTKEY, bucket)
+    eliminated_at_ms = state.entries[-1].start_time_ms
+
+    with _quiet(manager):
+        assert manager.revert_elimination(HOTKEY)
+
+    assert state.current_bucket == bucket
+    assert not state.entries[1].is_reverted
+    assert state.bucket(eliminated_at_ms) == MinerBucket.ELIMINATED
+    assert state.drawdown == DrawdownStats()
 
 
 @pytest.mark.parametrize("bucket", [MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_CHALLENGE,

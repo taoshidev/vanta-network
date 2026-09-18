@@ -1133,11 +1133,17 @@ class EntityManager(ValidatorBroadcastBase):
         A miner completing the pro challenge after passing the standard challenge trades the
         larger pro account but is paid on the size of the standard account they came from,
         uplifted by ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 for every other
-        subaccount.
+        subaccount, whose PnL is paid unscaled.
+
+        Returns 0.0 when the subaccount cannot be found at all.
         """
         subaccount = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
         if subaccount is None:
-            return 1.0
+            logger.warning(
+                f"[ENTITY_MANAGER] No subaccount info for {synthetic_hotkey}; payout scale "
+                f"defaults to 0 rather than paying at an unknown ratio"
+            )
+            return 0.0
         return pro_payout_scale(subaccount.standard_account_size, subaccount.pro_account_size)
 
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
@@ -1543,7 +1549,9 @@ class EntityManager(ValidatorBroadcastBase):
                 'total_checkpoints': int,
                 'checkpoints': List[dict],
                 'weekly_settlements': List[dict],  # each carries deferred / deferred_released /
-                                                   # deferred_forfeited / deferred_balance
+                                                   # deferred_forfeited / deferred_balance, and
+                                                   # settled_segment for one settled at an
+                                                   # account switch rather than computed here
                 'payout': float,
                 'deferred_balance': float,    # escrow still held at end_time_ms
                 'deferred_forfeited': float,  # cumulative escrow dropped by leaving the pro track
@@ -1552,15 +1560,24 @@ class EntityManager(ValidatorBroadcastBase):
                                               # deferred_forfeited for that)
             } or None if subaccount not found
         """
+        synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
+        if not synthetic_hotkey:
+            return None
+        return self._calculate_payout_for_hotkey(synthetic_hotkey, start_time_ms, end_time_ms)
+
+    def _calculate_payout_for_hotkey(
+        self,
+        synthetic_hotkey: str,
+        start_time_ms: int,
+        end_time_ms: Optional[int],
+        bucket_override: Optional[MinerBucket] = None,
+    ) -> Optional[dict]:
+        """Payout for one subaccount, keyed by synthetic hotkey. See calculate_subaccount_payout.
+        """
         realtime = False
         if end_time_ms is None:
             end_time_ms = TimeUtil.now_in_millis()
             realtime = True
-
-        # Translate UUID to hotkey
-        synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
-        if not synthetic_hotkey:
-            return None
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
         if not entity_hotkey or not subaccount_id:
@@ -1573,24 +1590,84 @@ class EntityManager(ValidatorBroadcastBase):
             return None
 
         try:
-            # Debt ledger is informational only (checkpoints/total_checkpoints display fields);
-            # it plays no role in the payout math below, so its absence isn't fatal.
+            # The debt ledger supplies the display fields (checkpoints/total_checkpoints)
+            # and is needed to fetch segmented boundaries for promotions
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            if debt_ledger is None:
+                logger.warning(
+                    f"[ENTITY_MANAGER] No debt ledger for {synthetic_hotkey}; payout falls back to "
+                    f"unsegmented, unscaled weeks"
+                )
+
+            miner_bucket = (
+                bucket_override if bucket_override is not None
+                else self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
+            )
+            # Escrow is only held while the bucket withholds on a soft breach; anywhere else it is forfeited
+            off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
+
+            # Stretches settled early because an account switch was about to wipe the account they
+            # were traded on. This is settled pnl
+            settled_segments = [
+                segment for segment in self._debt_ledger_client.get_settled_segments(synthetic_hotkey)
+                if segment.segment_end_ms <= end_time_ms
+            ]
+            settled_settlements = [{
+                'start_ms': segment.segment_start_ms,
+                'end_ms': segment.segment_end_ms,
+                'bucket': segment.bucket,
+                'settled_segment': True,
+                'eow_balance': 0.0,
+                'eow_unrealized': 0.0,
+                'gross_payout': segment.gross_payout_usd,
+                'payout': segment.payout_usd,
+                'deferred': 0.0,
+                'deferred_released': 0.0,
+                'deferred_forfeited': 0.0,
+                'deferred_balance': 0.0,
+                'weekly_penalty': segment.weekly_penalty,
+                'payout_scale': segment.payout_scale,
+                'orders': [],
+            } for segment in settled_segments]
+
+            def _finalize(computed_settlements, checkpoints, deferred_balance):
+                """Assemble the response from the computed settlements plus any settled segments."""
+                rows = sorted(computed_settlements + settled_settlements,
+                              key=lambda w: (w['start_ms'], w['end_ms']))
+                return {
+                    'hotkey': synthetic_hotkey,
+                    'total_checkpoints': len(checkpoints),
+                    'checkpoints': checkpoints,
+                    'weekly_settlements': rows,
+                    # Only sum settlements that fall within the requested period.
+                    'payout': sum(w['payout'] for w in rows if w['start_ms'] >= start_time_ms),
+                    'deferred_balance': deferred_balance,
+                    'deferred_forfeited': sum((w['deferred_forfeited'] for w in rows), 0.0),
+                    'off_track': off_track,
+                }
+
+            checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
 
             _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
             perf_ledger = _perf_ledger.get(synthetic_hotkey) if _perf_ledger else None
             if not perf_ledger:
-                is_currently_eliminated = self._challenge_period_client.get_miner_bucket(synthetic_hotkey) == MinerBucket.ELIMINATED
+                is_currently_eliminated = (
+                    bucket_override == MinerBucket.ELIMINATED if bucket_override is not None
+                    else self._challenge_period_client.get_miner_bucket(synthetic_hotkey) == MinerBucket.ELIMINATED
+                )
                 if is_currently_eliminated:
                     # Perf ledgers for eliminated funded/alpha subaccounts get moved to frozen storage.
                     frozen_ledgers = self._perf_ledger_client.get_frozen_ledgers()
                     perf_ledger = frozen_ledgers.get(synthetic_hotkey) if frozen_ledgers else None
                 if not perf_ledger:
+                    # The switch archives every position, and the perf ledger manager drops the
+                    # bundle for a hotkey that has none. A subaccount that promoted and has not
+                    # traded since sits in exactly that state, so its settled money is reported
+                    # without a ledger rather than reading as a subaccount that does not exist.
+                    if settled_settlements:
+                        return _finalize([], checkpoints_dict, 0.0)
                     return None
 
-            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
-            # Escrow is only held while the bucket withholds on a soft breach; anywhere else it is forfeited
-            off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
             EMPTY_RESPONSE = {
                 'hotkey': synthetic_hotkey,
                 'total_checkpoints': 0,
@@ -1603,8 +1680,6 @@ class EntityManager(ValidatorBroadcastBase):
             }
             if miner_bucket is None or not miner_bucket.is_subaccount_earning:
                 return EMPTY_RESPONSE
-
-            checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
 
             positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
             orders = []
@@ -1623,7 +1698,7 @@ class EntityManager(ValidatorBroadcastBase):
             orders.sort(key=lambda x: x.processed_ms)
             fees.sort(key=lambda x: x.time_ms)
             if not orders:
-                return EMPTY_RESPONSE
+                return _finalize([], checkpoints_dict, 0.0)
 
             # Weekly-scope penalties, and the account-size scale that applied in each week. Weeks
             # that have already been settled come back exactly as they were settled, so rebuilding
@@ -1673,8 +1748,10 @@ class EntityManager(ValidatorBroadcastBase):
                     scale = (week.payout_scale
                              if bucket is not None and bucket.payout_scale_applies else 1.0)
 
+                penalty = (week.weekly_penalty
+                           if bucket is not None and bucket.soft_breach_applies else 1.0)
                 owed = gross_payout * scale
-                earned = owed * week.weekly_penalty
+                earned = owed * penalty
                 released, deferred_balance, forfeited = apply_deferral(
                     deferred_balance,
                     owed - earned,
@@ -1685,6 +1762,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'start_ms': start_ms,
                     'end_ms': end_ms,
                     'bucket': bucket.value if bucket is not None else None,
+                    'settled_segment': False,
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
                     'gross_payout': gross_payout,
@@ -1693,7 +1771,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'deferred_released': released,
                     'deferred_forfeited': forfeited,
                     'deferred_balance': deferred_balance,
-                    'weekly_penalty': week.weekly_penalty,
+                    'weekly_penalty': penalty,
                     'payout_scale': scale,
                     'orders': [o.to_python_dict() for o in segment_orders],
                 })
@@ -1718,7 +1796,11 @@ class EntityManager(ValidatorBroadcastBase):
             snapshots = read_all_snapshots(synthetic_hotkey, running_unit_tests=self.running_unit_tests)
 
             idx_order, idx_fee, idx_snap = 0, 0, 0
-            segment_start = week_start
+            # Ensure no overlap for calculating segments
+            segment_start = max(
+                [week_start]
+                + [s.segment_end_ms for s in settled_segments if week_start < s.segment_end_ms < week_end]
+            )
             while segment_start < end_time_ms:
                 next_boundary = next(
                     (b for b in bucket_boundaries if segment_start < b < week_end), None
@@ -1773,23 +1855,83 @@ class EntityManager(ValidatorBroadcastBase):
                 if segment_start >= week_end:
                     week_start, week_end = week_end, week_end + MS_IN_WEEK
 
-            # Only sum settlements that fall within the requested period.
-            payout = sum(w['payout'] for w in weekly_settlements if w['start_ms'] >= start_time_ms)
-
-            return {
-                'hotkey': synthetic_hotkey,
-                'total_checkpoints': len(checkpoints_dict),
-                'checkpoints': checkpoints_dict,
-                'weekly_settlements': weekly_settlements,
-                'payout': payout,
-                'deferred_balance': deferred_balance,
-                'deferred_forfeited': sum(w['deferred_forfeited'] for w in weekly_settlements),
-                'off_track': off_track,
-            }
+            return _finalize(weekly_settlements, checkpoints_dict, deferred_balance)
 
         except Exception as e:
-            logger.error(f"[ENTITY_MANAGER] Error calculating payout for {subaccount_uuid}: {e}")
+            logger.error(f"[ENTITY_MANAGER] Error calculating payout for {synthetic_hotkey}: {e}")
             return None
+
+    def settle_wound_down_segment(
+        self, synthetic_hotkey: str, from_bucket: str, promotion_ms: int
+    ) -> bool:
+        """Settle and pin what a subaccount earned this payout week, before its account is wiped.
+
+        Called after the switch has force-closed the positions, so gains that were unrealized at
+        the promotion are realized and paid.
+
+        Never raises. A failure must not strand a miner mid-promotion, so it is logged and reported
+        through the return value instead.
+
+        Args:
+            synthetic_hotkey: The subaccount being wound down
+            from_bucket: MinerBucket value of the bucket it is leaving
+            promotion_ms: The moment of the switch; identifies the record with the hotkey
+
+        Returns:
+            True if a new settled segment was recorded
+        """
+        try:
+            bucket = MinerBucket(from_bucket)
+            week_start_ms = TimeUtil.ms_at_start_of_week(promotion_ms)
+            # end_time_ms=None takes the realtime branch, which reads unrealized PnL straight off
+            # the (now closed) positions rather than hunting for an account snapshot at a timestamp
+            # no snapshot was taken at.
+            result = self._calculate_payout_for_hotkey(
+                synthetic_hotkey, week_start_ms, None, bucket_override=bucket
+            )
+            if not result:
+                logger.warning(
+                    f"[ENTITY_MANAGER] Could not settle the wound-down segment for "
+                    f"{synthetic_hotkey}: no payout could be calculated"
+                )
+                return False
+
+            # Exclude segments settled at an earlier switch; re-settling one would pay it twice.
+            segments = [
+                w for w in result['weekly_settlements']
+                if w['start_ms'] >= week_start_ms and not w.get('settled_segment')
+            ]
+            payout_usd = sum(w['payout'] for w in segments)
+            if payout_usd <= 0:
+                logger.info(
+                    f"[ENTITY_MANAGER] Nothing to settle for {synthetic_hotkey} leaving "
+                    f"{from_bucket}: this payout week earned {payout_usd}"
+                )
+                return False
+
+            last = segments[-1]
+            recorded = self._debt_ledger_client.record_settled_segment(
+                synthetic_hotkey,
+                week_start_ms,
+                week_start_ms,
+                promotion_ms,
+                from_bucket,
+                payout_usd,
+                sum(w['gross_payout'] for w in segments),
+                last['weekly_penalty'],
+                last['payout_scale'],
+            )
+            if not recorded:
+                logger.warning(
+                    f"[ENTITY_MANAGER] Settled segment for {synthetic_hotkey} at {promotion_ms} "
+                    f"was not written; a record for that switch already exists or the write failed"
+                )
+            return recorded
+        except Exception as e:
+            logger.error(
+                f"[ENTITY_MANAGER] Error settling the wound-down segment for {synthetic_hotkey}: {e}"
+            )
+            return False
 
     def validate_hotkey_for_orders(self, hotkey: str) -> dict:
         """

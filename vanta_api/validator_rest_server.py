@@ -356,6 +356,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/<hotkey>/positions/<position_uuid>", methods=["PATCH"])(self.patch_position)
         self.app.route("/admin/revert-elimination/<hotkey>", methods=["POST"])(self.revert_elimination)
         self.app.route("/admin/unseal-week/<hotkey>", methods=["POST"])(self.unseal_week)
+        self.app.route("/admin/settled-segment/<hotkey>", methods=["GET"])(self.get_settled_segments)
+        self.app.route("/admin/settled-segment/<hotkey>", methods=["POST"])(self.correct_settled_segment)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
@@ -3085,6 +3087,91 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }), 200
         except Exception as e:
             logger.error(f"Error unsealing week for {hotkey}: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def get_settled_segments(self, hotkey: str):
+        """
+        List the payouts settled early for a subaccount because an account switch wiped its account.
+
+        A subaccount promoted mid-week traded part of that week on the account being wound down.
+        The switch archives its positions and deletes its perf, debt and penalty ledgers, so the
+        payout for that stretch is settled at the switch and recorded instead. Nothing recomputes
+        these records - the data they came from is gone - which is why they can be corrected below.
+
+        Example:
+        curl "http://localhost:48888/admin/settled-segment/<hotkey>" \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Settled segment endpoint requires tier 500 access'}), 403
+
+        try:
+            segments = self._debt_ledger_client.get_settled_segments(hotkey)
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'settled_segments': [segment.to_dict() for segment in segments],
+            }), 200
+        except Exception as e:
+            logger.error(f"Error reading settled segments for {hotkey}: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def correct_settled_segment(self, hotkey: str):
+        """
+        Correct or drop one settled-segment record.
+
+        Nothing rebuilds these records, so a wrong figure stays wrong until it is corrected here,
+        and a removed one is gone for good. Use only when the settled amount is known to be wrong.
+
+        Query params:
+          segment_end_ms: the account switch that identifies the record (required)
+          payout_usd:     the corrected payout (required unless remove=true)
+          remove:         true to drop the record entirely
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/settled-segment/<hotkey>?segment_end_ms=1700000000000&payout_usd=1234.56" \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Settled segment endpoint requires tier 500 access'}), 403
+
+        try:
+            segment_end_ms = int(request.args.get('segment_end_ms'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'segment_end_ms is required and must be an integer'}), 400
+
+        remove = request.args.get('remove', '').lower() == 'true'
+        payout_usd = None
+        if not remove:
+            try:
+                payout_usd = float(request.args.get('payout_usd'))
+            except (TypeError, ValueError):
+                return jsonify({
+                    'error': 'payout_usd is required and must be a number unless remove=true'
+                }), 400
+            if payout_usd < 0:
+                return jsonify({'error': f'payout_usd must not be negative; got {payout_usd}'}), 400
+
+        try:
+            if remove:
+                changed = self._debt_ledger_client.remove_settled_segment(hotkey, segment_end_ms)
+            else:
+                changed = self._debt_ledger_client.amend_settled_segment(hotkey, segment_end_ms, payout_usd)
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'segment_end_ms': segment_end_ms,
+                'removed' if remove else 'amended': changed,
+                'payout_usd': payout_usd,
+            }), 200
+        except Exception as e:
+            logger.error(f"Error correcting settled segment for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def eliminate_hotkey(self, hotkey: str):

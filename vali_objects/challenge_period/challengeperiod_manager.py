@@ -716,6 +716,10 @@ class ChallengePeriodManager(CacheController):
             close_time_ms=current_time_ms,
             order_source=OrderSource.SUBACCOUNT_PROMOTION
         )
+        # Track payout information already gathered before promotion since account will be wound down
+        from_bucket = self.miner_states[hotkey].current_bucket
+        if is_synthetic_hotkey(hotkey) and from_bucket.is_subaccount_earning:
+            self._entity_client.settle_wound_down_segment(hotkey, from_bucket.value, current_time_ms)
         # Reset account fields (PnL, capital used, borrowed amount, interest)
         self._miner_account_client.reset_account(hotkey, target_bucket)
         # Archive all positions (disk move + memory removal)
@@ -899,17 +903,15 @@ class ChallengePeriodManager(CacheController):
         The ELIMINATED entry is always kept as the record that it happened, and the previous bucket
         is appended on top.
 
-        On the pro track it is additionally marked reverted. Bucket history is replayed
+        For PRO_FUNDED it is additionally marked reverted. Bucket history is replayed
         point-in-time when the penalty and debt ledgers are rebuilt
         (PenaltyLedgerManager._get_status_for_checkpoint), so a reverted span that still governed
         its window would reclassify every checkpoint inside it as non-earning and off the pro
         soft-breach track - forfeiting escrow for an elimination that was undone. Marking it keeps
-        both the audit trail and the original classification. Pro also keeps its end-of-day high
-        water mark, so the trailing loss limit is not silently reset, and pro_stats carries the
-        ratcheted drawdown and the latched soft-breach days so breached weeks stay breached.
+        both the audit trail and the original classification. PRO_FUNDED also keeps its end-of-day
+        high water mark, so the trailing loss limit is not silently reset, and pro_stats carries
+        the ratcheted drawdown and the latched soft-breach days so breached weeks stay breached.
 
-        Standard subaccounts and regular miners get none of that: their revert behaves exactly as
-        it did before the pro track existed.
         """
         miner_state = self.miner_states.get(hotkey)
         if not miner_state:
@@ -924,11 +926,7 @@ class ChallengePeriodManager(CacheController):
 
             now_ms = TimeUtil.now_in_millis()
             prev_bucket = miner_state.entries[-2].bucket
-            # Both restorations below are scoped to the pro track. Everything they change - the
-            # replayed classification of the eliminated span, and the end-of-day high water mark -
-            # behaved differently for standard subaccounts and regular miners before pro accounts
-            # existed, and those rules are meant to stay exactly as they were.
-            restores_pro_account = prev_bucket.is_pro_track
+            restores_pro_account = prev_bucket == MinerBucket.PRO_FUNDED
 
             # The ELIMINATED entry stays as the record that it happened, but is marked reverted so
             # replaying this history never stamps a checkpoint inside the span with it

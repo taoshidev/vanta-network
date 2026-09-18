@@ -255,7 +255,9 @@ class EntityCollateralManager(CacheController):
             margin_usd     = min(open_position_value, max_slash_usd - cumulative_slashed_usd)
             required_theta += margin_usd / CPT_RISK
 
-        where max_slash_usd = account_size * the bucket's intraday drawdown threshold.
+        where max_slash_usd = exposed account size * the bucket's intraday drawdown threshold.
+        The exposed size is the traded account except in PRO_CHALLENGE_FROM_STANDARD, which
+        stays at the standard account size until it reaches PRO_FUNDED.
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -308,7 +310,7 @@ class EntityCollateralManager(CacheController):
         Args:
             synthetic_hotkey: The subaccount's synthetic hotkey.
             bucket: The subaccount's bucket; pass it when already known so the pro account's
-                drawdown threshold is used without an extra lookup.
+                drawdown threshold and account size are used without an extra lookup.
 
         Returns:
             Margin requirement in USD.
@@ -415,10 +417,12 @@ class EntityCollateralManager(CacheController):
 
         Cumulative MDD slashing model:
         - Track cumulative_realized_loss per subaccount (total losses over lifetime)
-        - max_slash = current_account_size * MDD% (dynamic, tracks current size)
+        - max_slash = exposed account size * MDD% (dynamic, tracks current size; a
+          PRO_CHALLENGE_FROM_STANDARD subaccount is exposed at its standard size)
         - target_slash = min(cumulative_realized_loss, max_slash)
         - slash_delta = target_slash - cumulative_slashed (only slash the new delta)
         - If account size increases, max_slash grows, opening new slash headroom
+          (this is what promotion to PRO_FUNDED does: the pro size finally applies)
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -742,23 +746,53 @@ class EntityCollateralManager(CacheController):
 
     def get_max_slash(self, synthetic_hotkey: str, bucket: MinerBucket | None = None) -> float:
         """
-        Get the maximum slashable amount for a subaccount (account_balance * MDD%).
+        Get the maximum slashable amount for a subaccount (exposed account size * MDD%).
 
         Args:
             synthetic_hotkey: The subaccount's synthetic hotkey.
             bucket: The subaccount's bucket; pass it when already known to skip the lookup.
-                When omitted it is resolved here, so every caller gets the threshold that
-                actually applies to the account (a pro account's is not the standard one).
+                When omitted it is resolved here, so every caller gets the threshold and the
+                account size that actually apply (a pro account's are not the standard one's).
 
         Returns:
             Maximum slash amount in USD.
         """
-        account_size = self._miner_account_client.get_miner_account_size(synthetic_hotkey)
-        if not account_size or account_size <= 0:
-            return 0.0
         if bucket is None:
             bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
+        account_size = self._exposed_account_size(synthetic_hotkey, bucket)
+        if account_size <= 0:
+            return 0.0
         return account_size * self._mdd_percent(bucket)
+
+    def _exposed_account_size(self, synthetic_hotkey: str, bucket: MinerBucket | None) -> float:
+        """
+        Account size the entity's collateral is exposed to, normally the account the
+        subaccount trades.
+
+        PRO_CHALLENGE_FROM_STANDARD is the exception: it trades the pro account but is paid
+        as though it were still on the standard one (`payout_scale_applies`), so the entity
+        stays exposed to the standard account it already collateralized. The pro account's
+        larger margin requirement is charged at PRO_FUNDED, where the larger payouts begin.
+        """
+        account_size = self._miner_account_client.get_miner_account_size(synthetic_hotkey) or 0.0
+        if account_size <= 0 or bucket != MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+            return account_size
+
+        try:
+            subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}
+        except Exception as e:
+            logger.warning(
+                f"[ENTITY_COLLATERAL] Failed to read the standard account size for {synthetic_hotkey}, "
+                f"witholding charge: {e}"
+            )
+            return 0
+
+        standard_size = subaccount_info.get("standard_account_size") or 0.0
+        if standard_size <= 0:
+            return 0
+        # A pro account is never smaller than the standard one it was promoted from; the min
+        # keeps a stale record from charging more than the account actually being traded.
+        return min(standard_size, account_size)
 
     def _mdd_percent(self, bucket: MinerBucket | None) -> float:
         """
@@ -767,6 +801,9 @@ class EntityCollateralManager(CacheController):
         This is the bucket's own intraday drawdown threshold, since that is the most the
         subaccount can lose before it is eliminated. Falls back to the standard funded
         threshold for a bucket that defines none (an unknown or non-trading bucket).
+
+        Applied to the exposed account size, not always the traded one: see
+        `_exposed_account_size`.
         """
         if bucket is None:
             return self.mdd_percent

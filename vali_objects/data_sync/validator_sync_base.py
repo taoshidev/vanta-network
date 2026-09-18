@@ -61,6 +61,9 @@ class ValidatorSyncBase():
         self._miner_account_client = MinerAccountClient(running_unit_tests=running_unit_tests)
         # Create own EntityClient (forward compatibility - no parameter passing)
         self._entity_client = EntityClient(running_unit_tests=running_unit_tests)
+        # Create own DebtLedgerClient (forward compatibility - no parameter passing)
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
+        self._debt_ledger_client = DebtLedgerClient(running_unit_tests=running_unit_tests)
         self.init_data()
 
     def init_data(self):
@@ -237,6 +240,17 @@ class ValidatorSyncBase():
             if not shadow_mode:
                 logger.info(f"Syncing {len(asset_selections_data)} miner asset selection records from auto sync")
                 self._asset_selection_client.sync_miner_asset_selection_data(asset_selections_data)
+
+        # Sync weekly seal records so every validator agrees on what was sealed. The checkpoint
+        # wins on records both sides hold; records only this validator has are kept.
+        weekly_seals_data = candidate_data.get('weekly_seals', {})
+        if weekly_seals_data and not shadow_mode:
+            seal_stats = self._debt_ledger_client.sync_weekly_seals(weekly_seals_data)
+            logger.info(f"Synced weekly seal records from auto sync: {seal_stats}")
+            self.global_stats['weekly_seals_added'] = seal_stats.get('sealed_added', 0)
+            self.global_stats['weekly_seals_replaced'] = seal_stats.get('sealed_replaced', 0)
+            self.global_stats['settled_segments_added'] = seal_stats.get('settled_added', 0)
+            self.global_stats['settled_segments_replaced'] = seal_stats.get('settled_replaced', 0)
 
         # Sync entity data if available
         entities_data = candidate_data.get('entities', {})

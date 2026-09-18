@@ -264,6 +264,12 @@ class EntityServer(RPCServerBase):
         """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
         return self._manager.get_payout_scale(synthetic_hotkey)
 
+    def settle_wound_down_segment_rpc(
+        self, synthetic_hotkey: str, from_bucket: str, promotion_ms: int
+    ) -> bool:
+        """Settle this payout week's earnings before an account switch wipes the account."""
+        return self._manager.settle_wound_down_segment(synthetic_hotkey, from_bucket, promotion_ms)
+
     def get_hl_subaccount_limits_data_rpc(self, hl_address: str) -> Optional[dict]:
         """
         Get lightweight limits data for an HL subaccount.

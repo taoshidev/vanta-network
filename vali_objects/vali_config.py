@@ -746,7 +746,9 @@ class ValiConfig:
     # Entity margin collateral requirement (funded subaccounts only):
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
     #   for each funded subaccount with open positions (or placing this order)
-    # max_slash_usd = account_size * the bucket's intraday drawdown threshold
+    # max_slash_usd = account_size * the bucket's intraday drawdown threshold. A subaccount in
+    # PRO_CHALLENGE_FROM_STANDARD trades the pro account but is charged against its standard
+    # account size, so the pro account's margin only lands when it reaches PRO_FUNDED.
     ENTITY_COLLATERAL_CPT_RISK = 35  # USD of remaining loss capacity per theta ($35 of capacity = 1 theta)
 
     # Hyperliquid tracking configuration
