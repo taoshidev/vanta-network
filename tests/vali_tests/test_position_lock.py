@@ -326,6 +326,41 @@ class TestPositionLockBehavior(TestBase):
         self.assertTrue(token_c)
         server.release_rpc(miner, trade_pair, token_c)
 
+    def test_client_token_reacquire_is_idempotent(self):
+        """A self-heal retry of a lost-ACK acquire (same client_token) must NOT strand the lock.
+
+        Simulates: the first acquire succeeds server-side but the ACK is lost, so the RPC client
+        re-executes acquire_rpc with the SAME client_token. It must get the token back WITHOUT
+        blocking on the lock it already holds (the strand bug), and one release must free it.
+        """
+        from shared_objects.locks.position_lock_server import PositionLockServer
+        from shared_objects.rpc.server_registry import ServerRegistry
+        server = PositionLockServer(running_unit_tests=True, start_server=False, start_daemon=False)
+        self.addCleanup(ServerRegistry.unregister, server)  # don't leak into the shared registry
+        miner = "test_miner_idem"
+        trade_pair = "BTCUSD"
+        lock_key = (miner, trade_pair)
+
+        ctok = "client-token-abc"
+        first = server.acquire_rpc(miner, trade_pair, timeout=2.0, client_token=ctok)
+        self.assertEqual(first, ctok, "acquire returns the client-owned token")
+
+        # Retry with the SAME token: returns immediately (would time out to False if it blocked
+        # on its own held lock — the exact strand this fix prevents).
+        retry = server.acquire_rpc(miner, trade_pair, timeout=2.0, client_token=ctok)
+        self.assertEqual(retry, ctok, "idempotent re-acquire returns the same token without blocking")
+
+        # A DIFFERENT owner still cannot acquire while it is held.
+        self.assertFalse(server.acquire_rpc(miner, trade_pair, timeout=0.2, client_token="other"),
+                         "held lock is not handed to a different client_token")
+
+        # One release frees it — proving there was a single logical hold, not two.
+        self.assertTrue(server.release_rpc(miner, trade_pair, ctok))
+        self.assertNotIn(lock_key, server.lock_owner)
+        after = server.acquire_rpc(miner, trade_pair, timeout=1.0, client_token="fresh")
+        self.assertEqual(after, "fresh", "lock is free after a single release")
+        server.release_rpc(miner, trade_pair, "fresh")
+
 
 if __name__ == '__main__':
     unittest.main()
