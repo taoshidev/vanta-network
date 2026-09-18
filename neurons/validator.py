@@ -250,7 +250,7 @@ class Validator(ValidatorBase):
         if self.orders_app:
             # subtensor_ops lives in core; build our own subtensor for the one-shot axon.serve, and
             # leave subtensor_ops_manager None so blacklist_fn uses the metagraph-fed hotkey cache.
-            self.subtensor = bt.subtensor(config=self.config)
+            self.subtensor = bt.Subtensor(config=self.config)
             self.subtensor_ops_manager = None
             self._init_blacklist_hotkey_cache()
         else:
