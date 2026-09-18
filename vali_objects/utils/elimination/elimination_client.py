@@ -152,17 +152,10 @@ class EliminationClient(RPCClientBase):
             t_ms: Optional timestamp in milliseconds
             bucket_at_elimination: The miner's bucket at the time of elimination
         """
-        # fail-fast (retry=False): this triggers an irreversible on-chain slash of the eliminated
-        # miner; _invoke_rpc's self-heal re-executes on a transient error, so auto-retrying a lost
-        # ACK would slash twice. (In production this mostly runs from the in-process elimination
-        # daemon, which isn't self-healed — but the client path is exposed, so opt out here too.)
-        self._invoke_rpc(
-            "append_elimination_row_rpc",
-            args=(hotkey, reason),
-            kwargs={"elimination_drawdown_pct": elimination_drawdown_pct,
-                    "intraday_drawdown_pct": intraday_drawdown_pct, "eod_drawdown_pct": eod_drawdown_pct,
-                    "elimination_time_ms": elimination_time_ms, "bucket_at_elimination": bucket_at_elimination},
-            retry=False,
+        self._server.append_elimination_row_rpc(
+            hotkey, reason, elimination_drawdown_pct=elimination_drawdown_pct,
+            intraday_drawdown_pct=intraday_drawdown_pct, eod_drawdown_pct=eod_drawdown_pct,
+            elimination_time_ms=elimination_time_ms, bucket_at_elimination=bucket_at_elimination,
         )
 
     def remove_elimination(self, hotkey: str) -> bool:

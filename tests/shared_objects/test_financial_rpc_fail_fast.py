@@ -1,12 +1,15 @@
 """
 Guards that the non-idempotent, money-moving RPC client wrappers opt OUT of the self-heal's
-at-least-once retry (retry=False).
+at-least-once retry (retry=False), and that the wrappers which already guard themselves against a
+retried lost-ACK (check-before-mutate, write-after-mutate-completes) are left on the auto-retrying
+path instead.
 
-_invoke_rpc re-executes a call on a transient error (server bounce / lost ACK). For methods that
-perform an irreversible on-chain slash/withdraw/deposit or mint a subaccount, a silent re-execution
-double-applies real funds. These wrappers must therefore pass retry=False so a lost ACK surfaces to
-the caller instead of being re-fired. A regression (reverting to the auto-retrying self._server.X)
-would silently reintroduce the double-apply, so pin it here.
+_invoke_rpc re-executes a call on a transient error (server bounce / lost ACK). For methods with no
+such guard that perform an irreversible on-chain slash/withdraw/deposit or mint a subaccount, a
+silent re-execution double-applies real funds — these must pass retry=False so a lost ACK surfaces
+to the caller instead of being re-fired. A regression either direction — sweeping an already-guarded
+method into fail-fast, or reverting an unguarded one back to auto-retrying self._server.X — is worth
+catching, so both are pinned here.
 """
 import unittest
 from unittest.mock import MagicMock, PropertyMock, patch
@@ -46,17 +49,33 @@ class TestFinancialRpcFailFast(unittest.TestCase):
 
     def test_entity_money_movers_fail_fast(self):
         c = self._client(EntityClient)
-        c.register_entity("eh")
-        self._assert_fail_fast(c._invoke_rpc, "register_entity_rpc")
         c.create_subaccount("eh", 1000.0, "crypto")
         self._assert_fail_fast(c._invoke_rpc, "create_subaccount_rpc")
-        c.create_hl_subaccount("eh", 1000.0, "0xabc")
-        self._assert_fail_fast(c._invoke_rpc, "create_hl_subaccount_rpc")
 
-    def test_elimination_append_fail_fast(self):
+    def test_entity_already_guarded_methods_still_auto_retry(self):
+        # register_entity and create_hl_subaccount already guard against a retried lost-ACK
+        # (check-before-slash, write-after-slash-completes), so a re-execution safely no-ops.
+        # They must NOT have been swept into the fail-fast change.
+        c = self._client(EntityClient)
+        with patch.object(EntityClient, "_server", new_callable=PropertyMock) as server_prop:
+            server_mock = MagicMock()
+            server_prop.return_value = server_mock
+            c.register_entity("eh")
+            c.create_hl_subaccount("eh", 1000.0, "0xabc")
+        server_mock.register_entity_rpc.assert_called_once_with("eh")
+        server_mock.create_hl_subaccount_rpc.assert_called_once()
+        c._invoke_rpc.assert_not_called()
+
+    def test_elimination_append_still_auto_retries(self):
+        # append_elimination_row already guards against a retried lost-ACK (check-before-slash,
+        # write-after-slash-completes), so it must NOT have been swept into the fail-fast change.
         c = self._client(EliminationClient)
-        c.append_elimination_row("hk", "SOME_REASON")
-        self._assert_fail_fast(c._invoke_rpc, "append_elimination_row_rpc")
+        with patch.object(EliminationClient, "_server", new_callable=PropertyMock) as server_prop:
+            server_mock = MagicMock()
+            server_prop.return_value = server_mock
+            c.append_elimination_row("hk", "SOME_REASON")
+        server_mock.append_elimination_row_rpc.assert_called_once()
+        c._invoke_rpc.assert_not_called()
 
     def test_promote_subaccount_fail_fast(self):
         c = self._client(ChallengePeriodClient)
