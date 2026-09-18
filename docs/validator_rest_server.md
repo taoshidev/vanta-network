@@ -1314,7 +1314,8 @@ collateral once the pro account goes live — the hops into `PRO_CHALLENGE_DIREC
 
 **Only the two hops onto a pro account wipe trading state.** A hop switches accounts when the target
 bucket changes the account size (`MinerBucket.switches_account`), and `PRO_CHALLENGE_TRANSITION` does
-not — it is a wind-down week on the standard account:
+not — it is a wind-down on the standard account, running to the first Monday 00:00 UTC after the
+hop:
 
 | Hop | Positions | Limit orders | Ledgers |
 | --- | --- | --- | --- |
@@ -1325,7 +1326,7 @@ not — it is a wind-down week on the standard account:
 The two account-switching hops cannot be undone. Entering `PRO_CHALLENGE_TRANSITION` resets nothing:
 the subaccount keeps its positions, its perf and debt ledgers, and its account size, and only the
 resting orders that could open or increase a position are swept (`PRO_TRANSITION_CANCELLED`), leaving
-closes and reductions in place for the week.
+closes and reductions in place for the rest of the week.
 
 A rejected promotion changes nothing: an invalid or missing size is a 400 before the subaccount or its
 bucket is touched, and a move that fails *after* the sizing is applied rolls the sizing back, so a

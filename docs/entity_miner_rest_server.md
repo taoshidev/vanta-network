@@ -376,8 +376,9 @@ account's drawdown allowance plus the registration rate on the $400K of size gra
   the increase over the fee already assessed is billed — so re-entering the pro track at the same
   size is free, and a pro size equal to the standard size is charged nothing at the registration
   rate. A collateral-exempt subaccount (`reg_fee_theta == 0`) stays exempt on the pro track.
-- A subaccount left in `PRO_CHALLENGE_TRANSITION` is advanced automatically once the grace period
-  (`PRO_TRANSITION_GRACE_PERIOD_DAYS`, default 7) expires.
+- A subaccount left in `PRO_CHALLENGE_TRANSITION` is advanced automatically at the first Monday
+  00:00 UTC after it entered the bucket, on the first challenge-period refresh at or after that
+  boundary.
 
 ### Create Hyperliquid-Linked Subaccount
 

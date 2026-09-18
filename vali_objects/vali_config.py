@@ -507,10 +507,6 @@ class ValiConfig:
     # challenge period checkpoint cannot grow without limit.
     PRO_SOFT_BREACH_LATCH_RETENTION_DAYS = 60
 
-    # Grace period for traders transitioning from standard funded to pro
-    PRO_TRANSITION_GRACE_PERIOD_DAYS = _env_override("PRO_TRANSITION_GRACE_PERIOD_DAYS", 7, maximum=3650)  # fractional days allowed
-    PRO_TRANSITION_GRACE_PERIOD_MS = int(PRO_TRANSITION_GRACE_PERIOD_DAYS * DAILY_MS)
-
     # Payout basis for a trader running the pro challenge after passing the standard challenge
     # (PRO_CHALLENGE_FROM_STANDARD). PnL earned on the pro account is paid as though it had been
     # earned on this multiple of their standard account size: at 2.0, $5K of eligible PnL on a

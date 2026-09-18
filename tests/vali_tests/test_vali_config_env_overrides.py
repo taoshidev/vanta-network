@@ -1,7 +1,7 @@
 """
-ValiConfig testnet knobs: the pro promotion criteria and transition grace period are read from the
-environment once at import. Each case imports ValiConfig in a fresh interpreter so the override is
-exercised exactly the way a validator process sees it.
+ValiConfig testnet knobs: the pro promotion criteria are read from the environment once at import.
+Each case imports ValiConfig in a fresh interpreter so the override is exercised exactly the way a
+validator process sees it.
 """
 import json
 import os
@@ -19,7 +19,6 @@ KNOBS = (
     "PRO_CHALLENGE_CALMAR_THRESHOLD",
     "PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD",
     "PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT",
-    "PRO_TRANSITION_GRACE_PERIOD_DAYS",
 )
 
 # Read the values through their consumers as well, so a copied literal anywhere would fail the test
@@ -34,13 +33,10 @@ print("PROBE " + json.dumps({
     "consistency": ValiConfig.PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD,
     "returns_default": ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT,
     "returns_by_class": sorted(set(ValiConfig.PRO_CHALLENGE_RETURNS_THRESHOLD.values())),
-    "grace_days": ValiConfig.PRO_TRANSITION_GRACE_PERIOD_DAYS,
-    "grace_ms": ValiConfig.PRO_TRANSITION_GRACE_PERIOD_MS,
     "bucket_minimum_days": MinerBucket.PRO_CHALLENGE_DIRECT.minimum_trading_days,
     "bucket_calmar": MinerBucket.PRO_CHALLENGE_DIRECT.calmar_threshold,
     "bucket_consistency": MinerBucket.PRO_CHALLENGE_DIRECT.daily_consistency_threshold,
     "bucket_returns": MinerBucket.PRO_CHALLENGE_DIRECT.returns_threshold(MinerAssetClass.FOREX),
-    "bucket_grace_ms": MinerBucket.PRO_CHALLENGE_TRANSITION.grace_period_ms,
 }))
 """
 
@@ -72,8 +68,6 @@ class TestProConfigEnvOverrides(unittest.TestCase):
         self.assertEqual(values["consistency"], 0.2)
         self.assertEqual(values["returns_default"], 0.06)
         self.assertEqual(values["returns_by_class"], [0.06])
-        self.assertEqual(values["grace_days"], 7)
-        self.assertEqual(values["grace_ms"], 7 * vali_config.ValiConfig.DAILY_MS)
 
     def test_env_overrides_reach_every_consumer(self):
         values = _probe({
@@ -81,7 +75,6 @@ class TestProConfigEnvOverrides(unittest.TestCase):
             "PRO_CHALLENGE_CALMAR_THRESHOLD": "0.5",
             "PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD": "0.9",
             "PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT": "0.01",
-            "PRO_TRANSITION_GRACE_PERIOD_DAYS": "0.25",
         })
         self.assertEqual(values["minimum_days"], 3)
         self.assertEqual(values["bucket_minimum_days"], 3)
@@ -92,9 +85,6 @@ class TestProConfigEnvOverrides(unittest.TestCase):
         self.assertEqual(values["returns_default"], 0.01)
         self.assertEqual(values["returns_by_class"], [0.01])
         self.assertEqual(values["bucket_returns"], 0.01)
-        self.assertEqual(values["grace_days"], 0.25)
-        self.assertEqual(values["grace_ms"], int(0.25 * vali_config.ValiConfig.DAILY_MS))
-        self.assertEqual(values["bucket_grace_ms"], values["grace_ms"])
 
     def test_override_logs_a_warning(self):
         proc = _import_with_env({"PRO_CHALLENGE_MINIMUM_DAYS": "3"})
@@ -102,11 +92,10 @@ class TestProConfigEnvOverrides(unittest.TestCase):
         self.assertIn("PRO_CHALLENGE_MINIMUM_DAYS overridden by environment: 3 (default 90)", proc.stderr + proc.stdout)
 
     def test_day_knobs_above_their_bound_fail_import_with_a_clear_message(self):
-        # Without the bound, an absurd grace period passed the finite check and crashed the import with
+        # Without the bound, an absurd day count passed the finite check and crashed the import with
         # a raw OverflowError converting days to milliseconds.
         for knob, raw in (
-            ("PRO_TRANSITION_GRACE_PERIOD_DAYS", "1e308"),
-            ("PRO_TRANSITION_GRACE_PERIOD_DAYS", "3651"),
+            ("PRO_CHALLENGE_MINIMUM_DAYS", "3651"),
             ("PRO_CHALLENGE_MINIMUM_DAYS", "99999999999999999999"),
         ):
             with self.subTest(knob=knob, raw=raw):
@@ -128,7 +117,8 @@ class TestProConfigEnvOverrides(unittest.TestCase):
         for knob, raw in (
             ("PRO_CHALLENGE_MINIMUM_DAYS", "0"),
             ("PRO_CHALLENGE_CALMAR_THRESHOLD", "-1"),
-            ("PRO_TRANSITION_GRACE_PERIOD_DAYS", "week"),
+            ("PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT", "week"),
+            ("PRO_CHALLENGE_MINIMUM_DAYS", "1e308"),
             ("PRO_CHALLENGE_MINIMUM_DAYS", "1.5"),
             ("PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD", "inf"),
         ):
