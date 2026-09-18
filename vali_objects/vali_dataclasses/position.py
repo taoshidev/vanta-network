@@ -288,6 +288,20 @@ class Position(BaseModel):
         if self.net_value:
             results["nv"] = self.net_value
 
+        # Net quantity in the pair's lot unit (`trade_pair.lot_size` base
+        # units: forex 100k, XAUUSD 100, XAGUSD 5,000, everything else 1),
+        # signed like `nl` / `nv`. Emitted so a client can read the size a
+        # fill left it with instead of re-deriving it from `fo`: that list is
+        # INCREMENTAL (fills newer than `positions_time_ms` only), so a delta
+        # frame under-counts, and fills that predate the quantity system
+        # carry no `q` at all. Same truthiness gate as `nv`, so it is absent
+        # when 0.0: a flat position, or an open position loaded from disk that
+        # predates the quantity fields and has not been rebuilt (which also
+        # lacks `nv`). A liquidated close keeps its pre-close size, exactly as
+        # `nl` / `nv` do.
+        if self.net_quantity:
+            results["nq"] = self.net_quantity
+
         if self.is_closed_position:
             results["c"] = self.close_ms
             results["rc"] = self.return_at_close
