@@ -1343,6 +1343,11 @@ class EntityManager(ValidatorBroadcastBase):
         if (isinstance(account_size, bool) or not isinstance(account_size, (int, float))
                 or not math.isfinite(account_size) or account_size <= 0):
             return False, f"account_size must be a finite positive number, got {account_size!r}"
+        if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
+            return False, (
+                f"account_size ${account_size} exceeds maximum allowed "
+                f"${ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE}"
+            )
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
         entity_lock = self._get_entity_lock(entity_hotkey)

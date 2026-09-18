@@ -1,4 +1,5 @@
 import hashlib
+import math
 import re
 import secrets
 from string import hexdigits
@@ -1853,19 +1854,20 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
     def reset_hotkey(self, hotkey: str):
         """
         Admin reset of a miner: deletes all positions, wipes perf/debt ledgers, removes
-        any active elimination, and optionally updates the account size. If the hotkey is
-        an entity subaccount, the account size update is also mirrored into the EntityManager's
-        SubaccountInfo (not just the MinerAccount record).
+        any active elimination, and optionally updates the account size. account_size is
+        only accepted for entity subaccounts, where it is mirrored into the EntityManager's
+        SubaccountInfo (not just the MinerAccount record); regular miner account sizes are
+        derived from actual on-chain collateral and cannot be set here.
         Requires tier 500 access.
 
-        Optional JSON body (to also update account size in the same call):
+        Optional JSON body (to also update account size in the same call; subaccounts only):
           account_size: float -- USD account size
 
         Example:
         curl -X POST http://localhost:48888/admin/reset/<hotkey> \\
           -H "Authorization: Bearer YOUR_API_KEY" \\
           -H "Content-Type: application/json" \\
-          -d '{"account_size": 250000.0}'
+          -d '{"account_size": 75000.0}'
         """
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
@@ -1875,13 +1877,21 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         data = request.get_json(silent=True) or {}
         account_size = data.get('account_size')
+        is_subaccount = is_synthetic_hotkey(hotkey)
         if account_size is not None:
             try:
                 account_size = float(account_size)
             except (TypeError, ValueError):
                 return jsonify({'error': 'account_size must be a number'}), 400
-            if account_size <= 0:
-                return jsonify({'error': 'account_size must be positive'}), 400
+            if not math.isfinite(account_size) or account_size <= 0:
+                return jsonify({'error': 'account_size must be a finite positive number'}), 400
+            if not is_subaccount:
+                return jsonify({
+                    'error': 'account_size can only be set for entity subaccounts; '
+                             'regular miner account size is derived from on-chain collateral'
+                }), 400
+            if not self._entity_client:
+                return jsonify({'error': 'account_size update requires the entity client, which is unavailable'}), 500
 
         try:
             result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
@@ -1891,21 +1901,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             self._challenge_period_client.revert_elimination(hotkey)
             self._miner_account_client.reset_account(hotkey)
 
-            is_subaccount = is_synthetic_hotkey(hotkey)
             if is_subaccount and self._entity_client:
                 self._entity_client.restore_subaccount(hotkey)
 
             if account_size is not None:
-                if is_subaccount and self._entity_client:
-                    success, message = self._entity_client.update_subaccount_account_size(hotkey, account_size)
-                    if not success:
-                        return jsonify({'error': f'Reset succeeded but failed to update account size for {hotkey}: {message}'}), 500
-                else:
-                    collateral_record = self._miner_account_client.set_miner_account_size(
-                        hotkey, account_size / ValiConfig.COST_PER_THETA, account_size=account_size
-                    )
-                    if collateral_record is None:
-                        return jsonify({'error': f'Reset succeeded but failed to update account size for {hotkey}'}), 500
+                success, message = self._entity_client.update_subaccount_account_size(hotkey, account_size)
+                if not success:
+                    return jsonify({'error': f'Reset succeeded but failed to update account size for {hotkey}: {message}'}), 500
                 result['account_size'] = account_size
 
             return jsonify({'status': 'success', **result})
