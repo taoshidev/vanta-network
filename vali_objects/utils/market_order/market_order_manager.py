@@ -73,6 +73,7 @@ class MarketOrderManager():
         order_size: OrderSize,
         *,
         fill_price: float | None = None,
+        trigger_price: float | None = None,  # limit/take-profit/stop-loss price; caps slippage so the fill is never worse
         price_sources: list[PriceSource] | None = None,
         slippage: float | None = None,
         order_src: OrderSource = OrderSource.ORGANIC,
@@ -102,13 +103,13 @@ class MarketOrderManager():
             position = self._position_client.get_open_position_for_trade_pair(hotkey, trade_pair.trade_pair_id)
             position_type = position.position_type if position else order_type
 
-            if fill_price is None or not price_sources:
+            if not price_sources:
                 price_sources = self._live_price_client.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
                 if not price_sources:
                     raise SignalException(f"Order Rejected: no live prices being found for {trade_pair.trade_pair_id}. Please try again.")
 
-                if fill_price is None:
-                    fill_price = price_sources[0].parse_appropriate_price(now_ms, trade_pair.is_forex, order_type, position_type)
+            if fill_price is None:
+                fill_price = price_sources[0].parse_appropriate_price(now_ms, trade_pair.is_forex, order_type, position_type)
 
             usd_base_rate = self._live_price_client.get_usd_base_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
             quote_usd_rate = self._live_price_client.get_quote_usd_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
@@ -145,7 +146,7 @@ class MarketOrderManager():
                 execution_type, order_type, order_size,
                 order_uuid, now_ms, price_sources, order_src,
                 fill_price, usd_base_rate, quote_usd_rate,
-                slippage, is_hl_taker
+                slippage, is_hl_taker, trigger_price,
             )
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
             return OrderExecution(order, position, binding_cap)
@@ -166,6 +167,7 @@ class MarketOrderManager():
         quote_usd_rate: float,
         slippage: float | None = None,
         is_hl_taker: bool | None = None,
+        trigger_price: float | None = None,
     ) -> Order:
         """Build and execute an order. Caller must hold the position lock."""
         trade_pair = position.trade_pair
@@ -260,6 +262,15 @@ class MarketOrderManager():
 
         if slippage is None:
             slippage = self._live_price_client.calculate_slippage(order.bid, order.ask, order)
+
+        if trigger_price is not None:
+            is_buy_side = quantity > 0
+            effective_price = fill_price * (1 + slippage if is_buy_side else 1 - slippage)
+            final_price = min(effective_price, trigger_price) if is_buy_side else max(effective_price, trigger_price)
+            if final_price != effective_price:
+                order.price = final_price
+                slippage = 0
+
         order.slippage = slippage
 
         logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} slippage={order.slippage:.6g}")
