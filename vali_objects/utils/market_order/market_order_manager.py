@@ -121,7 +121,7 @@ class MarketOrderManager():
                 if err:
                     raise SignalException(err)
 
-            if fill_price is None or not price_sources:
+            if not price_sources:
                 price_sources = self._live_price_client.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
                 if not price_sources:
                     raise SignalException(f"Order Rejected: no live prices being found for {trade_pair.trade_pair_id}. Please try again.")
