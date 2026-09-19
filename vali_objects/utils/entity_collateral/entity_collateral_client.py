@@ -95,9 +95,12 @@ class EntityCollateralClient(RPCClientBase):
         Returns:
             Actual amount slashed in USD.
         """
-        return self._server.slash_on_realized_loss_rpc(
-            entity_hotkey, synthetic_hotkey, realized_loss
-        )
+        # fail-fast (retry=False): accumulates realized-loss that later drives an on-chain slash; a
+        # re-execution inflates the tracked loss and over-slashes. No production client caller today
+        # (defensive) — but if a future caller runs this as a POST-COMMIT side-effect, revisit:
+        # fail-fast would then propagate into that flow (cf. offset_collateral_cache, left auto-retry).
+        return self._invoke_rpc("slash_on_realized_loss_rpc",
+                                args=(entity_hotkey, synthetic_hotkey, realized_loss), retry=False)
 
     def try_slash_on_elimination(self, hotkey: str) -> float:
         """

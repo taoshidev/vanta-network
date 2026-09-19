@@ -112,9 +112,15 @@ class EntityClient(RPCClientBase):
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
-                                                  drawdown_criteria=drawdown_criteria,
-                                                  leverage_tier=leverage_tier)
+        # fail-fast: reserves collateral + mints a subaccount; a re-execution creates a DUPLICATE
+        # subaccount (fresh id) and double-reserves the fee — never auto-retry.
+        return self._invoke_rpc(
+            "create_subaccount_rpc",
+            args=(entity_hotkey, account_size, asset_class),
+            kwargs={"collateral_exempt": collateral_exempt, "drawdown_criteria": drawdown_criteria,
+                    "leverage_tier": leverage_tier},
+            retry=False,
+        )
 
     def create_hl_subaccount(
         self,
