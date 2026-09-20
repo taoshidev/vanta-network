@@ -210,13 +210,6 @@ class MinerBucket(Enum):
             return None
 
     @property
-    def grace_period_ms(self) -> int | None:
-        """Time in this bucket before the miner is advanced to next_bucket automatically."""
-        if self == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            return ValiConfig.PRO_TRANSITION_GRACE_PERIOD_MS
-        return None
-
-    @property
     def is_rank_based(self):
         return self in (
                 MinerBucket.CHALLENGE,

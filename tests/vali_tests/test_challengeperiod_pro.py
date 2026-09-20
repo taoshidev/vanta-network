@@ -42,6 +42,7 @@ from tests.vali_tests.test_pro_account_size import (
     _add_standard as _add_standard_subaccount,
     _bare_manager as _bare_entity_manager,
 )
+from time_util.time_util import TimeUtil
 from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
     DrawdownStats,
@@ -114,8 +115,10 @@ NO_PROMOTION = (
 )
 
 LEDGER_START_MS = 1_735_689_600_000  # 2025-01-01 00:00:00 UTC, a midnight boundary
-NOW_MS = LEDGER_START_MS + 400 * DAILY_MS
+NOW_MS = LEDGER_START_MS + 400 * DAILY_MS                # 2026-02-05 00:00 UTC, a Thursday
 MIDNIGHT_MS = (NOW_MS // DAILY_MS) * DAILY_MS
+MONDAY_MS = TimeUtil.ms_at_start_of_week(NOW_MS)         # the Monday 00:00 UTC that opened this week
+NEXT_MONDAY_MS = MONDAY_MS + 7 * DAILY_MS
 
 _CP_CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager.PerfLedgerClient",
@@ -330,7 +333,8 @@ def test_the_transition_is_on_the_track_but_trades_the_standard_account():
     assert transition.is_pro_track is True
     assert transition.is_pro is False  # so it keeps the standard curve and the standard rules
     assert transition.next_bucket is MinerBucket.PRO_CHALLENGE_FROM_STANDARD
-    assert transition.grace_period_ms == ValiConfig.PRO_TRANSITION_GRACE_PERIOD_MS
+    # It leaves on the week boundary, not a time limit of its own
+    assert transition.max_time_ms is None
 
 
 def test_promotion_gate_thresholds():
@@ -620,18 +624,41 @@ def test_non_pro_buckets_ignore_pro_stats():
 
 
 def test_the_transition_bucket_never_promotes_on_returns():
-    """The transition week is a fixed window: returns cannot shorten it, however good they are.
-    Blocking the returns path leaves the grace period as the only automatic way out."""
+    """The transition runs to the week boundary: returns cannot shorten it, however good they are.
+    Blocking the returns path leaves that boundary as the only automatic way out."""
     state = _promotable_state(MinerBucket.PRO_CHALLENGE_TRANSITION)
     state.drawdown = DrawdownStats(current_equity=2.0, current_balance=2.0)
     assert ChallengePeriodManager._check_promotion(state, RETURNS_THRESHOLD, NOW_MS) is False
 
-    grace_ms = ValiConfig.PRO_TRANSITION_GRACE_PERIOD_MS
-    inside = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS - grace_ms + DAILY_MS)
-    assert ChallengePeriodManager._check_grace_period_expiry(inside, NOW_MS) is False
 
-    expired = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS - grace_ms - DAILY_MS)
-    assert ChallengePeriodManager._check_grace_period_expiry(expired, NOW_MS) is True
+def test_the_transition_ends_at_the_next_monday_however_short_that_is():
+    """Entering mid-week does not buy a full week: the wind-down closes at the first Monday 00:00
+    UTC after the miner entered, so a Saturday entry has two days of it."""
+    state = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, MONDAY_MS - 2 * DAILY_MS)  # the Saturday before
+
+    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS - DAILY_MS) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS - 1) is False
+    # The boundary itself, and every refresh after it: whichever run comes first promotes them
+    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS) is True
+    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS) is True
+
+
+def test_a_transition_entered_on_the_boundary_keeps_the_whole_week():
+    """The Monday has to be crossed, so a miner moved in at the seam is not promoted straight back
+    out on the same refresh."""
+    state = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, MONDAY_MS)
+
+    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, NEXT_MONDAY_MS - 1) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, NEXT_MONDAY_MS) is True
+
+
+@pytest.mark.parametrize("bucket", [b for b in MinerBucket if b != MinerBucket.PRO_CHALLENGE_TRANSITION])
+def test_no_other_bucket_leaves_on_the_week_boundary(bucket):
+    """Only the transition is advanced by the calendar; every other bucket promotes on its own
+    gates however many Mondays it has sat through."""
+    state = _state(bucket, NOW_MS - 400 * DAILY_MS)
+    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -697,6 +724,19 @@ def test_refresh_holds_in_bucket_when_one_day_carries_the_return(manager):
     assert stats.trading_days == MIN_DAYS
     assert stats.daily_consistency > CONSISTENCY_THRESHOLD
     assert manager.get_miner_bucket(HOTKEY) == MinerBucket.PRO_CHALLENGE_DIRECT
+
+
+def test_refresh_moves_the_transition_onto_the_pro_account_once_the_week_turns(manager):
+    """End to end: a miner that entered the wind-down on Sunday is still in it on Sunday night and
+    is moved on by the first refresh past Monday 00:00 UTC, with nothing but the calendar changing."""
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, MONDAY_MS - DAILY_MS)
+    manager.miner_states[HOTKEY].drawdown = _healthy_drawdown(1.0)
+
+    _run_refresh(manager, HOTKEY, now_ms=MONDAY_MS - 1)
+    assert manager.get_miner_bucket(HOTKEY) == MinerBucket.PRO_CHALLENGE_TRANSITION
+
+    _run_refresh(manager, HOTKEY, now_ms=MONDAY_MS)
+    assert manager.get_miner_bucket(HOTKEY) == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

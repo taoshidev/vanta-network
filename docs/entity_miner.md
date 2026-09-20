@@ -331,12 +331,14 @@ Every pro bucket is subject to two drawdown rules:
 #### Traders who have already passed the standard challenge
 
 A `SUBACCOUNT_FUNDED` trader offered a pro account is moved to `PRO_CHALLENGE_TRANSITION`, a
-one-week wind-down window on their existing standard account. During that week they keep the
-`SUBACCOUNT_FUNDED` rules and keep earning payouts, but they cannot open new positions or increase
-existing ones — those orders are rejected and only closes and reductions are accepted. They move to
-`PRO_CHALLENGE_FROM_STANDARD` as soon as they promote again (`POST /api/promote`), or automatically
-at the end of the week, at which point any remaining positions are force closed, the account is
-resized to the pro account size, and the ledgers restart.
+wind-down window on their existing standard account that runs to the end of the payout week. While
+they are in it they keep the `SUBACCOUNT_FUNDED` rules and keep earning payouts, but they cannot
+open new positions or increase existing ones — those orders are rejected and only closes and
+reductions are accepted. They move to `PRO_CHALLENGE_FROM_STANDARD` as soon as they promote again
+(`POST /api/promote`), or automatically at the first **Monday 00:00 UTC** after they entered the
+bucket — on the first challenge-period refresh at or after that boundary — at which point any
+remaining positions are force closed, the account is resized to the pro account size, and the
+ledgers restart.
 
 Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro account but is paid on
 **twice** the size of the standard account they came from:
@@ -400,9 +402,9 @@ trader who has not passed simply stays in the challenge bucket.
 
 #### Testnet overrides
 
-The promotion criteria and the transition grace period are read from `ValiConfig` once at import
-and can be overridden on a testnet validator through environment variables of the same name. Each
-value must be a positive number; the validator logs a warning for every override in force.
+The promotion criteria are read from `ValiConfig` once at import and can be overridden on a testnet
+validator through environment variables of the same name. Each value must be a positive number; the
+validator logs a warning for every override in force.
 
 These values move consensus — they decide promotions and the weekly penalties the weight
 calculator reads — so an override is only honored when `PTN_ALLOW_CONFIG_OVERRIDES=1` is also set.
@@ -415,7 +417,6 @@ validator started on netuid 8 (mainnet) with any of these names in its environme
 | `PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT` | `0.06` | Return required for promotion, applied to every asset class. |
 | `PRO_CHALLENGE_CALMAR_THRESHOLD` | `1.75` | Minimum all-time Calmar for promotion; also the soft-breach line. |
 | `PRO_CHALLENGE_DAILY_CONSISTENCY_THRESHOLD` | `0.2` | Maximum return consistency for promotion. Promotion only — it is not a soft breach. |
-| `PRO_TRANSITION_GRACE_PERIOD_DAYS` | `7` | Length of the `PRO_CHALLENGE_TRANSITION` wind-down window (fractional days allowed, at most 3650). |
 
 ## Getting Started
 

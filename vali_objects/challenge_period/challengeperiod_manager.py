@@ -469,8 +469,8 @@ class ChallengePeriodManager(CacheController):
                         eliminations[hotkey] = reason
                     continue
 
-            # Grace period expiry advances the miner to next_bucket regardless of performance
-            if self._check_grace_period_expiry(state, current_time_ms):
+            # The transition wind-down ends on the week boundary, regardless of performance
+            if self._check_transition_expiry(state, current_time_ms):
                 promotions.append(hotkey)
                 continue
 
@@ -583,14 +583,15 @@ class ChallengePeriodManager(CacheController):
         return None
 
     @staticmethod
-    def _check_grace_period_expiry(state: MinerBucketState, current_time_ms: int) -> bool:
-        """True once a miner has sat in a grace-period bucket past its window."""
-        grace_period_ms = state.current_bucket.grace_period_ms
-        if grace_period_ms is None:
+    def _check_transition_expiry(state: MinerBucketState, current_time_ms: int) -> bool:
+        """True once PRO_CHALLENGE_TRANSITION has run past the first Monday 00:00 UTC after the
+        miner entered it"""
+        if state.current_bucket != MinerBucket.PRO_CHALLENGE_TRANSITION:
             return False
-        expired = current_time_ms - state.current_bucket_start_ms > grace_period_ms
+        expired = (TimeUtil.ms_at_start_of_week(current_time_ms)
+                   > TimeUtil.ms_at_start_of_week(state.current_bucket_start_ms))
         if expired:
-            logger.info(f"[CHALLENGE] grace period expired: {state}")
+            logger.info(f"[CHALLENGE] transition window closed: {state}")
         return expired
 
     @staticmethod
