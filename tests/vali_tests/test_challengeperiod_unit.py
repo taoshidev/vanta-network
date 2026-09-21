@@ -464,3 +464,37 @@ def test_prune_removes_missing_regular(manager):
     manager._position_client.get_all_hotkeys.return_value = []
     manager._prune_hotkeys_no_positions()
     assert hk not in manager.miner_states
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 7 — set_eod_hwm
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_set_eod_hwm_leaves_other_fields(manager):
+    hk = "dd_hk"
+    manager.miner_states[hk] = _state(MinerBucket.MAINCOMP)
+    manager.miner_states[hk].drawdown = DrawdownStats(current_equity=0.97, eod_hwm=1.05)
+
+    success, _ = manager.set_eod_hwm(hk, 1.10)
+    dd = manager.miner_states[hk].drawdown
+    assert success is True
+    assert dd.eod_hwm == 1.10
+    assert dd.current_equity == 0.97
+
+
+def test_set_eod_hwm_lowers_mark(manager):
+    hk = "dd_hk"
+    manager.miner_states[hk] = _state(MinerBucket.MAINCOMP)
+    manager.miner_states[hk].drawdown = DrawdownStats(eod_hwm=1.10, last_eod_equity=1.0)
+
+    success, _ = manager.set_eod_hwm(hk, 1.0)
+    dd = manager.miner_states[hk].drawdown
+    assert success is True
+    assert dd.eod_hwm == 1.0
+    assert dd.eod_drawdown_pct == pytest.approx(0.0)
+
+
+def test_set_eod_hwm_unknown_hotkey(manager):
+    success, message = manager.set_eod_hwm("missing_hk", 1.0)
+    assert success is False
+    assert "not found" in message
