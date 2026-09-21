@@ -374,6 +374,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
         self.app.route("/admin/reset-snapshot/<hotkey>", methods=["POST"])(self.reset_account_snapshot)
         self.app.route("/admin/drawdown-criteria", methods=["POST"])(self.update_drawdown_criteria)
+        self.app.route("/admin/eod-hwm/<hotkey>", methods=["POST"])(self.set_eod_hwm)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -2000,6 +2001,51 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', 'results': results}), 200
         except Exception as e:
             logger.error(f"Error updating drawdown criteria: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def set_eod_hwm(self, hotkey: str):
+        """
+        Overwrite a miner's cached end-of-day high water mark.
+        Requires tier 500 access.
+
+        Required JSON body:
+          eod_hwm: float -- equity return (equity / account_size) to hold as the high water mark
+
+        Example:
+        curl -X POST http://localhost:48888/admin/eod-hwm/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"eod_hwm": 1.03}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Set eod hwm endpoint requires tier 500 access'}), 403
+
+        data = request.get_json(silent=True) or {}
+        eod_hwm = data.get('eod_hwm')
+        if isinstance(eod_hwm, bool) or not isinstance(eod_hwm, (int, float)):
+            return jsonify({'error': 'Missing required numeric field: eod_hwm'}), 400
+        eod_hwm = float(eod_hwm)
+        if not math.isfinite(eod_hwm) or eod_hwm <= 0:
+            return jsonify({'error': 'eod_hwm must be a finite positive number'}), 400
+
+        try:
+            success, message = self._challenge_period_client.set_eod_hwm(hotkey, eod_hwm)
+            if not success:
+                return jsonify({'error': message}), 400
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'eod_hwm': eod_hwm,
+                'message': message,
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error setting eod_hwm for {hotkey}: {e}")
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
