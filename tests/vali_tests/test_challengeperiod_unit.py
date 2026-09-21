@@ -467,34 +467,24 @@ def test_prune_removes_missing_regular(manager):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Section 7 — set_eod_hwm
+# Section 7 — set_miner_drawdown_stats
 # ═══════════════════════════════════════════════════════════════════════════════
+# The manager stores whatever stats it is handed. Which fields may be set, and merging them over
+# the miner's current stats, belong to the endpoint (test_drawdown_stats_endpoint.py).
 
-def test_set_eod_hwm_leaves_other_fields(manager):
+def test_set_miner_drawdown_stats_replaces_stats(manager):
     hk = "dd_hk"
     manager.miner_states[hk] = _state(MinerBucket.MAINCOMP)
     manager.miner_states[hk].drawdown = DrawdownStats(current_equity=0.97, eod_hwm=1.05)
 
-    success, _ = manager.set_eod_hwm(hk, 1.10)
+    success, _ = manager.set_miner_drawdown_stats(hk, DrawdownStats(eod_hwm=1.10, last_eod_equity=1.0))
     dd = manager.miner_states[hk].drawdown
     assert success is True
     assert dd.eod_hwm == 1.10
-    assert dd.current_equity == 0.97
+    assert dd.eod_drawdown_pct == pytest.approx(9.0909, abs=1e-4)
 
 
-def test_set_eod_hwm_lowers_mark(manager):
-    hk = "dd_hk"
-    manager.miner_states[hk] = _state(MinerBucket.MAINCOMP)
-    manager.miner_states[hk].drawdown = DrawdownStats(eod_hwm=1.10, last_eod_equity=1.0)
-
-    success, _ = manager.set_eod_hwm(hk, 1.0)
-    dd = manager.miner_states[hk].drawdown
-    assert success is True
-    assert dd.eod_hwm == 1.0
-    assert dd.eod_drawdown_pct == pytest.approx(0.0)
-
-
-def test_set_eod_hwm_unknown_hotkey(manager):
-    success, message = manager.set_eod_hwm("missing_hk", 1.0)
+def test_set_miner_drawdown_stats_unknown_hotkey(manager):
+    success, message = manager.set_miner_drawdown_stats("missing_hk", DrawdownStats())
     assert success is False
     assert "not found" in message

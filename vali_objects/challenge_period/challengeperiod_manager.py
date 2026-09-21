@@ -1300,16 +1300,16 @@ class ChallengePeriodManager(CacheController):
             self._save_to_disk()
         return True, f"drawdown_criteria updated to '{criteria.value}' for {hotkey}"
 
-    def set_eod_hwm(self, hotkey: str, eod_hwm: float) -> Tuple[bool, str]:
-        """Overwrite the end-of-day high water mark for an existing miner state and persist to disk."""
+    def set_miner_drawdown_stats(self, hotkey: str, drawdown: DrawdownStats) -> Tuple[bool, str]:
+        """Overwrite drawdown stats for an existing miner state and persist to disk."""
         with self._buckets_lock:
             state = self.miner_states.get(hotkey)
             if not state:
                 return False, f"{hotkey} not found in challenge period manager"
-            state.drawdown.eod_hwm = eod_hwm
-            logger.info(f"[CHALLENGE] eod_hwm set to {eod_hwm}: {state}")
+            state.drawdown = drawdown
+            logger.info(f"[CHALLENGE] drawdown stats set: {state}")
             self._save_to_disk()
-        return True, f"eod_hwm updated to {eod_hwm} for {hotkey}"
+        return True, f"drawdown stats updated for {hotkey}"
 
     def remove_miners(self, hotkeys: str | list[str]) -> bool:
         """Remove hotkeys from memory - CALL OUTSIDE OF LOCK"""

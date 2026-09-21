@@ -10,7 +10,7 @@ Clients connect using ChallengePeriodClient.
 import time
 from typing import Tuple
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
+from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager, DrawdownStats
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.common_data_client import CommonDataClient
@@ -195,8 +195,8 @@ class ChallengePeriodServer(RPCServerBase):
     def revert_elimination_rpc(self, hotkey: str) -> bool:
         return self._manager.revert_elimination(hotkey)
 
-    def set_eod_hwm_rpc(self, hotkey: str, eod_hwm: float) -> Tuple[bool, str]:
-        return self._manager.set_eod_hwm(hotkey, eod_hwm)
+    def set_miner_drawdown_stats_rpc(self, hotkey: str, drawdown: DrawdownStats) -> Tuple[bool, str]:
+        return self._manager.set_miner_drawdown_stats(hotkey, drawdown)
 
     def clear_test_state_rpc(self) -> None:
         """Clear all miner states for test isolation."""

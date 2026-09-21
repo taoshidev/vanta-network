@@ -20,11 +20,15 @@ Usage:
         client = ChallengePeriodClient()
         client.get_testing_miners()
 """
-from typing import Tuple
+from typing import TYPE_CHECKING, Tuple
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
+
+if TYPE_CHECKING:
+    # Annotation only -- the manager stays out of the client's import graph
+    from vali_objects.challenge_period.challengeperiod_manager import DrawdownStats
 
 
 class ChallengePeriodClient(RPCClientBase):
@@ -137,9 +141,9 @@ class ChallengePeriodClient(RPCClientBase):
         """Remove the ELIMINATED bucket entry, clear the elimination record, and persist to disk."""
         return self._server.revert_elimination_rpc(hotkey)
 
-    def set_eod_hwm(self, hotkey: str, eod_hwm: float) -> Tuple[bool, str]:
-        """Overwrite a miner's end-of-day high water mark."""
-        return self._server.set_eod_hwm_rpc(hotkey, eod_hwm)
+    def set_miner_drawdown_stats(self, hotkey: str, drawdown: 'DrawdownStats') -> Tuple[bool, str]:
+        """Overwrite a miner's drawdown stats."""
+        return self._server.set_miner_drawdown_stats_rpc(hotkey, drawdown)
 
     def get_testing_miners(self) -> dict[str, int]:
         """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""
