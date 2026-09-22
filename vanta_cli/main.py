@@ -124,12 +124,13 @@ class VantaCLIManager(CLIManager):
             short_help="Vanta Network - Entity management commands",
             no_args_is_help=True
         )
-        self.app.add_typer(
-            self.profile_app,
-            name="profile",
-            short_help="Vanta Network - Profile management commands",
-            no_args_is_help=True
-        )
+        # Temporarily disabled - re-enable with dashboard visibility
+        # self.app.add_typer(
+        #     self.profile_app,
+        #     name="profile",
+        #     short_help="Vanta Network - Profile management commands",
+        #     no_args_is_help=True
+        # )
 
         self.collateral_app.command(
             "list", rich_help_panel="Collateral Management"
