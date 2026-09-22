@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from typing import Annotated, Optional
 
 from rich.prompt import FloatPrompt, IntPrompt, Prompt
@@ -31,12 +33,26 @@ from vanta_cli.src.commands.profile import (
 
 _epilog = "Made with [bold red]:heart:[/bold red] by Vanτa Neτwork"
 
+# meta/meta.json lives at the repo root; this file is at vanta_cli/main.py.
+_META_JSON_PATH = Path(__file__).resolve().parent.parent / "meta" / "meta.json"
+
+
+def _get_vanta_network_version() -> str:
+    """Reads the subnet version from meta/meta.json."""
+    try:
+        with open(_META_JSON_PATH) as f:
+            return json.load(f)["subnet_version"]
+    except (OSError, json.JSONDecodeError, KeyError):
+        return "unknown"
+
+
 def vanta_version_callback(value: bool) -> None:
     """
     Prints the current version
     """
     if value:
         typer.echo(f"Vanta CLI version: {VANTA_CLI_VERSION}")
+        typer.echo(f"Vanta Network version: {_get_vanta_network_version()}")
         version_callback(value)
         raise typer.Exit()
 
