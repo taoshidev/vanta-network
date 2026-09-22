@@ -11,6 +11,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -24,6 +25,25 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from shared_objects.locks.position_lock_client import PositionLockClient
 from shared_objects.log import logger
+
+
+class OrderExecution:
+    """Result of execute_order: the filled order, its position, and what capped its size.
+
+    Iterates as (order, position) so existing two-value unpacking keeps working; `binding_cap`
+    is set only when a cap actually shrank the order, and is how a client learns an order was
+    sized down rather than filled as requested.
+    """
+
+    __slots__ = ("order", "position", "binding_cap")
+
+    def __init__(self, order, position, binding_cap=None):
+        self.order = order
+        self.position = position
+        self.binding_cap = binding_cap
+
+    def __iter__(self):
+        return iter((self.order, self.position))
 
 
 class MarketOrderManager():
@@ -53,6 +73,7 @@ class MarketOrderManager():
         order_size: OrderSize,
         *,
         fill_price: float | None = None,
+        trigger_price: float | None = None,  # limit/take-profit/stop-loss price; caps slippage so the fill is never worse
         price_sources: list[PriceSource] | None = None,
         slippage: float | None = None,
         order_src: OrderSource = OrderSource.ORGANIC,
@@ -63,10 +84,6 @@ class MarketOrderManager():
     ) -> tuple[Order, Position] | None:
         _start = TimeUtil.now_in_millis()
         now_ms = now_ms or _start
-        if enforce_cooldown:
-            err = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, hotkey)
-            if err:
-                raise SignalException(err)
 
         if not self._live_price_client.is_market_open(trade_pair):
             raise SignalException(f"The market for {trade_pair.trade_pair_id} is currently closed.")
@@ -82,13 +99,35 @@ class MarketOrderManager():
             position = self._position_client.get_open_position_for_trade_pair(hotkey, trade_pair.trade_pair_id)
             position_type = position.position_type if position else order_type
 
-            if fill_price is None or not price_sources:
+            # Idempotent replay guard: if this order_uuid is already committed to durable position
+            # state, return the committed result instead of applying again. This is what makes the
+            # RPC layer's at-least-once retry (and a placer resend after a lost ack) safe — the
+            # retry can land on a freshly restarted server whose in-memory caches (cooldown, dedup)
+            # are empty, so only the on-disk position can witness the first apply. Runs under the
+            # position lock, so it is serialized with all writers of this (hotkey, pair).
+            replayed = self._find_committed_order(hotkey, trade_pair.trade_pair_id, order_uuid, position)
+            if replayed is not None:
+                logger.warning(
+                    f"[ORDER_EXECUTION] {hotkey} {order_uuid} replay of an already-committed order "
+                    f"— returning the committed result (idempotent no-op)"
+                )
+                return replayed
+
+            # Cooldown is enforced under the lock (as its docstring requires) and AFTER the replay
+            # guard, so a legitimate replay is answered idempotently rather than bounced as
+            # "placed too soon" against its own first apply.
+            if enforce_cooldown:
+                err = self.enforce_order_cooldown(trade_pair.trade_pair_id, now_ms, hotkey)
+                if err:
+                    raise SignalException(err)
+
+            if not price_sources:
                 price_sources = self._live_price_client.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
                 if not price_sources:
                     raise SignalException(f"Order Rejected: no live prices being found for {trade_pair.trade_pair_id}. Please try again.")
 
-                if fill_price is None:
-                    fill_price = price_sources[0].parse_appropriate_price(now_ms, trade_pair.is_forex, order_type, position_type)
+            if fill_price is None:
+                fill_price = price_sources[0].parse_appropriate_price(now_ms, trade_pair.is_forex, order_type, position_type)
 
             usd_base_rate = self._live_price_client.get_usd_base_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
             quote_usd_rate = self._live_price_client.get_quote_usd_conversion(trade_pair, now_ms, fill_price, order_type, position_type)
@@ -100,20 +139,11 @@ class MarketOrderManager():
             )
 
             if position is not None and len(position.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
-                logger.info(
-                    f"[ORDER_EXECUTION] {hotkey} hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
-                    f"Auto-closing {trade_pair.trade_pair_id} with {len(position.orders)} orders."
+                raise SignalException(
+                    f"Order Rejected {hotkey} hit {ValiConfig.MAX_ORDERS_PER_POSITION} order limit. "
+                    f"Rejecting {trade_pair.trade_pair_id} with {len(position.orders)} orders."
+                    f"Only FLAT orders will be accepted for this position."
                 )
-                flat_uuid = position.position_uuid[::-1]
-                self._apply_order(
-                    position, miner_account,
-                    ExecutionType.MARKET, OrderType.FLAT, OrderSize(quantity=-position.net_quantity),
-                    flat_uuid, now_ms - 1, price_sources,
-                    OrderSource.MAX_ORDERS_PER_POSITION_CLOSE,
-                    fill_price, usd_base_rate, quote_usd_rate,
-                    slippage=0,
-                )
-                position = None
 
             if not position:
                 if order_type == OrderType.FLAT:
@@ -126,17 +156,54 @@ class MarketOrderManager():
                     position_type=order_type,
                     account_size=miner_account.account_size,
                     is_hl=is_hl,
+                    is_pro=bool(miner_account.miner_bucket and miner_account.miner_bucket.is_pro),
                 )
 
-            order = self._apply_order(
+            order, binding_cap = self._apply_order(
                 position, miner_account,
                 execution_type, order_type, order_size,
                 order_uuid, now_ms, price_sources, order_src,
                 fill_price, usd_base_rate, quote_usd_rate,
-                slippage, is_hl_taker
+                slippage, is_hl_taker, trigger_price,
             )
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
-            return order, position
+            return OrderExecution(order, position, binding_cap)
+
+    def _find_committed_order(
+        self,
+        hotkey: str,
+        trade_pair_id: str,
+        order_uuid: str,
+        open_position: Position | None,
+    ) -> tuple[Order, Position] | None:
+        """
+        Return the committed (order, position) for order_uuid if a prior apply already persisted
+        it, else None. Caller must hold the position lock. The open position (already fetched by
+        the caller) answers the common case without extra I/O; the closed-position scan only runs
+        when the uuid might have closed its position (e.g. the first apply flattened it).
+        """
+        if not order_uuid:
+            return None
+        if open_position is not None:
+            for o in open_position.orders:
+                if o.order_uuid == order_uuid:
+                    return o, open_position
+        # Not in the open position: the first apply may have closed the position (FLAT or an
+        # effective close), leaving the uuid only in a closed position for this trade pair.
+        try:
+            all_positions = self._position_client.get_positions_for_one_hotkey(hotkey) or []
+        except Exception as e:
+            # Best-effort widening of the guard: if the lookup fails, fall through to the normal
+            # apply path (the open-position check above already covered the likeliest replay).
+            logger.warning(f"[ORDER_EXECUTION] {hotkey} {order_uuid} replay-guard closed-position lookup failed: {e}")
+            return None
+        for p in all_positions:
+            if p.trade_pair.trade_pair_id != trade_pair_id:
+                continue
+            for o in p.orders:
+                if o.order_uuid == order_uuid:
+                    return o, p
+        return None
 
     def _apply_order(
         self,
@@ -154,6 +221,7 @@ class MarketOrderManager():
         quote_usd_rate: float,
         slippage: float | None = None,
         is_hl_taker: bool | None = None,
+        trigger_price: float | None = None,
     ) -> Order:
         """Build and execute an order. Caller must hold the position lock."""
         trade_pair = position.trade_pair
@@ -188,16 +256,29 @@ class MarketOrderManager():
             quantity, leverage, value = -position.net_quantity, -position.net_leverage, -position.net_value
 
         is_buy = order_type == position.position_type
+        # add_order can flip this to FLAT, and correlated exposure has to be released from the
+        # side the position was actually on.
+        prev_position_type = position.position_type
+
+        if is_buy and miner_account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
+            raise SignalException(
+                "Your account is transitioning to a Pro Account. You cannot open new positions or increase "
+                "existing ones - close your open positions to begin trading your Pro Account."
+            )
+
+        binding_cap = None
         if is_buy:
             max_order_value, binding_cap = get_max_order_size(miner_account, position)
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} max_order_value=${max_order_value:.4f}")
+
             if max_order_value <= 0:
                 msg = f"No buying power remaining for {trade_pair.trade_pair_id} (capped by {binding_cap})"
                 logger.error(f"[ORDER_EXECUTION] {hotkey} {order_uuid} {msg}")
                 raise SignalException(msg)
-            sign = -1 if order_type == OrderType.SHORT else 1
-            clamped_value = sign * min(abs(value), max_order_value)
-            if abs(clamped_value) < abs(value):
+
+            if abs(value) > max_order_value:
+                sign = 1 if value >= 0 else -1
+                clamped_value = sign * max_order_value
                 logger.info(
                     f"[ORDER_EXECUTION] {hotkey} {order_uuid} order value clamped from ${value:.4f} to ${clamped_value:.4f} by {binding_cap}"
                 )
@@ -207,6 +288,9 @@ class MarketOrderManager():
                     use_floor=True,
                     use_nano_increment=use_nano_increment,
                 )
+            else:
+                # Nothing was cut, so there is no cap worth reporting.
+                binding_cap = None
 
         if abs(value) < 1e-9 or abs(quantity) < 1e-9:
             raise SignalException("Error processing order: 0 order size after clamping")
@@ -232,6 +316,15 @@ class MarketOrderManager():
 
         if slippage is None:
             slippage = self._live_price_client.calculate_slippage(order.bid, order.ask, order)
+
+        if trigger_price is not None:
+            is_buy_side = quantity > 0
+            effective_price = fill_price * (1 + slippage if is_buy_side else 1 - slippage)
+            final_price = min(effective_price, trigger_price) if is_buy_side else max(effective_price, trigger_price)
+            if final_price != effective_price:
+                order.price = final_price
+                slippage = 0
+
         order.slippage = slippage
 
         logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} slippage={order.slippage:.6g}")
@@ -248,7 +341,8 @@ class MarketOrderManager():
 
         if is_buy:
             self._miner_account_client.process_order_buy(
-                hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category
+                hotkey, abs(order.value), order.margin_loan, transaction_fee, trade_pair.trade_pair_category,
+                trade_pair=trade_pair, position_type=prev_position_type,
             )
         else:
             entry_value = abs(order.quantity) * trade_pair.lot_size * position.average_entry_price * order.quote_usd_rate
@@ -256,6 +350,7 @@ class MarketOrderManager():
             self._miner_account_client.process_order_sell(
                 hotkey, entry_value, realized_pnl, loan_repaid, transaction_fee, trade_pair.trade_pair_category,
                 unrealized_pnl_released=unrealized_pnl_released,
+                trade_pair=trade_pair, position_type=prev_position_type,
             )
 
         self._position_client.save_miner_position(position)
@@ -265,7 +360,7 @@ class MarketOrderManager():
         if self.serve:
             self.websocket_notifier.broadcast_position_update(position)
 
-        return order
+        return order, binding_cap
 
     def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):
         logger.info(f"Processing close_positions for miner [{hotkey}] (close_all={close_all})")

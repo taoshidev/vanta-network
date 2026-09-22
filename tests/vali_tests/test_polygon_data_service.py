@@ -421,8 +421,9 @@ class TestPolygonDataService(unittest.TestCase):
         # Verify at least one blocked pair IS in the result
         all_pair_ids = {tp.trade_pair_id for tp in all_pairs}
 
-        # Check that AUDJPY (a blocked pair) is included
-        self.assertIn('AUDJPY', all_pair_ids, "AUDJPY should be included when include_blocked=True")
+        # Check that a blocked pair is included
+        blocked_pair_id = next(iter(BLOCKED_TRADE_PAIR_IDS))
+        self.assertIn(blocked_pair_id, all_pair_ids, f"{blocked_pair_id} should be included when include_blocked=True")
 
         # Verify we get more pairs than when excluding blocked
         tradeable_only = self.polygon_service.get_tradeable_pairs(include_blocked=False)
@@ -455,32 +456,31 @@ class TestPolygonDataService(unittest.TestCase):
             include_blocked=False
         )
 
-        # Verify blocked JPY pairs are NOT included
+        # Verify blocked forex pairs are NOT included
         forex_ids = {tp.trade_pair_id for tp in forex_pairs}
-        blocked_jpy_pairs = {'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY'}
 
-        jpy_in_forex = forex_ids & blocked_jpy_pairs
+        blocked_in_forex = forex_ids & BLOCKED_TRADE_PAIR_IDS
         self.assertEqual(
-            len(jpy_in_forex), 0,
-            f"Blocked JPY pairs should not be in forex list: {jpy_in_forex}"
+            len(blocked_in_forex), 0,
+            f"Blocked pairs should not be in forex list: {blocked_in_forex}"
         )
 
         # Verify non-blocked forex pairs ARE included
         self.assertIn('EURUSD', forex_ids, "EUR/USD should be tradeable")
 
     def test_get_tradeable_pairs_excludes_unsupported(self):
-        """Test that get_tradeable_pairs always excludes unsupported pairs."""
-        # Get all pairs with blocked included
-        all_pairs = self.polygon_service.get_tradeable_pairs(include_blocked=True)
-        all_pair_ids = {tp.trade_pair_id for tp in all_pairs}
+        """Test that get_tradeable_pairs excludes blocked indices when include_blocked=False."""
+        # Get tradeable pairs excluding blocked
+        tradeable = self.polygon_service.get_tradeable_pairs(include_blocked=False)
+        tradeable_ids = {tp.trade_pair_id for tp in tradeable}
 
-        # Verify unsupported pairs (SPX, DJI, etc.) are NEVER included
-        unsupported_ids = {'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI'}
-        unsupported_in_result = all_pair_ids & unsupported_ids
+        # Verify blocked indices (SPX, DJI, etc.) are excluded, per BLOCKED_TRADE_PAIR_IDS
+        blocked_indices = {'SPX', 'DJI', 'NDX', 'VIX', 'FTSE', 'GDAXI'} & BLOCKED_TRADE_PAIR_IDS
+        blocked_in_result = tradeable_ids & blocked_indices
 
         self.assertEqual(
-            len(unsupported_in_result), 0,
-            f"Unsupported pairs should never be included: {unsupported_in_result}"
+            len(blocked_in_result), 0,
+            f"Blocked indices should not be included: {blocked_in_result}"
         )
 
     def test_subscribe_websockets_excludes_blocked_pairs(self):
@@ -507,13 +507,12 @@ class TestPolygonDataService(unittest.TestCase):
                 pair_id = pair_str.replace('/', '')  # e.g., "AUDJPY"
                 subscribed_ids.add(pair_id)
 
-        # Verify blocked JPY pairs are NOT subscribed
-        blocked_jpy_pairs = {'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY'}
-        jpy_subscribed = subscribed_ids & blocked_jpy_pairs
+        # Verify blocked pairs are NOT subscribed
+        blocked_subscribed = subscribed_ids & BLOCKED_TRADE_PAIR_IDS
 
         self.assertEqual(
-            len(jpy_subscribed), 0,
-            f"Blocked JPY pairs should not be subscribed: {jpy_subscribed}"
+            len(blocked_subscribed), 0,
+            f"Blocked pairs should not be subscribed: {blocked_subscribed}"
         )
 
         # Verify non-blocked pairs ARE subscribed

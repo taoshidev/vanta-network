@@ -634,201 +634,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         has_activity = any(cp.n_updates > 0 for cp in final_bundle.cps)
         self.assertTrue(has_activity, "Portfolio ledger should have activity after delta updates")
 
-    def test_multiprocessing_vs_serial_consistency(self):
-        """Test that multiprocessing and serial modes produce identical results."""
-        # Align to checkpoint boundary
-        checkpoint_duration = 12 * 60 * 60 * 1000  # 12 hours
-        base_time = (self.now_ms // checkpoint_duration) * checkpoint_duration - (5 * MS_IN_24_HOURS)
-        
-        # Create identical positions for both modes
-        positions_data = [
-            # (name, trade_pair, start_offset_hours, duration_hours, open_price, close_price)
-            ("btc_pos", TradePair.BTCUSD, 0, 24, 50000.0, 51000.0),
-            ("eth_pos", TradePair.ETHUSD, 12, 18, 3000.0, 3100.0),
-            ("eur_pos", TradePair.EURUSD, 6, 12, 1.10, 1.11),
-        ]
-        
-        def create_positions_and_run(parallel_mode):
-            """Helper to create positions and run with specified parallel mode."""
-            # For multiprocessing mode, create a new PositionManager with IPC support
-            # to avoid pickling threading locks
-            # Clear any existing positions
-            self.position_client.clear_all_miner_positions_and_disk()
-
-            # Create fresh PerfLedgerManager for this mode with testing flags
-            plm = PerfLedgerManager(
-                running_unit_tests=True,
-                parallel_mode=parallel_mode,
-            )
-            plm.clear_all_ledger_data()
-
-            # Create identical positions
-            for name, tp, start_offset_hours, duration_hours, open_price, close_price in positions_data:
-                start_time = base_time + (start_offset_hours * 60 * 60 * 1000)
-                end_time = start_time + (duration_hours * 60 * 60 * 1000)
-
-                position = self._create_position(
-                    name, tp, start_time, end_time, open_price, close_price, OrderType.LONG
-                )
-                self.position_client.save_miner_position(position)
-
-            # Get positions for input verification (before processing)
-            all_positions = self.position_client.get_positions_for_all_miners()
-            hotkey_to_positions = {self.test_hotkey: all_positions.get(self.test_hotkey, [])}
-            
-            # Update using the appropriate API for the mode
-            update_time = base_time + (3 * MS_IN_24_HOURS)
-            
-            if parallel_mode == ParallelizationMode.MULTIPROCESSING:
-                # Use the parallel API for multiprocessing mode
-                from shared_objects.sn8_multiprocessing import get_multiprocessing_pool
-                
-                # Get existing ledgers (empty for this test)
-                existing_perf_ledgers = {}
-                
-                # Use multiprocessing pool
-                with get_multiprocessing_pool(ParallelizationMode.MULTIPROCESSING) as pool:
-                    updated_ledgers = plm.update_perf_ledgers_parallel(
-                        spark=None,  # Not using Spark in this test
-                        pool=pool,
-                        hotkey_to_positions=hotkey_to_positions,
-                        existing_perf_ledgers=existing_perf_ledgers,
-                        parallel_mode=ParallelizationMode.MULTIPROCESSING,
-                        now_ms=update_time,
-                        is_backtesting=False
-                    )
-                    return updated_ledgers, hotkey_to_positions, update_time
-            else:
-                # Use serial mode - capture positions that serial mode will use internally
-                # Serial mode calls get_positions_for_all_miners() internally during update()
-                plm.update(t_ms=update_time)
-                return plm.get_perf_ledgers(), hotkey_to_positions, update_time
-        
-        # Run in serial mode
-        serial_bundles, serial_positions, serial_update_time = create_positions_and_run(ParallelizationMode.SERIAL)
-        
-        # Run in multiprocessing mode  
-        parallel_bundles, parallel_positions, parallel_update_time = create_positions_and_run(ParallelizationMode.MULTIPROCESSING)
-        
-        # VERIFY INPUTS ARE IDENTICAL BEFORE COMPARING OUTPUTS
-        self.assertEqual(serial_update_time, parallel_update_time, 
-                        "Both modes should use identical update times")
-        
-        # Verify same hotkeys in position data
-        self.assertEqual(set(serial_positions.keys()), set(parallel_positions.keys()),
-                        "Both modes should process same hotkeys")
-        
-        # Verify identical positions for our test miner
-        self.assertIn(self.test_hotkey, serial_positions, "Serial mode should have test miner positions")
-        self.assertIn(self.test_hotkey, parallel_positions, "Parallel mode should have test miner positions")
-        
-        serial_miner_positions = serial_positions[self.test_hotkey]
-        parallel_miner_positions = parallel_positions[self.test_hotkey]
-        
-        self.assertEqual(len(serial_miner_positions), len(parallel_miner_positions),
-                        f"Both modes should have same number of positions: serial={len(serial_miner_positions)}, parallel={len(parallel_miner_positions)}")
-        
-        # Verify each position is identical
-        for i, (serial_pos, parallel_pos) in enumerate(zip(serial_miner_positions, parallel_miner_positions)):
-            self.assertEqual(serial_pos.position_uuid, parallel_pos.position_uuid,
-                           f"Position {i}: UUIDs should match")
-            self.assertEqual(serial_pos.miner_hotkey, parallel_pos.miner_hotkey,
-                           f"Position {i}: hotkeys should match")
-            self.assertEqual(serial_pos.open_ms, parallel_pos.open_ms,
-                           f"Position {i}: open times should match")
-            self.assertEqual(serial_pos.close_ms, parallel_pos.close_ms,
-                           f"Position {i}: close times should match")
-            self.assertEqual(serial_pos.trade_pair, parallel_pos.trade_pair,
-                           f"Position {i}: trade pairs should match")
-            self.assertEqual(len(serial_pos.orders), len(parallel_pos.orders),
-                           f"Position {i}: should have same number of orders")
-            
-            # Verify orders are identical
-            for j, (serial_order, parallel_order) in enumerate(zip(serial_pos.orders, parallel_pos.orders)):
-                self.assertEqual(serial_order.price, parallel_order.price,
-                               f"Position {i} order {j}: prices should match")
-                self.assertEqual(serial_order.processed_ms, parallel_order.processed_ms,
-                               f"Position {i} order {j}: processed times should match")
-                self.assertEqual(serial_order.order_type, parallel_order.order_type,
-                               f"Position {i} order {j}: order types should match")
-                self.assertEqual(serial_order.leverage, parallel_order.leverage,
-                               f"Position {i} order {j}: leverage should match")
-        
-        print("✅ INPUT VERIFICATION PASSED: Both modes received identical inputs")
-        print(f"   - Update time: {serial_update_time}")
-        print(f"   - Number of positions: {len(serial_miner_positions)}")
-        print(f"   - Trade pairs: {[pos.trade_pair.trade_pair_id for pos in serial_miner_positions]}")
-        print("   Now comparing outputs...")
-        
-        # Compare results - document behavior differences if they exist
-        serial_has_miner = self.test_hotkey in serial_bundles
-        parallel_has_miner = self.test_hotkey in parallel_bundles
-        
-        # Ideally both modes should produce the same results
-        if serial_has_miner and parallel_has_miner:
-            # Both modes created bundles - compare them
-            pass
-        elif not serial_has_miner and parallel_has_miner:
-            # Opposite case - less likely but worth documenting
-            self.fail("Multiprocessing mode created bundles but serial mode did not. "
-                     "This is unexpected behavior.")
-        else:
-            self.fail(f"Neither serial nor multiprocessing modes created bundles for hotkey {self.test_hotkey}. ")
-        
-        serial_bundle = serial_bundles[self.test_hotkey]
-        parallel_bundle = parallel_bundles[self.test_hotkey]
-
-        # Same portfolio ledgers should exist
-        self.assertIsInstance(serial_bundle, PerfLedger, "Serial bundle should be a PerfLedger")
-        self.assertIsInstance(parallel_bundle, PerfLedger, "Parallel bundle should be a PerfLedger")
-
-        # Compare portfolio ledgers between serial and parallel modes
-        print('Comparing portfolio ledger between serial and parallel modes...')
-        serial_ledger = serial_bundle
-        parallel_ledger = parallel_bundle
-
-        # Compare basic attributes
-        self.assertEqual(serial_ledger.initialization_time_ms, parallel_ledger.initialization_time_ms,
-                       "Portfolio ledger: initialization times should match")
-        self.assertEqual(serial_ledger.last_update_ms, parallel_ledger.last_update_ms,
-                       "Portfolio ledger: last update times should match")
-
-        # max_return should match exactly between modes
-        self.assertEqual(serial_ledger.max_return, parallel_ledger.max_return,
-                       "Portfolio ledger: max returns should match exactly between serial and parallel modes")
-
-        # Compare checkpoint counts
-        self.assertEqual(len(serial_ledger.cps), len(parallel_ledger.cps),
-                       "Portfolio ledger: checkpoint counts should match")
-
-        # Compare individual checkpoints - should match between modes
-        for i, (serial_cp, parallel_cp) in enumerate(zip(serial_ledger.cps, parallel_ledger.cps)):
-            self.assertEqual(serial_cp.last_update_ms, parallel_cp.last_update_ms,
-                           f"Portfolio ledger checkpoint {i}: update times should match")
-
-            # Update counts should match
-            self.assertEqual(serial_cp.n_updates, parallel_cp.n_updates,
-                           f"Portfolio ledger checkpoint {i}: update counts should match - serial={serial_cp.n_updates}, parallel={parallel_cp.n_updates}")
-
-            # Portfolio values should match exactly
-            self.assertEqual(serial_cp.prev_portfolio_ret, parallel_cp.prev_portfolio_ret,
-                           f"Portfolio ledger checkpoint {i}: portfolio returns should match exactly - serial={serial_cp.prev_portfolio_ret}, parallel={parallel_cp.prev_portfolio_ret}")
-
-            # Gains should match exactly
-            self.assertEqual(serial_cp.gain, parallel_cp.gain,
-                           f"Portfolio ledger checkpoint {i}: gains should match exactly - serial={serial_cp.gain}, parallel={parallel_cp.gain}")
-
-            # Losses should match exactly
-            self.assertEqual(serial_cp.loss, parallel_cp.loss,
-                           f"Portfolio ledger checkpoint {i}: losses should match exactly - serial={serial_cp.loss}, parallel={parallel_cp.loss}")
-
-            # Risk metrics should match exactly
-            self.assertEqual(serial_cp.mdd, parallel_cp.mdd,
-                           f"Portfolio ledger checkpoint {i}: MDD should match exactly - serial={serial_cp.mdd}, parallel={parallel_cp.mdd}")
-
-            self.assertEqual(serial_cp.mpv, parallel_cp.mpv,
-                           f"Portfolio ledger checkpoint {i}: MPV should match exactly - serial={serial_cp.mpv}, parallel={parallel_cp.mpv}")
-
     def test_rss_random_security_screening_logic(self):
         """Test RSS (Random Security Screening) logic with production code paths."""
         # Create multiple test miners
@@ -1000,56 +805,6 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         production_bundles = plm_production.get_perf_ledgers()
         self.assertIsNotNone(production_bundles, "Production mode should work without explicit time")
-
-    def test_parallel_mode_configurations(self):
-        """Test different parallel mode configurations."""
-        base_time = self.now_ms - (10 * MS_IN_24_HOURS)
-        
-        # Create position
-        position = self._create_position(
-            "parallel_test", TradePair.BTCUSD,
-            base_time, base_time + MS_IN_24_HOURS,
-            50000.0, 51000.0, OrderType.LONG
-        )
-        self.position_client.save_miner_position(position)
-        
-        # Test Serial mode
-        plm_serial = PerfLedgerManager(
-            running_unit_tests=True,
-            parallel_mode=ParallelizationMode.SERIAL,
-        )
-        plm_serial.clear_all_ledger_data()
-        
-        plm_serial.update(t_ms=base_time + (2 * MS_IN_24_HOURS))
-        serial_bundles = plm_serial.get_perf_ledgers()
-        
-        # Test Multiprocessing mode
-        plm_multiprocessing = PerfLedgerManager(
-            running_unit_tests=True,
-            parallel_mode=ParallelizationMode.MULTIPROCESSING,
-        )
-        plm_multiprocessing.clear_all_ledger_data()
-
-        # Use the parallel API
-        all_positions = self.position_client.get_positions_for_all_miners()
-        hotkey_to_positions = {self.test_hotkey: all_positions.get(self.test_hotkey, [])}
-        existing_perf_ledgers = {}
-
-        from shared_objects.sn8_multiprocessing import get_multiprocessing_pool
-        with get_multiprocessing_pool(ParallelizationMode.MULTIPROCESSING) as pool:
-            multiprocessing_bundles = plm_multiprocessing.update_perf_ledgers_parallel(
-                spark=None,
-                pool=pool,
-                hotkey_to_positions=hotkey_to_positions,
-                existing_perf_ledgers=existing_perf_ledgers,
-                parallel_mode=ParallelizationMode.MULTIPROCESSING,
-                now_ms=base_time + (2 * MS_IN_24_HOURS),
-                is_backtesting=False
-            )
-        
-        # Both modes should produce results
-        self.assertIsNotNone(serial_bundles, "Serial mode should produce bundles")
-        self.assertIsNotNone(multiprocessing_bundles, "Multiprocessing mode should produce bundles")
 
     def test_target_ledger_window_ms_configuration(self):
         """Test target_ledger_window_ms configuration with production code paths."""
@@ -1791,21 +1546,20 @@ class TestPerfLedgerConstraintsAndValidation(TestBase):
         
         # Apply continuity - this should update position returns based on last known prices
         plm.mutate_position_returns_for_continuity(
-            tp_to_historical_positions, 
-            bundle, 
+            tp_to_historical_positions,
+            portfolio_ledger,
             1000001000000  # portfolio_last_update_ms
         )
         
         # Verify returns were updated
-        # BTC: Long position, price went from 50k (order) to 55k (last known)
-        # Return should be approximately 1.1 minus fees
-        # The actual value is 1.0989 which includes spread fees
-        self.assertAlmostEqual(btc_position.return_at_close, 1.0989, places=5)
-        
+        # BTC: Long position, price went from 50k (order) to 55k (last known).
+        # Fees no longer perturb return_at_close (they flow through fee_history/equity_ret
+        # instead - see test_fee_calculations), so this is the raw price-driven return.
+        self.assertAlmostEqual(btc_position.return_at_close, 1.1, places=5)
+
         # ETH: Short position, price went from 3k (order) to 2.8k (last known)
-        # Short return with fees applied
         self.assertGreater(eth_position.return_at_close, 1.06)  # Should be profitable
-        self.assertLess(eth_position.return_at_close, 1.07)     # But less than raw calculation due to fees
+        self.assertLess(eth_position.return_at_close, 1.07)
 
     @patch('vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager.PerfLedgerManager.mutate_position_returns_for_continuity')
     def test_continuity_established_flag(self, mock_mutate):

@@ -89,6 +89,7 @@ class TestPositionDashboardFrame(unittest.TestCase):
 
         self.assertNotIn("nv", frame)
         self.assertNotIn("nl", frame)
+        self.assertNotIn("nq", frame)
 
     def test_short_position_keeps_the_sign(self):
         """
@@ -107,6 +108,61 @@ class TestPositionDashboardFrame(unittest.TestCase):
 
         self.assertEqual(frame["nv"], -50_000.0)
         self.assertEqual(abs(frame["nv"]), 50_000.0)
+        self.assertEqual(frame["nq"], -2.0)
+
+
+    def test_emits_net_quantity_alongside_net_value(self):
+        """
+        `nq` is the engine's `net_quantity` — the size a fill actually left
+        the position with, in the pair's lot unit and signed like `nl`/`nv`.
+        API consumers confirm fill sizes from it; nothing else on the frame
+        carries it.
+        """
+        position = _position(
+            net_leverage=0.25,
+            net_quantity=2.0,
+            net_value=123456.78,
+        )
+
+        frame = position.to_dashboard(0, filled_orders={}, unfilled_orders={})
+
+        self.assertEqual(frame["nq"], 2.0)
+        self.assertEqual(frame["nv"], 123456.78)
+        self.assertEqual(frame["nl"], 0.25)
+
+    def test_net_quantity_travels_on_a_delta_frame_with_no_fills(self):
+        """
+        The regression this field exists to prevent: `fo` only carries fills
+        newer than `positions_time_ms`, so a client summing fill quantities on
+        a delta frame under-counts. `nq` is position state, not a fill list,
+        so it must be present even when the frame carries no fills at all.
+        """
+        position = _position(net_leverage=0.1, net_quantity=0.75, net_value=45_000.0)
+
+        frame = position.to_dashboard(
+            positions_time_ms=1_700_000_500_000, filled_orders={}, unfilled_orders={}
+        )
+
+        self.assertNotIn("fo", frame)
+        self.assertEqual(frame["nq"], 0.75)
+
+    def test_net_quantity_is_in_lot_units_for_forex(self):
+        """
+        Forex positions are held in lots (`lot_size` 100k): a 0.5-lot EURUSD
+        position reports `nq` 0.5, never 50_000. The unit is the same one an
+        order's `quantity` is submitted in, so a client can round-trip it.
+        """
+        position = _position(
+            trade_pair=TradePair.EURUSD,
+            net_leverage=0.55,
+            net_quantity=0.5,
+            net_value=55_000.0,
+        )
+
+        frame = position.to_dashboard(0, filled_orders={}, unfilled_orders={})
+
+        self.assertEqual(frame["nq"], 0.5)
+        self.assertEqual(position.trade_pair.lot_size, 100_000)
 
 
 if __name__ == "__main__":

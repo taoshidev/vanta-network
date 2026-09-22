@@ -182,7 +182,7 @@ class TestContractManagerIntegration(TestBase):
         self.contract_client.set_test_collateral_balance(self.MINER_HOTKEY, 1_000_000_000_000)
 
         # Query withdrawal (doesn't execute, just returns preview)
-        # With no positions, drawdown will be 1.0 (no drawdown) so slashed_amount will be 0
+        # With no positions, drawdown will be 0.0 (no drawdown) so slashed_amount will be 0
         result = self.contract_client.query_withdrawal_request(
             amount=500.0,
             miner_hotkey=self.MINER_HOTKEY
@@ -194,10 +194,10 @@ class TestContractManagerIntegration(TestBase):
         self.assertIn("slashed_amount", result)
         self.assertIn("withdrawal_amount", result)
 
-        # With no positions/drawdown, drawdown should be 1.0
-        self.assertEqual(result["drawdown"], 1.0)
+        # With no positions/drawdown, drawdown should be 0.0
+        self.assertEqual(result["drawdown"], 0.0)
 
-        # Verify withdrawal_amount = amount (no slashing when drawdown is 1.0)
+        # Verify withdrawal_amount = amount (no slashing when drawdown is 0.0)
         self.assertEqual(result["withdrawal_amount"], 500.0)
 
         # Verify new_balance = current_balance - amount
@@ -244,11 +244,11 @@ class TestContractManagerIntegration(TestBase):
         self.assertIn("slashed_amount", result)
         self.assertIn("drawdown", result)
 
-        # With no positions (default case), drawdown should be 1.0 (no drawdown)
-        self.assertEqual(result["drawdown"], 1.0, "Default drawdown is 1.0 with no positions")
+        # With no positions (default case), drawdown should be 0.0 (no drawdown)
+        self.assertEqual(result["drawdown"], 0.0, "Default drawdown is 0.0 with no positions")
 
         # Slashed amount should be 0 when there's no drawdown
-        self.assertEqual(result["slashed_amount"], 0.0, "No slashing when drawdown = 1.0")
+        self.assertEqual(result["slashed_amount"], 0.0, "No slashing when drawdown = 0.0")
 
     # ============================================================
     # QUERY WITHDRAWAL TESTS
@@ -278,8 +278,8 @@ class TestContractManagerIntegration(TestBase):
         self.assertIn("withdrawal_amount", result)
         self.assertIn("new_balance", result)
 
-        # With no positions, drawdown should be 1.0 (no drawdown)
-        self.assertEqual(result["drawdown"], 1.0)
+        # With no positions, drawdown should be 0.0 (no drawdown)
+        self.assertEqual(result["drawdown"], 0.0)
 
         # Verify slashed_amount is 0 with no drawdown
         self.assertEqual(result["slashed_amount"], 0.0)

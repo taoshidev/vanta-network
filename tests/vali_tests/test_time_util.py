@@ -109,6 +109,7 @@ class TestTimeUtil(TestBase):
 
             # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
             position = Position(
+                position_type=OrderType.LONG,
                 miner_hotkey=self.DEFAULT_MINER_HOTKEY,
                 position_uuid=self.DEFAULT_POSITION_UUID,
                 open_ms=self.DEFAULT_OPEN_MS,
@@ -141,6 +142,7 @@ class TestTimeUtil(TestBase):
 
         # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
         position = Position(
+            position_type=OrderType.LONG,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
@@ -149,8 +151,12 @@ class TestTimeUtil(TestBase):
             orders=[o1]
         )
         position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+        # Carry fees only start accruing at FEE_V6_TIME_MS, so a position opened before the
+        # cutoff starts accruing at the cutoff itself (04:08 UTC). Four hours later the next
+        # 8-hour crypto boundary (12:00 UTC) still hasn't been crossed.
+        start_carry_fee_accrual_ms = max(FEE_V6_TIME_MS, position.open_ms)
         n_intervals, time_until_next_interval_ms = TimeUtil.n_intervals_elapsed_crypto(
-            position.open_ms, t_ms
+            start_carry_fee_accrual_ms, t_ms
         )
         assert n_intervals == 0, f"n_intervals: {n_intervals}, time_until_next_interval_ms: {time_until_next_interval_ms}"
 
@@ -202,6 +208,7 @@ class TestTimeUtil(TestBase):
 
             # Create fresh Position with orders (avoid deepcopy to prevent RPC serialization issues)
             position = Position(
+                position_type=OrderType.LONG,
                 miner_hotkey=self.DEFAULT_MINER_HOTKEY,
                 position_uuid=self.DEFAULT_POSITION_UUID,
                 open_ms=self.DEFAULT_OPEN_MS,

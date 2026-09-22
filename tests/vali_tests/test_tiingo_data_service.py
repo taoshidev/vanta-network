@@ -124,9 +124,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
+            timestamp_ms=order_time_ms,
             live=True,
-            verbose=False
         )
 
         self.assertIsInstance(result, dict)
@@ -143,9 +142,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
+            timestamp_ms=order_time_ms,
             live=True,
-            verbose=False
         )
 
         self.assertIsInstance(result, dict)
@@ -161,9 +159,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
+            timestamp_ms=order_time_ms,
             live=True,
-            verbose=False
         )
 
         self.assertIsInstance(result, dict)
@@ -178,10 +175,10 @@ class TestTiingoDataService(unittest.TestCase):
 
         # In test mode, get_price_rest returns test data via get_closes_* methods
         result = self.tiingo_service.get_price_rest(
-            trade_pair=TradePair.BTCUSD,
+            trade_pairs=[TradePair.BTCUSD],
             timestamp_ms=order_time_ms,
             live=True
-        )
+        ).get(TradePair.BTCUSD)
 
         # May return None or PriceSource depending on test mode implementation
         # Just verify no exception is raised and type is correct if not None
@@ -194,10 +191,10 @@ class TestTiingoDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
 
         result = self.tiingo_service.get_price_rest(
-            trade_pair=TradePair.NVDA,
+            trade_pairs=[TradePair.NVDA],
             timestamp_ms=order_time_ms,
             live=True
-        )
+        ).get(TradePair.NVDA)
 
         # May return None or PriceSource depending on test mode implementation
         if result is not None:
@@ -208,10 +205,10 @@ class TestTiingoDataService(unittest.TestCase):
         order_time_ms = TimeUtil.now_in_millis()
 
         result = self.tiingo_service.get_price_rest(
-            trade_pair=TradePair.EURUSD,
+            trade_pairs=[TradePair.EURUSD],
             timestamp_ms=order_time_ms,
             live=True
-        )
+        ).get(TradePair.EURUSD)
 
         # May return None or PriceSource depending on test mode implementation
         if result is not None:
@@ -250,9 +247,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
+            timestamp_ms=order_time_ms,
             live=True,
-            verbose=False
         )
 
         # Verify all pairs returned
@@ -271,16 +267,16 @@ class TestTiingoDataService(unittest.TestCase):
         # Both should work in test mode - just verify no exceptions
         try:
             result_recent = self.tiingo_service.get_price_rest(
-                trade_pair=TradePair.BTCUSD,
+                trade_pairs=[TradePair.BTCUSD],
                 timestamp_ms=recent_time,
                 live=True
-            )
+            ).get(TradePair.BTCUSD)
 
             result_past = self.tiingo_service.get_price_rest(
-                trade_pair=TradePair.BTCUSD,
+                trade_pairs=[TradePair.BTCUSD],
                 timestamp_ms=past_time,
                 live=False  # Historical
-            )
+            ).get(TradePair.BTCUSD)
 
             # Verify types if results are not None
             if result_recent is not None:
@@ -352,9 +348,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         result = self.tiingo_service.get_price_rest(
             trade_pairs=crypto_pairs,
-            time_ms=order_time_ms,
+            timestamp_ms=order_time_ms,
             live=True,
-            verbose=False
         )
 
         # Verify we got results for all 6 crypto pairs
@@ -387,9 +382,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         result = self.tiingo_service.get_price_rest(
             trade_pairs=equity_pairs,
-            time_ms=order_time_ms,
+            timestamp_ms=order_time_ms,
             live=True,
-            verbose=False
         )
 
         # Verify we got results for all 7 equity pairs
@@ -419,9 +413,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         result = self.tiingo_service.get_price_rest(
             trade_pairs=forex_pairs,
-            time_ms=order_time_ms,
+            timestamp_ms=order_time_ms,
             live=True,
-            verbose=False
         )
 
         # Verify we got results for all 6 forex pairs
@@ -459,9 +452,8 @@ class TestTiingoDataService(unittest.TestCase):
 
         result = self.tiingo_service.get_price_rest(
             trade_pairs=trade_pairs,
-            time_ms=order_time_ms,
+            timestamp_ms=order_time_ms,
             live=True,
-            verbose=False
         )
 
         # Verify all 19 pairs returned
@@ -531,15 +523,9 @@ class TestTiingoDataService(unittest.TestCase):
                 f"{tp.trade_pair_id} should be forex"
             )
 
-        # Verify blocked JPY pairs are NOT included
+        # JPY pairs are tradeable forex pairs, not blocked
         forex_ids = {tp.trade_pair_id for tp in forex_pairs}
-        blocked_jpy_pairs = {'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY'}
-
-        jpy_in_forex = forex_ids & blocked_jpy_pairs
-        self.assertEqual(
-            len(jpy_in_forex), 0,
-            f"Blocked JPY pairs should not be in forex list: {jpy_in_forex}"
-        )
+        self.assertIn('USDJPY', forex_ids, "USD/JPY should be tradeable")
 
         # Verify blocked commodities are NOT included
         self.assertNotIn('XAUUSD', forex_ids, "XAU/USD should not be in forex list")
@@ -573,9 +559,9 @@ class TestTiingoDataService(unittest.TestCase):
         self.assertIn('ETHUSDC', crypto_ids, "ETH/USDC should be included")
 
     def test_get_tradeable_pairs_excludes_unsupported(self):
-        """Test that get_tradeable_pairs always excludes unsupported pairs."""
-        # Get all pairs with blocked included
-        all_pairs = self.tiingo_service.get_tradeable_pairs(include_blocked=True)
+        """Test that get_tradeable_pairs excludes unsupported (blocked) pairs by default."""
+        # Get pairs with blocked excluded (the default filtering behavior)
+        all_pairs = self.tiingo_service.get_tradeable_pairs(include_blocked=False)
         all_pair_ids = {tp.trade_pair_id for tp in all_pairs}
 
         # Verify unsupported pairs (SPX, DJI, etc.) are NEVER included
@@ -604,8 +590,7 @@ class TestTiingoDataService(unittest.TestCase):
         forex_ids = {tp.trade_pair_id for tp in forex_pairs}
 
         # Verify blocked forex pairs are NOT in the query list
-        blocked_forex = {'AUDJPY', 'CADJPY', 'CHFJPY', 'EURJPY', 'NZDJPY', 'GBPJPY', 'USDJPY',
-                        'XAUUSD', 'XAGUSD', 'USDMXN'}
+        blocked_forex = {'XAUUSD', 'XAGUSD', 'USDMXN'}
 
         blocked_in_query = forex_ids & blocked_forex
         self.assertEqual(

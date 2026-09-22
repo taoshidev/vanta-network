@@ -45,6 +45,7 @@ class OrderProcessingResult:
         result_dict: Result dictionary (used for LIMIT_CANCEL response)
         updated_position: Updated position (used for MARKET orders)
         should_track_uuid: Whether to add UUID to tracker (False for LIMIT_CANCEL)
+        binding_cap: Which limit shrank the order, when one did. None on a full fill.
     """
     execution_type: ExecutionType
     success: bool = True
@@ -52,6 +53,7 @@ class OrderProcessingResult:
     result_dict: Optional[dict] = None
     updated_position: Optional[Position] = None
     should_track_uuid: bool = True
+    binding_cap: Optional[str] = None
 
     @property
     def order_for_logging(self) -> Optional[Order]:
@@ -59,6 +61,10 @@ class OrderProcessingResult:
 
     def get_response_json(self) -> str:
         if self.order:
+            # An order that was sized down still succeeds, so the cap is the only signal the
+            # miner gets that they did not get the size they asked for.
+            if self.binding_cap:
+                return str({**self.order.to_python_dict(), 'binding_cap': self.binding_cap})
             return self.order.__str__()
         elif self.result_dict:
             return json.dumps(self.result_dict)
@@ -125,7 +131,7 @@ class OrderProcessor:
 
 
         # Asset class check (FLAT market orders bypass this)
-        if trade_pair is not None and order_type != OrderType.FLAT and execution_type not in (ExecutionType.MARKET, ExecutionType.FLAT_ALL):
+        if trade_pair is not None and order_type != OrderType.FLAT and execution_type != ExecutionType.FLAT_ALL:
             if not miner_account.asset_class:
                 msg = (
                     f"No asset class selected for hotkey [{hotkey}]. "
@@ -133,7 +139,8 @@ class OrderProcessor:
                     f"https://github.com/taoshidev/vanta-cli"
                 )
                 return False, msg, trade_pair
-            if not miner_account.asset_class.can_trade(trade_pair):
+            is_pro = bool(miner_account.miner_bucket and miner_account.miner_bucket.is_pro)
+            if not miner_account.asset_class.can_trade(trade_pair, is_pro):
                 msg = f"Selected asset class [{miner_account.asset_class}] cannot submit orders for trade pair [{trade_pair.trade_pair}]."
                 return False, msg, trade_pair
 
@@ -195,18 +202,30 @@ class OrderProcessor:
             return OrderProcessingResult(ExecutionType.MARKET)
 
         created_order, updated_position = result
-        if updated_position and updated_position.is_closed_position:
-            self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
+        binding_cap = getattr(result, 'binding_cap', None)
+        # POST-COMMIT side effects: the position write above is durable. A failure past this point
+        # must NOT propagate — the handler's except path treats any exception as "apply failed",
+        # releases the uuid claim, and invites the placer to resend, which would double-apply a
+        # committed order. Brackets/cancels are best-effort against a bouncing LimitOrderServer.
+        try:
+            if updated_position and updated_position.is_closed_position:
+                self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
 
-        if created_order and (updated_position and not updated_position.is_closed_position) and signal.bracket_orders:
-            created_order.bracket_orders = signal.bracket_orders
-            self.limit_order_client.create_sltp_order(hotkey, created_order)
+            if created_order and (updated_position and not updated_position.is_closed_position) and signal.bracket_orders:
+                created_order.bracket_orders = signal.bracket_orders
+                self.limit_order_client.create_sltp_order(hotkey, created_order)
+        except Exception as e:
+            logger.error(
+                f"[ORDER_PROCESSOR] {hotkey} {order_uuid} order COMMITTED but post-commit "
+                f"bracket/cancel side effect failed (order stands, brackets may be missing): {e}"
+            )
 
         return OrderProcessingResult(
             execution_type=ExecutionType.MARKET,
             order=created_order,
             updated_position=updated_position,
             should_track_uuid=True,
+            binding_cap=binding_cap,
         )
 
     def process_flat_all(
@@ -223,7 +242,14 @@ class OrderProcessor:
             close_all=close_all,
             now_ms=now_ms,
         )
-        self.process_limit_cancel(hotkey, None, "ALL", now_ms, ExecutionType.BRACKET)
+        # Post-commit: positions are closed above; a failed bracket sweep must not turn the
+        # committed close into an "apply failed" resend (see process_market_order).
+        try:
+            self.process_limit_cancel(hotkey, None, "ALL", now_ms, ExecutionType.BRACKET)
+        except Exception as e:
+            logger.error(
+                f"[ORDER_PROCESSOR] {hotkey} FLAT_ALL COMMITTED but post-commit bracket cancel failed: {e}"
+            )
         return OrderProcessingResult(execution_type=ExecutionType.FLAT_ALL, should_track_uuid=True)
 
 

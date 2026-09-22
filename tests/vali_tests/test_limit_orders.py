@@ -193,10 +193,9 @@ class TestLimitOrders(TestBase):
             position_uuid=f"pos_{TimeUtil.now_in_millis()}",
             open_ms=TimeUtil.now_in_millis(),
             trade_pair=trade_pair,
+            position_type=position_type or OrderType.LONG,
             account_size=1000.0  # Required for position validation
         )
-        if position_type:
-            position.position_type = position_type
         return position
 
     def get_orders_from_server(self, miner_hotkey, trade_pair):
@@ -418,8 +417,7 @@ class TestLimitOrders(TestBase):
             self.DEFAULT_MINER_HOTKEY
         )
 
-        self.assertEqual(result["status"], "deleted")
-        self.assertEqual(result["deleted_count"], 2)
+        self.assertEqual(result, 2)
 
         # Verify all deleted from memory
         total_orders = self.count_orders_in_server(self.DEFAULT_MINER_HOTKEY)
@@ -447,7 +445,7 @@ class TestLimitOrders(TestBase):
             self.DEFAULT_MINER_HOTKEY
         )
 
-        self.assertEqual(result["deleted_count"], 1)
+        self.assertEqual(result, 1)
 
         # Verify miner2's orders still exist
         miner2_orders = self.get_orders_from_server(miner2, self.DEFAULT_TRADE_PAIR)
@@ -669,16 +667,16 @@ class TestLimitOrders(TestBase):
 
         Uses real market_order_manager for true integration testing.
         """
+        self.DEFAULT_TRADE_PAIR = TradePair.NVDA
         # Setup position FIRST (required if order fills immediately during process_limit_order)
         position = self.create_test_position()
         self.position_client.save_miner_position(position)
 
-        # Create order with limit price that WON'T trigger immediately
-        # Use a price below current market (~50k for BTC) for LONG order
-        # This ensures even if price data exists, the order won't fill during processing
+        # Create order with limit price that WON'T trigger immediately.
+        # No price source is injected yet, so the order can't fill during processing.
         order = self.create_test_limit_order(
             order_type=OrderType.LONG,
-            limit_price=30000.0  # Well below current BTC price, won't trigger on LONG
+            limit_price=30000.0
         )
 
         # Process the limit order (won't fill immediately with price below market)
@@ -843,19 +841,13 @@ class TestLimitOrders(TestBase):
             order
         )
 
-        # Eliminate miner - use proper API method
+        # Eliminate miner - use proper API method (append_elimination_row cancels the
+        # miner's limit orders internally, so no separate cleanup call is needed)
         from vali_objects.utils.elimination.elimination_manager import EliminationReason
         self.elimination_client.append_elimination_row(
             self.DEFAULT_MINER_HOTKEY,
-            TimeUtil.now_in_millis(),
-            EliminationReason.MAX_TOTAL_DRAWDOWN.value
-        )
-
-        # Trigger cleanup for eliminated miner (deletes limit orders)
-        self.elimination_client.handle_eliminated_miner(
-            self.DEFAULT_MINER_HOTKEY,
-            trade_pair_to_price_source_dict={},
-            iteration_epoch=None
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
+            elimination_time_ms=TimeUtil.now_in_millis()
         )
 
         # Verify eliminated miner's orders are not accessible via orchestrator client
@@ -890,7 +882,11 @@ class TestLimitOrders(TestBase):
         self.assertEqual(bracket_order.take_profit, 51000.0)
         self.assertEqual(bracket_order.src, OrderSource.BRACKET_UNFILLED)
         self.assertEqual(bracket_order.order_type, OrderType.LONG)  # Same as parent
-        self.assertEqual(bracket_order.quantity, parent_order.quantity)  # Same quantity (0.5 BTC)
+        # A bracket entry with no size field closes the whole position. Sizing is deferred to
+        # fill time via bracket_pct (resolved against net_quantity) instead of copying the
+        # parent's quantity, so the size fields stay unset.
+        self.assertEqual(bracket_order.bracket_pct, 1.0)
+        self.assertIsNone(bracket_order.quantity)
         self.assertIsNone(bracket_order.leverage)  # Bracket orders have None leverage
 
     def test_create_bracket_order_with_only_sl(self):
@@ -1261,6 +1257,8 @@ class TestLimitOrders(TestBase):
         and interval enforcement. Instead, it directly injects orders into the server to test
         ONLY the check_and_fill_limit_orders() daemon's interval enforcement.
         """
+        self.DEFAULT_TRADE_PAIR = TradePair.NVDA
+
         # Setup position first (required for market_order_manager)
         position = self.create_test_position()
         self.position_client.save_miner_position(position)
@@ -1329,6 +1327,8 @@ class TestLimitOrders(TestBase):
         and interval enforcement. Instead, it directly injects orders into the server to test
         ONLY the check_and_fill_limit_orders() daemon's interval enforcement.
         """
+        self.DEFAULT_TRADE_PAIR = TradePair.NVDA
+
         miner2 = "miner2"
         self.metagraph_client.set_hotkeys([self.DEFAULT_MINER_HOTKEY, miner2])
 
@@ -1738,11 +1738,13 @@ class TestLimitOrders(TestBase):
         with self.assertRaises(Exception) as context:
             self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, parent_order)
 
-    def test_create_sltp_order_uses_quantity_from_parent(self):
+    def test_create_sltp_order_sizing_defaults_to_full_position(self):
         """
-        Test that bracket order quantity matches parent order quantity.
+        Test how a bracket order is sized off its parent's order quantity.
 
-        This ensures the bracket order closes the correct amount of the position.
+        A parent's SL/TP carries no size of its own, so the bracket closes the whole position
+        via bracket_pct=1.0 (resolved against net_quantity at fill time). An explicitly sized
+        bracket entry keeps the size it was given.
         """
         parent_order = self.create_filled_market_order(
             order_type=OrderType.LONG,
@@ -1757,7 +1759,27 @@ class TestLimitOrders(TestBase):
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
         bracket_orders = [o for o in orders if o.execution_type == ExecutionType.BRACKET]
         self.assertEqual(len(bracket_orders), 1)
-        self.assertEqual(bracket_orders[0].quantity, 0.5, "Bracket should use parent's quantity")
+        self.assertEqual(bracket_orders[0].bracket_pct, 1.0, "Bracket should close the full position")
+        self.assertIsNone(bracket_orders[0].quantity, "Unsized bracket must not copy the parent's quantity")
+
+        # An explicitly sized bracket entry keeps its own quantity.
+        sized_parent = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR,
+            order_uuid="sized_parent_order",
+            processed_ms=TimeUtil.now_in_millis(),
+            price=50000.0,
+            order_type=OrderType.LONG,
+            leverage=0.1,
+            execution_type=ExecutionType.MARKET,
+            bracket_orders=[{'quantity': 0.25, 'stop_loss': 49000.0, 'take_profit': 52000.0}],
+            src=OrderSource.ORGANIC
+        )
+        self.limit_order_client.create_sltp_order(self.DEFAULT_MINER_HOTKEY, sized_parent)
+
+        orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
+        sized_bracket = next(o for o in orders if o.order_uuid == "sized_parent_order-bracket-0")
+        self.assertEqual(sized_bracket.quantity, 0.25)
+        self.assertIsNone(sized_bracket.bracket_pct)
 
     def test_bracket_orders_field_multiple_brackets(self):
         """Test that bracket_orders field creates multiple bracket orders with correct UUIDs and properties"""

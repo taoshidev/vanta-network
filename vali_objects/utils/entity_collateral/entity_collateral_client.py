@@ -95,9 +95,12 @@ class EntityCollateralClient(RPCClientBase):
         Returns:
             Actual amount slashed in USD.
         """
-        return self._server.slash_on_realized_loss_rpc(
-            entity_hotkey, synthetic_hotkey, realized_loss
-        )
+        # fail-fast (retry=False): accumulates realized-loss that later drives an on-chain slash; a
+        # re-execution inflates the tracked loss and over-slashes. No production client caller today
+        # (defensive) — but if a future caller runs this as a POST-COMMIT side-effect, revisit:
+        # fail-fast would then propagate into that flow (cf. offset_collateral_cache, left auto-retry).
+        return self._invoke_rpc("slash_on_realized_loss_rpc",
+                                args=(entity_hotkey, synthetic_hotkey, realized_loss), retry=False)
 
     def try_slash_on_elimination(self, hotkey: str) -> float:
         """
@@ -167,17 +170,41 @@ class EntityCollateralClient(RPCClientBase):
         """
         return self._server.get_cumulative_slashed_rpc(synthetic_hotkey)
 
-    def get_max_slash(self, synthetic_hotkey: str) -> float:
+    def get_max_slash(self, synthetic_hotkey: str, bucket=None) -> float:
         """
         Get max slashable amount for a subaccount (account_balance * MDD%).
 
         Args:
             synthetic_hotkey: The subaccount's synthetic hotkey.
+            bucket: The subaccount's bucket; pass it when already known so the bucket's own
+                drawdown threshold is used without an extra lookup.
 
         Returns:
             Max slash amount in USD.
         """
-        return self._server.get_max_slash_rpc(synthetic_hotkey)
+        return self._server.get_max_slash_rpc(synthetic_hotkey, bucket)
+
+    def compute_subaccount_margin_requirement(self, synthetic_hotkey: str, bucket=None) -> float:
+        """
+        Compute a single subaccount's margin requirement.
+
+        Args:
+            synthetic_hotkey: The subaccount's synthetic hotkey.
+            bucket: The subaccount's bucket, when already known.
+
+        Returns:
+            Margin requirement in USD.
+        """
+        return self._server.compute_subaccount_margin_requirement_rpc(synthetic_hotkey, bucket)
+
+    def get_entity_collateral_headroom(self, entity_hotkey: str) -> Optional[float]:
+        """
+        Get an entity's spare collateral in theta (deposited minus required).
+
+        Returns:
+            Headroom in theta, or None if the entity's balance is unknown.
+        """
+        return self._server.get_entity_collateral_headroom_rpc(entity_hotkey)
 
     # ==================== Utility ====================
 

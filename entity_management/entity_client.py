@@ -25,6 +25,8 @@ Usage:
 """
 from typing import Optional, Tuple, Dict, List
 
+from vali_objects.enums.miner_bucket_enum import MinerBucket
+
 from template.protocol import SubaccountRegistration, EntityEndpointUpdate
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -94,6 +96,7 @@ class EntityClient(RPCClientBase):
         asset_class: str,
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
+        leverage_tier: Optional[int] = None,
         client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
@@ -105,6 +108,7 @@ class EntityClient(RPCClientBase):
             asset_class: Asset class selection
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
+            leverage_tier: Standard leverage tier 1 to 3; None = tier 0 (max of legacy limits and Base)
             client_ref: Optional idempotency key; the returned dict carries
                 "duplicate": True when it matched a prior creation.
 
@@ -114,10 +118,20 @@ class EntityClient(RPCClientBase):
         # Forward client_ref only when present so an older EntityServer whose
         # create_subaccount_rpc has no client_ref kwarg still receives a
         # byte-identical call (no unexpected-keyword TypeError).
-        kwargs = dict(collateral_exempt=collateral_exempt, drawdown_criteria=drawdown_criteria)
+        kwargs = {"collateral_exempt": collateral_exempt, "drawdown_criteria": drawdown_criteria,
+                  "leverage_tier": leverage_tier}
         if client_ref is not None:
             kwargs["client_ref"] = client_ref
-        return self._server.create_subaccount_rpc(entity_hotkey, account_size, asset_class, **kwargs)
+        # fail-fast: reserves collateral + mints a subaccount; a re-execution creates a DUPLICATE
+        # subaccount (fresh id) and double-reserves the fee — never auto-retry. client_ref makes a
+        # *caller-driven* retry idempotent, but it is optional and callers may omit it, so the
+        # transport still refuses to re-fire a lost ACK on its own.
+        return self._invoke_rpc(
+            "create_subaccount_rpc",
+            args=(entity_hotkey, account_size, asset_class),
+            kwargs=kwargs,
+            retry=False,
+        )
 
     def create_hl_subaccount(
         self,
@@ -143,6 +157,10 @@ class EntityClient(RPCClientBase):
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
+        # Stays on the auto-retrying self._server path: this wrapper already guards against a
+        # retried lost ACK (check-before-slash / write-after-slash-completes), so a re-execution
+        # safely no-ops. Forward client_ref only when present, so an older EntityServer whose
+        # create_hl_subaccount_rpc has no client_ref kwarg still receives a byte-identical call.
         kwargs = dict(asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address)
         if client_ref is not None:
             kwargs["client_ref"] = client_ref
@@ -181,6 +199,33 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_subaccount_info_for_synthetic_rpc(synthetic_hotkey)
 
+    def apply_bucket_account_size(
+        self,
+        synthetic_hotkey: str,
+        target_bucket: MinerBucket,
+        pro_account_size: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """Point a subaccount at the account size its target bucket trades."""
+        return self._server.apply_bucket_account_size_rpc(synthetic_hotkey, target_bucket, pro_account_size)
+
+    def snapshot_bucket_account_size(self, synthetic_hotkey: str) -> Optional[dict]:
+        """The sizing fields apply_bucket_account_size writes, read before it runs."""
+        return self._server.snapshot_bucket_account_size_rpc(synthetic_hotkey)
+
+    def restore_bucket_account_size(self, synthetic_hotkey: str, snapshot: dict) -> Tuple[bool, str]:
+        """Undo an apply_bucket_account_size whose bucket move then failed."""
+        return self._server.restore_bucket_account_size_rpc(synthetic_hotkey, snapshot)
+
+    def get_payout_scale(self, synthetic_hotkey: str) -> float:
+        """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
+        return self._server.get_payout_scale_rpc(synthetic_hotkey)
+
+    def settle_wound_down_segment(
+        self, synthetic_hotkey: str, from_bucket: str, promotion_ms: int
+    ) -> bool:
+        """Settle this payout week's earnings before an account switch wipes the account."""
+        return self._server.settle_wound_down_segment_rpc(synthetic_hotkey, from_bucket, promotion_ms)
+
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
         """
         Get lightweight limits data for an HL subaccount.
@@ -192,6 +237,12 @@ class EntityClient(RPCClientBase):
             Dict with {account_size, asset_class, challenge_bucket} or None
         """
         return self._server.get_hl_subaccount_limits_data_rpc(hl_address)
+
+    def update_subaccount_leverage_tier(
+        self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
+    ) -> Tuple[bool, str]:
+        """Change a standard subaccount's leverage tier (1 to 3). Returns (success, message)."""
+        return self._server.update_subaccount_leverage_tier_rpc(entity_hotkey, synthetic_hotkey, leverage_tier)
 
     def eliminate_subaccount(
         self,
@@ -240,6 +291,10 @@ class EntityClient(RPCClientBase):
     def update_subaccount_drawdown_criteria(self, synthetic_hotkey: str, criteria: str) -> Tuple[bool, str]:
         """Update drawdown_criteria for a subaccount in EntityManager."""
         return self._server.update_subaccount_drawdown_criteria_rpc(synthetic_hotkey, criteria)
+
+    def update_subaccount_account_size(self, synthetic_hotkey: str, account_size: float) -> Tuple[bool, str]:
+        """Directly set a standard subaccount's live account size. Returns (success, message)."""
+        return self._server.update_subaccount_account_size_rpc(synthetic_hotkey, account_size)
 
     # ==================== Query Methods ====================
 
@@ -352,6 +407,23 @@ class EntityClient(RPCClientBase):
             True if updated successfully, False if not found.
         """
         return self._server.set_reg_fee_time_rpc(entity_hotkey, subaccount_id, time)
+
+    def set_pro_fee_pending(self, entity_hotkey: str, subaccount_id: int, theta: float) -> bool:
+        """
+        Set the unslashed portion of a subaccount's pro promotion fee.
+
+        Pass 0.0 once the fee has been slashed on-chain, or the original amount to restore the
+        claim when an on-chain slash fails.
+
+        Args:
+            entity_hotkey: The VANTA_ENTITY_HOTKEY
+            subaccount_id: The subaccount ID
+            theta: Theta still owed for the pro promotion.
+
+        Returns:
+            True if updated successfully, False if not found.
+        """
+        return self._server.set_pro_fee_pending_rpc(entity_hotkey, subaccount_id, theta)
 
     def calculate_subaccount_payout(
         self,
