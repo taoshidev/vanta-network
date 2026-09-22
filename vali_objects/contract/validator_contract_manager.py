@@ -468,7 +468,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 "drawdown": drawdown,
                 "slashed_amount": slashed_amount,
                 "withdrawal_amount": withdrawal_amount,
-                "new_balance": new_balance
+                "new_balance": new_balance,
+                "current_balance": theta_current_balance,
             }
             logger.info(f"{miner_hotkey} Query withdrawal request results: {result}")
             return result
@@ -494,7 +495,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             Dict[str, Any]: Result of withdrawal operation
         """
         try:
-            logger.info("Received withdrawal request")
+            logger.info(f"Received withdrawal request from {miner_hotkey} for {amount} theta")
 
             query_result = self.query_withdrawal_request(amount, miner_hotkey)
             if not query_result["successfully_processed"]:
@@ -506,7 +507,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             logger.info(
                 f"Processing withdrawal request from {miner_hotkey} for {amount} Theta. Current drawdown: {drawdown*100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
             if slashed_amount > 0:
-                self.slash_miner_collateral(miner_hotkey, slashed_amount)
+                self.slash_miner_collateral(miner_hotkey, slashed_amount, current_balance_theta=query_result["current_balance"])
 
             owner_address = ValiUtils.get_secret("collateral_owner_address")
             owner_private_key = ValiUtils.get_secret("collateral_owner_private_key")
@@ -543,7 +544,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             returned_theta = self.to_theta(withdrawn_balance.rao)
             msg = f"Withdrawal successful: {returned_theta} Theta withdrawn for {miner_hotkey}, returned to {miner_coldkey}"
             logger.info(msg)
-            self._set_miner_account_size(miner_hotkey, TimeUtil.now_in_millis())
+            self._set_miner_account_size(
+                miner_hotkey, TimeUtil.now_in_millis(), current_balance_theta=query_result["new_balance"]
+            )
             self._entity_collateral_client.offset_collateral_cache(miner_hotkey, -returned_theta)
             return {
                 "successfully_processed": True,
@@ -583,14 +586,16 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return False
 
         slash_amount = min(current_balance_theta, self.max_theta) * slash_proportion
-        return self.slash_miner_collateral(miner_hotkey, slash_amount)
+        return self.slash_miner_collateral(miner_hotkey, slash_amount, current_balance_theta=current_balance_theta)
 
-    def slash_miner_collateral(self, miner_hotkey: str, slash_amount: float) -> bool:
+    def slash_miner_collateral(self, miner_hotkey: str, slash_amount: float, current_balance_theta: Optional[float] = None) -> bool:
         """
         Slash miner's collateral by a raw theta amount
 
         Args:
             miner_hotkey: miner hotkey to slash from
+            slash_amount: amount in theta to slash
+            current_balance_theta: optional pre-fetched balance; fetched fresh if not provided
         """
         if not self.is_mothership:
             return False
@@ -599,7 +604,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             logger.error(f"Invalid collateral slash amount: {slash_amount}")
             return False
 
-        current_balance_theta = self.get_miner_collateral_balance(miner_hotkey)
+        if current_balance_theta is None:
+            current_balance_theta = self.get_miner_collateral_balance(miner_hotkey)
+
         if current_balance_theta is None or current_balance_theta <= 0:
             logger.info(f"No slashing available for {miner_hotkey}, balance is {current_balance_theta}")
             return False
@@ -698,7 +705,13 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             logger.error(f"Failed to get slashed collateral: {e}")
             return 0
 
-    def _set_miner_account_size(self, hotkey: str, timestamp_ms: int | None = None, account_size: float | None = None) -> bool:
+    def _set_miner_account_size(
+        self,
+        hotkey: str,
+        timestamp_ms: int | None = None,
+        account_size: float | None = None,
+        current_balance_theta: float | None = None,
+    ) -> bool:
         """
         Set the account size for a miner by fetching collateral balance and updating via MinerAccountClient.
 
@@ -706,16 +719,20 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             hotkey: Miner's hotkey (SS58 address)
             timestamp_ms: Timestamp for the record (defaults to now)
             account_size: Optional explicit account size in USD. If not provided, calculated from collateral balance.
+            current_balance_theta: Optional pre-known theta balance; ignored if account_size is provided.
 
         Returns:
             bool: True if successful, False otherwise
         """
         if account_size is None:
-            # Get collateral balance outside lock (external RPC call)
-            collateral_balance = self.get_miner_collateral_balance(hotkey)
-            if collateral_balance is None:
-                logger.warning(f"Could not retrieve collateral balance for {hotkey}")
-                return False
+            if current_balance_theta is not None:
+                collateral_balance = current_balance_theta
+            else:
+                # Get collateral balance outside lock (external RPC call)
+                collateral_balance = self.get_miner_collateral_balance(hotkey)
+                if collateral_balance is None:
+                    logger.warning(f"Could not retrieve collateral balance for {hotkey}")
+                    return False
         else:
             # Subaccount miner
             cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
