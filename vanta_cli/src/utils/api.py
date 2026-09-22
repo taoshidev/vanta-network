@@ -1,9 +1,8 @@
 import json
 import requests
-import importlib.metadata
 from typing import Dict, Any, Optional
 from rich.console import Console
-from vanta_cli.src.config import VANTA_API_BASE_URL_TESTNET, VANTA_API_BASE_URL_MAINNET
+from vanta_cli.src.config import VANTA_API_BASE_URL_TESTNET, VANTA_API_BASE_URL_MAINNET, VANTA_CLI_VERSION
 
 console = Console()
 
@@ -31,11 +30,7 @@ def make_api_request(
     try:
         # Inject Vanta CLI version into payload for tracking
         if payload is not None:
-            try:
-                vanta_cli_version = importlib.metadata.version("vanta-cli")
-            except importlib.metadata.PackageNotFoundError:
-                vanta_cli_version = "0.0.0"
-            payload["version"] = vanta_cli_version
+            payload["version"] = VANTA_CLI_VERSION
 
         if dev_mode:
             console.print(f"[cyan]Making {method} request to: {url}[/cyan]")

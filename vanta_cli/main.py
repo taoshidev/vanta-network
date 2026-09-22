@@ -11,6 +11,7 @@ from bittensor_cli.src.bittensor.utils import (
 )
 from rich.tree import Tree
 import typer
+from vanta_cli.src.config import VANTA_CLI_VERSION
 from vanta_cli.src.commands.collateral import (
     list as list_collateral,
     deposit as deposit_collateral,
@@ -35,7 +36,7 @@ def vanta_version_callback(value: bool) -> None:
     Prints the current version
     """
     if value:
-        typer.echo(f"Vanta CLI version: 3.1.0")
+        typer.echo(f"Vanta CLI version: {VANTA_CLI_VERSION}")
         version_callback(value)
         raise typer.Exit()
 
