@@ -883,6 +883,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
+            subaccount = subaccount.model_copy()
             subaccount.standard_account_size = standard_account_size
             subaccount.pro_account_size = pro_account_size
             subaccount.account_type = account_type
@@ -1092,6 +1093,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
+            subaccount = subaccount.model_copy()
             subaccount.account_size = previous_account_size
             subaccount.standard_account_size = snapshot.get("standard_account_size")
             subaccount.pro_account_size = snapshot.get("pro_account_size")
@@ -2771,6 +2773,7 @@ class EntityManager(ValidatorBroadcastBase):
                 if subaccount_id in entity_data.subaccounts:
                     existing_sub = entity_data.subaccounts[subaccount_id]
                     if existing_sub.subaccount_uuid == subaccount_uuid:
+                        existing_sub = existing_sub.model_copy()
                         changed = False
                         # Update status if changed
                         if existing_sub.status != status:
@@ -2833,6 +2836,7 @@ class EntityManager(ValidatorBroadcastBase):
                                 changed = True
                             self._push_leverage_tiers({synthetic_hotkey: new_tier})
                         if changed:
+                            entity_data.subaccounts[subaccount_id] = existing_sub
                             self._write_entities_from_memory_to_disk()
                         else:
                             logger.debug(
