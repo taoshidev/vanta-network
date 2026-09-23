@@ -22,7 +22,6 @@ from typing import List
 from shared_objects.rpc.common_data_client import CommonDataClient
 
 from shared_objects.rpc.rpc_server_base import RPCServerBase
-from shared_objects.sn8_multiprocessing import ParallelizationMode
 from time_util.time_util import TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -49,7 +48,6 @@ class PerfLedgerServer(RPCServerBase):
         running_unit_tests: bool = False,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
         is_backtesting: bool = False,
-        parallel_mode: ParallelizationMode = ParallelizationMode.SERIAL
     ):
         """
         Initialize PerfLedgerServer.
@@ -83,7 +81,6 @@ class PerfLedgerServer(RPCServerBase):
             running_unit_tests=running_unit_tests,
             enable_rss=not (running_unit_tests or is_backtesting),
             is_backtesting=is_backtesting,
-            parallel_mode=parallel_mode
         )
 
         logger.info("[PERFLEDGER_SERVER] PerfLedgerManager initialized")
@@ -318,31 +315,6 @@ class PerfLedgerServer(RPCServerBase):
             )
         else:
             self._manager.perf_ledger_hks_to_invalidate[hotkey] = timestamp_ms
-
-    def get_bypass_values_if_applicable_rpc(
-        self,
-        ledger: PerfLedger,
-        trade_pair: str,
-        tp_status: str,
-        tp_return: float,
-        tp_id_to_realtime_position_to_pop: dict
-    ) -> float:
-        """
-        Test-only RPC method to get bypass values if applicable.
-
-        Args:
-            ledger: PerfLedger instance
-            trade_pair: Trade pair identifier
-            tp_status: TradePairReturnStatus value
-            tp_return: Trade pair return value
-            tp_id_to_realtime_position_to_pop: Dict of trade pair id to position that just closed
-
-        Returns:
-            Return value to pass to update_pl
-        """
-        return self._manager.get_bypass_values_if_applicable(
-            ledger, trade_pair, tp_status, tp_return, tp_id_to_realtime_position_to_pop
-        )
 
     # ==================== Direct Access (for backward compatibility in tests) ====================
 

@@ -971,9 +971,7 @@ class PenaltyLedgerManager:
                             # Create a temporary ledger with only checkpoints up to current time
                             temp_ledger = PerfLedger(
                                 initialization_time_ms=portfolio_ledger.initialization_time_ms,
-                                max_return=portfolio_ledger.max_return,
                                 target_cp_duration_ms=portfolio_ledger.target_cp_duration_ms,
-                                target_ledger_window_ms=portfolio_ledger.target_ledger_window_ms,
                                 cps=[cp for cp in portfolio_ledger.cps if cp.last_update_ms <= checkpoint_ms],
                             )
                             if penalty_config.input_type == PenaltyInputType.LEDGER:

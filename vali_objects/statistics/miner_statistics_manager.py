@@ -301,8 +301,8 @@ class MinerStatisticsManager:
         total_volume = sum(abs(o.value) for pos in miner_positions for o in pos.orders if o.value is not None)
 
         # Engagement: checkpoints
-        n_checkpoints = len([cp for cp in miner_cps if cp.open_ms > 0])
-        checkpoint_durations = sum(cp.open_ms for cp in miner_cps)
+        n_checkpoints = len([cp for cp in miner_cps if cp.accum_ms > 0])
+        checkpoint_durations = sum(cp.accum_ms for cp in miner_cps)
 
         # Minimum days boolean
         meets_min_days = (len(miner_returns) >= ValiConfig.STATISTICAL_CONFIDENCE_MINIMUM_N_CEIL)

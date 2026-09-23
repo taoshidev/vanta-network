@@ -216,31 +216,6 @@ class PerfLedgerClient(RPCClientBase):
                 del hks_to_invalidate[hotkey]
                 self._server.set_perf_ledger_hks_to_invalidate_rpc(hks_to_invalidate)
 
-    def get_bypass_values_if_applicable(
-        self,
-        ledger: PerfLedger,
-        trade_pair: str,
-        tp_status: str,
-        tp_return: float,
-        tp_id_to_realtime_position_to_pop: dict
-    ) -> float:
-        """
-        Test-only method to get bypass values if applicable.
-
-        Args:
-            ledger: PerfLedger instance
-            trade_pair: Trade pair identifier
-            tp_status: TradePairReturnStatus value
-            tp_return: Trade pair return value
-            tp_id_to_realtime_position_to_pop: Dict of trade pair id to position that just closed
-
-        Returns:
-            Return value to pass to update_pl
-        """
-        return self._server.get_bypass_values_if_applicable_rpc(
-            ledger, trade_pair, tp_status, tp_return, tp_id_to_realtime_position_to_pop
-        )
-
     def health_check(self) -> dict:
         """Check server health."""
         return self._server.health_check_rpc()

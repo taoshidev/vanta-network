@@ -67,7 +67,7 @@ class PositionFilter:
             position_type=position.position_type,
             is_closed_position=position.is_closed_position and position.close_ms and position.close_ms <= cutoff_date_ms,
         )
-        filtered_position.rebuild_position_with_updated_orders(live_price_fetcher)
+        filtered_position.rebuild_position_with_updated_orders()
         return filtered_position, "kept"
 
     @staticmethod

@@ -17,6 +17,16 @@ class LedgerUtils:
     forex_holiday_calendar = ForexHolidayCalendar()
 
     @staticmethod
+    def equity_drawdowns(ledger: PerfLedger) -> list[float]:
+        """
+        Drawdown at each checkpoint as equity / running peak equity (1.0 = at the peak), with the
+        peak starting at the initial equity of 1.0.
+        """
+        if not ledger or not ledger.cps:
+            return []
+        return [drawdown for _, drawdown in ledger.equity_peaks()]
+
+    @staticmethod
     def daily_returns(ledger: PerfLedger) -> list[float]:
         """
         Calculate daily returns from performance checkpoints, only including full days
@@ -74,15 +84,15 @@ class LedgerUtils:
                 daily_cps[running_date] = cp
 
         ans = {}
-        prev_day_end_value = 1.0  # First day begins with portfolio value of 1
-        
+        prev_day_end_value = 1.0  # First day begins with equity of 1
+
         # Iterating in chronological order since python dicts are sorted by insertion order
         for date, cp in daily_cps.items():
             # For day 'date':
-            # - begin_value = portfolio value at beginning of day (00:00:00)
-            # - end_value = portfolio value at end of day (next day 00:00:00)
+            # - begin_value = equity at beginning of day (00:00:00)
+            # - end_value = equity at end of day (next day 00:00:00)
             begin_value = prev_day_end_value
-            end_value = cp.prev_portfolio_ret
+            end_value = cp.equity_ret
             
             try:
                 if return_type == 'log':
@@ -141,11 +151,24 @@ class LedgerUtils:
             dict[date, float] - dictionary mapping dates to daily log returns
         """
         complete_days = LedgerUtils._group_checkpoints_by_complete_days(ledger)
-        
+        if not complete_days:
+            return {}
+
+        # Equity at the start of each checkpoint is the equity at the end of the one before it.
+        # Ledgers begin at the miner's first order with equity 1.0.
+        start_equity = {}
+        prev_equity = 1.0
+        for cp in ledger.cps:
+            start_equity[id(cp)] = prev_equity
+            prev_equity = cp.equity_ret
+
         date_return_map = {}
         for running_date, day_checkpoints in sorted(complete_days.items()):
-            daily_return = sum(cp.gain + cp.loss for cp in day_checkpoints)
-            date_return_map[running_date] = daily_return
+            begin_value = start_equity[id(day_checkpoints[0])]
+            end_value = day_checkpoints[-1].equity_ret
+            if begin_value <= 0 or end_value <= 0:
+                continue
+            date_return_map[running_date] = math.log(end_value / begin_value)
 
         return date_return_map
 
@@ -313,14 +336,7 @@ class LedgerUtils:
         Returns:
             list[float]: List of drawdown values from all checkpoints
         """
-        if not ledger or not ledger.cps:
-            return []
-
-        drawdowns = []
-        for cp in ledger.cps:
-            drawdowns.append(cp.mdd)
-
-        return drawdowns
+        return LedgerUtils.equity_drawdowns(ledger)
 
     @staticmethod
     def daily_return_percentage(ledger: PerfLedger) -> list[float]:
@@ -525,8 +541,7 @@ class LedgerUtils:
             return 0
 
         # Compute the drawdown of the checkpoints
-        drawdowns = [checkpoint.mdd for checkpoint in checkpoints]
-        effective_drawdown = np.min(drawdowns)
+        effective_drawdown = np.min(LedgerUtils.equity_drawdowns(ledger))
         final_drawdown = np.clip(effective_drawdown, 0, 1.0)
 
         return final_drawdown
@@ -578,15 +593,10 @@ class LedgerUtils:
         ledger_dict = ledger.to_dict()
         ledger_copy = copy.deepcopy(ledger_dict)
 
-        # for miner, miner_ledger in ledger_copy.items():
-        return_overall = 1.0
-        if len(ledger_copy['cps']) > 0:
-            for cp in ledger_copy['cps']:
-                return_value = math.exp(cp['gain'] + cp['loss'])
-                return_overall *= return_value
-                cp['overall_returns'] = return_overall
-
-            ledger_copy = PerfLedger.from_dict(ledger_copy)
+        cps_with_returns = ledger_copy['cps']
+        ledger_copy = PerfLedger.from_dict(ledger_copy)
+        for cp, cp_dict in zip(ledger_copy.cps, cps_with_returns):
+            cp.overall_returns = cp_dict['equity_ret']
 
         return ledger_copy
 

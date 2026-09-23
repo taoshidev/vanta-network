@@ -164,7 +164,7 @@ class CoreOutputsManager:
             elif len(filtered_orders):
                 p["orders"] = filtered_orders
                 position = Position(**p)
-                position.rebuild_position_with_updated_orders(self.live_price_client)
+                position.rebuild_position_with_updated_orders()
                 return position.to_dict()
             else:
                 # Mo orders left. erase position

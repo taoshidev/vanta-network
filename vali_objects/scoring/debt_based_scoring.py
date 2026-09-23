@@ -239,11 +239,11 @@ class DebtBasedScoring:
         NOTE: realized_pnl and unrealized_pnl are in USD, per-checkpoint values (NOT cumulative)
 
         Formula:
-        - Track cumulative_realized = running sum of realized_pnl across checkpoints
-        - Track realized_hwm = highest cumulative_realized seen so far
-        - For each checkpoint where cumulative_realized > realized_hwm:
-            realized_component += (cumulative_realized - realized_hwm) * cp.total_penalty
-            realized_hwm = cumulative_realized
+        - Track net_realized = running sum of (realized_pnl - fees_usd) across checkpoints
+        - Track realized_hwm = highest net_realized seen so far
+        - For each checkpoint where net_realized > realized_hwm:
+            realized_component += (net_realized - realized_hwm) * cp.total_penalty
+            realized_hwm = net_realized
         - unrealized_component = min(0.0, last_cp.unrealized_pnl) * last_cp.total_penalty
         - payout = realized_component + unrealized_component
 
@@ -257,13 +257,12 @@ class DebtBasedScoring:
             return 0.0
 
         # HWM-gated realized component: only pay the delta above prior cumulative peak
-        cumulative_realized = 0.0
+        net_realized = 0.0
         realized_hwm = 0.0
         realized_component = 0.0
 
         for cp in checkpoints:
-            cumulative_realized += cp.realized_pnl
-            net_realized = cumulative_realized - cp.cumulative_fees_usd
+            net_realized += cp.realized_pnl - cp.fees_usd
             if net_realized > realized_hwm:
                 delta = net_realized - realized_hwm
                 realized_component += delta * cp.total_penalty
@@ -1002,13 +1001,12 @@ class DebtBasedScoring:
 
         # HWM-gated realized component: only pay the delta above prior cumulative peak
         # Each checkpoint has its own PnL (for that 12-hour period) and its own penalty
-        cumulative_realized = 0.0
+        net_realized = 0.0
         realized_hwm = 0.0
         penalty_adjusted_pnl = 0.0
 
         for cp in relevant_checkpoints:
-            cumulative_realized += cp.realized_pnl
-            net_realized = cumulative_realized - cp.cumulative_fees_usd
+            net_realized += cp.realized_pnl - cp.fees_usd
             if net_realized > realized_hwm:
                 delta = net_realized - realized_hwm
                 penalty_adjusted_pnl += delta * cp.total_penalty

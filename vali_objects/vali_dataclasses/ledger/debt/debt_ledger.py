@@ -129,13 +129,14 @@ class DebtCheckpoint:
         alpha_balance_snapshot: ALPHA balance at checkpoint end (for validation)
 
         # Performance Data (from PerfLedger)
-        # Note: Sourced from PerfCheckpoint attributes - some have different names:
-        #   portfolio_return <- gain, max_drawdown <- mdd, max_portfolio_value <- mpv
-        portfolio_return: Current portfolio return multiplier (1.0 = break-even)
-        realized_pnl: Net realized PnL during this checkpoint period (NOT cumulative across checkpoints)
-        unrealized_pnl: Net unrealized PnL during this checkpoint period (NOT cumulative across checkpoints)
-        max_drawdown: Maximum drawdown (worst loss from peak, cumulative)
-        max_portfolio_value: Maximum portfolio value achieved (cumulative)
+        # Note: portfolio_return, max_drawdown and max_portfolio_value are derived from the
+        # PerfLedger equity curve (equity_ret)
+        portfolio_return: Equity return at checkpoint end (1.0 = break-even)
+        realized_pnl: Realized PnL during this checkpoint period (NOT cumulative across checkpoints)
+        unrealized_pnl: Unrealized PnL at checkpoint end
+        fees_usd: Fees charged during this checkpoint period (NOT cumulative across checkpoints)
+        max_drawdown: Equity / peak equity at checkpoint end (1.0 = at the peak)
+        max_portfolio_value: Peak equity return reached so far (cumulative)
         open_ms: Time with open positions during this checkpoint (milliseconds)
         accum_ms: Time duration of this checkpoint (milliseconds)
         n_updates: Number of performance updates during this checkpoint
@@ -168,7 +169,7 @@ class DebtCheckpoint:
     portfolio_return: float = 1.0
     realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
-    cumulative_fees_usd: float = 0.0
+    fees_usd: float = 0.0
     max_drawdown: float = 1.0
     max_portfolio_value: float = 0.0
     open_ms: int = 0
@@ -226,7 +227,7 @@ class DebtCheckpoint:
                 'portfolio_return': self.portfolio_return,
                 'realized_pnl': self.realized_pnl,
                 'unrealized_pnl': self.unrealized_pnl,
-                'cumulative_fees_usd': self.cumulative_fees_usd,
+                'fees_usd': self.fees_usd,
                 'max_drawdown': self.max_drawdown,
                 'max_portfolio_value': self.max_portfolio_value,
                 'open_ms': self.open_ms,
@@ -408,22 +409,6 @@ class DebtLedger:
                 boundaries.append(self.checkpoints[index - 1].timestamp_ms)
             previous_bucket = bucket
         return boundaries
-
-    def fee_baseline_at_first_earning(self) -> float:
-        """`cumulative_fees_usd` as of the checkpoint *before* the first earning one.
-
-        `cumulative_fees_usd` runs from ledger inception while realized PnL is only accumulated
-        from the first earning checkpoint onward. Subtracting the raw cumulative figure would
-        charge a pro challenge's fees against the funded account's first earnings. Fees inside the
-        first earning checkpoint's own window do count, so the baseline is the *previous*
-        checkpoint's total.
-        """
-        baseline = 0.0
-        for cp in self.checkpoints:
-            if self._bucket_from_status(cp.challenge_period_status).is_subaccount_earning:
-                return baseline
-            baseline = cp.cumulative_fees_usd
-        return baseline
 
     def weekly_payout_context(
         self, payout_scale: float = 1.0, sealed: Optional[dict] = None
@@ -611,6 +596,7 @@ class DebtLedger:
             Reconstructed DebtLedger
         """
         checkpoints = []
+        prev_cumulative_fees = 0.0
         for cp_dict in data.get('checkpoints', []):
             # Extract nested data from the structured format
             if 'emissions' in cp_dict:
@@ -633,7 +619,7 @@ class DebtLedger:
                     portfolio_return=performance.get('portfolio_return', 1.0),
                     realized_pnl=performance.get('realized_pnl', 0.0),
                     unrealized_pnl=performance.get('unrealized_pnl', 0.0),
-                    cumulative_fees_usd=performance.get('cumulative_fees_usd', 0.0),
+                    fees_usd=DebtLedger._fees_from_dict(performance, prev_cumulative_fees),
                     max_drawdown=performance.get('max_drawdown', 1.0),
                     max_portfolio_value=performance.get('max_portfolio_value', 0.0),
                     open_ms=performance.get('open_ms', 0),
@@ -664,7 +650,7 @@ class DebtLedger:
                     portfolio_return=cp_dict.get('portfolio_return', 1.0),
                     realized_pnl=cp_dict.get('realized_pnl', 0.0),
                     unrealized_pnl=cp_dict.get('unrealized_pnl', 0.0),
-                    cumulative_fees_usd=cp_dict.get('cumulative_fees_usd', 0.0),
+                    fees_usd=DebtLedger._fees_from_dict(cp_dict, prev_cumulative_fees),
                     max_drawdown=cp_dict.get('max_drawdown', 1.0),
                     max_portfolio_value=cp_dict.get('max_portfolio_value', 0.0),
                     open_ms=cp_dict.get('open_ms', 0),
@@ -682,7 +668,19 @@ class DebtLedger:
                 )
 
             checkpoints.append(checkpoint)
+            fee_source = cp_dict['performance'] if 'emissions' in cp_dict else cp_dict
+            prev_cumulative_fees = fee_source.get('cumulative_fees_usd', prev_cumulative_fees)
 
         return DebtLedger(hotkey=data['hotkey'], checkpoints=checkpoints)
+
+    @staticmethod
+    def _fees_from_dict(fields: dict, prev_cumulative_fees: float) -> float:
+        """Per-checkpoint fees from a serialized checkpoint. Older checkpoints stored a running
+        total in `cumulative_fees_usd`, converted here by differencing with the previous one."""
+        if 'fees_usd' in fields:
+            return fields['fees_usd']
+        if 'cumulative_fees_usd' in fields:
+            return fields['cumulative_fees_usd'] - prev_cumulative_fees
+        return 0.0
 
 

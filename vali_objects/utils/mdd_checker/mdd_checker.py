@@ -389,7 +389,7 @@ class MDDChecker(CacheController):
 
             # Rebuild the position with the newest price
             if n_orders_updated:
-                position.rebuild_position_with_updated_orders(self._live_price_client)
+                position.rebuild_position_with_updated_orders()
                 logger.info(
                     f"Retroactively updated {n_orders_updated} order prices for {position.miner_hotkey} "
                     f"{position.trade_pair.trade_pair} return_at_close changed from {orig_return:.8f} to "
@@ -413,7 +413,7 @@ class MDDChecker(CacheController):
 
             if position.is_open_position and realtime_price is not None:
                 orig_return = position.return_at_close
-                position.set_returns(realtime_price, self._live_price_client, quote_usd_conversion=quote_usd_conversion, price_source=price_source)
+                position.set_returns(realtime_price, quote_usd_conversion=quote_usd_conversion, price_source=price_source)
                 ret_changed = orig_return != position.return_at_close
 
             if n_orders_updated or ret_changed:

@@ -13,12 +13,12 @@ if __name__ == "__main__":
     for i, position_json in enumerate(positions_to_snap):
         # build the positions as the order edits did not propagate to position-level attributes.
         pos = Position(**position_json)
-        pos.rebuild_position_with_updated_orders(lpf)
+        pos.rebuild_position_with_updated_orders()
         positions_to_snap[i] = pos.model_dump()
 
     for position_json in positions_to_snap:
         pos = Position(**position_json)
-        pos.rebuild_position_with_updated_orders(lpf)
+        pos.rebuild_position_with_updated_orders()
         assert pos.is_closed_position
         #print(pos.to_copyable_str())
         str_to_write = json.dumps(pos, cls=CustomEncoder)

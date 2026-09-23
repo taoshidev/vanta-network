@@ -190,7 +190,7 @@ class PositionSplitter:
 
             # Update the original position with the first group
             position.orders = order_groups[0]
-            position.rebuild_position_with_updated_orders(price_fetcher_client)
+            position.rebuild_position_with_updated_orders()
 
             positions = [position]
 
@@ -205,7 +205,7 @@ class PositionSplitter:
                     orders=order_group,
                     account_size=position.account_size
                 )
-                new_position.rebuild_position_with_updated_orders(price_fetcher_client)
+                new_position.rebuild_position_with_updated_orders()
                 positions.append(new_position)
 
             split_info = {

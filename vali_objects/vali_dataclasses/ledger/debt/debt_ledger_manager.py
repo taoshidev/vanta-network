@@ -675,6 +675,9 @@ class DebtLedgerManager():
                 f"Earliest emissions data starts at {TimeUtil.millis_to_formatted_date_str(earliest_emissions_ms)}"
             )
 
+        # Peak equity and drawdown per perf checkpoint, computed once per hotkey
+        equity_peaks_by_hotkey: Dict[str, Dict[int, tuple]] = {}
+
         # Iterate over TIMESTAMPS processing ALL hotkeys at each timestamp
         checkpoint_count = 0
         for perf_checkpoint in perf_checkpoints_to_process:
@@ -712,6 +715,11 @@ class DebtLedgerManager():
 
                 if not miner_perf_checkpoint:
                     continue  # This hotkey doesn't have a perf checkpoint at this timestamp
+
+                if hotkey not in equity_peaks_by_hotkey:
+                    equity_peaks_by_hotkey[hotkey] = {
+                        cp.last_update_ms: peak for cp, peak in zip(portfolio_ledger.cps, portfolio_ledger.equity_peaks())}
+                max_equity, equity_drawdown = equity_peaks_by_hotkey[hotkey][miner_perf_checkpoint.last_update_ms]
 
                 # Get corresponding penalty checkpoint (efficient O(1) lookup)
                 penalty_ledger = self.penalty_ledger_manager.get_penalty_ledger(hotkey)
@@ -816,15 +824,13 @@ class DebtLedgerManager():
                     tao_balance_snapshot=tao_balance_snapshot,
                     alpha_balance_snapshot=alpha_balance_snapshot,
                     # Performance data - access attributes directly from THIS MINER'S PerfCheckpoint
-                    portfolio_return=miner_perf_checkpoint.gain,  # Current portfolio multiplier
+                    portfolio_return=miner_perf_checkpoint.equity_ret,  # Equity return at checkpoint end
                     realized_pnl=miner_perf_checkpoint.realized_pnl,  # Realized PnL during this checkpoint period
-                    unrealized_pnl=miner_perf_checkpoint.unrealized_pnl,  # Unrealized PnL during this checkpoint period
-                    cumulative_fees_usd=miner_perf_checkpoint.cumulative_fees_usd,  # Unrealized PnL during this checkpoint period
-                    max_drawdown=miner_perf_checkpoint.mdd,  # Max drawdown
-                    max_portfolio_value=miner_perf_checkpoint.mpv,  # Max portfolio value achieved
-                    open_ms=miner_perf_checkpoint.open_ms,
+                    unrealized_pnl=miner_perf_checkpoint.unrealized_pnl,  # Unrealized PnL at checkpoint end
+                    fees_usd=miner_perf_checkpoint.fees_usd,  # Fees charged during this checkpoint period
+                    max_drawdown=equity_drawdown,  # Equity / peak equity at checkpoint end
+                    max_portfolio_value=max_equity,  # Peak equity return reached so far
                     accum_ms=miner_perf_checkpoint.accum_ms,
-                    n_updates=miner_perf_checkpoint.n_updates,
                     # Penalty data
                     drawdown_penalty=penalty_checkpoint.drawdown_penalty,
                     risk_profile_penalty=penalty_checkpoint.risk_profile_penalty,
@@ -942,7 +948,7 @@ class DebtLedgerManager():
                         if penalty_cp.challenge_period_status in _earning_statuses:
                             last_earning_status = penalty_cp.challenge_period_status
 
-                for cp in perf_ledger.cps:
+                for cp, (max_equity, equity_drawdown) in zip(perf_ledger.cps, perf_ledger.equity_peaks()):
                     if cp.accum_ms != target_cp_duration_ms:
                         continue
                     penalty_cp = (
@@ -956,15 +962,13 @@ class DebtLedgerManager():
                     debt_cp = DebtCheckpoint(
                         timestamp_ms=cp.last_update_ms,
                         realized_pnl=cp.realized_pnl,
-                        cumulative_fees_usd=cp.cumulative_fees_usd,
+                        fees_usd=cp.fees_usd,
                         weekly_penalty=penalty_cp.weekly_penalty if penalty_cp else 1.0,
                         challenge_period_status=frozen_status,
-                        max_portfolio_value=cp.mpv,
-                        max_drawdown=cp.mdd,
-                        portfolio_return=cp.gain,
-                        open_ms=cp.open_ms,
+                        max_portfolio_value=max_equity,
+                        max_drawdown=equity_drawdown,
+                        portfolio_return=cp.equity_ret,
                         accum_ms=cp.accum_ms,
-                        n_updates=cp.n_updates,
                     )
                     debt_checkpoints.append(debt_cp)
 
@@ -1058,13 +1062,9 @@ class DebtLedgerManager():
                 subaccount_cum_realized = {hk: 0.0 for hk, _ in subaccount_ledgers}
                 subaccount_hwm = {hk: 0.0 for hk, _ in subaccount_ledgers}
                 subaccount_escrow = {hk: 0.0 for hk, _ in subaccount_ledgers}
-                # cumulative_fees_usd runs from ledger inception, but cum_realized only starts
-                # accumulating at the first earning checkpoint. Without a baseline, a subaccount
-                # that ran a pro challenge on this account would have the challenge's fees
-                # subtracted from its funded earnings.
-                subaccount_fee_baseline = {
-                    hk: ledger.fee_baseline_at_first_earning() for hk, ledger in subaccount_ledgers
-                }
+                # Fees are netted over the same earning checkpoints as realized PnL, so fees from a
+                # pro challenge run before funding are never charged against funded earnings.
+                subaccount_cum_fees = {hk: 0.0 for hk, _ in subaccount_ledgers}
 
                 # Payouts settled early because an account switch was about to wipe the account
                 # they were traded on.
@@ -1137,12 +1137,9 @@ class DebtLedgerManager():
                                 agg_realized_pnl += released
 
                             subaccount_cum_realized[synthetic_hotkey] += checkpoint.realized_pnl
+                            subaccount_cum_fees[synthetic_hotkey] += checkpoint.fees_usd
 
-                            fees_since_earning = (
-                                checkpoint.cumulative_fees_usd - subaccount_fee_baseline[synthetic_hotkey]
-                            )
-
-                            net_realized = subaccount_cum_realized[synthetic_hotkey] - fees_since_earning
+                            net_realized = subaccount_cum_realized[synthetic_hotkey] - subaccount_cum_fees[synthetic_hotkey]
                             if net_realized > subaccount_hwm[synthetic_hotkey]:
                                 delta = net_realized - subaccount_hwm[synthetic_hotkey]
                                 subaccount_hwm[synthetic_hotkey] = net_realized
@@ -1203,7 +1200,7 @@ class DebtLedgerManager():
                     tao_balance = getattr(entity_emissions_cp, "tao_balance_snapshot", 0.0)
                     alpha_balance = getattr(entity_emissions_cp, "alpha_balance_snapshot", 0.0)
                     agg_unrealized_pnl = 0.0    # ignore unrealized pnl
-                    agg_cumulative_fees_usd = 0.0    # ignore fees - included in agg realized pnl
+                    agg_fees_usd = 0.0    # ignore fees - included in agg realized pnl
                     agg_max_portfolio_value = sum(cp.max_portfolio_value for cp in checkpoints_at_time)
                     agg_open_ms = sum(cp.open_ms for cp in checkpoints_at_time)
                     agg_n_updates = sum(cp.n_updates for cp in checkpoints_at_time)
@@ -1244,7 +1241,7 @@ class DebtLedgerManager():
                         portfolio_return=agg_portfolio_return,
                         realized_pnl=agg_realized_pnl,
                         unrealized_pnl=agg_unrealized_pnl,
-                        cumulative_fees_usd=agg_cumulative_fees_usd,
+                        fees_usd=agg_fees_usd,
                         max_drawdown=agg_max_drawdown,
                         max_portfolio_value=agg_max_portfolio_value,
                         open_ms=agg_open_ms,

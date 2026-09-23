@@ -366,7 +366,7 @@ class P2PSyncer(ValidatorSyncBase):
 
                 new_position.orders.sort(key=lambda o: o.processed_ms)
                 try:
-                    new_position.rebuild_position_with_updated_orders(self._price_fetcher_client)
+                    new_position.rebuild_position_with_updated_orders()
                     position_dict = new_position.to_dict()
                     uuid_matched_positions.append(position_dict)
                 except ValueError as v:

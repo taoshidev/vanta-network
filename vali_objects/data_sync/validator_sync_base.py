@@ -703,7 +703,7 @@ class ValidatorSyncBase():
                         min_timestamp_of_order_change = e.open_ms
 
                     if min_timestamp_of_order_change != float('inf'):
-                        e.rebuild_position_with_updated_orders(self._live_price_client)
+                        e.rebuild_position_with_updated_orders()
                         min_timestamp_of_change = min(min_timestamp_of_change, min_timestamp_of_order_change)
                         position_to_sync_status[e] = PositionSyncResult.UPDATED
                     else:
@@ -743,7 +743,7 @@ class ValidatorSyncBase():
                         min_timestamp_of_order_change = e.open_ms
 
                     if min_timestamp_of_order_change != float('inf'):
-                        e.rebuild_position_with_updated_orders(self._live_price_client)
+                        e.rebuild_position_with_updated_orders()
                         min_timestamp_of_change = min(min_timestamp_of_change, min_timestamp_of_order_change)
                         position_to_sync_status[e] = PositionSyncResult.UPDATED
                     else:

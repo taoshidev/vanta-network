@@ -602,7 +602,7 @@ class PriceSlippageModel:
                     logger.info(f"updated order attributes {o}")
                     order_updated = True
                 if order_updated:
-                    position.rebuild_position_with_updated_orders(self.live_price_fetcher)
+                    position.rebuild_position_with_updated_orders()
 
     class FeatureRefresher:
         """Daemon process that refreshes price slippage model features daily"""

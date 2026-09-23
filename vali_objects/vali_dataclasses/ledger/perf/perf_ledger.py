@@ -1,8 +1,4 @@
-import math
-
-from vali_objects.enums.misc import TradePairReturnStatus
-from typing import Dict, Tuple, Optional
-from shared_objects.sn8_multiprocessing import ParallelizationMode, get_spark_session, get_multiprocessing_pool
+from typing import Optional
 from shared_objects.cache_controller import CacheController
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import ValiConfig
@@ -10,49 +6,37 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 import logging
 from shared_objects.log import logger
 
+# Bump whenever checkpoint semantics change. Ledgers persisted with another version are rebuilt
+# from position history instead of being extended.
+PERF_LEDGER_VERSION = 2
+
+
 class PerfCheckpoint:
+    """
+    PnL snapshot of a miner's portfolio at a checkpoint boundary.
+
+    A checkpoint covers (last_update_ms - accum_ms, last_update_ms]. Completed checkpoints end on a
+    12-hour UTC boundary with accum_ms == target_cp_duration_ms; the trailing checkpoint ends at the
+    ledger's update time and is recomputed on every update until its boundary passes.
+    """
     def __init__(
         self,
         last_update_ms: int,
-        prev_portfolio_ret: float,
-        prev_portfolio_realized_pnl: float = 0.0,
-        prev_portfolio_unrealized_pnl: float = 0.0,
         accum_ms: int = 0,
-        open_ms: int = 0,
-        n_updates: int = 0,
-        gain: float = 0.0,
-        loss: float = 0.0,
-        mdd: float = 1.0,
-        mpv: float = 0.0,
-        realized_pnl: float = 0.0,
-        unrealized_pnl: float = 0.0,
-        equity_ret: float = 0.0,        # (account_size + prev_portfolio_realized_pnl - cumulative_fees_usd + unrealized_pnl) / account_size
-        cumulative_fees_usd: float = 0.0,  # Running total of all fees paid up to this checkpoint
-        **kwargs  # Support extra fields like BaseModel's extra="allow"
+        realized_pnl: float = 0.0,                 # Realized PnL booked during this checkpoint (USD)
+        unrealized_pnl: float = 0.0,               # Unrealized PnL of open positions at last_update_ms (USD)
+        fees_usd: float = 0.0,                     # Fees charged during this checkpoint (USD)
+        equity_ret: float = 1.0,                   # (account_size + cumulative realized - cumulative fees + unrealized) / account_size
+        **kwargs  # Fields from older ledger versions are dropped
     ):
-        # Type coercion to match BaseModel behavior (handles numpy types and ensures correct types)
         self.last_update_ms = int(last_update_ms)
-        self.prev_portfolio_ret = float(prev_portfolio_ret)
-        self.prev_portfolio_realized_pnl = float(prev_portfolio_realized_pnl)
-        self.prev_portfolio_unrealized_pnl = float(prev_portfolio_unrealized_pnl)
         self.accum_ms = int(accum_ms)
-        self.open_ms = int(open_ms)
-        self.n_updates = int(n_updates)
-        self.gain = float(gain)
-        self.loss = float(loss)
-        self.mdd = float(mdd)
-        self.mpv = float(mpv)
         self.realized_pnl = float(realized_pnl)
         self.unrealized_pnl = float(unrealized_pnl)
+        self.fees_usd = float(fees_usd)
         self.equity_ret = float(equity_ret)
-        self.cumulative_fees_usd = float(cumulative_fees_usd)
-
-        # Store any extra fields (equivalent to model_config extra="allow")
-        for key, value in kwargs.items():
-            setattr(self, key, value)
 
     def __eq__(self, other):
-        """Equality comparison (replaces BaseModel's automatic __eq__)"""
         if not isinstance(other, PerfCheckpoint):
             return False
         return self.__dict__ == other.__dict__
@@ -61,71 +45,53 @@ class PerfCheckpoint:
         return str(self.to_dict())
 
     def to_dict(self):
-        # Convert any numpy types to Python types for JSON serialization
-        result = {}
-        for key, value in self.__dict__.items():
-            # Handle numpy int64, float64, etc.
-            if hasattr(value, 'item'):  # numpy types have .item() method
-                result[key] = value.item()
-            else:
-                result[key] = value
-        return result
+        return dict(self.__dict__)
 
     @property
     def lowerbound_time_created_ms(self):
-        # accum_ms boundary alignment makes this a lowerbound for the first cp.
         return self.last_update_ms - self.accum_ms
 
 
 class PerfLedger():
-    def __init__(self, initialization_time_ms: int=0, max_return:float=1.0,
+    """Checkpoints from the miner's first order onward. History is never truncated."""
+    def __init__(self, initialization_time_ms: int=0,
                  target_cp_duration_ms:int=ValiConfig.TARGET_CHECKPOINT_DURATION_MS,
-                 target_ledger_window_ms=ValiConfig.TARGET_LEDGER_WINDOW_MS, cps: list[PerfCheckpoint]=None,
-                 last_known_prices: Dict[str, Tuple[float, int]]=None):
+                 cps: list[PerfCheckpoint]=None,
+                 version: int = PERF_LEDGER_VERSION):
         if cps is None:
             cps = []
-        if last_known_prices is None:
-            last_known_prices = {}
-        self.max_return = float(max_return)
         self.target_cp_duration_ms = int(target_cp_duration_ms)
-        self.target_ledger_window_ms = target_ledger_window_ms
         self.initialization_time_ms = int(initialization_time_ms)
         self.cps = cps
-        # Price continuity tracking - maps trade pair to (price, timestamp_ms)
-        self.last_known_prices = last_known_prices
+        self.version = int(version)
 
     def to_dict(self):
         return {
             "initialization_time_ms": self.initialization_time_ms,
-            "max_return": self.max_return,
             "target_cp_duration_ms": self.target_cp_duration_ms,
-            "target_ledger_window_ms": self.target_ledger_window_ms,
             "cps": [cp.to_dict() for cp in self.cps],
-            "last_known_prices": self.last_known_prices
+            "version": self.version,
         }
 
     @classmethod
     def from_dict(cls, x):
         assert isinstance(x, dict), x
-        x['cps'] = [PerfCheckpoint(**cp) for cp in x['cps']]
-        # Handle missing last_known_prices for backward compatibility
-        if 'last_known_prices' not in x:
-            x['last_known_prices'] = {}
-        x.pop('tp_id', None)
-        # Adopt the configured window rather than the one this ledger was serialized with
-        x['target_ledger_window_ms'] = ValiConfig.TARGET_LEDGER_WINDOW_MS
-        instance = cls(**x)
-        return instance
-
-    @property
-    def mdd(self):
-        return min(cp.mdd for cp in self.cps) if self.cps else 1.0
-
-    @property
-    def total_open_ms(self):
-        if len(self.cps) == 0:
-            return 0
-        return sum(cp.open_ms for cp in self.cps)
+        x = dict(x)
+        cps = []
+        prev_cumulative_fees = 0.0
+        for cp in x['cps']:
+            cp = dict(cp)
+            if 'fees_usd' not in cp and 'cumulative_fees_usd' in cp:
+                # Older checkpoints stored a running fee total; convert to the per-checkpoint amount
+                cp['fees_usd'] = cp['cumulative_fees_usd'] - prev_cumulative_fees
+                prev_cumulative_fees = cp['cumulative_fees_usd']
+            cps.append(PerfCheckpoint(**cp))
+        x['cps'] = cps
+        # Ledgers serialized before versioning are version 1
+        x.setdefault('version', 1)
+        for legacy_key in ('tp_id', 'max_return', 'last_known_prices', 'target_ledger_window_ms'):
+            x.pop(legacy_key, None)
+        return cls(**x)
 
     @property
     def last_update_ms(self):
@@ -134,264 +100,54 @@ class PerfLedger():
         return self.cps[-1].last_update_ms
 
     @property
-    def prev_portfolio_ret(self):
-        if len(self.cps) == 0:
-            return 1.0  # Initial value
-        return self.cps[-1].prev_portfolio_ret
+    def cumulative_realized_pnl(self) -> float:
+        # Realized PnL since the first order, in USD, before fees
+        return sum(cp.realized_pnl for cp in self.cps)
+
+    @property
+    def cumulative_fees_usd(self) -> float:
+        # Fees paid since the first order, in USD
+        return sum(cp.fees_usd for cp in self.cps)
 
     @property
     def realized_pnl_net_usd(self):
         # Cumulative realized PnL less all fees paid, in USD. Excludes unrealized marks.
-        if not self.cps:
-            return 0.0
-        return self.cps[-1].prev_portfolio_realized_pnl - self.cps[-1].cumulative_fees_usd
+        return self.cumulative_realized_pnl - self.cumulative_fees_usd
+
+    @property
+    def max_equity_ret(self) -> float:
+        # Highest equity return reached at any checkpoint, floored at the starting equity of 1.0
+        return max([1.0] + [cp.equity_ret for cp in self.cps])
+
+    def equity_peaks(self) -> list[tuple[float, float]]:
+        """(peak equity return so far, equity / peak) at each checkpoint. The peak starts at the
+        initial equity of 1.0, so a drawdown of 1.0 means the checkpoint is at its peak."""
+        running_max = 1.0
+        out = []
+        for cp in self.cps:
+            running_max = max(running_max, cp.equity_ret)
+            out.append((running_max, cp.equity_ret / running_max))
+        return out
 
     @property
     def start_time_ms(self):
         if len(self.cps) == 0:
             return 0
-        elif self.initialization_time_ms != 0:  # 0 default value for old ledgers that haven't rebuilt as of this update.
+        elif self.initialization_time_ms != 0:
             return self.initialization_time_ms
         else:
-            return self.cps[0].lowerbound_time_created_ms  # legacy calculation that will stop being used in ~24 hrs
+            return self.cps[0].lowerbound_time_created_ms
 
-    def init_max_portfolio_value(self):
-        if self.cps:
-            self.max_return = max(x.mpv for x in self.cps)
-        # Initial portfolio value is 1.0
-        self.max_return = max(self.max_return, 1.0)
-
-
-    def init_with_first_order(self, order_processed_ms: int, point_in_time_dd: float, current_portfolio_value: float,
-                              hotkey: str=None):
-        # figure out how many ms we want to initalize the checkpoint with so that once self.target_cp_duration_ms is
-        # reached, the CP ends at 00:00:00 UTC or 12:00:00 UTC (12 hr cp case). This may change based on self.target_cp_duration_ms
-        # |----x------midday-----------| -> accum_ms_for_utc_alignment = (distance between start of day and x) = x - start_of_day_ms
-        # |-----------midday-----x-----| -> accum_ms_for_utc_alignment = (distance between midday and x) = x - midday_ms
-        # By calculating the initial accum_ms this way, the co will always end at middday or 00:00:00 the next day.
-
-        assert order_processed_ms != 0, "order_processed_ms cannot be 0. This is likely a bug in the code."
-        datetime_representation = TimeUtil.millis_to_datetime(order_processed_ms)
-        assert self.target_cp_duration_ms == 43200000, f'self.target_cp_duration_ms is not 12 hours {self.target_cp_duration_ms}'
-        midday = datetime_representation.replace(hour=12, minute=0, second=0, microsecond=0)
-        midday_ms = int(midday.timestamp() * 1000)
-        if order_processed_ms < midday_ms:
-            start_of_day = datetime_representation.replace(hour=0, minute=0, second=0, microsecond=0)
-            start_of_day_ms = int(start_of_day.timestamp() * 1000)
-            accum_ms_for_utc_alignment = order_processed_ms - start_of_day_ms
-        else:
-            accum_ms_for_utc_alignment = order_processed_ms - midday_ms
-
-        # Start with open_ms equal to accum_ms (assuming positions are open from the start)
-        new_cp = PerfCheckpoint(last_update_ms=order_processed_ms, prev_portfolio_ret=current_portfolio_value,
-                                mdd=point_in_time_dd, accum_ms=accum_ms_for_utc_alignment,
-                                mpv=1.0)
-        self.cps.append(new_cp)
-
-
-
-    def compute_delta_between_ticks(self, cur: float, prev: float):
-        return math.log(cur / prev)
-
-    def purge_old_cps(self):
-        while self.get_total_ledger_duration_ms() > self.target_ledger_window_ms:
-            logger.debug(
-                f"Purging old perf cp {self.cps[0]}. Total ledger duration: {self.get_total_ledger_duration_ms()}. Target ledger window: {self.target_ledger_window_ms}")
-            self.cps = self.cps[1:]  # Drop the first cp (oldest)
+    def is_complete(self, cp: PerfCheckpoint) -> bool:
+        return cp.accum_ms == self.target_cp_duration_ms
 
     def trim_checkpoints(self, cutoff_ms: int):
-        new_cps = []
-        any_changes = False
-        for cp in self.cps:
-            if cp.lowerbound_time_created_ms + self.target_cp_duration_ms >= cutoff_ms:
-                any_changes = True
-                continue
-            new_cps.append(cp)
-        if any_changes:
-            self.cps = new_cps
-            self.init_max_portfolio_value()
-
-    def update_pl(self, current_portfolio_value: float, now_ms: int, miner_hotkey: str, any_open: TradePairReturnStatus,
-                  current_realized_pnl_usd: float, current_unrealized_pnl_usd: float,
-                  tp_debug=None, debug_dict=None,
-                  account_size: float = None, cumulative_fees_usd: float = None):
-        # Skip gap validation during void filling, shortcuts, or when no debug info
-        # The absence of tp_debug typically means this is a high-level update that may span time
-        skip_gap_check = (not tp_debug or '_shortcut' in tp_debug or 'void' in tp_debug)
-
-        # If we have checkpoints, verify continuous updates (unless explicitly skipping)
-        if len(self.cps) > 0 and not skip_gap_check:
-            time_gap = now_ms - self.last_update_ms
-
-            # Allow up to 1 minute gap (plus small buffer for processing)
-            max_allowed_gap = 61000  # 61 seconds
-
-            assert time_gap <= max_allowed_gap, (
-                f"Large gap in update_pl for {tp_debug or 'portfolio'}: {time_gap/1000:.1f}s. "
-                f"Last: {TimeUtil.millis_to_formatted_date_str(self.last_update_ms)}, "
-                f"Now: {TimeUtil.millis_to_formatted_date_str(now_ms)}"
-            )
-
-        if len(self.cps) == 0:
-            self.init_with_first_order(now_ms, point_in_time_dd=1.0, current_portfolio_value=1.0)
-        prev_max_return = self.max_return
-        last_portfolio_return = self.cps[-1].prev_portfolio_ret
-        prev_mdd = CacheController.calculate_drawdown(last_portfolio_return, prev_max_return)
-        self.max_return = max(self.max_return, current_portfolio_value)
-        point_in_time_dd = CacheController.calculate_drawdown(current_portfolio_value, self.max_return)
-        if not point_in_time_dd:
-            time_formatted = TimeUtil.millis_to_verbose_formatted_date_str(now_ms)
-            raise Exception(f'point_in_time_dd is {point_in_time_dd} at time {time_formatted}. '
-                            f'any_open: {any_open}, prev_portfolio_value {self.cps[-1].prev_portfolio_ret}, '
-                            f'current_portfolio_value: {current_portfolio_value}, self.max_return: {self.max_return}, debug_dict: {debug_dict}')
-
-        if len(self.cps) == 0:
-            self.init_with_first_order(now_ms, point_in_time_dd, current_portfolio_value)
-            return
-
-        time_since_last_update_ms = now_ms - self.cps[-1].last_update_ms
-        assert time_since_last_update_ms >= 0, self.cps
-
-        if time_since_last_update_ms + self.cps[-1].accum_ms > self.target_cp_duration_ms:
-            # Need to fill void - complete current checkpoint and create new ones
-
-            # Validate that we're working with 12-hour checkpoints
-            if self.target_cp_duration_ms != 43200000:  # 12 hours in milliseconds
-                raise Exception(f"Checkpoint boundary alignment only supports 12-hour checkpoints, "
-                                f"but target_cp_duration_ms is {self.target_cp_duration_ms} ms "
-                                f"({self.target_cp_duration_ms / 3600000:.1f} hours)")
-
-            # Step 1: Complete the current checkpoint by aligning to 12-hour boundary
-            # Find the next 12-hour boundary
-            next_boundary = TimeUtil.align_to_12hour_checkpoint_boundary(self.cps[-1].last_update_ms)
-            if next_boundary > now_ms:
-                raise Exception(
-                    f"Cannot align checkpoint: next boundary {next_boundary} ({TimeUtil.millis_to_formatted_date_str(next_boundary)}) "
-                    f"exceeds current time {now_ms} ({TimeUtil.millis_to_formatted_date_str(now_ms)})")
-
-            # Update the current checkpoint to end at the boundary
-            delta_to_boundary = self.target_cp_duration_ms - self.cps[-1].accum_ms
-            self.cps[-1].last_update_ms = next_boundary
-            self.cps[-1].accum_ms = self.target_cp_duration_ms
-
-            # Complete the current checkpoint using last_portfolio_return (no change in value during void)
-            # The current checkpoint should be filled to the boundary but without value changes
-            # Only the final checkpoint after void filling gets the new portfolio value
-            if any_open > TradePairReturnStatus.TP_MARKET_NOT_OPEN:
-                self.cps[-1].open_ms += delta_to_boundary
-
-            # Step 2: Create full 12-hour checkpoints for the void period
-            current_boundary = next_boundary
-            # During void periods, portfolio value remains constant at last_portfolio_return
-            # Do NOT update last_portfolio_return to current_portfolio_value yet
-
-            while now_ms - current_boundary > self.target_cp_duration_ms:
-                current_boundary += self.target_cp_duration_ms
-                new_cp = PerfCheckpoint(
-                    last_update_ms=current_boundary,
-                    prev_portfolio_ret=last_portfolio_return,  # Keep constant during void
-                    prev_portfolio_realized_pnl=self.cps[-1].prev_portfolio_realized_pnl,
-                    prev_portfolio_unrealized_pnl=self.cps[-1].prev_portfolio_unrealized_pnl,
-                    accum_ms=self.target_cp_duration_ms,
-                    open_ms=0,  # No market data for void periods
-                    mdd=prev_mdd,
-                    mpv=last_portfolio_return,
-                    equity_ret=self.cps[-1].equity_ret,
-                    cumulative_fees_usd=self.cps[-1].cumulative_fees_usd,
-                )
-                assert new_cp.last_update_ms % self.target_cp_duration_ms == 0, f"Checkpoint not aligned: {new_cp.last_update_ms}"
-                self.cps.append(new_cp)
-
-            # Step 3: Create final partial checkpoint from last boundary to now
-            time_since_boundary = now_ms - current_boundary
-            assert 0 <= time_since_boundary <= self.target_cp_duration_ms
-
-            final_open_ms = time_since_boundary if any_open > TradePairReturnStatus.TP_MARKET_NOT_OPEN else 0
-            # Calculate MDD for this checkpoint period based on the change from boundary to now
-            # MDD should be the worst decline within this checkpoint period
-
-            new_cp = PerfCheckpoint(
-                last_update_ms=now_ms,
-                prev_portfolio_ret=last_portfolio_return, # old for now, update below
-                prev_portfolio_realized_pnl=self.cps[-1].prev_portfolio_realized_pnl,
-                prev_portfolio_unrealized_pnl=self.cps[-1].prev_portfolio_unrealized_pnl,
-                n_updates = 0, # 0 for now, update below
-                gain=0,  # 0 for now, update below
-                loss=0,  # 0 for now, update below
-                mdd=prev_mdd,  # old for now update below
-                mpv=last_portfolio_return, # old for now, update below
-                accum_ms=time_since_boundary,
-                open_ms=final_open_ms,
-                equity_ret=self.cps[-1].equity_ret,          # carried forward, updated below
-                cumulative_fees_usd=self.cps[-1].cumulative_fees_usd,  # carried forward, updated below
-            )
-            self.cps.append(new_cp)
-        else:
-            # Nominal update. No void to fill
-            current_cp = self.cps[-1]
-            # Calculate time since this checkpoint's last update
-            time_to_accumulate = now_ms - current_cp.last_update_ms
-            if time_to_accumulate < 0:
-                logger.error(f"Negative accumulated time: {time_to_accumulate} for miner {miner_hotkey}."
-                                 f" start_time_ms: {self.start_time_ms}, now_ms: {now_ms}")
-                time_to_accumulate = 0
-
-            current_cp.accum_ms += time_to_accumulate
-            # Update open_ms only when market is actually open
-            if any_open > TradePairReturnStatus.TP_MARKET_NOT_OPEN:
-                current_cp.open_ms += time_to_accumulate
-
-
-        current_cp = self.cps[-1]  # Get the current checkpoint after updates
-        current_cp.mdd = min(current_cp.mdd, point_in_time_dd)
-        # Update gains/losses based on portfolio value change
-        n_updates = 1
-        delta_return = self.compute_delta_between_ticks(current_portfolio_value, current_cp.prev_portfolio_ret)
-
-        if delta_return > 0:
-            current_cp.gain += delta_return
-        elif delta_return < 0:
-            current_cp.loss += delta_return
-        else:
-            n_updates = 0
-
-        # realized_pnl stores delta (sum of realized gains/losses during checkpoint period)
-        delta_realized = current_realized_pnl_usd - current_cp.prev_portfolio_realized_pnl
-        current_cp.realized_pnl += delta_realized
-        # unrealized_pnl stores snapshot (current unrealized PnL at checkpoint end)
-        current_cp.unrealized_pnl = current_unrealized_pnl_usd
-
-        # Update portfolio values
-        current_cp.prev_portfolio_ret = current_portfolio_value
-        current_cp.prev_portfolio_realized_pnl = current_realized_pnl_usd
-        current_cp.prev_portfolio_unrealized_pnl = current_unrealized_pnl_usd
-        current_cp.last_update_ms = now_ms
-        current_cp.mpv = max(current_cp.mpv, current_portfolio_value)
-        current_cp.n_updates += n_updates
-
-        # Update equity-based return fields (only for portfolio ledger on synthetic miners)
-        if account_size is not None and account_size > 0 and cumulative_fees_usd is not None:
-            current_cp.cumulative_fees_usd = cumulative_fees_usd
-            equity = account_size + current_realized_pnl_usd - cumulative_fees_usd + current_unrealized_pnl_usd
-            current_cp.equity_ret = equity / account_size
-
+        # Drop every checkpoint whose window ends at or after cutoff_ms so it is recomputed.
+        self.cps = [cp for cp in self.cps
+                    if cp.lowerbound_time_created_ms + self.target_cp_duration_ms < cutoff_ms]
 
     def count_events(self):
-        # Return the number of events currently stored
         return len(self.cps)
-
-    def get_product_of_gains(self):
-        cumulative_gains = sum(cp.gain for cp in self.cps)
-        return math.exp(cumulative_gains)
-
-    def get_product_of_loss(self):
-        cumulative_loss = sum(cp.loss for cp in self.cps)
-        return math.exp(cumulative_loss)
-
-    def get_total_product(self):
-        cumulative_gains = sum(cp.gain for cp in self.cps)
-        cumulative_loss = sum(cp.loss for cp in self.cps)
-        return math.exp(cumulative_gains + cumulative_loss)
 
     def get_total_ledger_duration_ms(self):
         return sum(cp.accum_ms for cp in self.cps)
@@ -401,7 +157,7 @@ class PerfLedger():
         Get the checkpoint at a specific timestamp (efficient O(1) lookup).
 
         Uses index calculation instead of scanning since checkpoints are evenly-spaced
-        and contiguous (enforced by strict checkpoint validation).
+        and contiguous.
 
         Args:
             timestamp_ms: Exact timestamp to query (should match last_update_ms)
@@ -416,29 +172,20 @@ class PerfLedger():
         if not self.cps:
             return None
 
-        # Calculate expected index based on first checkpoint and duration
         first_checkpoint_ms = self.cps[0].last_update_ms
-
-        # Check if timestamp is before first checkpoint
         if timestamp_ms < first_checkpoint_ms:
             return None
 
-        # Calculate index (checkpoints are evenly spaced by target_cp_duration_ms)
         time_diff = timestamp_ms - first_checkpoint_ms
         if time_diff % target_cp_duration_ms != 0:
-            # Timestamp doesn't align with checkpoint boundaries
             return None
 
         index = time_diff // target_cp_duration_ms
-
-        # Check if index is within bounds
         if index >= len(self.cps):
             return None
 
-        # Validate the checkpoint at this index has the expected timestamp
         checkpoint = self.cps[index]
         if checkpoint.last_update_ms != timestamp_ms:
-            from time_util.time_util import TimeUtil
             raise ValueError(
                 f"Data corruption detected for portfolio: "
                 f"checkpoint at index {index} has last_update_ms {checkpoint.last_update_ms} "
@@ -463,8 +210,6 @@ if __name__ == "__main__":
     use_database_positions = True  # NEW: Enable database position loading
     use_test_positions = False      # NEW: Enable test position loading
     crypto_only = False # Whether to process only crypto trade pairs
-    parallel_mode = ParallelizationMode.SERIAL  # 1 for pyspark, 2 for multiprocessing
-    top_n_miners = 4
     test_single_hotkey = '5FRWVox3FD5Jc2VnS7FUCCf8UJgLKfGdEnMAN7nU3LrdMWHu'  # Set to a specific hotkey string to test single hotkey, or None for all
     regenerate_all = False  # Whether to regenerate all ledgers from scratch
 
@@ -520,29 +265,10 @@ if __name__ == "__main__":
         logger.info(f"Saved {position_count} positions to position manager")
 
     # PerfLedgerManager creates its own MetagraphClient and PositionManagerClient internally
-    perf_ledger_manager = PerfLedgerManager(running_unit_tests=False,
-                                            enable_rss=False, parallel_mode=parallel_mode)
-
-
-    if parallel_mode == ParallelizationMode.SERIAL:
-        # Use serial update like validators do
-        if test_single_hotkey:
-            logger.info(f"Running single-hotkey test for: {test_single_hotkey}")
-            perf_ledger_manager.update(testing_one_hotkey=test_single_hotkey, t_ms=TimeUtil.now_in_millis())
-        else:
-            logger.info("Running standard sequential update for all hotkeys")
-            perf_ledger_manager.update(regenerate_all_ledgers=regenerate_all)
+    perf_ledger_manager = PerfLedgerManager(running_unit_tests=False, enable_rss=False)
+    if test_single_hotkey:
+        logger.info(f"Running single-hotkey test for: {test_single_hotkey}")
+        perf_ledger_manager.update(testing_one_hotkey=test_single_hotkey, t_ms=TimeUtil.now_in_millis())
     else:
-        # Get positions and existing ledgers
-        hotkey_to_positions, _ = perf_ledger_manager.get_positions_perf_ledger(testing_one_hotkey=test_single_hotkey)
-
-        existing_perf_ledgers = {} if regenerate_all else perf_ledger_manager.get_perf_ledgers(from_disk=True)
-
-        # Run the parallel update
-        spark, should_close = get_spark_session(parallel_mode)
-        pool = get_multiprocessing_pool(parallel_mode)
-        assert pool, parallel_mode
-        updated_perf_ledgers = perf_ledger_manager.update_perf_ledgers_parallel(spark, pool, hotkey_to_positions,
-                                    existing_perf_ledgers, parallel_mode=parallel_mode, top_n_miners=top_n_miners)
-
-        PerfLedgerManager.print_bundles(updated_perf_ledgers)
+        logger.info("Running standard sequential update for all hotkeys")
+        perf_ledger_manager.update(regenerate_all_ledgers=regenerate_all)

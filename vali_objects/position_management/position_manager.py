@@ -958,7 +958,7 @@ class PositionManager:
                     elif reopen_force_closed_orders:
                         if any((o.src in (1, 3, 12)) for o in pos.orders):
                             pos.orders = [o for o in pos.orders if (o.src not in (1, 3, 12))]
-                            pos.rebuild_position_with_updated_orders(self._live_price_client)
+                            pos.rebuild_position_with_updated_orders()
                             # Delete stale closed-dir copy before re-saving as open
                             self.delete_position(pos.miner_hotkey, pos.position_uuid)
                             self.save_miner_position(pos, validate=False)
@@ -1121,7 +1121,7 @@ class PositionManager:
                         order_uuid_to_dedup[order.order_uuid] = order
                 if any_orders_deleted:
                     position.orders = new_orders
-                    position.rebuild_position_with_updated_orders(self._live_price_client)
+                    position.rebuild_position_with_updated_orders()
                     self.save_miner_position(position, delete_open_position_if_exists=False, validate=False)
                     n_positions_rebuilt_with_new_orders += 1
 
@@ -1654,7 +1654,7 @@ class PositionManager:
             elif reopen_force_closed_orders:
                 if any(o.src in (1, 3, 12) for o in pos.orders):
                     pos.orders = [o for o in pos.orders if o.src not in (1, 3, 12)]
-                    pos.rebuild_position_with_updated_orders(self._live_price_client)
+                    pos.rebuild_position_with_updated_orders()
                     self.save_miner_position(pos, validate=False)
                     n_reopened += 1
         log.append(f"Positions deleted={n_deleted} archived={n_archived} reopened={n_reopened}")

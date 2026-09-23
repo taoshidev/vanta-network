@@ -400,7 +400,7 @@ class Position(BaseModel):
     def _position_log(message):
         logger.debug("Position Notification - " + message)
 
-    def rebuild_position_with_updated_orders(self, price_fetcher_client=None):
+    def rebuild_position_with_updated_orders(self):
         self.current_return = 1.0
         self.close_ms = None
         self.return_at_close = 1.0
@@ -415,7 +415,7 @@ class Position(BaseModel):
         self.is_closed_position = False
         self.position_type = None
 
-        self._update_position(price_fetcher_client)
+        self._update_position()
 
     def log_position_status(self):
         logger.debug(
@@ -439,7 +439,7 @@ class Position(BaseModel):
         ]
         logger.debug(f"position order details: " f"close_ms [{order_info}] ")
 
-    def add_order(self, order: Order, live_price_fetcher=None):
+    def add_order(self, order: Order):
         if self.is_closed_position:
             raise ValueError("Miner attempted to add order to a closed/liquidated position. Ignoring.")
         if order.trade_pair != self.trade_pair:
@@ -472,7 +472,7 @@ class Position(BaseModel):
 
         return order.realized_pnl, transaction_fee, loan_repaid
 
-    def calculate_pnl(self, current_price, live_price_fetcher=None, t_ms=None, order=None, quote_usd_conversion=None):
+    def calculate_pnl(self, current_price, t_ms=None, order=None, quote_usd_conversion=None):
         if self.initial_entry_price == 0 or self.average_entry_price is None:
             return 1
 
@@ -508,10 +508,10 @@ class Position(BaseModel):
         net_return = 1 + gain
         return net_return
 
-    def set_returns(self, realtime_price, price_fetcher_client=None, time_ms=None, total_fees=None, order=None, quote_usd_conversion=None, price_source=None):
+    def set_returns(self, realtime_price, time_ms=None, total_fees=None, order=None, quote_usd_conversion=None, price_source=None):
         # We used to multiple trade_pair.fees by net_leverage. Eventually we will
         # Update this calculation to approximate actual exchange fees.
-        self.current_return = self.calculate_pnl(realtime_price, price_fetcher_client, t_ms=time_ms, order=order, quote_usd_conversion=quote_usd_conversion)
+        self.current_return = self.calculate_pnl(realtime_price, t_ms=time_ms, order=order, quote_usd_conversion=quote_usd_conversion)
         self.return_at_close = self.current_return * (total_fees if total_fees is not None else 1.0)
 
         if price_source:
@@ -523,7 +523,7 @@ class Position(BaseModel):
         if self.current_return < 0:
             raise ValueError(f"current return must be positive {self.current_return}")
 
-    def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage, price_fetcher_client=None):
+    def update_position_state_for_new_order(self, order, delta_quantity, delta_leverage):
         """
         Must be called after every order to maintain accurate internal state. The variable average_entry_price has
         a name that can be a little confusing. Although it claims to be the average price, it really isn't.
@@ -539,7 +539,7 @@ class Position(BaseModel):
             self.net_quantity = 0.0
             self.net_value = 0.0
             return  # Don't set returns since the price is zero'd out.
-        self.set_returns(realtime_price, price_fetcher_client, time_ms=order.processed_ms, order=order)
+        self.set_returns(realtime_price, time_ms=order.processed_ms, order=order)
 
         # Liquidated
         if self.current_return == 0:
@@ -740,7 +740,7 @@ class Position(BaseModel):
                 total += entry.amount
         return total
 
-    def _update_position(self, price_fetcher_client=None):
+    def _update_position(self):
         self.net_leverage = 0.0
         self.net_quantity = 0.0
         self.net_value = 0.0
@@ -783,7 +783,7 @@ class Position(BaseModel):
             #logger.info(
             #    f"Updating position state for new order {order} with adjusted leverage {adjusted_quantity}"
             #)
-            self.update_position_state_for_new_order(order, adjusted_quantity, adjusted_leverage, price_fetcher_client)
+            self.update_position_state_for_new_order(order, adjusted_quantity, adjusted_leverage)
 
 
             # If the position is already closed, we don't need to process any more orders. break in case there are more orders.
