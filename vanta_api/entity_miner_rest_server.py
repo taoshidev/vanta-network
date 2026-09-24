@@ -26,6 +26,7 @@ import queue
 import re
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
@@ -1038,17 +1039,18 @@ class EntityMinerRestServer(MinerRestServer):
         Request body (JSON) — standard:
         {
             "asset_class": "crypto" | "forex" | "equities",  // Required
-            "account_size": float,                           // Required, must be > 0
-            "collateral_exempt": bool                        // Optional, default false
+            "account_size": float                            // Required, must be > 0
         }
 
         Request body (JSON) — HL-linked:
         {
             "hl_address": "0x...",     // Required, 0x + 40 hex chars
             "account_size": float,     // Required, must be > 0
-            "payout_address": "0x...", // Optional, EVM address for USDC payouts
-            "collateral_exempt": bool  // Optional, default false
+            "payout_address": "0x..."  // Optional, EVM address for USDC payouts
         }
+
+        collateral_exempt is NOT accepted (403 if supplied): exempt accounts are created
+        only by Taoshi tooling on the validator host, never over the network.
         """
         import requests as http_requests
         start_time = time.time()
@@ -1087,10 +1089,12 @@ class EntityMinerRestServer(MinerRestServer):
                 if drawdown_criteria not in ("trailing", "static"):
                     return jsonify({'status': 'error', 'message': 'drawdown_criteria must be "trailing" or "static"'}), 400
 
-            raw = request_data.get("collateral_exempt", request_data.get("admin", False))
-            if not isinstance(raw, bool):
-                return jsonify({'status': 'error', 'message': 'collateral_exempt must be a boolean'}), 400
-            collateral_exempt = raw
+            # collateral_exempt is not accepted from gateway callers (defense in depth — the
+            # validator rejects it too): it waives the collateral registration fee, and there
+            # is no admin identity at this boundary. Covers the legacy 'admin' key name.
+            if request_data.get("collateral_exempt") or request_data.get("admin"):
+                return jsonify({'status': 'error',
+                                'message': 'collateral_exempt is not accepted on this endpoint'}), 403
 
             # Optional idempotency key forwarded to the validator. Validated
             # here so a malformed value fails fast; forwarded in the payload
@@ -1150,16 +1154,20 @@ class EntityMinerRestServer(MinerRestServer):
         if not self._coldkey or not self._hotkey or not self._validator_url:
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
 
-        # 4. Sign message
+        # 4. Sign message. nonce + timestamp are signature-covered replay protection: the
+        # validator rejects a reused nonce (per coldkey::hotkey, 5-minute window), so a
+        # captured request cannot be replayed to re-trigger the registration-fee slashing.
         try:
+            nonce = uuid.uuid4().hex
+            timestamp_ms = int(time.time() * 1000)
             message_dict = {
                 "account_size": account_size,
                 "asset_class": asset_class,
                 "entity_coldkey": self._coldkey.ss58_address,
                 "entity_hotkey": self._hotkey.ss58_address,
+                "nonce": nonce,
+                "timestamp": timestamp_ms,
             }
-            if collateral_exempt:
-                message_dict["collateral_exempt"] = collateral_exempt
             if is_hl:
                 message_dict["hl_address"] = hl_address
                 if payout_address is not None:
@@ -1179,10 +1187,12 @@ class EntityMinerRestServer(MinerRestServer):
                 "asset_class": asset_class,
                 "drawdown_criteria": drawdown_criteria,
                 "signature": signature,
-                "version": "2.2.1"
+                "nonce": nonce,
+                "timestamp": timestamp_ms,
+                # Capability version for the validator's minimum-version gate: this gateway
+                # signs the nonce+timestamp field set introduced with the 3.1.0 minimum.
+                "version": "3.1.0"
             }
-            if collateral_exempt:
-                payload["collateral_exempt"] = collateral_exempt
             # client_ref rides unsigned alongside drawdown_criteria. message_dict
             # above is intentionally left untouched so the coldkey signature is
             # byte-identical to the legacy field set (forward/back compatible).

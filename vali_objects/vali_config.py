@@ -78,8 +78,13 @@ class ValiConfig:
     # versioning
     VERSION = meta_version
 
-    # minimum required vanta-cli version
-    VANTA_CLI_MINIMUM_VERSION = "2.2.1"
+    # minimum required vanta-cli version.
+    # 3.1.0: create-subaccount requires a signed nonce+timestamp (replay protection) and no
+    # longer accepts collateral_exempt — older CLIs sign the legacy field set and would fail
+    # with a confusing missing-fields/signature error; the version gate gives them a clear
+    # upgrade message instead. COORDINATE: release vanta-cli >= 3.1.0 (signing the new field
+    # set) before this reaches mainnet.
+    VANTA_CLI_MINIMUM_VERSION = "3.1.0"
 
     DAYS_IN_YEAR_CRYPTO = 365  # annualization factor
     DAYS_IN_YEAR_FOREX = 252
