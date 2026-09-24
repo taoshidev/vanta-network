@@ -51,9 +51,18 @@ class CustomEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 class ValiBkpUtils:
+    # When True, running_unit_tests=True resolves to the production validation/ paths instead of
+    # tests/validation/. Lets restore_validator_from_backup.py keep test-mode server behavior
+    # while writing the restored state where the validator reads it.
+    use_production_paths = False
+
+    @staticmethod
+    def get_test_dir_suffix(running_unit_tests: bool) -> str:
+        return "/tests" if running_unit_tests and not ValiBkpUtils.use_production_paths else ""
+
     @staticmethod
     def get_miner_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/miners/"
 
     @staticmethod
@@ -108,7 +117,7 @@ class ValiBkpUtils:
 
     @staticmethod
     def get_positions_override_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/data/positions_overrides/"
 
     @staticmethod
@@ -162,36 +171,36 @@ class ValiBkpUtils:
 
     @staticmethod
     def get_eliminations_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/eliminations.json"
 
     @staticmethod
     def get_departed_hotkeys_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/departed_hotkeys.json"
 
     @staticmethod
     def get_perf_ledgers_path(running_unit_tests=False) -> str:
         """Get current perf_ledgers path (compressed JSON format)."""
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json.gz"
 
     @staticmethod
     def get_perf_ledgers_path_pkl(running_unit_tests=False) -> str:
         """Get .pkl path (for migration from bug that wrote .json.gz data with .pkl extension)."""
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.pkl"
 
     @staticmethod
     def get_perf_ledgers_path_legacy(running_unit_tests=False) -> str:
         """Get legacy uncompressed perf_ledgers path for migration."""
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/perf_ledgers.json"
 
     @staticmethod
     def get_frozen_perf_ledgers_path(running_unit_tests=False) -> str:
         """Get frozen perf_ledgers path (compressed JSON format) for eliminated miners."""
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/frozen_perf_ledgers.json.gz"
 
     @staticmethod
@@ -265,42 +274,42 @@ class ValiBkpUtils:
 
     @staticmethod
     def get_challengeperiod_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/challengeperiod.json"
 
     @staticmethod
     def get_asset_selections_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/asset_selections.json"
 
     @staticmethod
     def get_last_order_timestamp_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/timestamp.json"
 
     @staticmethod
     def get_miner_account_sizes_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/miner_account_sizes.json"
 
     @staticmethod
     def get_entity_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entities.json"
 
     @staticmethod
     def get_weekly_seal_ledger_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/weekly_seal_ledger.json.gz"
 
     @staticmethod
     def get_entity_collateral_cache_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entity_collateral_cache.json"
 
     @staticmethod
     def get_entity_slash_tracking_file_location(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entity_slash_tracking.json"
 
     @staticmethod
@@ -347,7 +356,7 @@ class ValiBkpUtils:
         Returns:
             Full path to compressed validator checkpoint output file (.gz)
         """
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/runnable/validator_checkpoint.json.gz"
 
     @staticmethod
@@ -371,7 +380,7 @@ class ValiBkpUtils:
 
     @staticmethod
     def get_vali_dir(running_unit_tests=False) -> str:
-        suffix = "/tests" if running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/"
 
     @staticmethod
