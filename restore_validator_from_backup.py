@@ -1,4 +1,13 @@
-import argparse
+"""
+Restore validator state from a validator checkpoint (validator_checkpoint.json[.gz]).
+
+The restore overwrites everything the checkpoint covers: positions, archived positions, limit
+orders, eliminations, perf ledgers, challenge period, miner accounts, asset selections, entities
+and weekly seals. Each service's manager is created in-process in LOCAL mode with no RPC servers,
+so a running validator's ports are never touched. Never run this against the mothership.
+
+Always writes to validation/ and backs it up first. Stop the validator before running.
+"""
 import json
 import gzip
 import os
@@ -8,124 +17,36 @@ import time
 import traceback
 from datetime import datetime
 
-from shared_objects.rpc.common_data_server import CommonDataServer
-from shared_objects.rpc.metagraph_server import MetagraphServer
-from shared_objects.rpc.rpc_client_base import RPCClientBase
-from shared_objects.rpc.rpc_server_base import RPCServerBase
 from time_util.time_util import TimeUtil
+from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.position import Position
-from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
-from vali_objects.challenge_period.challengeperiod_server import ChallengePeriodServer
-from vali_objects.utils.elimination.elimination_client import EliminationClient
-from vali_objects.utils.elimination.elimination_server import EliminationServer
-from vali_objects.utils.limit_order.limit_order_server import LimitOrderServer
-from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.position_management.position_manager_server import PositionManagerServer
-from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.miner_account.miner_account_server import MinerAccountServer
+from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
+from vali_objects.utils.elimination.elimination_manager import EliminationManager
+from vali_objects.utils.limit_order.limit_order_manager import LimitOrderManager
+from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
-from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-from vali_objects.utils.asset_selection.asset_selection_server import AssetSelectionServer
-from entity_management.entity_server import EntityServer
-from entity_management.entity_client import EntityClient
-
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_server import PerfLedgerServer
-from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
-import time as time_module
+from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
+from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
+from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import WeeklySealLedger
+from entity_management.entity_manager import EntityManager
 import logging
 from shared_objects.log import logger
 
-DEBUG = 0
+# Managers run in test mode (no wallets, secrets or broadcasts); ValiBkpUtils.use_production_paths
+# still points their files at validation/ rather than tests/validation/.
+RUNNING_UNIT_TESTS = True
+ValiBkpUtils.use_production_paths = True
+CONNECTION_MODE = RPCConnectionMode.LOCAL
 
-def start_servers_for_restore():
-    """
-    Start all required RPC servers in background threads for restore operation.
-    Returns dict of server instances that can be shut down later.
-    """
-    logger.info("Starting RPC servers for restore operation...")
-    servers = {}
+# Per-hotkey directories under miners/ that the checkpoint fully describes
+MINER_SUBDIRS_TO_OVERWRITE = ("positions", "limit_orders", "archived_positions")
 
-    servers['common_data'] = CommonDataServer()
-    servers['metagraph_server'] = MetagraphServer()
-    # Start servers in dependency order
-    # 1. Base servers with no dependencies
-    servers['position'] = PositionManagerServer(
-        running_unit_tests=True,
-        is_backtesting=False,
-        start_server=True,
-        start_daemon=False,
-        load_from_disk=False,  # Don't load existing positions (we're restoring from backup)
-        split_positions_on_disk_load=False  # CRITICAL: Disable position splitting during restore
-    )
-
-    servers['miner_account'] = MinerAccountServer(
-        start_server=True,
-        running_unit_tests=True
-    )
-
-    servers['perf_ledger'] = PerfLedgerServer(
-        start_server=True,
-        running_unit_tests=True
-    )
-
-    servers['challengeperiod'] = ChallengePeriodServer(
-        start_server=True,
-        running_unit_tests=True
-    )
-
-    # 2. Elimination server (needed by LimitOrderManager)
-    servers['elimination'] = EliminationServer(
-        start_server=True,
-        running_unit_tests=True
-    )
-
-    # Give servers a moment to start listening
-    time_module.sleep(2)
-
-    # 3. Servers that depend on other servers
-    servers['limit_order'] = LimitOrderServer(
-        start_server=True,
-        running_unit_tests=True,
-        serve=False  # Don't start market order manager
-    )
-
-    servers['asset_selection'] = AssetSelectionServer(
-        start_server=True,
-        running_unit_tests=True
-    )
-
-    servers['entity'] = EntityServer(
-        start_server=True,
-        running_unit_tests=True
-    )
-
-    # Give all servers time to fully initialize
-    time_module.sleep(1)
-    logger.info("All RPC servers started successfully")
-
-    return servers
-
-def shutdown_all_servers_and_clients():
-    """
-    Shutdown all RPC servers and clients using proper cleanup methods.
-
-    This ensures complete cleanup and prevents the script from hanging.
-    """
-    logger.info("Shutting down all RPC clients and servers...")
-
-    # Step 1: Disconnect all clients first (prevents clients from holding connections)
-    RPCClientBase.disconnect_all()
-    logger.info("  ✓ All RPC clients disconnected")
-
-    # Step 2: Shutdown all servers and force-kill any processes still using RPC ports
-    RPCServerBase.shutdown_all(force_kill_ports=True)
-    logger.info("  ✓ All RPC servers shut down and ports cleaned up")
-
-    logger.info("All servers and clients shut down successfully")
 
 def backup_validation_directory():
-    dir_to_backup = ValiBkpUtils.get_vali_dir()
+    dir_to_backup = ValiBkpUtils.get_vali_dir(running_unit_tests=RUNNING_UNIT_TESTS)
+    if not os.path.exists(dir_to_backup):
+        logger.info(f"Nothing to back up at {dir_to_backup}")
+        return
     # Write to the backup location. Make sure it is a function of the date. No dashes. Days and months get 2 digits.
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_location = ValiBkpUtils.get_vali_bkp_dir() + date_str + '/'
@@ -134,50 +55,17 @@ def backup_validation_directory():
     logger.info(f"backed up {dir_to_backup} to {backup_location}")
 
 
-def force_validator_to_restore_from_checkpoint(validator_hotkey, metagraph, config, secrets):
-    try:
-        time_ms = TimeUtil.now_in_millis()
-        if time_ms > 1716644087000 + 1000 * 60 * 60 * 2:  # Only perform under a targeted time as checkpoint goes stale quickly.
-            return
-
-        if "mothership" in secrets:
-            logger.warning(f"Validator {validator_hotkey} is the mothership. Not forcing restore.")
-            return
-
-        #if config.subtensor.network == "test":  # Only need do this in mainnet
-        #    logger.warning("Not forcing validator to restore from checkpoint in testnet.")
-        #    return
-
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in metagraph.neurons}
-        my_trust = hotkey_to_v_trust.get(validator_hotkey)
-        if my_trust is None:
-            logger.warning(f"Validator {validator_hotkey} not found in metagraph. Cannot determine trust.")
-            return
-
-        # Good enough
-        #if my_trust > 0.5:
-        #    return
-
-        logger.warning(f"Validator {validator_hotkey} trust is {my_trust}. Forcing restore.")
-        regenerate_miner_positions(perform_backup=True, backup_from_data_dir=True, ignore_timestamp_checks=True)
-        logger.info('Successfully forced validator to restore from checkpoint.')
-
-    except Exception as e:
-        logger.error(f"Error forcing validator to restore from checkpoint: {e}")
-        logger.error(traceback.format_exc())
-
-
-def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, ignore_timestamp_checks=False):
+def load_checkpoint() -> dict:
     # Check for compressed version first, then fallback to uncompressed for backward compatibility
-    compressed_path = ValiBkpUtils.get_validator_checkpoint_path(use_data_dir=backup_from_data_dir)
-    uncompressed_path = ValiBkpUtils.get_backup_file_path(use_data_dir=backup_from_data_dir)
+    compressed_path = ValiBkpUtils.get_validator_checkpoint_path()
+    uncompressed_path = ValiBkpUtils.get_backup_file_path()
 
     # Load checkpoint file - fail fast if file is missing or corrupt
     if os.path.exists(compressed_path):
         logger.info(f"Found compressed checkpoint file: {compressed_path}")
         try:
             with gzip.open(compressed_path, 'rt', encoding='utf-8') as f:
-                data = json.load(f)
+                return json.load(f)
         except Exception as e:
             if "Not a gzipped file" in str(e):
                 logger.error(f"File {compressed_path} has .gz extension but contains uncompressed data.")
@@ -189,6 +77,7 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
             data = json.loads(ValiBkpUtils.get_file(uncompressed_path))
             if isinstance(data, str):
                 data = json.loads(data)
+            return data
         except Exception as e:
             if "invalid start byte" in str(e) or "'utf-8' codec can't decode" in str(e):
                 logger.error(f"File {uncompressed_path} appears to contain compressed data but lacks .gz extension.")
@@ -197,292 +86,147 @@ def regenerate_miner_positions(perform_backup=True, backup_from_data_dir=False, 
     else:
         raise FileNotFoundError(f"No checkpoint file found at {uncompressed_path} or {compressed_path}")
 
+
+def clear_restore_targets():
+    """
+    Delete the state the checkpoint replaces, so each manager starts empty and the result matches
+    the checkpoint exactly. Several syncs merge into existing state (challenge period, entities,
+    weekly seals), so clearing first is what makes the restore an overwrite.
+    """
+    miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=RUNNING_UNIT_TESTS)
+    if os.path.exists(miner_dir):
+        for hotkey in ValiBkpUtils.get_directories_in_dir(miner_dir):
+            for subdir in MINER_SUBDIRS_TO_OVERWRITE:
+                shutil.rmtree(os.path.join(miner_dir, hotkey, subdir), ignore_errors=True)
+
+    rut = RUNNING_UNIT_TESTS
+    for file_path in (
+        ValiBkpUtils.get_eliminations_dir(rut),
+        ValiBkpUtils.get_perf_ledgers_path(rut),
+        ValiBkpUtils.get_perf_ledgers_path_pkl(rut),
+        ValiBkpUtils.get_perf_ledgers_path_legacy(rut),
+        ValiBkpUtils.get_frozen_perf_ledgers_path(rut),
+        ValiBkpUtils.get_challengeperiod_file_location(rut),
+        ValiBkpUtils.get_miner_account_sizes_file_location(rut),
+        ValiBkpUtils.get_asset_selections_file_location(rut),
+        ValiBkpUtils.get_entity_file_location(rut),
+        ValiBkpUtils.get_weekly_seal_ledger_file_location(rut),
+    ):
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    logger.info(f"Cleared restore targets under {ValiBkpUtils.get_vali_dir(running_unit_tests=rut)}")
+
+
+def write_positions(hotkey_to_dashboard: dict, archived: bool) -> tuple[int, int]:
+    """
+    Write every position in the checkpoint straight to disk, one file per position, in the same
+    layout PositionManager uses. Returns (n_written, n_skipped).
+    """
+    n_written = 0
+    n_skipped = 0
+    for hotkey, dashboard in hotkey_to_dashboard.items():
+        if archived:
+            base_dir = ValiBkpUtils.get_miner_archived_positions_dir(hotkey, running_unit_tests=RUNNING_UNIT_TESTS)
+        else:
+            base_dir = ValiBkpUtils.get_miner_all_positions_dir(hotkey, running_unit_tests=RUNNING_UNIT_TESTS)
+        for position_dict in dashboard['positions']:
+            try:
+                position = Position(**position_dict)
+            except Exception as e:
+                tp = position_dict.get('trade_pair')
+                tp_id = tp[0] if isinstance(tp, list) else tp
+                logger.warning(f"Skipping position for hotkey {hotkey[-8:]} trade_pair={tp_id}: {e}")
+                n_skipped += 1
+                continue
+            status_dir = "open" if position.is_open_position else "closed"
+            file_path = os.path.join(base_dir, position.trade_pair.trade_pair_id, status_dir, position.position_uuid)
+            ValiBkpUtils.write_file(file_path, position)
+            n_written += 1
+    return n_written, n_skipped
+
+
+def regenerate_miner_positions():
+    data = load_checkpoint()
+
     logger.info("Found validator backup file with the following attributes:")
-    # Log every key and value pair in the data except for positions and eliminations
+    # Log every key and value pair in the data, with sizes for dicts and lists
     for key, value in data.items():
-        # Check is the value is of type dict or list. If so, print the size of the dict or list
         if isinstance(value, dict) or isinstance(value, list):
-            # Log the size of the positions and eliminations
             logger.info(f"    {key}: {len(value)} entries")
         else:
             logger.info(f"    {key}: {value}")
-    backup_creation_time_ms = data['created_timestamp_ms']
+    logger.info(f"    backup_creation_time: {TimeUtil.millis_to_formatted_date_str(data['created_timestamp_ms'])}")
 
-    # Start RPC servers (tests production code paths)
-    servers = start_servers_for_restore()
+    backup_validation_directory()
 
-    try:
-        # Create RPC clients to connect to the servers
-        # This tests the actual production RPC communication paths
-        position_client = PositionManagerClient(running_unit_tests=True)
-        elimination_client = EliminationClient()
-        miner_account_client = MinerAccountClient()
-        perf_ledger_client = PerfLedgerClient(running_unit_tests=True)
-        challengeperiod_client = ChallengePeriodClient(running_unit_tests=True)
-        limit_order_client = LimitOrderClient(running_unit_tests=True)
-        asset_selection_client = AssetSelectionClient(running_unit_tests=True)
-        entity_client = EntityClient(running_unit_tests=True)
+    clear_restore_targets()
 
-        if DEBUG:
-            position_client.pre_run_setup()
+    # Positions and archived positions: written directly, no manager needed
+    total_in_backup = sum(len(d['positions']) for d in data['positions'].values())
+    n_written, n_skipped = write_positions(data['positions'], archived=False)
+    logger.info(f"Restored {n_written}/{total_in_backup} positions for {len(data['positions'])} hotkeys")
 
-        # We want to get the smallest processed_ms timestamp across all positions in the backup and then compare this to
-        # the smallest processed_ms timestamp across all orders on the local filesystem. If the backup smallest timestamp is
-        # older than the local smallest timestamp, we will not regenerate the positions. Similarly for the oldest timestamp.
-        smallest_disk_ms, largest_disk_ms = position_client.get_extreme_position_order_processed_on_disk_ms()
-        smallest_backup_ms = data['youngest_order_processed_ms']
-        largest_backup_ms = data['oldest_order_processed_ms']
+    archived_positions = data.get('archived_positions', {})
+    total_archived_in_backup = sum(len(d['positions']) for d in archived_positions.values())
+    n_archived_written, n_archived_skipped = write_positions(archived_positions, archived=True)
+    logger.info(f"Restored {n_archived_written}/{total_archived_in_backup} archived positions")
 
-        # Check if disk is empty (returns inf/0 when no positions exist)
-        disk_is_empty = smallest_disk_ms == float('inf') or largest_disk_ms == 0
+    if n_skipped or n_archived_skipped:
+        logger.warning(f"Skipped {n_skipped} positions and {n_archived_skipped} archived positions "
+                       f"(unresolvable dynamic trade pairs)")
+    if n_written + n_skipped != total_in_backup or n_archived_written + n_archived_skipped != total_archived_in_backup:
+        raise AssertionError("Position count mismatch between checkpoint and restored files")
 
-        # Format timestamps for display - fail fast if data is corrupt
-        formatted_backup_creation_time = TimeUtil.millis_to_formatted_date_str(backup_creation_time_ms)
-        formatted_backup_date_largest = TimeUtil.millis_to_formatted_date_str(largest_backup_ms)
-        formatted_backup_date_smallest = TimeUtil.millis_to_formatted_date_str(smallest_backup_ms)
+    # Managers load from the now-empty targets, then take the checkpoint's data
+    kwargs = dict(running_unit_tests=RUNNING_UNIT_TESTS, connection_mode=CONNECTION_MODE)
 
-        if disk_is_empty:
-            formatted_disk_date_largest = "N/A (no positions on disk)"
-            formatted_disk_date_smallest = "N/A (no positions on disk)"
-        else:
-            formatted_disk_date_largest = TimeUtil.millis_to_formatted_date_str(largest_disk_ms)
-            formatted_disk_date_smallest = TimeUtil.millis_to_formatted_date_str(smallest_disk_ms)
+    eliminations = data['eliminations']
+    logger.info(f"regenerating {len(eliminations)} eliminations")
+    EliminationManager(**kwargs).write_eliminations_to_disk(eliminations)
 
-        logger.info("Timestamp analysis of backup vs disk (UTC):")
-        logger.info(f"    backup_creation_time: {formatted_backup_creation_time}")
-        logger.info(f"    smallest_disk_order_timestamp: {formatted_disk_date_smallest}")
-        logger.info(f"    smallest_backup_order_timestamp: {formatted_backup_date_smallest}")
-        logger.info(f"    oldest_disk_order_timestamp: {formatted_disk_date_largest}")
-        logger.info(f"    oldest_backup_order_timestamp: {formatted_backup_date_largest}")
+    perf_ledger_manager = PerfLedgerManager(enable_rss=False, **kwargs)
+    perf_ledgers = data.get('perf_ledgers', {})
+    logger.info(f"regenerating {len(perf_ledgers)} perf ledgers")
+    perf_ledger_manager.save_perf_ledgers(perf_ledgers)
+    frozen_perf_ledgers = data.get('frozen_perf_ledgers', {})
+    logger.info(f"regenerating {len(frozen_perf_ledgers)} frozen perf ledgers")
+    perf_ledger_manager.sync_frozen_ledgers(frozen_perf_ledgers)
 
-        # Validate timestamp consistency - fail fast on data integrity issues
-        if ignore_timestamp_checks:
-            checkpoint_file = compressed_path if os.path.exists(compressed_path) else uncompressed_path
-            logger.warning(f'SKIPPING TIMESTAMP CHECKS - Forcing restore from: {checkpoint_file}')
-        elif disk_is_empty:
-            logger.info("✓ Disk is empty - proceeding with fresh restore")
-        elif smallest_disk_ms >= smallest_backup_ms and largest_disk_ms <= backup_creation_time_ms:
-            logger.info("✓ Timestamp validation passed - backup is newer than disk data")
-        elif largest_disk_ms > backup_creation_time_ms:
-            raise ValueError(
-                f"BACKUP TOO OLD: Backup created at {formatted_backup_creation_time} "
-                f"but disk has data as recent as {formatted_disk_date_largest}. "
-                f"Please re-pull a newer backup file before restoring."
-            )
-        elif smallest_disk_ms < smallest_backup_ms:
-            # Deregistered miners can trip this check - allow to proceed but warn
-            logger.warning(
-                f"Disk has older data ({formatted_disk_date_smallest}) than backup ({formatted_backup_date_smallest}). "
-                f"This may be from deregistered miners. Proceeding with restore."
-            )
-        else:
-            raise ValueError(
-                f"TIMESTAMP VALIDATION FAILED: Unexpected timestamp relationship detected. "
-                f"Backup: {formatted_backup_creation_time}, Disk range: {formatted_disk_date_smallest} to {formatted_disk_date_largest}"
-            )
+    challengeperiod = data.get('challengeperiod', {})
+    logger.info(f"syncing {len(challengeperiod)} challenge period records")
+    ChallengePeriodManager(**kwargs).sync_challenge_period_data(challengeperiod)
 
+    # Asset selections before miner accounts: the account sync reads asset selections from disk
+    asset_selections = data.get('asset_selections', {})
+    logger.info(f"syncing {len(asset_selections)} miner asset selection records")
+    AssetSelectionManager(**kwargs).sync_miner_asset_selection_data(asset_selections)
 
-        n_existing_position = len(position_client.get_all_hotkeys())
-        n_existing_eliminations = len(elimination_client.get_eliminations_from_memory())
-        msg = (f"Detected {n_existing_position} hotkeys with positions, {n_existing_eliminations} eliminations")
-        logger.info(msg)
+    miner_account_sizes = data.get('miner_account_sizes', {})
+    logger.info(f"syncing {len(miner_account_sizes)} miner account size records")
+    MinerAccountManager(**kwargs).sync_miner_account_sizes_data(miner_account_sizes)
 
-        logger.info("Overwriting all existing positions and eliminations.")
-        if perform_backup:
-            backup_validation_directory()
+    limit_orders = data.get('limit_orders', {})
+    logger.info(f"syncing limit orders for {len(limit_orders)} trade pairs")
+    LimitOrderManager(serve=False, **kwargs).sync_limit_orders(limit_orders)
 
-        # Calculate global statistics
-        total_positions_in_backup = sum(len(json_positions['positions']) for json_positions in data['positions'].values())
-        num_hotkeys = len(data['positions'].keys())
+    entities = data.get('entities', {})
+    logger.info(f"syncing {len(entities)} entity records")
+    EntityManager(**kwargs).sync_entity_data(entities)
 
-        logger.info("=" * 80)
-        logger.info("RESTORE SUMMARY:")
-        logger.info(f"  Total hotkeys: {num_hotkeys}")
-        logger.info(f"  Total positions: {total_positions_in_backup}")
-        logger.info(f"  Average positions per hotkey: {total_positions_in_backup / num_hotkeys:.1f}")
-        logger.info("=" * 80)
+    weekly_seals = data.get('weekly_seals', {})
+    logger.info("syncing weekly seal records")
+    WeeklySealLedger(running_unit_tests=RUNNING_UNIT_TESTS).sync_from_checkpoint(weekly_seals)
 
-        # CRITICAL: Clear both memory AND disk to avoid stale positions from previous runs
-        # Without this, old positions on disk can trigger deletion logic during restore
-        position_client.clear_all_miner_positions_and_disk()
+    logger.info("== RESTORE COMPLETED SUCCESSFULLY ==")
 
-        total_saved = 0
-        total_skipped = 0
-        for hotkey, json_positions in data['positions'].items():
-            # Sort positions by close_ms to save in chronological order
-            # (closed positions first, then open positions with close_ms=None → inf)
-            positions = []
-            n_skipped = 0
-            for json_positions_dict in json_positions['positions']:
-                try:
-                    positions.append(Position(**json_positions_dict))
-                except Exception as e:
-                    tp_id = json_positions_dict.get('trade_pair', [None])[0] if isinstance(json_positions_dict.get('trade_pair'), list) else json_positions_dict.get('trade_pair')
-                    logger.warning(f"Skipping position for hotkey {hotkey[-8:]} trade_pair={tp_id}: {e}")
-                    n_skipped += 1
-                    total_skipped += 1
-            if not positions:
-                continue
-            assert len(positions) > 0, f"no positions for hotkey {hotkey}"
-
-            # Check for duplicate trade pairs BEFORE saving
-            trade_pair_to_positions = {}
-            for p in positions:
-                tp_id = p.trade_pair.trade_pair_id
-                if tp_id not in trade_pair_to_positions:
-                    trade_pair_to_positions[tp_id] = []
-                trade_pair_to_positions[tp_id].append(p)
-
-            duplicates = {tp: ps for tp, ps in trade_pair_to_positions.items() if len(ps) > 1}
-            if duplicates:
-                # Show which trade pairs have multiple positions and the breakdown
-                duplicate_summary = ', '.join([f"{tp}({len(ps)})" for tp, ps in duplicates.items()])
-                hotkey_short = hotkey[-8:] if len(hotkey) > 8 else hotkey
-                logger.warning(f"...{hotkey_short}: {len(duplicates)} trade pairs with multiple positions: {duplicate_summary}")
-                logger.warning(f"  Total: {len(positions)} positions (all will be preserved)")
-
-            positions.sort(key=lambda p: p.close_ms if p.close_ms is not None else float('inf'))
-            ValiBkpUtils.make_dir(ValiBkpUtils.get_miner_all_positions_dir(hotkey))
-            for p_obj in positions:
-                #logger.info(f'creating position {p_obj}')
-                # CRITICAL: Pass delete_open_position_if_exists=False to preserve ALL positions from backup
-                # Without this, later closed positions would delete earlier open positions for same trade pair
-                position_client.save_miner_position(p_obj, delete_open_position_if_exists=False)
-
-            # Validate that the positions were written correctly
-            disk_positions = position_client.get_positions_for_one_hotkey(hotkey)
-            n_disk_positions = len(disk_positions)
-            n_memory_positions = len(positions)
-
-            # During restore, we save closed positions FIRST (due to sort order), then open positions.
-            # Since closed positions are saved first, the deletion logic in save_miner_position doesn't
-            # find any existing open positions to delete. Therefore, ALL positions are kept.
-            # The sort order specifically prevents deletions during restore (see comment above sort).
-            expected_disk_count = n_memory_positions
-
-            if n_disk_positions != expected_disk_count and n_skipped == 0:
-                memory_p_uuids = set([p.position_uuid for p in positions])
-                disk_p_uuids = set([p.position_uuid for p in disk_positions])
-                missing_uuids = memory_p_uuids - disk_p_uuids
-                extra_uuids = disk_p_uuids - memory_p_uuids
-
-                logger.error(f"UNEXPECTED position mismatch for hotkey {hotkey}:")
-                logger.error(f"  Expected: {expected_disk_count} positions")
-                logger.error(f"  Got: {n_disk_positions} positions")
-
-                if missing_uuids:
-                    logger.error(f"  Missing {len(missing_uuids)} positions from disk:")
-                    for uuid in list(missing_uuids)[:5]:  # Limit to first 5 for brevity
-                        missing_pos = next((p for p in positions if p.position_uuid == uuid), None)
-                        if missing_pos:
-                            logger.error(f"    - {uuid}: trade_pair={missing_pos.trade_pair.trade_pair_id}, "
-                                           f"is_open={missing_pos.is_open_position}")
-
-                if extra_uuids:
-                    logger.error(f"  Found {len(extra_uuids)} unexpected positions on disk:")
-                    logger.error("  POSSIBLE CAUSE: Position splitting may have occurred during save operations")
-                    for uuid in list(extra_uuids)[:5]:  # Limit to first 5 for brevity
-                        extra_pos = next((p for p in disk_positions if p.position_uuid == uuid), None)
-                        if extra_pos:
-                            logger.error(f"    + {uuid}: trade_pair={extra_pos.trade_pair.trade_pair_id}, "
-                                           f"is_open={extra_pos.is_open_position}, "
-                                           f"open_ms={extra_pos.open_ms}, close_ms={extra_pos.close_ms}")
-                            # Check if this looks like a split position (has fewer orders than original)
-                            logger.error(f"      orders: {len(extra_pos.orders)}")
-
-                raise AssertionError(f"Unexpected position count: expected {expected_disk_count}, got {n_disk_positions}")
-
-            # Log success (only reached if validation passed)
-            if duplicates:
-                hotkey_short = hotkey[-8:] if len(hotkey) > 8 else hotkey
-                logger.info(f"  ✓ ...{hotkey_short}: Saved {n_memory_positions} positions (with overlaps)")
-
-            total_saved += n_memory_positions
-
-        # Log final global statistics and validate - fail fast on mismatch
-        logger.info("=" * 80)
-        logger.info("POSITION RESTORE COMPLETE:")
-        logger.info(f"  Expected to save: {total_positions_in_backup} positions")
-        logger.info(f"  Actually saved: {total_saved} positions")
-        if total_skipped:
-            logger.warning(f"  Skipped: {total_skipped} positions (unresolvable dynamic trade pairs)")
-        expected_saved = total_positions_in_backup - total_skipped
-        if total_saved == expected_saved:
-            logger.info("  ✓ All resolvable positions successfully restored!")
-        else:
-            logger.error(f"  ✗ Mismatch: {expected_saved - total_saved} positions missing")
-            raise AssertionError(
-                f"GLOBAL POSITION COUNT MISMATCH: Expected {expected_saved} positions, "
-                f"but saved {total_saved}. Missing {expected_saved - total_saved} positions."
-            )
-        logger.info("=" * 80)
-
-        logger.info(f"regenerating {len(data['eliminations'])} eliminations")
-        elimination_client.write_eliminations_to_disk(data['eliminations'])
-
-        perf_ledgers = data.get('perf_ledgers', {})
-        logger.info(f"regenerating {len(perf_ledgers)} perf ledgers")
-        perf_ledger_client.save_perf_ledgers(perf_ledgers)
-
-        ## Now sync challenge period with the disk
-        challengeperiod = data.get('challengeperiod', {})
-        challengeperiod_client.sync_challenge_period_data(challengeperiod)
-
-        ## Sync miner account sizes with the disk
-        miner_account_sizes = data.get('miner_account_sizes', {})
-        if miner_account_sizes:
-            logger.info(f"syncing {len(miner_account_sizes)} miner account size records")
-            miner_account_client.sync_miner_account_sizes_data(miner_account_sizes)
-        else:
-            logger.info("No miner account sizes found in backup data")
-
-        limit_orders = data.get('limit_orders', {})
-        limit_order_client.sync_limit_orders(limit_orders)
-
-        ## Restore asset selections
-        asset_selections_data = data.get('asset_selections', {})
-        if asset_selections_data:
-            logger.info(f"syncing {len(asset_selections_data)} miner asset selection records")
-            asset_selection_client.sync_miner_asset_selection_data(asset_selections_data)
-        else:
-            logger.info("No asset selections found in backup data")
-
-        ## Restore entity data
-        entities_data = data.get('entities', {})
-        if entities_data:
-            logger.info(f"syncing {len(entities_data)} entity records")
-            entity_client.sync_entity_data(entities_data)
-            logger.info(f"✓ Restored {len(entities_data)} entities")
-        else:
-            logger.info("No entity data found in backup data")
-
-        logger.info("✓ RESTORE COMPLETED SUCCESSFULLY - All data validated and saved")
-
-    finally:
-        # Always shutdown servers and clients, even if restore fails
-        # This prevents the script from hanging after completion
-        shutdown_all_servers_and_clients()
 
 if __name__ == "__main__":
     logger.setLevel(logging.INFO)
     t0 = time.time()
-    # Check commandline arg "disable_backup" to disable backup.
-    parser = argparse.ArgumentParser(description="Regenerate miner positions with optional backup disabling.")
-    # Add disable_backup argument, default is 0 (False), change type to int
-    parser.add_argument('--backup', type=int, default=0,
-                        help='Set to 1 to enable backup during regeneration process.')
-
-    # Parse command-line arguments
-    args = parser.parse_args()
-
-    # Use the disable_backup argument to control backup
-    perform_backup = bool(args.backup)
-    logger.info("regenerating miner positions")
-    if not perform_backup:
-        logger.warning("backup disabled")
+    logger.warning(f"Restoring into {ValiBkpUtils.get_vali_dir(running_unit_tests=RUNNING_UNIT_TESTS)}")
 
     try:
-        regenerate_miner_positions(perform_backup, ignore_timestamp_checks=True)
+        regenerate_miner_positions()
         logger.info(f"regeneration complete in {time.time() - t0:.2f} seconds")
     except Exception as e:
         logger.error(f"RESTORE FAILED: {e}")
