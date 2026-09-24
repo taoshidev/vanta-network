@@ -9,8 +9,7 @@ Your validator receives trade signals from miners and maintains a portfolio per 
 Your validator:
 - Tracks portfolio returns using live price information
 - Eliminates miners whose portfolio value declines beyond the drawdown limits
-- Detects & eliminates miners copying from the network by performing analysis on every order received
-- Maintains information on plagiarizing miners in `validation/miner_copying.json`
+- Eliminates miners copying from the network, using plagiarism scores polled hourly from Taoshi's plagiarism service (`ValiConfig.PLAGIARISM_URL`) and held in memory by the plagiarism RPC service
 - Records eliminated miners (due to drawdown limits or plagiarism) in `validation/eliminations.json`
 - Maintains debt ledgers for each miner, combining emissions, penalties, and performance data
 - Sets weights every 5 minutes using a debt-based scoring system that pays miners based on previous week's performance (PnL scaled by penalties), targeting payout completion by midnight on Sunday of each week
@@ -268,20 +267,22 @@ Subnet 8 uses a commit-reveal mechanism in mainnet for weight setting:
 1. **Rate Limiting**: Run a local subtensor to avoid rate limit issues on finney that prevent weights from being set
    - [Subtensor installation guide](https://github.com/opentensor/subtensor)
 
-2. **Testnet Configuration**: Always include `--subtensor.network test` and `--netuid 116` for testnet
+2. **Consensus config overrides**: The `PRO_CHALLENGE_*` environment variables — and the `PTN_ALLOW_CONFIG_OVERRIDES=1` opt-in that unlocks them — are **testnet-only** knobs that change promotion decisions and the weekly penalties the weight calculator reads. A validator started on netuid 8 with any of them set in its environment refuses to start. See [entity_miner.md](entity_miner.md#testnet-overrides).
 
-3. **JSON Format**: Ensure `secrets.json` is correctly formatted with proper syntax
+3. **Testnet Configuration**: Always include `--subtensor.network test` and `--netuid 116` for testnet
 
-4. **API Key Sharing**: Do not share API keys across multiple validators/scripts
+4. **JSON Format**: Ensure `secrets.json` is correctly formatted with proper syntax
+
+5. **API Key Sharing**: Do not share API keys across multiple validators/scripts
    - Each key allows only one websocket connection
 
-5. **Port Configuration**: In cloud environments (e.g., Runpod), you may not have your Bittensor default port open (8091)
+6. **Port Configuration**: In cloud environments (e.g., Runpod), you may not have your Bittensor default port open (8091)
    - This will cause your validator to be unable to communicate with miners and thus have a low VTRUST
    - Explicitly open a TCP port and pass it with: `--axon.port <YOUR_OPEN_PORT>`
 
-6. **Generated Trade Data**: Reach out to the Taoshi team on how to sell the generated trade data via the Request Network
+7. **Generated Trade Data**: Reach out to the Taoshi team on how to sell the generated trade data via the Request Network
 
-7. **Port Issues**: When running a validator in certain cloud environments such as Runpod, you may not have your Bittensor default port open (8091). This will cause your validator to be unable to communicate with miners and thus have a low VTRUST as your validator isn't receiving the latest orders. In order to correct this issue, explicitly open a tcp port, and pass this as an arugment with `--axon.port <YOUR_OPEN_PORT>`
+8. **Port Issues**: When running a validator in certain cloud environments such as Runpod, you may not have your Bittensor default port open (8091). This will cause your validator to be unable to communicate with miners and thus have a low VTRUST as your validator isn't receiving the latest orders. In order to correct this issue, explicitly open a tcp port, and pass this as an arugment with `--axon.port <YOUR_OPEN_PORT>`
 
 ## Security Warnings
 

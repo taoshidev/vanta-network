@@ -14,6 +14,7 @@ import unittest
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.enums.order_type_enum import OrderType
@@ -115,6 +116,7 @@ class TestEntityDashboardIntegration(TestBase):
                 open_ms=open_ms,
                 close_ms=close_ms,
                 trade_pair=TradePair.BTCUSD,
+                position_type=OrderType.LONG,
                 is_closed_position=True,
                 return_at_close=1.02,  # 2% return
                 account_size=100_000,
@@ -134,9 +136,7 @@ class TestEntityDashboardIntegration(TestBase):
 
     def _add_to_challenge_period(self, hotkey: str, bucket: MinerBucket):
         """Add a hotkey to challenge period."""
-        miners = {hotkey: (bucket, self.START_TIME, None, None)}
-        self.challenge_period_client.update_miners(miners)
-        self.challenge_period_client._write_challengeperiod_from_memory_to_disk()
+        self.challenge_period_client.set_miner_bucket(hotkey, bucket, self.START_TIME)
 
     def _build_debt_ledgers(self):
         """Build debt ledgers."""
@@ -194,6 +194,7 @@ class TestEntityDashboardIntegration(TestBase):
             position_uuid=f"stats_position_{hotkey}",
             open_ms=self.START_TIME,
             trade_pair=TradePair.BTCUSD,
+            position_type=OrderType.LONG,
             account_size=200_000,
             orders=[Order(
                 price=60000,
@@ -211,8 +212,7 @@ class TestEntityDashboardIntegration(TestBase):
 
         # 4. Add to challenge period in MAINCOMP bucket
         start_time = self.START_TIME - (60 * ValiConfig.DAILY_MS)  # 60 days before START_TIME
-        miners_dict = {hotkey: (MinerBucket.MAINCOMP, start_time, None, None)}
-        self.challenge_period_client.update_miners(miners_dict)
+        self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.MAINCOMP, start_time)
 
         # 5. Inject account sizes (REQUIRED - must be >= $150k to avoid penalty)
         miner_account_client = self.orchestrator.get_client('miner_account')
@@ -325,8 +325,8 @@ class TestEntityDashboardIntegration(TestBase):
         # Also add to elimination registry
         self.elimination_client.append_elimination_row(
             self.synthetic_hotkey,
-            self.END_TIME,
-            "test_elimination"
+            EliminationReason.MAX_TOTAL_DRAWDOWN,
+            elimination_time_ms=self.END_TIME,
         )
 
         # Get dashboard data
@@ -343,7 +343,7 @@ class TestEntityDashboardIntegration(TestBase):
         elimination_data = dashboard['elimination']
         self.assertIsNotNone(elimination_data, "Elimination data should exist for eliminated miner")
         self.assertEqual(elimination_data['hotkey'], self.synthetic_hotkey)
-        self.assertEqual(elimination_data['reason'], "test_elimination")
+        self.assertEqual(elimination_data['reason'], EliminationReason.MAX_TOTAL_DRAWDOWN.value)
 
     def test_dashboard_data_no_positions(self):
         """Test dashboard data when subaccount has no positions."""
@@ -362,8 +362,8 @@ class TestEntityDashboardIntegration(TestBase):
         # Positions data should be None (no positions)
         self.assertIsNone(dashboard['positions'])
 
-        # Challenge period should be None (not added)
-        self.assertIsNone(dashboard['challenge_period'])
+        # Challenge period reflects the bucket assigned at subaccount creation
+        self.assertEqual(dashboard['challenge_period']['bucket'], MinerBucket.SUBACCOUNT_CHALLENGE.value)
 
         # Ledger should be None (no ledger data)
         self.assertIsNone(dashboard['ledger'])
@@ -424,8 +424,10 @@ class TestEntityDashboardIntegration(TestBase):
         self.assertIsNotNone(positions_data)
         self.assertEqual(positions_data['n_positions'], 3)
 
+        # Challenge period reflects the bucket assigned at subaccount creation
+        self.assertEqual(dashboard['challenge_period']['bucket'], MinerBucket.SUBACCOUNT_CHALLENGE.value)
+
         # Services without data should return None (graceful degradation)
-        self.assertIsNone(dashboard['challenge_period'])
         self.assertIsNone(dashboard['ledger'])
         self.assertIsNone(dashboard['statistics'])
         self.assertIsNone(dashboard['elimination'])

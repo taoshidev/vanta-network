@@ -212,6 +212,21 @@ class LedgerUtils:
         return total_pnl
 
     @staticmethod
+    def realized_return(ledger: PerfLedger, account_size: float) -> float:
+        """
+        Realized return since inception as a decimal (0.06 == 6%). Excludes unrealized marks,
+        mirroring MinerAccount.balance / account_size - 1.0 (less dividend income).
+
+        Args:
+            ledger: PerfLedger - the ledger of the miner
+            account_size: float - the miner's account size in USD
+        """
+        if ledger is None or not account_size:
+            return 0.0
+
+        return ledger.realized_pnl_net_usd / account_size
+
+    @staticmethod
     def daily_pnl_by_date(ledger: PerfLedger) -> dict[datetime.date, float]:
         """
         Calculate daily PnL from performance checkpoints, only including full days

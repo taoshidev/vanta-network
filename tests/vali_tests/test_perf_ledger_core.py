@@ -21,6 +21,7 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import (
     PerfCheckpoint
 )
+from vali_objects.vali_dataclasses.fee_event import FeeType
 
 
 class TestPerfLedgerCore(TestBase):
@@ -43,6 +44,7 @@ class TestPerfLedgerCore(TestBase):
     perf_ledger_client = None
     elimination_client = None
     challenge_period_client = None
+    miner_account_client = None
 
     # Test miner constant
     TEST_HOTKEY = "test_miner_core"
@@ -68,6 +70,7 @@ class TestPerfLedgerCore(TestBase):
         cls.challenge_period_client = cls.orchestrator.get_client('challenge_period')
         cls.elimination_client = cls.orchestrator.get_client('elimination')
         cls.position_client = cls.orchestrator.get_client('position_manager')
+        cls.miner_account_client = cls.orchestrator.get_client('miner_account')
 
     @classmethod
     def tearDownClass(cls):
@@ -280,8 +283,21 @@ class TestPerfLedgerCore(TestBase):
         self.assertGreater(len(portfolio_ledger.cps), 0, "Portfolio should have checkpoints")
 
     def test_fee_calculations(self):
-        """Test carry fee and spread fee calculations."""
+        """Test carry fee and spread fee calculations.
+
+        Fees no longer perturb return_at_close/n_updates directly (that's driven purely
+        by price movement under the debt-based scoring system) - they flow through
+        fee_history into cumulative_fees_usd/equity_ret on the checkpoint instead, which
+        requires an account_size to be registered for the miner.
+        """
         base_time = self.now_ms - (10 * MS_IN_24_HOURS)
+
+        # Register an account size so cumulative_fees_usd/equity_ret get populated.
+        # account_size is derived from collateral_balance_theta * COST_PER_THETA ($500/theta),
+        # so 200 theta -> DEFAULT_ACCOUNT_SIZE ($100k).
+        self.miner_account_client.set_miner_account_size(
+            self.TEST_HOTKEY, self.DEFAULT_ACCOUNT_SIZE / 500, base_time
+        )
 
         # Create position held for multiple days (accumulates carry fees)
         position = self._create_position(
@@ -290,6 +306,9 @@ class TestPerfLedgerCore(TestBase):
             50000.0, 50000.0,  # No price change
             OrderType.LONG
         )
+        # Simulate carry fees accrued while the position was open
+        position.record_fee_event(FeeType.CARRY, 25.0, base_time + (2 * MS_IN_24_HOURS))
+        position.record_fee_event(FeeType.CARRY, 25.0, base_time + (4 * MS_IN_24_HOURS))
         self.position_client.save_miner_position(position)
 
         # Update via client
@@ -302,18 +321,16 @@ class TestPerfLedgerCore(TestBase):
         # Validate the ledger structure first
         self.validate_perf_ledger(btc_ledger, base_time)
 
-        # Find checkpoint with position and validate fee behavior
-        position_checkpoint_found = False
-        for i, cp in enumerate(btc_ledger.cps):
-            if cp.n_updates > 0 and i != 0:  # Skip initial checkpoint which has an update due to initial spread fee
-                position_checkpoint_found = True
+        # Fees should show up as a running total on checkpoints once accrued, and should
+        # depress equity_ret below the raw (fee-free) portfolio return.
+        cumulative_fees_seen = [cp.cumulative_fees_usd for cp in btc_ledger.cps]
+        self.assertGreaterEqual(max(cumulative_fees_seen), 50.0,
+                                 "Cumulative fees should reflect both recorded fee events")
 
-                # Validate checkpoint structure
-                self.validate_checkpoint(cp, "Fee calculation checkpoint")
-
-                break
-
-        self.assertTrue(position_checkpoint_found, "Should find at least one checkpoint with position data")
+        fee_checkpoint = next(cp for cp in btc_ledger.cps if cp.cumulative_fees_usd >= 50.0)
+        self.validate_checkpoint(fee_checkpoint, "Fee calculation checkpoint")
+        self.assertLess(fee_checkpoint.equity_ret, fee_checkpoint.prev_portfolio_ret,
+                         "equity_ret should be depressed relative to the raw portfolio return once fees accrue")
 
     def test_checkpoint_time_alignment(self):
         """Test that checkpoints align to expected time boundaries."""

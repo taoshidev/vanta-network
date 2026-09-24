@@ -1,5 +1,6 @@
 """
-Focused unit tests for ChallengePeriodManager and related dataclasses.
+Focused unit tests for ChallengePeriodManager and related dataclasses, on the standard track.
+The pro account buckets and their promotion criteria live in test_challengeperiod_pro.py.
 No RPC connections, no disk I/O, no daemon simulation.
 Each test uses a manager fixture with all RPC clients mocked and
 is_backtesting=True to skip all file system access.
@@ -38,6 +39,8 @@ _CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager.CommonDataClient",
     "vali_objects.challenge_period.challengeperiod_manager.AssetSelectionClient",
     "vali_objects.challenge_period.challengeperiod_manager.DebtLedgerClient",
+    "vali_objects.challenge_period.challengeperiod_manager.LimitOrderClient",
+    "vali_objects.challenge_period.challengeperiod_manager.EntityClient",
 ]
 
 
@@ -127,7 +130,7 @@ def test_to_json_excludes_drawdown():
     state = _state(MinerBucket.CHALLENGE)
     state.drawdown = DrawdownStats(current_equity=1.5)
     state.rank = 3
-    json_list = state.to_json()
+    json_list = state.to_checkpoint_dict()["entries"]
     assert isinstance(json_list, list)
     assert len(json_list) == 1
     assert "bucket" in json_list[0]
@@ -139,50 +142,6 @@ def test_current_bucket_start_ms():
     state = _state(MinerBucket.CHALLENGE, NOW_MS)
     state.add_bucket_entry(MinerBucket.MAINCOMP, NOW_MS + 100)
     assert state.current_bucket_start_ms == NOW_MS + 100
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Section 2 — parse_checkpoint_dict
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def test_parse_legacy_format():
-    data = {"testing": {"hk_a": NOW_MS}, "success": {"hk_b": NOW_MS + 1}}
-    result = ChallengePeriodManager.parse_checkpoint_dict(data)
-    assert result["hk_a"].current_bucket == MinerBucket.CHALLENGE
-    assert result["hk_b"].current_bucket == MinerBucket.MAINCOMP
-
-
-def test_parse_dict_format():
-    data = {"hk_x": {"bucket": "CHALLENGE", "bucket_start_time": NOW_MS}}
-    result = ChallengePeriodManager.parse_checkpoint_dict(data)
-    assert result["hk_x"].current_bucket == MinerBucket.CHALLENGE
-    assert result["hk_x"].current_bucket_start_ms == NOW_MS
-
-
-def test_parse_dict_format_with_previous_bucket():
-    data = {
-        "hk_x": {
-            "bucket": "MAINCOMP",
-            "bucket_start_time": NOW_MS + 1000,
-            "previous_bucket": "CHALLENGE",
-            "previous_bucket_start_time": NOW_MS,
-        }
-    }
-    result = ChallengePeriodManager.parse_checkpoint_dict(data)
-    state = result["hk_x"]
-    assert len(state.entries) == 2
-    assert state.entries[0].bucket == MinerBucket.CHALLENGE
-    assert state.entries[1].bucket == MinerBucket.MAINCOMP
-
-
-def test_parse_list_format():
-    entries = [
-        {"bucket": "CHALLENGE", "start_time_ms": NOW_MS},
-        {"bucket": "MAINCOMP", "start_time_ms": NOW_MS + 1000},
-    ]
-    result = ChallengePeriodManager.parse_checkpoint_dict({"hk_z": entries})
-    assert result["hk_z"].current_bucket == MinerBucket.MAINCOMP
-    assert len(result["hk_z"].entries) == 2
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -265,55 +224,43 @@ def test_should_demote_maincomp_no_rank():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Section 3b — _check_static_drawdown / _check_static_eod_drawdown (subaccounts)
+# Section 3b — _check_static_drawdown (subaccounts)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 STATIC_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD * 100      # 5.0
-STATIC_EOD_DD_PCT = ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD * 100  # 5.0
 
 
-def test_check_static_drawdown_at_threshold_survives():
+def test_check_static_drawdown_below_threshold_survives():
     state = _state(MinerBucket.SUBACCOUNT_FUNDED)
-    state.drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT)
+    state.drawdown = DrawdownStats(current_equity=1 - (STATIC_DD_PCT - 0.01) / 100)
     assert ChallengePeriodManager._check_static_drawdown(state) is None
 
 
 def test_check_static_drawdown_funded_reason():
     state = _state(MinerBucket.SUBACCOUNT_FUNDED)
-    state.drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT + 0.01)
+    state.drawdown = DrawdownStats(current_equity=1 - (STATIC_DD_PCT + 0.01) / 100)
     assert ChallengePeriodManager._check_static_drawdown(state) == EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN
 
 
 def test_check_static_drawdown_challenge_reason():
     state = _state(MinerBucket.SUBACCOUNT_CHALLENGE)
-    state.drawdown = DrawdownStats(static_drawdown_pct=STATIC_DD_PCT + 0.01)
+    state.drawdown = DrawdownStats(current_equity=1 - (STATIC_DD_PCT + 0.01) / 100)
     assert ChallengePeriodManager._check_static_drawdown(state) == EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN
 
 
-def test_check_static_eod_drawdown_at_threshold_survives():
+def test_check_static_ignores_trailing_drawdown_pcts():
+    # Trailing drawdowns (12% intraday, 9% EOD) while equity is still above the
+    # starting balance — the static check is absolute, so it does not fire.
     state = _state(MinerBucket.SUBACCOUNT_FUNDED)
-    state.drawdown = DrawdownStats(static_eod_drawdown_pct=STATIC_EOD_DD_PCT)
-    assert ChallengePeriodManager._check_static_eod_drawdown(state) is None
-
-
-def test_check_static_eod_drawdown_funded_reason():
-    state = _state(MinerBucket.SUBACCOUNT_FUNDED)
-    state.drawdown = DrawdownStats(static_eod_drawdown_pct=STATIC_EOD_DD_PCT + 0.01)
-    assert ChallengePeriodManager._check_static_eod_drawdown(state) == EliminationReason.FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN
-
-
-def test_check_static_eod_drawdown_challenge_reason():
-    state = _state(MinerBucket.SUBACCOUNT_CHALLENGE)
-    state.drawdown = DrawdownStats(static_eod_drawdown_pct=STATIC_EOD_DD_PCT + 0.01)
-    assert ChallengePeriodManager._check_static_eod_drawdown(state) == EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN
-
-
-def test_check_static_ignores_legacy_drawdown_pcts():
-    state = _state(MinerBucket.SUBACCOUNT_FUNDED)
-    state.drawdown = DrawdownStats(intraday_drawdown_pct=12.0, eod_drawdown_pct=9.0)
+    state.drawdown = DrawdownStats(
+        current_equity=1.1,
+        daily_open_equity=1.25,
+        last_eod_equity=1.092,
+        eod_hwm=1.2,
+    )
+    assert state.drawdown.intraday_drawdown_pct == pytest.approx(12.0)
+    assert state.drawdown.eod_drawdown_pct == pytest.approx(9.0)
     assert ChallengePeriodManager._check_static_drawdown(state) is None
-    assert ChallengePeriodManager._check_static_eod_drawdown(state) is None
-
 
 
 def test_should_demote_non_maincomp():
@@ -433,7 +380,7 @@ def test_refresh_eliminates_intraday_drawdown(manager):
     after_activation_ms = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS
     manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, after_activation_ms - DAILY_MS)
     manager.miner_states[hk].drawdown = DrawdownStats(
-        intraday_drawdown_pct=INTRADAY_THRESHOLD_PCT + 1.0
+        daily_open_equity=1 / (1 - (INTRADAY_THRESHOLD_PCT + 1.0) / 100)
     )
     _setup_refresh_clients(manager, hk)
 
@@ -448,8 +395,10 @@ def test_refresh_eliminates_intraday_drawdown(manager):
     assert manager.miner_states[hk].current_bucket == MinerBucket.ELIMINATED
 
 
-def test_refresh_no_changes_skips_save(manager):
-    # CHALLENGE miner only 1 day old — too early for promotion, no drawdown issues
+def test_refresh_no_changes_still_saves(manager):
+    # CHALLENGE miner only 1 day old — too early for promotion, no drawdown issues.
+    # refresh() always persists (equity snapshots move even when buckets don't),
+    # but skips the account sync when no bucket changed.
     hk = "hk_stable"
     manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - DAILY_MS)
     manager.miner_states[hk].drawdown = DrawdownStats()
@@ -464,26 +413,28 @@ def test_refresh_no_changes_skips_save(manager):
     ):
         manager.refresh(current_time_ms=NOW_MS)
 
-    mock_save.assert_not_called()
+    mock_save.assert_called_once()
     mock_sync.assert_not_called()
+    assert manager.miner_states[hk].current_bucket == MinerBucket.CHALLENGE
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Section 6 — sync_elimination_miners / _prune_hotkeys_no_positions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def test_sync_elimination_miners_removes(manager):
+def test_sync_elimination_miners_marks_eliminated(manager):
     manager.miner_states["hk1"] = _state(MinerBucket.CHALLENGE)
     manager.miner_states["hk2"] = _state(MinerBucket.MAINCOMP)
-    result = manager.sync_elimination_miners(["hk1"])
+    result = manager.sync_elimination_miners(["hk1"], NOW_MS)
     assert result is True
-    assert "hk1" not in manager.miner_states
-    assert "hk2" in manager.miner_states
+    assert manager.miner_states["hk1"].current_bucket == MinerBucket.ELIMINATED
+    assert manager.miner_states["hk1"].current_bucket_start_ms == NOW_MS
+    assert manager.miner_states["hk2"].current_bucket == MinerBucket.MAINCOMP
 
 
 def test_sync_elimination_miners_empty(manager):
     manager.miner_states["hk1"] = _state(MinerBucket.CHALLENGE)
-    result = manager.sync_elimination_miners([])
+    result = manager.sync_elimination_miners([], NOW_MS)
     assert result is False
     assert "hk1" in manager.miner_states
 

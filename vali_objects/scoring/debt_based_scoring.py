@@ -121,9 +121,8 @@ class DebtBasedScoring:
     EARNING_MINER_BUCKETS = {
         MinerBucket.MAINCOMP.value,
         MinerBucket.PROBATION.value,
-        MinerBucket.SUBACCOUNT_FUNDED.value,
-        MinerBucket.SUBACCOUNT_ALPHA.value,
         MinerBucket.ENTITY.value,
+        *(b.value for b in MinerBucket if b.is_subaccount_earning),
     }
 
     @staticmethod

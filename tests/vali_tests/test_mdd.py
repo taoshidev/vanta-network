@@ -104,12 +104,15 @@ class TestMDDChecker(TestBase):
         self.DEFAULT_OPEN_MS = TimeUtil.now_in_millis()
         self.DEFAULT_ACCOUNT_SIZE = 100_000
         self.trade_pair_to_default_position = {x: Position(
+            position_type=OrderType.LONG,
             miner_hotkey=self.MINER_HOTKEY,
             position_uuid=self.DEFAULT_TEST_POSITION_UUID + str(x.trade_pair_id),
             open_ms=self.DEFAULT_OPEN_MS,
             trade_pair=x,
             account_size=self.DEFAULT_ACCOUNT_SIZE,
         ) for x in TradePair}
+        for position in self.trade_pair_to_default_position.values():
+            position.position_type = None
 
     def create_price_source(self, price, bid=None, ask=None, order_time_ms=None):
         """Create a price source for test data injection."""
@@ -264,10 +267,12 @@ class TestMDDChecker(TestBase):
         Comprehensive test that price correction works for all order sources, timestamps, and trade pairs.
 
         Tests:
-        1. Different OrderSource values (ORGANIC, LIMIT_FILLED, BRACKET_FILLED, PRICE_FILLED_ELIMINATION_FLAT)
-        2. Recent orders (within 5 minute window) - should be corrected
+        1. Different OrderSource values: only ORGANIC market orders are corrected. LIMIT_FILLED,
+           BRACKET_FILLED and PRICE_FILLED_ELIMINATION_FLAT orders filled at their own trigger
+           price and are left alone.
+        2. Recent ORGANIC orders (within 5 minute window) - should be corrected
         3. Old orders (beyond 5 minute window) - should NOT be corrected
-        4. Different trade pairs (BTCUSD crypto, ETHUSD crypto, EURUSD forex)
+        4. Different trade pairs (NVDA and AAPL equities, EURUSD forex).
         5. Multiple orders in same position with different characteristics
         """
         from vali_objects.enums.order_source_enum import OrderSource
@@ -282,114 +287,115 @@ class TestMDDChecker(TestBase):
         recent_time_ms = now_ms - 60000  # 1 minute ago (within 5 minute window)
         old_time_ms = now_ms - ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS - 10000  # Beyond 5 minute window
 
-        # ==================== Test 1: BTCUSD Position with Multiple OrderSource Types ====================
-        btc_position = self.trade_pair_to_default_position[TradePair.BTCUSD]
-        correct_btc_price = 65000.0
-        wrong_btc_price = 1000.0
+        # ==================== Test 1: NVDA Position with Multiple OrderSource Types ====================
+        # The price magnitudes are arbitrary; only the gap between the wrong price the order was
+        # written with and the injected correct price matters to the assertions below.
+        nvda_position = self.trade_pair_to_default_position[TradePair.NVDA]
+        correct_nvda_price = 65000.0
+        wrong_nvda_price = 1000.0
 
         # Order 1: OLD order (beyond 5 minute window) - should NOT be corrected
         # Use LONG to start the position
-        btc_order_old = Order(
+        nvda_order_old = Order(
             order_type=OrderType.LONG,
             leverage=0.1,
-            price=wrong_btc_price,
-            trade_pair=TradePair.BTCUSD,
+            price=wrong_nvda_price,
+            trade_pair=TradePair.NVDA,
             processed_ms=old_time_ms,
-            order_uuid="btc_old",
+            order_uuid="nvda_old",
             src=OrderSource.ORGANIC
         )
 
         # Order 2: ORGANIC order (recent) - should be corrected
-        btc_order_organic = Order(
+        nvda_order_organic = Order(
             order_type=OrderType.LONG,
             leverage=0.05,
-            price=wrong_btc_price,
-            trade_pair=TradePair.BTCUSD,
+            price=wrong_nvda_price,
+            trade_pair=TradePair.NVDA,
             processed_ms=recent_time_ms,
-            order_uuid="btc_organic",
+            order_uuid="nvda_organic",
             src=OrderSource.ORGANIC
         )
 
-        # Order 3: LIMIT_FILLED order (recent) - should be corrected
-        btc_order_limit = Order(
+        # Order 3: LIMIT_FILLED order (recent) - should NOT be corrected (not a market order)
+        nvda_order_limit = Order(
             order_type=OrderType.LONG,
             leverage=0.05,
-            price=wrong_btc_price,
-            trade_pair=TradePair.BTCUSD,
+            price=wrong_nvda_price,
+            trade_pair=TradePair.NVDA,
             processed_ms=recent_time_ms + 1000,
-            order_uuid="btc_limit",
+            order_uuid="nvda_limit",
             src=OrderSource.LIMIT_FILLED
         )
 
-        # Order 4: BRACKET_FILLED order (recent) - should be corrected
-        btc_order_bracket = Order(
+        # Order 4: BRACKET_FILLED order (recent) - should NOT be corrected (not a market order)
+        nvda_order_bracket = Order(
             order_type=OrderType.LONG,
             leverage=0.05,
-            price=wrong_btc_price,
-            trade_pair=TradePair.BTCUSD,
+            price=wrong_nvda_price,
+            trade_pair=TradePair.NVDA,
             processed_ms=recent_time_ms + 2000,
-            order_uuid="btc_bracket",
+            order_uuid="nvda_bracket",
             src=OrderSource.BRACKET_FILLED
         )
 
-        # Order 5: PRICE_FILLED_ELIMINATION_FLAT (recent) - should be corrected
+        # Order 5: PRICE_FILLED_ELIMINATION_FLAT (recent) - should NOT be corrected (not a market order)
         # Add another LONG order instead of FLAT to avoid closing position
-        btc_order_elimination = Order(
+        nvda_order_elimination = Order(
             order_type=OrderType.LONG,
             leverage=0.05,
-            price=wrong_btc_price,
-            trade_pair=TradePair.BTCUSD,
+            price=wrong_nvda_price,
+            trade_pair=TradePair.NVDA,
             processed_ms=recent_time_ms + 3000,
-            order_uuid="btc_elimination",
+            order_uuid="nvda_elimination",
             src=OrderSource.PRICE_FILLED_ELIMINATION_FLAT
         )
 
-        # Inject correct price sources for BTCUSD
-        price_source_btc_recent = self.create_price_source(correct_btc_price, order_time_ms=recent_time_ms)
-        price_source_btc_old = self.create_price_source(correct_btc_price, order_time_ms=old_time_ms)
-        self.live_price_fetcher_client.set_test_price_source(TradePair.BTCUSD, price_source_btc_recent)
+        # Inject correct price sources for NVDA
+        price_source_nvda_recent = self.create_price_source(correct_nvda_price, order_time_ms=recent_time_ms)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.NVDA, price_source_nvda_recent)
 
-        # Add all BTC orders to position
-        self.add_order_to_position_and_save_to_disk(btc_position, btc_order_old)
-        self.add_order_to_position_and_save_to_disk(btc_position, btc_order_organic)
-        self.add_order_to_position_and_save_to_disk(btc_position, btc_order_limit)
-        self.add_order_to_position_and_save_to_disk(btc_position, btc_order_bracket)
-        self.add_order_to_position_and_save_to_disk(btc_position, btc_order_elimination)
+        # Add all NVDA orders to position
+        self.add_order_to_position_and_save_to_disk(nvda_position, nvda_order_old)
+        self.add_order_to_position_and_save_to_disk(nvda_position, nvda_order_organic)
+        self.add_order_to_position_and_save_to_disk(nvda_position, nvda_order_limit)
+        self.add_order_to_position_and_save_to_disk(nvda_position, nvda_order_bracket)
+        self.add_order_to_position_and_save_to_disk(nvda_position, nvda_order_elimination)
 
-        # ==================== Test 2: ETHUSD Position with Different Order Sources ====================
-        eth_position = self.trade_pair_to_default_position[TradePair.ETHUSD]
-        correct_eth_price = 3200.0
-        wrong_eth_price = 500.0
+        # ==================== Test 2: AAPL Position with Different Order Sources ====================
+        aapl_position = self.trade_pair_to_default_position[TradePair.AAPL]
+        correct_aapl_price = 3200.0
+        wrong_aapl_price = 500.0
 
-        # Recent LIMIT_FILLED order - should be corrected
-        eth_order_limit = Order(
+        # Recent LIMIT_FILLED order - should NOT be corrected (not a market order)
+        aapl_order_limit = Order(
             order_type=OrderType.LONG,
             leverage=0.2,
-            price=wrong_eth_price,
-            trade_pair=TradePair.ETHUSD,
+            price=wrong_aapl_price,
+            trade_pair=TradePair.AAPL,
             processed_ms=recent_time_ms,
-            order_uuid="eth_limit",
+            order_uuid="aapl_limit",
             src=OrderSource.LIMIT_FILLED
         )
 
-        # Recent BRACKET_FILLED order - should be corrected
-        eth_order_bracket = Order(
+        # Recent BRACKET_FILLED order - should NOT be corrected (not a market order)
+        aapl_order_bracket = Order(
             order_type=OrderType.SHORT,
             leverage=-0.1,
-            price=wrong_eth_price,
-            trade_pair=TradePair.ETHUSD,
+            price=wrong_aapl_price,
+            trade_pair=TradePair.AAPL,
             processed_ms=recent_time_ms + 1000,
-            order_uuid="eth_bracket",
+            order_uuid="aapl_bracket",
             src=OrderSource.BRACKET_FILLED
         )
 
-        # Inject correct price sources for ETHUSD
-        price_source_eth = self.create_price_source(correct_eth_price, order_time_ms=recent_time_ms)
-        self.live_price_fetcher_client.set_test_price_source(TradePair.ETHUSD, price_source_eth)
+        # Inject correct price sources for AAPL
+        price_source_aapl = self.create_price_source(correct_aapl_price, order_time_ms=recent_time_ms)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, price_source_aapl)
 
-        # Add ETH orders to position
-        self.add_order_to_position_and_save_to_disk(eth_position, eth_order_limit)
-        self.add_order_to_position_and_save_to_disk(eth_position, eth_order_bracket)
+        # Add AAPL orders to position
+        self.add_order_to_position_and_save_to_disk(aapl_position, aapl_order_limit)
+        self.add_order_to_position_and_save_to_disk(aapl_position, aapl_order_bracket)
 
         # ==================== Test 3: EURUSD Forex Position ====================
         eur_position = self.trade_pair_to_default_position[TradePair.EURUSD]
@@ -421,75 +427,75 @@ class TestMDDChecker(TestBase):
 
         # ==================== Verify Price Corrections ====================
 
-        # Verify BTCUSD position
-        btc_from_disk = self.position_client.get_miner_position_by_uuid(self.MINER_HOTKEY, btc_position.position_uuid)
-        self.assertIsNotNone(btc_from_disk)
-        self.assertEqual(len(btc_from_disk.orders), 5)
+        # Verify NVDA position
+        nvda_from_disk = self.position_client.get_miner_position_by_uuid(self.MINER_HOTKEY, nvda_position.position_uuid)
+        self.assertIsNotNone(nvda_from_disk)
+        self.assertEqual(len(nvda_from_disk.orders), 5)
 
         # Verify old order was NOT corrected (beyond 5 minute window)
-        old_order = next(o for o in btc_from_disk.orders if o.order_uuid == "btc_old")
+        old_order = next(o for o in nvda_from_disk.orders if o.order_uuid == "nvda_old")
         self.assertAlmostEqual(
             old_order.price,
-            wrong_btc_price,
+            wrong_nvda_price,
             delta=10,
-            msg=f"Old order should NOT be corrected. Expected ~{wrong_btc_price}, got {old_order.price}"
+            msg=f"Old order should NOT be corrected. Expected ~{wrong_nvda_price}, got {old_order.price}"
         )
 
         # Verify recent ORGANIC order was corrected
-        organic_order = next(o for o in btc_from_disk.orders if o.order_uuid == "btc_organic")
+        organic_order = next(o for o in nvda_from_disk.orders if o.order_uuid == "nvda_organic")
         self.assertAlmostEqual(
             organic_order.price,
-            correct_btc_price,
+            correct_nvda_price,
             delta=100,
-            msg=f"ORGANIC order should be corrected to ~{correct_btc_price}, got {organic_order.price}"
+            msg=f"ORGANIC order should be corrected to ~{correct_nvda_price}, got {organic_order.price}"
         )
 
-        # Verify recent LIMIT_FILLED order was corrected
-        limit_order = next(o for o in btc_from_disk.orders if o.order_uuid == "btc_limit")
+        # Verify recent LIMIT_FILLED order was NOT corrected (only market orders are)
+        limit_order = next(o for o in nvda_from_disk.orders if o.order_uuid == "nvda_limit")
         self.assertAlmostEqual(
             limit_order.price,
-            correct_btc_price,
-            delta=100,
-            msg=f"LIMIT_FILLED order should be corrected to ~{correct_btc_price}, got {limit_order.price}"
+            wrong_nvda_price,
+            delta=10,
+            msg=f"LIMIT_FILLED order should NOT be corrected. Expected ~{wrong_nvda_price}, got {limit_order.price}"
         )
 
-        # Verify recent BRACKET_FILLED order was corrected
-        bracket_order = next(o for o in btc_from_disk.orders if o.order_uuid == "btc_bracket")
+        # Verify recent BRACKET_FILLED order was NOT corrected (only market orders are)
+        bracket_order = next(o for o in nvda_from_disk.orders if o.order_uuid == "nvda_bracket")
         self.assertAlmostEqual(
             bracket_order.price,
-            correct_btc_price,
-            delta=100,
-            msg=f"BRACKET_FILLED order should be corrected to ~{correct_btc_price}, got {bracket_order.price}"
+            wrong_nvda_price,
+            delta=10,
+            msg=f"BRACKET_FILLED order should NOT be corrected. Expected ~{wrong_nvda_price}, got {bracket_order.price}"
         )
 
-        # Verify recent PRICE_FILLED_ELIMINATION_FLAT order was corrected
-        elim_order = next(o for o in btc_from_disk.orders if o.order_uuid == "btc_elimination")
+        # Verify recent PRICE_FILLED_ELIMINATION_FLAT order was NOT corrected (only market orders are)
+        elim_order = next(o for o in nvda_from_disk.orders if o.order_uuid == "nvda_elimination")
         self.assertAlmostEqual(
             elim_order.price,
-            correct_btc_price,
-            delta=100,
-            msg=f"PRICE_FILLED_ELIMINATION_FLAT order should be corrected to ~{correct_btc_price}, got {elim_order.price}"
+            wrong_nvda_price,
+            delta=10,
+            msg=f"PRICE_FILLED_ELIMINATION_FLAT order should NOT be corrected. Expected ~{wrong_nvda_price}, got {elim_order.price}"
         )
 
-        # Verify ETHUSD position - both orders should be corrected
-        eth_from_disk = self.position_client.get_miner_position_by_uuid(self.MINER_HOTKEY, eth_position.position_uuid)
-        self.assertIsNotNone(eth_from_disk)
-        self.assertEqual(len(eth_from_disk.orders), 2)
+        # Verify AAPL position - neither order is a market order, so neither is corrected
+        aapl_from_disk = self.position_client.get_miner_position_by_uuid(self.MINER_HOTKEY, aapl_position.position_uuid)
+        self.assertIsNotNone(aapl_from_disk)
+        self.assertEqual(len(aapl_from_disk.orders), 2)
 
-        eth_limit = next(o for o in eth_from_disk.orders if o.order_uuid == "eth_limit")
+        aapl_limit = next(o for o in aapl_from_disk.orders if o.order_uuid == "aapl_limit")
         self.assertAlmostEqual(
-            eth_limit.price,
-            correct_eth_price,
-            delta=50,
-            msg=f"ETH LIMIT_FILLED order should be corrected to ~{correct_eth_price}, got {eth_limit.price}"
+            aapl_limit.price,
+            wrong_aapl_price,
+            delta=5,
+            msg=f"AAPL LIMIT_FILLED order should NOT be corrected. Expected ~{wrong_aapl_price}, got {aapl_limit.price}"
         )
 
-        eth_bracket = next(o for o in eth_from_disk.orders if o.order_uuid == "eth_bracket")
+        aapl_bracket = next(o for o in aapl_from_disk.orders if o.order_uuid == "aapl_bracket")
         self.assertAlmostEqual(
-            eth_bracket.price,
-            correct_eth_price,
-            delta=50,
-            msg=f"ETH BRACKET_FILLED order should be corrected to ~{correct_eth_price}, got {eth_bracket.price}"
+            aapl_bracket.price,
+            wrong_aapl_price,
+            delta=5,
+            msg=f"AAPL BRACKET_FILLED order should NOT be corrected. Expected ~{wrong_aapl_price}, got {aapl_bracket.price}"
         )
 
         # Verify EURUSD forex position - order should be corrected

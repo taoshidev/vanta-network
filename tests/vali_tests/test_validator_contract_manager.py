@@ -270,37 +270,58 @@ class TestValidatorContractManager(TestBase):
         expected_theta = 0.0015
         self.assertAlmostEqual(balance, expected_theta, places=4)
 
-    def test_compute_slash_amount_formula_accuracy(self):
-        """Test the exact formula for slash calculation across range of drawdowns"""
-        # Set up real collateral balance via data injection
+    def test_query_withdrawal_request_slash_formula_accuracy(self):
+        """
+        Test the drawdown -> slash formula exposed by query_withdrawal_request across a range
+        of drawdowns. This is the only production path that turns an equity drawdown into a
+        slashed_amount without mutating state (no chain calls, no elimination triggered), so it's
+        the right surface to pin the formula against -- there is no standalone
+        ContractClient.compute_slash_amount() method.
+
+        With no collateral records, MinerAccount.account_size is fixed at ValiConfig.MIN_CAPITAL,
+        so crediting a known realized loss via process_order_sell produces an exact,
+        reproducible current_return = 1 - drawdown_pct/100 (max_return stays at the 1.0 default
+        since only update_unrealized_pnl advances the high-water mark). With no bucket and no
+        elimination on file, query_withdrawal_request falls back to a drawdown_threshold of
+        (1 - ValiConfig.MAX_TOTAL_DRAWDOWN) == 0.10, matching the 10%-drawdown-> 100%-slash cases
+        below.
+        """
         balance_theta = 1000.0
         balance_rao = int(balance_theta * 10 ** 9)
         self.contract_client.set_test_collateral_balance(self.MINER_1, balance_rao)
+        account_size = ValiConfig.MIN_CAPITAL
 
-        # Test cases: (drawdown, expected_drawdown_percentage, expected_slash_proportion)
+        # Test cases: (drawdown_pct, expected_slash_proportion)
         test_cases = [
-            (1.0, 0.0, 0.0),      # 0% drawdown -> 0% slash
-            (0.99, 1.0, 0.1),     # 1% drawdown -> 10% slash
-            (0.98, 2.0, 0.2),     # 2% drawdown -> 20% slash
-            (0.97, 3.0, 0.3),     # 3% drawdown -> 30% slash
-            (0.96, 4.0, 0.4),     # 4% drawdown -> 40% slash
-            (0.95, 5.0, 0.5),     # 5% drawdown -> 50% slash
-            (0.94, 6.0, 0.6),     # 6% drawdown -> 60% slash
-            (0.93, 7.0, 0.7),     # 7% drawdown -> 70% slash
-            (0.92, 8.0, 0.8),     # 8% drawdown -> 80% slash
-            (0.91, 9.0, 0.9),     # 9% drawdown -> 90% slash
-            (0.90, 10.0, 1.0),    # 10% drawdown -> 100% slash (elimination)
+            (0.0, 0.0),    # 0% drawdown -> 0% slash
+            (1.0, 0.1),    # 1% drawdown -> 10% slash
+            (2.0, 0.2),    # 2% drawdown -> 20% slash
+            (3.0, 0.3),    # 3% drawdown -> 30% slash
+            (4.0, 0.4),    # 4% drawdown -> 40% slash
+            (5.0, 0.5),    # 5% drawdown -> 50% slash
+            (6.0, 0.6),    # 6% drawdown -> 60% slash
+            (7.0, 0.7),    # 7% drawdown -> 70% slash
+            (8.0, 0.8),    # 8% drawdown -> 80% slash
+            (9.0, 0.9),    # 9% drawdown -> 90% slash
+            (10.0, 1.0),   # 10% drawdown -> 100% slash (elimination threshold)
         ]
 
-        for drawdown, dd_pct, expected_proportion in test_cases:
+        for dd_pct, expected_proportion in test_cases:
             with self.subTest(drawdown_pct=dd_pct):
-                # Test through production RPC path
-                slash_amount = self.contract_client.compute_slash_amount(self.MINER_1, drawdown=drawdown)
-                expected_slash = balance_theta * expected_proportion
+                self.miner_account_client.reset_account(self.MINER_1)
+                loss = (dd_pct / 100.0) * account_size
+                if loss > 0:
+                    self.miner_account_client.process_order_sell(
+                        self.MINER_1, entry_value_usd=0, realized_pnl=-loss, loan_repaid=0)
 
-                self.assertAlmostEqual(slash_amount, expected_slash, places=1,
+                result = self.contract_client.query_withdrawal_request(balance_theta, self.MINER_1)
+                self.assertTrue(result["successfully_processed"], result.get("error_message"))
+
+                expected_slash = balance_theta * expected_proportion
+                self.assertAlmostEqual(result["drawdown"] * 100, dd_pct, places=4)
+                self.assertAlmostEqual(result["slashed_amount"], expected_slash, places=1,
                                        msg=f"{dd_pct}% drawdown should slash {expected_proportion*100}% of balance. "
-                                           f"Expected {expected_slash}, got {slash_amount}")
+                                           f"Expected {expected_slash}, got {result['slashed_amount']}")
 
     def test_get_all_miner_account_sizes(self):
         """Test getting all miner account sizes at a specific timestamp"""

@@ -13,19 +13,15 @@ Tests the entity cross-margin collateral system including:
 - Elimination-driven slashing
 """
 import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
-from vali_objects.vali_config import ValiConfig
+from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 from time_util.time_util import TimeUtil
-
-# The slash cap is account_size * FUNDED_INTRADAY_DRAWDOWN_THRESHOLD. Derive it
-# from the config rather than hardcoding a percentage so these tests stay
-# correct when the threshold changes (it moved 0.10 -> 0.08 -> 0.05; the old
-# tests hardcoded the 0.08 era's $8K values for a $100K account).
-MAX_SLASH_100K = 100_000 * ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
 
 
 class TestEntityCollateral(TestBase):
@@ -93,7 +89,14 @@ class TestEntityCollateral(TestBase):
         ])
 
         # MDD percentage (same as manager uses)
-        self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD  # 0.08
+        self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+
+        # max_slash for the $100K subaccounts used throughout the slash tests.
+        # Derive it from the config rather than hardcoding a percentage so these
+        # tests stay correct when the threshold changes (it moved 0.10 -> 0.08 ->
+        # 0.05; the old tests hardcoded the 0.08 era's $8K values for a $100K
+        # account).
+        self.max_slash_100k = 100_000 * self.mdd_percent
 
     def tearDown(self):
         """Per-test teardown: Clear data."""
@@ -131,6 +134,18 @@ class TestEntityCollateral(TestBase):
         )
 
         return entity_hotkey, synthetic_hotkey, subaccount_info
+
+    def _expected_promotion_fee(self, pro_size, standard_size):
+        """The promotion price: an up-front premium on the standard account's drawdown allowance
+        plus registration's per-dollar rate on the size granted above it."""
+        premium = (ValiConfig.PRO_PROMOTION_PREMIUM_RATE
+                   * ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size
+                   / ValiConfig.THETA_USD_PRICE)
+        return premium + (pro_size - standard_size) / ValiConfig.entity_cost_per_theta(pro_size)
+
+    def _set_bucket(self, synthetic_hotkey, bucket):
+        """Helper: Move a subaccount into a bucket."""
+        self.challenge_period_client.set_miner_bucket(synthetic_hotkey, bucket, TimeUtil.now_in_millis())
 
     def _set_collateral_cache(self, entity_hotkey, collateral_theta):
         """Helper: Inject collateral cache value in theta via RPC."""
@@ -207,8 +222,8 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Required delta: min(50K, 8K)/10 = 800 theta (first order, no existing positions)
-        # Set 5000 theta (well above 800)
+        # Required delta: min(50K, max_slash)/10 theta (first order, no existing positions).
+        # Set 5000 theta (well above that).
         self._set_collateral_cache(entity_hotkey, 5000.0)
 
         allowed, reason = self.entity_collateral_client.can_open_position(
@@ -224,7 +239,7 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Required delta: min(50K, 8K)/10 = 800 theta. Set only 10 theta → insufficient.
+        # Required delta: min(50K, max_slash)/10 theta. Set only 10 theta → insufficient.
         self._set_collateral_cache(entity_hotkey, 10.0)
 
         allowed, reason = self.entity_collateral_client.can_open_position(
@@ -261,7 +276,7 @@ class TestEntityCollateral(TestBase):
         synthetic_1 = sa_info_1['synthetic_hotkey']
         synthetic_2 = sa_info_2['synthetic_hotkey']
 
-        # Required delta: min(1K, 8K)/10 = 100 theta. Set 500 theta (sufficient).
+        # Required delta: min(1K, max_slash)/10 = 100 theta. Set 500 theta (sufficient).
         self._set_collateral_cache(self.ENTITY_HOTKEY, 500.0)
 
         # First subaccount with small order should work
@@ -279,7 +294,7 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)  # 100 theta
 
-        # Loss of $5,000 on an account with max_slash = $100K * 8% = $8K
+        # Loss of $5,000 on an account with max_slash = $100K * MDD%
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
@@ -327,21 +342,22 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = MAX_SLASH_100K (account_size * MDD)
+        max_slash = self.max_slash_100k  # $100K * MDD%
 
         # Trade 1: Lose $3K
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 3_000.0
         )
-        self.assertAlmostEqual(slashed_1, min(3_000.0, MAX_SLASH_100K))
+        self.assertAlmostEqual(slashed_1, min(3_000.0, max_slash))
 
-        # Trade 2: Lose $4K (cumulative_loss = $7K). Returns total pending slash
-        # (min(cumulative_loss, max_slash) - cumulative_slashed), not incremental,
+        # Trade 2: Lose $4K (cumulative_loss = $7K, capped at max_slash). Returns
+        # total pending slash (min(cumulative_loss, max_slash) - cumulative_slashed),
+        # not incremental (4K),
         # because cumulative_slashed stays 0 until process_pending_slashes runs.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 4_000.0
         )
-        self.assertAlmostEqual(slashed_2, min(7_000.0, MAX_SLASH_100K))
+        self.assertAlmostEqual(slashed_2, min(7_000.0, max_slash))
 
         # Verify cumulative tracking
         tracking = self._get_slash_tracking(synthetic_hotkey)
@@ -355,27 +371,27 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = MAX_SLASH_100K (account_size * MDD)
+        max_slash = self.max_slash_100k  # $100K * MDD%
 
-        # Trade 1: Lose $8K (>= cap) → slash is capped at max_slash
+        # Trade 1: Lose exactly max_slash → exactly at cap, slash max_slash
         slashed_1 = self.entity_collateral_client.slash_on_realized_loss(
-            entity_hotkey, synthetic_hotkey, 8_000.0
+            entity_hotkey, synthetic_hotkey, max_slash
         )
-        self.assertAlmostEqual(slashed_1, MAX_SLASH_100K)
+        self.assertAlmostEqual(slashed_1, max_slash)
 
-        # Trade 2: Lose $5K more → still returns the cap (total pending, capped
-        # at max_slash). cumulative_slashed stays 0 until process_pending_slashes
-        # runs, so the pending remains at the cap rather than going to 0.
+        # Trade 2: Lose $5K → still returns max_slash (total pending, capped at max_slash).
+        # cumulative_slashed stays 0 until process_pending_slashes runs, so the
+        # pending remains at the cap rather than going to 0.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
-        self.assertAlmostEqual(slashed_2, MAX_SLASH_100K)
+        self.assertAlmostEqual(slashed_2, max_slash)
 
         # cumulative_realized_loss tracks all losses; cumulative_slashed stays 0
         # until process_pending_slashes commits the on-chain slash.
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 13_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], max_slash + 5_000.0)
 
     def test_slash_completely_at_cap_returns_zero(self):
         """Test that no further slashing when already at cap."""
@@ -384,8 +400,9 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # Pre-fill tracking to exactly at cap ($8K = $100K * 8%)
-        self._set_slash_tracking(synthetic_hotkey, 8_000.0, 8_000.0)
+        # Pre-fill tracking to exactly at cap (max_slash = $100K * MDD%)
+        max_slash = self.max_slash_100k
+        self._set_slash_tracking(synthetic_hotkey, max_slash, max_slash)
 
         # Try to slash more — should return 0
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -395,8 +412,8 @@ class TestEntityCollateral(TestBase):
 
         # cumulative_realized_loss should still be updated
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 13_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], max_slash + 5_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], max_slash)
 
     def test_slash_no_account_size_returns_zero(self):
         """Test that slashing returns 0 when account has no size (max_slash=0)."""
@@ -475,8 +492,9 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # Pre-fill: already at cap ($8K = $100K * 8%)
-        self._set_slash_tracking(synthetic_hotkey, 8_000.0, 8_000.0)
+        # Pre-fill: already at cap (max_slash = $100K * MDD%)
+        max_slash = self.max_slash_100k
+        self._set_slash_tracking(synthetic_hotkey, max_slash, max_slash)
 
         # Another loss of $3K → no slash, but loss tracked
         slashed = self.entity_collateral_client.slash_on_realized_loss(
@@ -485,8 +503,8 @@ class TestEntityCollateral(TestBase):
         self.assertAlmostEqual(slashed, 0.0)
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], 11_000.0)
-        self.assertAlmostEqual(tracking["cumulative_slashed"], 8_000.0)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], max_slash + 3_000.0)
+        self.assertAlmostEqual(tracking["cumulative_slashed"], max_slash)
 
     # ==================== Cumulative Slashed Query Tests ====================
 
@@ -511,13 +529,180 @@ class TestEntityCollateral(TestBase):
         )
 
         max_slash = self.entity_collateral_client.get_max_slash(synthetic_hotkey)
-        expected = 100_000 * self.mdd_percent  # $8,000
+        expected = 100_000 * self.mdd_percent
         self.assertAlmostEqual(max_slash, expected)
 
     def test_get_max_slash_zero_for_unknown(self):
         """Test that max_slash returns 0 for unknown hotkey (no account)."""
         result = self.entity_collateral_client.get_max_slash("unknown_hotkey_0")
         self.assertAlmostEqual(result, 0.0)
+
+    def test_get_max_slash_uses_the_pro_threshold_for_a_pro_account(self):
+        """A pro account is slashable up to the pro threshold, which the manager resolves from
+        the bucket even though the caller passes none."""
+        _, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
+        self._set_bucket(synthetic_hotkey, MinerBucket.PRO_FUNDED)
+
+        max_slash = self.entity_collateral_client.get_max_slash(synthetic_hotkey)
+
+        self.assertAlmostEqual(max_slash, 100_000 * ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    # ==================== Pro Promotion Fee Tests ====================
+
+    def test_pro_promotion_charges_for_the_size_granted_above_the_standard_account(self):
+        """Promotion bills the drawdown premium plus registration's rate on the granted size."""
+        entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
+        self._set_collateral_cache(entity_hotkey, 1_000.0)
+
+        success, message = self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000
+        )
+        self.assertTrue(success, message)
+
+        expected_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 1.6 + 180 theta
+        subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        self.assertAlmostEqual(subaccount["pro_fee_theta"], expected_fee)
+        self.assertAlmostEqual(subaccount["pro_fee_theta_pending"], expected_fee)
+        self.assertAlmostEqual(subaccount["account_size"], 1_000_000)
+
+        # The fee is reserved against the cache until the daemon slashes it on-chain
+        self.assertAlmostEqual(
+            self.entity_collateral_client.get_cached_collateral(entity_hotkey), 1_000.0 - expected_fee
+        )
+
+    def test_pro_promotion_is_rejected_when_the_entity_cannot_cover_the_fee(self):
+        """A promotion the entity cannot pay for leaves the account on its standard size."""
+        entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
+        self._set_collateral_cache(entity_hotkey, 10.0)  # 181.6 theta owed
+
+        success, message = self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000
+        )
+
+        self.assertFalse(success)
+        self.assertIn("Insufficient collateral", message)
+        subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        self.assertAlmostEqual(subaccount["account_size"], 100_000)
+        self.assertAlmostEqual(subaccount["pro_fee_theta"], 0.0)
+        self.assertAlmostEqual(self.entity_collateral_client.get_cached_collateral(entity_hotkey), 10.0)
+
+    def test_pro_promotion_charges_only_the_increase_over_a_size_already_paid_for(self):
+        """Stepping a pro account up bills the difference; re-entering at the same size is free."""
+        entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
+        self._set_collateral_cache(entity_hotkey, 1_000.0)
+
+        self.assertTrue(self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 500_000)[0])
+        first_fee = self._expected_promotion_fee(500_000, 100_000)  # 1.6 + 80 theta
+
+        # Back to standard, then up to a larger pro account
+        self.assertTrue(self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.SUBACCOUNT_FUNDED)[0])
+        self.assertTrue(self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000)[0])
+
+        total_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 1.6 + 180 theta
+        subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        self.assertAlmostEqual(subaccount["pro_fee_theta"], total_fee)
+        self.assertAlmostEqual(subaccount["pro_fee_theta_pending"], total_fee)
+        self.assertAlmostEqual(
+            self.entity_collateral_client.get_cached_collateral(entity_hotkey), 1_000.0 - total_fee
+        )
+        self.assertLess(first_fee, total_fee)
+
+    def test_re_entering_the_pro_track_at_the_same_size_is_free(self):
+        """A demotion and re-promotion at a size already paid for costs nothing extra."""
+        entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
+        self._set_collateral_cache(entity_hotkey, 1_000.0)
+
+        self.assertTrue(self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000)[0])
+        balance_after_first = self.entity_collateral_client.get_cached_collateral(entity_hotkey)
+
+        self.assertTrue(self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.SUBACCOUNT_FUNDED)[0])
+        self.assertTrue(self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000)[0])
+
+        self.assertAlmostEqual(
+            self.entity_collateral_client.get_cached_collateral(entity_hotkey), balance_after_first
+        )
+
+    def test_the_transition_bucket_is_not_charged(self):
+        """PRO_CHALLENGE_TRANSITION still trades the standard account, so nothing is billed yet."""
+        entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
+        self._set_collateral_cache(entity_hotkey, 1_000.0)
+
+        success, message = self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 1_000_000
+        )
+
+        self.assertTrue(success, message)
+        subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        self.assertAlmostEqual(subaccount["account_size"], 100_000)
+        self.assertAlmostEqual(subaccount["pro_account_size"], 1_000_000)
+        self.assertAlmostEqual(subaccount["pro_fee_theta"], 0.0)
+        self.assertAlmostEqual(self.entity_collateral_client.get_cached_collateral(entity_hotkey), 1_000.0)
+
+    def test_a_rolled_back_promotion_gives_the_fee_back(self):
+        """A bucket move that fails after the resize must not leave the entity paying for it."""
+        entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
+        self._set_collateral_cache(entity_hotkey, 1_000.0)
+
+        snapshot = self.entity_client.snapshot_bucket_account_size(synthetic_hotkey)
+        self.assertTrue(self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000)[0])
+
+        restored, message = self.entity_client.restore_bucket_account_size(synthetic_hotkey, snapshot)
+
+        self.assertTrue(restored, message)
+        subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        self.assertAlmostEqual(subaccount["account_size"], 100_000)
+        self.assertAlmostEqual(subaccount["pro_fee_theta"], 0.0)
+        self.assertAlmostEqual(subaccount["pro_fee_theta_pending"], 0.0)
+        self.assertAlmostEqual(self.entity_collateral_client.get_cached_collateral(entity_hotkey), 1_000.0)
+
+    def test_a_rollback_cannot_refund_a_fee_already_slashed_on_chain(self):
+        """Once the daemon has taken the theta it is gone, and the fee stays assessed."""
+        entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
+        self._set_collateral_cache(entity_hotkey, 1_000.0)
+
+        snapshot = self.entity_client.snapshot_bucket_account_size(synthetic_hotkey)
+        self.assertTrue(self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000)[0])
+        fee = self._expected_promotion_fee(1_000_000, 100_000)
+
+        # The daemon settles the fee on-chain before the rollback runs
+        _, subaccount_id = synthetic_hotkey.rsplit("_", 1)
+        self.entity_client.set_pro_fee_pending(entity_hotkey, int(subaccount_id), 0.0)
+
+        self.assertTrue(self.entity_client.restore_bucket_account_size(synthetic_hotkey, snapshot)[0])
+
+        subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        self.assertAlmostEqual(subaccount["pro_fee_theta"], fee)
+        self.assertAlmostEqual(subaccount["pro_fee_theta_pending"], 0.0)
+        self.assertAlmostEqual(
+            self.entity_collateral_client.get_cached_collateral(entity_hotkey), 1_000.0 - fee
+        )
+
+    def test_collateral_exempt_subaccounts_stay_exempt_on_the_pro_track(self):
+        """A subaccount that paid no registration fee pays no promotion fee either."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY)
+        _, sa_info, _ = self.entity_client.create_subaccount(
+            self.ENTITY_HOTKEY, account_size=100_000, asset_class="crypto", collateral_exempt=True
+        )
+        synthetic_hotkey = sa_info["synthetic_hotkey"]
+        self._set_collateral_cache(self.ENTITY_HOTKEY, 1.0)
+
+        success, message = self.entity_client.apply_bucket_account_size(
+            synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000
+        )
+
+        self.assertTrue(success, message)
+        subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        self.assertAlmostEqual(subaccount["account_size"], 1_000_000)
+        self.assertAlmostEqual(subaccount["pro_fee_theta"], 0.0)
+        self.assertAlmostEqual(self.entity_collateral_client.get_cached_collateral(self.ENTITY_HOTKEY), 1.0)
 
     # ==================== Slash Tracking Persistence Tests ====================
 
@@ -611,7 +796,7 @@ class TestEntityCollateral(TestBase):
             account_size=100_000
         )
 
-        # Entity has 5000 theta. $1K order delta: min(1K, 8K)/10 = 100 theta. 5000 > 100 → allowed.
+        # Entity has 5000 theta. $1K order delta: min(1K, max_slash)/10 = 100 theta. 5000 > 100 → allowed.
         self._set_collateral_cache(entity_hotkey, 5000.0)
 
         allowed, _ = self.entity_collateral_client.can_open_position(
@@ -651,14 +836,15 @@ class TestEntityCollateral(TestBase):
         self._set_collateral_cache(entity_hotkey, 100.0)
 
         # loss exactly max_slash
+        max_slash = self.max_slash_100k
         slashed = self.entity_collateral_client.slash_on_realized_loss(
-            entity_hotkey, synthetic_hotkey, MAX_SLASH_100K
+            entity_hotkey, synthetic_hotkey, max_slash
         )
-        self.assertAlmostEqual(slashed, MAX_SLASH_100K)
+        self.assertAlmostEqual(slashed, max_slash)
 
         # cumulative_realized_loss = max_slash; cumulative_slashed stays 0 until process_pending_slashes
         tracking = self._get_slash_tracking(synthetic_hotkey)
-        self.assertAlmostEqual(tracking["cumulative_realized_loss"], MAX_SLASH_100K)
+        self.assertAlmostEqual(tracking["cumulative_realized_loss"], max_slash)
         self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
     def test_slash_loss_exceeds_max_slash_single_trade(self):
@@ -668,11 +854,12 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # loss = $50K >> max_slash → capped at max_slash
+        # loss = $50K >> max_slash → only slash max_slash
+        max_slash = self.max_slash_100k
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 50_000.0
         )
-        self.assertAlmostEqual(slashed, MAX_SLASH_100K)
+        self.assertAlmostEqual(slashed, max_slash)
 
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 50_000.0)
@@ -685,10 +872,10 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # max_slash = $8K
         # Each call returns total pending slash (min(cumulative_loss, max_slash) - cumulative_slashed).
         # Since cumulative_slashed stays 0 until process_pending_slashes, each return is
         # the running cumulative loss capped at max_slash.
+        max_slash = self.max_slash_100k
         losses = [1_000, 2_000, 3_000, 4_000, 5_000]
         last_slash = 0.0
         for loss in losses:
@@ -697,22 +884,37 @@ class TestEntityCollateral(TestBase):
             )
 
         # Total losses = $15K > max_slash → last call returns the cap
-        self.assertAlmostEqual(last_slash, MAX_SLASH_100K)
+        self.assertAlmostEqual(last_slash, min(15_000.0, max_slash))
 
         # All losses are tracked; cumulative_slashed stays 0 until process_pending_slashes
         tracking = self._get_slash_tracking(synthetic_hotkey)
         self.assertAlmostEqual(tracking["cumulative_realized_loss"], 15_000.0)
         self.assertAlmostEqual(tracking["cumulative_slashed"], 0.0)
 
-    # ==================== MarketOrderManager Wiring Tests ====================
+    # ==================== DebtLedgerManager Wiring Tests ====================
 
-    def test_market_order_manager_has_entity_collateral_client(self):
-        """Test that MarketOrderManager creates an EntityCollateralClient."""
-        from vali_objects.utils.market_order.market_order_manager import MarketOrderManager
-        from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+    def test_debt_ledger_manager_has_entity_collateral_client(self):
+        """Test that DebtLedgerManager creates an EntityCollateralClient.
 
-        mom = MarketOrderManager(serve=False, running_unit_tests=True)
-        self.assertIsInstance(mom._entity_collateral_client, EntityCollateralClient)
+        Entity collateral is non-blocking: orders are no longer gated on it in
+        MarketOrderManager. The requirement is enforced as an emissions penalty on the
+        entity debt ledger instead, so the client lives on DebtLedgerManager.
+        """
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
+        import inspect
+        init_source = inspect.getsource(DebtLedgerManager.__init__)
+        self.assertIn("EntityCollateralClient", init_source)
+        self.assertIn("_entity_collateral_client", init_source)
+
+    def test_debt_ledger_manager_applies_entity_collateral_penalty(self):
+        """Test that entity ledger aggregation penalizes under-collateralized entities."""
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
+        import inspect
+        source = inspect.getsource(DebtLedgerManager.aggregate_entity_debt_ledgers)
+        self.assertIn("_entity_collateral_client", source)
+        self.assertIn("compute_entity_required_collateral", source)
+        self.assertIn("get_cached_collateral", source)
+        self.assertIn("entity_collateral_penalty", source)
 
     # ==================== EliminationManager Wiring Tests ====================
 
@@ -743,16 +945,26 @@ class TestEntityCollateral(TestBase):
         self.assertIn("_entity_client", source)
 
     def test_validator_contract_manager_withdrawal_blocking_code_exists(self):
-        """The withdrawal path blocks a withdrawal that would drop below the
-        entity's required cross-margin collateral. That logic lives in
-        query_withdrawal_request (called by process_withdrawal_request); it was
-        refactored out of process_withdrawal_request, so inspect the method that
-        actually holds it now."""
+        """Test that the withdrawal path blocks withdrawals that break entity collateral.
+
+        The blocking checks were refactored out of process_withdrawal_request and now
+        live in query_withdrawal_request; process_withdrawal_request must run them and
+        bail out before withdrawing anything on-chain.
+        """
         from vali_objects.contract.validator_contract_manager import ValidatorContractManager
         import inspect
-        source = inspect.getsource(ValidatorContractManager.query_withdrawal_request)
-        self.assertIn("compute_entity_required_collateral", source)
-        self.assertIn("required_min_theta", source)
+
+        process_source = inspect.getsource(ValidatorContractManager.process_withdrawal_request)
+        self.assertIn("query_withdrawal_request", process_source)
+        self.assertIn('if not query_result["successfully_processed"]', process_source)
+        self.assertIn("return query_result", process_source)
+
+        query_source = inspect.getsource(ValidatorContractManager.query_withdrawal_request)
+        # Withdrawal may not drop the entity below the collateral its subaccounts require
+        self.assertIn("compute_entity_required_collateral", query_source)
+        self.assertIn("required_min_theta", query_source)
+        # ...and open positions block the withdrawal outright
+        self.assertIn("is_open_position", query_source)
 
     # ==================== Validator.py Wiring Tests ====================
 
@@ -769,6 +981,259 @@ class TestEntityCollateral(TestBase):
         with open("neurons/validator.py", "r") as f:
             source = f.read()
         self.assertIn("'entity_collateral'", source)
+
+
+class TestEntityCollateralBucketThresholds(unittest.TestCase):
+    """
+    Direct tests of the manager's bucket-driven slash ceiling.
+
+    The orchestrator tests above run the manager in its own process, so they cannot vary the
+    thresholds. These drive the manager in-process with stubbed clients, which is the only way
+    to prove a pro account is sized off the pro threshold rather than the standard one while
+    the two are configured to the same number.
+    """
+
+    PRO_MDD = 0.20
+
+    def setUp(self):
+        from vali_objects.utils.entity_collateral.entity_collateral_manager import EntityCollateralManager
+
+        self.manager = EntityCollateralManager(
+            running_unit_tests=True, connection_mode=RPCConnectionMode.LOCAL
+        )
+        self.manager._miner_account_client = MagicMock()
+        self.manager._miner_account_client.get_miner_account_size.return_value = 100_000
+        self.manager._challenge_period_client = MagicMock()
+        self.manager._challenge_period_client.get_miner_bucket.return_value = MinerBucket.PRO_FUNDED
+        self.manager._position_client = MagicMock()
+        self.manager._position_client.get_positions_for_one_hotkey.return_value = []
+        self.manager._entity_client = MagicMock()
+
+    def _with_pro_threshold(self):
+        return patch.object(ValiConfig, "PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD", self.PRO_MDD)
+
+    def test_max_slash_resolves_the_bucket_when_the_caller_passes_none(self):
+        with self._with_pro_threshold():
+            self.assertAlmostEqual(self.manager.get_max_slash("entity_0"), 100_000 * self.PRO_MDD)
+
+    def test_max_slash_trusts_the_bucket_it_is_given(self):
+        """A passed bucket is used as-is, with no lookup of its own."""
+        with self._with_pro_threshold():
+            max_slash = self.manager.get_max_slash("entity_0", MinerBucket.SUBACCOUNT_FUNDED)
+
+        self.assertAlmostEqual(max_slash, 100_000 * ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.manager._challenge_period_client.get_miner_bucket.assert_not_called()
+
+    def test_max_slash_falls_back_for_a_bucket_with_no_drawdown_rule(self):
+        """The entity hotkey itself never trades, so it has no threshold to read."""
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.ENTITY)
+        self.assertAlmostEqual(max_slash, 100_000 * ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    def test_max_slash_zero_without_an_account_size(self):
+        self.manager._miner_account_client.get_miner_account_size.return_value = None
+        self.assertAlmostEqual(self.manager.get_max_slash("entity_0"), 0.0)
+
+    def test_margin_requirement_caps_at_the_pro_slash_ceiling(self):
+        """A pro account with a position larger than its slash ceiling margins at the ceiling."""
+        self.manager._position_client.get_positions_for_one_hotkey.return_value = [
+            SimpleNamespace(net_value=500_000.0)
+        ]
+
+        with self._with_pro_threshold():
+            margin = self.manager.compute_subaccount_margin_requirement("entity_0", MinerBucket.PRO_FUNDED)
+
+        self.assertAlmostEqual(margin, 100_000 * self.PRO_MDD)
+
+    def test_margin_requirement_falls_back_to_the_position_value(self):
+        """Below the slash ceiling the position value is what has to be collateralized."""
+        self.manager._position_client.get_positions_for_one_hotkey.return_value = [
+            SimpleNamespace(net_value=1_000.0)
+        ]
+
+        with self._with_pro_threshold():
+            margin = self.manager.compute_subaccount_margin_requirement("entity_0", MinerBucket.PRO_FUNDED)
+
+        self.assertAlmostEqual(margin, 1_000.0)
+
+    def _promoted_from_standard(self, standard_account_size=100_000, pro_account_size=1_000_000):
+        """A subaccount trading a pro account it was promoted onto from a standard one."""
+        self.manager._miner_account_client.get_miner_account_size.return_value = pro_account_size
+        self.manager._entity_client.get_subaccount_info_for_synthetic.return_value = {
+            "synthetic_hotkey": "entity_0",
+            "standard_account_size": standard_account_size,
+            "pro_account_size": pro_account_size,
+        }
+
+    def test_pro_challenge_from_standard_is_exposed_at_the_standard_size(self):
+        """The pro challenge trades the pro account but is paid as though it were still on the
+        standard one, so the entity stays exposed to the standard account it collateralized."""
+        self._promoted_from_standard()
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+
+        self.assertAlmostEqual(max_slash, 100_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    def test_pro_funded_is_exposed_at_the_pro_size(self):
+        """Only a funded pro account is charged against the size it was granted."""
+        self._promoted_from_standard()
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_FUNDED)
+
+        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.manager._entity_client.get_subaccount_info_for_synthetic.assert_not_called()
+
+    def test_margin_requirement_steps_up_only_on_promotion_to_pro_funded(self):
+        """One open position, margined at the standard ceiling in challenge and the pro ceiling once funded."""
+        self._promoted_from_standard()
+        self.manager._position_client.get_positions_for_one_hotkey.return_value = [
+            SimpleNamespace(net_value=900_000.0)
+        ]
+
+        in_challenge = self.manager.compute_subaccount_margin_requirement(
+            "entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+        )
+        funded = self.manager.compute_subaccount_margin_requirement("entity_0", MinerBucket.PRO_FUNDED)
+
+        self.assertAlmostEqual(in_challenge, 100_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertAlmostEqual(funded, 1_000_000 * ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertLess(in_challenge, funded)
+
+    def test_exposure_falls_back_to_the_traded_account_without_a_recorded_standard_size(self):
+        """A record carrying no standard size charges the account actually being traded."""
+        self._promoted_from_standard(standard_account_size=None)
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+
+        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    def test_exposure_falls_back_to_the_traded_account_when_the_entity_lookup_fails(self):
+        """An unreachable entity service charges the pro account rather than under-collateralizing."""
+        self._promoted_from_standard()
+        self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = RuntimeError("rpc down")
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+
+        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    def test_exposure_never_exceeds_the_traded_account(self):
+        """A stale standard size above the pro account cannot inflate the exposure."""
+        self._promoted_from_standard(standard_account_size=5_000_000)
+
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+
+        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+
+
+class TestProPromotionFeeSlashing(unittest.TestCase):
+    """The daemon leg: a charged promotion fee is slashed on-chain and cleared, or restored."""
+
+    ENTITY = "entity"
+    SUBACCOUNT_ID = 0
+    PENDING_FEE = 180.0
+
+    def _manager(self, slash_succeeds=True, pro_fee_pending=PENDING_FEE):
+        from vali_objects.utils.entity_collateral.entity_collateral_manager import EntityCollateralManager
+
+        manager = EntityCollateralManager(
+            running_unit_tests=True, connection_mode=RPCConnectionMode.LOCAL
+        )
+        manager._entity_client = MagicMock()
+        manager._entity_client.get_all_entities.return_value = {
+            self.ENTITY: {
+                "subaccounts": {
+                    self.SUBACCOUNT_ID: {
+                        "synthetic_hotkey": f"{self.ENTITY}_{self.SUBACCOUNT_ID}",
+                        "reg_fee_theta": 20.0,
+                        "reg_fee_slashed_ms": 1,  # registration fee already settled
+                        "pro_fee_theta_pending": pro_fee_pending,
+                    }
+                }
+            }
+        }
+        manager._challenge_period_client = MagicMock()
+        manager._challenge_period_client.get_miner_buckets.return_value = {}
+        manager._contract_client = MagicMock()
+        manager._contract_client.slash_miner_collateral.return_value = slash_succeeds
+        return manager
+
+    def test_a_pending_promotion_fee_is_slashed_and_cleared(self):
+        manager = self._manager()
+
+        manager.process_pending_slashes()
+
+        manager._contract_client.slash_miner_collateral.assert_called_once_with(self.ENTITY, self.PENDING_FEE)
+        manager._entity_client.set_pro_fee_pending.assert_called_once_with(
+            self.ENTITY, self.SUBACCOUNT_ID, 0.0
+        )
+
+    def test_a_failed_slash_restores_the_claim_for_the_next_pass(self):
+        manager = self._manager(slash_succeeds=False)
+
+        manager.process_pending_slashes()
+
+        manager._entity_client.set_pro_fee_pending.assert_any_call(self.ENTITY, self.SUBACCOUNT_ID, 0.0)
+        manager._entity_client.set_pro_fee_pending.assert_any_call(
+            self.ENTITY, self.SUBACCOUNT_ID, self.PENDING_FEE
+        )
+
+    def test_nothing_is_slashed_when_no_promotion_fee_is_owed(self):
+        manager = self._manager(pro_fee_pending=0.0)
+
+        manager.process_pending_slashes()
+
+        manager._contract_client.slash_miner_collateral.assert_not_called()
+        manager._entity_client.set_pro_fee_pending.assert_not_called()
+
+
+class TestProPromotionFeeConfig(unittest.TestCase):
+    """
+    The promotion price:
+
+        PREMIUM_RATE * (FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size) / THETA_USD_PRICE
+            + (pro_size - standard_size) / registration CPT
+    """
+
+    def test_the_fee_is_the_drawdown_premium_plus_the_granted_size(self):
+        fee = ValiConfig.pro_promotion_fee_theta(1_000_000, 100_000)
+
+        premium = 0.10 * (0.08 * 100_000) / ValiConfig.THETA_USD_PRICE
+        granted = 900_000 / ValiConfig.ENTITY_COST_PER_THETA
+        self.assertAlmostEqual(fee, premium + granted)
+
+    def test_the_premium_scales_with_the_standard_account(self):
+        """Doubling the standard account doubles the premium, holding the granted size fixed."""
+        small = ValiConfig.pro_promotion_fee_theta(200_000, 100_000)
+        large = ValiConfig.pro_promotion_fee_theta(300_000, 200_000)
+
+        granted = 100_000 / ValiConfig.ENTITY_COST_PER_THETA
+        self.assertAlmostEqual(large - granted, 2 * (small - granted))
+
+    def test_every_term_is_configurable(self):
+        with patch.object(ValiConfig, "PRO_PROMOTION_PREMIUM_RATE", 0.20), \
+                patch.object(ValiConfig, "THETA_USD_PRICE", 250.0), \
+                patch.object(ValiConfig, "ENTITY_COST_PER_THETA", 10_000):
+            fee = ValiConfig.pro_promotion_fee_theta(1_000_000, 100_000)
+
+        self.assertAlmostEqual(fee, 0.20 * (0.08 * 100_000) / 250.0 + 900_000 / 10_000)
+
+    def test_a_pro_size_at_or_below_the_standard_size_costs_only_the_premium(self):
+        premium = 0.10 * (0.08 * 100_000) / ValiConfig.THETA_USD_PRICE
+        self.assertAlmostEqual(ValiConfig.pro_promotion_fee_theta(100_000, 100_000), premium)
+        self.assertAlmostEqual(ValiConfig.pro_promotion_fee_theta(50_000, 100_000), premium)
+
+    def test_a_missing_standard_size_prices_the_whole_pro_account_with_no_premium(self):
+        """No standard account means no drawdown allowance to buy, so only the size is charged."""
+        fee = ValiConfig.pro_promotion_fee_theta(500_000, None)
+        self.assertAlmostEqual(fee, 500_000 / ValiConfig.ENTITY_COST_PER_THETA)
+
+    def test_the_granted_size_uses_the_registration_cost_per_theta(self):
+        """Registration's own rate, including its lower rate for small accounts."""
+        self.assertAlmostEqual(ValiConfig.entity_cost_per_theta(10_000), ValiConfig.ENTITY_COST_PER_THETA_LOW)
+        self.assertAlmostEqual(ValiConfig.entity_cost_per_theta(10_001), ValiConfig.ENTITY_COST_PER_THETA)
+
+        fee = ValiConfig.pro_promotion_fee_theta(10_000, 5_000)
+        premium = 0.10 * (0.08 * 5_000) / ValiConfig.THETA_USD_PRICE
+        self.assertAlmostEqual(fee, premium + 5_000 / ValiConfig.ENTITY_COST_PER_THETA_LOW)
 
 
 if __name__ == '__main__':

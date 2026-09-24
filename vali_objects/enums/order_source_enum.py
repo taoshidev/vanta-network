@@ -22,6 +22,7 @@ class OrderSource(IntEnum):
     HYPERLIQUID = 16                   # order placed via Hyperliquid with exchange fill price
     CORRECTION = 17                    # order fields corrected post-submission
     ELIMINATION_CANCELLED = 18         # limit/bracket/stop-limit order cancelled from elimination
+    PRO_TRANSITION_CANCELLED = 19      # entry order cancelled because the miner is transitioning to a pro account
 
     @staticmethod
     def get_fill(order_src):
@@ -75,6 +76,7 @@ class OrderSource(IntEnum):
             OrderSource.BRACKET_CANCELLED,
             OrderSource.STOP_LIMIT_CANCELLED,
             OrderSource.ELIMINATION_CANCELLED,
+            OrderSource.PRO_TRANSITION_CANCELLED,
         }
 
     @staticmethod
@@ -84,7 +86,7 @@ class OrderSource(IntEnum):
         elif order_src in [OrderSource.LIMIT_FILLED, OrderSource.BRACKET_FILLED, OrderSource.STOP_LIMIT_FILLED]:
             return "FILLED"
         elif order_src in [OrderSource.LIMIT_CANCELLED, OrderSource.BRACKET_CANCELLED, OrderSource.STOP_LIMIT_CANCELLED,
-                           OrderSource.ELIMINATION_CANCELLED]:
+                           OrderSource.ELIMINATION_CANCELLED, OrderSource.PRO_TRANSITION_CANCELLED]:
             return "CANCELLED"
         else:
             return OrderSource(order_src).name

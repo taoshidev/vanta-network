@@ -110,10 +110,8 @@ class TestDebtBasedScoring(TestBase):
         Args:
             miner_buckets: Dict of {hotkey: MinerBucket enum}
         """
-        miners = {}
         for hotkey, bucket in miner_buckets.items():
-            miners[hotkey] = (bucket, 1000, None, None)  # (bucket, start_time, prev_bucket, prev_time)
-        self.challengeperiod_client.update_miners(miners)
+            self.challengeperiod_client.set_miner_bucket(hotkey, bucket, 1000)
 
     def _set_miner_collateral(self, miner_collateral: dict):
         """
@@ -1003,15 +1001,14 @@ class TestDebtBasedScoring(TestBase):
         self.assertAlmostEqual(ratio_2_to_3, 50000.0 / 30000.0, places=1)  # ~1.67
         self.assertAlmostEqual(ratio_1_to_3, 40000.0 / 30000.0, places=1)  # ~1.33
 
-    def test_surplus_emissions_burned(self):
+    def test_surplus_emissions_fully_distributed(self):
         """
-        Test that when projected emissions greatly exceed needed payouts, excess goes to burn address.
+        Test that when projected emissions greatly exceed needed payouts, the full emission is
+        still distributed pro-rata by remaining payout rather than burned.
 
         Scenario: Miners need $120k total remaining payout, but emissions project to $6.8M over 4 days.
-        Expected: Weights sum to ~1.75%, burn address gets ~98.25%
+        Expected: Miner weights sum to 1.0 in proportion to remaining payouts, no burn address.
 
-        This is the CRITICAL fix - weights should be normalized against projected emissions,
-        not against total payouts, to ensure surplus is burned.
         """
         # December 3rd, 2025 - early in month (lots of time until day 25)
         current_time = datetime(2025, 12, 3, 6, 0, 0, tzinfo=timezone.utc)
@@ -1107,11 +1104,10 @@ class TestDebtBasedScoring(TestBase):
         # Calculate expected values:
         # - Needed payouts: $50k + $40k + $30k = $120k
         # - Already paid: $10k + $8k + $12k = $30k
-        # - Remaining needed: $120k - $30k = $90k
+        # - Remaining needed: $120k - $30k = $90k ($40k, $32k, $18k per miner)
         # - Daily target (4 days until day 25): $90k / 4 = $22.5k/day
-        # - Projected daily emissions: $1.714M/day
-        # - Expected weight fraction: $22.5k / $1.714M = 0.0131 (1.31%)
-        # - Expected burn: 1.0 - 0.0131 = 0.9869 (98.69%)
+        # - Projected daily emissions: $1.714M/day (informational only under proportional share)
+        # - Expected weights: 40/90, 32/90, 18/90 -> sum 1.0, no burn despite the surplus
 
         result = DebtBasedScoring.compute_results(
             ledgers,
@@ -1123,29 +1119,24 @@ class TestDebtBasedScoring(TestBase):
             verbose=True
         )
 
-        # Should have 4 entries: 3 miners + burn address
-        self.assertEqual(len(result), 4)
+        # Should have 3 entries: 3 miners, no burn address (miner weights already sum to 1.0)
+        self.assertEqual(len(result), 3)
 
         weights_dict = dict(result)
-
-        # Verify burn address is present
-        self.assertIn("burn_address_mainnet", weights_dict)
 
         # Verify all 3 miners are present
         self.assertIn("miner_1", weights_dict)
         self.assertIn("miner_2", weights_dict)
         self.assertIn("miner_3", weights_dict)
 
+        # Surplus emissions are not burned: burn address receives no weight
+        self.assertNotIn("burn_address_mainnet", weights_dict)
+
         # Calculate total miner weight (excluding burn)
         total_miner_weight = sum(weight for hotkey, weight in result if "burn" not in hotkey)
 
-        # Total miner weight should be very small (~1.31% with minimum dust added)
-        # With dust weights (~0.003 each), actual total will be slightly higher
-        self.assertLess(total_miner_weight, 0.05)  # Less than 5% goes to miners
-
-        # Burn address should get the vast majority (>95%)
-        burn_weight = weights_dict["burn_address_mainnet"]
-        self.assertGreater(burn_weight, 0.95)  # Burn gets >95%
+        # All emissions go to miners
+        self.assertAlmostEqual(total_miner_weight, 1.0, places=10)
 
         # Total should sum to exactly 1.0
         total_weight = sum(weight for _, weight in result)
@@ -1153,9 +1144,12 @@ class TestDebtBasedScoring(TestBase):
 
         # Verify proportional distribution among miners is maintained
         # Remaining payouts: miner_1=$40k, miner_2=$32k, miner_3=$18k (ratio 40:32:18)
-        # Weights should follow similar ratio (accounting for dust floor)
+        # Weights follow that ratio exactly (all three are well above the dust floor)
         self.assertGreater(weights_dict["miner_1"], weights_dict["miner_2"])
         self.assertGreater(weights_dict["miner_2"], weights_dict["miner_3"])
+        self.assertAlmostEqual(weights_dict["miner_1"], 40000.0 / 90000.0, places=10)
+        self.assertAlmostEqual(weights_dict["miner_2"], 32000.0 / 90000.0, places=10)
+        self.assertAlmostEqual(weights_dict["miner_3"], 18000.0 / 90000.0, places=10)
 
         # Log for debugging
         print("\nSurplus Emissions Test Results:")
@@ -1163,7 +1157,6 @@ class TestDebtBasedScoring(TestBase):
         print(f"  miner_2 weight: {weights_dict['miner_2']:.6f}")
         print(f"  miner_3 weight: {weights_dict['miner_3']:.6f}")
         print(f"  Total miner weight: {total_miner_weight:.6f} ({total_miner_weight*100:.2f}%)")
-        print(f"  Burn weight: {burn_weight:.6f} ({burn_weight*100:.2f}%)")
         print(f"  Total weight: {total_weight:.6f}")
 
     def test_dynamic_dust_enabled_by_default(self):

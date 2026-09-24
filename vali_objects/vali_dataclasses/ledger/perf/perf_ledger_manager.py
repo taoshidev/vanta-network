@@ -1700,15 +1700,20 @@ class PerfLedgerManager(CacheController):
 
         # Freeze funded subaccount perf ledgers (move to separate frozen storage)
         frozen_ledger_hotkeys = self._elimination_client.get_eliminated_hotkeys_by_bucket(
-            [MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA]
+            [b for b in MinerBucket if b.is_subaccount_earning]
         )
 
         # Move frozen ledgers from active to frozen storage
         for hk in frozen_ledger_hotkeys:
-            if hk in perf_ledger_bundles and hk not in self._frozen_ledgers:
-                self._frozen_ledgers[hk] = perf_ledger_bundles[hk]
+            if hk in perf_ledger_bundles:
+                ledger = perf_ledger_bundles[hk]
+                if ledger.cps and ledger.cps[-1].accum_ms != ledger.target_cp_duration_ms:
+                    ledger.cps.pop()
+                if ledger.cps:
+                    self._frozen_ledgers[hk] = ledger
                 del perf_ledger_bundles[hk]
-                logger.info(f"Moved frozen ledger for {hk} to frozen storage")
+                logger.info(f"Moved ledger {hk} to frozen ledger storage")
+            hotkey_to_positions.pop(hk, None)
 
         hotkeys_to_delete = set([x for x in hotkeys_with_no_positions if x in perf_ledger_bundles])
         rss_modified = False

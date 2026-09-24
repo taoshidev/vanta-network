@@ -78,6 +78,7 @@ class CoreOutputsManager:
         from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         from entity_management.entity_client import EntityClient
+        from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 
         self._position_client = PositionManagerClient(connection_mode=connection_mode)
         self._challengeperiod_client = ChallengePeriodClient(connection_mode=connection_mode)
@@ -88,6 +89,7 @@ class CoreOutputsManager:
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
         self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
         self._entity_client = EntityClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
+        self._debt_ledger_client = DebtLedgerClient(connection_mode=connection_mode, running_unit_tests=running_unit_tests)
 
         logger.info("[COREOUTPUTS_MANAGER] CoreOutputsManager initialized")
 
@@ -281,6 +283,13 @@ class CoreOutputsManager:
         except Exception as e:
             logger.warning(f"Could not fetch frozen perf ledgers: {e}")
 
+        # Settled payout weeks, so every validator agrees on what was sealed
+        weekly_seals = {}
+        try:
+            weekly_seals = self._debt_ledger_client.get_weekly_seals_checkpoint_dict()
+        except Exception as e:
+            logger.warning(f"Could not fetch weekly seal records: {e}")
+
         final_dict = {
             'version': ValiConfig.VERSION,
             'created_timestamp_ms': time_now,
@@ -296,6 +305,7 @@ class CoreOutputsManager:
             'frozen_perf_ledgers': frozen_perf_ledgers,
             'asset_selections': asset_selections,
             'limit_orders': limit_orders_dict,
+            'weekly_seals': weekly_seals,
             'archived_positions': archived_positions or {}
         }
 

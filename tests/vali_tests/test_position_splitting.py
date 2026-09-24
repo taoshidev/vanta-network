@@ -105,6 +105,7 @@ class TestPositionSplitting(TestBase):
             orders.append(order)
 
         position = Position(
+            position_type=OrderType.FLAT,
             miner_hotkey=miner_hotkey,
             position_uuid=f"{miner_hotkey}_test_position_uuid",
             open_ms=1000,

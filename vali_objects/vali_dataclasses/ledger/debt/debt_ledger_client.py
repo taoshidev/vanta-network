@@ -153,6 +153,191 @@ class DebtLedgerClient(RPCClientBase):
             logger.debug(f"DebtLedgerClient: Health check failed: {e}")
             return None
 
+    def get_sealed_weeks(self, hotkey: str) -> dict:
+        """
+        Settled payout-week records for a hotkey, keyed by Monday 00:00 UTC.
+
+        A sealed week is replayed verbatim by the payout paths instead of being recomputed, so a
+        ledger rebuild cannot move it between paid and withheld. An empty dict on failure means the
+        caller recomputes, which is the pre-seal behavior.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            Dict mapping week_start_ms to SealedWeek, empty on error
+        """
+        try:
+            return self._server.get_sealed_weeks_rpc(hotkey)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Get sealed weeks failed: {e}")
+            return {}
+
+    def unseal_week(self, hotkey: str, week_start_ms: int) -> bool:
+        """
+        Drop one settled payout-week record so the next build reseals it.
+
+        Args:
+            hotkey: The miner's hotkey
+            week_start_ms: Monday 00:00 UTC of the week to unseal
+
+        Returns:
+            True if a record was removed
+        """
+        try:
+            return self._server.unseal_week_rpc(hotkey, week_start_ms)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Unseal week failed: {e}")
+            return False
+
+    def record_settled_segment(
+        self,
+        hotkey: str,
+        week_start_ms: int,
+        segment_start_ms: int,
+        segment_end_ms: int,
+        bucket: str,
+        payout_usd: float,
+        gross_payout_usd: float,
+        weekly_penalty: float,
+        payout_scale: float,
+    ) -> bool:
+        """
+        Pin a payout settled early by an account switch.
+
+        The caller runs this mid-wipe, so there is no second chance: everything this record
+        describes is deleted moments later. A failure is therefore logged at error level rather
+        than swallowed quietly like the reads on this client.
+
+        Args:
+            hotkey: The miner's hotkey
+            week_start_ms: Monday 00:00 UTC of the week the segment falls in
+            segment_start_ms: Start of the settled stretch
+            segment_end_ms: The account switch; names the record for a later correction
+            bucket: The bucket being wound down
+            payout_usd: Settled payout, what both payout paths add
+            gross_payout_usd: Pre-penalty payout, for audit
+            weekly_penalty: The penalty applied
+            payout_scale: The standard/pro ratio applied
+
+        Returns:
+            True if a new record was written, False if this week and bucket were already
+            settled - a retried switch - or on error
+        """
+        try:
+            return self._server.record_settled_segment_rpc(
+                hotkey,
+                week_start_ms,
+                segment_start_ms,
+                segment_end_ms,
+                bucket,
+                payout_usd,
+                gross_payout_usd,
+                weekly_penalty,
+                payout_scale,
+            )
+        except Exception as e:
+            logger.error(
+                f"DebtLedgerClient: Record settled segment failed for {hotkey} "
+                f"(${payout_usd:.2f} ending {segment_end_ms}): {e}"
+            )
+            return False
+
+    def get_settled_segments(self, hotkey: str) -> list:
+        """
+        Segments settled early for a hotkey, oldest first.
+
+        These are payouts whose source data was destroyed by an account switch, so the recorded
+        dollars are all that remains of them.
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            List of SettledSegment, empty on error
+        """
+        try:
+            return self._server.get_settled_segments_rpc(hotkey)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Get settled segments failed: {e}")
+            return []
+
+    def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
+        """
+        Correct a settled segment's amount. Deliberate corrections only.
+
+        Args:
+            hotkey: The miner's hotkey
+            segment_end_ms: The account switch that identifies the record
+            payout_usd: The corrected payout
+
+        Returns:
+            True if a record was amended
+        """
+        try:
+            return self._server.amend_settled_segment_rpc(hotkey, segment_end_ms, payout_usd)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Amend settled segment failed: {e}")
+            return False
+
+    def remove_settled_segment(self, hotkey: str, segment_end_ms: int) -> bool:
+        """
+        Drop a settled segment entirely. Deliberate corrections only.
+
+        Args:
+            hotkey: The miner's hotkey
+            segment_end_ms: The account switch that identifies the record
+
+        Returns:
+            True if a record was removed
+        """
+        try:
+            return self._server.remove_settled_segment_rpc(hotkey, segment_end_ms)
+        except Exception as e:
+            logger.debug(f"DebtLedgerClient: Remove settled segment failed: {e}")
+            return False
+
+    def get_weekly_seals_checkpoint_dict(self) -> dict:
+        """
+        Every sealed week and settled segment, JSON-ready, for the validator checkpoint.
+
+        An empty dict on failure means the checkpoint ships without seal records, which peers
+        treat as "nothing to merge" - the pre-autosync behavior.
+
+        Returns:
+            Dict with 'sealed' and 'settled' maps keyed by hotkey, empty on error
+        """
+        try:
+            return self._server.get_weekly_seals_checkpoint_dict_rpc()
+        except Exception as e:
+            logger.warning(f"DebtLedgerClient: Get weekly seals checkpoint dict failed: {e}")
+            return {}
+
+    def sync_weekly_seals(self, weekly_seals_dict: dict) -> dict:
+        """
+        Merge a checkpoint's weekly seal records so validators agree on what was sealed.
+
+        Args:
+            weekly_seals_dict: Dict with 'sealed' and 'settled' maps from the checkpoint
+
+        Returns:
+            dict: Sync statistics, empty on error
+        """
+        try:
+            return self._server.sync_weekly_seals_rpc(weekly_seals_dict)
+        except Exception as e:
+            logger.error(f"DebtLedgerClient: Sync weekly seals failed: {e}")
+            return {}
+
+    def clear_weekly_seals_for_test(self) -> bool:
+        """
+        Drop every seal record, in memory and on disk. Unit tests only.
+
+        Returns:
+            True once cleared
+        """
+        return self._server.clear_weekly_seals_for_test_rpc()
+
     def delete_debt_ledger(self, hotkey: str) -> bool:
         """
         Delete the debt ledger for a specific hotkey.

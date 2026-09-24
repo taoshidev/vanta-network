@@ -77,6 +77,8 @@ class EntityMinerAPIManager:
             logger.info("  GET    /api/hl/<addr>/stream      - SSE stream")
             logger.info("  POST   /api/create-subaccount     - Create subaccount")
             logger.info("  POST   /api/create-hl-subaccount  - Create HL subaccount")
+            logger.info("  POST   /api/update-subaccount-leverage-tier - Update subaccount leverage tier")
+            logger.info("  POST   /api/promote               - Promote a subaccount up the pro track")
             logger.info("  GET    /api/health                - Health check")
 
         except Exception as e:

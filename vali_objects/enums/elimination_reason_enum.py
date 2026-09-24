@@ -25,16 +25,33 @@ class EliminationReason(Enum):
     # STATIC_EOD: retired — no longer produced, kept only because historical elimination rows may carry this value
     FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN = "FAILED_CHALLENGE_PERIOD_STATIC_EOD_DRAWDOWN"
     FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN = "FAILED_FUNDED_PERIOD_STATIC_EOD_DRAWDOWN"
+    # PRO: the pro account track runs the intraday and EOD rules only, never the static ones
+    FAILED_PRO_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN = "FAILED_PRO_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN"
+    FAILED_PRO_CHALLENGE_PERIOD_EOD_DRAWDOWN = "FAILED_PRO_CHALLENGE_PERIOD_EOD_DRAWDOWN"
+    FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN = "FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN"
+    FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN = "FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN"
     LIQUIDATED = "LIQUIDATED"
     DEREGISTERED = "DEREGISTERED"
+    # MARTINGALE: doubling down while losing, detected by the martingale service
+    # (taoshidev/vanta-martingale-service) and confirmed by a human. The service
+    # only ever records a warning and an eliminate-eligible flag; it never
+    # eliminates, so this reason is only ever written by an operator acting on a
+    # reviewed flag. Recorded distinctly because "Subject to Martingale
+    # Detection: Yes" is a published pro-account rule, and a martingale
+    # elimination filed under DEREGISTERED (the admin endpoint's default) is
+    # indistinguishable from an administrative removal in the elimination
+    # ledger.
+    MARTINGALE = "MARTINGALE"
 
     @property
     def is_intraday_drawdown(self):
-        return self in (self.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN, self.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
+        return self in (self.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN, self.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
+                        self.FAILED_PRO_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN, self.FAILED_PRO_FUNDED_PERIOD_INTRADAY_DRAWDOWN)
 
     @property
     def is_eod_drawdown(self):
-        return self in (self.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN, self.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN)
+        return self in (self.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN, self.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN,
+                        self.FAILED_PRO_CHALLENGE_PERIOD_EOD_DRAWDOWN, self.FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN)
 
     @property
     def is_static_drawdown(self):

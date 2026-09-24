@@ -44,6 +44,7 @@ def make_hl_position(order_type=OrderType.LONG, leverage=0.5, open_ms=None, orde
     if orders is None:
         orders = [make_order(order_type, leverage, processed_ms=open_ms)]
     pos = Position(
+        position_type=OrderType.FLAT,
         miner_hotkey="test_hl_miner",
         position_uuid="test_hl_position",
         open_ms=open_ms,
@@ -63,6 +64,7 @@ class TestPositionIsHl(unittest.TestCase):
 
     def test_default_is_hl_false(self):
         pos = Position(
+            position_type=OrderType.FLAT,
             miner_hotkey="miner",
             position_uuid="uuid",
             open_ms=BASE_OPEN_MS,
@@ -72,6 +74,7 @@ class TestPositionIsHl(unittest.TestCase):
 
     def test_is_hl_true(self):
         pos = Position(
+            position_type=OrderType.FLAT,
             miner_hotkey="miner",
             position_uuid="uuid",
             open_ms=BASE_OPEN_MS,
@@ -83,6 +86,7 @@ class TestPositionIsHl(unittest.TestCase):
     def test_is_hl_serialization_roundtrip(self):
         """is_hl should survive JSON serialization/deserialization."""
         pos = Position(
+            position_type=OrderType.FLAT,
             miner_hotkey="miner",
             position_uuid="uuid",
             open_ms=BASE_OPEN_MS,
@@ -102,6 +106,7 @@ class TestPositionIsHl(unittest.TestCase):
             "position_uuid": "uuid",
             "open_ms": BASE_OPEN_MS,
             "trade_pair": TradePair.BTCUSD,
+            "position_type": OrderType.FLAT,
         }
         pos = Position(**data)
         self.assertFalse(pos.is_hl)

@@ -147,6 +147,19 @@ class LimitOrderServer(RPCServerBase):
         """
         return self._manager.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
 
+    def cancel_entry_orders_rpc(self, miner_hotkey, now_ms, order_src=None):
+        """
+        RPC method to cancel every resting order that would open or increase a position, leaving
+        brackets and resting exits alone.
+        Args:
+            miner_hotkey: The miner's hotkey
+            now_ms: Current timestamp
+            order_src: Optional OrderSource override — if specified, replaces the derived cancel src
+        Returns:
+            dict with cancellation details
+        """
+        return self._manager.cancel_entry_orders(miner_hotkey, now_ms, order_src)
+
     def get_limit_order_by_uuid_rpc(self, miner_hotkey, order_uuid):
         """
         RPC method to get an unfilled limit order by UUID.
@@ -397,6 +410,10 @@ class LimitOrderServer(RPCServerBase):
     def cancel_limit_order(self, miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type=None, order_src=None):
         """Cancel limit order(s) (direct call for tests)."""
         return self._manager.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
+
+    def cancel_entry_orders(self, miner_hotkey, now_ms, order_src=None):
+        """Cancel resting entry orders (direct call for tests)."""
+        return self._manager.cancel_entry_orders(miner_hotkey, now_ms, order_src)
 
     def get_limit_order_by_uuid(self, miner_hotkey, order_uuid):
         """Get an unfilled limit order by UUID (direct call for tests)."""

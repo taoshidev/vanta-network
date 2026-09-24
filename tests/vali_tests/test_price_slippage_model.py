@@ -56,6 +56,7 @@ class TestPriceSlippageModel(TestBase):
             leverage=1,
         )
         self.open_position = Position(
+            position_type=OrderType.LONG,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,
@@ -97,6 +98,7 @@ class TestPriceSlippageModel(TestBase):
             leverage=-1,
         )
         self.closed_position = Position(
+            position_type=OrderType.LONG,
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
             position_uuid=self.DEFAULT_POSITION_UUID,
             open_ms=self.DEFAULT_OPEN_MS,

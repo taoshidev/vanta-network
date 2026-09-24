@@ -269,6 +269,119 @@ class DebtLedgerServer(RPCServerBase):
     # PENALTY LEDGER RPC METHODS (delegate to manager's sub-manager)
     # ========================================================================
 
+    def get_sealed_weeks_rpc(self, hotkey: str) -> dict:
+        """
+        Get the settled payout-week records for a hotkey (RPC method).
+
+        Args:
+            hotkey: The miner's hotkey
+
+        Returns:
+            Dict mapping week_start_ms to SealedWeek
+        """
+        return self._manager.get_sealed_weeks(hotkey)
+
+    def unseal_week_rpc(self, hotkey: str, week_start_ms: int) -> bool:
+        """
+        Drop one settled payout-week record so the next build reseals it (RPC method).
+
+        Args:
+            hotkey: The miner's hotkey
+            week_start_ms: Monday 00:00 UTC of the week to unseal
+
+        Returns:
+            True if a record was removed
+        """
+        return self._manager.unseal_week(hotkey, week_start_ms)
+
+    def record_settled_segment_rpc(
+        self,
+        hotkey: str,
+        week_start_ms: int,
+        segment_start_ms: int,
+        segment_end_ms: int,
+        bucket: str,
+        payout_usd: float,
+        gross_payout_usd: float,
+        weekly_penalty: float,
+        payout_scale: float,
+    ) -> bool:
+        """
+        Pin a payout settled early by an account switch (RPC method).
+
+        Returns:
+            True if a new record was written, False if one already existed
+        """
+        return self._manager.record_settled_segment(
+            hotkey,
+            week_start_ms,
+            segment_start_ms,
+            segment_end_ms,
+            bucket,
+            payout_usd,
+            gross_payout_usd,
+            weekly_penalty,
+            payout_scale,
+        )
+
+    def get_settled_segments_rpc(self, hotkey: str) -> list:
+        """
+        Get the segments settled early for a hotkey, oldest first (RPC method).
+
+        Returns:
+            List of SettledSegment
+        """
+        return self._manager.get_settled_segments(hotkey)
+
+    def amend_settled_segment_rpc(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
+        """
+        Correct a settled segment's amount (RPC method).
+
+        Returns:
+            True if a record was amended
+        """
+        return self._manager.amend_settled_segment(hotkey, segment_end_ms, payout_usd)
+
+    def remove_settled_segment_rpc(self, hotkey: str, segment_end_ms: int) -> bool:
+        """
+        Drop a settled segment entirely (RPC method).
+
+        Returns:
+            True if a record was removed
+        """
+        return self._manager.remove_settled_segment(hotkey, segment_end_ms)
+
+    def get_weekly_seals_checkpoint_dict_rpc(self) -> dict:
+        """
+        Get every sealed week and settled segment for the validator checkpoint (RPC method).
+
+        Returns:
+            Dict with 'sealed' and 'settled' maps, both keyed by hotkey
+        """
+        return self._manager.get_weekly_seals_checkpoint_dict()
+
+    def sync_weekly_seals_rpc(self, weekly_seals_dict: dict) -> dict:
+        """
+        Merge a checkpoint's weekly seal records into this validator (RPC method).
+
+        Args:
+            weekly_seals_dict: Dict with 'sealed' and 'settled' maps from the checkpoint
+
+        Returns:
+            dict: Sync statistics (sealed_added, sealed_replaced, settled_added,
+                  settled_replaced, errors)
+        """
+        return self._manager.sync_weekly_seals(weekly_seals_dict)
+
+    def clear_weekly_seals_for_test_rpc(self) -> bool:
+        """
+        Drop every seal record, in memory and on disk (RPC method). Unit tests only.
+
+        Returns:
+            True once cleared
+        """
+        return self._manager.clear_weekly_seals_for_test()
+
     def get_penalty_ledger_rpc(self, hotkey: str):
         """
         Get penalty ledger for a specific hotkey (RPC method).

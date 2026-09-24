@@ -2,6 +2,7 @@
 # Copyright (c) 2024 Taoshi Inc
 import functools
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone, date
 from typing import List, Optional, Tuple
@@ -48,6 +49,7 @@ class ForexHolidayCalendar(USFederalHolidayCalendar):
         self.cache_valid_min_ms = 0
         self.cache_valid_max_ms = 0
         self.cache_valid_ans = False
+        self._cache_lock = threading.Lock()
 
     def get_holidays(self, timestamp):
         # Check if the holidays for the given year are already cached
@@ -60,51 +62,52 @@ class ForexHolidayCalendar(USFederalHolidayCalendar):
         return self.holidays_cache[timestamp.year]
 
     def is_forex_market_open(self, ms_timestamp):
-        # Check if our answer is cached.
-        if self.cache_valid_min_ms <= ms_timestamp <= self.cache_valid_max_ms:
-            return self.cache_valid_ans
-        # Convert millisecond timestamp to pandas Timestamp in UTC
-        timestamp = pd.Timestamp(ms_timestamp, unit='ms', tz='UTC')
+        with self._cache_lock:
+            # Check if our answer is cached.
+            if self.cache_valid_min_ms <= ms_timestamp <= self.cache_valid_max_ms:
+                return self.cache_valid_ans
+            # Convert millisecond timestamp to pandas Timestamp in UTC
+            timestamp = pd.Timestamp(ms_timestamp, unit='ms', tz='UTC')
 
-        # Convert timestamp to New York time using zoneinfo
-        ny_timezone = ZoneInfo('America/New_York')
-        ny_timestamp = timestamp.astimezone(ny_timezone)
+            # Convert timestamp to New York time using zoneinfo
+            ny_timezone = ZoneInfo('America/New_York')
+            ny_timestamp = timestamp.astimezone(ny_timezone)
 
-        ans = True
-        # Check if the day is a weekend in New York time
-        if ny_timestamp.weekday() < 4:  # Monday to Thursday
-            self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
-        elif ny_timestamp.weekday() == 5:  # Saturday all day
-            self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
-            ans = False
-        elif ny_timestamp.weekday() == 4:
-            if ny_timestamp.hour >= 17:  # Market closes at 5 PM Friday NY time
-                ans = False
+            ans = True
+            # Check if the day is a weekend in New York time
+            if ny_timestamp.weekday() < 4:  # Monday to Thursday
                 self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
+            elif ny_timestamp.weekday() == 5:  # Saturday all day
+                self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
+                ans = False
+            elif ny_timestamp.weekday() == 4:
+                if ny_timestamp.hour >= 17:  # Market closes at 5 PM Friday NY time
+                    ans = False
+                    self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
+                else:
+                    ans = True
+                    self.cache_valid_max_ms = ny_timestamp.replace(hour=16, minute=59, second=59).timestamp() * 1000
+            elif ny_timestamp.weekday() == 6:
+                if ny_timestamp.hour < 17:  # Market opens at 5 PM Sunday NY time
+                    ans = False
+                    self.cache_valid_max_ms = ny_timestamp.replace(hour=16, minute=59, second=59).timestamp() * 1000
+                else:
+                    ans = True
+                    self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
             else:
-                ans = True
-                self.cache_valid_max_ms = ny_timestamp.replace(hour=16, minute=59, second=59).timestamp() * 1000
-        elif ny_timestamp.weekday() == 6:
-            if ny_timestamp.hour < 17:  # Market opens at 5 PM Sunday NY time
-                ans = False
-                self.cache_valid_max_ms = ny_timestamp.replace(hour=16, minute=59, second=59).timestamp() * 1000
-            else:
-                ans = True
-                self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
-        else:
-            raise Exception(f"Unexpected weekday: {ny_timestamp.weekday()}")
+                raise Exception(f"Unexpected weekday: {ny_timestamp.weekday()}")
 
-        if ans:
-            # Check if the day is a holiday (assuming holiday impacts the full day)
-            # Ensure get_holidays function is aware of local dates
-            holidays = self.get_holidays(ny_timestamp)
-            if ny_timestamp.strftime('%Y-%m-%d') in holidays:
-                ans = False
-                self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
+            if ans:
+                # Check if the day is a holiday (assuming holiday impacts the full day)
+                # Ensure get_holidays function is aware of local dates
+                holidays = self.get_holidays(ny_timestamp)
+                if ny_timestamp.strftime('%Y-%m-%d') in holidays:
+                    ans = False
+                    self.cache_valid_max_ms = ny_timestamp.replace(hour=23, minute=59, second=59).timestamp() * 1000
 
-        self.cache_valid_min_ms = ms_timestamp
-        self.cache_valid_ans = ans
-        return ans
+            self.cache_valid_min_ms = ms_timestamp
+            self.cache_valid_ans = ans
+            return ans
 
     def is_forex_market_closed_full_day(self, testing_day: date) -> bool:
         """Check if the Forex market is closed for the entire UTC day."""
@@ -131,10 +134,10 @@ class IndicesMarketCalendar:
         self.nasdaq_calendar = mcal.get_calendar('NASDAQ')
         self.cboe_calendar = mcal.get_calendar('CBOE_Index_Options')  # For VIX
 
-        # Initialize cache attributes to zero
-        self.cache_valid_min_ms = 0
-        self.cache_valid_max_ms = 0
-        self.cache_valid_ans = False
+        # Cache keyed by market calendar name (e.g. 'NASDAQ') since every ticker on the
+        # same calendar shares identical hours -- market_name -> (min_ms, max_ms, ans)
+        self._cache = {}
+        self._cache_lock = threading.Lock()
 
 
     def get_market_calendar(self, ticker):
@@ -168,46 +171,59 @@ class IndicesMarketCalendar:
 
 
     def is_market_open(self, ticker, timestamp_ms):
-        if self.cache_valid_min_ms <= timestamp_ms <= self.cache_valid_max_ms:
-            return self.cache_valid_ans
-        # Convert millisecond timestamp to pandas Timestamp in UTC
-        timestamp = pd.Timestamp(timestamp_ms, unit='ms', tz='UTC')
-
+        # Indices in this list never trade; check this before touching the cache
+        # so a cached verdict for one calendar can never be returned for another.
         if ticker in ['SPX', 'DJI', 'NDX', 'VIX', 'GDAXI', 'FTSE']:
             return False
 
-        # Get the market calendar for the given ticker
+        # Every ticker on the same calendar shares identical hours, so cache by calendar.
+        # This lookup only reads immutable calendar objects, so it's safe outside the lock.
         market_calendar = self.get_market_calendar(ticker)
+        cache_key = market_calendar.name
 
-        # Calculate the start and end dates for the schedule
-        tsn = timestamp.normalize()
-        schedule = self.schedule_from_cache(tsn, market_calendar.name)
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                cache_valid_min_ms, cache_valid_max_ms, cache_valid_ans = cached
+                if cache_valid_min_ms <= timestamp_ms <= cache_valid_max_ms:
+                    return cache_valid_ans
 
-        if schedule.empty:
-            self.cache_valid_ans = False
-            self.cache_valid_min_ms = timestamp_ms
-            self.cache_valid_max_ms = self.cache_valid_min_ms + MS_IN_24_HOURS
-            return self.cache_valid_ans
-        #print('schedule', schedule, 'ts', timestamp, 'ts_m', timestamp_ms)
+            # Convert millisecond timestamp to pandas Timestamp in UTC
+            timestamp = pd.Timestamp(timestamp_ms, unit='ms', tz='UTC')
 
-        start_time_ms = TimeUtil.timestamp_to_millis(schedule.iloc[0]['market_open'])
-        end_time_ms = TimeUtil.timestamp_to_millis(schedule.iloc[0]['market_close'])
-        if timestamp_ms < start_time_ms:
-            self.cache_valid_ans = False
-            self.cache_valid_min_ms = timestamp_ms
-            self.cache_valid_max_ms = start_time_ms - 1
-        elif timestamp_ms < end_time_ms:
-            self.cache_valid_ans = True
-            self.cache_valid_min_ms = timestamp_ms
-            self.cache_valid_max_ms = end_time_ms - 1
-        else:
-            self.cache_valid_ans = False
-            self.cache_valid_min_ms = timestamp_ms
-            self.cache_valid_max_ms = TimeUtil.timestamp_to_millis(tsn) + MS_IN_24_HOURS
+            # Calculate the start and end dates for the schedule
+            tsn = timestamp.normalize()
+            schedule = self.schedule_from_cache(tsn, market_calendar.name)
 
-        # Check if the timestamp is within trading hours
-        #market_open = market_calendar.open_at_time(schedule, timestamp, include_close=False)
-        return self.cache_valid_ans
+            if schedule.empty:
+                cache_valid_ans = False
+                cache_valid_min_ms = timestamp_ms
+                # Bound to the end of this calendar day, not 24h from an arbitrary intraday
+                # timestamp, so a Sunday check can't stay cached into Monday's open.
+                cache_valid_max_ms = TimeUtil.timestamp_to_millis(tsn) + MS_IN_24_HOURS
+                self._cache[cache_key] = (cache_valid_min_ms, cache_valid_max_ms, cache_valid_ans)
+                return cache_valid_ans
+            #print('schedule', schedule, 'ts', timestamp, 'ts_m', timestamp_ms)
+
+            start_time_ms = TimeUtil.timestamp_to_millis(schedule.iloc[0]['market_open'])
+            end_time_ms = TimeUtil.timestamp_to_millis(schedule.iloc[0]['market_close'])
+            if timestamp_ms < start_time_ms:
+                cache_valid_ans = False
+                cache_valid_min_ms = timestamp_ms
+                cache_valid_max_ms = start_time_ms - 1
+            elif timestamp_ms < end_time_ms:
+                cache_valid_ans = True
+                cache_valid_min_ms = timestamp_ms
+                cache_valid_max_ms = end_time_ms - 1
+            else:
+                cache_valid_ans = False
+                cache_valid_min_ms = timestamp_ms
+                cache_valid_max_ms = TimeUtil.timestamp_to_millis(tsn) + MS_IN_24_HOURS
+
+            self._cache[cache_key] = (cache_valid_min_ms, cache_valid_max_ms, cache_valid_ans)
+            # Check if the timestamp is within trading hours
+            #market_open = market_calendar.open_at_time(schedule, timestamp, include_close=False)
+            return cache_valid_ans
 
 """
 Make a decorator called "timeme" which prints the function name and the time it took to complete.

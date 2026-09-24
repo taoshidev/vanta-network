@@ -156,12 +156,20 @@ class TestPositionManager(TestBase):
                 t0 = t1
 
 
-        # Fetch all positions and verify that they are the same as the ones we created
+        # Fetch all positions and verify that they are the same as the ones we created.
+        # Reuse the single fetch above: re-fetching every miner position once per position
+        # is O(n^2) over every trade pair and never completes.
+        uuid_to_disk_position = {p.position_uuid: p for p in all_disk_positions}
         for i in range(n_trade_pairs):
             for j in range(6):
                 expected_position = idx_to_position[(i, j)]
-                disk_position = self._find_disk_position_from_memory_position(expected_position)
-                self.validate_positions(expected_position, disk_position)
+                disk_position = uuid_to_disk_position.get(expected_position.position_uuid)
+                self.assertIsNotNone(
+                    disk_position,
+                    f"Could not find position {expected_position.position_uuid} in disk"
+                )
+                success, reason = PositionManagerClient.positions_are_the_same(expected_position, disk_position)
+                self.assertTrue(success, "Disc position is not as expected. " + reason)
 
     def test_sorting_and_fetching_positions_with_several_open_positions_for_the_same_trade_pair(self):
         num_positions = 100
@@ -843,7 +851,8 @@ class TestPositionManager(TestBase):
                         position_uuid=f"pos_t{thread_id}_i{i}",
                         trade_pair=trade_pair,
                         open_ms=1000 + thread_id * 100 + i,
-                        account_size=self.DEFAULT_ACCOUNT_SIZE
+                        account_size=self.DEFAULT_ACCOUNT_SIZE,
+                        position_type=OrderType.LONG
                     )
 
                     # RPC call - will be handled by server thread
@@ -948,7 +957,8 @@ class TestPositionManager(TestBase):
                     position_uuid=f"duplicate_attempt_{thread_id}",
                     trade_pair=TradePair.BTCUSD,  # SAME trade pair for all threads!
                     open_ms=1000 + thread_id,
-                    account_size=self.DEFAULT_ACCOUNT_SIZE
+                    account_size=self.DEFAULT_ACCOUNT_SIZE,
+                    position_type=OrderType.LONG
                 )
 
                 # RPC save - server will handle concurrently with threading

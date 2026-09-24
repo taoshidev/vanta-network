@@ -8,6 +8,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.exceptions.signal_exception import SignalException
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.limit_order.order_trigger import (
@@ -19,6 +20,11 @@ from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from shared_objects.log import logger
+
+PRO_TRANSITION_REJECTION = (
+    "Your account is transitioning to a Pro Account. You cannot open new positions or increase "
+    "existing ones - close your open positions to begin trading your Pro Account."
+)
 
 
 class LimitOrderManager(CacheController):
@@ -63,6 +69,12 @@ class LimitOrderManager(CacheController):
         self._position_client = PositionManagerClient(
             port=ValiConfig.RPC_POSITIONMANAGER_PORT,
             connect_immediately=False,
+            connection_mode=connection_mode
+        )
+
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(
+            running_unit_tests=running_unit_tests,
             connection_mode=connection_mode
         )
 
@@ -290,6 +302,20 @@ class LimitOrderManager(CacheController):
                 f"STOP_LIMIT orders must have a valid stop_condition (GTE or LTE), got {order.stop_condition}"
             )
 
+        if order.limit_price is None or order.limit_price <= 0:
+            raise SignalException(
+                f"STOP_LIMIT orders must have a valid limit_price > 0 (got {order.limit_price})"
+            )
+
+        if order.order_type == OrderType.LONG and order.limit_price < order.stop_price:
+            raise SignalException(
+                f"STOP_LIMIT LONG orders require limit_price ({order.limit_price}) >= stop_price ({order.stop_price})"
+            )
+        if order.order_type == OrderType.SHORT and order.limit_price > order.stop_price:
+            raise SignalException(
+                f"STOP_LIMIT SHORT orders require limit_price ({order.limit_price}) <= stop_price ({order.stop_price})"
+            )
+
         self._validate_limit_order(order)
 
     # ==================== Public API Methods ====================
@@ -312,6 +338,39 @@ class LimitOrderManager(CacheController):
                         if order.src in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                             return order.to_python_dict()
         return None
+
+    @staticmethod
+    def _increases_exposure(order, open_position):
+        """True when filling this order would open a position or add to one. Brackets and FLATs
+        only ever reduce, and an order opposite an open position reduces that position."""
+        if order.execution_type == ExecutionType.BRACKET:
+            return False
+        if order.order_type == OrderType.FLAT:
+            return False
+        return open_position is None or order.order_type == open_position.position_type
+
+    def _is_transitioning_to_pro(self, miner_hotkey):
+        """True while the miner is winding their standard account down to start a pro account."""
+        account = self._miner_account_client.get_account(miner_hotkey)
+        return account is not None and account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+
+    def _blocked_by_pro_transition(self, miner_hotkey, order):
+        """Whether PRO_CHALLENGE_TRANSITION blocks this order, fetching the position only when it
+        could matter. Used at fill time as well as at placement: a resting order that reduced a
+        position when it was placed becomes an entry order once that position closes."""
+        if order.execution_type == ExecutionType.BRACKET or order.order_type == OrderType.FLAT:
+            return False
+        if not self._is_transitioning_to_pro(miner_hotkey):
+            return False
+        return self._increases_exposure(order, self._get_open_position(miner_hotkey, order))
+
+    def _reject_if_transitioning_to_pro(self, miner_hotkey, order, open_position):
+        """Block orders that would open or increase exposure while a miner winds down their
+        standard account before starting a pro account. Brackets only ever reduce, so they pass."""
+        if not self._increases_exposure(order, open_position):
+            return
+        if self._is_transitioning_to_pro(miner_hotkey):
+            raise SignalException(PRO_TRANSITION_REJECTION)
 
     def process_limit_order(self, miner_hotkey, order, is_edit=False):
         """
@@ -358,7 +417,18 @@ class LimitOrderManager(CacheController):
                 if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                     raise SignalException(f"Cannot edit order {order_uuid}: order is no longer unfilled (race condition)")
             else:
-                # NEW ORDER PATH: Check max unfilled orders limit
+                # NEW ORDER PATH: idempotent replay guard — a retried process_limit_order (RPC
+                # self-heal or placer resend after a lost ack) with an already-registered uuid
+                # returns the standing order instead of appending a duplicate.
+                existing_order = self._find_existing_order_under_lock(miner_hotkey, order_uuid)
+                if existing_order:
+                    logger.warning(
+                        f"Limit order [{order_uuid}] already registered for {miner_hotkey} — "
+                        f"returning existing (idempotent replay)"
+                    )
+                    return {"status": "success", "order_uuid": order_uuid, "replayed": True}
+
+                # Check max unfilled orders limit
                 total_unfilled = self._count_unfilled_orders_for_hotkey(miner_hotkey)
                 if total_unfilled >= ValiConfig.MAX_UNFILLED_LIMIT_ORDERS:
                     raise SignalException(
@@ -368,6 +438,20 @@ class LimitOrderManager(CacheController):
 
             # Get position for validation
             open_position = self._get_open_position(miner_hotkey, order)
+
+            # Replay guard, filled case: a limit order that filled immediately on its first apply
+            # lives in the position (not the unfilled book), so the check above misses it. Answer
+            # the replay idempotently instead of re-validating and re-filling a committed order.
+            if not is_edit and open_position is not None and any(
+                o.order_uuid == order_uuid for o in open_position.orders
+            ):
+                logger.warning(
+                    f"Limit order [{order_uuid}] already filled into position for {miner_hotkey} — "
+                    f"idempotent replay, not re-filling"
+                )
+                return {"status": "success", "order_uuid": order_uuid, "replayed": True}
+
+            self._reject_if_transitioning_to_pro(miner_hotkey, order, open_position)
 
             # Validate order using shared validation logic (business rules)
             if order.execution_type == ExecutionType.BRACKET:
@@ -401,7 +485,7 @@ class LimitOrderManager(CacheController):
                     if o.order_uuid == order_uuid:
                         orders_list.pop(i)
                         break
-            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, is_market_order=True)
+            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], trigger_price, is_market_order=True)
             if fill_error:
                 raise SignalException(fill_error)
             logger.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
@@ -510,6 +594,53 @@ class LimitOrderManager(CacheController):
 
         except Exception as e:
             logger.error(f"Error cancelling limit order: {e}")
+            logger.error(traceback.format_exc())
+            raise
+
+    def cancel_entry_orders(self, miner_hotkey, now_ms, order_src=None):
+        """
+        RPC method to cancel every resting order that would open a position or add to one,
+        leaving brackets and resting exits alone.
+
+        Args:
+            miner_hotkey: The miner's hotkey
+            now_ms: Current timestamp
+            order_src: Optional OrderSource override — if specified, replaces the derived cancel src
+        Returns:
+            dict with cancellation details
+        """
+        try:
+            # One fetch for the whole sweep rather than one per resting order
+            open_by_trade_pair = {
+                p.trade_pair.trade_pair_id: p
+                for p in self.position_manager.get_positions_for_one_hotkey(miner_hotkey, only_open_positions=True)
+            }
+
+            orders_to_cancel = []
+            for hotkey_dict in self._limit_orders.values():
+                for order in hotkey_dict.get(miner_hotkey, []):
+                    if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
+                        continue
+                    open_position = open_by_trade_pair.get(order.trade_pair.trade_pair_id)
+                    if self._increases_exposure(order, open_position):
+                        orders_to_cancel.append(order)
+
+            for order in orders_to_cancel:
+                cancel_src = order_src if order_src is not None else OrderSource.get_cancel(order.src)
+                self._close_limit_order(miner_hotkey, order, cancel_src, now_ms)
+
+            if orders_to_cancel:
+                logger.info(f"Cancelled {len(orders_to_cancel)} entry orders for [{miner_hotkey}]")
+
+            return {
+                "status": "cancelled",
+                "miner_hotkey": miner_hotkey,
+                "cancelled_ms": now_ms,
+                "num_cancelled": len(orders_to_cancel)
+            }
+
+        except Exception as e:
+            logger.error(f"Error cancelling entry orders for {miner_hotkey}: {e}")
             logger.error(traceback.format_exc())
             raise
 
@@ -1078,17 +1209,32 @@ class LimitOrderManager(CacheController):
             logger.error(
                 f"[STOP_LIMIT] Failed to create child limit order from {order.order_uuid}: {e}"
             )
+            # The parent was closed as STOP_LIMIT_FILLED above on the assumption the child would
+            # take its place. It did not, and _close_limit_order only persists cancelled orders, so
+            # record the parent as cancelled or it leaves the trader's order history with no trace.
+            with self.limit_order_locks.get_lock(miner_hotkey, order.trade_pair.trade_pair_id):
+                order.src = OrderSource.STOP_LIMIT_CANCELLED
+                self._write_to_disk(miner_hotkey, order)
 
-    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, fill_price, is_market_order=False, is_taker=None):
+    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, trigger_price, is_market_order=False, is_taker=None):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
         from vali_objects.utils.limit_order.order_utils import OrderSize
         trade_pair = order.trade_pair
         fill_time = price_source.start_ms
         error_msg = None
 
+        # Re-check the pro transition here and not just at placement: a resting order that reduced
+        # a position when it was placed becomes an entry order once that position closes, and an
+        # order resting from before the transition was never checked at all. Without this the fill
+        # raises inside _apply_order and the generic handler below cancels it as a fill failure.
+        if self._blocked_by_pro_transition(miner_hotkey, order):
+            error_msg = f"Cancelling limit order [{order.order_uuid}] for [{miner_hotkey}]: {PRO_TRANSITION_REJECTION}"
+            logger.info(error_msg)
+            self._close_limit_order(miner_hotkey, order, OrderSource.PRO_TRANSITION_CANCELLED, fill_time)
+            return error_msg
+
         new_src = OrderSource.ORGANIC if is_market_order else OrderSource.get_fill(order.src)
         slippage = None if is_market_order else 0
-        # An order that fills on submission crossed the spread, so it took liquidity.
         is_taker = True if is_market_order else is_taker
         try:
             if order.execution_type == ExecutionType.BRACKET:
@@ -1109,7 +1255,7 @@ class LimitOrderManager(CacheController):
             result = self.market_order_client.execute_order(
                 miner_hotkey, order.order_uuid, trade_pair,
                 order.execution_type, order_type, order_size,
-                fill_price=fill_price,
+                trigger_price=trigger_price,
                 price_sources=[price_source],
                 order_src=new_src,
                 now_ms=fill_time,
@@ -1127,7 +1273,7 @@ class LimitOrderManager(CacheController):
             order.value = filled_order.value
             order.quantity = filled_order.quantity
             order.price_sources = filled_order.price_sources
-            order.price = fill_price if fill_price else filled_order.price
+            order.price = filled_order.price
             order.bid = filled_order.bid
             order.ask = filled_order.ask
             order.slippage = filled_order.slippage
@@ -1285,6 +1431,14 @@ class LimitOrderManager(CacheController):
                     self._last_fill_time[trade_pair][miner_hotkey] = 0
 
                 for bracket_data in brackets_to_create:
+                    # Idempotent replay guard: bracket uuids are deterministic
+                    # ("{parent_uuid}-bracket-{i}"), so a retried create_sltp_order (RPC self-heal
+                    # or placer resend of a committed parent) must not append duplicate brackets.
+                    if self._find_existing_order_under_lock(miner_hotkey, bracket_data['uuid']):
+                        logger.warning(
+                            f"Bracket order [{bracket_data['uuid']}] already exists — skipping (idempotent replay)"
+                        )
+                        continue
                     # Build trailing_stop dict for the Order if trailing fields present
                     trailing_stop_dict = None
                     if bracket_data.get('trailing_percent') is not None:

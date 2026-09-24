@@ -818,10 +818,6 @@ class TestEntityManagerNotification(TestBase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 # ==================== Mapping/Dashboard Concurrency Tests ====================
 
 class TestEntityMinerMappingConcurrency(TestBase):
@@ -1064,3 +1060,7 @@ class TestAsyncSlackNotify(TestBase):
     def test_notify_without_notifier_is_noop(self):
         gw = self._make_gateway(None)
         gw._notify_slack_async("hello")  # must not raise
+
+
+if __name__ == "__main__":
+    unittest.main()

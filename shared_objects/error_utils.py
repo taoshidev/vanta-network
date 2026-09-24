@@ -9,7 +9,30 @@ from typing import Union, List, Callable, Any
 
 class ErrorUtils:
     """Shared utilities for error handling, formatting, and runtime protection across the codebase."""
-    
+
+    @staticmethod
+    def is_transient_rpc_error(exc: BaseException) -> bool:
+        """
+        True if `exc` is a transient RPC/infra failure (a state server — e.g. MarketOrderServer
+        :50027 — bouncing during a deploy) rather than a permanent business-logic rejection.
+
+        Used to decide whether an order ack should ask the placer to retry (should_retry=True).
+        Business rejections (SignalException, ValueError, invalid payloads, ...) return False and
+        must NOT be retried. OSError covers the connection family
+        (ConnectionRefusedError/ConnectionResetError, BrokenPipeError, TimeoutError all subclass
+        it); EOFError is what a multiprocessing BaseManager proxy raises when the server dies
+        mid-call; AuthenticationError can surface on a racing reconnect; RemoteError is a stale proxy
+        token after the server restarted at the same address (genuine business exceptions arrive as
+        their original type, so they still return False). RemoteError is ambiguous, so _invoke_rpc
+        probes the transport to tell a dead proxy from a real server-side RemoteError.
+        """
+        if exc is None:
+            return False
+        from multiprocessing.context import AuthenticationError
+        from multiprocessing.managers import RemoteError
+        return isinstance(exc, (OSError, EOFError, AuthenticationError, RemoteError))
+
+
     @staticmethod
     def get_compact_stacktrace(error: Union[str, Exception], 
                              relevant_keywords: List[str] = None,
