@@ -486,7 +486,7 @@ teardown_disabled_split_apps
 if [ "$split_state_enabled" = true ]; then
     check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
 fi
-check_and_restart_pm2 "$proc_name" "$script" args
+check_and_restart_pm2 "$proc_name" "$script" args 15000
 if [ "$orders_split_enabled" = true ]; then
     # After core: vanta-orders seeds dedup + primes its blacklist cache from core's metagraph on boot.
     check_and_restart_pm2 "$orders_proc_name" "$orders_script" orders_args 10000
@@ -567,7 +567,7 @@ while true; do
                 if [ "$split_state_enabled" = true ]; then
                     check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
                 fi
-                check_and_restart_pm2 "$proc_name" "$script" args
+                check_and_restart_pm2 "$proc_name" "$script" args 15000
                 if [ "$orders_split_enabled" = true ]; then
                     check_and_restart_pm2 "$orders_proc_name" "$orders_script" orders_args 10000
                 fi

@@ -56,6 +56,12 @@ from vali_objects.utils.entity_collateral.entity_collateral_client import Entity
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 
+# Grace period for graceful shutdown before force-exiting. Must stay under the "vanta" PM2 app's
+# kill_timeout (run.sh) so this alarm fires and exits cleanly before PM2 SIGKILLs the process —
+# otherwise in-flight critical sections (e.g. a position_lock held via the RPC lock server) get
+# killed mid-hold and strand the lock in vanta-state until POSITION_LOCK_LEASE_MS reclaims it.
+GRACEFUL_SHUTDOWN_TIMEOUT_S = 12
+
 def is_shutdown() -> bool:
     """Check if shutdown is in progress via ShutdownCoordinator."""
     return ShutdownCoordinator.is_shutdown()
@@ -75,8 +81,7 @@ def signal_handler(signum, frame):
         )
         print("Shutdown signal propagated to all servers via ShutdownCoordinator")
 
-        # Set a 2-second alarm
-        signal.alarm(2)
+        signal.alarm(GRACEFUL_SHUTDOWN_TIMEOUT_S)
 
 def alarm_handler(signum, frame):
     print("Graceful shutdown failed, force killing the process")
