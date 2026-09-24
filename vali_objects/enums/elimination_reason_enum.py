@@ -32,6 +32,16 @@ class EliminationReason(Enum):
     FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN = "FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN"
     LIQUIDATED = "LIQUIDATED"
     DEREGISTERED = "DEREGISTERED"
+    # MARTINGALE: doubling down while losing, detected by the martingale service
+    # (taoshidev/vanta-martingale-service) and confirmed by a human. The service
+    # only ever records a warning and an eliminate-eligible flag; it never
+    # eliminates, so this reason is only ever written by an operator acting on a
+    # reviewed flag. Recorded distinctly because "Subject to Martingale
+    # Detection: Yes" is a published pro-account rule, and a martingale
+    # elimination filed under DEREGISTERED (the admin endpoint's default) is
+    # indistinguishable from an administrative removal in the elimination
+    # ledger.
+    MARTINGALE = "MARTINGALE"
 
     @property
     def is_intraday_drawdown(self):
