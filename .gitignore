@@ -206,3 +206,6 @@ IWB_holdings.csv
 
 # Throwaway diagnostic spikes
 runnable/spike_*.py
+
+# Validator state backups written by restore_validator_from_backup.py
+/backups/

@@ -1460,32 +1460,6 @@ class EntityManager(ValidatorBroadcastBase):
         logger.warning(f"[ENTITY_MANAGER] Ignoring invalid leverage_tier {tier!r} for {synthetic_hotkey}")
         return None
 
-    def _push_leverage_tiers(self, wanted: Dict[str, int]) -> int:
-        """Set MinerAccount.leverage_tier where it differs from the SubaccountInfo value or the account
-        is missing. Repairs accounts that lost the field to an account-size sync from a validator
-        without it. Returns the number of accounts written."""
-        if not self._miner_account_client or not wanted:
-            return 0
-        accounts = self._miner_account_client.get_accounts(list(wanted))
-        written = 0
-        for hotkey, tier in wanted.items():
-            account = accounts.get(hotkey)
-            if account is None or account.leverage_tier != tier:
-                self._miner_account_client.set_leverage_tier(hotkey, tier)
-                written += 1
-        return written
-
-    def _reconcile_leverage_tiers(self) -> int:
-        """Push every active subaccount's stored tier to its MinerAccount, see _push_leverage_tiers."""
-        with self._entities_lock:
-            wanted = {
-                sub.synthetic_hotkey: sub.leverage_tier
-                for entity in self.entities.values()
-                for sub in entity.subaccounts.values()
-                if sub.leverage_tier is not None and sub.status == "active"
-            }
-        return self._push_leverage_tiers(wanted)
-
     def get_subaccount_status(self, synthetic_hotkey: str) -> Tuple[bool, Optional[str], str]:
         """
         Get the status of a subaccount by synthetic hotkey.
@@ -2490,6 +2464,9 @@ class EntityManager(ValidatorBroadcastBase):
         - Updates subaccount status (active/eliminated)
         - Preserves local-only data (e.g., newer subaccounts)
 
+        Only touches entity state. Challenge period buckets, MinerAccount fields (hl_address,
+        leverage_tier) and asset selections come from their own checkpoint syncs.
+
         Args:
             entities_checkpoint_dict: Dict from checkpoint (entity_hotkey -> EntityData dict)
 
@@ -2501,7 +2478,6 @@ class EntityManager(ValidatorBroadcastBase):
             'subaccounts_added': 0,
             'subaccounts_updated': 0,
             'entities_skipped': 0,
-            'leverage_tiers_pushed': 0,
         }
 
         # Validate input
@@ -2534,21 +2510,12 @@ class EntityManager(ValidatorBroadcastBase):
                     # Create lock for new entity
                     self._entity_locks[entity_hotkey] = threading.RLock()
 
-                    # Register entity with challenge period system (ENTITY bucket - 4x dust weight)
-                    self._challenge_period_client.set_miner_bucket(
-                        entity_hotkey,
-                        MinerBucket.ENTITY,
-                        incoming_entity.registered_at_ms
-                    )
-
                     # Update HL address reverse index for all subaccounts
                     for sub in incoming_entity.subaccounts.values():
                         if sub.hl_address:
                             normalized_hl = self._normalize_hl_address(sub.hl_address)
                             if normalized_hl:
                                 self._hl_address_to_synthetic[normalized_hl] = sub.synthetic_hotkey
-                            if self._miner_account_client:
-                                self._miner_account_client.set_hl_address(sub.synthetic_hotkey, sub.hl_address)
 
                     stats['entities_added'] += 1
                     stats['subaccounts_added'] += len(incoming_entity.subaccounts)
@@ -2574,8 +2541,6 @@ class EntityManager(ValidatorBroadcastBase):
                                     normalized_hl = self._normalize_hl_address(incoming_sub.hl_address)
                                     if normalized_hl:
                                         self._hl_address_to_synthetic[normalized_hl] = incoming_sub.synthetic_hotkey
-                                    if self._miner_account_client:
-                                        self._miner_account_client.set_hl_address(incoming_sub.synthetic_hotkey, incoming_sub.hl_address)
 
                                 stats['subaccounts_added'] += 1
                                 logger.info(f"[ENTITY_MANAGER] Added subaccount {incoming_sub.synthetic_hotkey} from sync")
@@ -2594,8 +2559,6 @@ class EntityManager(ValidatorBroadcastBase):
                                     normalized_hl = self._normalize_hl_address(incoming_sub.hl_address)
                                     if normalized_hl:
                                         self._hl_address_to_synthetic[normalized_hl] = incoming_sub.synthetic_hotkey
-                                    if self._miner_account_client:
-                                        self._miner_account_client.set_hl_address(incoming_sub.synthetic_hotkey, incoming_sub.hl_address)
                                     stats['subaccounts_updated'] += 1
 
                                 # Update payout_address if added
@@ -2620,11 +2583,6 @@ class EntityManager(ValidatorBroadcastBase):
                                     stats['subaccounts_updated'] += 1
                                 if incoming_sub.asset_class and local_sub.asset_class != incoming_sub.asset_class:
                                     local_sub.asset_class = incoming_sub.asset_class
-                                    self._asset_selection_client.process_asset_selection_request(
-                                        asset_selection=incoming_sub.asset_class,
-                                        miner=incoming_sub.synthetic_hotkey,
-                                        overwrite=True,
-                                    )
                                     stats['subaccounts_updated'] += 1
 
                         # Update next_subaccount_id to prevent ID collisions
@@ -2633,10 +2591,6 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Persist changes to disk
             self._write_entities_from_memory_to_disk()
-
-        # The account-size sync that runs before this may have replaced MinerAccounts with records
-        # from a validator without the field; put every stored tier back
-        stats['leverage_tiers_pushed'] = self._reconcile_leverage_tiers()
 
         logger.info(f"[ENTITY_MANAGER] Entity sync complete: {stats}")
         return stats
