@@ -42,6 +42,9 @@ class EntityCollateralManager(CacheController):
     - Disk persistence via JSON
     """
 
+    # Ceiling on how long an entity can go without an on-chain refresh even if not dirty (4 hours)
+    ENTITY_COLLATERAL_MAX_STALENESS_MS = 4 * 60 * 60 * 1000
+
     def __init__(
         self,
         *,
@@ -79,6 +82,12 @@ class EntityCollateralManager(CacheController):
         self._collateral_cache: Dict[str, float] = {}
         self._cache_lock = threading.RLock()
 
+        # entity_hotkey -> ms timestamp of the last offset_collateral_cache event, and
+        # entity_hotkey -> ms timestamp of the last successful on-chain refresh. Used by
+        # refresh_collateral_cache to skip entities with no pending event.
+        self._last_offset_ms: Dict[str, int] = {}
+        self._last_refreshed_ms: Dict[str, int] = {}
+
         # Slash tracking: synthetic_hotkey -> {cumulative_realized_loss, cumulative_slashed}
         self._slash_tracking: Dict[str, Dict[str, float]] = {}
         self._slash_lock = threading.RLock()
@@ -105,10 +114,12 @@ class EntityCollateralManager(CacheController):
 
     def refresh_collateral_cache(self) -> str | None:
         """
-        Refresh cached collateral balances for all known entities from on-chain contracts.
+        Refresh cached collateral balances for known entities from on-chain contracts.
 
-        Called periodically by the daemon. Reads each entity's collateral balance
-        from the ContractClient and writes results to the on-disk cache.
+        Called periodically by the daemon. Only queries entities that have had a
+        collateral-changing event since their last refresh (or have never been
+        refreshed, or have exceeded the staleness ceiling), instead of every known
+        entity, since most cycles have no pending changes at all.
 
         Returns:
             Number of entities refreshed.
@@ -117,19 +128,29 @@ class EntityCollateralManager(CacheController):
         if not all_entities:
             return None
 
+        attempt_ms = TimeUtil.now_in_millis()
+        with self._cache_lock:
+            entities_to_refresh = [
+                hotkey for hotkey in all_entities
+                if hotkey not in self._collateral_cache
+                or self._last_offset_ms.get(hotkey, 0) > self._last_refreshed_ms.get(hotkey, 0)
+                or attempt_ms - self._last_refreshed_ms.get(hotkey, 0) > self.ENTITY_COLLATERAL_MAX_STALENESS_MS
+            ]
+
         refreshed = 0
-        for entity_hotkey in all_entities:
+        for entity_hotkey in entities_to_refresh:
             try:
                 balance_theta = self._contract_client.get_miner_collateral_balance(entity_hotkey)
                 if balance_theta is not None:
                     with self._cache_lock:
                         self._collateral_cache[entity_hotkey] = balance_theta
+                        self._last_refreshed_ms[entity_hotkey] = attempt_ms
                     refreshed += 1
             except Exception as e:
                 logger.warning(f"[ENTITY_COLLATERAL] Failed to refresh collateral for {entity_hotkey}: {e}")
 
         self._save_cache_to_disk()
-        logger.info(f"[ENTITY_COLLATERAL] Refreshed collateral cache for {refreshed}/{len(all_entities)} entities")
+        logger.info( f"[ENTITY_COLLATERAL] Refreshed collateral cache for {refreshed}/{len(entities_to_refresh)} entities")
         return self._to_slack_message(self._collateral_cache)
 
     def get_cached_collateral(self, entity_hotkey: str) -> Optional[float]:
@@ -176,6 +197,7 @@ class EntityCollateralManager(CacheController):
         with self._cache_lock:
             if entity_hotkey in self._collateral_cache:
                 self._collateral_cache[entity_hotkey] = max(0.0, self._collateral_cache[entity_hotkey] + theta)
+            self._last_offset_ms[entity_hotkey] = TimeUtil.now_in_millis()
 
     def _load_cache_from_disk(self) -> Dict[str, float]:
         """
@@ -735,6 +757,8 @@ class EntityCollateralManager(CacheController):
             raise RuntimeError("clear_test_state can only be used in unit test mode")
         with self._cache_lock:
             self._collateral_cache.clear()
+            self._last_offset_ms.clear()
+            self._last_refreshed_ms.clear()
         with self._slash_lock:
             self._slash_tracking.clear()
 
