@@ -72,6 +72,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
+from vali_objects.challenge_period.challengeperiod_manager import DrawdownStats
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.fee_event import FeeType
 from vali_objects.vali_dataclasses.order import Order
@@ -79,6 +80,11 @@ from vanta_api.base_rest_server import BaseRestServer
 from vanta_api.nonce_manager import NonceManager
 import logging
 from shared_objects.log import logger
+
+
+# current_equity and current_balance are recomputed from the account on every refresh, so they are
+# not settable -- the EOD fields hold until the next midnight snapshot is captured.
+SETTABLE_DRAWDOWN_FIELDS = ('daily_open_equity', 'eod_hwm', 'last_eod_equity', 'last_eod_checked_ms')
 
 
 class ValidatorRestServer(BaseRestServer, RPCServerBase):
@@ -374,6 +380,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
         self.app.route("/admin/reset-snapshot/<hotkey>", methods=["POST"])(self.reset_account_snapshot)
         self.app.route("/admin/drawdown-criteria", methods=["POST"])(self.update_drawdown_criteria)
+        self.app.route("/admin/drawdown-stats/<hotkey>", methods=["POST"])(self.set_miner_drawdown_stats)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -2000,6 +2007,75 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', 'results': results}), 200
         except Exception as e:
             logger.error(f"Error updating drawdown criteria: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def set_miner_drawdown_stats(self, hotkey: str):
+        """
+        Overwrite a miner's cached drawdown fields, eod_hwm among them. Only the fields present
+        in the body are changed; the rest are left as they are.
+        Requires tier 500 access.
+
+        Settable fields (all numeric): daily_open_equity, eod_hwm, last_eod_equity,
+        last_eod_checked_ms
+
+        Example:
+        curl -X POST http://localhost:48888/admin/drawdown-stats/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"eod_hwm": 1.03, "last_eod_equity": 0.99}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Set drawdown stats endpoint requires tier 500 access'}), 403
+
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data:
+            return jsonify({'error': 'Body must be a non-empty JSON object of drawdown fields'}), 400
+
+        unknown = sorted(set(data) - set(SETTABLE_DRAWDOWN_FIELDS))
+        if unknown:
+            return jsonify({'error': f'{unknown} not settable, settable fields: {list(SETTABLE_DRAWDOWN_FIELDS)}'}), 400
+
+        updates = {}
+        for name, value in data.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                return jsonify({'error': f'{name} must be a finite number, got "{value}"'}), 400
+            if name == 'last_eod_checked_ms':
+                updates[name] = int(value)
+            elif value <= 0:
+                return jsonify({'error': f'{name} must be a positive number, got "{value}"'}), 400
+            else:
+                updates[name] = float(value)
+
+        try:
+            current = self._challenge_period_client.get_drawdown_stats(hotkey)
+            if current is None:
+                return jsonify({'error': f'{hotkey} not found in challenge period manager'}), 404
+
+            merged = {**current, **updates}
+            drawdown = DrawdownStats.from_dict(merged)
+            # from_dict drops None, which would otherwise reset a cleared optional field to its default
+            for name in SETTABLE_DRAWDOWN_FIELDS:
+                if merged.get(name) is None:
+                    setattr(drawdown, name, None)
+
+            success, message = self._challenge_period_client.set_miner_drawdown_stats(hotkey, drawdown)
+            if not success:
+                return jsonify({'error': message}), 400
+
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'updates': updates,
+                'drawdown': drawdown.to_dict(),
+                'message': message,
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error setting drawdown for {hotkey}: {e}")
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 

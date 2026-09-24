@@ -1300,6 +1300,17 @@ class ChallengePeriodManager(CacheController):
             self._save_to_disk()
         return True, f"drawdown_criteria updated to '{criteria.value}' for {hotkey}"
 
+    def set_miner_drawdown_stats(self, hotkey: str, drawdown: DrawdownStats) -> Tuple[bool, str]:
+        """Overwrite drawdown stats for an existing miner state and persist to disk."""
+        with self._buckets_lock:
+            state = self.miner_states.get(hotkey)
+            if not state:
+                return False, f"{hotkey} not found in challenge period manager"
+            state.drawdown = drawdown
+            logger.info(f"[CHALLENGE] drawdown stats set: {state}")
+            self._save_to_disk()
+        return True, f"drawdown stats updated for {hotkey}"
+
     def remove_miners(self, hotkeys: str | list[str]) -> bool:
         """Remove hotkeys from memory - CALL OUTSIDE OF LOCK"""
         hotkeys = [hotkeys] if isinstance(hotkeys, str) else hotkeys
