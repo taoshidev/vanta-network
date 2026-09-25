@@ -89,6 +89,9 @@ def main() -> bool:
 
     success_count = 0
     for migration in pending:
+        if not os.path.exists(os.path.join(MIGRATIONS_DIR, migration)):
+            print(f"  Skipping {migration}: file not found in {MIGRATIONS_DIR}\n")
+            continue
         if run_migration(migration, dry_run):
             if not dry_run:
                 mark_completed(migration)
