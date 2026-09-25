@@ -974,7 +974,7 @@ class TestEntityCollateral(TestBase):
         with open("neurons/validator.py", "r") as f:
             source = f.read()
         self.assertIn("entity_collateral_client", source)
-        self.assertIn("orchestrator.get_client('entity_collateral')", source)
+        self.assertIn("EntityCollateralClient()", source)
 
     def test_validator_py_starts_entity_collateral_daemon(self):
         """Test that validator.py starts entity_collateral daemon."""
@@ -1098,22 +1098,22 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         self.assertAlmostEqual(funded, 1_000_000 * ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
         self.assertLess(in_challenge, funded)
 
-    def test_exposure_falls_back_to_the_traded_account_without_a_recorded_standard_size(self):
-        """A record carrying no standard size charges the account actually being traded."""
+    def test_exposure_is_withheld_without_a_recorded_standard_size(self):
+        """A record carrying no standard size leaves the exposure unknown, so nothing is charged."""
         self._promoted_from_standard(standard_account_size=None)
 
         max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
 
-        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertAlmostEqual(max_slash, 0.0)
 
-    def test_exposure_falls_back_to_the_traded_account_when_the_entity_lookup_fails(self):
-        """An unreachable entity service charges the pro account rather than under-collateralizing."""
+    def test_exposure_is_withheld_when_the_entity_lookup_fails(self):
+        """An unreachable entity service withholds the charge rather than guessing a size."""
         self._promoted_from_standard()
         self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = RuntimeError("rpc down")
 
         max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
 
-        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertAlmostEqual(max_slash, 0.0)
 
     def test_exposure_never_exceeds_the_traded_account(self):
         """A stale standard size above the pro account cannot inflate the exposure."""
