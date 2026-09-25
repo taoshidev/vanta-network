@@ -36,6 +36,20 @@ from shared_objects.log import logger
 TARGET_MS = 1782417600000 + (1000 * 60 * 60 * 6)  # + 6 hours
 
 
+def dashboard_fill_key(order_uuid: str, occurrence: int) -> str:
+    """Key for a fill in the dashboard's `fo` dict.
+
+    A bracket order that fills in more than one chunk produces several fills
+    sharing one order_uuid, so the uuid alone cannot key the dict. The first
+    fill keeps the bare order_uuid (backward compatible — existing consumers
+    still find it); each repeat fill gets an "@{occurrence}" suffix.
+
+    Client contract: everything after '@' is an opaque discriminator — strip
+    it to recover the order_uuid, and never interpret the number's value.
+    """
+    return order_uuid if occurrence == 0 else f"{order_uuid}@{occurrence}"
+
+
 class PositionManager:
     """
     Core business logic for position management.
@@ -522,10 +536,21 @@ class PositionManager:
                 new_closed_positions = True
 
             dashboard_filled_orders = {}
+            # See dashboard_fill_key: repeat fills of one order_uuid get an
+            # "@{occurrence}" suffix so none is silently dropped. The running
+            # count covers ALL of the position's orders (not just those past
+            # the watermark) so a fill keeps the same key in every incremental
+            # frame that includes it. position.orders is the chronological
+            # fill sequence (fills are only ever appended), which makes each
+            # fill's ordinal stable across calls.
+            fill_counts = {}
             for order in position.orders:
+                occurrence = fill_counts.get(order.order_uuid, 0)
+                fill_counts[order.order_uuid] = occurrence + 1
                 if order.processed_ms > positions_time_ms:
                     snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
-                    dashboard_filled_orders[order.order_uuid] = order.to_dashboard()
+                    key = dashboard_fill_key(order.order_uuid, occurrence)
+                    dashboard_filled_orders[key] = order.to_dashboard()
 
             dashboard_unfilled_orders = {
                 order.order_uuid: order.to_dashboard()

@@ -124,6 +124,20 @@ class EntityMinerRestServer(MinerRestServer):
     DASHBOARD_CACHE_TTL_MS = 10_000
     MAPPING_REFRESH_TTL_MS = 5_000
 
+    # SSE stream caps. Each open stream pins one of Waitress's 32 worker threads
+    # for its whole lifetime (the generator blocks in queue.get), so uncapped
+    # streams can exhaust the pool and stall every other endpoint. Streams are
+    # bounded in count and lifetime; the browser's EventSource reconnects
+    # transparently after either cutoff.
+    SSE_MAX_CONCURRENT_STREAMS = 8
+    SSE_HEARTBEAT_S = 30
+    # Keep SSE_MAX_IDLE_S >= SSE_HEARTBEAT_S: the idle check only runs between
+    # queue waits, so an idle window smaller than one heartbeat would close
+    # every stream on its first pass.
+    SSE_MAX_LIFETIME_S = 15 * 60
+    SSE_MAX_IDLE_S = 5 * 60
+    SSE_RETRY_AFTER_S = 5  # advertised to rejected clients (503 Retry-After)
+
     def __init__(self, api_keys_file, flask_host="0.0.0.0", flask_port=8088,
                  slack_notifier=None, prop_net_order_placer=None, **kwargs):
         # Internal state (initialized before super().__init__ calls _initialize_clients)
@@ -133,10 +147,19 @@ class EntityMinerRestServer(MinerRestServer):
         self._synthetic_to_hl: Dict[str, str] = {}  # synthetic_hotkey -> hl_address
         self._dashboard_cache_updated_ms: Dict[str, int] = {}  # hl_address -> cache write time
         self._mapping_last_refresh_ms: Dict[str, int] = {}  # hl_address -> last validator mapping refresh time
+        # Guards the five dicts above. They are mutated by request threads, the WS
+        # listener, its executor callbacks, and the payment daemon; unguarded, a
+        # json.dump over a live dict raises "dictionary changed size during iteration"
+        # and readers can observe half-reassigned HL<->synthetic mappings.
+        # RLock: _refresh_dashboard_from_validator -> _set_hl_mapping -> _evict_dashboard_cache nest.
+        # Never held across I/O (snapshot-then-write / fetch-then-lock).
+        self._mapping_lock = threading.RLock()
 
         # SSE subscriber tracking: hl_address -> set of Queue objects
         self._sse_subscribers: Dict[str, Set[queue.Queue]] = {}
         self._sse_lock = threading.Lock()
+        # Caps concurrent SSE streams so they can never exhaust the Waitress pool.
+        self._sse_stream_slots = threading.BoundedSemaphore(self.SSE_MAX_CONCURRENT_STREAMS)
 
         # WebSocket connection state
         self._ws_thread: Optional[threading.Thread] = None
@@ -429,8 +452,9 @@ class EntityMinerRestServer(MinerRestServer):
                     normalized_synthetic_to_hl[synthetic] = normalized_hl
                     normalized_hl_to_synthetic[normalized_hl] = synthetic
 
-            self._hl_to_synthetic = normalized_hl_to_synthetic
-            self._synthetic_to_hl = normalized_synthetic_to_hl
+            with self._mapping_lock:
+                self._hl_to_synthetic = normalized_hl_to_synthetic
+                self._synthetic_to_hl = normalized_synthetic_to_hl
             logger.info(f"[ENTITY-GW] Loaded {len(self._hl_to_synthetic)} HL address mappings from disk")
         except Exception as e:
             logger.error(f"[ENTITY-GW] Error loading HL mappings: {e}")
@@ -440,12 +464,17 @@ class EntityMinerRestServer(MinerRestServer):
         if not self._mappings_file:
             return
 
+        # Snapshot under the lock, write outside it: json.dump over the live dicts
+        # races concurrent writers (RuntimeError: dictionary changed size during
+        # iteration), and holding the lock during disk I/O would stall other threads.
+        with self._mapping_lock:
+            snapshot = {
+                "hl_to_synthetic": dict(self._hl_to_synthetic),
+                "synthetic_to_hl": dict(self._synthetic_to_hl),
+            }
         try:
             with open(self._mappings_file, "w") as f:
-                json.dump({
-                    "hl_to_synthetic": self._hl_to_synthetic,
-                    "synthetic_to_hl": self._synthetic_to_hl,
-                }, f, indent=2)
+                json.dump(snapshot, f, indent=2)
         except Exception as e:
             logger.error(f"[ENTITY-GW] Error saving HL mappings: {e}")
 
@@ -466,36 +495,38 @@ class EntityMinerRestServer(MinerRestServer):
         if not hl_address or not synthetic_hotkey:
             return False
 
-        old_synthetic = self._hl_to_synthetic.get(hl_address)
-        old_hl_for_synthetic = self._synthetic_to_hl.get(synthetic_hotkey)
-        mapping_changed = (
-            old_synthetic is not None and old_synthetic != synthetic_hotkey
-        ) or (
-            old_hl_for_synthetic is not None and old_hl_for_synthetic != hl_address
-        )
-
-        if old_synthetic and old_synthetic != synthetic_hotkey:
-            self._synthetic_to_hl.pop(old_synthetic, None)
-            self._evict_dashboard_cache(hl_address)
-            logger.info(
-                f"[ENTITY-GW] HL mapping reassigned ({source}): {hl_address} {old_synthetic} -> {synthetic_hotkey}"
+        with self._mapping_lock:
+            old_synthetic = self._hl_to_synthetic.get(hl_address)
+            old_hl_for_synthetic = self._synthetic_to_hl.get(synthetic_hotkey)
+            mapping_changed = (
+                old_synthetic is not None and old_synthetic != synthetic_hotkey
+            ) or (
+                old_hl_for_synthetic is not None and old_hl_for_synthetic != hl_address
             )
 
-        if old_hl_for_synthetic and old_hl_for_synthetic != hl_address:
-            self._hl_to_synthetic.pop(old_hl_for_synthetic, None)
-            self._evict_dashboard_cache(old_hl_for_synthetic)
-            logger.info(
-                f"[ENTITY-GW] Synthetic reassigned ({source}): {synthetic_hotkey} {old_hl_for_synthetic} -> {hl_address}"
-            )
+            if old_synthetic and old_synthetic != synthetic_hotkey:
+                self._synthetic_to_hl.pop(old_synthetic, None)
+                self._evict_dashboard_cache(hl_address)
+                logger.info(
+                    f"[ENTITY-GW] HL mapping reassigned ({source}): {hl_address} {old_synthetic} -> {synthetic_hotkey}"
+                )
 
-        self._hl_to_synthetic[hl_address] = synthetic_hotkey
-        self._synthetic_to_hl[synthetic_hotkey] = hl_address
-        return mapping_changed
+            if old_hl_for_synthetic and old_hl_for_synthetic != hl_address:
+                self._hl_to_synthetic.pop(old_hl_for_synthetic, None)
+                self._evict_dashboard_cache(old_hl_for_synthetic)
+                logger.info(
+                    f"[ENTITY-GW] Synthetic reassigned ({source}): {synthetic_hotkey} {old_hl_for_synthetic} -> {hl_address}"
+                )
+
+            self._hl_to_synthetic[hl_address] = synthetic_hotkey
+            self._synthetic_to_hl[synthetic_hotkey] = hl_address
+            return mapping_changed
 
     def _evict_dashboard_cache(self, hl_address: str):
         """Remove any cached dashboard payload for an HL address."""
-        self._dashboard_cache.pop(hl_address, None)
-        self._dashboard_cache_updated_ms.pop(hl_address, None)
+        with self._mapping_lock:
+            self._dashboard_cache.pop(hl_address, None)
+            self._dashboard_cache_updated_ms.pop(hl_address, None)
 
     def _fetch_validator_hl_trader(self, hl_address: str) -> Optional[dict]:
         """Fetch canonical HL trader snapshot from validator."""
@@ -535,7 +566,9 @@ class EntityMinerRestServer(MinerRestServer):
         """
         payload = self._fetch_validator_hl_trader(hl_address)
         now_ms = int(time.time() * 1000)
-        self._mapping_last_refresh_ms[hl_address] = now_ms
+        # Lock taken only after the (slow) HTTP fetch above.
+        with self._mapping_lock:
+            self._mapping_last_refresh_ms[hl_address] = now_ms
         if not payload:
             return None
 
@@ -565,19 +598,23 @@ class EntityMinerRestServer(MinerRestServer):
                 }
 
         if normalized_payload:
-            self._dashboard_cache[hl_address] = normalized_payload
-            self._dashboard_cache_updated_ms[hl_address] = now_ms
+            with self._mapping_lock:
+                self._dashboard_cache[hl_address] = normalized_payload
+                self._dashboard_cache_updated_ms[hl_address] = now_ms
 
         return normalized_payload
 
     def _resolve_active_synthetic_hotkey(self, hl_address: str) -> Optional[str]:
         """Resolve active synthetic hotkey, refreshing from validator periodically."""
         now_ms = int(time.time() * 1000)
-        cached_synthetic = self._hl_to_synthetic.get(hl_address)
-        last_refresh_ms = self._mapping_last_refresh_ms.get(hl_address, 0)
-
-        if cached_synthetic and (now_ms - last_refresh_ms) < self.MAPPING_REFRESH_TTL_MS:
-            return cached_synthetic
+        # The freshness decision and the value it returns come from one atomic
+        # snapshot. (Any returned mapping is inherently a snapshot the moment
+        # the lock releases — extending the lock further would not change that.)
+        with self._mapping_lock:
+            cached_synthetic = self._hl_to_synthetic.get(hl_address)
+            last_refresh_ms = self._mapping_last_refresh_ms.get(hl_address, 0)
+            if cached_synthetic and (now_ms - last_refresh_ms) < self.MAPPING_REFRESH_TTL_MS:
+                return cached_synthetic
 
         refreshed_dashboard = self._refresh_dashboard_from_validator(hl_address)
         if refreshed_dashboard:
@@ -786,15 +823,20 @@ class EntityMinerRestServer(MinerRestServer):
                 return
 
             # Update dashboard cache
-            self._dashboard_cache[hl_address] = {
+            dashboard_payload = {
                 "timestamp_ms": msg.get("timestamp", int(time.time() * 1000)),
                 "synthetic_hotkey": synthetic_hotkey,
                 "hl_address": hl_address,
                 **data
             }
-            self._dashboard_cache_updated_ms[hl_address] = int(time.time() * 1000)
-            # Push to SSE
-            self._push_sse(hl_address, {"type": "dashboard", "data": self._dashboard_cache[hl_address]})
+            with self._mapping_lock:
+                self._dashboard_cache[hl_address] = dashboard_payload
+                self._dashboard_cache_updated_ms[hl_address] = int(time.time() * 1000)
+            # Push to SSE outside the lock. Safe: dashboard payload dicts are
+            # never mutated in place anywhere — every writer builds a fresh dict
+            # and REBINDS the cache entry, so this local reference stays stable
+            # for serialization even if the cache is concurrently replaced.
+            self._push_sse(hl_address, {"type": "dashboard", "data": dashboard_payload})
 
         elif msg_type == "error":
             data = msg.get("data", {})
@@ -814,6 +856,26 @@ class EntityMinerRestServer(MinerRestServer):
 
             # Push to SSE
             self._push_sse(hl_address, {"type": "event", "data": event.to_dict()})
+
+    def _notify_slack_async(self, message: str, level: str = "info", **kwargs):
+        """Send a Slack notification without blocking the request thread.
+
+        The Slack webhook POST can take up to ~10s; on the create-subaccount
+        path that time was previously spent while holding one of Waitress's 32
+        worker threads. Fire-and-forget on a daemon thread — send_message is
+        internally locked, and delivery failures are logged by the notifier.
+        """
+        if not self.slack_notifier:
+            return
+
+        def _send():
+            try:
+                self.slack_notifier.send_message(message, level=level, **kwargs)
+            except Exception as e:
+                # Daemon threads die silently; surface delivery failures here.
+                logger.warning(f"[ENTITY-GW] Async Slack notification failed: {e}")
+
+        threading.Thread(target=_send, daemon=True, name="slack-notify").start()
 
     # ==================== SSE ====================
 
@@ -859,8 +921,9 @@ class EntityMinerRestServer(MinerRestServer):
         normalized_hl = self._normalize_hl_address(hl_address)
         now_ms = int(time.time() * 1000)
         active_synthetic = self._resolve_active_synthetic_hotkey(normalized_hl)
-        dashboard = self._dashboard_cache.get(normalized_hl)
-        cache_updated_ms = self._dashboard_cache_updated_ms.get(normalized_hl, 0)
+        with self._mapping_lock:
+            dashboard = self._dashboard_cache.get(normalized_hl)
+            cache_updated_ms = self._dashboard_cache_updated_ms.get(normalized_hl, 0)
         cache_is_fresh = dashboard is not None and (now_ms - cache_updated_ms) <= self.DASHBOARD_CACHE_TTL_MS
         cache_matches_mapping = (
             dashboard is not None and (
@@ -904,14 +967,38 @@ class EntityMinerRestServer(MinerRestServer):
 
     def stream_endpoint(self, hl_address):
         """GET /api/hl/<hl_address>/stream - SSE real-time stream (no API key required)."""
-        normalized_hl = self._normalize_hl_address(hl_address)
-        subscriber_queue = self._subscribe_sse(normalized_hl)
+        # Take a stream slot first: an uncapped stream pins a Waitress worker
+        # thread indefinitely, and ~32 open streams would stall the whole REST
+        # surface (see SSE_MAX_CONCURRENT_STREAMS).
+        if not self._sse_stream_slots.acquire(blocking=False):
+            logger.warning(
+                f"[ENTITY-GW] SSE stream rejected for {hl_address}: "
+                f"all {self.SSE_MAX_CONCURRENT_STREAMS} slots in use"
+            )
+            response = jsonify({
+                'status': 'error',
+                'message': f'Too many concurrent streams (max {self.SSE_MAX_CONCURRENT_STREAMS}). Retry shortly.'
+            })
+            response.headers['Retry-After'] = str(self.SSE_RETRY_AFTER_S)
+            return response, 503
 
         def event_stream():
             try:
+                started = time.monotonic()
+                last_event_time = started
                 while True:
+                    now = time.monotonic()
+                    if now - started > self.SSE_MAX_LIFETIME_S:
+                        # Rotate long-lived streams so slots (and worker threads) recycle.
+                        yield ": max stream lifetime reached, reconnect\n\n"
+                        return
+                    if now - last_event_time > self.SSE_MAX_IDLE_S:
+                        # No events for a while: free the slot; the client reconnects on demand.
+                        yield ": idle stream closed, reconnect\n\n"
+                        return
                     try:
-                        data = subscriber_queue.get(timeout=30)
+                        data = subscriber_queue.get(timeout=self.SSE_HEARTBEAT_S)
+                        last_event_time = time.monotonic()
                         yield f"data: {json.dumps(data)}\n\n"
                     except queue.Empty:
                         # Send keepalive heartbeat
@@ -919,17 +1006,32 @@ class EntityMinerRestServer(MinerRestServer):
             except GeneratorExit:
                 pass
             finally:
-                self._unsubscribe_sse(normalized_hl, subscriber_queue)
+                # Nested so the slot is returned even if unsubscribe raises.
+                try:
+                    self._unsubscribe_sse(normalized_hl, subscriber_queue)
+                finally:
+                    self._sse_stream_slots.release()
 
-        return Response(
-            event_stream(),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache',
-                'X-Accel-Buffering': 'no',
-                'Connection': 'keep-alive'
-            }
-        )
+        try:
+            normalized_hl = self._normalize_hl_address(hl_address)
+            subscriber_queue = self._subscribe_sse(normalized_hl)
+            return Response(
+                event_stream(),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'X-Accel-Buffering': 'no',
+                    'Connection': 'keep-alive'
+                }
+            )
+        except Exception:
+            # Slot must not leak if setup (or Response construction) fails before
+            # the response owns the generator. No double-release is possible: an
+            # exception here means the generator body never started, so its
+            # finally block never runs — the discarded generator object is
+            # simply garbage-collected without executing.
+            self._sse_stream_slots.release()
+            raise
 
     def create_subaccount_endpoint(self):
         """
@@ -1005,6 +1107,15 @@ class EntityMinerRestServer(MinerRestServer):
             if not isinstance(raw, bool):
                 return jsonify({'status': 'error', 'message': 'collateral_exempt must be a boolean'}), 400
             collateral_exempt = raw
+
+            # Optional idempotency key forwarded to the validator. Validated
+            # here so a malformed value fails fast; forwarded in the payload
+            # only (never signed), matching how drawdown_criteria is handled.
+            client_ref = request_data.get("client_ref")
+            if client_ref is not None and (
+                not isinstance(client_ref, str) or not re.match(r'^[A-Za-z0-9_.:-]{1,64}\Z', client_ref)
+            ):
+                return jsonify({'status': 'error', 'message': 'client_ref must be 1-64 chars of [A-Za-z0-9_.:-]'}), 400
 
             try:
                 account_size = float(request_data["account_size"])
@@ -1090,6 +1201,11 @@ class EntityMinerRestServer(MinerRestServer):
                 payload["collateral_exempt"] = collateral_exempt
             if leverage_tier is not None:
                 payload["leverage_tier"] = leverage_tier
+            # client_ref rides unsigned alongside drawdown_criteria. message_dict
+            # above is intentionally left untouched so the coldkey signature is
+            # byte-identical to the legacy field set (forward/back compatible).
+            if client_ref is not None:
+                payload["client_ref"] = client_ref
             if is_hl:
                 payload["hl_address"] = hl_address
                 if payout_address is not None:
@@ -1149,14 +1265,14 @@ class EntityMinerRestServer(MinerRestServer):
                             f"Created: {timestamp}\n"
                             f"Time: {elapsed_s:.2f}s"
                         )
-                    self.slack_notifier.send_message(msg, level="success", bypass_cooldown=True)
+                    self._notify_slack_async(msg, level="success", bypass_cooldown=True)
 
                 return jsonify(response_data), 200
             else:
                 error_message = response_data.get('error', response_data.get('message', 'Unknown error from validator'))
                 if self.slack_notifier:
                     hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
-                    self.slack_notifier.send_message(
+                    self._notify_slack_async(
                         f"Subaccount creation failed\n"
                         f"{hl_address_line}"
                         f"Asset Class: {asset_class}\n"
@@ -1169,7 +1285,7 @@ class EntityMinerRestServer(MinerRestServer):
         except http_requests.exceptions.Timeout:
             if self.slack_notifier:
                 hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
-                self.slack_notifier.send_message(
+                self._notify_slack_async(
                     f"Subaccount creation failed\n"
                     f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"
@@ -1182,7 +1298,7 @@ class EntityMinerRestServer(MinerRestServer):
         except http_requests.exceptions.ConnectionError:
             if self.slack_notifier:
                 hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
-                self.slack_notifier.send_message(
+                self._notify_slack_async(
                     f"Subaccount creation failed\n"
                     f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"
@@ -1196,7 +1312,7 @@ class EntityMinerRestServer(MinerRestServer):
             logger.error(f"Error communicating with validator: {e}")
             if self.slack_notifier:
                 hl_address_line = f"HL Address: {hl_address}\n" if is_hl else ""
-                self.slack_notifier.send_message(
+                self._notify_slack_async(
                     f"Subaccount creation failed\n"
                     f"{hl_address_line}"
                     f"Asset Class: {asset_class}\n"

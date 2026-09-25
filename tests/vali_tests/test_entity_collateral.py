@@ -91,7 +91,11 @@ class TestEntityCollateral(TestBase):
         # MDD percentage (same as manager uses)
         self.mdd_percent = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
 
-        # max_slash for the $100K subaccounts used throughout the slash tests
+        # max_slash for the $100K subaccounts used throughout the slash tests.
+        # Derive it from the config rather than hardcoding a percentage so these
+        # tests stay correct when the threshold changes (it moved 0.10 -> 0.08 ->
+        # 0.05; the old tests hardcoded the 0.08 era's $8K values for a $100K
+        # account).
         self.max_slash_100k = 100_000 * self.mdd_percent
 
     def tearDown(self):
@@ -346,8 +350,9 @@ class TestEntityCollateral(TestBase):
         )
         self.assertAlmostEqual(slashed_1, min(3_000.0, max_slash))
 
-        # Trade 2: Lose $4K (cumulative_loss = $7K, capped at max_slash).
-        # Returns total pending slash (min(7K, max_slash) - 0), not incremental (4K),
+        # Trade 2: Lose $4K (cumulative_loss = $7K, capped at max_slash). Returns
+        # total pending slash (min(cumulative_loss, max_slash) - cumulative_slashed),
+        # not incremental (4K),
         # because cumulative_slashed stays 0 until process_pending_slashes runs.
         slashed_2 = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 4_000.0
@@ -849,7 +854,7 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 100.0)
 
-        # loss = $50K → only slash max_slash
+        # loss = $50K >> max_slash → only slash max_slash
         max_slash = self.max_slash_100k
         slashed = self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 50_000.0
@@ -878,7 +883,7 @@ class TestEntityCollateral(TestBase):
                 entity_hotkey, synthetic_hotkey, float(loss)
             )
 
-        # Total losses = $15K > max_slash → last call returns max_slash (at cap)
+        # Total losses = $15K > max_slash → last call returns the cap
         self.assertAlmostEqual(last_slash, min(15_000.0, max_slash))
 
         # All losses are tracked; cumulative_slashed stays 0 until process_pending_slashes
@@ -942,8 +947,9 @@ class TestEntityCollateral(TestBase):
     def test_validator_contract_manager_withdrawal_blocking_code_exists(self):
         """Test that the withdrawal path blocks withdrawals that break entity collateral.
 
-        The blocking checks live in query_withdrawal_request; process_withdrawal_request
-        must run them and bail out before withdrawing anything on-chain.
+        The blocking checks were refactored out of process_withdrawal_request and now
+        live in query_withdrawal_request; process_withdrawal_request must run them and
+        bail out before withdrawing anything on-chain.
         """
         from vali_objects.contract.validator_contract_manager import ValidatorContractManager
         import inspect
@@ -968,7 +974,7 @@ class TestEntityCollateral(TestBase):
         with open("neurons/validator.py", "r") as f:
             source = f.read()
         self.assertIn("entity_collateral_client", source)
-        self.assertIn("orchestrator.get_client('entity_collateral')", source)
+        self.assertIn("EntityCollateralClient()", source)
 
     def test_validator_py_starts_entity_collateral_daemon(self):
         """Test that validator.py starts entity_collateral daemon."""
@@ -1092,22 +1098,22 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         self.assertAlmostEqual(funded, 1_000_000 * ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
         self.assertLess(in_challenge, funded)
 
-    def test_exposure_falls_back_to_the_traded_account_without_a_recorded_standard_size(self):
-        """A record carrying no standard size charges the account actually being traded."""
+    def test_exposure_is_withheld_without_a_recorded_standard_size(self):
+        """A record carrying no standard size leaves the exposure unknown, so nothing is charged."""
         self._promoted_from_standard(standard_account_size=None)
 
         max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
 
-        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertAlmostEqual(max_slash, 0.0)
 
-    def test_exposure_falls_back_to_the_traded_account_when_the_entity_lookup_fails(self):
-        """An unreachable entity service charges the pro account rather than under-collateralizing."""
+    def test_exposure_is_withheld_when_the_entity_lookup_fails(self):
+        """An unreachable entity service withholds the charge rather than guessing a size."""
         self._promoted_from_standard()
         self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = RuntimeError("rpc down")
 
         max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
 
-        self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertAlmostEqual(max_slash, 0.0)
 
     def test_exposure_never_exceeds_the_traded_account(self):
         """A stale standard size above the pro account cannot inflate the exposure."""

@@ -43,6 +43,7 @@ import os
 import time
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from multiprocessing.managers import BaseManager
 from typing import Optional, Any, Dict
 
@@ -100,16 +101,61 @@ def _patch_socket_for_nodelay():
     logger.debug("Socket patched to enable TCP_NODELAY for all RPC connections")
 
 
+class RPCCallTimeoutError(TimeoutError):
+    """An RPC call exceeded the client's per-call timeout.
+
+    The backing service is alive-but-unresponsive (or mid-GC / mid-heavy-pass);
+    the caller has been freed instead of blocking forever. Callers should treat
+    this as a retryable service-unavailable condition.
+
+    Deliberately short-circuited by _invoke_rpc BEFORE its transient-error check:
+    this subclasses TimeoutError (an OSError), so ErrorUtils.is_transient_rpc_error()
+    would otherwise read it as a dead transport and run the reconnect+retry cycle.
+    A timeout means the opposite — the connection is fine and the SERVER IS STILL
+    EXECUTING the call — so reconnecting achieves nothing, while re-running the
+    method would pile more work onto an already-wedged service and risk
+    double-applying a non-idempotent write.
+    """
+
+    def __init__(self, service_name: str, method_name: str, timeout_s: float):
+        self.service_name = service_name
+        self.method_name = method_name
+        self.timeout_s = timeout_s
+        super().__init__(
+            f"{service_name}.{method_name} timed out after {timeout_s}s "
+            f"(service alive but unresponsive)"
+        )
+
+
 class _ResilientRPCProxy:
     """
     Transparent stand-in for the raw multiprocessing BaseManager proxy.
 
     Every attribute access returns a callable that routes the RPC method through the owning
-    client's _invoke_rpc(), so that ALL call sites get uniform reconnect-on-server-bounce
-    behavior — both the typed method wrappers (self._server.foo_rpc(...)) and the generic
-    call() path. Before this wrapper, only call() self-healed, and the ~20 clients that call
-    the proxy directly (elimination, position_manager, metagraph, ...) would cache a dead proxy
-    forever after a state-server restart and raise on every subsequent call.
+    client's _invoke_rpc(), so that ALL call sites get uniform behavior — both the typed method
+    wrappers (self._server.foo_rpc(...)) and the generic call() path. Before this wrapper, only
+    call() self-healed, and the ~20 clients that call the proxy directly (elimination,
+    position_manager, metagraph, ...) would cache a dead proxy forever after a state-server
+    restart and raise on every subsequent call.
+
+    Routing through _invoke_rpc() is what gives every call BOTH protections, for the two
+    distinct ways a backing service fails:
+      - server GONE (bounced during a deploy): reconnect-on-server-bounce, with the transport
+        probe / circuit breaker that keep a business error from being retried.
+      - server WEDGED (alive but unresponsive): a per-call timeout. The raw proxy call blocks in
+        conn.recv() with NO timeout, so a wedged service pinned the calling thread forever — in
+        the REST process that permanently drained Waitress's 32-thread pool and took the whole
+        API down until restart. _invoke_rpc runs each proxy call on the client's small executor
+        and waits at most rpc_call_timeout_s, raising RPCCallTimeoutError instead of hanging
+        (see _call_proxy_method / _invoke_bounded).
+
+    A timed-out worker thread stays parked on its own thread-local connection until the service
+    recovers; the caller is freed immediately. When every worker is parked, new calls queue
+    behind them and time out promptly — a natural fail-fast while the service is wedged that
+    self-heals on recovery. The timeout is CLIENT-SIDE ONLY: the server keeps executing the
+    dispatched method to completion. Design RPC methods to be idempotent/retry-safe, and give
+    known-long operations a larger per-client rpc_call_timeout_s rather than relying on the
+    default.
 
     __getattr__ only fires for attributes not found normally, so the real `_client` attribute
     is never routed through the RPC path.
@@ -184,6 +230,21 @@ class RPCClientBase:
 
     # Track instance counts per service name for sequential IDs
     _instance_counts: Dict[str, int] = {}
+
+    # Default per-call RPC timeout (seconds). Generous on purpose: the goal is
+    # to convert an INFINITE hang into a bounded failure, not to police normal
+    # latency. Override per client via rpc_call_timeout_s=, or set <= 0 to
+    # disable bounding for a client that makes legitimately unbounded calls.
+    RPC_CALL_TIMEOUT_S = 60.0
+    # Executor size per client: enough to pump concurrent healthy calls from a
+    # full Waitress pool without serializing them, small enough that parked
+    # (timed-out) workers stay cheap. Note the deliberate failure semantics:
+    # while a service is wedged, its parked workers consume slots and queued
+    # calls time out promptly (fail-fast); healthy-service queuing is transient
+    # (calls complete in ms). Tune upward for clients that legitimately carry
+    # heavy concurrent fan-out; tune rpc_call_timeout_s (not workers) for
+    # legitimately slow calls.
+    RPC_EXECUTOR_WORKERS = 16
 
     @classmethod
     def disconnect_all(cls, reset_counts: bool = True) -> None:
@@ -269,7 +330,8 @@ class RPCClientBase:
         connect_immediately: bool = False,
         warning_threshold: int = 2,
         local_cache_refresh_period_ms: int = None,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        rpc_call_timeout_s: float = None,
     ):
         """
         Initialize RPC client.
@@ -326,6 +388,16 @@ class RPCClientBase:
         # Direct server reference (used in LOCAL mode)
         self._direct_server = None
 
+        # Per-call timeout machinery (applied inside _invoke_rpc, see _call_proxy_method).
+        # None -> class default; a value <= 0 disables bounding entirely and makes _server hand
+        # back the raw proxy (see the _server property).
+        self._rpc_call_timeout_s = (
+            rpc_call_timeout_s if rpc_call_timeout_s is not None else self.RPC_CALL_TIMEOUT_S
+        )
+        self._rpc_executor: Optional[ThreadPoolExecutor] = None
+        self._rpc_executor_lock = threading.Lock()
+        self._rpc_timeout_log_ts: Dict[str, float] = {}
+
         # Local cache state
         self._local_cache_refresh_period_ms = local_cache_refresh_period_ms
         self._local_cache: Dict[str, Any] = {}
@@ -353,9 +425,11 @@ class RPCClientBase:
 
         In LOCAL mode: returns _direct_server (no RPC overhead, direct method calls).
         In RPC mode: returns the _ResilientRPCProxy wrapper — every method call on it routes
-        through _invoke_rpc(), which lazily connects on first use and self-heals a poisoned
-        proxy after a server restart. The wrapper is returned WITHOUT forcing a connection here
+        through _invoke_rpc(), which lazily connects on first use, self-heals a poisoned proxy
+        after a server restart, AND bounds the call at rpc_call_timeout_s so a wedged service
+        cannot pin the caller forever. The wrapper is returned WITHOUT forcing a connection here
         so client construction stays non-blocking and free of server-startup ordering concerns.
+        rpc_call_timeout_s <= 0 opts the client out of both and hands back the raw proxy.
 
         Subclasses use self._server to access RPC methods exactly as before:
             return self._server.some_method_rpc(arg)
@@ -364,6 +438,12 @@ class RPCClientBase:
             return self._direct_server
 
         if self.connection_mode == RPCConnectionMode.RPC:
+            if self._rpc_call_timeout_s <= 0:
+                # Opt-out escape hatch: the RAW proxy, i.e. neither the per-call timeout nor the
+                # _invoke_rpc reconnect/self-heal wrapper. Reserved for a client that makes
+                # legitimately unbounded calls (and for tests that want production proxy
+                # semantics); no production client sets rpc_call_timeout_s <= 0 today.
+                return self._ensure_proxy()
             return self._resilient_proxy
 
         # Non-RPC, non-direct (should not happen in practice) - return raw proxy.
@@ -387,6 +467,79 @@ class RPCClientBase:
         if self._proxy is None and self.connection_mode == RPCConnectionMode.RPC:
             self.connect()
         return self._proxy
+
+    def _get_rpc_executor(self) -> ThreadPoolExecutor:
+        """Lazily create the small executor that carries bounded RPC calls."""
+        if self._rpc_executor is None:
+            with self._rpc_executor_lock:
+                if self._rpc_executor is None:
+                    self._rpc_executor = ThreadPoolExecutor(
+                        max_workers=self.RPC_EXECUTOR_WORKERS,
+                        thread_name_prefix=f"rpc-{self.service_name}",
+                    )
+        return self._rpc_executor
+
+    def _call_proxy_method(self, proxy, method_name: str, args, kwargs):
+        """
+        Invoke ONE method on the raw proxy, bounded by the per-call timeout when enabled.
+
+        Single funnel for every raw-proxy invocation in _invoke_rpc (first attempt, each
+        self-heal retry, and the transport probe), so no path can reach the unbounded
+        conn.recv() that drained the REST worker pool. rpc_call_timeout_s <= 0 calls straight
+        through (raw-proxy behavior).
+        """
+        method = getattr(proxy, method_name)
+        if self._rpc_call_timeout_s <= 0:
+            return method(*args, **kwargs)
+        return self._invoke_bounded(method_name, method, args, kwargs)
+
+    def _invoke_bounded(self, method_name: str, bound_method, args, kwargs):
+        """Run one proxy method call with the per-call timeout (see _ResilientRPCProxy)."""
+        timeout_s = self._rpc_call_timeout_s
+        future = self._get_rpc_executor().submit(bound_method, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout_s)
+        except FuturesTimeoutError:
+            # Python >= 3.11 aliases concurrent.futures.TimeoutError to the builtin
+            # TimeoutError, so a TimeoutError raised by the SERVER'S own logic (e.g. a
+            # position-lock timeout under contention, transported verbatim by
+            # multiprocessing) lands in this handler too. Only a future that has NOT
+            # completed is a real client-side wait timeout; a completed one carries the
+            # call's own outcome and must propagate untouched — relabelling it would hide a
+            # business error behind a bogus "exceeded Ns" and rob _invoke_rpc's transport
+            # probe of the chance to classify it.
+            if future.done():
+                completed_error = future.exception(timeout=0)
+                if completed_error is not None:
+                    raise completed_error
+                return future.result()
+            # cancel() succeeds only for QUEUED calls (they never hit the wire);
+            # a call already running keeps its worker parked until the service
+            # recovers. Either way this caller is freed now.
+            cancelled = future.cancel()
+            self._log_rpc_timeout(method_name, timeout_s, cancelled)
+            raise RPCCallTimeoutError(self.service_name, method_name, timeout_s) from None
+
+    # Sustained outages produce one timeout per call; full-volume ERROR logging
+    # would flood the logs with identical lines. Log ERROR at most once per
+    # method per RPC_TIMEOUT_LOG_INTERVAL_S; the rest drop to DEBUG.
+    RPC_TIMEOUT_LOG_INTERVAL_S = 30.0
+
+    def _log_rpc_timeout(self, method_name: str, timeout_s: float, cancelled: bool) -> None:
+        now = time.monotonic()
+        detail = (
+            f"{self.service_name}Client.{method_name} exceeded {timeout_s}s — freeing caller; "
+            f"{'call was still queued (never dispatched)' if cancelled else 'worker remains parked until the service recovers'}"
+        )
+        with self._rpc_executor_lock:
+            last = self._rpc_timeout_log_ts.get(method_name, 0.0)
+            should_error = now - last >= self.RPC_TIMEOUT_LOG_INTERVAL_S
+            if should_error:
+                self._rpc_timeout_log_ts[method_name] = now
+        if should_error:
+            logger.error(detail)
+        else:
+            logger.debug(detail)
 
     def connect(self, max_retries: int = None, retry_delay: float = None) -> bool:
         """
@@ -553,6 +706,13 @@ class RPCClientBase:
              drop the poisoned connection and retry the whole reconnect+call cycle a bounded
              number of times, with a short settle between attempts. Business-logic errors are
              re-raised untouched and never trigger a reconnect/retry.
+          3. Every proxy invocation here (first attempt, each self-heal retry, and the transport
+             probe) goes through _call_proxy_method, i.e. it is bounded at rpc_call_timeout_s.
+             A server that is WEDGED rather than gone therefore raises RPCCallTimeoutError, which
+             is re-raised IMMEDIATELY — no reconnect, no retry, no connection reset: the
+             transport is healthy and the server is still executing the call, so re-running it
+             would multiply load and could double-apply a non-idempotent write. That keeps the
+             retry=False guarantee below intact for a wedge as well as for a bounce.
 
         Why retry the CYCLE (not just the call): a just-restarted server accepts the TCP connect
         a moment before its manager can actually serve method calls, so a single reconnect+retry
@@ -588,6 +748,12 @@ class RPCClientBase:
             if breaker_open and self._proxy is None:
                 self.connect(max_retries=1, retry_delay=0.25)
             proxy = self._ensure_proxy()
+            if proxy is None:
+                # connect() returned without establishing a transport. Surface the explicit
+                # "Not connected" contract instead of letting getattr(None, method) raise an
+                # AttributeError, which the classifier below would read as a permanent
+                # business error.
+                raise RuntimeError(f"Not connected to {self.service_name}")
         except Exception:
             # Even the connect failed — open (or extend) the breaker so concurrent/subsequent
             # calls fail fast instead of each paying the full connect-retry penalty.
@@ -595,7 +761,7 @@ class RPCClientBase:
             raise
         generation = self._connection_generation
         try:
-            result = getattr(proxy, method_name)(*args, **kwargs)
+            result = self._call_proxy_method(proxy, method_name, args, kwargs)
             # Do NOT interpolate args/kwargs here: this runs on EVERY call (all typed wrappers
             # route through here now), and repr-ing large payloads (metagraph/position lists) on
             # the hot path would cost even when trace logging is disabled. Name + result type only.
@@ -603,6 +769,14 @@ class RPCClientBase:
             if self._backoff_until:
                 self._backoff_until = 0.0
             return result
+        except RPCCallTimeoutError:
+            # Client-side timeout: the service is alive but WEDGED and is STILL EXECUTING this
+            # call. Nothing to reconnect (the transport is fine) and nothing safe to retry, so
+            # free the caller now — that is the whole point of the bound — and let caller-level
+            # retry decide. MUST precede the is_transient_rpc_error() check: RPCCallTimeoutError
+            # is a TimeoutError, i.e. an OSError, so it would otherwise be misread as a dead
+            # transport and dragged through the full reconnect+retry cycle.
+            raise
         except Exception as e:
             if not ErrorUtils.is_transient_rpc_error(e):
                 # Business rejection / missing method / etc. — do NOT reconnect or retry.
@@ -654,12 +828,17 @@ class RPCClientBase:
 
             if proxy is not None:
                 try:
-                    result = getattr(proxy, method_name)(*args, **kwargs)
+                    result = self._call_proxy_method(proxy, method_name, args, kwargs)
                     logger.info(
                         f"{self.service_name}Client.{method_name} recovered after reconnect "
                         f"(attempt {attempt})."
                     )
                     return result
+                except RPCCallTimeoutError:
+                    # Reconnected fine, then the call itself wedged — same reasoning as the
+                    # first attempt: free the caller instead of cycling on a live-but-stuck
+                    # service.
+                    raise
                 except Exception as e2:
                     if not ErrorUtils.is_transient_rpc_error(e2):
                         raise
@@ -690,13 +869,22 @@ class RPCClientBase:
         """
         True if the connection that just raised is actually alive — meaning the exception was
         raised by the SERVER'S code (transported verbatim by multiprocessing) rather than by the
-        transport itself. Every RPCServerBase exposes health_check_rpc, and BaseProxy uses a
-        per-thread connection, so this probes the exact connection the failed call used.
+        transport itself. Every RPCServerBase exposes health_check_rpc.
+
+        BaseProxy connections are thread-local, and the failed call ran on a worker of this
+        client's bounded executor, so the probe is issued through that same executor: with the
+        worker just freed by the failure it normally reuses that very connection. Even when the
+        pool hands it a different worker the verdict holds — a dead/restarted server fails the
+        probe on any connection, a live one answers on any connection.
         """
         if proxy is None:
             return False
         try:
-            proxy.health_check_rpc()
+            # Bounded like every other call: an unbounded probe against a WEDGED service would
+            # hang this thread forever — precisely the failure the per-call timeout exists to
+            # prevent. A probe that times out is not provably alive, so it reports False and the
+            # caller treats the connection as dead.
+            self._call_proxy_method(proxy, "health_check_rpc", (), {})
             return True
         except Exception:
             return False
@@ -805,6 +993,10 @@ class RPCClientBase:
         # BaseManager creates IPC resources that need explicit cleanup
         self._teardown_transport()
         self._direct_server = None
+        if self._rpc_executor is not None:
+            # Don't wait: parked workers may be blocked on a dead service.
+            self._rpc_executor.shutdown(wait=False, cancel_futures=True)
+            self._rpc_executor = None
 
         # Unregister from instance tracking
         RPCClientBase._unregister_instance(self)
@@ -942,6 +1134,14 @@ class RPCClientBase:
         state['_cache_refresh_thread'] = None
         state['_cache_refresh_shutdown'] = None
 
+        # Don't pickle bounded-call machinery (executor/lock are unpicklable; both are
+        # recreated lazily after unpickle). '_bounded_proxy' is the pre-merge name of the
+        # bounded facade that now lives inside _invoke_rpc — kept nulled so a state pickled by
+        # an older build never carries a stale facade object across the process boundary.
+        state['_rpc_executor'] = None
+        state['_rpc_executor_lock'] = None
+        state['_bounded_proxy'] = None
+
         # Apply subclass-specific excludes/transforms
         self._prepare_state_for_pickle(state)
 
@@ -1037,6 +1237,11 @@ class RPCClientBase:
         self._local_cache_lock = threading.Lock()
         self._cache_refresh_shutdown = threading.Event()
         self._cache_refresh_thread = None
+
+        # Restore bounded-call machinery (the executor is recreated lazily on first use)
+        self._rpc_executor = None
+        self._rpc_executor_lock = threading.Lock()
+        self._rpc_timeout_log_ts = {}
 
         # Restart cache refresh daemon if it was configured and in RPC mode
         if (self._local_cache_refresh_period_ms is not None
