@@ -1,7 +1,7 @@
 """
 Shared helpers for migration scripts under runnable/migrations/.
 
-Migration scripts listed in ACTIVE_MIGRATIONS (runnable/run_migrations.py) run
+Migration scripts in runnable/migrations/<subnet_version>/ run
 once each at validator startup (see runnable/migrations/README.md). They run as
 standalone Python processes — no RPC servers are available — so they must
 operate directly on on-disk state.

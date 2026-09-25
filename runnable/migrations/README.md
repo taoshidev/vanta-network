@@ -1,10 +1,16 @@
 # Migrations
 
-Migration scripts live in `runnable/migrations/`. The ones listed in `ACTIVE_MIGRATIONS` (`runnable/run_migrations.py`) run automatically when the validator starts.
+Migrations live in per-version folders under `runnable/migrations/`. At validator startup, the runner runs the migrations in the folder matching `subnet_version` in `meta/meta.json`.
+
+```
+runnable/migrations/
+  8.17.0/
+    migrate_something.py
+```
 
 ## Creating a migration
 
-1. Create a new Python file in `runnable/migrations/` (e.g., `migrate_something.py`)
+1. Create `runnable/migrations/<release version>/migrate_something.py`
 2. Implement a `main()` function that returns `True` on success, `False` on failure:
 
 ```python
@@ -13,22 +19,14 @@ def main() -> bool:
     return True
 ```
 
-3. Add the filename to `ACTIVE_MIGRATIONS` in `runnable/run_migrations.py`
-
 ## How it works
 
 - On startup, `neurons/validator.py` calls the runner. Under `--split-state` the state tier (`vanta_api/run_state_server.py`) calls it instead.
-- The runner goes through `ACTIVE_MIGRATIONS` in order and runs each one that isn't already in `migrations_completed.txt`
-- Successful migrations are recorded in `migrations_completed.txt` (gitignored, local to each validator)
+- The runner runs, alphabetically, each migration in `migrations/<subnet_version>/` that isn't already in `migrations_completed.txt`
+- Successful migrations are recorded in `migrations_completed.txt` as `<version>/<filename>` (gitignored, local to each validator)
 - If a migration fails, the runner stops and the validator starts without the remaining migrations
 
-Files in this directory that are not in `ACTIVE_MIGRATIONS` never run.
-
-## Retiring a migration
-
-Once every validator has run a migration (auto-update runs it within ~30 minutes of release), remove it from `ACTIVE_MIGRATIONS`. After that it never runs again, including on new validators, whose state already comes from up-to-date code. Retired files are kept for reference only and don't need to keep working as the code changes.
-
-A new validator still runs whatever is in `ACTIVE_MIGRATIONS`, so active migrations should be a no-op on state that's already migrated.
+Once the version is bumped, older folders stop running. Delete them whenever you like; they don't need to keep working as the code changes.
 
 ## Running manually
 
@@ -40,6 +38,10 @@ python3 runnable/run_migrations.py
 python3 runnable/run_migrations.py --dry-run
 ```
 
+## Development
+
+Prefix work-in-progress migrations with `_` to prevent them from running.
+
 ## Re-running a migration
 
-Remove its filename from `runnable/migrations/migrations_completed.txt` (and make sure it's in `ACTIVE_MIGRATIONS`), or create a new migration file with a different name.
+Remove its `<version>/<filename>` line from `runnable/migrations/migrations_completed.txt`. It only runs again while its folder matches the current version.
