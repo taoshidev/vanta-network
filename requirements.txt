@@ -23,4 +23,7 @@ PySocks==1.7.1
 web3==7.12.1
 orjson==3.11.7
 git+https://github.com/taoshidev/collateral_sdk.git@1.0.10#egg=collateral_sdk
-git+https://github.com/taoshidev/vanta-cli.git@3.0.3#egg=vanta-cli
+typer>=0.16
+rich>=13.7,<15.0
+bittensor-wallet==4.0.1
+bittensor-cli==9.21.0

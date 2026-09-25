@@ -77,6 +77,11 @@ setup(
     author_email="support@taoshi.io",
     python_requires=">=3.10",
     install_requires=requirements,
+    entry_points={
+        "console_scripts": [
+            "vanta=vanta_cli.main:main",
+        ],
+    },
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
