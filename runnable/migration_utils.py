@@ -1,8 +1,8 @@
 """
 Shared helpers for migration scripts under runnable/migrations/.
 
-Migration scripts run once each, alphabetically, right before the validator
-restarts after an update (see runnable/migrations/README.md). They run as
+Migration scripts listed in ACTIVE_MIGRATIONS (runnable/run_migrations.py) run
+once each at validator startup (see runnable/migrations/README.md). They run as
 standalone Python processes — no RPC servers are available — so they must
 operate directly on on-disk state.
 
@@ -19,11 +19,6 @@ Helpers exposed:
   MigrationUtils.save_miner_accounts   — writes dict back to miner_account_sizes.json
   MigrationUtils.load_entities         — returns dict from validation/entities.json
   MigrationUtils.save_entities         — writes dict back to entities.json
-
-This file lives at runnable/migration_utils.py (NOT under runnable/migrations/)
-because run_migrations.py scans runnable/migrations/ for .py files and treats
-any without a main() as a failed migration. A helper module belongs outside
-that scan.
 """
 
 from collections import defaultdict

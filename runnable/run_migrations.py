@@ -1,8 +1,7 @@
 """
 Migration runner for the validator.
 
-Scans the migrations/ directory for migration scripts and runs any that
-haven't been executed yet, sorted alphabetically by filename.
+Runs the migrations in ACTIVE_MIGRATIONS that haven't been executed yet.
 
 Each migration must have a main() function that returns True on success, False on failure.
 
@@ -16,6 +15,9 @@ import sys
 
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 COMPLETED_FILE = os.path.join(MIGRATIONS_DIR, "migrations_completed.txt")
+
+# Migrations to run, in order. Remove once every validator has run them.
+ACTIVE_MIGRATIONS: list[str] = []
 
 
 def get_completed_migrations() -> set[str]:
@@ -34,22 +36,9 @@ def mark_completed(migration_name: str) -> None:
 
 
 def get_pending_migrations() -> list[str]:
-    """Get list of migration files that haven't been run yet, sorted alphabetically."""
-    if not os.path.exists(MIGRATIONS_DIR):
-        return []
-
+    """Get the active migrations that haven't been run yet, in ACTIVE_MIGRATIONS order."""
     completed = get_completed_migrations()
-    migrations = []
-
-    for filename in os.listdir(MIGRATIONS_DIR):
-        if not filename.endswith(".py") or filename.startswith("_"):
-            continue
-        if filename in completed:
-            continue
-        migrations.append(filename)
-
-    migrations.sort()
-    return migrations
+    return [m for m in ACTIVE_MIGRATIONS if m not in completed]
 
 
 def run_migration(filename: str, dry_run: bool = False) -> bool:
