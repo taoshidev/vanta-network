@@ -467,13 +467,19 @@ class LimitOrderManager(CacheController):
             )
 
             # Check if order can be filled immediately (only if market is open)
-            # Skip immediate fill for STOP_LIMIT orders - they should only trigger via daemon
-            if order.execution_type != ExecutionType.STOP_LIMIT:
-                price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
-                if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
-                    _ps = price_sources[0]
-                    _, trigger_price, _ = evaluate_order_trigger(miner_hotkey, order, open_position, [_ps])
-                    should_fill_immediately = trigger_price is not None
+            price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, order.processed_ms)
+            if price_sources and self.live_price_fetcher.is_market_open(trade_pair, order.processed_ms):
+                _ps = price_sources[0]
+                _, trigger_price, _ = evaluate_order_trigger(miner_hotkey, order, open_position, [_ps])
+                should_fill_immediately = trigger_price is not None
+
+            # Only LIMIT orders may fill on submission, any other trigger orders are rejected
+            if should_fill_immediately and order.execution_type != ExecutionType.LIMIT:
+                leg = "take_profit" if trigger_price == order.take_profit else "stop_loss"
+                raise SignalException(
+                    f"{order.execution_type.name} order for {trade_pair.trade_pair_id} rejected: {leg} "
+                    f"{trigger_price} is already crossed. Submit a MARKET order to fill now, or adjust the trigger."
+                )
 
         # Fill outside the lock to avoid reentrant lock issue
         # Treat order that fills immediately as market order
@@ -485,7 +491,7 @@ class LimitOrderManager(CacheController):
                     if o.order_uuid == order_uuid:
                         orders_list.pop(i)
                         break
-            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], trigger_price, is_market_order=True)
+            fill_error = self._fill_limit_order_with_price_source(miner_hotkey, order, price_sources[0], None, is_market_order=True)
             if fill_error:
                 raise SignalException(fill_error)
             logger.info(f"Filled order {order_uuid} @ market price {price_sources[0].close}")
