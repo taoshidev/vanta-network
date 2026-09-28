@@ -475,9 +475,8 @@ class LimitOrderManager(CacheController):
 
             # Only LIMIT orders may fill on submission, any other trigger orders are rejected
             if should_fill_immediately and order.execution_type != ExecutionType.LIMIT:
-                leg = "take_profit" if trigger_price == order.take_profit else "stop_loss"
                 raise SignalException(
-                    f"{order.execution_type.name} order for {trade_pair.trade_pair_id} rejected: {leg} "
+                    f"{order.execution_type.name} order for {trade_pair.trade_pair_id} rejected: trigger price "
                     f"{trigger_price} is already crossed. Submit a MARKET order to fill now, or adjust the trigger."
                 )
 
