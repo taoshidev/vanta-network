@@ -30,7 +30,6 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
@@ -80,11 +79,6 @@ from vanta_api.base_rest_server import BaseRestServer
 from vanta_api.nonce_manager import NonceManager
 import logging
 from shared_objects.log import logger
-
-
-# current_equity and current_balance are recomputed from the account on every refresh, so they are
-# not settable. The manager enforces the rules between the settable fields.
-SETTABLE_DRAWDOWN_FIELDS = ('daily_open_equity', 'eod_hwm', 'last_eod_equity', 'last_eod_checked_ms')
 
 
 class ValidatorRestServer(BaseRestServer, RPCServerBase):
@@ -379,9 +373,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
         self.app.route("/admin/reset-snapshot/<hotkey>", methods=["POST"])(self.reset_account_snapshot)
-        self.app.route("/admin/account-size/<hotkey>", methods=["POST"])(self.set_account_size)
         self.app.route("/admin/drawdown-criteria", methods=["POST"])(self.update_drawdown_criteria)
-        self.app.route("/admin/drawdown-stats/<hotkey>", methods=["POST"])(self.set_miner_drawdown_stats)
 
         # Collateral endpoints
         self.app.route("/collateral/deposit", methods=["POST"])(self.deposit_collateral)
@@ -2011,79 +2003,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
-    def set_miner_drawdown_stats(self, hotkey: str):
-        """
-        Overwrite a miner's cached drawdown fields, eod_hwm among them. Only the fields present
-        in the body are changed; the rest are left as they are.
-        Requires tier 500 access.
-
-        Settable fields: daily_open_equity, eod_hwm, last_eod_equity, last_eod_checked_ms.
-        - last_eod_checked_ms must be a UTC day boundary no later than today
-        - daily_open_equity and last_eod_equity require last_eod_checked_ms to be today's open
-        - eod_hwm cannot go below 1.0, last_eod_equity or daily_open_equity
-        - "force": true is required when a change pushes a drawdown past its threshold or deepens
-          a pro account's max_drawdown
-
-        Example:
-        curl -X POST http://localhost:48888/admin/drawdown-stats/<hotkey> \\
-          -H "Authorization: Bearer YOUR_API_KEY" \\
-          -H "Content-Type: application/json" \\
-          -d '{"eod_hwm": 1.03}'
-        """
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-        if not self.can_access_tier(api_key, 500):
-            return jsonify({'error': 'Set drawdown stats endpoint requires tier 500 access'}), 403
-
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            return jsonify({'error': 'Body must be a JSON object of drawdown fields'}), 400
-        data = dict(data)
-        force = data.pop('force', False)
-        if not isinstance(force, bool):
-            return jsonify({'error': f'force must be a boolean, got "{force}"'}), 400
-        if not data:
-            return jsonify({'error': f'Body must set at least one of {list(SETTABLE_DRAWDOWN_FIELDS)}'}), 400
-
-        unknown = sorted(set(data) - set(SETTABLE_DRAWDOWN_FIELDS))
-        if unknown:
-            return jsonify({'error': f'{unknown} not settable, settable fields: {list(SETTABLE_DRAWDOWN_FIELDS)}'}), 400
-
-        try:
-            updates = {}
-            for name, value in data.items():
-                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-                    return jsonify({'error': f'{name} must be a finite number, got "{value}"'}), 400
-                if name == 'last_eod_checked_ms':
-                    if value != int(value) or value <= 0:
-                        return jsonify({'error': f'{name} must be a positive integer, got "{value}"'}), 400
-                    updates[name] = int(value)
-                elif value <= 0:
-                    return jsonify({'error': f'{name} must be a positive number, got "{value}"'}), 400
-                else:
-                    updates[name] = float(value)
-        except OverflowError:
-            return jsonify({'error': 'value out of range'}), 400
-
-        try:
-            success, message, drawdown = self._challenge_period_client.set_miner_drawdown_stats(hotkey, updates, force)
-            if not success:
-                return jsonify({'error': message}), 400
-
-            return jsonify({
-                'status': 'success',
-                'hotkey': hotkey,
-                'updates': updates,
-                'drawdown': drawdown,
-                'message': message,
-            }), 200
-
-        except Exception as e:
-            logger.error(f"Error setting drawdown for {hotkey}: {e}")
-            logger.error(traceback.format_exc())
-            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
-
     def force_deposit(self, hotkey: str):
         """
         Force a collateral deposit for a miner without a stake transfer.
@@ -2196,76 +2115,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', 'hotkey': hotkey, 'snapshot': snapshot}), 200
         except Exception as e:
             logger.error(f"Error resetting snapshot for {hotkey}: {e}")
-            logger.error(traceback.format_exc())
-            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
-
-    def set_account_size(self, hotkey: str):
-        """
-        Correct an entity subaccount's account size, in any bucket.
-        Requires tier 500 access.
-
-        On the pro track this sets pro_account_size (and the live account size outside
-        PRO_CHALLENGE_TRANSITION), charging only the promotion fee above what was already assessed:
-        100k standard -> 300k pro -> 500k pro pays for the 200k increase, not the full 400k.
-        Off the pro track it sets the standard account size.
-
-        Resetting the account afterwards (POST /admin/reset/<hotkey>) is recommended: the ledgers and
-        daily snapshot were built against the old size, which can throw off drawdown checks.
-
-        Required JSON body:
-          account_size: float -- USD account size
-
-        Example:
-        curl -X POST http://localhost:48888/admin/account-size/<hotkey> \\
-          -H "Authorization: Bearer YOUR_API_KEY" \\
-          -H "Content-Type: application/json" \\
-          -d '{"account_size": 500000}'
-        """
-        api_key = self._get_api_key_safe()
-        if not self.is_valid_api_key(api_key):
-            return jsonify({'error': 'Unauthorized access'}), 401
-        if not self.can_access_tier(api_key, 500):
-            return jsonify({'error': 'Account size endpoint requires tier 500 access'}), 403
-
-        if not is_synthetic_hotkey(hotkey):
-            return jsonify({'error': f'{hotkey} is not an entity subaccount'}), 400
-        if not self._entity_client:
-            return jsonify({'error': 'Entity management not available'}), 503
-
-        data = request.get_json(silent=True) or {}
-        account_size = data.get('account_size')
-        if (isinstance(account_size, bool) or not isinstance(account_size, (int, float))
-                or not math.isfinite(account_size) or account_size <= 0):
-            return jsonify({'error': 'account_size must be a finite positive number'}), 400
-
-        try:
-            before = self._entity_client.get_subaccount_info_for_synthetic(hotkey)
-            if not before:
-                return jsonify({'error': f'Subaccount {hotkey} not found'}), 404
-
-            bucket = self._challenge_period_client.get_miner_bucket(hotkey)
-            if bucket is not None and bucket.is_pro_track:
-                # Re-applying the current bucket resizes in place; the fee charged is the new size's
-                # fee minus pro_fee_theta already assessed
-                success, message = self._entity_client.apply_bucket_account_size(hotkey, bucket, account_size)
-            else:
-                success, message = self._entity_client.update_subaccount_account_size(hotkey, account_size)
-            if not success:
-                return jsonify({'error': message}), 400
-
-            after = self._entity_client.get_subaccount_info_for_synthetic(hotkey) or {}
-            fields = ('account_size', 'standard_account_size', 'pro_account_size', 'pro_fee_theta')
-            logger.info(f"Admin account size update for {hotkey} ({bucket.value if bucket else None}): {message}")
-            return jsonify({
-                'status': 'success',
-                'message': message,
-                'hotkey': hotkey,
-                'bucket': bucket.value if bucket else None,
-                'before': {f: before.get(f) for f in fields},
-                'after': {f: after.get(f) for f in fields},
-            }), 200
-        except Exception as e:
-            logger.error(f"Error setting account size for {hotkey}: {e}")
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
@@ -2409,7 +2258,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if position.is_open_position and position.last_price_source:
                 now_ms = TimeUtil.now_in_millis()
                 realtime_price = position.last_price_source.parse_appropriate_price(
-                    now_ms, position.trade_pair.is_forex, OrderType.FLAT, position.position_type
+                    now_ms, position.trade_pair.is_forex, position.position_type, position.position_type
                 )
                 if realtime_price:
                     position.set_returns(
@@ -2619,12 +2468,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_coldkey": "5FxY...",
             "account_size": 25000,
             "asset_class": "crypto",
+            "nonce": "one-time-hex",
+            "timestamp": 1700000000000,
             "intraday_drawdown_threshold": 0.03,
             "signature": "0x..."
           }'
-
-        intraday_drawdown_threshold is optional: one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
-        applied in every bucket. Omitted keeps each bucket's default.
 
         Example (HL-linked):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
@@ -2687,6 +2535,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Intraday drawdown threshold, one of SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES, for standard and HL
             # subaccounts alike. Omitted keeps each bucket's default. Unsigned, like drawdown_criteria.
             intraday_drawdown_threshold = data.get('intraday_drawdown_threshold')
+
+            # collateral_exempt is NOT accepted over the network. It waives the collateral
+            # registration fee, and the only "auth" on this endpoint is the caller's own
+            # coldkey signature — i.e. any entity could self-sign the flag and register fee
+            # -free accounts at scale. Exempt accounts are created only by Taoshi tooling
+            # calling entity_client/entity_manager directly on the validator host. Reject
+            # loudly (rather than silently ignore) so a signed-with-flag request fails with
+            # a clear error instead of a confusing signature mismatch. Covers the legacy
+            # 'admin' key name from before the #886 rename.
+            if data.get('collateral_exempt') or data.get('admin'):
+                return jsonify({'error': 'collateral_exempt is not accepted on this endpoint'}), 403
+            collateral_exempt = False
             # Optional idempotency key. Deliberately NOT part of the signed
             # payload (sig_dict below is frozen) so that a new gateway signing
             # the legacy field set still verifies against an older validator,
@@ -2705,10 +2565,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': 'leverage_tier is not supported for Hyperliquid subaccounts'}), 400
                 if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
                     return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
-
-            if (intraday_drawdown_threshold is not None
-                    and intraday_drawdown_threshold not in ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES):
-                return jsonify({'error': f'intraday_drawdown_threshold must be one of {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES}'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -2776,13 +2632,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
                     entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
                     payout_address=payout_address, client_ref=client_ref,
-                    intraday_drawdown_threshold=intraday_drawdown_threshold,
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
                     entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
                     drawdown_criteria=drawdown_criteria, leverage_tier=leverage_tier,
-                    client_ref=client_ref, intraday_drawdown_threshold=intraday_drawdown_threshold,
+                    client_ref=client_ref,
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
