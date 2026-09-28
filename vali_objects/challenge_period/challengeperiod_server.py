@@ -195,6 +195,9 @@ class ChallengePeriodServer(RPCServerBase):
     def revert_elimination_rpc(self, hotkey: str) -> bool:
         return self._manager.revert_elimination(hotkey)
 
+    def set_miner_drawdown_stats_rpc(self, hotkey: str, updates: dict, force: bool = False) -> Tuple[bool, str, dict | None]:
+        return self._manager.set_miner_drawdown_stats(hotkey, updates, force)
+
     def clear_test_state_rpc(self) -> None:
         """Clear all miner states for test isolation."""
         assert self.running_unit_tests, "clear_test_state_rpc should only be called in unit tests"
