@@ -6,9 +6,11 @@ Each test uses a manager fixture with all RPC clients mocked and
 is_backtesting=True to skip all file system access.
 """
 import contextlib
-from unittest.mock import patch
+import json
+from unittest.mock import MagicMock, patch
 
 import pytest
+from flask import Flask
 
 from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
@@ -18,6 +20,7 @@ from vali_objects.challenge_period.challengeperiod_manager import (
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import TradePairCategory, ValiConfig
+from vanta_api.validator_rest_server import ValidatorRestServer
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -469,22 +472,130 @@ def test_prune_removes_missing_regular(manager):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Section 7 — set_miner_drawdown_stats
 # ═══════════════════════════════════════════════════════════════════════════════
-# The manager stores whatever stats it is handed. Which fields may be set, and merging them over
-# the miner's current stats, belong to the endpoint (test_drawdown_stats_endpoint.py).
 
-def test_set_miner_drawdown_stats_replaces_stats(manager):
+TODAY_MS = NOW_MS - NOW_MS % DAILY_MS
+
+
+def _dd_manager(manager, bucket=MinerBucket.MAINCOMP, **drawdown):
     hk = "dd_hk"
-    manager.miner_states[hk] = _state(MinerBucket.MAINCOMP)
-    manager.miner_states[hk].drawdown = DrawdownStats(current_equity=0.97, eod_hwm=1.05)
+    manager.miner_states[hk] = _state(bucket)
+    manager.miner_states[hk].drawdown = DrawdownStats(**drawdown)
+    return hk
 
-    success, _ = manager.set_miner_drawdown_stats(hk, DrawdownStats(eod_hwm=1.10, last_eod_equity=1.0))
+
+def _snapshot_refresh(manager, hk, day_ms, equity_return):
+    """One refresh on day_ms with the account's daily open snapshot taken that day."""
+    account = MagicMock(account_size=100.0, equity=100.0 * equity_return, balance=100.0 * equity_return)
+    account.daily_open_snapshot = MagicMock(snapshot_ms=day_ms, equity_return=equity_return)
+    manager._refresh_drawdown_cache([hk], {hk: account}, {}, {hk: [MagicMock()]}, day_ms + 60_000)
+
+
+def test_set_drawdown_stats_lowered_eod_hwm_sticks_across_snapshot_days(manager):
+    hk = _dd_manager(manager, current_equity=0.97, eod_hwm=1.20, last_eod_equity=1.0,
+                     daily_open_equity=1.0, last_eod_checked_ms=TODAY_MS)
+
+    success, _, result = manager.set_miner_drawdown_stats(hk, {"eod_hwm": 1.05}, now_ms=NOW_MS)
     dd = manager.miner_states[hk].drawdown
     assert success is True
-    assert dd.eod_hwm == 1.10
-    assert dd.eod_drawdown_pct == pytest.approx(9.0909, abs=1e-4)
+    assert result["eod_hwm"] == dd.eod_hwm == 1.05
+    assert dd.current_equity == 0.97  # live fields untouched
+
+    _snapshot_refresh(manager, hk, TODAY_MS + DAILY_MS, 1.01)
+    _snapshot_refresh(manager, hk, TODAY_MS + 2 * DAILY_MS, 1.03)
+    assert dd.eod_hwm == 1.05
+    assert dd.last_eod_equity == 1.03
 
 
-def test_set_miner_drawdown_stats_unknown_hotkey(manager):
-    success, message = manager.set_miner_drawdown_stats("missing_hk", DrawdownStats())
+def test_set_drawdown_stats_raise_past_threshold_needs_force(manager):
+    hk = _dd_manager(manager, current_equity=1.0, eod_hwm=1.0, last_eod_equity=1.0, last_eod_checked_ms=TODAY_MS)
+
+    success, message, _ = manager.set_miner_drawdown_stats(hk, {"eod_hwm": 10.3}, now_ms=NOW_MS)
+    assert success is False and "force" in message
+    assert manager.miner_states[hk].drawdown.eod_hwm == 1.0
+
+    success, _, _ = manager.set_miner_drawdown_stats(hk, {"eod_hwm": 1.02}, now_ms=NOW_MS)
+    assert success is True
+    success, _, _ = manager.set_miner_drawdown_stats(hk, {"eod_hwm": 10.3}, force=True, now_ms=NOW_MS)
+    assert success is True and manager.miner_states[hk].drawdown.eod_hwm == 10.3
+
+
+@pytest.mark.parametrize("updates, stored_checked_ms", [
+    ({"eod_hwm": 0.99}, TODAY_MS),                                  # below the 1.0 floor
+    ({"eod_hwm": 1.01}, TODAY_MS),                                  # below last_eod_equity
+    ({"last_eod_checked_ms": TODAY_MS + 1}, TODAY_MS),              # not a day boundary
+    ({"last_eod_checked_ms": TODAY_MS + DAILY_MS}, TODAY_MS),       # future day
+    ({"daily_open_equity": 1.02}, TODAY_MS - DAILY_MS),             # today's EOD not captured yet
+])
+def test_set_drawdown_stats_rejected(manager, updates, stored_checked_ms):
+    hk = _dd_manager(manager, eod_hwm=1.10, last_eod_equity=1.02, daily_open_equity=1.02,
+                     last_eod_checked_ms=stored_checked_ms)
+    before = DrawdownStats(**vars(manager.miner_states[hk].drawdown))
+
+    success, _, result = manager.set_miner_drawdown_stats(hk, updates, now_ms=NOW_MS)
+    assert success is False and result is None
+    assert manager.miner_states[hk].drawdown == before
+
+
+def test_set_drawdown_stats_unknown_hotkey(manager):
+    success, message, _ = manager.set_miner_drawdown_stats("missing_hk", {"eod_hwm": 1.1})
     assert success is False
     assert "not found" in message
+
+
+# POST /admin/drawdown-stats/<hotkey>: the real Flask handler with a mocked challenge period client
+
+@pytest.fixture
+def dd_endpoint():
+    server = object.__new__(ValidatorRestServer)
+    server._get_api_key_safe = MagicMock(return_value="key")
+    server.is_valid_api_key = MagicMock(return_value=True)
+    server.can_access_tier = MagicMock(return_value=True)
+    server._challenge_period_client = MagicMock()
+    set_stats = server._challenge_period_client.set_miner_drawdown_stats
+    set_stats.return_value = (True, "ok", {"eod_hwm": 1.05})
+
+    app = Flask(__name__)
+    app.route("/admin/drawdown-stats/<hotkey>", methods=["POST"])(server.set_miner_drawdown_stats)
+    client = app.test_client()
+
+    def post(raw: str):
+        response = client.post("/admin/drawdown-stats/dd_hk", data=raw, content_type="application/json")
+        return response.status_code, response.get_json()
+
+    return post, set_stats
+
+
+def test_drawdown_stats_endpoint_passes_updates_and_force(dd_endpoint):
+    post, set_stats = dd_endpoint
+    status, payload = post(json.dumps({"eod_hwm": 1.05, "last_eod_checked_ms": 1.728e12, "force": True}))
+    assert status == 200
+    set_stats.assert_called_once_with("dd_hk", {"eod_hwm": 1.05, "last_eod_checked_ms": 1_728_000_000_000}, True)
+    assert payload["drawdown"] == {"eod_hwm": 1.05}
+
+
+def test_drawdown_stats_endpoint_manager_rejection_is_400(dd_endpoint):
+    post, set_stats = dd_endpoint
+    set_stats.return_value = (False, "pass force to apply", None)
+    status, payload = post(json.dumps({"eod_hwm": 10.3}))
+    assert status == 400
+    assert "force" in payload["error"]
+
+
+@pytest.mark.parametrize("raw", [
+    '{}',
+    '{"force": true}',
+    '{"current_equity": 0.5}',
+    '{"eod_hwm": "1.1"}',
+    '{"eod_hwm": true}',
+    '{"eod_hwm": NaN}',
+    '{"eod_hwm": -1}',
+    '{"eod_hwm": 1' + '0' * 400 + '}',
+    '{"last_eod_checked_ms": 1728000000000.5}',
+    '{"eod_hwm": 1.05, "force": "yes"}',
+])
+def test_drawdown_stats_endpoint_rejects_invalid_body(dd_endpoint, raw):
+    post, set_stats = dd_endpoint
+    status, payload = post(raw)
+    assert status == 400
+    assert "error" in payload
+    set_stats.assert_not_called()

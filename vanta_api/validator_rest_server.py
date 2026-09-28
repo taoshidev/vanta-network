@@ -72,7 +72,6 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLed
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
-from vali_objects.challenge_period.challengeperiod_manager import DrawdownStats
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.vali_dataclasses.fee_event import FeeType
 from vali_objects.vali_dataclasses.order import Order
@@ -83,7 +82,7 @@ from shared_objects.log import logger
 
 
 # current_equity and current_balance are recomputed from the account on every refresh, so they are
-# not settable -- the EOD fields hold until the next midnight snapshot is captured.
+# not settable. The manager enforces the rules between the settable fields.
 SETTABLE_DRAWDOWN_FIELDS = ('daily_open_equity', 'eod_hwm', 'last_eod_equity', 'last_eod_checked_ms')
 
 
@@ -2016,14 +2015,18 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         in the body are changed; the rest are left as they are.
         Requires tier 500 access.
 
-        Settable fields (all numeric): daily_open_equity, eod_hwm, last_eod_equity,
-        last_eod_checked_ms
+        Settable fields: daily_open_equity, eod_hwm, last_eod_equity, last_eod_checked_ms.
+        - last_eod_checked_ms must be a UTC day boundary no later than today
+        - daily_open_equity and last_eod_equity require last_eod_checked_ms to be today's open
+        - eod_hwm cannot go below 1.0, last_eod_equity or daily_open_equity
+        - "force": true is required when a change pushes a drawdown past its threshold or deepens
+          a pro account's max_drawdown
 
         Example:
         curl -X POST http://localhost:48888/admin/drawdown-stats/<hotkey> \\
           -H "Authorization: Bearer YOUR_API_KEY" \\
           -H "Content-Type: application/json" \\
-          -d '{"eod_hwm": 1.03, "last_eod_equity": 0.99}'
+          -d '{"eod_hwm": 1.03}'
         """
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
@@ -2032,37 +2035,37 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'error': 'Set drawdown stats endpoint requires tier 500 access'}), 403
 
         data = request.get_json(silent=True)
-        if not isinstance(data, dict) or not data:
-            return jsonify({'error': 'Body must be a non-empty JSON object of drawdown fields'}), 400
+        if not isinstance(data, dict):
+            return jsonify({'error': 'Body must be a JSON object of drawdown fields'}), 400
+        data = dict(data)
+        force = data.pop('force', False)
+        if not isinstance(force, bool):
+            return jsonify({'error': f'force must be a boolean, got "{force}"'}), 400
+        if not data:
+            return jsonify({'error': f'Body must set at least one of {list(SETTABLE_DRAWDOWN_FIELDS)}'}), 400
 
         unknown = sorted(set(data) - set(SETTABLE_DRAWDOWN_FIELDS))
         if unknown:
             return jsonify({'error': f'{unknown} not settable, settable fields: {list(SETTABLE_DRAWDOWN_FIELDS)}'}), 400
 
-        updates = {}
-        for name, value in data.items():
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-                return jsonify({'error': f'{name} must be a finite number, got "{value}"'}), 400
-            if name == 'last_eod_checked_ms':
-                updates[name] = int(value)
-            elif value <= 0:
-                return jsonify({'error': f'{name} must be a positive number, got "{value}"'}), 400
-            else:
-                updates[name] = float(value)
+        try:
+            updates = {}
+            for name, value in data.items():
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    return jsonify({'error': f'{name} must be a finite number, got "{value}"'}), 400
+                if name == 'last_eod_checked_ms':
+                    if value != int(value) or value <= 0:
+                        return jsonify({'error': f'{name} must be a positive integer, got "{value}"'}), 400
+                    updates[name] = int(value)
+                elif value <= 0:
+                    return jsonify({'error': f'{name} must be a positive number, got "{value}"'}), 400
+                else:
+                    updates[name] = float(value)
+        except OverflowError:
+            return jsonify({'error': 'value out of range'}), 400
 
         try:
-            current = self._challenge_period_client.get_drawdown_stats(hotkey)
-            if current is None:
-                return jsonify({'error': f'{hotkey} not found in challenge period manager'}), 404
-
-            merged = {**current, **updates}
-            drawdown = DrawdownStats.from_dict(merged)
-            # from_dict drops None, which would otherwise reset a cleared optional field to its default
-            for name in SETTABLE_DRAWDOWN_FIELDS:
-                if merged.get(name) is None:
-                    setattr(drawdown, name, None)
-
-            success, message = self._challenge_period_client.set_miner_drawdown_stats(hotkey, drawdown)
+            success, message, drawdown = self._challenge_period_client.set_miner_drawdown_stats(hotkey, updates, force)
             if not success:
                 return jsonify({'error': message}), 400
 
@@ -2070,7 +2073,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'status': 'success',
                 'hotkey': hotkey,
                 'updates': updates,
-                'drawdown': drawdown.to_dict(),
+                'drawdown': drawdown,
                 'message': message,
             }), 200
 

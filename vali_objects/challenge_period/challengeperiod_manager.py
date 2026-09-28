@@ -8,7 +8,7 @@ ChallengePeriodServer wraps this and exposes methods via RPC.
 
 This follows the same pattern as EliminationManager.
 """
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Tuple
 
 from shared_objects.log import logger
@@ -987,34 +987,36 @@ class ChallengePeriodManager(CacheController):
 
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
             current_day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
-            existing = self.miner_states[hotkey].drawdown
-            existing.current_equity = current_equity
-            existing.current_balance = current_balance
-
-            # EOD fields are locked in for today once the snapshot has been captured
-            if existing.last_eod_checked_ms == current_day_open_ms:
-                continue
-
-            # Use daily open snapshot from miner account as default and fallback to perf ledgers
-            snapshot = account.daily_open_snapshot
-            if snapshot and TimeUtil.get_start_of_day_ms(snapshot.snapshot_ms) == current_day_open_ms:
-                last_eod_equity = daily_open_equity = snapshot.equity_return
-                eod_hwm = max(existing.eod_hwm, daily_open_equity)
-                last_eod_checked_ms = current_day_open_ms
-            else:
-                ledger = ledgers.get(hotkey)
-                if ledger is None:
-                    logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
-                    continue
-                last_eod_equity, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
-
-            if last_eod_checked_ms == current_day_open_ms:
+            # Held so a manual set_miner_drawdown_stats cannot land between reading and writing eod_hwm
+            with self._buckets_lock:
+                existing = self.miner_states[hotkey].drawdown
                 existing.current_equity = current_equity
                 existing.current_balance = current_balance
-                existing.last_eod_equity = last_eod_equity
-                existing.daily_open_equity = daily_open_equity
-                existing.eod_hwm = max(existing.eod_hwm, last_eod_equity, eod_hwm)
-                existing.last_eod_checked_ms = last_eod_checked_ms
+
+                # EOD fields are locked in for today once the snapshot has been captured
+                if existing.last_eod_checked_ms == current_day_open_ms:
+                    continue
+
+                # Use daily open snapshot from miner account as default and fallback to perf ledgers
+                snapshot = account.daily_open_snapshot
+                if snapshot and TimeUtil.get_start_of_day_ms(snapshot.snapshot_ms) == current_day_open_ms:
+                    last_eod_equity = daily_open_equity = snapshot.equity_return
+                    eod_hwm = max(existing.eod_hwm, daily_open_equity)
+                    last_eod_checked_ms = current_day_open_ms
+                else:
+                    ledger = ledgers.get(hotkey)
+                    if ledger is None:
+                        logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
+                        continue
+                    last_eod_equity, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
+
+                if last_eod_checked_ms == current_day_open_ms:
+                    existing.current_equity = current_equity
+                    existing.current_balance = current_balance
+                    existing.last_eod_equity = last_eod_equity
+                    existing.daily_open_equity = daily_open_equity
+                    existing.eod_hwm = max(existing.eod_hwm, last_eod_equity, eod_hwm)
+                    existing.last_eod_checked_ms = last_eod_checked_ms
 
     def _refresh_pro_stats(self, hotkeys: list[str], ledgers: dict[str, PerfLedger],
                            accounts: dict[str, MinerAccount]) -> None:
@@ -1300,16 +1302,55 @@ class ChallengePeriodManager(CacheController):
             self._save_to_disk()
         return True, f"drawdown_criteria updated to '{criteria.value}' for {hotkey}"
 
-    def set_miner_drawdown_stats(self, hotkey: str, drawdown: DrawdownStats) -> Tuple[bool, str]:
-        """Overwrite drawdown stats for an existing miner state and persist to disk."""
+    def set_miner_drawdown_stats(
+        self, hotkey: str, updates: dict, force: bool = False, now_ms: int | None = None
+    ) -> Tuple[bool, str, dict | None]:
+        """Overwrite drawdown fields on a miner's live stats and persist to disk.
+
+        force is required for a change that deepens a drawdown
+        past its threshold, or that deepens a pro account's ratcheted max_drawdown.
+        """
+        today_ms = TimeUtil.get_start_of_day_ms(now_ms if now_ms is not None else TimeUtil.now_in_millis())
         with self._buckets_lock:
             state = self.miner_states.get(hotkey)
             if not state:
-                return False, f"{hotkey} not found in challenge period manager"
-            state.drawdown = drawdown
-            logger.info(f"[CHALLENGE] drawdown stats set: {state}")
+                return False, f"{hotkey} not found in challenge period manager", None
+            old = state.drawdown
+            new = replace(old, **updates)
+
+            checked_ms = new.last_eod_checked_ms
+            if 'last_eod_checked_ms' in updates and (
+                    TimeUtil.get_start_of_day_ms(checked_ms) != checked_ms or checked_ms > today_ms):
+                return False, f"last_eod_checked_ms must be a UTC day boundary no later than today ({today_ms})", None
+            if {'daily_open_equity', 'last_eod_equity'} & updates.keys() and checked_ms != today_ms:
+                return False, ("daily_open_equity and last_eod_equity only hold for today: wait for today's "
+                               f"EOD snapshot or set last_eod_checked_ms to {today_ms}"), None
+
+            eod_hwm_floor = max(1.0, new.last_eod_equity, new.daily_open_equity or 0.0)
+            if new.eod_hwm < eod_hwm_floor:
+                return False, f"eod_hwm {new.eod_hwm} is below its floor {eod_hwm_floor} (1.0, last_eod_equity, daily_open_equity)", None
+
+            if not force:
+                rules = (
+                    ('intraday', old.intraday_drawdown_pct, new.intraday_drawdown_pct, state.intraday_drawdown_threshold_pct),
+                    ('eod', old.eod_drawdown_pct, new.eod_drawdown_pct, state.eod_drawdown_threshold_pct),
+                    ('trailing', old.trailing_drawdown_pct, new.trailing_drawdown_pct, state.eod_drawdown_threshold_pct),
+                )
+                for rule, before, after, threshold in rules:
+                    if after > threshold and after > before:
+                        return False, (f"{rule} drawdown would go from {before:.2f}% to {after:.2f}%, past the "
+                                       f"{threshold:.2f}% threshold; pass force to apply"), None
+                if state.current_bucket.is_pro_track and new.current_equity / new.eod_hwm < state.pro_stats.max_drawdown:
+                    return False, ("eod_hwm would permanently deepen pro max_drawdown "
+                                   f"({state.pro_stats.max_drawdown:.4f} -> {new.current_equity / new.eod_hwm:.4f}); pass force to apply"), None
+
+            changes = ", ".join(f"{name} {getattr(old, name)} -> {value}" for name, value in updates.items())
+            for name, value in updates.items():
+                setattr(old, name, value)
+            logger.warning(f"[CHALLENGE] {hotkey} drawdown stats manually set (force={force}): {changes}")
             self._save_to_disk()
-        return True, f"drawdown stats updated for {hotkey}"
+            result = old.to_dict()
+        return True, f"drawdown stats updated for {hotkey}", result
 
     def remove_miners(self, hotkeys: str | list[str]) -> bool:
         """Remove hotkeys from memory - CALL OUTSIDE OF LOCK"""
