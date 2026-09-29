@@ -279,3 +279,52 @@ def monkeypatch_connect(client, fn):
     """Replace the instance's connect with a plain function (no `self`), matching how
     _invoke_rpc calls self.connect(max_retries=..., retry_delay=...)."""
     client.connect = fn
+
+
+def test_reset_connection_recycles_bounded_executor(client):
+    """
+    A transient reset must retire the bounded-call executor so its worker threads (which hold the
+    now-dead per-thread proxy connections) terminate, instead of lingering until GC. A fresh
+    executor is then created lazily on the next bounded call.
+    """
+    # Materialize the executor as a real bounded call would.
+    first = client._get_rpc_executor()
+    assert first is not None
+    assert client._rpc_executor is first
+
+    client._connected = True
+    client._proxy = object()
+    client._reset_connection()
+
+    # The old executor was handed off for shutdown and cleared...
+    assert client._rpc_executor is None
+    assert first._shutdown is True
+    # ...and the next call gets a brand-new, live executor.
+    second = client._get_rpc_executor()
+    assert second is not first
+    assert second._shutdown is False
+
+
+def test_submit_bounded_call_recovers_from_concurrent_recycle(client):
+    """
+    If the executor is recycled between _get_rpc_executor() and submit() (a concurrent reset),
+    submit() raises RuntimeError('cannot schedule new futures after shutdown'). _submit_bounded_call
+    must swallow that once and retry on a fresh executor rather than surfacing a bogus RuntimeError
+    that _invoke_rpc would mis-classify as a business error.
+    """
+    # Pre-shut-down the current executor so the first submit attempt raises RuntimeError.
+    stale = client._get_rpc_executor()
+    stale.shutdown(wait=False)
+
+    ran = {"count": 0}
+
+    def work():
+        ran["count"] += 1
+        return "done"
+
+    future = client._submit_bounded_call(work, (), {})
+    assert future.result(timeout=5) == "done"
+    assert ran["count"] == 1
+    # The retry created a fresh, usable executor.
+    assert client._rpc_executor is not None
+    assert client._rpc_executor is not stale
