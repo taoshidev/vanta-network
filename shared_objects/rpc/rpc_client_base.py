@@ -529,6 +529,7 @@ class RPCClientBase:
         """Run one proxy method call with the per-call timeout (see _ResilientRPCProxy)."""
         if timeout_s is None:
             timeout_s = self._rpc_call_timeout_s
+
         future = self._submit_bounded_call(bound_method, args, kwargs)
         try:
             return future.result(timeout=timeout_s)
