@@ -103,7 +103,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from shared_objects.rpc.port_manager import PortManager
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.rpc.rpc_server_base import RPCServerBase, ServerProcessHandle
 from vali_objects.vali_config import RPCConnectionMode
 from shared_objects.log import logger
 
@@ -174,6 +174,10 @@ class ServerOrchestrator:
 
     _instance: Optional['ServerOrchestrator'] = None
     _lock = threading.Lock()
+
+    # Window shutdown_all_servers waits for spawned subprocesses to self-exit on the shutdown flag
+    # before hard-stopping them. Under the state tier's 9s alarm / 10s PM2 kill_timeout.
+    _SERVER_SHUTDOWN_GRACE_S = 4.0
 
     # Server registry - defines all available servers
     # Format: server_name -> ServerConfig
@@ -1658,12 +1662,37 @@ class ServerOrchestrator:
         RPCClientBase.disconnect_all()
         self._clients.clear()
 
-        # Shutdown all servers
+        # Set the shutdown flag so spawned subprocesses break their serve loop and shut down
+        # gracefully. Idempotent — a no-op if the caller's signal handler already signaled.
+        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        ShutdownCoordinator.signal_shutdown("orchestrator.shutdown_all_servers")
+
+        # Stop spawned server subprocesses via their handles. Their RPCServerBase instances live in
+        # the child (entry_point_start_server), so the in-process ServerRegistry used by
+        # RPCServerBase.shutdown_all() below is empty here and cannot reach them; only the parent's
+        # ServerProcessHandle can. Left unstopped, a child orphaned on a parent SIGKILL leaks its port.
+        with self._servers_lock:
+            handles = [(n, h) for n, h in self._servers.items()
+                       if isinstance(h, ServerProcessHandle)]
+        # Give each child a shared grace window to self-exit on the flag (flush + release port)
+        # before terminate(), since children install no SIGTERM handler (terminate is an immediate kill).
+        grace_deadline = time.time() + self._SERVER_SHUTDOWN_GRACE_S
+        for name, handle in handles:
+            remaining = grace_deadline - time.time()
+            if remaining > 0 and handle.process is not None:
+                handle.process.join(timeout=remaining)
+        # Reap any straggler and stop its HealthMonitor. No-op on an already-exited process.
+        for name, handle in handles:
+            try:
+                handle.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping {name} server process: {e}")
+
+        # Shutdown in-process (LOCAL-mode) servers via the registry + force-clear any ports still held.
         RPCServerBase.shutdown_all(force_kill_ports=True)
         self._servers.clear()
 
-        # Cleanup shared memory
-        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        # Unlink the shared-memory segment last, after children have exited, so none reads it unlinked.
         ShutdownCoordinator.cleanup()
 
         self._started = False

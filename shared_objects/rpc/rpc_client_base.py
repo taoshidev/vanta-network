@@ -479,6 +479,38 @@ class RPCClientBase:
                     )
         return self._rpc_executor
 
+    def _recycle_rpc_executor(self) -> None:
+        """
+        Retire the bounded-call executor so its worker threads exit and release their per-thread
+        multiprocessing proxy connections (which dropping self._proxy alone does not close); a fresh
+        one is created lazily on the next call. Non-blocking so a parked worker can't stall a reset.
+        """
+        with self._rpc_executor_lock:
+            old_executor = self._rpc_executor
+            self._rpc_executor = None
+        if old_executor is not None:
+            try:
+                old_executor.shutdown(wait=False, cancel_futures=True)
+            except Exception as e:
+                logger.debug(f"{self.service_name}Client error recycling RPC executor: {e}")
+
+    def _submit_bounded_call(self, bound_method, args, kwargs):
+        """
+        Submit one bounded proxy call to the executor. If a concurrent _reset_connection recycled the
+        executor between fetch and submit, submit() raises RuntimeError (shutdown); drop the retired
+        executor and retry once on a fresh one, so that race doesn't surface as a spurious error.
+        """
+        for attempt in (1, 2):
+            executor = self._get_rpc_executor()
+            try:
+                return executor.submit(bound_method, *args, **kwargs)
+            except RuntimeError:
+                if attempt == 2:
+                    raise
+                with self._rpc_executor_lock:
+                    if self._rpc_executor is executor:
+                        self._rpc_executor = None
+
     def _call_proxy_method(self, proxy, method_name: str, args, kwargs):
         """
         Invoke ONE method on the raw proxy, bounded by the per-call timeout when enabled.
@@ -496,7 +528,7 @@ class RPCClientBase:
     def _invoke_bounded(self, method_name: str, bound_method, args, kwargs):
         """Run one proxy method call with the per-call timeout (see _ResilientRPCProxy)."""
         timeout_s = self._rpc_call_timeout_s
-        future = self._get_rpc_executor().submit(bound_method, *args, **kwargs)
+        future = self._submit_bounded_call(bound_method, args, kwargs)
         try:
             return future.result(timeout=timeout_s)
         except FuturesTimeoutError:
@@ -980,6 +1012,9 @@ class RPCClientBase:
         Callers should hold self._conn_lock.
         """
         self._teardown_transport()
+        # Also retire the executor, whose worker threads hold the dead per-thread proxy connections
+        # that _teardown_transport (manager control-connection only) leaves open.
+        self._recycle_rpc_executor()
 
     def disconnect(self):
         """Disconnect from the server."""
