@@ -350,10 +350,14 @@ class EntityManager(ValidatorBroadcastBase):
         Returns:
             RLock for this entity
         """
-        with self._entities_lock:
-            if entity_hotkey not in self._entity_locks:
-                self._entity_locks[entity_hotkey] = threading.RLock()
-            return self._entity_locks[entity_hotkey]
+        entity_lock = self._entity_locks.get(entity_hotkey)
+        if entity_lock is None:
+            with self._entities_lock:
+                entity_lock = self._entity_locks.get(entity_hotkey)
+                if entity_lock is None:
+                    entity_lock = threading.RLock()
+                    self._entity_locks[entity_hotkey] = entity_lock
+        return entity_lock
 
     # ==================== Core Business Logic ====================
 
@@ -1016,6 +1020,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
+            subaccount = subaccount.model_copy()
             subaccount.standard_account_size = standard_account_size
             subaccount.pro_account_size = pro_account_size
             subaccount.account_type = account_type
@@ -1225,6 +1230,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         entity_lock = self._get_entity_lock(entity_hotkey)
         with entity_lock:
+            subaccount = subaccount.model_copy()
             subaccount.account_size = previous_account_size
             subaccount.standard_account_size = snapshot.get("standard_account_size")
             subaccount.pro_account_size = snapshot.get("pro_account_size")
@@ -1671,35 +1677,33 @@ class EntityManager(ValidatorBroadcastBase):
         if not entity_hotkey:
             return None
 
-        entity_lock = self._get_entity_lock(entity_hotkey)
-        with entity_lock:
-            entity_data = self.entities.get(entity_hotkey)
+        entity_data = self.entities.get(entity_hotkey)
 
-            if entity_data is None:
-                return None
+        if entity_data is None:
+            return None
 
-            subaccount = entity_data.subaccounts.get(subaccount_id)
-            if subaccount is None:
-                return None
+        subaccount = entity_data.subaccounts.get(subaccount_id)
+        if subaccount is None:
+            return None
 
-            result = {
-                "synthetic_hotkey": synthetic_hotkey,
-                "subaccount_uuid": subaccount.subaccount_uuid,
-                "subaccount_id": subaccount.subaccount_id,
-                "asset_class": subaccount.asset_class,
-                "account_size": subaccount.account_size,
-                "standard_account_size": subaccount.standard_account_size,
-                "pro_account_size": subaccount.pro_account_size,
-                "account_type": subaccount.account_type,
-                "status": subaccount.status,
-                "created_at_ms": subaccount.created_at_ms,
-                "eliminated_at_ms": subaccount.eliminated_at_ms,
-            }
-            if subaccount.hl_address:
-                result["hl_address"] = subaccount.hl_address
-            if subaccount.payout_address:
-                result["payout_address"] = subaccount.payout_address
-            return result
+        result = {
+            "synthetic_hotkey": synthetic_hotkey,
+            "subaccount_uuid": subaccount.subaccount_uuid,
+            "subaccount_id": subaccount.subaccount_id,
+            "asset_class": subaccount.asset_class,
+            "account_size": subaccount.account_size,
+            "standard_account_size": subaccount.standard_account_size,
+            "pro_account_size": subaccount.pro_account_size,
+            "account_type": subaccount.account_type,
+            "status": subaccount.status,
+            "created_at_ms": subaccount.created_at_ms,
+            "eliminated_at_ms": subaccount.eliminated_at_ms,
+        }
+        if subaccount.hl_address:
+            result["hl_address"] = subaccount.hl_address
+        if subaccount.payout_address:
+            result["payout_address"] = subaccount.payout_address
+        return result
 
     def get_synthetic_hotkey_from_uuid(self, subaccount_uuid: str) -> Optional[str]:
         """
@@ -2913,6 +2917,7 @@ class EntityManager(ValidatorBroadcastBase):
                 if subaccount_id in entity_data.subaccounts:
                     existing_sub = entity_data.subaccounts[subaccount_id]
                     if existing_sub.subaccount_uuid == subaccount_uuid:
+                        existing_sub = existing_sub.model_copy()
                         changed = False
                         # Update status if changed
                         if existing_sub.status != status:
@@ -2975,6 +2980,7 @@ class EntityManager(ValidatorBroadcastBase):
                                 changed = True
                             self._push_leverage_tiers({synthetic_hotkey: new_tier})
                         if changed:
+                            entity_data.subaccounts[subaccount_id] = existing_sub
                             self._write_entities_from_memory_to_disk()
                         else:
                             logger.debug(
