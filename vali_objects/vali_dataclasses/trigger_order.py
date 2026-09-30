@@ -33,8 +33,9 @@ cancelled/ directory.
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
+from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.utils.limit_order.order_utils import OrderSize
@@ -64,13 +65,12 @@ class TrailingTrigger(BaseModel):
     price start unset and are seeded from the first observation.
     """
     kind: Literal["trailing"] = "trailing"
-    price: float = Field(gt=0)
     direction: StopCondition
     price_field: PriceField = PriceField.MID
 
+    best_price: float
     trailing_pct: float | None = Field(default=None, gt=0, lt=1)
     trailing_val: float | None = Field(default=None, gt=0)
-    best_price: float | None = Field(default=None, gt=0)
 
     @model_validator(mode='after')
     def validate_trailing_amount(self):
@@ -78,22 +78,21 @@ class TrailingTrigger(BaseModel):
             raise ValueError("TrailingTrigger requires exactly one of trailing_pct or trailing_val")
         return self
 
-    def update_trailing_price(self, observed: float) -> None:
-        if self.best_price is None:
-            self.best_price = observed
+    @property
+    def price(self) -> float:
+        sign = 1 if self.direction == StopCondition.GTE else -1
+        if self.trailing_pct is not None:
+            return self.best_price * (1 + sign * self.trailing_pct)
+        elif self.trailing_val is not None:
+            return self.best_price + sign * self.trailing_val
+        else:
+            raise ValueError("TrailingTrigger missing both trailing_pct and trailing_val")
 
+    def update_best_price(self, observed: float) -> None:
         if self.direction == StopCondition.LTE:
             self.best_price = max(self.best_price, observed)
-            if self.trailing_pct is not None:
-                self.price = self.best_price * (1 - self.trailing_pct)
-            else:
-                self.price = self.best_price - self.trailing_val
         else:
             self.best_price = min(self.best_price, observed)
-            if self.trailing_pct is not None:
-                self.price = self.best_price * (1 + self.trailing_pct)
-            else:
-                self.price = self.best_price + self.trailing_val
 
 
 Trigger = Annotated[
@@ -119,6 +118,22 @@ class MarketAction(BaseModel):
         return not self.fill_at_trigger
 
 
+class TriggerAction(BaseModel):
+    execution_type: ExecutionType = ExecutionType.LIMIT
+    order_uuid: str  # pending actions need uuid for v2 api
+
+    trigger: Trigger
+    market_action: MarketAction | None
+    child_actions: list["TriggerAction"] = Field(default_factory=list)
+    bind_to_position: bool = False  # Attach child actions to live trade pair position
+
+    @model_validator(mode='after')
+    def validate_actions(self):
+        if not self.market_action and not self.child_actions:
+            raise ValueError("TriggerAction requires a fill, attached child actions, or both")
+        return self
+
+
 class TriggerOrder(BaseModel):
     """
     A top-level trigger order, or a child template attached to another trigger order. A child's
@@ -128,47 +143,46 @@ class TriggerOrder(BaseModel):
     """
     execution_type: ExecutionType  # API-facing type, kept for backwards-compatible responses
 
-    order_uuid: str | None = None        # None on a child template
-    miner_hotkey: str | None = None      # None on a child template
-    trade_pair: TradePair | None = None  # None on a child template; inherits the parent's
+    order_uuid: str
+    miner_hotkey: str
+    trade_pair: TradePair
 
-    processed_ms: int | None = None  # None on a child template
+    processed_ms: int
     closed_ms: int | None = None     # set on fire or cancel; keeps processed_ms as placement time
 
     trigger: Trigger
-    fill: MarketAction | None = None              # executed when this trigger fires
-    attached: list["TriggerOrder"] = Field(default_factory=list)  # armed when this trigger fires
+    market_action: MarketAction | None
+    child_actions: list[TriggerAction] = Field(default_factory=list)  # armed when trigger fires
+    bind_to_position: bool = False
 
-    oco_group: str | None = None      # a sibling firing cancels the others
+    # oco_group: str | None = None      # a sibling firing cancels the others
     position_uuid: str | None = None  # bound position; cancel if it closes or flips
-    bind_to_position: bool = False    # child templates: bind to the position open when placed
-
-    @field_validator('trade_pair', mode='before')
-    @classmethod
-    def convert_trade_pair(cls, v):
-        if isinstance(v, str):
-            return TradePair.from_trade_pair_id(v)
-        if isinstance(v, dict) and 'trade_pair_id' in v:
-            return TradePair.from_trade_pair_id(v['trade_pair_id'])
-        if isinstance(v, list) and len(v) >= 1:
-            return TradePair.from_trade_pair_id(v[0])
-        return v
 
     @model_validator(mode='after')
-    def validate_binding(self):
-        is_bound = self.position_uuid is not None or self.bind_to_position
-        if self.fill is None and not self.attached:
-            raise ValueError("TriggerOrder requires a fill, attached orders, or both")
-        if isinstance(self.trigger, TrailingTrigger):
-            if not is_bound or self.fill is None or not self.fill.reduce_only or self.attached:
-                raise ValueError("Trailing triggers require a bound position and a single reduce_only MARKET fill")
-        if self.fill is not None and self.fill.reduce_only and not is_bound:
-            raise ValueError("reduce_only fills require a bound position")
+    def validate_actions(self):
+        if not self.market_action and not self.child_actions:
+            raise ValueError("TriggerOrder requires a fill, attached child actions, or both")
         return self
 
-    @property
-    def is_open(self) -> bool:
-        return self.closed_ms is None
+    def create_child_orders(self, linked_position_uuid) -> list["TriggerOrder"]:
+        orders = []
+        time_ms = self.closed_ms or TimeUtil.now_in_millis()
+        for i, action in enumerate(self.child_actions):
+            new_order = TriggerOrder(
+                execution_type=action.execution_type,
+                order_uuid=f"{action.order_uuid}-trigger-{i}",
+                miner_hotkey=self.miner_hotkey,
+                trade_pair=self.trade_pair,
+                processed_ms=time_ms,
+                trigger=action.trigger,
+                market_action=action.market_action,
+                child_actions=action.child_actions,
+                bind_to_position=action.bind_to_position,
+                position_uuid=linked_position_uuid if self.bind_to_position else None,
+            )
+            orders.append(new_order)
+
+        return orders
 
 
 TriggerOrder.model_rebuild()
