@@ -30,6 +30,7 @@ from vali_objects.challenge_period.challengeperiod_client import ChallengePeriod
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
@@ -2258,7 +2259,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if position.is_open_position and position.last_price_source:
                 now_ms = TimeUtil.now_in_millis()
                 realtime_price = position.last_price_source.parse_appropriate_price(
-                    now_ms, position.trade_pair.is_forex, position.position_type, position.position_type
+                    now_ms, position.trade_pair.is_forex, OrderType.FLAT, position.position_type
                 )
                 if realtime_price:
                     position.set_returns(
