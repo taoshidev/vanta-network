@@ -51,6 +51,11 @@ from vanta_api.server_readiness import start_readiness_watchdog  # noqa: E402
 # live_price_fetcher, market_order) either have no deferred daemon or start it at spawn.
 STATE_DAEMONS = ['miner_account', 'position_manager', 'limit_order', 'entity_collateral']
 
+# Backstop that force-exits if graceful shutdown hangs. Kept under this tier's PM2 kill_timeout
+# (10s, set in run.sh) so we exit via atexit (which reaps the spawned subprocesses) before PM2
+# SIGKILLs us — a SIGKILL would orphan them and leak their RPC ports.
+GRACEFUL_SHUTDOWN_DEADLINE_S = 9
+
 
 def main() -> int:
     # Reuse the validator's config parser for exact parity with core (netuid, wallet.*, serve,
@@ -102,13 +107,24 @@ def main() -> int:
     orchestrator = ServerOrchestrator.get_instance()
     stop = threading.Event()
 
-    # Keep SIGINT default (raises KeyboardInterrupt, breaking blocking sleeps during a slow startup).
-    # Route SIGTERM (PM2's stop signal) to the same path so shutdown is graceful.
-    def _sigterm_to_keyboard_interrupt(signum, _frame):
-        bt.logging.info(f"[vanta-state] Received signal {signum} — interrupting for graceful shutdown.")
-        raise KeyboardInterrupt()
+    # Mirrors core (neurons/validator.py:signal_handler). Sets the shared shutdown flag — which the
+    # spawned state subprocesses poll to break their serve loop and shut down gracefully — then arms
+    # the backstop alarm.
+    def _signal_handler(signum, _frame):
+        if ShutdownCoordinator.is_shutdown():
+            return
+        bt.logging.info(f"[vanta-state] Received signal {signum} — initiating graceful shutdown.")
+        ShutdownCoordinator.signal_shutdown(f"vanta-state received signal {signum}")
+        stop.set()  # wake the main loop and the readiness watchdog immediately
+        signal.alarm(GRACEFUL_SHUTDOWN_DEADLINE_S)
 
-    signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+    def _alarm_handler(_signum, _frame):
+        bt.logging.error("[vanta-state] Graceful shutdown exceeded deadline — force-exiting.")
+        sys.exit(1)  # SystemExit unwinds through finally + atexit (terminates daemon subprocesses)
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGALRM, _alarm_handler)
 
     try:
         # Run on-disk state migrations BEFORE any server loads that state. vanta-state starts
@@ -172,6 +188,7 @@ def main() -> int:
             bt.logging.warning(f"[vanta-state] error during shutdown: {e}")
         # Unlink our OWN coordinator segment so it doesn't leak; safe because this app owns its namespace.
         ShutdownCoordinator.cleanup()
+        signal.alarm(0)  # teardown finished in time; cancel the backstop
 
 
 if __name__ == "__main__":
