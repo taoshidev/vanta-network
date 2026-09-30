@@ -479,23 +479,24 @@ class RPCClientBase:
                     )
         return self._rpc_executor
 
-    def _call_proxy_method(self, proxy, method_name: str, args, kwargs):
+    def _call_proxy_method(self, proxy, method_name: str, args, kwargs, timeout_s: float = None):
         """
         Invoke ONE method on the raw proxy, bounded by the per-call timeout when enabled.
 
         Single funnel for every raw-proxy invocation in _invoke_rpc (first attempt, each
         self-heal retry, and the transport probe), so no path can reach the unbounded
         conn.recv() that drained the REST worker pool. rpc_call_timeout_s <= 0 calls straight
-        through (raw-proxy behavior).
+        through (raw-proxy behavior). timeout_s overrides rpc_call_timeout_s for this call only.
         """
         method = getattr(proxy, method_name)
         if self._rpc_call_timeout_s <= 0:
             return method(*args, **kwargs)
-        return self._invoke_bounded(method_name, method, args, kwargs)
+        return self._invoke_bounded(method_name, method, args, kwargs, timeout_s)
 
-    def _invoke_bounded(self, method_name: str, bound_method, args, kwargs):
+    def _invoke_bounded(self, method_name: str, bound_method, args, kwargs, timeout_s: float = None):
         """Run one proxy method call with the per-call timeout (see _ResilientRPCProxy)."""
-        timeout_s = self._rpc_call_timeout_s
+        if timeout_s is None:
+            timeout_s = self._rpc_call_timeout_s
         future = self._get_rpc_executor().submit(bound_method, *args, **kwargs)
         try:
             return future.result(timeout=timeout_s)
@@ -694,7 +695,7 @@ class RPCClientBase:
         return self._invoke_rpc(method_name, args, kwargs)
 
     def _invoke_rpc(self, method_name: str, args: tuple = (), kwargs: dict = None,
-                    retry: bool = True) -> Any:
+                    retry: bool = True, timeout_s: float = None) -> Any:
         """
         Central choke point for EVERY RPC method call (typed wrappers via _ResilientRPCProxy and
         the generic call() path both route here).
@@ -720,6 +721,10 @@ class RPCClientBase:
         out that readiness window. Reconnecting has no side effects; only the method re-run carries
         at-least-once semantics (safe here: reads dominate, order writes are UUID-deduped, sync-epoch
         is staleness-tolerant).
+
+        timeout_s -> overrides rpc_call_timeout_s for this call (first attempt and self-heal
+        retries). For a method that wraps a known-long operation (e.g. one that waits on the chain)
+        on a client whose other methods should keep the short default.
 
         retry=False -> fail-fast: attempt once, and on a transient error drop the poisoned
         connection (so the NEXT call reconnects) but re-raise immediately instead of cycling. Use
@@ -761,7 +766,7 @@ class RPCClientBase:
             raise
         generation = self._connection_generation
         try:
-            result = self._call_proxy_method(proxy, method_name, args, kwargs)
+            result = self._call_proxy_method(proxy, method_name, args, kwargs, timeout_s)
             # Do NOT interpolate args/kwargs here: this runs on EVERY call (all typed wrappers
             # route through here now), and repr-ing large payloads (metagraph/position lists) on
             # the hot path would cost even when trace logging is disabled. Name + result type only.
@@ -828,7 +833,7 @@ class RPCClientBase:
 
             if proxy is not None:
                 try:
-                    result = self._call_proxy_method(proxy, method_name, args, kwargs)
+                    result = self._call_proxy_method(proxy, method_name, args, kwargs, timeout_s)
                     logger.info(
                         f"{self.service_name}Client.{method_name} recovered after reconnect "
                         f"(attempt {attempt})."

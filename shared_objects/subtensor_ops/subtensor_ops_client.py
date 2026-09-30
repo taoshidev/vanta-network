@@ -19,6 +19,10 @@ class SubtensorOpsClient(RPCClientBase):
         result = client.broadcast_to_validators_rpc(synapse_dict, validator_axons)
     """
 
+    # set_weights waits for inclusion, finalization and revealed execution under the subtensor
+    # lock; see ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S.
+    RPC_CALL_TIMEOUT_S = ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S
+
     def __init__(self, running_unit_tests=False, connect_immediately=True):
         self.running_unit_tests = running_unit_tests
         if self.running_unit_tests:

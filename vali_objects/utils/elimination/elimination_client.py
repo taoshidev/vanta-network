@@ -152,10 +152,15 @@ class EliminationClient(RPCClientBase):
             t_ms: Optional timestamp in milliseconds
             bucket_at_elimination: The miner's bucket at the time of elimination
         """
-        self._server.append_elimination_row_rpc(
-            hotkey, reason, elimination_drawdown_pct=elimination_drawdown_pct,
-            intraday_drawdown_pct=intraday_drawdown_pct, eod_drawdown_pct=eod_drawdown_pct,
-            elimination_time_ms=elimination_time_ms, bucket_at_elimination=bucket_at_elimination,
+        # Chain timeout: a new elimination slashes collateral on-chain (mothership) before the
+        # row is written, which legitimately exceeds the 60s default.
+        self._invoke_rpc(
+            "append_elimination_row_rpc",
+            args=(hotkey, reason),
+            kwargs={"elimination_drawdown_pct": elimination_drawdown_pct,
+                    "intraday_drawdown_pct": intraday_drawdown_pct, "eod_drawdown_pct": eod_drawdown_pct,
+                    "elimination_time_ms": elimination_time_ms, "bucket_at_elimination": bucket_at_elimination},
+            timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S,
         )
 
     def remove_elimination(self, hotkey: str) -> bool:

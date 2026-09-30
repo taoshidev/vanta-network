@@ -775,12 +775,12 @@ class EntityManager(ValidatorBroadcastBase):
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
             client_ref: Optional idempotency key (see NOTE below).
 
-        NOTE on idempotency: for HL subaccounts the natural idempotency key is the
-        hl_address itself (a repeat with the SAME address is rejected by the guard
-        below). client_ref is threaded through for the corruption-safety it buys:
-        if a client_ref matches a prior subaccount, we return that subaccount and
-        DO NOT rebind the HL reverse index — otherwise a reused ref with a new
-        address would silently repoint an existing subaccount at a second address.
+        NOTE on idempotency: without a client_ref, a repeat with the SAME hl_address
+        is rejected by the duplicate-address guard below. With a client_ref that
+        matches a prior subaccount, we return that subaccount (checked before the
+        HL guards, so a retry isn't rejected as a duplicate address) and DO NOT
+        rebind the HL reverse index — otherwise a reused ref with a new address
+        would silently repoint an existing subaccount at a second address.
 
         Returns:
             (success, subaccount_info, message, duplicate) — duplicate is True when
@@ -795,6 +795,21 @@ class EntityManager(ValidatorBroadcastBase):
         if payout_address is not None:
             if not isinstance(payout_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, payout_address):
                 return False, None, f"Invalid payout_address format: {payout_address}. Must be a valid EVM address (0x followed by 40 hex characters).", False
+
+        # Idempotency first: a retry of a create that already succeeded carries the same client_ref
+        # AND the same hl_address, so the duplicate-address / capacity guards below would reject it
+        # instead of returning the existing subaccount. create_subaccount_ex re-checks under the
+        # same lock, so this early return only short-circuits the HL guards.
+        normalized_client_ref = self._normalize_client_ref(client_ref)
+        if normalized_client_ref is not None:
+            with self._get_entity_lock(entity_hotkey):
+                entity_data = self.entities.get(entity_hotkey)
+                existing_sub = self._find_by_client_ref(entity_data, normalized_client_ref) if entity_data else None
+            if existing_sub is not None:
+                return True, existing_sub, (
+                    f"Duplicate client_ref {normalized_client_ref}: returning existing "
+                    f"subaccount {existing_sub.subaccount_id} ({existing_sub.synthetic_hotkey})"
+                ), True
 
         # Check for duplicate HL address across all entities
         with self._entities_lock:

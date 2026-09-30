@@ -127,6 +127,13 @@ class ValiConfig:
     # Centralized port and service name definitions to avoid conflicts and inconsistencies
     # All RPC services are defined here to prevent port conflicts and ensure consistent authkey generation
 
+    # Client-side timeout (seconds) for RPC calls that wait on the chain (collateral slash/burn/
+    # deposit/withdraw, set_weights). The collateral SDK waits for block inclusion / EVM receipts
+    # (up to 120s each) with 3 retries, so these legitimately exceed the 60s RPC default. A call
+    # that times out keeps executing server-side, so a too-short bound turns a slow success into
+    # a reported failure that callers retry.
+    RPC_CHAIN_CALL_TIMEOUT_S = 600.0
+
     # Core Manager Services
     RPC_LIVEPRICEFETCHER_PORT = 50000
     RPC_LIVEPRICEFETCHER_SERVICE_NAME = "LivePriceFetcherServer"

@@ -87,7 +87,10 @@ class EntityClient(RPCClientBase):
         Returns:
             (success: bool, message: str)
         """
-        return self._server.register_entity_rpc(entity_hotkey)
+        # Chain timeout: slashes the registration fee on-chain, which legitimately exceeds the 60s
+        # default. Keeps the auto-retry: the manager checks "already registered" before slashing.
+        return self._invoke_rpc("register_entity_rpc", args=(entity_hotkey,),
+                                timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     def create_subaccount(
         self,

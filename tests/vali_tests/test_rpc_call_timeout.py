@@ -184,9 +184,39 @@ class TestBoundedRPCCalls(unittest.TestCase):
             for _ in range(3):
                 with self.assertRaises(RPCCallTimeoutError):
                     client._server.wedge_rpc()
-        self.assertEqual(mock_logger.error.call_count, 1)
-        self.assertEqual(mock_logger.debug.call_count, 2)
+        # The patched logger is module-global, so other clients' background threads in the
+        # same test process can log through it too — count only this method's timeout lines.
+        def timeout_lines(mock_method):
+            return [c for c in mock_method.call_args_list if "wedge_rpc exceeded" in str(c.args[0])]
+        self.assertEqual(len(timeout_lines(mock_logger.error)), 1)
+        self.assertEqual(len(timeout_lines(mock_logger.debug)), 2)
         self._service._gate.set()
+
+    def test_per_call_timeout_overrides_client_default(self):
+        """_invoke_rpc(timeout_s=...) bounds that call alone: a call that outlasts the client's
+        default succeeds under a longer per-call bound, and the default still applies elsewhere."""
+        client = self._make_client(timeout_s=0.2)
+        threading.Timer(0.6, self._service._gate.set).start()
+        self.assertEqual(client._invoke_rpc("wedge_rpc", timeout_s=5.0), "unwedged")
+
+        self._service._gate.clear()
+        with self.assertRaises(RPCCallTimeoutError) as ctx:
+            client._invoke_rpc("wedge_rpc")
+        self.assertEqual(ctx.exception.timeout_s, 0.2)
+        self._service._gate.set()
+
+    def test_chain_clients_use_the_chain_timeout(self):
+        """Clients whose every call waits on the chain must not inherit the 60s default."""
+        from shared_objects.subtensor_ops.subtensor_ops_client import SubtensorOpsClient
+        from vali_objects.contract.contract_client import ContractClient
+        from vali_objects.vali_config import ValiConfig
+
+        self.assertGreater(ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S, RPCClientBase.RPC_CALL_TIMEOUT_S)
+        self.assertEqual(ContractClient.RPC_CALL_TIMEOUT_S, ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
+        self.assertEqual(SubtensorOpsClient.RPC_CALL_TIMEOUT_S, ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
+        client = ContractClient(connect_immediately=False)
+        self.addCleanup(client.disconnect)
+        self.assertEqual(client._rpc_call_timeout_s, ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     def test_pickle_state_excludes_bounded_machinery(self):
         client = self._make_client()
