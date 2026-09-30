@@ -209,11 +209,11 @@ class TestHyperliquidDataService(unittest.TestCase):
             coarse_bids=[{"px": "29990.0", "sz": "100.0"}],
             coarse_asks=[{"px": "30010.0", "sz": "100.0"}],
         )
-        # Buy $100 — fits in fine ask level at 30001, mid = 30000
+        # Buy $100 — fits in fine ask level at 30001, which is also the best ask
         result = self.service.simulate_slippage(TradePair.BTCUSDC, 100.0, True)
         self.assertIsNotNone(result)
-        # slippage = (30001 - 30000) / 30000 ≈ 0.0000333
-        self.assertAlmostEqual(result, 1.0 / 30000.0, places=6)
+        # slippage is measured from the ask, so a top-of-book fill has none
+        self.assertAlmostEqual(result, 0.0, places=8)
 
     def test_simulate_slippage_extends_into_coarse_for_large_order(self):
         # Fine book has 1 BTC at ask 30001 ($30001 total capacity)
