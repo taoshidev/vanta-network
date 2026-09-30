@@ -87,7 +87,10 @@ class EntityClient(RPCClientBase):
         Returns:
             (success: bool, message: str)
         """
-        return self._server.register_entity_rpc(entity_hotkey)
+        # Chain timeout: slashes the registration fee on-chain, which legitimately exceeds the 60s
+        # default. Keeps the auto-retry: the manager checks "already registered" before slashing.
+        return self._invoke_rpc("register_entity_rpc", args=(entity_hotkey,),
+                                timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     def create_subaccount(
         self,
@@ -97,6 +100,7 @@ class EntityClient(RPCClientBase):
         collateral_exempt: bool = False,
         drawdown_criteria: str = "trailing",
         leverage_tier: Optional[int] = None,
+        client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -108,17 +112,27 @@ class EntityClient(RPCClientBase):
             collateral_exempt: If True, skip collateral slashing and exclude from payouts
             drawdown_criteria: "trailing" or "static"
             leverage_tier: Standard leverage tier 1 to 3; None = tier 0 (max of legacy limits and Base)
+            client_ref: Optional idempotency key; the returned dict carries
+                "duplicate": True when it matched a prior creation.
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
+        # Forward client_ref only when present so an older EntityServer whose
+        # create_subaccount_rpc has no client_ref kwarg still receives a
+        # byte-identical call (no unexpected-keyword TypeError).
+        kwargs = {"collateral_exempt": collateral_exempt, "drawdown_criteria": drawdown_criteria,
+                  "leverage_tier": leverage_tier}
+        if client_ref is not None:
+            kwargs["client_ref"] = client_ref
         # fail-fast: reserves collateral + mints a subaccount; a re-execution creates a DUPLICATE
-        # subaccount (fresh id) and double-reserves the fee — never auto-retry.
+        # subaccount (fresh id) and double-reserves the fee — never auto-retry. client_ref makes a
+        # *caller-driven* retry idempotent, but it is optional and callers may omit it, so the
+        # transport still refuses to re-fire a lost ACK on its own.
         return self._invoke_rpc(
             "create_subaccount_rpc",
             args=(entity_hotkey, account_size, asset_class),
-            kwargs={"collateral_exempt": collateral_exempt, "drawdown_criteria": drawdown_criteria,
-                    "leverage_tier": leverage_tier},
+            kwargs=kwargs,
             retry=False,
         )
 
@@ -130,6 +144,7 @@ class EntityClient(RPCClientBase):
         asset_class: str = "hl_all",
         collateral_exempt: bool = False,
         payout_address: Optional[str] = None,
+        client_ref: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -145,8 +160,14 @@ class EntityClient(RPCClientBase):
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
         """
-        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, asset_class=asset_class,
-                                                     collateral_exempt=collateral_exempt, payout_address=payout_address)
+        # Stays on the auto-retrying self._server path: this wrapper already guards against a
+        # retried lost ACK (check-before-slash / write-after-slash-completes), so a re-execution
+        # safely no-ops. Forward client_ref only when present, so an older EntityServer whose
+        # create_hl_subaccount_rpc has no client_ref kwarg still receives a byte-identical call.
+        kwargs = dict(asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address)
+        if client_ref is not None:
+            kwargs["client_ref"] = client_ref
+        return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, **kwargs)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:
         """

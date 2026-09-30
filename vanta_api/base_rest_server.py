@@ -65,8 +65,16 @@ class APIMetricsTracker:
         # Lock for thread safety
         self.metrics_lock = threading.Lock()
 
-        # Reference to API key to user ID mapping
-        self.api_key_to_alias = api_key_mapping or {}  # Use provided mapping or empty dict
+        # API key → user ID mapping. Accepts a dict (legacy) or a zero-arg callable
+        # returning the current dict. APIKeyMixin publishes refreshes by REBINDING
+        # its api_key_to_alias attribute, so a captured dict reference goes stale
+        # forever (keys added after startup would log as "unknown_key"); a callable
+        # re-resolves the live mapping on every lookup.
+        if callable(api_key_mapping):
+            self._alias_provider = api_key_mapping
+        else:
+            _static_mapping = api_key_mapping or {}
+            self._alias_provider = lambda: _static_mapping
 
         # Start logging thread
         self.start_logging_thread()
@@ -81,8 +89,8 @@ class APIMetricsTracker:
         Returns:
             The user ID or a unique unknown_key identifier
         """
-        # Get user_id from api_key if available
-        user_id = self.api_key_to_alias.get(api_key, "unknown_key")
+        # Re-resolve the live mapping (see __init__: the mixin rebinds on refresh)
+        user_id = self._alias_provider().get(api_key, "unknown_key")
         return user_id
 
     def track_request(self, api_key: str, endpoint: str, duration: float, status_code: int = 200):
@@ -495,7 +503,10 @@ class BaseRestServer(APIKeyMixin, ABC):
     def _setup_metrics(self, metrics_interval_minutes):
         """Set up API metrics tracking."""
         # Initialize the metrics tracker as instance variable
-        self.metrics = APIMetricsTracker(metrics_interval_minutes, self.api_key_to_alias)
+        # Pass a provider, not the dict: the API-key refresh thread REBINDS
+        # api_key_to_alias, so a captured reference would never see keys added
+        # after startup.
+        self.metrics = APIMetricsTracker(metrics_interval_minutes, lambda: self.api_key_to_alias)
 
         # Set up Flask request hooks for automatic metrics tracking
         @self.app.before_request

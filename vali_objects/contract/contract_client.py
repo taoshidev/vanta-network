@@ -16,6 +16,9 @@ class ContractClient(RPCClientBase):
     Instead, use set_direct_server() to provide a direct ContractServer instance.
     """
 
+    # Every ContractServer method waits on the chain; see ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S.
+    RPC_CALL_TIMEOUT_S = ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S
+
     def __init__(self, port: int = None, running_unit_tests: bool = False,
                  connect_immediately: bool = False, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
         """

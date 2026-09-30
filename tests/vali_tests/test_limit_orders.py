@@ -526,14 +526,13 @@ class TestLimitOrders(TestBase):
         # Now register test price source for manual fill
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, price_source)
 
-        # Fill it manually
-        # For LONG order with limit_price=50000 and ask=49000, the order fills at limit_price (50000)
-        # This is because when ask <= limit_price, the order gets the limit price
+        # Fill it manually. The trigger price only caps the fill so it can never be worse than
+        # the limit price; a better market price is kept, so this LONG fills at the ask (49000).
         self.limit_order_client.fill_limit_order_with_price_source(
             self.DEFAULT_MINER_HOTKEY,
             order,
             price_source,
-            50000.0  # Fill at limit price, not ask price
+            49000.0
         )
 
         # Verify filled order removed from memory (Issue 8 fix)
@@ -549,8 +548,7 @@ class TestLimitOrders(TestBase):
         self.assertEqual(len(position.orders), 1, "Position should have exactly one order")
         filled_order = position.orders[0]  # The filled limit order
         # The filled order should have exact values from the fill
-        # For a LONG limit order, when ask <= limit_price, the order fills at limit_price (50000)
-        self.assertEqual(filled_order.price, 50000.0, "Filled order should have correct price (limit price)")
+        self.assertEqual(filled_order.price, 49000.0, "Filled order should have correct price (fill price)")
         self.assertIsNotNone(filled_order.slippage, "Filled order should have slippage calculated")
         self.assertGreaterEqual(filled_order.slippage, 0, "Filled order slippage should be >= 0")
         self.assertEqual(filled_order.src, OrderSource.LIMIT_FILLED, "Order should be marked as LIMIT_FILLED")

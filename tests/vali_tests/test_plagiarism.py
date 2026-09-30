@@ -406,6 +406,27 @@ class TestPlagiarismBucketTransitions(TestBase):
             self.assertEqual(mgr.get_miner_bucket(self.MINER_HOTKEY3), MinerBucket.ELIMINATED)
             mgr._elimination_client.append_elimination_row.assert_called_once()
 
+    def test_one_failed_elimination_does_not_abort_the_batch(self):
+        """A failure eliminating one miner (e.g. a slash that outlasts the RPC timeout) must not
+        stop the rest of the batch, and the failed miner stays in its bucket for a retry."""
+        from shared_objects.rpc.rpc_client_base import RPCCallTimeoutError
+        mgr, stack = self._make_manager()
+        with stack:
+            self._seed_miners(mgr)
+            mgr._elimination_client.append_elimination_row.side_effect = [
+                RPCCallTimeoutError("EliminationServer", "append_elimination_row_rpc", 600.0),
+                None,
+            ]
+
+            mgr.eliminate_hotkeys(
+                {self.MINER_HOTKEY1: EliminationReason.PLAGIARISM, self.MINER_HOTKEY3: EliminationReason.PLAGIARISM},
+                self.current_time,
+            )
+
+            self.assertEqual(mgr._elimination_client.append_elimination_row.call_count, 2)
+            self.assertEqual(mgr.get_miner_bucket(self.MINER_HOTKEY1), MinerBucket.MAINCOMP)
+            self.assertEqual(mgr.get_miner_bucket(self.MINER_HOTKEY3), MinerBucket.ELIMINATED)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -19,6 +19,7 @@ from entity_management.entity_client import EntityClient
 from vali_objects.utils.elimination.elimination_client import EliminationClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+from vali_objects.vali_config import ValiConfig
 
 
 class TestFinancialRpcFailFast(unittest.TestCase):
@@ -62,20 +63,27 @@ class TestFinancialRpcFailFast(unittest.TestCase):
             server_prop.return_value = server_mock
             c.register_entity("eh")
             c.create_hl_subaccount("eh", 1000.0, "0xabc")
-        server_mock.register_entity_rpc.assert_called_once_with("eh")
         server_mock.create_hl_subaccount_rpc.assert_called_once()
-        c._invoke_rpc.assert_not_called()
+        # register_entity goes through _invoke_rpc for the chain timeout, but keeps the auto-retry.
+        c._invoke_rpc.assert_called_once()
+        call = c._invoke_rpc.call_args
+        self.assertEqual(call.args[0], "register_entity_rpc")
+        self.assertEqual(call.kwargs["args"], ("eh",))
+        self.assertNotIn("retry", call.kwargs)
+        self.assertEqual(call.kwargs["timeout_s"], ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     def test_elimination_append_still_auto_retries(self):
         # append_elimination_row already guards against a retried lost-ACK (check-before-slash,
         # write-after-slash-completes), so it must NOT have been swept into the fail-fast change.
+        # It goes through _invoke_rpc for the chain timeout (the slash), but keeps the auto-retry.
         c = self._client(EliminationClient)
-        with patch.object(EliminationClient, "_server", new_callable=PropertyMock) as server_prop:
-            server_mock = MagicMock()
-            server_prop.return_value = server_mock
-            c.append_elimination_row("hk", "SOME_REASON")
-        server_mock.append_elimination_row_rpc.assert_called_once()
-        c._invoke_rpc.assert_not_called()
+        c.append_elimination_row("hk", "SOME_REASON")
+        c._invoke_rpc.assert_called_once()
+        call = c._invoke_rpc.call_args
+        self.assertEqual(call.args[0], "append_elimination_row_rpc")
+        self.assertEqual(call.kwargs["args"], ("hk", "SOME_REASON"))
+        self.assertNotIn("retry", call.kwargs)
+        self.assertEqual(call.kwargs["timeout_s"], ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     def test_promote_subaccount_fail_fast(self):
         c = self._client(ChallengePeriodClient)

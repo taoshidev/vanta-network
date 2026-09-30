@@ -85,8 +85,74 @@ class TestHyperliquidSubaccounts(TestBase):
         self.assertTrue(success, f"HL subaccount creation failed: {message}")
         self.assertIsNotNone(subaccount_info)
         self.assertEqual(subaccount_info['subaccount_id'], 0)
-        # Asset class defaults to "hl_all" for HL subaccounts (kept as-is since hl_address is set)
+        # Asset class defaults to "hl_all" for HL subaccounts (kept as-is since
+        # hl_address is set): the hl_all->all_markets remap only fires when there
+        # is NO hl_address, and HL subaccounts always carry one. (The old "crypto"
+        # expectation was stale — it never matched create_hl_subaccount's behavior.)
         self.assertEqual(subaccount_info['asset_class'], 'hl_all')
+
+    def test_hl_client_ref_retry_with_same_address_returns_existing(self):
+        """A retry of a create that already succeeded carries the same client_ref AND the same
+        hl_address. It must return the existing subaccount (duplicate=True), not be rejected by
+        the duplicate-address guard."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        ok1, s1, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=50_000,
+            hl_address=VALID_HL_ADDRESS, client_ref="hl-ref-retry")
+        self.assertTrue(ok1)
+
+        ok2, s2, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=50_000,
+            hl_address=VALID_HL_ADDRESS, client_ref="hl-ref-retry")
+        self.assertTrue(ok2, f"retry was rejected: {message}")
+        self.assertTrue(s2.get("duplicate"))
+        self.assertEqual(s2["subaccount_id"], s1["subaccount_id"])
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 1)
+
+    def test_hl_same_address_without_client_ref_still_rejected(self):
+        """Without a client_ref, a repeat with the same hl_address is still a duplicate address."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        ok1, _, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=50_000, hl_address=VALID_HL_ADDRESS)
+        self.assertTrue(ok1)
+        ok2, s2, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=50_000, hl_address=VALID_HL_ADDRESS)
+        self.assertFalse(ok2)
+        self.assertIn("already registered", message)
+
+    def test_hl_client_ref_dedupe_does_not_rebind_address(self):
+        """A reused client_ref with a NEW hl_address must return the existing
+        subaccount (duplicate=True) WITHOUT repointing the HL reverse index at
+        the new address — otherwise HL routing gets corrupted."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        ok1, s1, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=50_000,
+            hl_address=VALID_HL_ADDRESS, client_ref="hl-ref-1")
+        self.assertTrue(ok1)
+
+        # Reuse the ref with a DIFFERENT address.
+        ok2, s2, _ = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=50_000,
+            hl_address=VALID_HL_ADDRESS_2, client_ref="hl-ref-1")
+        self.assertTrue(ok2)
+        self.assertTrue(s2.get("duplicate"), "HL retry must surface duplicate=True")
+        self.assertEqual(s2["subaccount_id"], s1["subaccount_id"])
+
+        # Only one subaccount exists.
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data["subaccounts"]), 1)
+
+        # The NEW address must NOT have been bound to the existing subaccount.
+        self.assertIsNone(
+            self.entity_client.get_synthetic_hotkey_for_hl_address(VALID_HL_ADDRESS_2),
+            "reused client_ref must not repoint the HL index at the new address")
+        # The original address still resolves.
+        self.assertEqual(
+            self.entity_client.get_synthetic_hotkey_for_hl_address(VALID_HL_ADDRESS),
+            s1["synthetic_hotkey"])
 
     def test_create_hl_subaccount_invalid_address_format(self):
         """Test HL subaccount creation fails with invalid address formats."""

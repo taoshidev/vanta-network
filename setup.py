@@ -70,6 +70,11 @@ setup(
     url="https://github.com/taoshidev/prop-net",
     author="taoshidev",
     packages=find_packages(),
+    # Top-level single-file modules imported by packaged code (e.g. the
+    # entity-miner gateway does `from miner_config import MinerConfig`).
+    # find_packages() only picks up packages (dirs with __init__.py), so these
+    # must be declared explicitly or they're missing from an editable/wheel install.
+    py_modules=["miner_config"],
     include_package_data=True,
     package_data={
         "meta": ["meta.json"],  # include meta.json in the root of the package

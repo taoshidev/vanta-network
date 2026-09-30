@@ -54,7 +54,7 @@ class Miner:
                 error_webhook_url=self.config.slack_error_webhook_url,
                 is_miner=True,
                 enable_metrics=True,
-                enable_daily_summary=True,
+                enable_daily_summary=False,
                 miner_name=self.config.miner_name
             )
 

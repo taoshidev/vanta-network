@@ -52,6 +52,11 @@ THRESHOLD = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT
 RANK_LIMIT = ValiConfig.PROMOTION_THRESHOLD_RANK
 INTRADAY_DD_PCT = ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100
 EOD_DD_PCT = ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD * 100
+
+# Canonical DrawdownStats initialization: set the underlying fields (current_equity,
+# current_balance, eod_hwm, last_eod_equity); every *_drawdown_pct is a computed
+# @property, never a constructor argument.
+
 _CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager.PerfLedgerClient",
     "vali_objects.challenge_period.challengeperiod_manager.PositionManagerClient",
@@ -342,6 +347,20 @@ class TestChallengePeriodManagerLogic(TestBase):
             changed = mgr.sync_plagiarism_miners(["unknown_hk"], now)
             self.assertFalse(changed)
 
+    def test_sync_elimination_miners_removes_targeted_hotkey(self):
+        """Eliminated miners are moved to the ELIMINATED bucket (retained in state); unaffected miners remain."""
+        now = TimeUtil.now_in_millis()
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket("hk_elim", MinerBucket.CHALLENGE, now)
+            mgr.set_miner_bucket("hk_safe", MinerBucket.MAINCOMP, now)
+
+            changed = mgr.sync_elimination_miners(["hk_elim"], now)
+            self.assertTrue(changed)
+            self.assertTrue(mgr.has_miner("hk_elim"))
+            self.assertEqual(mgr.get_miner_bucket("hk_elim"), MinerBucket.ELIMINATED)
+            self.assertTrue(mgr.has_miner("hk_safe"))
+
     def test_sync_elimination_miners_empty_list_is_noop(self):
         now = TimeUtil.now_in_millis()
         mgr, stack = self._make_manager()
@@ -485,7 +504,7 @@ class TestChallengePeriodManagerLogic(TestBase):
 
     def test_refresh_eliminates_intraday_drawdown(self):
         """Miner whose intraday drawdown exceeds the threshold is eliminated during refresh."""
-        now = TimeUtil.now_in_millis()
+        now = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS  # after activation so the legacy intraday rule fires for a regular miner
         hk = "hk_intraday"
         mgr, stack = self._make_manager()
         with stack:
@@ -511,14 +530,14 @@ class TestChallengePeriodManagerLogic(TestBase):
 
     def test_refresh_eliminates_eod_drawdown(self):
         """Miner whose EOD trailing drawdown exceeds the threshold is eliminated during refresh."""
-        now = TimeUtil.now_in_millis()
+        now = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS  # after activation so the legacy EOD rule fires for a regular miner
         hk = "hk_eod"
         mgr, stack = self._make_manager()
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 5)
+            # current_equity/daily_open_equity stay at their 1.0 defaults so the intraday rule
+            # (checked first) reads 0% and the EOD rule under test is the one that fires.
             mgr.miner_states[hk].drawdown = DrawdownStats(
-                current_equity=1.0 - (EOD_DD_PCT + 1.0) / 100,
-                current_balance=1.0,
                 eod_hwm=1.1,
                 last_eod_equity=1.1 * (1 - (EOD_DD_PCT + 1.0) / 100),
             )
@@ -537,7 +556,12 @@ class TestChallengePeriodManagerLogic(TestBase):
         self.assertTrue(mgr.miner_states[hk].is_eliminated)
 
     def test_refresh_healthy_miner_unchanged_disk_write(self):
-        """Brand-new miner with no issues triggers no state change and no disk write."""
+        """Brand-new miner with no issues triggers no bucket change and no account sync.
+
+        Note: refresh() persists to disk unconditionally at the end of every cycle
+        (ChallengePeriodManager.refresh -> _save_to_disk), so unlike the pre-#866
+        behavior this test asserts the save IS called; "no state change" is still
+        enforced via the untouched bucket and the absence of an account sync."""
         now = TimeUtil.now_in_millis()
         hk = "hk_healthy"
         mgr, stack = self._make_manager()
@@ -556,8 +580,8 @@ class TestChallengePeriodManagerLogic(TestBase):
                 mgr.refresh(current_time_ms=now)
 
             self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.CHALLENGE)
-            mock_save.assert_called()
-            mock_sync.assert_not_called()
+            mock_save.assert_called()     # refresh() always persists at end of cycle
+            mock_sync.assert_not_called()  # no bucket change → no account sync
 
     def test_demotion_then_re_promotion_full_cycle(self):
         """MAINCOMP → PROBATION → MAINCOMP bucket progression works end-to-end."""
@@ -619,12 +643,17 @@ class TestChallengePeriodManagerLogic(TestBase):
         ])
 
         intraday_drop = 0.07
+        # Live equity 7% below account size; a non-empty position list is required for the cache
+        # to update (production skips hotkeys with no open positions).
         accounts = {hk: _make_account(hk, account_size, account_size * (1 - intraday_drop), now)}
         positions = {hk: [_make_position(hk, yesterday_midnight_ms)]}
 
         mgr, stack = self._make_manager()
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 5)
+            # First refresh locks today's EOD/open snapshot from the ledger; the second updates the
+            # live intraday equity (the two-phase cadence a real per-day refresh loop follows).
+            mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, positions, now)
             mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, positions, now)
 
             dd = mgr.miner_states[hk].drawdown
@@ -653,6 +682,7 @@ class TestChallengePeriodManagerLogic(TestBase):
         mgr, stack = self._make_manager()
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 10)
+            # EOD fields (last_eod_equity / eod_hwm) are locked on the first refresh of the day.
             mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, positions, now)
 
             dd = mgr.miner_states[hk].drawdown
@@ -670,7 +700,8 @@ class TestChallengePeriodManagerLogic(TestBase):
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 3)
             default_dd = DrawdownStats()
-            mgr._refresh_drawdown_cache([hk], accounts, {}, {hk: []}, now)
+            # Non-empty positions so evaluation reaches the ledger lookup, which is missing → skipped.
+            mgr._refresh_drawdown_cache([hk], accounts, {}, {hk: [SimpleNamespace()]}, now)
 
             dd = mgr.miner_states[hk].drawdown
             self.assertEqual(dd.intraday_drawdown_pct, default_dd.intraday_drawdown_pct)

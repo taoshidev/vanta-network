@@ -190,9 +190,15 @@ class APIKeyMixin:
             # Only update and log if keys have actually changed
             if old_count != new_count or set(self.accessible_api_keys) != set(accessible_keys):
                 print(f"[{current_process().name}] API key list size changed: {old_count} -> {new_count}")
+                # Publish via REBIND (never in-place mutation): concurrent readers
+                # iterate these mappings (websocket_server / validator_rest_server
+                # scan api_key_to_alias.items()), and rebinding lets them finish on
+                # their old snapshot. Order matters: tier data and alias first, the
+                # validity list LAST — a key must never test valid before its tier
+                # and alias are visible to other threads.
                 self.api_keys_data = processed_keys
-                self.accessible_api_keys = accessible_keys
                 self.api_key_to_alias = api_key_to_name
+                self.accessible_api_keys = accessible_keys
                 print(
                     f"[{current_process().name}] Updated API keys data with {len(self.api_keys_data)} keys")
 

@@ -38,6 +38,7 @@ from shared_objects.cache_controller import CacheController
 from shared_objects.subtensor_ops.metagraph_utils import is_anomalous_hotkey_loss
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.contract.contract_client import ContractClient
+from shared_objects.rpc.rpc_client_base import RPCCallTimeoutError
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from shared_objects.rpc.common_data_client import CommonDataClient
@@ -343,6 +344,10 @@ class EliminationManager(CacheController):
         self.ELIMINATIONS_FILE = ValiBkpUtils.get_eliminations_dir(running_unit_tests=self.running_unit_tests)
         self.eliminations_lock = threading.Lock()
         self.eliminations: dict[str, EliminationRow] = self._load_eliminations_from_disk()
+        # Guards against slashing twice (see append_elimination_row): hotkeys whose elimination is
+        # running, and the slash outcome of hotkeys already slashed whose row isn't written yet.
+        self._eliminations_in_progress: set[str] = set()
+        self._slashed_before_row: dict[str, bool] = {}
 
         if len(self.eliminations) == 0:
             ValiBkpUtils.write_file(self.ELIMINATIONS_FILE, {CacheController.ELIMINATIONS: []})
@@ -482,78 +487,110 @@ class EliminationManager(CacheController):
         if hotkey == ValiConfig.DEVELOPMENT_HOTKEY:
             return
 
-        if hotkey in self.eliminations:
-            logger.warning(f"[ELIM_DEBUG] Attempted to eliminate {hotkey} already in eliminations "
-                               f"(original elimination: {self.eliminations[hotkey]})")
-            return
-
-        if not elimination_time_ms:
-            elimination_time_ms = TimeUtil.now_in_millis()
-
-
-        if bucket_at_elimination is None:
-            bucket_at_elimination = self._challenge_period_client.get_miner_bucket(hotkey, elimination_time_ms)
-
-        # Empty elimination drawdown for stuff zombie/inactive eliminations
-        if elimination_drawdown_pct is None and intraday_drawdown_pct is None and eod_drawdown_pct is None:
-            ledger = self.perf_ledger_manager.filtered_ledger_for_scoring([hotkey]).get(hotkey)
-            _, elimination_drawdown_pct = LedgerUtils.is_beyond_max_drawdown(ledger)
-
-
-        # Slash on new eliminations
-        is_subaccount = is_synthetic_hotkey(hotkey)
-        _drawdown_thresholds = {
-            EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN: ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
-            EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
-            EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN: ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD,
-            EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD,
-        }
-
-        collateral_slashed = True
-        if not is_subaccount:
-            drawdown_threshold = _drawdown_thresholds.get(reason, 1 - ValiConfig.MAX_TOTAL_DRAWDOWN)  # Other elimination reasons default to max drawdown 10%
-            slash_proportion = (elimination_drawdown_pct or 0) / (drawdown_threshold*100)
-            slash_proportion = max(0.0, min(1.0, slash_proportion))
-            logger.info(f"Elimination slash proportion: {slash_proportion}")
-            collateral_slashed = self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion)
-            if not collateral_slashed:
-                logger.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}")
-
-        if is_subaccount and bucket_at_elimination is not None and bucket_at_elimination.is_subaccount_earning:
-            # Assume succes (slashed on entity collateral daemon)
-            # Also collateral slashed not relevant for subaccounts
-            self._entity_collateral_client.try_slash_on_elimination(hotkey)
-
-        cancel_results = self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", elimination_time_ms, order_src=OrderSource.ELIMINATION_CANCELLED)
-        if cancel_results:
-            logger.info(f"Cancelled limit orders for eliminated miner [{hotkey}] {cancel_results}")
-
-        closed = self._position_client.close_all_positions(hotkey, elimination_time_ms, OrderSource.PRICE_FILLED_ELIMINATION_FLAT)
-        if closed:
-            positions = self._position_client.get_positions_for_one_hotkey(hotkey)
-            self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
-
-        elimination_row = EliminationRow(
-                hotkey=hotkey,
-                reason=reason.value,
-                elimination_initiated_time_ms=elimination_time_ms,
-                elimination_drawdown_pct=elimination_drawdown_pct,
-                intraday_drawdown_pct=intraday_drawdown_pct,
-                eod_drawdown_pct=eod_drawdown_pct,
-                bucket_at_elimination=bucket_at_elimination,
-                row_added_ms=TimeUtil.now_in_millis(),
-                collateral_slashed=collateral_slashed
-        )
-        logger.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
-
+        # The row written at the end is what stops a later call from slashing again, and it only
+        # lands after the slash, order cancel and position close. Claim the hotkey so a concurrent
+        # call (e.g. the next challenge-period pass while this one is still waiting on the chain)
+        # returns instead of starting a second slash.
         with self.eliminations_lock:
-            dict_len_before = len(self.eliminations)
-            self.eliminations[hotkey] = elimination_row
-            dict_len_after = len(self.eliminations)
-            logger.info(f"[ELIM_DEBUG] Eliminations dict grew from {dict_len_before} to {dict_len_after} entries")
+            if hotkey in self.eliminations:
+                logger.warning(f"[ELIM_DEBUG] Attempted to eliminate {hotkey} already in eliminations "
+                                   f"(original elimination: {self.eliminations[hotkey]})")
+                return
+            if hotkey in self._eliminations_in_progress:
+                logger.warning(f"[ELIM_DEBUG] Attempted to eliminate {hotkey} while its elimination is in progress")
+                return
+            self._eliminations_in_progress.add(hotkey)
 
-            # Save while holding lock to prevent concurrent disk writes
-            self._save_eliminations_locked()
+        try:
+            if not elimination_time_ms:
+                elimination_time_ms = TimeUtil.now_in_millis()
+
+
+            if bucket_at_elimination is None:
+                bucket_at_elimination = self._challenge_period_client.get_miner_bucket(hotkey, elimination_time_ms)
+
+            # Empty elimination drawdown for stuff zombie/inactive eliminations
+            if elimination_drawdown_pct is None and intraday_drawdown_pct is None and eod_drawdown_pct is None:
+                ledger = self.perf_ledger_manager.filtered_ledger_for_scoring([hotkey]).get(hotkey)
+                _, elimination_drawdown_pct = LedgerUtils.is_beyond_max_drawdown(ledger)
+
+
+            # Slash on new eliminations
+            is_subaccount = is_synthetic_hotkey(hotkey)
+            _drawdown_thresholds = {
+                EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN: ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
+                EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
+                EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN: ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD,
+                EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD,
+            }
+
+            collateral_slashed = True
+            if not is_subaccount and hotkey in self._slashed_before_row:
+                # An earlier attempt slashed, then failed before writing the row (e.g. the position
+                # close timed out). Reuse its outcome rather than slashing again.
+                collateral_slashed = self._slashed_before_row[hotkey]
+                logger.warning(f"[ELIM_DEBUG] {hotkey} already slashed by an earlier attempt "
+                               f"(collateral_slashed={collateral_slashed}); not slashing again")
+            elif not is_subaccount:
+                drawdown_threshold = _drawdown_thresholds.get(reason, 1 - ValiConfig.MAX_TOTAL_DRAWDOWN)  # Other elimination reasons default to max drawdown 10%
+                slash_proportion = (elimination_drawdown_pct or 0) / (drawdown_threshold*100)
+                slash_proportion = max(0.0, min(1.0, slash_proportion))
+                logger.info(f"Elimination slash proportion: {slash_proportion}")
+                try:
+                    collateral_slashed = self._contract_client.slash_miner_collateral_proportion(hotkey, slash_proportion)
+                    if not collateral_slashed:
+                        logger.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}")
+                except RPCCallTimeoutError as e:
+                    # The contract server is still executing the slash, so its outcome is unknown.
+                    # Record it as slashed: a False row makes the next withdrawal apply the drawdown
+                    # slash again, and under-slashing is recoverable where a double slash is not.
+                    collateral_slashed = True
+                    logger.error(f"Elimination slash for {hotkey} slash_proportion={slash_proportion} timed out; "
+                                 f"outcome unknown, recording collateral_slashed=True. Verify on-chain: {e}")
+                except Exception as e:
+                    collateral_slashed = False
+                    logger.error(f"Failed elimination slashing {hotkey} slash_proportion={slash_proportion}: {e}")
+                self._slashed_before_row[hotkey] = collateral_slashed
+
+            if is_subaccount and bucket_at_elimination is not None and bucket_at_elimination.is_subaccount_earning:
+                # Assume succes (slashed on entity collateral daemon)
+                # Also collateral slashed not relevant for subaccounts
+                self._entity_collateral_client.try_slash_on_elimination(hotkey)
+
+            cancel_results = self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", elimination_time_ms, order_src=OrderSource.ELIMINATION_CANCELLED)
+            if cancel_results:
+                logger.info(f"Cancelled limit orders for eliminated miner [{hotkey}] {cancel_results}")
+
+            closed = self._position_client.close_all_positions(hotkey, elimination_time_ms, OrderSource.PRICE_FILLED_ELIMINATION_FLAT)
+            if closed:
+                positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+                self._miner_account_client.rebuild_account_state_from_positions(hotkey, positions)
+
+            elimination_row = EliminationRow(
+                    hotkey=hotkey,
+                    reason=reason.value,
+                    elimination_initiated_time_ms=elimination_time_ms,
+                    elimination_drawdown_pct=elimination_drawdown_pct,
+                    intraday_drawdown_pct=intraday_drawdown_pct,
+                    eod_drawdown_pct=eod_drawdown_pct,
+                    bucket_at_elimination=bucket_at_elimination,
+                    row_added_ms=TimeUtil.now_in_millis(),
+                    collateral_slashed=collateral_slashed
+            )
+            logger.info(f"miner eliminated with hotkey [{hotkey}]. Info [{elimination_row}]")
+
+            with self.eliminations_lock:
+                dict_len_before = len(self.eliminations)
+                self.eliminations[hotkey] = elimination_row
+                self._slashed_before_row.pop(hotkey, None)
+                dict_len_after = len(self.eliminations)
+                logger.info(f"[ELIM_DEBUG] Eliminations dict grew from {dict_len_before} to {dict_len_after} entries")
+
+                # Save while holding lock to prevent concurrent disk writes
+                self._save_eliminations_locked()
+        finally:
+            with self.eliminations_lock:
+                self._eliminations_in_progress.discard(hotkey)
 
     def delete_eliminations(self, deleted_hotkeys):
         """

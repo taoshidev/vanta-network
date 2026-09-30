@@ -646,6 +646,7 @@ class ChallengePeriodManager(CacheController):
         if eliminations:
             logger.info(f"[CHALLENGE] eliminating {len(eliminations)} miners {list(eliminations.keys())}")
 
+        failed_hotkeys = set()
         for hotkey, elimination_reason in eliminations.items():
             state = self.miner_states[hotkey]
             if not state.current_bucket.is_active:
@@ -676,19 +677,28 @@ class ChallengePeriodManager(CacheController):
             # static accounts, or the EOD-vs-high-water-mark check otherwise
             eod_drawdown_pct = state.drawdown.static_drawdown_pct if is_static else state.drawdown.eod_drawdown_pct
 
-            self._elimination_client.append_elimination_row(
-                hotkey=hotkey,
-                reason=elimination_reason,
-                elimination_drawdown_pct=elimination_drawdown_pct,
-                intraday_drawdown_pct=intraday_drawdown_pct,
-                eod_drawdown_pct=eod_drawdown_pct,
-                elimination_time_ms=elimination_time_ms,
-                bucket_at_elimination=state.current_bucket,
-            )
+            # One failure (e.g. a slash that outlasts the RPC timeout) must not abort the rest of the
+            # batch. The failed hotkey stays in its bucket; if its elimination completes server-side,
+            # sync_elimination_miners marks it ELIMINATED on the next pass, otherwise it is retried.
+            try:
+                self._elimination_client.append_elimination_row(
+                    hotkey=hotkey,
+                    reason=elimination_reason,
+                    elimination_drawdown_pct=elimination_drawdown_pct,
+                    intraday_drawdown_pct=intraday_drawdown_pct,
+                    eod_drawdown_pct=eod_drawdown_pct,
+                    elimination_time_ms=elimination_time_ms,
+                    bucket_at_elimination=state.current_bucket,
+                )
+            except Exception as e:
+                logger.error(f"[CHALLENGE] elimination of {hotkey} failed, retrying next pass: {e}", exc_info=True)
+                failed_hotkeys.add(hotkey)
 
         state_changed = False
         with self._buckets_lock:
             for hotkey in eliminations:
+                if hotkey in failed_hotkeys:
+                    continue
                 state_changed |= self.miner_states[hotkey].add_bucket_entry(MinerBucket.ELIMINATED, current_time_ms)
 
         return state_changed
