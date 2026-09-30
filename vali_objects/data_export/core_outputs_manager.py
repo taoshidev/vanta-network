@@ -290,6 +290,24 @@ class CoreOutputsManager:
         except Exception as e:
             logger.warning(f"Could not fetch weekly seal records: {e}")
 
+        debt_ledgers = {}
+        try:
+            debt_ledgers = self._debt_ledger_client.get_all_debt_ledgers()
+        except Exception as e:
+            logger.warning(f"Could not fetch debt ledgers: {e}")
+
+        emissions_ledgers = {}
+        try:
+            emissions_ledgers = self._debt_ledger_client.get_all_emissions_ledgers()
+        except Exception as e:
+            logger.warning(f"Could not fetch emissions ledgers: {e}")
+
+        penalty_ledgers = {}
+        try:
+            penalty_ledgers = self._debt_ledger_client.get_all_penalty_ledgers()
+        except Exception as e:
+            logger.warning(f"Could not fetch penalty ledgers: {e}")
+
         final_dict = {
             'version': ValiConfig.VERSION,
             'created_timestamp_ms': time_now,
@@ -303,6 +321,9 @@ class CoreOutputsManager:
             'positions': ord_dict_hotkey_position_map,
             'perf_ledgers': perf_ledgers,
             'frozen_perf_ledgers': frozen_perf_ledgers,
+            'debt_ledgers': debt_ledgers,
+            'emissions_ledgers': emissions_ledgers,
+            'penalty_ledgers': penalty_ledgers,
             'asset_selections': asset_selections,
             'limit_orders': limit_orders_dict,
             'weekly_seals': weekly_seals,
