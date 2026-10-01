@@ -8,7 +8,7 @@ from typing import Dict, Optional
 
 
 from time_util.time_util import TimeUtil
-from vali_objects.utils.vali_bkp_utils import CustomEncoder
+from vali_objects.utils.vali_bkp_utils import CustomEncoder, ValiBkpUtils
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import (
     DebtLedger,
@@ -419,6 +419,25 @@ class DebtLedgerManager():
         return self.penalty_ledger_manager.get_all_penalty_ledgers()
 
     # ========================================================================
+    # CHECKPOINT SYNC METHODS (replace from the mothership checkpoint)
+    # ========================================================================
+
+    def sync_debt_ledgers(self, debt_ledgers_data: dict) -> int:
+        """Replace all debt ledgers with the checkpoint's and persist. Returns ledger count."""
+        synced = {hk: DebtLedger.from_dict(d) for hk, d in debt_ledgers_data.items()}
+        self.debt_ledgers = synced
+        self.save_to_disk(create_backup=False)
+        self._update_compressed_ledgers_cache()
+        logger.info(f"Synced {len(synced)} debt ledgers from checkpoint")
+        return len(synced)
+
+    def sync_emissions_ledgers(self, emissions_ledgers_data: dict) -> int:
+        return self.emissions_ledger_manager.sync_from_checkpoint(emissions_ledgers_data)
+
+    def sync_penalty_ledgers(self, penalty_ledgers_data: dict) -> int:
+        return self.penalty_ledger_manager.sync_from_checkpoint(penalty_ledgers_data)
+
+    # ========================================================================
     # PERSISTENCE METHODS
     # ========================================================================
 
@@ -453,7 +472,7 @@ class DebtLedgerManager():
     def _get_ledger_path(self) -> str:
         """Get path for debt ledger file."""
         from vali_objects.vali_config import ValiConfig
-        suffix = "/tests" if self.running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(self.running_unit_tests)
         base_path = ValiConfig.BASE_DIR + f"{suffix}/validation/debt_ledger.json"
         return base_path + ".gz"
 

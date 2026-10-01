@@ -392,7 +392,8 @@ class PenaltyLedgerManager:
 
     def _get_ledger_path(self) -> str:
         """Get path for penalty ledger file."""
-        suffix = "/tests" if self.running_unit_tests else ""
+        from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
+        suffix = ValiBkpUtils.get_test_dir_suffix(self.running_unit_tests)
         base_path = ValiConfig.BASE_DIR + f"{suffix}/validation/penalty_ledger.json"
         return base_path + ".gz"
 
@@ -1136,6 +1137,14 @@ class PenaltyLedgerManager:
             PenaltyLedger for the miner, or None if not found
         """
         return self.penalty_ledgers.get(miner_hotkey, None)
+
+    def sync_from_checkpoint(self, penalty_ledgers_data: dict) -> int:
+        """Replace all penalty ledgers with the checkpoint's and persist. Returns ledger count."""
+        synced = {hk: PenaltyLedger.from_dict(d) for hk, d in penalty_ledgers_data.items()}
+        self.penalty_ledgers = synced
+        self.save_to_disk(create_backup=False)
+        logger.info(f"[PENALTY_LEDGER] Synced {len(synced)} penalty ledgers from checkpoint")
+        return len(synced)
 
     def delete_penalty_ledger(self, miner_hotkey: str) -> bool:
         """
