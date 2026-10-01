@@ -170,6 +170,18 @@ class RecentEventTracker:
                 after = self.events[idx]
                 return after[1] if (after[0] - timestamp_ms) < (timestamp_ms - before[0]) else before[1]
 
+    def get_latest_event_at_or_before(self, timestamp_ms):
+        """
+        Thread-safe retrieval of the newest event at or before timestamp_ms.
+
+        Unlike get_closest_event, never returns an event from after timestamp_ms.
+        """
+        with self._lock:
+            idx = self.events.bisect_right((timestamp_ms,))
+            if idx == 0:
+                return None
+            return self.events[idx - 1][1]
+
     def count_events(self):
         """Thread-safe event count."""
         with self._lock:

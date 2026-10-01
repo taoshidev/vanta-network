@@ -382,6 +382,17 @@ class ValiConfig:
     # Controls how much history to store for price data which is used in retroactive updates
     RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS = 300000 # 5 minutes
 
+    # Nasdaq Basic quotes (Polygon/Massive nasdaq-basic-business feed, equities only)
+    NASDAQ_QUOTE_TRACKER_SAMPLE_MS = 250  # keep the last quote of each window in the recent event tracker
+    NASDAQ_QUOTE_OUT_OF_ORDER_TOLERANCE_MS = 1000  # quotes arriving this much older than the latest are dropped
+    NASDAQ_QUOTE_FEED_HEALTH_MS = 5000  # feed must have delivered a message this recently
+    NASDAQ_QUOTE_MAX_AGE_MS = 30000  # a quote stays valid until replaced, up to this age
+    NASDAQ_QUOTE_MAX_SPREAD_BPS = 50
+    NASDAQ_QUOTE_FMV_BAND_BPS = 25  # mid must be within max(this, spread) of FMV
+    NASDAQ_QUOTE_FMV_MAX_AGE_MS = 10000  # FMV band is only checked against an FMV this fresh
+    NASDAQ_ENTITLEMENT_RETRY_S = 600  # re-check entitlement this often after "not authorized" or failed connects
+    NASDAQ_MIN_RECONNECT_INTERVAL_S = 15  # Massive asks for 10-30s between reconnects
+
     # Risk Profiling
     RISK_PROFILING_STEPS_MIN_LEVERAGE = 0.01  # min of category MIN_LEVERAGE values in vali_objects/trade_pair.py
     RISK_PROFILING_STEPS_CRITERIA = 3
