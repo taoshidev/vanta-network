@@ -511,6 +511,60 @@ class TestMDDChecker(TestBase):
             msg=f"EUR ORGANIC order should be corrected to ~{correct_eur_price}, got {eur_organic.price}"
         )
 
+    def test_mdd_price_correction_closed_position_close_order(self):
+        """
+        Price correction of a FLAT close order on a recently closed position fills against the
+        side the position held (bid for a LONG), not the FLAT position's fallback price.
+        """
+        from vali_objects.enums.order_source_enum import OrderSource
+
+        self.mdd_checker_client.price_correction_enabled = True
+        self.live_price_fetcher_client.set_test_market_open(True)
+
+        now_ms = TimeUtil.now_in_millis()
+        recent_time_ms = now_ms - 60000  # 1 minute ago (within 5 minute window)
+        wrong_price = 50.0
+        bid, ask = 99.0, 101.0
+
+        aapl_position = self.trade_pair_to_default_position[TradePair.AAPL]
+        open_order = Order(
+            order_type=OrderType.LONG,
+            leverage=0.1,
+            price=wrong_price,
+            trade_pair=TradePair.AAPL,
+            processed_ms=recent_time_ms,
+            order_uuid="aapl_open",
+            src=OrderSource.ORGANIC
+        )
+        close_order = Order(
+            order_type=OrderType.FLAT,
+            leverage=0,
+            price=wrong_price,
+            trade_pair=TradePair.AAPL,
+            processed_ms=recent_time_ms + 1,
+            order_uuid="aapl_close",
+            src=OrderSource.ORGANIC
+        )
+
+        price_source = self.create_price_source(100.0, bid=bid, ask=ask, order_time_ms=recent_time_ms)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, price_source)
+
+        self.add_order_to_position_and_save_to_disk(aapl_position, open_order)
+        self.add_order_to_position_and_save_to_disk(aapl_position, close_order)
+        self.assertTrue(aapl_position.is_closed_position)
+
+        self.mdd_checker_client.last_price_fetch_time_ms = now_ms - 1000 * 30
+        self.mdd_checker_client.mdd_check()
+
+        aapl_from_disk = self.position_client.get_miner_position_by_uuid(self.MINER_HOTKEY, aapl_position.position_uuid)
+        self.assertIsNotNone(aapl_from_disk)
+        self.assertTrue(aapl_from_disk.is_closed_position)
+
+        corrected_open = next(o for o in aapl_from_disk.orders if o.order_uuid == "aapl_open")
+        corrected_close = next(o for o in aapl_from_disk.orders if o.order_uuid == "aapl_close")
+        self.assertEqual(corrected_open.price, ask, "LONG open order should be corrected to the ask")
+        self.assertEqual(corrected_close.price, bid, "FLAT close of a LONG should be corrected to the bid")
+
     def test_no_mdd_failures(self):
         self.verify_elimination_data_in_memory_and_disk([])
         self.position = self.trade_pair_to_default_position[TradePair.BTCUSD]
