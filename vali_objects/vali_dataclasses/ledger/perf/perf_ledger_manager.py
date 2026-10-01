@@ -378,6 +378,12 @@ class PerfLedgerManager(CacheController):
         self._frozen_ledgers = self.get_frozen_ledgers(from_disk=True)
         logger.info(f"Synced {len(self._frozen_ledgers)} frozen perf ledgers from auto sync")
 
+    def sync_perf_ledgers(self, perf_ledgers_data: dict):
+        file_path = ValiBkpUtils.get_perf_ledgers_path(self.running_unit_tests)
+        ValiBkpUtils.write_compressed_json(file_path, perf_ledgers_data)
+        self.hotkey_to_perf_bundle = self.get_perf_ledgers(from_disk=True)
+        logger.info(f"Synced {len(self.hotkey_to_perf_bundle)} perf ledgers from auto sync")
+
     @staticmethod
     def clear_perf_ledgers_from_disk_autosync(hotkeys:list):
         compressed_json_path = ValiBkpUtils.get_perf_ledgers_path(running_unit_tests=False)

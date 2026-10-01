@@ -2,9 +2,9 @@
 Restore validator state from a validator checkpoint (validator_checkpoint.json[.gz]).
 
 The restore overwrites everything the checkpoint covers: positions, archived positions, limit
-orders, eliminations, perf ledgers, challenge period, miner accounts, asset selections, entities
-and weekly seals. Each service's manager is created in-process in LOCAL mode with no RPC servers,
-so a running validator's ports are never touched. Never run this against the mothership.
+orders, eliminations, perf ledgers, debt/emissions/penalty ledgers, challenge period, miner
+accounts, asset selections, entities and weekly seals. Each service's manager is created in-process
+in LOCAL mode with no RPC servers, so a running validator's ports are never touched. Never run this against the mothership.
 
 Always writes to validation/ and backs it up first. Stop the validator before running.
 """
@@ -28,6 +28,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
 from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import WeeklySealLedger
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
 from entity_management.entity_manager import EntityManager
 import logging
 from shared_objects.log import logger
@@ -216,6 +217,21 @@ def regenerate_miner_positions():
     weekly_seals = data.get('weekly_seals', {})
     logger.info("syncing weekly seal records")
     WeeklySealLedger(running_unit_tests=RUNNING_UNIT_TESTS).sync_from_checkpoint(weekly_seals)
+
+    # Penalty and emissions ledgers are owned by the debt ledger manager
+    debt_ledger_manager = DebtLedgerManager(**kwargs)
+    penalty_ledgers = data.get('penalty_ledgers', {})
+    logger.info(f"syncing {len(penalty_ledgers)} penalty ledgers")
+    if penalty_ledgers:
+        debt_ledger_manager.sync_penalty_ledgers(penalty_ledgers)
+    emissions_ledgers = data.get('emissions_ledgers', {})
+    logger.info(f"syncing {len(emissions_ledgers)} emissions ledgers")
+    if emissions_ledgers:
+        debt_ledger_manager.sync_emissions_ledgers(emissions_ledgers)
+    debt_ledgers = data.get('debt_ledgers', {})
+    logger.info(f"syncing {len(debt_ledgers)} debt ledgers")
+    if debt_ledgers:
+        debt_ledger_manager.sync_debt_ledgers(debt_ledgers)
 
     logger.info("== RESTORE COMPLETED SUCCESSFULLY ==")
 
