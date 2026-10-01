@@ -180,6 +180,12 @@ class ValidatorSyncBase():
             logger.info(f"Syncing {len(frozen_perf_ledgers_data)} frozen perf ledger records from auto sync")
             self._perf_ledger_client.sync_frozen_ledgers(frozen_perf_ledgers_data)
 
+        # Sync perf ledgers. Hotkeys whose positions change below are still invalidated and rebuilt.
+        perf_ledgers_data = candidate_data.get('perf_ledgers', {})
+        if perf_ledgers_data and not shadow_mode and not self.is_mothership:
+            logger.info(f"Syncing {len(perf_ledgers_data)} perf ledger records from auto sync")
+            self._perf_ledger_client.sync_perf_ledgers(perf_ledgers_data)
+
         eliminated_hotkeys = set([e['hotkey'] for e in eliminations])
         # For a healthy validator, the existing positions will always be a superset of the candidate positions
         for hotkey, positions in candidate_hk_to_positions.items():
@@ -251,6 +257,18 @@ class ValidatorSyncBase():
             self.global_stats['weekly_seals_replaced'] = seal_stats.get('sealed_replaced', 0)
             self.global_stats['settled_segments_added'] = seal_stats.get('settled_added', 0)
             self.global_stats['settled_segments_replaced'] = seal_stats.get('settled_replaced', 0)
+
+        # Sync penalty, emissions and debt ledgers
+        if not shadow_mode and not self.is_mothership:
+            penalty_ledgers_data = candidate_data.get('penalty_ledgers', {})
+            if penalty_ledgers_data:
+                self.global_stats['penalty_ledgers_synced'] = self._debt_ledger_client.sync_penalty_ledgers(penalty_ledgers_data)
+            emissions_ledgers_data = candidate_data.get('emissions_ledgers', {})
+            if emissions_ledgers_data:
+                self.global_stats['emissions_ledgers_synced'] = self._debt_ledger_client.sync_emissions_ledgers(emissions_ledgers_data)
+            debt_ledgers_data = candidate_data.get('debt_ledgers', {})
+            if debt_ledgers_data:
+                self.global_stats['debt_ledgers_synced'] = self._debt_ledger_client.sync_debt_ledgers(debt_ledgers_data)
 
         # Sync entity data if available
         entities_data = candidate_data.get('entities', {})

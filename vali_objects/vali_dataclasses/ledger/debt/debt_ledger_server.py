@@ -373,6 +373,18 @@ class DebtLedgerServer(RPCServerBase):
         """
         return self._manager.sync_weekly_seals(weekly_seals_dict)
 
+    def sync_debt_ledgers_rpc(self, debt_ledgers_data: dict) -> int:
+        """Replace all debt ledgers with the checkpoint's (RPC method)."""
+        return self._manager.sync_debt_ledgers(debt_ledgers_data)
+
+    def sync_emissions_ledgers_rpc(self, emissions_ledgers_data: dict) -> int:
+        """Replace all emissions ledgers with the checkpoint's (RPC method)."""
+        return self._manager.sync_emissions_ledgers(emissions_ledgers_data)
+
+    def sync_penalty_ledgers_rpc(self, penalty_ledgers_data: dict) -> int:
+        """Replace all penalty ledgers with the checkpoint's (RPC method)."""
+        return self._manager.sync_penalty_ledgers(penalty_ledgers_data)
+
     def clear_weekly_seals_for_test_rpc(self) -> bool:
         """
         Drop every seal record, in memory and on disk (RPC method). Unit tests only.

@@ -290,6 +290,28 @@ class EmissionsLedger:
             'checkpoints': [cp.to_dict() for cp in self.checkpoints]
         }
 
+    @staticmethod
+    def from_dict(data: dict, hotkey: Optional[str] = None) -> 'EmissionsLedger':
+        """Reconstruct a ledger from to_dict() output. Coldkey is empty if missing."""
+        checkpoints = [
+            EmissionsCheckpoint(
+                chunk_start_ms=cp["chunk_start_ms"],
+                chunk_end_ms=cp["chunk_end_ms"],
+                chunk_emissions=cp["chunk_emissions"],
+                chunk_emissions_tao=cp.get("chunk_emissions_tao", 0.0),
+                chunk_emissions_usd=cp.get("chunk_emissions_usd", 0.0),
+                avg_alpha_to_tao_rate=cp["avg_alpha_to_tao_rate"],
+                avg_tao_to_usd_rate=cp["avg_tao_to_usd_rate"],
+                num_blocks=cp.get("num_blocks", 0),
+                block_start=cp.get("block_start"),
+                block_end=cp.get("block_end"),
+                tao_balance_snapshot=cp.get("tao_balance_snapshot", 0.0),
+                alpha_balance_snapshot=cp.get("alpha_balance_snapshot", 0.0)
+            )
+            for cp in data.get("checkpoints", [])
+        ]
+        return EmissionsLedger(hotkey=hotkey or data["hotkey"], coldkey=data.get("coldkey", ""), checkpoints=checkpoints)
+
     def print_summary(self):
         """Print a formatted summary of emissions for this hotkey."""
         if not self.checkpoints:
@@ -1667,7 +1689,7 @@ class EmissionsLedgerManager:
 
     def _get_ledger_path(self) -> str:
         """Get path for emissions ledger file."""
-        suffix = "/tests" if self.running_unit_tests else ""
+        suffix = ValiBkpUtils.get_test_dir_suffix(self.running_unit_tests)
         base_path = ValiConfig.BASE_DIR + f"{suffix}/validation/emissions_ledger.json"
         return base_path + ".gz"
 
@@ -1760,34 +1782,12 @@ class EmissionsLedgerManager:
 
         # Reconstruct ledgers
         for hotkey, ledger_dict in data.get("ledgers", {}).items():
-            checkpoints = []
-            for cp in ledger_dict.get("checkpoints", []):
-                checkpoint = EmissionsCheckpoint(
-                    chunk_start_ms=cp["chunk_start_ms"],
-                    chunk_end_ms=cp["chunk_end_ms"],
-                    chunk_emissions=cp["chunk_emissions"],
-                    chunk_emissions_tao=cp.get("chunk_emissions_tao", 0.0),
-                    chunk_emissions_usd=cp.get("chunk_emissions_usd", 0.0),
-                    avg_alpha_to_tao_rate=cp["avg_alpha_to_tao_rate"],
-                    avg_tao_to_usd_rate=cp["avg_tao_to_usd_rate"],
-                    num_blocks=cp.get("num_blocks", 0),
-                    block_start=cp.get("block_start"),
-                    block_end=cp.get("block_end"),
-                    tao_balance_snapshot=cp.get("tao_balance_snapshot", 0.0),
-                    alpha_balance_snapshot=cp.get("alpha_balance_snapshot", 0.0)
-                )
-
-                checkpoints.append(checkpoint)
-
-            # Load coldkey from ledger data (empty string if missing - will be lazily queried)
-            coldkey = ledger_dict.get("coldkey", "")
-
             # Note: If coldkey is empty, it will be lazily queried from substrate when first needed
             # by _get_coldkey_for_hotkey() and then persisted on next save (one-time migration)
-            if not coldkey:
+            if not ledger_dict.get("coldkey"):
                 logger.debug(f"Coldkey missing for {hotkey[:16]}... in saved data - will be queried lazily when needed")
 
-            self.emissions_ledgers[hotkey] = EmissionsLedger(hotkey=hotkey, coldkey=coldkey, checkpoints=checkpoints)
+            self.emissions_ledgers[hotkey] = EmissionsLedger.from_dict(ledger_dict, hotkey=hotkey)
 
         logger.info(
             f"Loaded {len(self.emissions_ledgers)} emissions ledgers, "
@@ -2015,6 +2015,14 @@ class EmissionsLedgerManager:
     def get_all_ledgers(self) -> Dict[str, EmissionsLedger]:
         """Get all emissions ledgers."""
         return deepcopy(self.emissions_ledgers)
+
+    def sync_from_checkpoint(self, emissions_ledgers_data: dict) -> int:
+        """Replace all emissions ledgers with the checkpoint's and persist. Returns ledger count."""
+        synced = {hk: EmissionsLedger.from_dict(d, hotkey=hk) for hk, d in emissions_ledgers_data.items()}
+        self.emissions_ledgers = synced
+        self.save_to_disk(create_backup=False)
+        logger.info(f"Synced {len(synced)} emissions ledgers from checkpoint")
+        return len(synced)
 
     def get_earliest_emissions_timestamp(self) -> Optional[int]:
         """
