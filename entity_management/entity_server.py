@@ -156,6 +156,7 @@ class EntityServer(RPCServerBase):
         drawdown_criteria: str = "trailing",
         leverage_tier: Optional[int] = None,
         client_ref: Optional[str] = None,
+        intraday_drawdown_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -170,6 +171,7 @@ class EntityServer(RPCServerBase):
             client_ref: Optional idempotency key. A repeat with the same
                 (entity_hotkey, client_ref) returns the existing subaccount
                 dict with an added "duplicate": True and creates nothing.
+            intraday_drawdown_threshold: Optional decimal whole percent (e.g. 0.03); None keeps bucket defaults
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -180,7 +182,7 @@ class EntityServer(RPCServerBase):
         success, subaccount_info, message, duplicate = self._manager.create_subaccount_ex(
             entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
             drawdown_criteria=drawdown_criteria, leverage_tier=leverage_tier,
-            client_ref=client_ref,
+            client_ref=client_ref, intraday_drawdown_threshold=intraday_drawdown_threshold,
         )
 
         # Convert SubaccountInfo to dict for RPC serialization
@@ -199,6 +201,7 @@ class EntityServer(RPCServerBase):
         collateral_exempt: bool = False,
         payout_address: Optional[str] = None,
         client_ref: Optional[str] = None,
+        intraday_drawdown_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -210,6 +213,7 @@ class EntityServer(RPCServerBase):
             asset_class: Asset class selection (default: "hl_all")
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
+            intraday_drawdown_threshold: Optional decimal whole percent (e.g. 0.03); None keeps bucket defaults
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -217,6 +221,7 @@ class EntityServer(RPCServerBase):
         success, subaccount_info, message, duplicate = self._manager.create_hl_subaccount_ex(
             entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
             payout_address=payout_address, client_ref=client_ref,
+            intraday_drawdown_threshold=intraday_drawdown_threshold,
         )
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
         if subaccount_dict is not None and duplicate:

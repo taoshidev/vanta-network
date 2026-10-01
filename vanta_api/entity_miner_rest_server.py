@@ -1045,6 +1045,7 @@ class EntityMinerRestServer(MinerRestServer):
             "asset_class": "crypto" | "forex" | "equities",  // Required
             "account_size": float,                           // Required, must be > 0
             "leverage_tier": 1 | 2 | 3,                      // Optional, default 1 (standard leverage tier)
+            "intraday_drawdown_threshold": 0.03 | 0.04 | 0.05,  // Optional, decimal whole percent; omitted keeps bucket defaults
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -1053,6 +1054,7 @@ class EntityMinerRestServer(MinerRestServer):
             "hl_address": "0x...",     // Required, 0x + 40 hex chars
             "account_size": float,     // Required, must be > 0
             "payout_address": "0x...", // Optional, EVM address for USDC payouts
+            "intraday_drawdown_threshold": 0.03 | 0.04 | 0.05,  // Optional, decimal whole percent; omitted keeps bucket defaults
             "collateral_exempt": bool  // Optional, default false
         }
         """
@@ -1074,6 +1076,15 @@ class EntityMinerRestServer(MinerRestServer):
                 return jsonify({'status': 'error', 'message': 'Missing required field: account_size'}), 400
 
             is_hl = 'hl_address' in request_data
+
+            # Intraday drawdown threshold as a decimal whole percent (e.g. 0.03), for standard and HL subaccounts alike
+            intraday_drawdown_threshold = request_data.get("intraday_drawdown_threshold")
+            if (intraday_drawdown_threshold is not None
+                    and not ValiConfig.is_valid_intraday_drawdown_threshold(intraday_drawdown_threshold)):
+                return jsonify({'status': 'error', 'message': (
+                    f'intraday_drawdown_threshold must be a whole percent from '
+                    f'{ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN} to {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MAX}'
+                )}), 400
 
             if is_hl:
                 hl_address = request_data["hl_address"]
@@ -1201,6 +1212,9 @@ class EntityMinerRestServer(MinerRestServer):
                 payload["collateral_exempt"] = collateral_exempt
             if leverage_tier is not None:
                 payload["leverage_tier"] = leverage_tier
+            # Unsigned, like drawdown_criteria, so the signature stays byte-identical to the legacy field set
+            if intraday_drawdown_threshold is not None:
+                payload["intraday_drawdown_threshold"] = intraday_drawdown_threshold
             # client_ref rides unsigned alongside drawdown_criteria. message_dict
             # above is intentionally left untouched so the coldkey signature is
             # byte-identical to the legacy field set (forward/back compatible).

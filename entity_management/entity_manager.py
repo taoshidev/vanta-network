@@ -81,6 +81,7 @@ class SubaccountInfo(BaseModel):
     pro_fee_theta_pending: float = Field(default=0.0, description="Portion of the pro promotion fee charged but not yet slashed on-chain")
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
+    intraday_drawdown_threshold: Optional[float] = Field(default=None, description="Chosen intraday drawdown threshold (daily loss limit) as a fraction, applied in every bucket (immutable once set). None keeps each bucket's default")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
     leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades tier 0 (each limit is max of its legacy value and Base)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
@@ -452,6 +453,7 @@ class EntityManager(ValidatorBroadcastBase):
         drawdown_criteria: str = "trailing",
         client_ref: Optional[str] = None,
         leverage_tier: Optional[int] = None,
+        intraday_drawdown_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """Backward-compatible 3-tuple wrapper around create_subaccount_ex.
 
@@ -463,7 +465,7 @@ class EntityManager(ValidatorBroadcastBase):
             entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
             hl_address=hl_address, payout_address=payout_address,
             drawdown_criteria=drawdown_criteria, client_ref=client_ref,
-            leverage_tier=leverage_tier,
+            leverage_tier=leverage_tier, intraday_drawdown_threshold=intraday_drawdown_threshold,
         )
         return success, info, message
 
@@ -478,6 +480,7 @@ class EntityManager(ValidatorBroadcastBase):
         drawdown_criteria: str = "trailing",
         client_ref: Optional[str] = None,
         leverage_tier: Optional[int] = None,
+        intraday_drawdown_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str, bool]:
         """
         Create a new subaccount for an entity.
@@ -497,6 +500,8 @@ class EntityManager(ValidatorBroadcastBase):
                    Exempt subaccounts are excluded from entity aggregation and payouts.
             leverage_tier: Standard leverage tier 1 to 3. Defaults to
                    ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
+            intraday_drawdown_threshold: Intraday drawdown threshold as a decimal whole percent (e.g. 0.03) within
+                   ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN/MAX. None keeps each bucket's default.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -513,6 +518,15 @@ class EntityManager(ValidatorBroadcastBase):
                 leverage_tier = ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT
             if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
                 return False, None, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}", False
+
+        if intraday_drawdown_threshold is not None:
+            if not ValiConfig.is_valid_intraday_drawdown_threshold(intraday_drawdown_threshold):
+                return False, None, (
+                    f"Invalid intraday_drawdown_threshold: {intraday_drawdown_threshold}. Must be a whole percent from "
+                    f"{ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN} to {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MAX}"
+                ), False
+            # Normalize float noise (e.g. 0.07 - 0.04) to the exact whole-percent value
+            intraday_drawdown_threshold = round(intraday_drawdown_threshold, 2)
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -665,6 +679,7 @@ class EntityManager(ValidatorBroadcastBase):
                 reg_fee_slashed_ms=now_ms if collateral_exempt else None,
                 asset_class=asset_class,
                 drawdown_criteria=drawdown_criteria,
+                intraday_drawdown_threshold=intraday_drawdown_threshold,
                 leverage_tier=leverage_tier,
                 hl_address=hl_address,
                 payout_address=payout_address,
@@ -684,6 +699,7 @@ class EntityManager(ValidatorBroadcastBase):
                 self._challenge_period_client.set_miner_bucket(
                     synthetic_hotkey, initial_bucket, now_ms,
                     drawdown_criteria=DrawdownCriteria(drawdown_criteria),
+                    intraday_drawdown_threshold=intraday_drawdown_threshold,
                 )
             except Exception as e:
                 logger.error(
@@ -741,11 +757,13 @@ class EntityManager(ValidatorBroadcastBase):
         collateral_exempt: bool = False,
         payout_address: Optional[str] = None,
         client_ref: Optional[str] = None,
+        intraday_drawdown_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """Backward-compatible 3-tuple wrapper around create_hl_subaccount_ex."""
         success, info, message, _duplicate = self.create_hl_subaccount_ex(
             entity_hotkey, account_size, hl_address, asset_class=asset_class,
             collateral_exempt=collateral_exempt, payout_address=payout_address, client_ref=client_ref,
+            intraday_drawdown_threshold=intraday_drawdown_threshold,
         )
         return success, info, message
 
@@ -758,6 +776,7 @@ class EntityManager(ValidatorBroadcastBase):
         collateral_exempt: bool = False,
         payout_address: Optional[str] = None,
         client_ref: Optional[str] = None,
+        intraday_drawdown_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str, bool]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -774,6 +793,7 @@ class EntityManager(ValidatorBroadcastBase):
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
             client_ref: Optional idempotency key (see NOTE below).
+            intraday_drawdown_threshold: Optional decimal whole percent (see create_subaccount_ex).
 
         NOTE on idempotency: without a client_ref, a repeat with the SAME hl_address
         is rejected by the duplicate-address guard below. With a client_ref that
@@ -831,6 +851,7 @@ class EntityManager(ValidatorBroadcastBase):
             entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
             hl_address=hl_address, payout_address=payout_address,
             drawdown_criteria="trailing", client_ref=client_ref,
+            intraday_drawdown_threshold=intraday_drawdown_threshold,
         )
 
         if not success:
@@ -3042,6 +3063,7 @@ class EntityManager(ValidatorBroadcastBase):
                     self._challenge_period_client.set_miner_bucket(
                         synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, subaccount_info.created_at_ms,
                         drawdown_criteria=DrawdownCriteria(subaccount_info.drawdown_criteria),
+                        intraday_drawdown_threshold=subaccount_info.intraday_drawdown_threshold,
                     )
                 except Exception as e:
                     logger.error(

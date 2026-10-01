@@ -101,6 +101,7 @@ class EntityClient(RPCClientBase):
         drawdown_criteria: str = "trailing",
         leverage_tier: Optional[int] = None,
         client_ref: Optional[str] = None,
+        intraday_drawdown_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -114,6 +115,7 @@ class EntityClient(RPCClientBase):
             leverage_tier: Standard leverage tier 1 to 3; None = tier 0 (max of legacy limits and Base)
             client_ref: Optional idempotency key; the returned dict carries
                 "duplicate": True when it matched a prior creation.
+            intraday_drawdown_threshold: Optional decimal whole percent (e.g. 0.03); None keeps bucket defaults
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -125,6 +127,8 @@ class EntityClient(RPCClientBase):
                   "leverage_tier": leverage_tier}
         if client_ref is not None:
             kwargs["client_ref"] = client_ref
+        if intraday_drawdown_threshold is not None:
+            kwargs["intraday_drawdown_threshold"] = intraday_drawdown_threshold
         # fail-fast: reserves collateral + mints a subaccount; a re-execution creates a DUPLICATE
         # subaccount (fresh id) and double-reserves the fee — never auto-retry. client_ref makes a
         # *caller-driven* retry idempotent, but it is optional and callers may omit it, so the
@@ -145,6 +149,7 @@ class EntityClient(RPCClientBase):
         collateral_exempt: bool = False,
         payout_address: Optional[str] = None,
         client_ref: Optional[str] = None,
+        intraday_drawdown_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -156,6 +161,7 @@ class EntityClient(RPCClientBase):
             asset_class: Asset class selection (default: "hl_all")
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
+            intraday_drawdown_threshold: Optional decimal whole percent (e.g. 0.03); None keeps bucket defaults
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -167,6 +173,8 @@ class EntityClient(RPCClientBase):
         kwargs = dict(asset_class=asset_class, collateral_exempt=collateral_exempt, payout_address=payout_address)
         if client_ref is not None:
             kwargs["client_ref"] = client_ref
+        if intraday_drawdown_threshold is not None:
+            kwargs["intraday_drawdown_threshold"] = intraday_drawdown_threshold
         return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, **kwargs)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:

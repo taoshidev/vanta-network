@@ -178,6 +178,7 @@ The system uses a distributed RPC architecture for inter-process communication:
   - To promote to MAINCOMP a miner must serve the 61-day minimum, clear its asset class's returns threshold, and rank at or above `PROMOTION_THRESHOLD_RANK` (25) in that class; failing to do so by day 90 eliminates
   - Minimal weights during challenge period
   - Entity subaccounts run a separate returns-based challenge (10% crypto/equities/commodities/multi-class, 8% forex) with no rank requirement and no time limit
+  - Entity subaccounts (standard and HL-linked) may choose an `intraday_drawdown_threshold` (daily loss limit) of 3-5% (sent as a decimal whole percent 0.03-0.05, `SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN`/`_MAX`) at creation; it replaces the intraday drawdown threshold in every standard and pro bucket. Omitted keeps each bucket's default
 - **Probation**: Miners below rank 25 in asset class
   - 90-day probation period
   - Must achieve rank 25 or better to avoid elimination

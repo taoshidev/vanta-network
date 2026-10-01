@@ -179,6 +179,8 @@ Passing is evaluated continuously — a subaccount is promoted immediately once 
 - **Trailing** (default): eliminated if intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaches **5%**.
 - **Static**: eliminated if equity (including unrealized PnL) drops more than **5%** below the subaccount's starting balance, or if intraday drawdown from the day's opening equity reaches **5%** (same intraday drawdown check as trailing, with a flat 5% threshold).
 
+**Intraday drawdown threshold (daily loss limit):** a subaccount may choose its own intraday drawdown threshold at creation (`intraday_drawdown_threshold`): any whole percent from **3%** to **5%**, sent as a decimal (`0.03`, `0.04` or `0.05`; bounds in `ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN` / `_MAX`). It replaces the intraday drawdown threshold above. If omitted, each bucket keeps its default threshold.
+
 ### Leverage Limits
 
 Standard subaccounts carry a `leverage_tier` (1 = Base, 2 = Boost I, 3 = Boost II), set at creation (default 1) and changeable later (see [Change Leverage Tier](#change-leverage-tier)). Challenge and funded share the same limits, and account size does not change them. All values are multiples of the subaccount balance; an order is capped by the tightest of the per-pair, per-class and portfolio limits.
@@ -277,6 +279,8 @@ Once in SUBACCOUNT_FUNDED, the subaccount keeps the same `drawdown_criteria` it 
 - **Trailing** (default): the same two rules as regular miners — eliminated at a **5%** intraday drawdown from the day's opening equity, or an **8%** drawdown from the end-of-day equity high-water mark. Subaccounts registered before the cutoffs in `ValiConfig.FUNDED_V0_CUTOFF_MS` / `FUNDED_V1_CUTOFF_MS` keep the looser thresholds they were registered under.
 - **Static**: still eliminated at **5%** below starting balance, or **5%** intraday drawdown from the day's opening equity, same thresholds as during challenge — this rule set does not loosen after funding.
 
+A subaccount that chose an `intraday_drawdown_threshold` at creation keeps that value as its intraday threshold instead of the 5% above.
+
 After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is eligible for additional funding.
 
 ### Account Types
@@ -323,7 +327,7 @@ otherwise reach only part of it. `PRO_CHALLENGE_TRANSITION` is still on the stan
 keeps its registered class.
 
 Every pro bucket is subject to two drawdown rules:
-- **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day. Checked continuously.
+- **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day, or the subaccount's chosen `intraday_drawdown_threshold` (3–5%) if it set one at creation. Checked continuously.
 - **EOD trailing loss limit:** end-of-day equity cannot drop **8%** below the end-of-day equity high-water mark. Evaluated once per UTC day against the midnight snapshot, not in real time — an intraday dip below the mark that recovers before midnight does not breach.
 
 `PRO_CHALLENGE_TRANSITION` is still trading the standard account, so it keeps the `SUBACCOUNT_FUNDED` rules instead.
@@ -674,6 +678,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `account_size` | float | Yes | Account size in USD                                                          |
 | `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
 | `leverage_tier` | int | No | Standard leverage tier `1` (default), `2` or `3` — see [Leverage Limits](#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later via [Change Leverage Tier](#change-leverage-tier). |
+| `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit) as a decimal whole percent: `0.03`, `0.04` or `0.05` — see [Challenge Period Requirements](#challenge-period-requirements). Fractional percents such as `0.035` are rejected. Accepted for standard and HL-linked subaccounts. Omitted keeps each bucket's default. Set once at creation; immutable afterward. |
 
 #### Change Leverage Tier
 
@@ -819,11 +824,12 @@ The signature is produced by signing `{"entity_coldkey": "...", "entity_hotkey":
   "account_size": 10000.0,
   "asset_class": "crypto",
   "drawdown_criteria": "trailing",
+  "intraday_drawdown_threshold": 0.04,
   "signature": "<coldkey_signature>"
 }
 ```
 
-The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys). `drawdown_criteria` is optional (defaults to `"trailing"` if omitted) and is not currently part of the signed payload.
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys). `drawdown_criteria` is optional (defaults to `"trailing"` if omitted) and is not currently part of the signed payload. `intraday_drawdown_threshold` is optional (a decimal whole percent from 0.03 to 0.05; omitted keeps each bucket's default) and is likewise not part of the signed payload.
 
 Response:
 
@@ -928,6 +934,7 @@ Each subaccount is identified by a synthetic hotkey with the format `{entity_hot
 | Challenge period drawdown threshold (trailing) | 5%                                     |
 | Funded period drawdown threshold (trailing)    | 8%                                     |
 | Drawdown threshold (static, challenge + funded) | 5%                                    |
+| Intraday drawdown threshold chosen at creation (optional) | 3%–5%, whole percent, all buckets |
 
 ### Elimination
 
@@ -935,6 +942,7 @@ Subaccounts can be eliminated for:
 - **Trailing criteria, challenge period failure** — drawdown exceeds 5% before achieving the return threshold
 - **Trailing criteria, funded period failure** — drawdown exceeds 8%
 - **Static criteria (challenge or funded)** — equity drops more than 5% below starting balance, or intraday drawdown from the day's opening equity reaches 5%
+- **Chosen intraday drawdown threshold (any bucket)** — intraday drawdown from the day's opening equity exceeds the `intraday_drawdown_threshold` chosen at creation, which replaces the intraday threshold in each rule above
 - **Plagiarism** — detected order similarity with other miners
 
 Eliminated subaccount ids are permanently retired. Create a new subaccount to replace an eliminated one.
@@ -1018,6 +1026,7 @@ curl -X POST http://localhost:8088/api/create-hl-subaccount \
 | `hl_address` | string | Yes | Hyperliquid wallet address (0x + 40 hex chars) |
 | `account_size` | float | Yes | Account size in USD |
 | `payout_address` | string | No | Optional EVM payout address |
+| `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit) as a decimal whole percent: `0.03`, `0.04` or `0.05` — see [Challenge Period Requirements](#challenge-period-requirements). Omitted keeps each bucket's default. |
 
 ### Monitoring
 
@@ -1081,7 +1090,7 @@ HL-linked subaccount creation (include `hl_address`; `asset_class` is always `"h
 }
 ```
 
-The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey, hl_address}` (JSON, sorted keys), plus `payout_address` if provided.
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey, hl_address}` (JSON, sorted keys), plus `payout_address` if provided. An optional `intraday_drawdown_threshold` (decimal whole percent, 0.03 to 0.05) rides unsigned alongside.
 
 #### Entity Miner Gateway (port 8088)
 

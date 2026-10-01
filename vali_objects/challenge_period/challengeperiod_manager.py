@@ -133,6 +133,10 @@ class MinerBucketState:
     entries: list[BucketEntry]
     drawdown: DrawdownStats = field(default_factory=DrawdownStats)
     drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING
+    # Subaccount's chosen intraday drawdown threshold (fraction). Set once at creation; overrides the
+    # bucket's intraday threshold in every bucket (read through the intraday_drawdown_threshold
+    # property). None keeps the bucket default.
+    intraday_drawdown_threshold_override: float | None = None
     rank: int | None = None
     pro_stats: ProStats = field(default_factory=ProStats)
 
@@ -168,12 +172,14 @@ class MinerBucketState:
         return MinerBucket.UNKNOWN
 
     def to_checkpoint_dict(self) -> dict:
-        """Serialize full state (entries + drawdown + drawdown_criteria + rank + pro_stats) for
-        on-disk checkpoint. The latched soft-breach days ride along inside pro_stats."""
+        """Serialize full state (entries + drawdown + drawdown_criteria +
+        intraday_drawdown_threshold_override + rank + pro_stats) for on-disk checkpoint. The latched
+        soft-breach days ride along inside pro_stats."""
         return {
             "entries": [entry.to_dict() for entry in self.entries],
             "drawdown": self.drawdown.to_dict(),
             "drawdown_criteria": self.drawdown_criteria.value,
+            "intraday_drawdown_threshold_override": self.intraday_drawdown_threshold_override,
             "rank": self.rank,
             "pro_stats": self.pro_stats.to_dict(),
         }
@@ -188,6 +194,7 @@ class MinerBucketState:
             entries=entries,
             drawdown=DrawdownStats.from_dict(data.get("drawdown")),
             drawdown_criteria=criteria,
+            intraday_drawdown_threshold_override=data.get("intraday_drawdown_threshold_override"),
             rank=data.get("rank"),
             pro_stats=ProStats.from_dict(data.get("pro_stats")),
         )
@@ -198,7 +205,7 @@ class MinerBucketState:
         dd = self.drawdown
         criteria_str = self.drawdown_criteria.value
         return (
-            f"{self.hotkey} {self.current_bucket.value} {start} rank={self.rank} criteria={criteria_str} "
+            f"{self.hotkey} {self.current_bucket.value} {start} rank={self.rank} criteria={criteria_str} idt_override={self.intraday_drawdown_threshold_override} "
             f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={f'{dd.daily_open_equity:.4f}' if dd.daily_open_equity is not None else 'None'} | "
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
             f"static_dd={dd.static_drawdown_pct:.2f}% static_eod_dd={dd.static_eod_drawdown_pct:.2f}% "
@@ -234,8 +241,11 @@ class MinerBucketState:
         return self.current_bucket_start_ms
 
     def _intraday_threshold_for(self, bucket: MinerBucket, threshold_time_ms: int | None) -> float:
-        """Static accounts use a flat intraday threshold regardless of bucket or registration time.
-        Pro buckets keep their own threshold even when the subaccount was created static."""
+        """An intraday drawdown threshold chosen at creation applies in every bucket. Otherwise static accounts use
+        a flat intraday threshold regardless of bucket or registration time, and pro buckets keep their
+        own threshold even when the subaccount was created static."""
+        if self.intraday_drawdown_threshold_override is not None:
+            return self.intraday_drawdown_threshold_override
         if self.drawdown_criteria == DrawdownCriteria.STATIC and not bucket.is_pro:
             return ValiConfig.SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD
         return bucket.intraday_drawdown_threshold(threshold_time_ms)
@@ -1279,12 +1289,13 @@ class ChallengePeriodManager(CacheController):
         *,
         replace_top=False,
         drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING,
+        intraday_drawdown_threshold: float | None = None,
     ) -> bool:
         """
         Set or update a miner's bucket information, replace_top to override most recent entry.
-        drawdown_criteria is set only on first creation and ignored for existing states.
+        drawdown_criteria and intraday_drawdown_threshold are set only on first creation and ignored for existing states.
 
-        Only persists to disk on first creation - drawdown_criteria is write-once, and updates to
+        Only persists to disk on first creation - both are write-once, and updates to
         an existing state are already covered by the caller's own batched save (see refresh()).
 
         Returns:
@@ -1292,7 +1303,8 @@ class ChallengePeriodManager(CacheController):
         """
         with self._buckets_lock:
             if hotkey not in self.miner_states:
-                self.miner_states[hotkey] = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)], drawdown_criteria=drawdown_criteria)
+                self.miner_states[hotkey] = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)], drawdown_criteria=drawdown_criteria,
+                                                          intraday_drawdown_threshold_override=intraday_drawdown_threshold)
                 is_new = True
                 self._save_to_disk()
             else:
@@ -1467,7 +1479,7 @@ class ChallengePeriodManager(CacheController):
     @staticmethod
     def parse_checkpoint_dict(json_dict) -> dict[str, MinerBucketState]:
         """Parse checkpoint dict from disk or validator sync.
-        Expected format: {hk: {"entries": [...], "drawdown": {...}, "drawdown_criteria": ..., "rank": ...}}
+        Expected format: {hk: {"entries": [...], "drawdown": {...}, "drawdown_criteria": ..., "intraday_drawdown_threshold_override": ..., "rank": ...}}
         """
         return {
             hotkey: MinerBucketState.from_checkpoint_dict(hotkey, info)
