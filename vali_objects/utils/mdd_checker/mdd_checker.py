@@ -26,6 +26,7 @@ from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
+from vali_objects.enums.order_type_enum import OrderType
 from shared_objects.log import logger
 
 
@@ -286,7 +287,7 @@ class MDDChecker(CacheController):
                 any_changes = True
 
         if any_changes:
-            order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position.position_type)
+            order.price = winning_event.parse_appropriate_price(order_time_ms, trade_pair.is_forex, order.order_type, position.orders[0].order_type)
             order.bid = winning_event.bid
             order.ask = winning_event.ask
             # order.slippage = PriceSlippageModel.calculate_slippage(winning_event.bid, winning_event.ask, order)
@@ -401,8 +402,8 @@ class MDDChecker(CacheController):
             temp = tp_to_price_sources_for_realtime_price.get(trade_pair, [])
             price_source = temp[0] if temp else None
             realtime_price = price_source.parse_appropriate_price(
-                now_ms, trade_pair.is_forex, position.position_type, position.position_type
-            ) if price_source else None
+                now_ms, trade_pair.is_forex, OrderType.FLAT, position.position_type
+            ) if price_source and position.is_open_position else None
             ret_changed = False
 
             first_order = position.orders[0]

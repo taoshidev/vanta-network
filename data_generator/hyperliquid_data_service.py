@@ -626,8 +626,8 @@ class HyperliquidDataService(BaseDataService):
         if not bids or not asks:
             return None
 
-        mid = (float(bids[0]["px"]) + float(asks[0]["px"])) / 2.0
-        if mid <= 0:
+        best_price = float(asks[0]["px"]) if is_buy else float(bids[0]["px"])
+        if best_price <= 0:
             return None
 
         side = "asks" if is_buy else "bids"
@@ -657,7 +657,7 @@ class HyperliquidDataService(BaseDataService):
             return None
 
         avg_price = total_usd / total_coins
-        slippage_pct = max(0.0, (avg_price - mid) / mid if is_buy else (mid - avg_price) / mid)
+        slippage_pct = max(0.0, (avg_price - best_price) / best_price if is_buy else (best_price - avg_price) / best_price)
 
         if slippage_pct > ValiConfig.HL_SLIPPAGE_AUDIT_LOG_THRESHOLD:
             fills_desc = [
@@ -666,7 +666,7 @@ class HyperliquidDataService(BaseDataService):
             ]
             logger.warning(
                 f"[SLIPPAGE_AUDIT] order_uuid={order_uuid} {trade_pair.trade_pair_id} "
-                f"size_usd={size_usd:.2f} is_buy={is_buy} mid={mid} avg_price={avg_price} "
+                f"size_usd={size_usd:.2f} is_buy={is_buy} best_price={best_price} avg_price={avg_price} "
                 f"slippage_pct={slippage_pct:.6f} fills={fills_desc}"
             )
 
