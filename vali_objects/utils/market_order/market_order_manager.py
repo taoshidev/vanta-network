@@ -121,6 +121,7 @@ class MarketOrderManager():
                 if err:
                     raise SignalException(err)
 
+            is_live_market_fill = not price_sources and fill_price is None
             if not price_sources:
                 price_sources = self._live_price_client.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
                 if not price_sources:
@@ -137,6 +138,14 @@ class MarketOrderManager():
                 f"quote_usd={quote_usd_rate:.6g} source={price_sources[0].source} "
                 f"bid/ask={price_sources[0].bid}/{price_sources[0].ask}"
             )
+
+            # Shadow mode: log the Nasdaq Basic quote fill next to the actual fill. Never affects the order.
+            if is_live_market_fill and trade_pair.is_equities:
+                try:
+                    self._live_price_client.log_nasdaq_shadow_fill(trade_pair, now_ms, order_type, position_type,
+                                                                   fill_price, price_sources[0].source, order_uuid)
+                except Exception as e:
+                    logger.warning(f"[NASDAQ_SHADOW] {order_uuid} shadow log failed: {type(e).__name__}: {e}")
 
             if position is not None and len(position.orders) >= ValiConfig.MAX_ORDERS_PER_POSITION and order_type != OrderType.FLAT:
                 raise SignalException(

@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple, Dict
 import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
+from data_generator.polygon_nasdaq_basic_data_service import PolygonNasdaqBasicDataService
 from data_generator.databento_data_service import DatabentoDataService
 from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
@@ -31,6 +32,14 @@ class LivePriceFetcher:
                                                            is_backtesting=is_backtesting, running_unit_tests=running_unit_tests)
         else:
             raise Exception("Polygon API key not found in secrets.json")
+
+        # Nasdaq Basic quotes for equities. Enabled only if the key's subscribe replies succeed;
+        # otherwise equities keep pricing from Business FMV.
+        self.polygon_nasdaq_basic_data_service = PolygonNasdaqBasicDataService(
+            api_key=secrets["polygon_apikey"],
+            disable_ws=disable_ws,
+            running_unit_tests=running_unit_tests
+        )
 
         # Optional Databento service for equities
         self.databento_data_service = None
@@ -68,6 +77,7 @@ class LivePriceFetcher:
     def stop_all_threads(self):
         self.tiingo_data_service.stop_threads()
         self.polygon_data_service.stop_threads()
+        self.polygon_nasdaq_basic_data_service.stop_threads()
         if self.databento_data_service:
             self.databento_data_service.stop_threads()
         self.hyperliquid_data_service.stop_threads()
@@ -399,6 +409,35 @@ class LivePriceFetcher:
             if price_source and price_source.bid and price_source.ask and price_source.bid > 0 and price_source.ask > 0:
                 return price_source.bid, price_source.ask, price_source.start_ms
         return self.polygon_data_service.get_quote(trade_pair, processed_ms)
+
+    def nasdaq_quotes_enabled(self) -> bool:
+        return self.polygon_nasdaq_basic_data_service.is_enabled()
+
+    def get_valid_nasdaq_quote(self, trade_pair: TradePair, time_ms: int,
+                               max_age_ms: int | None = None) -> Tuple[PriceSource | None, str | None]:
+        """
+        Newest Nasdaq Basic quote at or before time_ms that passes the validity rules, checked against the
+        Business FMV at or before the same time. Returns (quote, None) or (None, rejection reason).
+        """
+        fmv_tracker = self.polygon_data_service.trade_pair_to_recent_events.get(trade_pair.trade_pair)
+        fmv_ps = fmv_tracker.get_latest_event_at_or_before(time_ms) if fmv_tracker else None
+        return self.polygon_nasdaq_basic_data_service.get_valid_quote(trade_pair, time_ms, fmv_ps, max_age_ms)
+
+    def log_nasdaq_shadow_fill(self, trade_pair: TradePair, time_ms: int, order_type, position_type,
+                               fill_price: float, fill_source: str, order_uuid: str) -> None:
+        """Log what a Nasdaq Basic quote fill would have been next to the actual fill. Pricing is unchanged."""
+        if not trade_pair.is_equities or not self.nasdaq_quotes_enabled():
+            return
+        quote, reason = self.get_valid_nasdaq_quote(trade_pair, time_ms)
+        if quote is None:
+            logger.info(f"[NASDAQ_SHADOW] {order_uuid} {trade_pair.trade_pair_id} {order_type.name}: no valid quote "
+                        f"({reason}). actual fill={fill_price} src={fill_source}")
+            return
+        shadow_price = quote.parse_appropriate_price(time_ms, trade_pair.is_forex, order_type, position_type)
+        diff_bps = (shadow_price - fill_price) / fill_price * 10000 if fill_price else 0.0
+        logger.info(f"[NASDAQ_SHADOW] {order_uuid} {trade_pair.trade_pair_id} {order_type.name}: actual fill={fill_price} "
+                    f"src={fill_source}, nasdaq fill={shadow_price} bid/ask={quote.bid}/{quote.ask} "
+                    f"quote_age_ms={time_ms - quote.start_ms} diff={diff_bps:+.2f}bps")
 
     def get_candles(self, trade_pairs, start_time_ms, end_time_ms) -> dict:
         ans = {}

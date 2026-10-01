@@ -245,8 +245,7 @@ class BaseDataService(ABC):
                         await client.connect(self.handle_msg)
                         logger.warning(f"{self.provider_name}[{category}] connection closed, restarting")
                     else:
-                        logger.warning(f"{self.provider_name}[{category}] client not created, retrying")
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(self._client_unavailable_delay_s(category))
                         continue
 
                 except asyncio.CancelledError:
@@ -422,6 +421,11 @@ class BaseDataService(ABC):
 
     def _create_websocket_client(self, tpc):
         raise NotImplementedError
+
+    def _client_unavailable_delay_s(self, tpc) -> float:
+        """Seconds to wait before retrying when _create_websocket_client left no client."""
+        logger.warning(f"{self.provider_name}[{tpc}] client not created, retrying")
+        return 5
 
     def _subscribe_websockets(self, tpc):
         raise NotImplementedError
