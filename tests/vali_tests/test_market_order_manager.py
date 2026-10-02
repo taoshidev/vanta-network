@@ -24,6 +24,8 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from data_generator.polygon_nasdaq_basic_data_service import NASDAQ_BASIC_SOURCE
+from vali_objects.vali_dataclasses.price_source import NASDAQ_BASIC_TRADE_SOURCE
 
 
 class TestMarketOrderManager(TestBase):
@@ -490,3 +492,96 @@ class TestMarketOrderManager(TestBase):
 
         refreshed = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         self.assertFalse(next(p for p in refreshed if p.position_uuid == pos.position_uuid).is_closed_position)
+
+    # ============================================================================
+    # Test: equity fills from Nasdaq Basic quotes
+    # ============================================================================
+
+    def inject_equity_prices(self, now_ms, nasdaq_bid=None, nasdaq_ask=None):
+        """Business FMV at 100.0, plus a Nasdaq Basic quote when bid/ask are given."""
+        self.live_price_fetcher_client.set_test_market_open(True)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, PriceSource(
+            source='Polygon_ws', open=100.0, close=100.0, high=100.0, low=100.0, vwap=100.0,
+            start_ms=now_ms - 50, websocket=True, bid=100.0, ask=100.0))
+        if nasdaq_bid is not None:
+            mid = (nasdaq_bid + nasdaq_ask) / 2
+            self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, PriceSource(
+                source=NASDAQ_BASIC_SOURCE, open=mid, close=mid, high=mid, low=mid, vwap=mid,
+                start_ms=now_ms - 100, websocket=True, bid=nasdaq_bid, ask=nasdaq_ask))
+
+    def execute_live_equity(self, order_uuid, order_type, now_ms, value=None, bracket_pct=None):
+        """No fill_price/price_sources, so the manager prices the order from the live price fetcher."""
+        return self.market_order_manager.execute_order(
+            self.DEFAULT_MINER_HOTKEY, order_uuid, TradePair.AAPL, ExecutionType.MARKET, order_type,
+            OrderSize(value=value, bracket_pct=bracket_pct), now_ms=now_ms, enforce_cooldown=False,
+        )
+
+    def test_equity_long_fills_at_nasdaq_ask(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms, 99.99, 100.01)
+        order, _ = self.execute_live_equity("aapl_long", OrderType.LONG, now_ms, value=500.0)
+        self.assertEqual(order.price, 100.01)
+        self.assertEqual((order.bid, order.ask), (99.99, 100.01))
+        self.assertEqual(order.price_sources[0].source, NASDAQ_BASIC_SOURCE)
+
+    def test_equity_short_fills_at_nasdaq_bid(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms, 99.99, 100.01)
+        order, _ = self.execute_live_equity("aapl_short", OrderType.SHORT, now_ms, value=-500.0)
+        self.assertEqual(order.price, 99.99)
+
+    def test_equity_close_of_long_fills_at_nasdaq_bid(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms, 99.99, 100.01)
+        self.execute_live_equity("aapl_open", OrderType.LONG, now_ms, value=500.0)
+        close_order, position = self.execute_live_equity("aapl_close", OrderType.FLAT, now_ms + 1, bracket_pct=1.0)
+        self.assertTrue(position.is_closed_position)
+        self.assertEqual(close_order.price, 99.99)
+
+    def test_equity_invalid_quote_falls_back_to_fmv(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms, 99.0, 101.0)  # 200 bps spread exceeds the cap
+        order, _ = self.execute_live_equity("aapl_wide", OrderType.LONG, now_ms, value=500.0)
+        self.assertEqual(order.price, 100.0)
+        self.assertEqual(order.price_sources[0].source, 'Polygon_ws')
+
+    def test_equity_without_nasdaq_basic_fills_at_fmv(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms)
+        order, _ = self.execute_live_equity("aapl_fmv", OrderType.LONG, now_ms, value=500.0)
+        self.assertEqual(order.price, 100.0)
+        self.assertEqual(order.price_sources[0].source, 'Polygon_ws')
+
+    # ============================================================================
+    # Test: pre-market / after-hours
+    # ============================================================================
+
+    def set_session(self, session):
+        self.live_price_fetcher_client.set_test_market_open(session == 'regular')
+        self.live_price_fetcher_client.set_test_equity_session(session)
+
+    def test_market_order_rejected_in_extended_hours(self):
+        for session in ('pre', 'post'):
+            self.set_session(session)
+            with self.assertRaises(SignalException) as ctx:
+                self.execute_live_equity(f"aapl_{session}", OrderType.LONG, TimeUtil.now_in_millis(), value=500.0)
+            self.assertIn("Only limit orders are accepted", str(ctx.exception))
+
+    def test_orders_rejected_when_session_closed(self):
+        self.set_session('closed')
+        with self.assertRaises(SignalException) as ctx:
+            self.execute_live_equity("aapl_closed", OrderType.LONG, TimeUtil.now_in_millis(), value=500.0)
+        self.assertIn("currently closed", str(ctx.exception))
+
+    def test_limit_fill_allowed_in_extended_hours_at_fill_price(self):
+        self.set_session('post')
+        now_ms = TimeUtil.now_in_millis()
+        trade = PriceSource(source=NASDAQ_BASIC_TRADE_SOURCE, open=99.5, close=99.5, high=99.5, low=99.5, vwap=99.5,
+                            start_ms=now_ms, websocket=True, bid=99.5, ask=99.5)
+        order, position = self.market_order_manager.execute_order(
+            self.DEFAULT_MINER_HOTKEY, "aapl_limit_post", TradePair.AAPL, ExecutionType.LIMIT, OrderType.LONG,
+            OrderSize(value=500.0), fill_price=100.0, trigger_price=100.0, price_sources=[trade], slippage=0,
+            order_src=OrderSource.LIMIT_FILLED, now_ms=now_ms, enforce_cooldown=False,
+        )
+        self.assertEqual(order.price, 100.0)
+        self.assertFalse(position.is_closed_position)

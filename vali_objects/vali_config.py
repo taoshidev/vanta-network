@@ -381,6 +381,41 @@ class ValiConfig:
 
     # Controls how much history to store for price data which is used in retroactive updates
     RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS = 300000 # 5 minutes
+    # Websocket price events further than this from the requested time are too old; the best event must be
+    # within it or REST is used (also the max age of a Nasdaq Basic quote replacing FMV)
+    WEBSOCKET_PRICE_MAX_AGE_MS = 8000
+
+    # Nasdaq Basic quotes (Polygon/Massive nasdaq-basic-business feed, equities only)
+    NASDAQ_QUOTE_TRACKER_SAMPLE_MS = 250  # keep the last quote of each window in the recent event tracker
+    NASDAQ_QUOTE_MAX_SPREAD_BPS = 50  # wider quotes are dropped on receipt
+    NASDAQ_ENTITLEMENT_RETRY_S = 600  # re-check entitlement this often after "not authorized" or failed connects
+    NASDAQ_MIN_RECONNECT_INTERVAL_S = 15  # Massive asks for 10-30s between reconnects
+    # Nasdaq Basic trades (T.<ticker>), used to fill limit orders in pre-market and after-hours
+    NASDAQ_TRADE_MIN_SIZE = 100  # round lots only
+    # Massive stocks sale conditions whose prints are not a tradable price: the ones consolidated feeds don't use
+    # as the last price (Form T 12 and odd lot 37 aside, handled by session and size), plus closing-auction
+    # prints and corrected closes so the 16:00 auction cannot fill after-hours limit orders.
+    # IDs from Massive /v3/reference/conditions (asset_class=stocks, data_type=trade)
+    NASDAQ_TRADE_EXCLUDED_CONDITIONS = frozenset({
+        2,   # Average Price Trade
+        5,   # Bunched Sold Trade
+        7,   # Cash Sale
+        8,   # Closing Prints
+        10,  # Derivatively Priced
+        13,  # Extended Hours (Sold Out Of Sequence)
+        15,  # Market Center Official Close
+        16,  # Market Center Official Open
+        19,  # Market Center Closing Trade
+        20,  # Next Day
+        21,  # Price Variation Trade
+        22,  # Prior Reference Price
+        29,  # Seller
+        32,  # Sold (Out Of Sequence)
+        33,  # Sold (Out of Sequence) and Stopped Stock
+        38,  # Corrected Consolidated Close
+        52,  # Contingent Trade
+        53,  # Qualified Contingent Trade
+    })
 
     # Risk Profiling
     RISK_PROFILING_STEPS_MIN_LEVERAGE = 0.01  # min of category MIN_LEVERAGE values in vali_objects/trade_pair.py

@@ -51,10 +51,54 @@ A long position is a bet that the trade pair will increase, while a short positi
    - If they fail to do so within this window, they will be eliminated.
 11. Miners are eliminated for inactivity: if a miner in challenge period, main competition, or probation goes **60 days** without submitting a single order, it is eliminated with reason `INACTIVE`. This is checked continuously alongside the other elimination checks.
 12. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
-13. A miner's order will be ignored if placing a trade outside of market hours.
+13. Each asset class has its own trading hours, and which order types are accepted and filled depends on the session. See [Market Hours and Order Types](#market-hours-and-order-types). Market orders sent while their market is closed are rejected.
 14. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
 15. There is a 5-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
 16. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
+
+## Market Hours and Order Types
+
+All times are US Eastern (ET).
+
+### Trading hours by asset class
+
+| Asset class | Trading hours |
+|---|---|
+| Crypto (Hyperliquid USDC perps) | 24/7 |
+| Commodities (Hyperliquid USDC perps) | 24/7 |
+| Indices (Hyperliquid perps, e.g. SP500USDC) | 24/7 |
+| Equity perps on Hyperliquid (USDC pairs) | 24/7 |
+| Forex | Sunday 17:00 to Friday 17:00, closed on forex holidays (see [Holidays](#holidays)) |
+| Equities (Vanta stocks/ETFs, e.g. AAPL) | Pre-market 04:00–09:30, regular session 09:30–16:00, after-hours 16:00–20:00, on NYSE/Nasdaq trading days |
+
+Equities follow the NYSE/Nasdaq calendar: closed on exchange holidays, and on early-close days (e.g. the day after Thanksgiving) the regular session ends at 13:00 and there is **no after-hours session**.
+
+### Order types by session
+
+For 24/7 asset classes every order type is accepted and can fill at any time. Forex behaves like the equities "Closed" column outside forex hours and like the "Regular" column during them.
+
+| Order type | Equities pre-market | Equities regular session | Equities after-hours | Closed (equities overnight, weekends, holidays; forex outside hours) |
+|---|---|---|---|---|
+| `MARKET` (including `FLAT`) | Rejected | Accepted, fills immediately | Rejected | Rejected |
+| `FLAT_ALL` | Does not close equity positions | Closes positions | Does not close equity positions | Does not close positions in closed markets |
+| `LIMIT` | Accepted; fills on trades (see below) | Accepted; fills on quotes, can fill immediately | Accepted; fills on trades (see below) | Accepted and stored; fills once the market opens |
+| `STOP_LIMIT` | Accepted and stored; not triggered | Accepted; triggers | Accepted and stored; not triggered | Accepted and stored; not triggered |
+| `BRACKET` (stop loss / take profit), trailing stops | Accepted and stored; not triggered | Accepted; triggers | Accepted and stored; not triggered | Accepted and stored; not triggered |
+| `LIMIT_CANCEL`, `LIMIT_EDIT` | Accepted | Accepted | Accepted | Accepted |
+
+`LIMIT` orders cannot be `FLAT`. To reduce or close an equity position during pre-market or after-hours, send a `LIMIT` order in the opposite direction (e.g. a `SHORT` limit to reduce a `LONG` position).
+
+### How equity orders fill
+
+**Regular session.** Market orders and limit orders fill against the quote: buys (`LONG`, or `FLAT` closing a short) at the ask, sells (`SHORT`, or `FLAT` closing a long) at the bid. Limit fills never fill worse than your `limit_price`. Validators with the Nasdaq Basic data feed use real Nasdaq quotes (or Databento quotes, whichever is closest in time). Validators without it use the Business fair market value (FMV), where bid and ask are the same price. Open equity positions are valued at the price they could be closed at: longs at the bid, shorts at the ask.
+
+**Pre-market and after-hours (LIMIT orders only).** A limit order fills when a qualifying trade prints **at or through** your `limit_price` after the order was placed:
+- `LONG` limit: a trade at or below `limit_price`. `SHORT` limit: a trade at or above `limit_price`.
+- Qualifying trades are round lots (100 shares or more) reported on the Nasdaq Basic feed. Odd lots, average-price, out-of-sequence, derivatively priced, contingent, prior-reference, closing-auction and similar prints do not count.
+- The fill price is your `limit_price`, with no slippage.
+- There is no immediate fill on submission. The order waits for a qualifying trade after it was placed.
+- Stop-limit, bracket (stop loss / take profit) and trailing-stop orders do not trigger until the next regular session.
+- Open equity positions are not re-valued during pre-market or after-hours, so drawdown does not move with extended-hours prices. A fill that reduces or closes a position does realize PnL at the limit price immediately.
 
 ## Asset Class Selection
 Each miner selects a single asset class to compete in (crypto, forex, equities, or commodities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
@@ -446,16 +490,18 @@ This system ensures miners are compensated fairly based on their performance whi
 
 ## Holidays
 
-There are several enforced trading holidays where signals will not be processed. These include:
+Forex is closed on the following holidays. Market orders are rejected, and other orders are stored and wait for the market to reopen:
 
-| Holiday       | Date         | Asset              |
-|---------------|--------------|---------------------|
-| New Years     | Jan 1        | Forex, Commodities  |
-| Good Friday   | Apr 18, 2025 | Forex, Commodities  |
-| Christmas Day | Dec 25       | Forex, Commodities  |
-| Boxing Day    | Dec 26       | Forex, Commodities  |
+| Holiday       | Date                      | Asset |
+|---------------|---------------------------|-------|
+| New Years     | Jan 1                     | Forex |
+| Good Friday   | Friday before Easter      | Forex |
+| Christmas Day | Dec 25                    | Forex |
+| Boxing Day    | Dec 26                    | Forex |
 
 Where a holiday falls on a weekend, it is observed on the nearest working day.
+
+Equities follow the NYSE/Nasdaq holiday and early-close calendar (see [Market Hours and Order Types](#market-hours-and-order-types)). Crypto, commodities, indices and other Hyperliquid perps trade through all holidays.
 
 # Easy Setup
 

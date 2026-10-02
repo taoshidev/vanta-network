@@ -217,8 +217,12 @@ class LivePriceFetcherServer(RPCServerBase):
         return self._fetcher.set_test_market_open(is_open)
 
     def clear_test_market_open(self) -> None:
-        """Test-only RPC method to clear market open override."""
+        """Test-only RPC method to clear market open and equities session overrides."""
         return self._fetcher.clear_test_market_open()
+
+    def set_test_equity_session(self, session: str) -> None:
+        """Test-only RPC method to override the equities session ('pre', 'regular', 'post', 'closed')."""
+        return self._fetcher.set_test_equity_session(session)
 
     def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
         """
@@ -245,6 +249,9 @@ class LivePriceFetcherServer(RPCServerBase):
 
     def is_market_open(self, trade_pair: TradePair, time_ms: int) -> bool:
         return self._fetcher.is_market_open(trade_pair, time_ms)
+
+    def get_equity_session(self, trade_pair: TradePair, time_ms: int = None) -> str | None:
+        return self._fetcher.get_equity_session(trade_pair, time_ms)
 
 
 

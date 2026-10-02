@@ -3,7 +3,7 @@ import unittest
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
-from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
@@ -12,7 +12,7 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.vali_dataclasses.price_source import PriceSource
+from vali_objects.vali_dataclasses.price_source import PriceSource, NASDAQ_BASIC_TRADE_SOURCE
 
 
 class TestLimitOrderIntegration(TestBase):
@@ -912,6 +912,101 @@ class TestLimitOrderIntegration(TestBase):
         self.assertEqual(bracket_order['stop_loss'], 54000.0)
         self.assertEqual(bracket_order['take_profit'], 48000.0)
         self.assertEqual(bracket_order['src'], OrderSource.BRACKET_UNFILLED)
+
+
+    # ============================================================================
+    # Pre-market / after-hours: LIMIT orders fill on Nasdaq Basic round-lot trades
+    # ============================================================================
+
+    def enter_session(self, session='post'):
+        self.live_price_fetcher_client.set_test_market_open(False)
+        self.live_price_fetcher_client.set_test_equity_session(session)
+
+    def inject_trade(self, price, t_ms=None):
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, PriceSource(
+            source=NASDAQ_BASIC_TRADE_SOURCE, open=price, close=price, high=price, low=price, vwap=price,
+            start_ms=t_ms if t_ms is not None else TimeUtil.now_in_millis(), websocket=True, bid=price, ask=price))
+
+    def unfilled_orders(self):
+        return self.limit_order_client.get_limit_orders_for_trade_pair(
+            self.DEFAULT_TRADE_PAIR.trade_pair_id).get(self.DEFAULT_MINER_HOTKEY, [])
+
+    def submit_in_session(self, order, session='post'):
+        self.enter_session(session)
+        result = self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(self.unfilled_orders()), 1, "No immediate fill outside regular hours")
+
+    def test_after_hours_long_limit_fills_at_limit_price_on_trade_through(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.submit_in_session(self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2))
+
+        self.inject_trade(47900.0)
+        self.limit_order_client.check_and_fill_limit_orders()
+
+        self.assertEqual(self.unfilled_orders(), [])
+        position = self.position_client.get_open_position_for_trade_pair(self.DEFAULT_MINER_HOTKEY,
+                                                                         self.DEFAULT_TRADE_PAIR.trade_pair_id)
+        filled = position.orders[-1]
+        self.assertEqual(filled.src, OrderSource.LIMIT_FILLED)
+        self.assertEqual(filled.price, 48000.0, "Fills at the miner's limit price, not the trade price")
+
+    def test_pre_market_trade_at_limit_fills_short(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.submit_in_session(self.create_limit_order(order_type=OrderType.SHORT, limit_price=52000.0, leverage=-0.1),
+                               session='pre')
+
+        self.inject_trade(52000.0)
+        self.limit_order_client.check_and_fill_limit_orders()
+
+        self.assertEqual(self.unfilled_orders(), [])
+        position = self.position_client.get_open_position_for_trade_pair(self.DEFAULT_MINER_HOTKEY,
+                                                                         self.DEFAULT_TRADE_PAIR.trade_pair_id)
+        self.assertEqual(position.orders[-1].price, 52000.0)
+
+    def test_after_hours_trade_not_through_limit_does_not_fill(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.submit_in_session(self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2))
+        self.inject_trade(48100.0)
+        self.limit_order_client.check_and_fill_limit_orders()
+        self.assertEqual(len(self.unfilled_orders()), 1)
+
+    def test_after_hours_trade_before_order_ignored(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        order = self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2)
+        self.submit_in_session(order)
+        self.inject_trade(47900.0, t_ms=order.processed_ms - 1000)
+        self.limit_order_client.check_and_fill_limit_orders()
+        self.assertEqual(len(self.unfilled_orders()), 1)
+
+    def test_after_hours_without_nasdaq_trades_does_not_fill(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.submit_in_session(self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2))
+        # A non-trade price that crosses the limit (e.g. FMV) does not fill outside regular hours
+        self.inject_price_data(self.DEFAULT_TRADE_PAIR, self.create_price_source(47000.0))
+        self.limit_order_client.check_and_fill_limit_orders()
+        self.assertEqual(len(self.unfilled_orders()), 1)
+
+    def test_after_hours_stop_limit_waits_for_regular_session(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        stop_limit = Order(
+            trade_pair=self.DEFAULT_TRADE_PAIR, order_uuid=f"stop_limit_{TimeUtil.now_in_millis()}",
+            processed_ms=TimeUtil.now_in_millis(), price=0.0, order_type=OrderType.LONG, leverage=0.2,
+            execution_type=ExecutionType.STOP_LIMIT, stop_price=52000.0, stop_condition=StopCondition.GTE,
+            limit_price=52500.0, src=OrderSource.STOP_LIMIT_UNFILLED)
+        self.submit_in_session(stop_limit)
+        self.inject_trade(52100.0)  # would trigger the stop in regular hours
+        self.limit_order_client.check_and_fill_limit_orders()
+        orders = self.unfilled_orders()
+        self.assertEqual([o['src'] for o in orders], [OrderSource.STOP_LIMIT_UNFILLED])
+
+    def test_closed_session_does_not_fill(self):
+        self.create_test_position(order_type=OrderType.LONG, leverage=0.3)
+        self.submit_in_session(self.create_limit_order(order_type=OrderType.LONG, limit_price=48000.0, leverage=0.2),
+                               session='closed')
+        self.inject_trade(47900.0)
+        self.limit_order_client.check_and_fill_limit_orders()
+        self.assertEqual(len(self.unfilled_orders()), 1)
 
 
 if __name__ == '__main__':

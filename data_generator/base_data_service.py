@@ -14,7 +14,7 @@ from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
 from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
-from vali_objects.vali_dataclasses.price_source import PriceSource
+from vali_objects.vali_dataclasses.price_source import PriceSource, POLYGON_WS_SOURCE  # noqa: F401 (re-exported)
 import logging
 from shared_objects.log import logger
 
@@ -92,6 +92,7 @@ class BaseDataService(ABC):
 
         # Test-only override for market open status
         self._test_market_open_override = None  # None = use real calendar, True/False = override all markets
+        self._test_equity_session_override = None  # None = use real calendar, else 'pre'/'regular'/'post'/'closed'
 
 
 
@@ -135,10 +136,39 @@ class BaseDataService(ABC):
     @ErrorUtils.require_test_mode
     def clear_test_market_open(self) -> None:
         """
-        Clear market open override and use real calendar.
+        Clear market open and equities session overrides and use the real calendar.
         Only works when running_unit_tests=True for safety.
         """
         self._test_market_open_override = None
+        self._test_equity_session_override = None
+
+    def get_equity_session(self, trade_pair: TradePair, time_ms=None) -> str | None:
+        """'pre', 'regular', 'post' or 'closed' for Vanta equities, None for anything else."""
+        if trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA:
+            test_session = self._test_equity_session()
+            if test_session is not None:
+                return test_session
+        if time_ms is None:
+            time_ms = TimeUtil.now_in_millis()
+        return self.market_calendar.get_equity_session(trade_pair, time_ms)
+
+    def _test_equity_session(self) -> str | None:
+        """Test override for the equities session. A market open override implies 'regular' or 'closed' so the
+        two overrides stay consistent; an explicit session override takes precedence."""
+        if self._test_equity_session_override is not None:
+            return self._test_equity_session_override
+        if self._test_market_open_override is not None:
+            return 'regular' if self._test_market_open_override else 'closed'
+        return None
+
+    @ErrorUtils.require_test_mode
+    def set_test_equity_session(self, session: str) -> None:
+        """Test-only override of the equities session ('pre', 'regular', 'post', 'closed')."""
+        self._test_equity_session_override = session
+
+    def _websocket_session_active(self, trade_pair: TradePair) -> bool:
+        """Whether the websocket for trade_pair's category should be running now. Defaults to market hours."""
+        return self.is_market_open(trade_pair)
 
     def get_first_trade_pair_in_category(self, tpc: TradePairCategory) -> TradePair:
         # Use generator expression for efficiency
@@ -245,8 +275,7 @@ class BaseDataService(ABC):
                         await client.connect(self.handle_msg)
                         logger.warning(f"{self.provider_name}[{category}] connection closed, restarting")
                     else:
-                        logger.warning(f"{self.provider_name}[{category}] client not created, retrying")
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(self._client_unavailable_delay_s(category))
                         continue
 
                 except asyncio.CancelledError:
@@ -335,7 +364,7 @@ class BaseDataService(ABC):
             # Market check first
             # Get a representative trade pair for the category
             trade_pair = self.get_first_trade_pair_in_category(tpc)
-            if trade_pair and not self.is_market_open(trade_pair):
+            if trade_pair and not self._websocket_session_active(trade_pair):
                 if task and not task.done():
                     logger.info(f"{self.provider_name}[{tpc}] market closed, stopping")
                     task.cancel()
@@ -422,6 +451,11 @@ class BaseDataService(ABC):
 
     def _create_websocket_client(self, tpc):
         raise NotImplementedError
+
+    def _client_unavailable_delay_s(self, tpc) -> float:
+        """Seconds to wait before retrying when _create_websocket_client left no client."""
+        logger.warning(f"{self.provider_name}[{tpc}] client not created, retrying")
+        return 5
 
     def _subscribe_websockets(self, tpc):
         raise NotImplementedError
