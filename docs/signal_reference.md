@@ -26,6 +26,8 @@ Complete reference for all order signal types supported by Vanta Network.
 
 **Size fields:** Exactly one of `leverage`, `value`, or `quantity` must be specified (except BRACKET and FLAT orders). BRACKET orders additionally accept `bracket_pct` as an alternative size specifier.
 
+**Market hours:** which execution types are accepted and filled depends on the asset class and session (equities pre-market, regular session, after-hours). See [Market Hours and Order Types](miner.md#market-hours-and-order-types).
+
 ---
 
 ## Execution Types
@@ -155,6 +157,10 @@ Price validation:
 - SHORT: `take_profit` < `limit_price` < `stop_loss`
 - SL validation is skipped when `trailing_stop` is set (SL computed at fill time)
 
+Limit orders can be submitted at any time, including while the market is closed. They fill once the market is open.
+
+**Equities in pre-market (04:00–09:30 ET) and after-hours (16:00–20:00 ET):** LIMIT is the only execution type that fills. The order fills at exactly `limit_price` when a round-lot trade (100+ shares) on the Nasdaq Basic feed prints at or through it after the order was placed: at or below `limit_price` for LONG, at or above for SHORT. There is no immediate fill on submission. Bracket orders attached via SL/TP are created on fill but do not trigger until the regular session.
+
 #### With SL/TP (creates bracket on fill)
 
 ```json
@@ -256,6 +262,7 @@ Price validation:
 
 - Stop-limit orders are **never filled immediately** on submission — they always wait for the daemon
 - The trigger uses mid price (average of bid and ask)
+- Equities: only triggers during the regular session (09:30–16:00 ET), not in pre-market or after-hours
 - `FLAT` order type is not supported
 - Cancellable via `LIMIT_CANCEL` while unfilled
 - Editable via `LIMIT_EDIT` while unfilled
@@ -270,6 +277,8 @@ Sets a stop loss / take profit on an **existing open position**. Requires an ope
 **Required:** `trade_pair_id`, at least one of `stop_loss`, `take_profit`, `trailing_stop`
 
 Size is optional — omit to close the entire position when triggered (equivalent to `bracket_pct: 1.0`).
+
+Equities: stop loss, take profit and trailing stops only trigger during the regular session (09:30–16:00 ET), not in pre-market or after-hours.
 
 ```json
 {
@@ -467,5 +476,6 @@ At least one price field (`stop_loss`, `take_profit`, `trailing_percent`, or `tr
 
 - `order_uuid` is auto-generated if not provided. Providing your own UUID enables later cancellation by UUID.
 - `FLAT` order type on MARKET closes the position without specifying size — it closes the full open position.
+- MARKET orders (including FLAT) are rejected when the trade pair's market is closed, and for equities during pre-market and after-hours. FLAT_ALL skips positions whose market is closed or in pre-market/after-hours, and closes the rest.
 - Bracket orders created from a market/limit fill use the parent order's UUID as a prefix: `{parent_uuid}-bracket-{i}`.
 - Trailing stop best price is tracked per tick and persisted to disk (rate-limited to once per minute).
