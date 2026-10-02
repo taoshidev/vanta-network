@@ -144,11 +144,22 @@ class BaseDataService(ABC):
 
     def get_equity_session(self, trade_pair: TradePair, time_ms=None) -> str | None:
         """'pre', 'regular', 'post' or 'closed' for Vanta equities, None for anything else."""
-        if self._test_equity_session_override is not None and trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA:
-            return self._test_equity_session_override
+        if trade_pair.is_equities and trade_pair.src == TradePairSource.VANTA:
+            test_session = self._test_equity_session()
+            if test_session is not None:
+                return test_session
         if time_ms is None:
             time_ms = TimeUtil.now_in_millis()
         return self.market_calendar.get_equity_session(trade_pair, time_ms)
+
+    def _test_equity_session(self) -> str | None:
+        """Test override for the equities session. A market open override implies 'regular' or 'closed' so the
+        two overrides stay consistent; an explicit session override takes precedence."""
+        if self._test_equity_session_override is not None:
+            return self._test_equity_session_override
+        if self._test_market_open_override is not None:
+            return 'regular' if self._test_market_open_override else 'closed'
+        return None
 
     @ErrorUtils.require_test_mode
     def set_test_equity_session(self, session: str) -> None:

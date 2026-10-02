@@ -18,6 +18,7 @@ from vali_objects.utils.limit_order.order_trigger import (
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.price_source import NASDAQ_BASIC_TRADE_SOURCE
 from vali_objects.enums.order_source_enum import OrderSource
 from shared_objects.log import logger
 
@@ -925,8 +926,10 @@ class LimitOrderManager(CacheController):
             if trade_pair.is_blocked or not hotkey_dict:
                 continue
 
-            # Check if market is open
-            if not self.live_price_fetcher.is_market_open(trade_pair, now_ms):
+            # Check if market is open. Equities also check limit orders in pre-market/after-hours, where only
+            # LIMIT orders fill (against Nasdaq Basic trades) and other order types wait for the regular session.
+            extended_hours = self.live_price_fetcher.get_equity_session(trade_pair, now_ms) in ('pre', 'post')
+            if not extended_hours and not self.live_price_fetcher.is_market_open(trade_pair, now_ms):
                 if self.running_unit_tests:
                     print(f"[CHECK_ORDERS DEBUG] Market closed for {trade_pair.trade_pair_id}")
                 logger.debug(f"Market closed for {trade_pair.trade_pair_id}, skipping")
@@ -959,6 +962,8 @@ class LimitOrderManager(CacheController):
                 for order in list(orders):
                     # Check regular limit orders, SL/TP Bracket orders, and stop-limit orders
                     if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
+                        continue
+                    if extended_hours and order.execution_type != ExecutionType.LIMIT:
                         continue
 
                     total_checked += 1
@@ -1260,6 +1265,8 @@ class LimitOrderManager(CacheController):
             result = self.market_order_client.execute_order(
                 miner_hotkey, order.order_uuid, trade_pair,
                 order.execution_type, order_type, order_size,
+                # A trade (pre-market/after-hours) at or through the limit fills at the miner's limit price
+                fill_price=trigger_price if price_source.source == NASDAQ_BASIC_TRADE_SOURCE else None,
                 trigger_price=trigger_price,
                 price_sources=[price_source],
                 order_src=new_src,

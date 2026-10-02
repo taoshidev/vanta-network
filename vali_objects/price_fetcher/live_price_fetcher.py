@@ -6,6 +6,7 @@ import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
 from data_generator.polygon_data_service import PolygonDataService
 from data_generator.polygon_nasdaq_basic_data_service import PolygonNasdaqBasicDataService, NASDAQ_BASIC_SOURCE
+from vali_objects.vali_dataclasses.price_source import NASDAQ_BASIC_TRADE_SOURCE
 from data_generator.databento_data_service import DatabentoDataService
 from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
@@ -118,10 +119,14 @@ class LivePriceFetcher:
         """
         Test-only method to inject price sources for specific trade pairs.
         Delegates to PolygonDataService, or to the Nasdaq Basic service (which it also enables) when the
-        source is a Nasdaq Basic quote.
+        source is a Nasdaq Basic quote or trade (injected as a round lot).
         """
         if price_source is not None and price_source.source == NASDAQ_BASIC_SOURCE:
             self.polygon_nasdaq_basic_data_service.set_test_quote(trade_pair, price_source)
+            return
+        if price_source is not None and price_source.source == NASDAQ_BASIC_TRADE_SOURCE:
+            self.polygon_nasdaq_basic_data_service.set_test_trade(trade_pair, price_source.open,
+                                                                  ValiConfig.NASDAQ_TRADE_MIN_SIZE, price_source.start_ms)
             return
         self.polygon_data_service.set_test_price_source(trade_pair, price_source)
 
@@ -254,6 +259,13 @@ class LivePriceFetcher:
         hl_sources = self.hyperliquid_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         if trade_pair.src == TradePairSource.HYPERLIQUID:
             return hl_sources
+
+        # Equities in pre-market/after-hours: only Nasdaq Basic trades fill (limit orders), and without the
+        # Nasdaq Basic expansion nothing does
+        if self.get_equity_session(trade_pair, end_ms) in ('pre', 'post'):
+            if not self.nasdaq_quotes_enabled():
+                return []
+            return self.polygon_nasdaq_basic_data_service.get_trades_in_range(trade_pair, start_ms, end_ms)
 
         databento_sources = []
         # NOTE re-enable after resolving databento spread
