@@ -311,8 +311,9 @@ class PolygonNasdaqBasicDataService(BaseDataService):
         """Equities session at time_ms, cached for the span it holds so per-trade checks stay cheap."""
         if self._session_trade_pair is None:
             return None
-        if self._test_equity_session_override is not None:
-            return self._test_equity_session_override
+        test_session = self._test_equity_session()
+        if test_session is not None:
+            return test_session
         cached = self._session_cache
         if cached is None or not (cached[1] <= time_ms < cached[2]):
             cached = self.market_calendar.get_equity_session_bounds(self._session_trade_pair, time_ms)
@@ -351,7 +352,10 @@ class PolygonNasdaqBasicDataService(BaseDataService):
             low=price,
             start_ms=t,
             websocket=True,
-            lag_ms=now_ms - t
+            lag_ms=now_ms - t,
+            # bid = ask = trade price, like FMV, so the limit trigger compares the trade price to the limit
+            bid=price,
+            ask=price
         ))
         oldest_ms = now_ms - ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS
         while trades and trades[0].start_ms < oldest_ms:

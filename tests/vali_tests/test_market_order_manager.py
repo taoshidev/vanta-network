@@ -25,6 +25,7 @@ from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from data_generator.polygon_nasdaq_basic_data_service import NASDAQ_BASIC_SOURCE
+from vali_objects.vali_dataclasses.price_source import NASDAQ_BASIC_TRADE_SOURCE
 
 
 class TestMarketOrderManager(TestBase):
@@ -550,3 +551,37 @@ class TestMarketOrderManager(TestBase):
         order, _ = self.execute_live_equity("aapl_fmv", OrderType.LONG, now_ms, value=500.0)
         self.assertEqual(order.price, 100.0)
         self.assertEqual(order.price_sources[0].source, 'Polygon_ws')
+
+    # ============================================================================
+    # Test: pre-market / after-hours
+    # ============================================================================
+
+    def set_session(self, session):
+        self.live_price_fetcher_client.set_test_market_open(session == 'regular')
+        self.live_price_fetcher_client.set_test_equity_session(session)
+
+    def test_market_order_rejected_in_extended_hours(self):
+        for session in ('pre', 'post'):
+            self.set_session(session)
+            with self.assertRaises(SignalException) as ctx:
+                self.execute_live_equity(f"aapl_{session}", OrderType.LONG, TimeUtil.now_in_millis(), value=500.0)
+            self.assertIn("Only limit orders are accepted", str(ctx.exception))
+
+    def test_orders_rejected_when_session_closed(self):
+        self.set_session('closed')
+        with self.assertRaises(SignalException) as ctx:
+            self.execute_live_equity("aapl_closed", OrderType.LONG, TimeUtil.now_in_millis(), value=500.0)
+        self.assertIn("currently closed", str(ctx.exception))
+
+    def test_limit_fill_allowed_in_extended_hours_at_fill_price(self):
+        self.set_session('post')
+        now_ms = TimeUtil.now_in_millis()
+        trade = PriceSource(source=NASDAQ_BASIC_TRADE_SOURCE, open=99.5, close=99.5, high=99.5, low=99.5, vwap=99.5,
+                            start_ms=now_ms, websocket=True, bid=99.5, ask=99.5)
+        order, position = self.market_order_manager.execute_order(
+            self.DEFAULT_MINER_HOTKEY, "aapl_limit_post", TradePair.AAPL, ExecutionType.LIMIT, OrderType.LONG,
+            OrderSize(value=500.0), fill_price=100.0, trigger_price=100.0, price_sources=[trade], slippage=0,
+            order_src=OrderSource.LIMIT_FILLED, now_ms=now_ms, enforce_cooldown=False,
+        )
+        self.assertEqual(order.price, 100.0)
+        self.assertFalse(position.is_closed_position)

@@ -437,7 +437,7 @@ class TestNasdaqBasicTrades(unittest.TestCase):
         self.assertEqual(len(trades), 1)
         ps = trades[0]
         self.assertEqual(ps.source, NASDAQ_BASIC_TRADE_SOURCE)
-        self.assertEqual((ps.open, ps.close, ps.bid, ps.ask, ps.start_ms), (330.25, 330.25, 0.0, 0.0, self.now_ms - 100))
+        self.assertEqual((ps.open, ps.close, ps.bid, ps.ask, ps.start_ms), (330.25, 330.25, 330.25, 330.25, self.now_ms - 100))
 
     def test_trades_stored_in_pre_but_not_regular_or_closed(self):
         self.svc.set_test_equity_session('pre')
@@ -488,6 +488,24 @@ class TestNasdaqBasicTrades(unittest.TestCase):
             self.assertEqual(self.svc._session_at(et_ms(2026, 10, 1, 19, 0)), 'post')
             self.assertEqual(self.svc._session_at(et_ms(2026, 10, 2, 5, 0)), 'pre')
         self.assertEqual(bounds.call_count, 2)
+
+    def test_trigger_window_in_extended_hours_is_trades_only(self):
+        fetcher = LivePriceFetcher(secrets=ValiUtils.get_secrets(running_unit_tests=True), disable_ws=True,
+                                   running_unit_tests=True)
+        now_ms = TimeUtil.now_in_millis()
+        fetcher.set_test_price_source(TradePair.AAPL, fmv_source(100.0, now_ms - 50))
+        fetcher.set_test_equity_session('post')
+        # Without Nasdaq Basic nothing fills outside regular hours, even with FMV in the window
+        self.assertEqual(fetcher.get_ws_price_sources_in_window(TradePair.AAPL, now_ms - 30_000, now_ms), [])
+        trade = PriceSource(source=NASDAQ_BASIC_TRADE_SOURCE, open=99.5, start_ms=now_ms - 100, websocket=True,
+                            bid=99.5, ask=99.5)
+        fetcher.set_test_price_source(TradePair.AAPL, trade)
+        window = fetcher.get_ws_price_sources_in_window(TradePair.AAPL, now_ms - 30_000, now_ms)
+        self.assertEqual([(ps.source, ps.open) for ps in window], [(NASDAQ_BASIC_TRADE_SOURCE, 99.5)])
+        # Regular hours: trades are not used
+        fetcher.set_test_equity_session('regular')
+        self.assertEqual([ps.source for ps in fetcher.get_ws_price_sources_in_window(TradePair.AAPL, now_ms - 30_000, now_ms)],
+                         ['Polygon_ws'])
 
     def test_other_services_keep_market_hours_for_their_websocket(self):
         fetcher = LivePriceFetcher(secrets=ValiUtils.get_secrets(running_unit_tests=True), disable_ws=True,
