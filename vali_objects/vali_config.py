@@ -521,6 +521,9 @@ class ValiConfig:
     SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # retired rule, no longer enforced — kept for dashboard/API payload compatibility
     SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: flat intraday-drawdown threshold for static accounts, regardless of bucket entry time
 
+    # Intraday drawdown thresholds (daily loss limit) a subaccount may choose from at creation
+    SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES = [0.03, 0.05]
+
     # Pro account (entity subaccount) rules. The promotion criteria and transition grace period can
     # be overridden for testnet through environment variables of the same name (docs/entity_miner.md).
     PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT = _env_override("PRO_CHALLENGE_RETURNS_THRESHOLD_DEFAULT", 0.06)
@@ -732,6 +735,7 @@ class ValiConfig:
     MAX_COLLATERAL_BALANCE_THETA = 1000  # Approx $500k capital account size
     MIN_COLLATERAL_BALANCE_TESTNET = 100
     MAX_COLLATERAL_BALANCE_TESTNET = 10000.0
+    SLASH_BURN_PROPORTION = 0.7  # Share of slashed theta that is burned
 
     # Entity Miner Collateral
     ENTITY_REGISTRATION_FEE = 1000  # Theta required to register an entity

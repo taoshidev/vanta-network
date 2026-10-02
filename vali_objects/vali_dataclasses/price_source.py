@@ -106,8 +106,9 @@ class PriceSource:
 
     def parse_appropriate_price(self, now_ms: int, is_forex: bool, order_type: OrderType, position_type: OrderType) -> float:
         ans = None
-        # Only secondly candles have bid/ask
-        if is_forex and self.timespan_ms == 1000:
+        # Fill against the side of the book the order takes whenever a real quote is present.
+        # Buys (LONG, or FLAT closing a SHORT) lift the ask; sells hit the bid.
+        if self.bid and self.ask and self.bid > 0 and self.ask > 0:
             if order_type == OrderType.LONG:
                 ans = self.ask
             elif order_type == OrderType.SHORT:

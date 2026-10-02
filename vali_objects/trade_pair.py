@@ -1341,6 +1341,10 @@ class TradePair(Enum):
     WLDUSDC   = ["WLDUSDC",   "WLD/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5), False]
     PUMPUSDC  = ["PUMPUSDC",  "PUMP/USDC",  0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5), False]
     KPEPEUSDC = ["kPEPEUSDC", "kPEPE/USDC", 0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5), True]
+    HBARUSDC  = ["HBARUSDC",  "HBAR/USDC",  0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5), False]
+    XLMUSDC   = ["XLMUSDC",   "XLM/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5), False]
+    KSHIBUSDC = ["kSHIBUSDC", "kSHIB/USDC", 0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5), False]
+    CCUSDC    = ["CCUSDC",    "CC/USDC",    0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.CRYPTO, None, TradePairSource.HYPERLIQUID, InstrumentType.PERP, SubaccountTierBaseLeverage(0.5), False]
 
     # Commodity perp futures (synthetic, track commodity prices — not physical delivery)
     WTIOILUSDC   = ["WTIOILUSDC",   "WTIOIL/USDC",   0.001, HS_MIN_LEVERAGE, HS_MAX_LEVERAGE, TradePairCategory.COMMODITIES, None, TradePairSource.HYPERLIQUID, "xyz:CL",       InstrumentType.PERP, SubaccountTierBaseLeverage(0.5), True]

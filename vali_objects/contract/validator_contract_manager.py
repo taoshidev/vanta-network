@@ -541,7 +541,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 # The slash above already executed for real. If the withdrawal
                 # itself failed, that slash is now unwarranted -- restore it so a
                 # subsequent retry isn't processed against an already-reduced balance.
-                if slashed_amount > 0:
+                # Non-mothership slashes are dry runs, so there is nothing to roll back.
+                if slashed_amount > 0 and self.is_mothership:
                     try:
                         self.force_deposit(slashed_amount, miner_hotkey)
                         logger.info(
@@ -585,9 +586,6 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         """
         Slash miner's collateral by a proportion (1.0 for 100%)
         """
-        if not self.is_mothership:
-            return False
-
         if not (0.0 <= slash_proportion <= 1.0):
             logger.error(f"Invalid collateral slash proportion: {slash_proportion}")
             return False
@@ -606,10 +604,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         Args:
             miner_hotkey: miner hotkey to slash from
-        """
-        if not self.is_mothership:
-            return False
 
+        Non-mothership validators only log the slash and burn they would perform and return True,
+        so callers proceed as they do on the mothership.
+        """
         if slash_amount is None or slash_amount < 0:
             logger.error(f"Invalid collateral slash amount: {slash_amount}")
             return False
@@ -623,6 +621,13 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         slash_amount = min(slash_amount, current_balance_theta, self.max_theta)
         if slash_amount <= 0:
             logger.info(f"No slashing required for {miner_hotkey} (calculated amount: {slash_amount})")
+            return True
+
+        if not self.is_mothership:
+            logger.info(
+                f"[DRY RUN] Non-mothership: would slash {slash_amount} Theta and burn "
+                f"{slash_amount * ValiConfig.SLASH_BURN_PROPORTION} Theta from {miner_hotkey}"
+            )
             return True
 
         # Call collateral SDK slash method
@@ -645,18 +650,21 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
             logger.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
 
+            # Only burn a portion of the slash; the remainder stays in the vault stake
+            burn_amount = slash_amount * ValiConfig.SLASH_BURN_PROPORTION
+            burn_amount_rao = int(slash_amount_rao * ValiConfig.SLASH_BURN_PROPORTION)
             try:
                 self.collateral_manager.burn(
-                    amount=slash_amount_rao,
+                    amount=burn_amount_rao,
                     vault_stake=self.wallet.hotkey.ss58_address,
                     vault_wallet=self.wallet,
                     wallet_password=vault_password,
                 )
-                logger.info(f"Successfully burned {slash_amount} Theta for {miner_hotkey} slash")
+                logger.info(f"Successfully burned {burn_amount} of {slash_amount} slashed Theta for {miner_hotkey}")
             except Exception as e:
                 logger.error(
                     f"Slash succeeded but burn failed for {miner_hotkey} - "
-                    f"{slash_amount} Theta funds remain in slashedCollateral pool: {e}"
+                    f"{burn_amount} Theta to burn remains in slashedCollateral pool: {e}"
                 )
 
             return True
