@@ -388,6 +388,10 @@ class EntityManager(ValidatorBroadcastBase):
                 return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
 
             if not self.running_unit_tests:
+                # Non-mothership slashes are dry runs, so registering here would skip the fee
+                if not self.is_mothership:
+                    return False, "Entity registration is only processed by the mothership validator"
+
                 # Verify collateral balance
                 try:
                     current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)

@@ -455,3 +455,19 @@ class TestSlashBurnProportion(TestBase):
         with patch.object(ValiUtils, "get_secret", return_value="secret"):
             self.assertTrue(m.slash_miner_collateral("5HK", 100.0))
         m.collateral_manager.slash.assert_called_once()
+
+    def test_non_mothership_slash_is_dry_run(self):
+        m = self._make_manager(500.0)
+        m.is_mothership = False
+        self.assertTrue(m.slash_miner_collateral("5HK", 100.0))
+        self.assertTrue(m.slash_miner_collateral_proportion("5HK", 0.5))
+        m.collateral_manager.slash.assert_not_called()
+        m.collateral_manager.burn.assert_not_called()
+
+    def test_non_mothership_slash_still_validates(self):
+        m = self._make_manager(0.0)
+        m.is_mothership = False
+        self.assertFalse(m.slash_miner_collateral("5HK", 100.0))
+        self.assertFalse(m.slash_miner_collateral("5HK", -1.0))
+        self.assertFalse(m.slash_miner_collateral_proportion("5HK", 1.5))
+        m.collateral_manager.slash.assert_not_called()

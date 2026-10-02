@@ -1459,5 +1459,29 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
                          self._payout_result()['weekly_settlements'][1]['payout'])
 
 
+class TestEntityRegistrationMothershipOnly(TestBase):
+    """Non-mothership slashes are dry runs, so entity registration must stay mothership-only."""
+
+    def test_non_mothership_rejects_registration(self):
+        import threading
+        from unittest.mock import MagicMock
+        from entity_management.entity_manager import EntityManager
+
+        m = object.__new__(EntityManager)
+        m.running_unit_tests = False
+        m.is_mothership = False
+        m._entities_lock = threading.RLock()
+        m.entities = {}
+        m._position_client = MagicMock()
+        m._position_client.get_positions_for_one_hotkey.return_value = []
+        m._contract_client = MagicMock()
+
+        success, message = m.register_entity("5Entity")
+        self.assertFalse(success)
+        self.assertIn("mothership", message)
+        m._contract_client.slash_miner_collateral.assert_not_called()
+        self.assertNotIn("5Entity", m.entities)
+
+
 if __name__ == '__main__':
     unittest.main()
