@@ -184,6 +184,73 @@ class TestEntityManagement(TestBase):
         bucket = self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey'])
         self.assertEqual(bucket, MinerBucket.SUBACCOUNT_CHALLENGE)
 
+    def test_create_subaccount_with_intraday_drawdown_threshold(self):
+        """A chosen intraday drawdown threshold is stored as a fraction and applies from the first bucket."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto",
+            drawdown_criteria="static",
+            intraday_drawdown_threshold=0.03,
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertEqual(subaccount_info['intraday_drawdown_threshold'], 0.03)
+        stats = self.challenge_period_client.get_drawdown_stats(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(stats['intraday_drawdown_threshold'], 0.03)
+
+    def test_create_hl_subaccount_with_intraday_drawdown_threshold(self):
+        """Hyperliquid subaccounts may choose an intraday drawdown threshold too."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            hl_address="0x" + "b" * 40,
+            intraday_drawdown_threshold=0.03,
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertEqual(subaccount_info['intraday_drawdown_threshold'], 0.03)
+        stats = self.challenge_period_client.get_drawdown_stats(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(stats['intraday_drawdown_threshold'], 0.03)
+
+    def test_create_subaccount_without_intraday_drawdown_threshold_keeps_bucket_default(self):
+        """Omitting the intraday drawdown threshold keeps today's bucket threshold."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        success, subaccount_info, message = self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1,
+            account_size=100_000,
+            asset_class="crypto",
+        )
+
+        self.assertTrue(success, f"Subaccount creation failed: {message}")
+        self.assertIsNone(subaccount_info['intraday_drawdown_threshold'])
+        stats = self.challenge_period_client.get_drawdown_stats(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(stats['intraday_drawdown_threshold'], ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+
+    def test_create_subaccount_rejects_invalid_intraday_drawdown_threshold(self):
+        """Values outside SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES are rejected before anything is created."""
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+
+        for value in (0.04, 0.07 - 0.04, 0.02, 0.06, 3, True):
+            success, subaccount_info, message = self.entity_client.create_subaccount(
+                entity_hotkey=self.ENTITY_HOTKEY_1,
+                account_size=100_000,
+                asset_class="crypto",
+                intraday_drawdown_threshold=value,
+            )
+            self.assertFalse(success, f"intraday_drawdown_threshold={value!r} should be rejected")
+            self.assertIsNone(subaccount_info)
+            self.assertIn("intraday_drawdown_threshold", message)
+
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data['subaccounts']), 0)
+        self.assertEqual(entity_data['next_subaccount_id'], 0)
+
     def test_create_multiple_subaccounts(self):
         """Test creating multiple subaccounts for an entity."""
         # Register entity
@@ -1390,6 +1457,30 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         # Only the promotion week's window moved; the week after it is untouched
         self.assertEqual(result['weekly_settlements'][2]['payout'],
                          self._payout_result()['weekly_settlements'][1]['payout'])
+
+
+class TestEntityRegistrationMothershipOnly(TestBase):
+    """Non-mothership slashes are dry runs, so entity registration must stay mothership-only."""
+
+    def test_non_mothership_rejects_registration(self):
+        import threading
+        from unittest.mock import MagicMock
+        from entity_management.entity_manager import EntityManager
+
+        m = object.__new__(EntityManager)
+        m.running_unit_tests = False
+        m.is_mothership = False
+        m._entities_lock = threading.RLock()
+        m.entities = {}
+        m._position_client = MagicMock()
+        m._position_client.get_positions_for_one_hotkey.return_value = []
+        m._contract_client = MagicMock()
+
+        success, message = m.register_entity("5Entity")
+        self.assertFalse(success)
+        self.assertIn("mothership", message)
+        m._contract_client.slash_miner_collateral.assert_not_called()
+        self.assertNotIn("5Entity", m.entities)
 
 
 if __name__ == '__main__':

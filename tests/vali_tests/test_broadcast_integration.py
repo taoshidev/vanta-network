@@ -219,6 +219,54 @@ class TestBroadcastIntegration(TestBase):
             # Restore original MOTHERSHIP_HOTKEY
             ValiConfig.MOTHERSHIP_HOTKEY = original_mothership_hotkey
 
+    def test_subaccount_broadcast_carries_the_intraday_drawdown_threshold(self):
+        """A receiving validator registers the same chosen intraday drawdown threshold as the mothership."""
+        # Built first so it starts without the subaccount, like a remote validator
+        receiver_manager = EntityManager(
+            running_unit_tests=True,
+            config=SimpleNamespace(netuid=116, wallet=SimpleNamespace(hotkey=self.NON_MOTHERSHIP_HOTKEY),
+                                   subtensor=SimpleNamespace(network="test")),
+            is_backtesting=False
+        )
+        receiver_manager.is_mothership = False
+        mothership_manager = EntityManager(
+            running_unit_tests=True,
+            config=SimpleNamespace(netuid=116, wallet=SimpleNamespace(hotkey=self.MOTHERSHIP_HOTKEY),
+                                   subtensor=SimpleNamespace(network="test")),
+            is_backtesting=False
+        )
+        mothership_manager.is_mothership = True
+        success, msg = mothership_manager.register_entity(entity_hotkey=self.TEST_ENTITY_HOTKEY)
+        self.assertTrue(success, msg)
+        success, subaccount_info, msg = mothership_manager.create_subaccount(
+            entity_hotkey=self.TEST_ENTITY_HOTKEY, account_size=50000.0, asset_class="crypto",
+            drawdown_criteria="static", intraday_drawdown_threshold=0.03,
+        )
+        self.assertTrue(success, msg)
+
+        # Same payload broadcast_subaccount_registration sends. Drop the mothership's challenge
+        # period state so the receiver's registration is what gets checked.
+        subaccount_data = subaccount_info.model_dump()
+        subaccount_data["entity_hotkey"] = self.TEST_ENTITY_HOTKEY
+        challenge_period_client = self.orchestrator.get_client('challenge_period')
+        challenge_period_client.remove_miners(subaccount_info.synthetic_hotkey)
+
+        original_mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY
+        ValiConfig.MOTHERSHIP_HOTKEY = self.MOTHERSHIP_HOTKEY
+        try:
+            result = receiver_manager.receive_subaccount_registration_update(
+                subaccount_data=subaccount_data,
+                sender_hotkey=ValiConfig.MOTHERSHIP_HOTKEY_TESTNET
+            )
+        finally:
+            ValiConfig.MOTHERSHIP_HOTKEY = original_mothership_hotkey
+        self.assertTrue(result, "Broadcast reception failed")
+
+        received = receiver_manager.get_entity_data(self.TEST_ENTITY_HOTKEY).subaccounts[0]
+        self.assertEqual(received.intraday_drawdown_threshold, 0.03)
+        stats = challenge_period_client.get_drawdown_stats(subaccount_info.synthetic_hotkey)
+        self.assertEqual(stats["intraday_drawdown_threshold"], 0.03)
+
     def test_entity_manager_reject_unauthorized_broadcast(self):
         """
         Test that non-mothership broadcasts are rejected by verify_broadcast_sender.

@@ -415,3 +415,59 @@ class TestBoundedOwnershipQuery(TestBase):
         m = self._make_manager(lambda *a, **k: "5SomeoneElse")
         self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))
         self.assertEqual(m._coldkey_hotkey_cache[("5CK", "5HK")], False)
+
+
+class TestSlashBurnProportion(TestBase):
+    """slash_miner_collateral debits the full slash from the miner but burns only
+    SLASH_BURN_PROPORTION of it from the vault stake."""
+
+    def _make_manager(self, balance_theta):
+        from unittest.mock import MagicMock
+        from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+
+        m = object.__new__(ValidatorContractManager)
+        m.is_mothership = True
+        m.is_testnet = False
+        m.wallet = MagicMock()
+        m.collateral_manager = MagicMock()
+        m.get_miner_collateral_balance = MagicMock(return_value=balance_theta)
+        return m
+
+    def test_burns_proportion_of_slash(self):
+        from unittest.mock import patch
+
+        m = self._make_manager(500.0)
+        with patch.object(ValiUtils, "get_secret", return_value="secret"):
+            self.assertTrue(m.slash_miner_collateral("5HK", 100.0))
+
+        slash_rao = int(100.0 * 10 ** 9)
+        self.assertEqual(m.collateral_manager.slash.call_args.kwargs["amount"], slash_rao)
+        self.assertEqual(
+            m.collateral_manager.burn.call_args.kwargs["amount"],
+            int(slash_rao * ValiConfig.SLASH_BURN_PROPORTION),
+        )
+
+    def test_burn_failure_still_reports_slash_success(self):
+        from unittest.mock import patch
+
+        m = self._make_manager(500.0)
+        m.collateral_manager.burn.side_effect = RuntimeError("burn failed")
+        with patch.object(ValiUtils, "get_secret", return_value="secret"):
+            self.assertTrue(m.slash_miner_collateral("5HK", 100.0))
+        m.collateral_manager.slash.assert_called_once()
+
+    def test_non_mothership_slash_is_dry_run(self):
+        m = self._make_manager(500.0)
+        m.is_mothership = False
+        self.assertTrue(m.slash_miner_collateral("5HK", 100.0))
+        self.assertTrue(m.slash_miner_collateral_proportion("5HK", 0.5))
+        m.collateral_manager.slash.assert_not_called()
+        m.collateral_manager.burn.assert_not_called()
+
+    def test_non_mothership_slash_still_validates(self):
+        m = self._make_manager(0.0)
+        m.is_mothership = False
+        self.assertFalse(m.slash_miner_collateral("5HK", 100.0))
+        self.assertFalse(m.slash_miner_collateral("5HK", -1.0))
+        self.assertFalse(m.slash_miner_collateral_proportion("5HK", 1.5))
+        m.collateral_manager.slash.assert_not_called()

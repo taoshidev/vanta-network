@@ -2548,8 +2548,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_coldkey": "5FxY...",
             "account_size": 25000,
             "asset_class": "crypto",
+            "intraday_drawdown_threshold": 0.03,
             "signature": "0x..."
           }'
+
+        intraday_drawdown_threshold is optional: one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
+        applied in every bucket. Omitted keeps each bucket's default.
 
         Example (HL-linked):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
@@ -2609,6 +2613,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
             # Standard leverage tier 1 to 3; EntityManager applies the default when omitted
             leverage_tier = data.get('leverage_tier')
+            # Intraday drawdown threshold, one of SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES, for standard and HL
+            # subaccounts alike. Omitted keeps each bucket's default. Unsigned, like drawdown_criteria.
+            intraday_drawdown_threshold = data.get('intraday_drawdown_threshold')
             # Optional idempotency key. Deliberately NOT part of the signed
             # payload (sig_dict below is frozen) so that a new gateway signing
             # the legacy field set still verifies against an older validator,
@@ -2627,6 +2634,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': 'leverage_tier is not supported for Hyperliquid subaccounts'}), 400
                 if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
                     return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
+
+            if (intraday_drawdown_threshold is not None
+                    and intraday_drawdown_threshold not in ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES):
+                return jsonify({'error': f'intraday_drawdown_threshold must be one of {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES}'}), 400
 
             # Validate account_size is a positive number
             try:
@@ -2694,12 +2705,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
                     entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
                     payout_address=payout_address, client_ref=client_ref,
+                    intraday_drawdown_threshold=intraday_drawdown_threshold,
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
                     entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
                     drawdown_criteria=drawdown_criteria, leverage_tier=leverage_tier,
-                    client_ref=client_ref,
+                    client_ref=client_ref, intraday_drawdown_threshold=intraday_drawdown_threshold,
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
