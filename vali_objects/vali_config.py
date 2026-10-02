@@ -735,6 +735,7 @@ class ValiConfig:
     MAX_COLLATERAL_BALANCE_THETA = 1000  # Approx $500k capital account size
     MIN_COLLATERAL_BALANCE_TESTNET = 100
     MAX_COLLATERAL_BALANCE_TESTNET = 10000.0
+    SLASH_BURN_PROPORTION = 0.7  # Share of slashed theta that is burned
 
     # Entity Miner Collateral
     ENTITY_REGISTRATION_FEE = 1000  # Theta required to register an entity
