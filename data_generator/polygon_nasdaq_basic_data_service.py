@@ -229,16 +229,14 @@ class PolygonNasdaqBasicDataService(BaseDataService):
                 self.dropped_counts[reason] += 1
             return
 
-        # Quotes carry no sequence number and can arrive a few ms behind the previous quote's timestamp.
-        # Arrival order is the book's order, so a slightly late quote is still the newest state; clamp its
-        # timestamp to keep the ticker's quotes monotonic. Only drop quotes far behind (stale replays).
+        # Quotes carry no sequence number and can arrive a few ms behind the previous quote. Like the other
+        # sources, order by timestamp: a quote older than the latest is ignored. Quotes keep their real
+        # timestamps, so stale ones (e.g. replays after a reconnect) fail the WEBSOCKET_PRICE_MAX_AGE_MS check.
         latest = self.latest_websocket_events.get(symbol)
         if latest is not None and t < latest.start_ms:
             with self._stats_lock:
                 self.n_quotes_out_of_order += 1
-            if latest.start_ms - t > ValiConfig.NASDAQ_QUOTE_OUT_OF_ORDER_TOLERANCE_MS:
-                return
-            t = latest.start_ms
+            return
 
         mid = (bid + ask) / 2.0
         ps = PriceSource(
