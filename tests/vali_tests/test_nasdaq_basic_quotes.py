@@ -94,20 +94,17 @@ class TestNasdaqBasicService(unittest.TestCase):
         self.assertEqual([ps.start_ms for ps in stored], [t0 + 200, t0 + sample + 100])
         self.assertEqual(self.svc.latest_websocket_events['AAPL'].start_ms, t0 + 2 * sample + 60)
 
-    def test_slightly_late_quote_becomes_latest_with_clamped_time(self):
-        # Observed live: quotes can arrive 1-15ms behind the previous quote's timestamp
+    def test_quote_older_than_latest_ignored(self):
+        # Observed live: quotes can arrive 1-15ms behind the previous quote. Timestamp order wins, like other sources.
         self.feed(quote_msg(self.now_ms, 99.99, 100.01), quote_msg(self.now_ms - 5, 99.98, 100.02))
         latest = self.svc.latest_websocket_events['AAPL']
-        self.assertEqual((latest.bid, latest.ask), (99.98, 100.02))
-        self.assertEqual(latest.start_ms, self.now_ms)
+        self.assertEqual((latest.bid, latest.ask, latest.start_ms), (99.99, 100.01, self.now_ms))
         self.assertEqual(self.svc.n_quotes_out_of_order, 1)
 
-    def test_far_out_of_order_quote_dropped(self):
-        late_ms = ValiConfig.NASDAQ_QUOTE_OUT_OF_ORDER_TOLERANCE_MS + 500
-        self.feed(quote_msg(self.now_ms, 99.99, 100.01), quote_msg(self.now_ms - late_ms, 50.00, 50.01))
-        latest = self.svc.latest_websocket_events['AAPL']
-        self.assertEqual((latest.bid, latest.ask), (99.99, 100.01))
-        self.assertEqual(self.svc.n_quotes_out_of_order, 1)
+    def test_replayed_quote_keeps_its_real_timestamp(self):
+        # With no newer quote it is stored as-is; its age then fails the 8s check when pricing
+        self.feed(quote_msg(self.now_ms - 60_000, 99.99, 100.01))
+        self.assertEqual(self.svc.latest_websocket_events['AAPL'].start_ms, self.now_ms - 60_000)
 
     def test_get_closest_quote_checks_latest_and_tracker(self):
         t0 = self.now_ms - 10_000

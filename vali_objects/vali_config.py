@@ -387,7 +387,6 @@ class ValiConfig:
 
     # Nasdaq Basic quotes (Polygon/Massive nasdaq-basic-business feed, equities only)
     NASDAQ_QUOTE_TRACKER_SAMPLE_MS = 250  # keep the last quote of each window in the recent event tracker
-    NASDAQ_QUOTE_OUT_OF_ORDER_TOLERANCE_MS = 1000  # quotes arriving this much older than the latest are dropped
     NASDAQ_QUOTE_MAX_SPREAD_BPS = 50  # wider quotes are dropped on receipt
     NASDAQ_ENTITLEMENT_RETRY_S = 600  # re-check entitlement this often after "not authorized" or failed connects
     NASDAQ_MIN_RECONNECT_INTERVAL_S = 15  # Massive asks for 10-30s between reconnects
