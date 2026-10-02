@@ -99,6 +99,10 @@ Native USD-denominated pairs (e.g. BTC/USD) are blocked in favor of their Hyperl
 | WLDUSDC   | WLD/USDC   |
 | PUMPUSDC  | PUMP/USDC  |
 | kPEPEUSDC | kPEPE/USDC |
+| HBARUSDC  | HBAR/USDC  |
+| XLMUSDC   | XLM/USDC   |
+| kSHIBUSDC | kSHIB/USDC |
+| CCUSDC    | CC/USDC    |
 
 ### Forex
 
