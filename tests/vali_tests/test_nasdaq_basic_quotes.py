@@ -4,7 +4,7 @@ Nasdaq Basic quotes for equities.
 Covers:
 - Quote message conversion, untradable quotes dropped on receipt, 250ms tracker sampling, out-of-order handling
 - Entitlement detection from subscribe status replies, reconnect spacing
-- PriceSource.apply_nasdaq_fmv_rule, for a single price (sorted_valid_price_sources) and for a window of events
+- PriceSource.apply_nasdaq_fmv_rule: quotes replace FMV (within 8s for a single price, any quote in a window)
 - Equities events, the limit/stop trigger window and get_quote through LivePriceFetcher
 """
 import asyncio
@@ -213,7 +213,7 @@ class TestNasdaqQuoteSelection(unittest.TestCase):
     def select(self, *events):
         return [ps.source for ps in self.fetcher.sorted_valid_price_sources(list(events), self.now_ms)]
 
-    def test_recent_quote_agreeing_with_fmv_replaces_fmv(self):
+    def test_recent_quote_replaces_fmv(self):
         self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms - 100), fmv_source(100.0, self.now_ms - 50)),
                          [NASDAQ_BASIC_SOURCE])
 
@@ -223,19 +223,12 @@ class TestNasdaqQuoteSelection(unittest.TestCase):
             self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, t_ms), fmv_source(100.0, self.now_ms - 50)),
                              ['Polygon_ws'])
 
-    def test_quote_away_from_fmv_dropped(self):
-        # ~50 bps from FMV, outside max(25 bps, 2 bps spread)
-        self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms), fmv_source(100.5, self.now_ms)),
-                         ['Polygon_ws'])
-
-    def test_fmv_band_widens_to_spread(self):
-        # 40 bps spread, mid 30 bps from FMV: inside max(25, 40)
-        self.assertEqual(self.select(self.nasdaq_quote(100.10, 100.50, self.now_ms), fmv_source(100.0, self.now_ms)),
+    def test_quote_replaces_fmv_regardless_of_fmv_price(self):
+        # No FMV band: FMV can lag quotes in a fast move, so it is not used to reject them
+        self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms), fmv_source(101.0, self.now_ms)),
                          [NASDAQ_BASIC_SOURCE])
 
-    def test_old_or_missing_fmv_not_used_for_band(self):
-        old_fmv = fmv_source(105.0, self.now_ms - ValiConfig.NASDAQ_QUOTE_FMV_MAX_AGE_MS - 1000)
-        self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms), old_fmv), [NASDAQ_BASIC_SOURCE])
+    def test_quote_without_fmv_kept(self):
         self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms)), [NASDAQ_BASIC_SOURCE])
 
     def test_lists_without_a_quote_unchanged(self):
@@ -243,18 +236,12 @@ class TestNasdaqQuoteSelection(unittest.TestCase):
 
     # ---------- apply_nasdaq_fmv_rule over a window (no time_ms) ----------
 
-    def test_window_keeps_agreeing_quotes_and_drops_fmv(self):
+    def test_window_keeps_all_quotes_and_drops_fmv(self):
         fmv = fmv_source(100.0, self.now_ms - 11_000)
-        agreeing = self.nasdaq_quote(99.99, 100.01, self.now_ms - 12_000)  # >8s old is fine in a window
-        disagreeing = self.nasdaq_quote(100.99, 101.01, self.now_ms - 10_500)  # ~100 bps from the FMV beside it
+        old_quote = self.nasdaq_quote(99.99, 100.01, self.now_ms - 20_000)  # >8s old is fine in a window
+        new_quote = self.nasdaq_quote(100.99, 101.01, self.now_ms - 1000)
         other = PriceSource(source='Tiingo_ws', open=100.0, start_ms=self.now_ms, websocket=True)
-        kept = PriceSource.apply_nasdaq_fmv_rule([fmv, agreeing, disagreeing, other])
-        self.assertEqual(kept, [agreeing, other])
-
-    def test_window_without_agreeing_quote_keeps_fmv(self):
-        fmv = fmv_source(100.0, self.now_ms)
-        kept = PriceSource.apply_nasdaq_fmv_rule([fmv, self.nasdaq_quote(100.99, 101.01, self.now_ms)])
-        self.assertEqual(kept, [fmv])
+        self.assertEqual(PriceSource.apply_nasdaq_fmv_rule([fmv, old_quote, new_quote, other]), [old_quote, new_quote, other])
 
     def test_events_without_quote_returned_unchanged(self):
         events = [fmv_source(100.0, self.now_ms)]
@@ -308,8 +295,9 @@ class TestNasdaqQuoteSelection(unittest.TestCase):
         self.assertEqual(sources[0].parse_appropriate_price(self.now_ms, False, OrderType.SHORT, OrderType.SHORT), 99.99)
         self.assertEqual(sources[0].parse_appropriate_price(self.now_ms, False, OrderType.FLAT, OrderType.LONG), 99.99)
 
-    def test_quote_away_from_fmv_leaves_fmv(self):
-        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(100.99, 101.01, self.now_ms - 100))
+    def test_stale_quote_leaves_fmv(self):
+        stale_ms = self.now_ms - ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS - 1000
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, stale_ms))
         sources = self.fetcher.get_sorted_price_sources_for_trade_pair(TradePair.AAPL, self.now_ms)
         self.assertEqual([ps.source for ps in sources], ['Polygon_ws'])
 

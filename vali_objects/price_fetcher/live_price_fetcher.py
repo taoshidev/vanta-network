@@ -198,7 +198,7 @@ class LivePriceFetcher:
         if not current_time_ms:
             current_time_ms = TimeUtil.now_in_millis()
 
-        # Equities: a recent Nasdaq Basic quote that agrees with FMV replaces FMV, otherwise the quote is dropped
+        # Equities: a Nasdaq Basic quote within WEBSOCKET_PRICE_MAX_AGE_MS replaces FMV, otherwise the quote is dropped
         valid_events = PriceSource.apply_nasdaq_fmv_rule(valid_events, current_time_ms)
 
         best_event = PriceSource.get_winning_event(valid_events, current_time_ms)
@@ -257,7 +257,7 @@ class LivePriceFetcher:
 
         poly_sources = self.polygon_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         t_sources = self.tiingo_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        # Equities: if any Nasdaq Basic quote in the window agrees with FMV, triggers use quotes instead of FMV
+        # Equities: if the window has Nasdaq Basic quotes, triggers use them instead of FMV
         return PriceSource.apply_nasdaq_fmv_rule(poly_sources + t_sources + hl_sources + databento_sources + nasdaq_sources)
 
     def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
