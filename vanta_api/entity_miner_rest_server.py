@@ -1045,7 +1045,7 @@ class EntityMinerRestServer(MinerRestServer):
             "asset_class": "crypto" | "forex" | "equities",  // Required
             "account_size": float,                           // Required, must be > 0
             "leverage_tier": 1 | 2 | 3,                      // Optional, default 1 (standard leverage tier)
-            "intraday_drawdown_threshold": 0.03 | 0.04 | 0.05,  // Optional, decimal whole percent; omitted keeps bucket defaults
+            "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -1054,7 +1054,7 @@ class EntityMinerRestServer(MinerRestServer):
             "hl_address": "0x...",     // Required, 0x + 40 hex chars
             "account_size": float,     // Required, must be > 0
             "payout_address": "0x...", // Optional, EVM address for USDC payouts
-            "intraday_drawdown_threshold": 0.03 | 0.04 | 0.05,  // Optional, decimal whole percent; omitted keeps bucket defaults
+            "intraday_drawdown_threshold": 0.03 | 0.05,  // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults
             "collateral_exempt": bool  // Optional, default false
         }
         """
@@ -1077,14 +1077,14 @@ class EntityMinerRestServer(MinerRestServer):
 
             is_hl = 'hl_address' in request_data
 
-            # Intraday drawdown threshold as a decimal whole percent (e.g. 0.03), for standard and HL subaccounts alike
+            # Intraday drawdown threshold, one of SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES, for standard and HL subaccounts alike
             intraday_drawdown_threshold = request_data.get("intraday_drawdown_threshold")
             if (intraday_drawdown_threshold is not None
-                    and not ValiConfig.is_valid_intraday_drawdown_threshold(intraday_drawdown_threshold)):
-                return jsonify({'status': 'error', 'message': (
-                    f'intraday_drawdown_threshold must be a whole percent from '
-                    f'{ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN} to {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MAX}'
-                )}), 400
+                    and intraday_drawdown_threshold not in ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES):
+                return jsonify({
+                    'status': 'error',
+                    'message': f'intraday_drawdown_threshold must be one of {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES}'
+                }), 400
 
             if is_hl:
                 hl_address = request_data["hl_address"]

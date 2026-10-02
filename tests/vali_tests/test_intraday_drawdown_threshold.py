@@ -1,7 +1,6 @@
 """
-Subaccount intraday drawdown threshold (daily loss limit): a decimal whole percent chosen at creation
-(ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN to _MAX) that replaces the bucket's intraday
-drawdown threshold in every standard and pro bucket. A subaccount that chooses none keeps each bucket's
+Subaccount intraday drawdown threshold (daily loss limit): one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
+chosen at creation, that replaces the bucket's intraday drawdown threshold in every standard and pro bucket. A subaccount that chooses none keeps each bucket's
 default threshold. The other rule (static or EOD) is unchanged.
 """
 import json
@@ -62,22 +61,11 @@ def _seed(manager, bucket: MinerBucket, drawdown: DrawdownStats, intraday_drawdo
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("value", [0.03, 0.04, 0.05, 0.07 - 0.04])
-def test_every_decimal_whole_percent_in_the_bounds_is_valid(value):
-    assert ValiConfig.is_valid_intraday_drawdown_threshold(value) is True
-
-
-@pytest.mark.parametrize("value", [0.02, 0.06, 0.0, -0.03, 0.035, 0.0301, 3, 4, 5, 3.0,
-                                   float("nan"), float("inf"), "0.03", True, None])
-def test_values_outside_the_bounds_or_not_whole_percents_are_rejected(value):
-    assert ValiConfig.is_valid_intraday_drawdown_threshold(value) is False
-
-
 # ── Threshold resolution ──────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("criteria", CRITERIA)
 @pytest.mark.parametrize("bucket", SUBACCOUNT_BUCKETS)
-@pytest.mark.parametrize("threshold", [0.03, 0.04, 0.05])
+@pytest.mark.parametrize("threshold", ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES)
 def test_the_chosen_threshold_is_the_intraday_threshold_in_every_bucket(threshold, bucket, criteria):
     state = _threshold_state(bucket, threshold, criteria)
     assert state.intraday_drawdown_threshold == threshold
@@ -127,17 +115,17 @@ def test_the_chosen_threshold_is_write_once(manager):
 
 def test_the_dashboard_reports_the_chosen_threshold_as_the_intraday_threshold(manager):
     manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE, NOW_MS - DAILY_MS,
-                             drawdown_criteria=DrawdownCriteria.STATIC, intraday_drawdown_threshold=0.04)
-    assert manager.get_drawdown_stats(HOTKEY)["intraday_drawdown_threshold"] == 0.04
+                             drawdown_criteria=DrawdownCriteria.STATIC, intraday_drawdown_threshold=0.03)
+    assert manager.get_drawdown_stats(HOTKEY)["intraday_drawdown_threshold"] == 0.03
 
 
 # ── Checkpoint ────────────────────────────────────────────────────────────────
 
 def test_the_chosen_threshold_round_trips_through_the_checkpoint():
-    state = _threshold_state(MinerBucket.PRO_FUNDED, 0.04)
+    state = _threshold_state(MinerBucket.PRO_FUNDED, 0.03)
     restored = MinerBucketState.from_checkpoint_dict(HOTKEY, state.to_checkpoint_dict())
-    assert restored.intraday_drawdown_threshold_override == 0.04
-    assert restored.intraday_drawdown_threshold == 0.04
+    assert restored.intraday_drawdown_threshold_override == 0.03
+    assert restored.intraday_drawdown_threshold == 0.03
 
 
 def test_a_checkpoint_written_before_the_field_loads_with_no_limit():
@@ -160,7 +148,7 @@ INTRADAY_REASON = {
 
 @pytest.mark.parametrize("criteria", CRITERIA)
 @pytest.mark.parametrize("bucket", tuple(INTRADAY_REASON))
-@pytest.mark.parametrize("threshold", [0.03, 0.04])
+@pytest.mark.parametrize("threshold", ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES)
 def test_a_drop_just_past_the_chosen_threshold_eliminates(manager, threshold, bucket, criteria):
     _seed(manager, bucket, _below_day_open(threshold + 0.001), threshold, criteria)
     _run_refresh(manager, HOTKEY)
@@ -170,7 +158,7 @@ def test_a_drop_just_past_the_chosen_threshold_eliminates(manager, threshold, bu
 
 @pytest.mark.parametrize("criteria", CRITERIA)
 @pytest.mark.parametrize("bucket", tuple(INTRADAY_REASON))
-@pytest.mark.parametrize("threshold", [0.03, 0.04])
+@pytest.mark.parametrize("threshold", ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES)
 def test_a_drop_just_inside_the_chosen_threshold_survives(manager, threshold, bucket, criteria):
     _seed(manager, bucket, _below_day_open(threshold - 0.001), threshold, criteria)
     _run_refresh(manager, HOTKEY)
@@ -231,10 +219,10 @@ def _signed_create_body(keys, hl: bool = False, **unsigned) -> dict:
 @pytest.mark.parametrize("hl", [False, True])
 def test_validator_forwards_the_chosen_threshold(validator, keys, hl):
     server, client = validator
-    resp = client.post("/entity/create-subaccount", json=_signed_create_body(keys, hl=hl, intraday_drawdown_threshold=0.04))
+    resp = client.post("/entity/create-subaccount", json=_signed_create_body(keys, hl=hl, intraday_drawdown_threshold=0.03))
     assert resp.status_code == 200, resp.data
     create = server._entity_client.create_hl_subaccount if hl else server._entity_client.create_subaccount
-    assert create.call_args.kwargs["intraday_drawdown_threshold"] == 0.04
+    assert create.call_args.kwargs["intraday_drawdown_threshold"] == 0.03
 
 
 @pytest.mark.parametrize("hl", [False, True])
@@ -246,7 +234,7 @@ def test_validator_forwards_none_when_omitted(validator, keys, hl):
     assert create.call_args.kwargs["intraday_drawdown_threshold"] is None
 
 
-@pytest.mark.parametrize("bad", [0.02, 0.06, 0.035, 3, 4, 5, "0.03", True])
+@pytest.mark.parametrize("bad", [0.04, 0.07 - 0.04, 0.02, 0.06, 0.035, 3, 5, "0.03", True, [0.03]])
 def test_validator_rejects_an_invalid_limit(validator, keys, bad):
     server, client = validator
     resp = client.post("/entity/create-subaccount", json=_signed_create_body(keys, intraday_drawdown_threshold=bad))
@@ -310,7 +298,7 @@ def test_gateway_omits_the_limit_when_not_chosen(gateway):
     assert "intraday_drawdown_threshold" not in post.call_args.kwargs["json"]
 
 
-@pytest.mark.parametrize("bad", [0.02, 0.06, 0.035, 3, 4, 5, "0.03", True])
+@pytest.mark.parametrize("bad", [0.04, 0.07 - 0.04, 0.02, 0.06, 0.035, 3, 5, "0.03", True, [0.03]])
 def test_gateway_rejects_an_invalid_limit(gateway, bad):
     resp, post = _gateway_post(gateway, {"account_size": 100_000, "asset_class": "crypto", "intraday_drawdown_threshold": bad})
     assert resp.status_code == 400

@@ -2468,13 +2468,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_coldkey": "5FxY...",
             "account_size": 25000,
             "asset_class": "crypto",
-            "intraday_drawdown_threshold": 0.04,
+            "intraday_drawdown_threshold": 0.03,
             "signature": "0x..."
           }'
 
-        intraday_drawdown_threshold is optional: a decimal whole percent from 0.03 to 0.05
-        (ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN/MAX), applied in every bucket. Omitted
-        keeps each bucket's default.
+        intraday_drawdown_threshold is optional: one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
+        applied in every bucket. Omitted keeps each bucket's default.
 
         Example (HL-linked):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
@@ -2534,8 +2533,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             drawdown_criteria = data.get('drawdown_criteria', 'trailing')
             # Standard leverage tier 1 to 3; EntityManager applies the default when omitted
             leverage_tier = data.get('leverage_tier')
-            # Intraday drawdown threshold as a decimal whole percent (e.g. 0.03), for standard and HL subaccounts
-            # alike. Omitted keeps each bucket's default. Unsigned, like drawdown_criteria.
+            # Intraday drawdown threshold, one of SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES, for standard and HL
+            # subaccounts alike. Omitted keeps each bucket's default. Unsigned, like drawdown_criteria.
             intraday_drawdown_threshold = data.get('intraday_drawdown_threshold')
             # Optional idempotency key. Deliberately NOT part of the signed
             # payload (sig_dict below is frozen) so that a new gateway signing
@@ -2557,11 +2556,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
 
             if (intraday_drawdown_threshold is not None
-                    and not ValiConfig.is_valid_intraday_drawdown_threshold(intraday_drawdown_threshold)):
-                return jsonify({'error': (
-                    f'intraday_drawdown_threshold must be a whole percent from '
-                    f'{ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN} to {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MAX}'
-                )}), 400
+                    and intraday_drawdown_threshold not in ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES):
+                return jsonify({'error': f'intraday_drawdown_threshold must be one of {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES}'}), 400
 
             # Validate account_size is a positive number
             try:

@@ -209,13 +209,13 @@ class TestEntityManagement(TestBase):
             entity_hotkey=self.ENTITY_HOTKEY_1,
             account_size=100_000,
             hl_address="0x" + "b" * 40,
-            intraday_drawdown_threshold=0.04,
+            intraday_drawdown_threshold=0.03,
         )
 
         self.assertTrue(success, f"Subaccount creation failed: {message}")
-        self.assertEqual(subaccount_info['intraday_drawdown_threshold'], 0.04)
+        self.assertEqual(subaccount_info['intraday_drawdown_threshold'], 0.03)
         stats = self.challenge_period_client.get_drawdown_stats(subaccount_info['synthetic_hotkey'])
-        self.assertEqual(stats['intraday_drawdown_threshold'], 0.04)
+        self.assertEqual(stats['intraday_drawdown_threshold'], 0.03)
 
     def test_create_subaccount_without_intraday_drawdown_threshold_keeps_bucket_default(self):
         """Omitting the intraday drawdown threshold keeps today's bucket threshold."""
@@ -232,27 +232,11 @@ class TestEntityManagement(TestBase):
         stats = self.challenge_period_client.get_drawdown_stats(subaccount_info['synthetic_hotkey'])
         self.assertEqual(stats['intraday_drawdown_threshold'], ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
 
-    def test_create_subaccount_normalizes_intraday_drawdown_threshold_float_noise(self):
-        """A whole percent carrying float noise is stored as the exact decimal."""
-        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        noisy = 0.07 - 0.04
-        self.assertNotEqual(noisy, 0.03)
-
-        success, subaccount_info, message = self.entity_client.create_subaccount(
-            entity_hotkey=self.ENTITY_HOTKEY_1,
-            account_size=100_000,
-            asset_class="crypto",
-            intraday_drawdown_threshold=noisy,
-        )
-
-        self.assertTrue(success, f"Subaccount creation failed: {message}")
-        self.assertEqual(subaccount_info['intraday_drawdown_threshold'], 0.03)
-
     def test_create_subaccount_rejects_invalid_intraday_drawdown_threshold(self):
-        """Out-of-range or non-integer limits are rejected before anything is created."""
+        """Values outside SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES are rejected before anything is created."""
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
 
-        for value in (0.02, 0.06, 0.035, 3, True):
+        for value in (0.04, 0.07 - 0.04, 0.02, 0.06, 3, True):
             success, subaccount_info, message = self.entity_client.create_subaccount(
                 entity_hotkey=self.ENTITY_HOTKEY_1,
                 account_size=100_000,

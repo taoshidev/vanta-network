@@ -115,7 +115,7 @@ class EntityClient(RPCClientBase):
             leverage_tier: Standard leverage tier 1 to 3; None = tier 0 (max of legacy limits and Base)
             client_ref: Optional idempotency key; the returned dict carries
                 "duplicate": True when it matched a prior creation.
-            intraday_drawdown_threshold: Optional decimal whole percent (e.g. 0.03); None keeps bucket defaults
+            intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -161,7 +161,7 @@ class EntityClient(RPCClientBase):
             asset_class: Asset class selection (default: "hl_all")
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
-            intraday_drawdown_threshold: Optional decimal whole percent (e.g. 0.03); None keeps bucket defaults
+            intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)

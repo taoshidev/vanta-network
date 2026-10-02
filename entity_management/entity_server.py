@@ -171,7 +171,7 @@ class EntityServer(RPCServerBase):
             client_ref: Optional idempotency key. A repeat with the same
                 (entity_hotkey, client_ref) returns the existing subaccount
                 dict with an added "duplicate": True and creates nothing.
-            intraday_drawdown_threshold: Optional decimal whole percent (e.g. 0.03); None keeps bucket defaults
+            intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -213,7 +213,7 @@ class EntityServer(RPCServerBase):
             asset_class: Asset class selection (default: "hl_all")
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
-            intraday_drawdown_threshold: Optional decimal whole percent (e.g. 0.03); None keeps bucket defaults
+            intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)

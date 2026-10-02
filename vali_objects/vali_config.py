@@ -521,10 +521,8 @@ class ValiConfig:
     SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD = 0.05  # retired rule, no longer enforced — kept for dashboard/API payload compatibility
     SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD = 0.05  # Rule 2: flat intraday-drawdown threshold for static accounts, regardless of bucket entry time
 
-    # Intraday drawdown threshold (daily loss limit) a subaccount may choose at creation, as a whole
-    # percent within these bounds.
-    SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN = 0.03
-    SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MAX = 0.05
+    # Intraday drawdown thresholds (daily loss limit) a subaccount may choose from at creation
+    SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES = [0.03, 0.05]
 
     # Pro account (entity subaccount) rules. The promotion criteria and transition grace period can
     # be overridden for testnet through environment variables of the same name (docs/entity_miner.md).
@@ -627,17 +625,6 @@ class ValiConfig:
     def is_valid_standard_leverage_tier(tier) -> bool:
         """True for an int in STANDARD_LEVERAGE_TIERS; bools and floats are rejected."""
         return isinstance(tier, int) and not isinstance(tier, bool) and tier in ValiConfig.STANDARD_LEVERAGE_TIERS
-
-    @staticmethod
-    def is_valid_intraday_drawdown_threshold(value) -> bool:
-        """True for a decimal whole percent (0.03, 0.04, ...) within the subaccount intraday drawdown
-        threshold bounds; bools, strings and fractional percents such as 0.035 are rejected."""
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
-            return False
-        pct = value * 100
-        return (abs(pct - round(pct)) < 1e-9
-                and round(ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN * 100) <= round(pct)
-                <= round(ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MAX * 100))
 
     # Per-pair groups narrower than an asset class (see leverage_utils.get_standard_leverage_group).
     STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}

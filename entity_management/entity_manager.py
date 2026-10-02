@@ -500,8 +500,8 @@ class EntityManager(ValidatorBroadcastBase):
                    Exempt subaccounts are excluded from entity aggregation and payouts.
             leverage_tier: Standard leverage tier 1 to 3. Defaults to
                    ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
-            intraday_drawdown_threshold: Intraday drawdown threshold as a decimal whole percent (e.g. 0.03) within
-                   ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN/MAX. None keeps each bucket's default.
+            intraday_drawdown_threshold: One of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES (e.g. 0.03).
+                   None keeps each bucket's default.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -520,13 +520,11 @@ class EntityManager(ValidatorBroadcastBase):
                 return False, None, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}", False
 
         if intraday_drawdown_threshold is not None:
-            if not ValiConfig.is_valid_intraday_drawdown_threshold(intraday_drawdown_threshold):
+            if intraday_drawdown_threshold not in ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES:
                 return False, None, (
-                    f"Invalid intraday_drawdown_threshold: {intraday_drawdown_threshold}. Must be a whole percent from "
-                    f"{ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MIN} to {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_THRESHOLD_MAX}"
+                    f"Invalid intraday_drawdown_threshold: {intraday_drawdown_threshold}. "
+                    f"Must be one of {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES}"
                 ), False
-            # Normalize float noise (e.g. 0.07 - 0.04) to the exact whole-percent value
-            intraday_drawdown_threshold = round(intraday_drawdown_threshold, 2)
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -793,7 +791,7 @@ class EntityManager(ValidatorBroadcastBase):
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
             client_ref: Optional idempotency key (see NOTE below).
-            intraday_drawdown_threshold: Optional decimal whole percent (see create_subaccount_ex).
+            intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES (see create_subaccount_ex).
 
         NOTE on idempotency: without a client_ref, a repeat with the SAME hl_address
         is rejected by the duplicate-address guard below. With a client_ref that
