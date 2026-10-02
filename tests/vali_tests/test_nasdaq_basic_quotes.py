@@ -1,12 +1,11 @@
 """
-Nasdaq Basic quote ingestion and validation (phase 1, shadow mode).
+Nasdaq Basic quotes for equities.
 
 Covers:
-- RecentEventTracker.get_latest_event_at_or_before (no look-ahead)
-- Quote message conversion, 250ms tracker sampling, out-of-order handling
+- Quote message conversion, untradable quotes dropped on receipt, 250ms tracker sampling, out-of-order handling
 - Entitlement detection from subscribe status replies, reconnect spacing
-- Every validity rule in PolygonNasdaqBasicDataService.get_valid_quote
-- LivePriceFetcher FMV lookup and shadow fill logging
+- sorted_valid_price_sources: a recent quote that agrees with FMV replaces FMV, otherwise the quote is dropped
+- Equities events and get_quote through LivePriceFetcher
 """
 import asyncio
 import json
@@ -22,7 +21,6 @@ from vali_objects.trade_pair import TradePairCategory
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.price_source import PriceSource
-from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
 
 
 def quote_msg(t_ms, bid, ask, bid_size=100, ask_size=100, sym='AAPL'):
@@ -33,25 +31,6 @@ def quote_msg(t_ms, bid, ask, bid_size=100, ask_size=100, sym='AAPL'):
 def fmv_source(price, t_ms):
     return PriceSource(source='Polygon_ws', timespan_ms=0, open=price, close=price, vwap=price, high=price,
                        low=price, start_ms=t_ms, websocket=True, lag_ms=0, bid=price, ask=price)
-
-
-class TestRecentEventTrackerAtOrBefore(unittest.TestCase):
-    def test_never_returns_a_later_event(self):
-        now_ms = TimeUtil.now_in_millis()
-        tracker = RecentEventTracker()
-        early = fmv_source(100.0, now_ms - 2000)
-        late = fmv_source(101.0, now_ms - 1000)
-        tracker.add_event(early)
-        tracker.add_event(late)
-
-        self.assertIsNone(tracker.get_latest_event_at_or_before(now_ms - 2001))
-        self.assertIs(tracker.get_latest_event_at_or_before(now_ms - 2000), early)
-        self.assertIs(tracker.get_latest_event_at_or_before(now_ms - 1001), early)
-        self.assertIs(tracker.get_latest_event_at_or_before(now_ms - 1000), late)
-        self.assertIs(tracker.get_latest_event_at_or_before(now_ms), late)
-        # get_closest_event would pick the later event here; at-or-before must not
-        self.assertIs(tracker.get_closest_event(now_ms - 1400), late)
-        self.assertIs(tracker.get_latest_event_at_or_before(now_ms - 1400), early)
 
 
 class TestNasdaqBasicService(unittest.TestCase):
@@ -67,19 +46,32 @@ class TestNasdaqBasicService(unittest.TestCase):
     # ---------- ingestion ----------
 
     def test_quote_converted_to_price_source(self):
-        self.feed(quote_msg(self.now_ms - 100, 99.0, 101.0))
+        self.feed(quote_msg(self.now_ms - 100, 99.99, 100.01))
         ps = self.svc.latest_websocket_events['AAPL']
         self.assertEqual(ps.source, NASDAQ_BASIC_SOURCE)
-        self.assertEqual((ps.bid, ps.ask), (99.0, 101.0))
+        self.assertEqual((ps.bid, ps.ask), (99.99, 100.01))
         self.assertEqual(ps.open, 100.0)
         self.assertEqual(ps.start_ms, self.now_ms - 100)
         self.assertTrue(ps.websocket)
 
-    def test_zero_size_side_is_zeroed(self):
-        self.feed(quote_msg(self.now_ms, 99.0, 101.0, bid_size=0))
-        ps = self.svc.latest_websocket_events['AAPL']
-        self.assertEqual(ps.bid, 0.0)
-        self.assertEqual(ps.ask, 101.0)
+    def test_untradable_quotes_dropped_on_receipt(self):
+        self.feed(quote_msg(self.now_ms, 99.99, 100.01, bid_size=0),
+                  quote_msg(self.now_ms, 99.99, 0.0),
+                  quote_msg(self.now_ms, 100.02, 100.01),
+                  quote_msg(self.now_ms, 100.0, 100.0),
+                  quote_msg(self.now_ms, 99.70, 100.30))  # 60 bps > 50 bps cap
+        self.assertNotIn('AAPL', self.svc.latest_websocket_events)
+        self.assertEqual(dict(self.svc.dropped_counts), {'missing_side': 2, 'crossed_or_locked': 2, 'wide_spread': 1})
+
+    def test_dropped_quote_leaves_previous_quote_current(self):
+        # Same as the Polygon forex spread filter: the previous quote stays until it ages out
+        self.feed(quote_msg(self.now_ms - 1000, 99.99, 100.01), quote_msg(self.now_ms, 100.02, 100.01))
+        self.assertEqual(self.svc.latest_websocket_events['AAPL'].start_ms, self.now_ms - 1000)
+
+    def test_set_test_quote_applies_receipt_filter(self):
+        wide = PriceSource(source=NASDAQ_BASIC_SOURCE, open=100.0, start_ms=self.now_ms, websocket=True, bid=99.0, ask=101.0)
+        self.svc.set_test_quote(TradePair.AAPL, wide)
+        self.assertNotIn('AAPL', self.svc.latest_websocket_events)
 
     def test_unknown_and_non_equity_symbols_ignored(self):
         self.feed(quote_msg(self.now_ms, 1.0, 2.0, sym='NOTATICKER'), {'ev': 'T', 'sym': 'AAPL', 'p': 100, 't': self.now_ms})
@@ -88,38 +80,42 @@ class TestNasdaqBasicService(unittest.TestCase):
     def test_tracker_keeps_last_quote_of_each_window(self):
         t0 = self.now_ms - 10_000
         sample = ValiConfig.NASDAQ_QUOTE_TRACKER_SAMPLE_MS
-        self.feed(quote_msg(t0, 99.0, 101.0),
-                  quote_msg(t0 + 100, 99.1, 101.0),
-                  quote_msg(t0 + 200, 99.2, 101.0),   # last of window 1
-                  quote_msg(t0 + sample + 50, 99.3, 101.0),   # opens window 2, flushes t0+200
-                  quote_msg(t0 + sample + 100, 99.4, 101.0),  # last of window 2
-                  quote_msg(t0 + 2 * sample + 60, 99.5, 101.0))  # opens window 3, flushes window 2
+        self.feed(quote_msg(t0, 100.00, 100.10),
+                  quote_msg(t0 + 100, 100.01, 100.10),
+                  quote_msg(t0 + 200, 100.02, 100.10),   # last of window 1
+                  quote_msg(t0 + sample + 50, 100.03, 100.10),   # opens window 2, flushes t0+200
+                  quote_msg(t0 + sample + 100, 100.04, 100.10),  # last of window 2
+                  quote_msg(t0 + 2 * sample + 60, 100.05, 100.10))  # opens window 3, flushes window 2
         stored = self.svc.trade_pair_to_recent_events['AAPL'].get_events_in_range(t0 - 1, self.now_ms)
         self.assertEqual([ps.start_ms for ps in stored], [t0 + 200, t0 + sample + 100])
         self.assertEqual(self.svc.latest_websocket_events['AAPL'].start_ms, t0 + 2 * sample + 60)
 
     def test_slightly_late_quote_becomes_latest_with_clamped_time(self):
         # Observed live: quotes can arrive 1-15ms behind the previous quote's timestamp
-        self.feed(quote_msg(self.now_ms, 99.0, 101.0), quote_msg(self.now_ms - 5, 99.5, 100.5))
+        self.feed(quote_msg(self.now_ms, 99.99, 100.01), quote_msg(self.now_ms - 5, 99.98, 100.02))
         latest = self.svc.latest_websocket_events['AAPL']
-        self.assertEqual((latest.bid, latest.ask), (99.5, 100.5))
+        self.assertEqual((latest.bid, latest.ask), (99.98, 100.02))
         self.assertEqual(latest.start_ms, self.now_ms)
         self.assertEqual(self.svc.n_quotes_out_of_order, 1)
 
     def test_far_out_of_order_quote_dropped(self):
         late_ms = ValiConfig.NASDAQ_QUOTE_OUT_OF_ORDER_TOLERANCE_MS + 500
-        self.feed(quote_msg(self.now_ms, 99.0, 101.0), quote_msg(self.now_ms - late_ms, 50.0, 51.0))
+        self.feed(quote_msg(self.now_ms, 99.99, 100.01), quote_msg(self.now_ms - late_ms, 50.00, 50.01))
         latest = self.svc.latest_websocket_events['AAPL']
-        self.assertEqual((latest.bid, latest.ask), (99.0, 101.0))
+        self.assertEqual((latest.bid, latest.ask), (99.99, 100.01))
         self.assertEqual(self.svc.n_quotes_out_of_order, 1)
 
-    def test_get_quote_at_or_before_uses_latest_then_tracker(self):
+    def test_get_closest_quote_checks_latest_and_tracker(self):
         t0 = self.now_ms - 10_000
         sample = ValiConfig.NASDAQ_QUOTE_TRACKER_SAMPLE_MS
-        self.feed(quote_msg(t0, 99.0, 101.0), quote_msg(t0 + sample, 98.0, 100.0))
-        self.assertEqual(self.svc.get_quote_at_or_before(TradePair.AAPL, self.now_ms).start_ms, t0 + sample)
-        self.assertEqual(self.svc.get_quote_at_or_before(TradePair.AAPL, t0 + sample - 1).start_ms, t0)
-        self.assertIsNone(self.svc.get_quote_at_or_before(TradePair.AAPL, t0 - 1))
+        # t0 is flushed to the tracker when t0 + sample opens a new window; t0 + sample stays the latest
+        self.feed(quote_msg(t0, 99.99, 100.01), quote_msg(t0 + sample, 99.98, 100.02))
+        self.assertEqual(self.svc.get_closest_quote(TradePair.AAPL, self.now_ms).start_ms, t0 + sample)
+        self.assertEqual(self.svc.get_closest_quote(TradePair.AAPL, t0 + 10).start_ms, t0)
+        # Like other websocket sources, a quote after the requested time is used when it is closest
+        self.assertEqual(self.svc.get_closest_quote(TradePair.AAPL, t0 - 1000).start_ms, t0)
+        self.assertEqual(self.svc.get_closes_websocket([TradePair.AAPL], self.now_ms)[TradePair.AAPL].start_ms, t0 + sample)
+        self.assertEqual(self.svc.get_closes_websocket([TradePair.MSFT], self.now_ms), {})
 
     # ---------- entitlement ----------
 
@@ -179,151 +175,124 @@ class TestNasdaqBasicService(unittest.TestCase):
         self.assertIsNone(self.svc.WEBSOCKET_OBJECTS[tpc])
         self.assertGreater(self.svc._client_unavailable_delay_s(tpc), ValiConfig.NASDAQ_MIN_RECONNECT_INTERVAL_S - 2)
 
-    # ---------- validity rules ----------
 
-    def assert_rejected(self, reason, time_ms=None, fmv_ps=None, trade_pair=TradePair.AAPL, max_age_ms=None):
-        quote, got = self.svc.get_valid_quote(trade_pair, time_ms or TimeUtil.now_in_millis(), fmv_ps, max_age_ms)
-        self.assertIsNone(quote)
-        self.assertEqual(got, reason)
+class TestNasdaqQuoteSelection(unittest.TestCase):
+    """sorted_valid_price_sources rule, and the equities events and get_quote through LivePriceFetcher."""
 
-    def assert_valid(self, time_ms=None, fmv_ps=None, max_age_ms=None):
-        quote, reason = self.svc.get_valid_quote(TradePair.AAPL, time_ms or TimeUtil.now_in_millis(), fmv_ps, max_age_ms)
-        self.assertIsNone(reason)
-        self.assertIsNotNone(quote)
-        return quote
-
-    def test_valid_quote_passes(self):
-        self.feed(quote_msg(self.now_ms - 100, 99.99, 100.01))
-        quote = self.assert_valid(fmv_ps=fmv_source(100.0, self.now_ms - 50))
-        self.assertEqual((quote.bid, quote.ask), (99.99, 100.01))
-        self.assertEqual(self.svc.n_valid, 1)
-
-    def test_disabled(self):
-        self.feed(quote_msg(self.now_ms, 99.99, 100.01))
-        self.svc.set_test_entitlement(False)
-        self.assert_rejected('disabled')
-
-    def test_not_applicable_for_non_vanta_equities(self):
-        self.assert_rejected('not_applicable', trade_pair=TradePair.EURUSD)
-        self.assert_rejected('not_applicable', trade_pair=TradePair.AAPLUSDC)
-
-    def test_market_closed(self):
-        self.feed(quote_msg(self.now_ms, 99.99, 100.01))
-        self.svc.set_test_market_open(False)
-        self.assert_rejected('market_closed')
-
-    def test_no_quote(self):
-        self.assert_rejected('no_quote')
-
-    def test_feed_unhealthy(self):
-        self.feed(quote_msg(self.now_ms, 99.99, 100.01))
-        self.svc.last_message_ms = TimeUtil.now_in_millis() - ValiConfig.NASDAQ_QUOTE_FEED_HEALTH_MS - 1000
-        self.assert_rejected('feed_unhealthy')
-
-    def test_stale(self):
-        self.feed(quote_msg(self.now_ms - ValiConfig.NASDAQ_QUOTE_MAX_AGE_MS - 1000, 99.99, 100.01))
-        self.assert_rejected('stale')
-
-    def test_quote_unchanged_for_25s_is_still_valid(self):
-        # Mid-caps can go 25s between quote changes; the quote stays valid until replaced
-        self.feed(quote_msg(self.now_ms - 25_000, 99.99, 100.01))
-        self.assert_valid()
-
-    def test_max_age_override(self):
-        self.feed(quote_msg(self.now_ms - 2000, 99.99, 100.01))
-        self.assert_rejected('stale', max_age_ms=1000)
-
-    def test_missing_side(self):
-        self.feed(quote_msg(self.now_ms, 99.99, 100.01, ask_size=0))
-        self.assert_rejected('missing_side')
-
-    def test_bad_current_quote_does_not_fall_back_to_older_good_quote(self):
-        self.feed(quote_msg(self.now_ms - 1000, 99.99, 100.01), quote_msg(self.now_ms, 100.02, 100.01))
-        self.assert_rejected('crossed_or_locked')
-
-    def test_locked(self):
-        self.feed(quote_msg(self.now_ms, 100.0, 100.0))
-        self.assert_rejected('crossed_or_locked')
-
-    def test_wide_spread(self):
-        # 60 bps spread > 50 bps cap
-        self.feed(quote_msg(self.now_ms, 99.70, 100.30))
-        self.assert_rejected('wide_spread')
-
-    def test_fmv_deviation(self):
-        self.feed(quote_msg(self.now_ms, 99.99, 100.01))
-        self.assert_rejected('fmv_deviation', fmv_ps=fmv_source(100.5, self.now_ms))  # ~50 bps away
-
-    def test_fmv_band_widens_to_spread(self):
-        # 40 bps spread, mid 30 bps from FMV: inside max(25, 40)
-        self.feed(quote_msg(self.now_ms, 100.10, 100.50))
-        self.assert_valid(fmv_ps=fmv_source(100.0, self.now_ms))
-
-    def test_old_fmv_not_used_for_band(self):
-        self.feed(quote_msg(self.now_ms, 99.99, 100.01))
-        self.assert_valid(fmv_ps=fmv_source(105.0, self.now_ms - ValiConfig.NASDAQ_QUOTE_FMV_MAX_AGE_MS - 1000))
-
-    def test_rejections_counted_by_reason(self):
-        self.assert_rejected('no_quote')
-        self.assert_rejected('no_quote')
-        self.assertEqual(self.svc.rejection_counts['no_quote'], 2)
-
-
-class TestLivePriceFetcherNasdaqQuotes(unittest.TestCase):
     def setUp(self):
         secrets = ValiUtils.get_secrets(running_unit_tests=True)
         self.fetcher = LivePriceFetcher(secrets=secrets, disable_ws=True, running_unit_tests=True)
-        self.svc = self.fetcher.polygon_nasdaq_basic_data_service
-        self.svc.set_test_market_open(True)
+        self.fetcher.set_test_market_open(True)
         self.now_ms = TimeUtil.now_in_millis()
+        self.fetcher.set_test_price_source(TradePair.AAPL, fmv_source(100.0, self.now_ms - 50))
 
-    def enable_with_quote(self, bid, ask):
-        self.svc.set_test_entitlement(True)
-        self.svc._process_raw(json.dumps([quote_msg(self.now_ms - 100, bid, ask)]), TimeUtil.now_in_millis())
+    def tearDown(self):
+        self.fetcher.clear_test_price_sources()
+        self.fetcher.clear_test_market_open()
+
+    def nasdaq_quote(self, bid, ask, t_ms):
+        mid = (bid + ask) / 2
+        return PriceSource(source=NASDAQ_BASIC_SOURCE, timespan_ms=0, open=mid, close=mid, vwap=mid, high=mid,
+                           low=mid, start_ms=t_ms, websocket=True, lag_ms=0, bid=bid, ask=ask)
+
+    # ---------- sorted_valid_price_sources ----------
+
+    def select(self, *events):
+        return [ps.source for ps in self.fetcher.sorted_valid_price_sources(list(events), self.now_ms)]
+
+    def test_recent_quote_agreeing_with_fmv_replaces_fmv(self):
+        self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms - 100), fmv_source(100.0, self.now_ms - 50)),
+                         [NASDAQ_BASIC_SOURCE])
+
+    def test_stale_quote_dropped_in_either_direction(self):
+        stale_ms = ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS + 1000
+        for t_ms in (self.now_ms - stale_ms, self.now_ms + stale_ms):
+            self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, t_ms), fmv_source(100.0, self.now_ms - 50)),
+                             ['Polygon_ws'])
+
+    def test_quote_away_from_fmv_dropped(self):
+        # ~50 bps from FMV, outside max(25 bps, 2 bps spread)
+        self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms), fmv_source(100.5, self.now_ms)),
+                         ['Polygon_ws'])
+
+    def test_fmv_band_widens_to_spread(self):
+        # 40 bps spread, mid 30 bps from FMV: inside max(25, 40)
+        self.assertEqual(self.select(self.nasdaq_quote(100.10, 100.50, self.now_ms), fmv_source(100.0, self.now_ms)),
+                         [NASDAQ_BASIC_SOURCE])
+
+    def test_old_or_missing_fmv_not_used_for_band(self):
+        old_fmv = fmv_source(105.0, self.now_ms - ValiConfig.NASDAQ_QUOTE_FMV_MAX_AGE_MS - 1000)
+        self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms), old_fmv), [NASDAQ_BASIC_SOURCE])
+        self.assertEqual(self.select(self.nasdaq_quote(99.99, 100.01, self.now_ms)), [NASDAQ_BASIC_SOURCE])
+
+    def test_lists_without_a_quote_unchanged(self):
+        self.assertEqual(self.select(fmv_source(100.0, self.now_ms - 50), None), ['Polygon_ws'])
+
+    # ---------- equities events through LivePriceFetcher ----------
 
     def test_disabled_by_default(self):
         self.assertFalse(self.fetcher.nasdaq_quotes_enabled())
-        self.assertEqual(self.fetcher.get_valid_nasdaq_quote(TradePair.AAPL, self.now_ms), (None, 'disabled'))
 
-    def test_fmv_band_uses_polygon_fmv_at_or_before(self):
-        self.enable_with_quote(99.99, 100.01)
-        self.fetcher.polygon_data_service.trade_pair_to_recent_events['AAPL'].add_event(fmv_source(100.0, self.now_ms - 200))
-        quote, reason = self.fetcher.get_valid_nasdaq_quote(TradePair.AAPL, self.now_ms)
-        self.assertIsNone(reason)
-        # An FMV after the lookup time is ignored, so the band check still uses the earlier FMV
-        self.fetcher.polygon_data_service.trade_pair_to_recent_events['AAPL'].add_event(fmv_source(110.0, self.now_ms + 500))
-        self.assertIsNone(self.fetcher.get_valid_nasdaq_quote(TradePair.AAPL, self.now_ms)[1])
-        self.fetcher.polygon_data_service.trade_pair_to_recent_events['AAPL'].add_event(fmv_source(101.0, self.now_ms - 50))
-        self.assertEqual(self.fetcher.get_valid_nasdaq_quote(TradePair.AAPL, self.now_ms)[1], 'fmv_deviation')
+    def test_fmv_only_without_nasdaq_basic(self):
+        sources = self.fetcher.get_sorted_price_sources_for_trade_pair(TradePair.AAPL, self.now_ms)
+        self.assertEqual([ps.source for ps in sources], ['Polygon_ws'])
 
-    def test_shadow_log_reports_would_be_fill(self):
-        self.enable_with_quote(99.9, 100.0)
-        with mock.patch('vali_objects.price_fetcher.live_price_fetcher.logger') as log:
-            self.fetcher.log_nasdaq_shadow_fill(TradePair.AAPL, self.now_ms, OrderType.LONG, OrderType.LONG,
-                                                99.95, 'Polygon_ws', 'uuid-1')
-            self.fetcher.log_nasdaq_shadow_fill(TradePair.AAPL, self.now_ms, OrderType.FLAT, OrderType.LONG,
-                                                99.95, 'Polygon_ws', 'uuid-2')
-        buy_line, sell_line = [c.args[0] for c in log.info.call_args_list]
-        self.assertIn('nasdaq fill=100.0', buy_line)
-        self.assertIn('diff=+5.00bps', buy_line)
-        self.assertIn('nasdaq fill=99.9', sell_line)
-        self.assertIn('diff=-5.00bps', sell_line)
+    def test_valid_quote_replaces_fmv(self):
+        # The quote is older than FMV, but FMV is no longer in the race
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms - 100))
+        sources = self.fetcher.get_sorted_price_sources_for_trade_pair(TradePair.AAPL, self.now_ms)
+        self.assertEqual([ps.source for ps in sources], [NASDAQ_BASIC_SOURCE])
+        # Fill side follows the #941 bid/ask logic on the first source
+        self.assertEqual(sources[0].parse_appropriate_price(self.now_ms, False, OrderType.LONG, OrderType.LONG), 100.01)
+        self.assertEqual(sources[0].parse_appropriate_price(self.now_ms, False, OrderType.SHORT, OrderType.SHORT), 99.99)
+        self.assertEqual(sources[0].parse_appropriate_price(self.now_ms, False, OrderType.FLAT, OrderType.LONG), 99.99)
 
-    def test_shadow_log_reports_rejection_reason(self):
-        self.enable_with_quote(99.0, 101.0)  # 200 bps spread
-        with mock.patch('vali_objects.price_fetcher.live_price_fetcher.logger') as log:
-            self.fetcher.log_nasdaq_shadow_fill(TradePair.AAPL, self.now_ms, OrderType.LONG, OrderType.LONG,
-                                                100.0, 'Polygon_ws', 'uuid-3')
-        self.assertIn('no valid quote (wide_spread)', log.info.call_args.args[0])
+    def test_quote_away_from_fmv_leaves_fmv(self):
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(100.99, 101.01, self.now_ms - 100))
+        sources = self.fetcher.get_sorted_price_sources_for_trade_pair(TradePair.AAPL, self.now_ms)
+        self.assertEqual([ps.source for ps in sources], ['Polygon_ws'])
 
-    def test_shadow_log_silent_when_disabled_or_not_equities(self):
-        with mock.patch('vali_objects.price_fetcher.live_price_fetcher.logger') as log:
-            self.fetcher.log_nasdaq_shadow_fill(TradePair.AAPL, self.now_ms, OrderType.LONG, OrderType.LONG,
-                                                100.0, 'Polygon_ws', 'uuid-4')
-            self.svc.set_test_entitlement(True)
-            self.fetcher.log_nasdaq_shadow_fill(TradePair.EURUSD, self.now_ms, OrderType.LONG, OrderType.LONG,
-                                                1.1, 'Polygon_ws', 'uuid-5')
-        log.info.assert_not_called()
+    def test_closer_databento_quote_wins_over_nasdaq(self):
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms - 300))
+        databento = PriceSource(source='Databento_ws', timespan_ms=1000, open=100.0, close=100.0, vwap=100.0,
+                                high=100.0, low=100.0, start_ms=self.now_ms - 20, websocket=True, bid=99.98, ask=100.02)
+        with mock.patch.object(self.fetcher, 'databento_data_service') as db_svc:
+            db_svc.get_closes_websocket.return_value = {TradePair.AAPL: databento}
+            sources = self.fetcher.get_sorted_price_sources_for_trade_pair(TradePair.AAPL, self.now_ms)
+        self.assertEqual([ps.source for ps in sources], ['Databento_ws', NASDAQ_BASIC_SOURCE])
+
+    def test_quote_after_lookup_time_used_when_closest(self):
+        # Same as the other websocket sources: closest by absolute time difference
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms + 1000))
+        sources = self.fetcher.get_sorted_price_sources_for_trade_pair(TradePair.AAPL, self.now_ms)
+        self.assertEqual([ps.source for ps in sources], [NASDAQ_BASIC_SOURCE])
+
+    def test_non_equities_unaffected(self):
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms - 100))
+        eur = PriceSource(source='Polygon_ws', open=1.1, close=1.1, high=1.1, low=1.1, vwap=1.1,
+                          start_ms=self.now_ms, websocket=True, bid=1.0999, ask=1.1001)
+        self.fetcher.set_test_price_source(TradePair.EURUSD, eur)
+        tp_to_sources = self.fetcher.get_tp_to_sorted_price_sources([TradePair.AAPL, TradePair.EURUSD], self.now_ms)
+        self.assertEqual([ps.source for ps in tp_to_sources[TradePair.AAPL]], [NASDAQ_BASIC_SOURCE])
+        self.assertEqual([ps.source for ps in tp_to_sources[TradePair.EURUSD]], ['Polygon_ws'])
+
+    def test_clear_test_price_sources_disables_nasdaq(self):
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms - 100))
+        self.fetcher.clear_test_price_sources()
+        self.assertFalse(self.fetcher.nasdaq_quotes_enabled())
+
+    # ---------- get_quote ----------
+
+    def test_get_quote_uses_closest_nasdaq_quote(self):
+        # Same as the Databento branch: closest quote with a bid and ask, no age limit
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms - 20_000))
+        self.assertEqual(self.fetcher.get_quote(TradePair.AAPL, self.now_ms), (99.99, 100.01, self.now_ms - 20_000))
+
+    def test_get_quote_without_nasdaq_basic_uses_existing_path(self):
+        with mock.patch.object(self.fetcher.polygon_data_service, 'get_quote', return_value=(1.0, 2.0, 3)) as poly, \
+                mock.patch.object(self.fetcher, 'databento_data_service', None):
+            self.assertEqual(self.fetcher.get_quote(TradePair.AAPL, self.now_ms), (1.0, 2.0, 3))
+        poly.assert_called_once()
 
 
 if __name__ == '__main__':

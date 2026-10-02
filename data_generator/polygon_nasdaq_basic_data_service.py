@@ -48,8 +48,6 @@ class PolygonNasdaqBasicDataService(BaseDataService):
         self._entitlement_retry_at_s = 0.0
         self._next_connect_allowed_at_s = 0.0
         self._closing_denied_client = False
-        self.last_message_ms = 0
-
         self._window_start_ms = {}
         self._raw_queue = queue.Queue()
         self._stop_event = threading.Event()
@@ -59,8 +57,7 @@ class PolygonNasdaqBasicDataService(BaseDataService):
         self.n_quotes = 0
         self.n_quotes_stored = 0
         self.n_quotes_out_of_order = 0
-        self.n_valid = 0
-        self.rejection_counts = Counter()
+        self.dropped_counts = Counter()
         self._stats_since_s = time.time()
 
         self._worker_thread = None
@@ -79,6 +76,25 @@ class PolygonNasdaqBasicDataService(BaseDataService):
     @ErrorUtils.require_test_mode
     def set_test_entitlement(self, entitled: bool | None) -> None:
         self.entitled = entitled
+
+    @ErrorUtils.require_test_mode
+    def set_test_quote(self, trade_pair: TradePair, price_source: PriceSource) -> None:
+        """Inject a quote as the newest for trade_pair and enable quotes. Applies the same filter as received quotes."""
+        self.entitled = True
+        if self._quote_rejection(price_source.bid, price_source.ask, 1, 1):
+            return
+        symbol = trade_pair.trade_pair
+        self.trade_pair_to_recent_events[symbol].add_event(price_source)
+        latest = self.latest_websocket_events.get(symbol)
+        if latest is None or price_source.start_ms >= latest.start_ms:
+            self.latest_websocket_events[symbol] = price_source
+
+    @ErrorUtils.require_test_mode
+    def clear_test_quotes(self) -> None:
+        self.entitled = None
+        self.latest_websocket_events.clear()
+        self.trade_pair_to_recent_events.clear()
+        self._window_start_ms.clear()
 
     def stop_threads(self):
         self._stop_event.set()
@@ -128,7 +144,6 @@ class PolygonNasdaqBasicDataService(BaseDataService):
 
     async def handle_msg(self, raw):
         recv_ms = TimeUtil.now_in_millis()
-        self.last_message_ms = recv_ms
         self.tpc_to_last_event_time[TradePairCategory.EQUITIES] = time.time()
         if isinstance(raw, bytes):
             raw = raw.decode()
@@ -192,7 +207,6 @@ class PolygonNasdaqBasicDataService(BaseDataService):
                 logger.error(f"{self.provider_name} failed to process message: {type(e).__name__}: {e}")
 
     def _process_raw(self, raw, recv_ms: int):
-        self.last_message_ms = max(self.last_message_ms, recv_ms)
         msgs = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
         for m in msgs:
             if m.get('ev') == 'Q':
@@ -208,6 +222,14 @@ class PolygonNasdaqBasicDataService(BaseDataService):
         with self._stats_lock:
             self.n_quotes += 1
 
+        bid = m.get('bp') or 0.0
+        ask = m.get('ap') or 0.0
+        reason = self._quote_rejection(bid, ask, m.get('bs') or 0, m.get('as') or 0)
+        if reason:
+            with self._stats_lock:
+                self.dropped_counts[reason] += 1
+            return
+
         # Quotes carry no sequence number and can arrive a few ms behind the previous quote's timestamp.
         # Arrival order is the book's order, so a slightly late quote is still the newest state; clamp its
         # timestamp to keep the ticker's quotes monotonic. Only drop quotes far behind (stale replays).
@@ -219,13 +241,7 @@ class PolygonNasdaqBasicDataService(BaseDataService):
                 return
             t = latest.start_ms
 
-        bp = m.get('bp') or 0.0
-        ap = m.get('ap') or 0.0
-        # A side with no size has no executable price. Zero it so validation rejects this quote as the
-        # current market instead of falling back to an older one.
-        bid = bp if (m.get('bs') or 0) > 0 else 0.0
-        ask = ap if (m.get('as') or 0) > 0 else 0.0
-        mid = (bp + ap) / 2.0 if bp > 0 and ap > 0 else (bp or ap)
+        mid = (bid + ask) / 2.0
         ps = PriceSource(
             source=NASDAQ_BASIC_SOURCE,
             timespan_ms=0,
@@ -251,76 +267,53 @@ class PolygonNasdaqBasicDataService(BaseDataService):
             self._window_start_ms[symbol] = t
         self.latest_websocket_events[symbol] = ps
 
-    # ==================== Lookup and validation ====================
+    @staticmethod
+    def _quote_rejection(bid: float, ask: float, bid_size: float, ask_size: float) -> str | None:
+        """
+        Why a quote cannot be traded against, or None. Such quotes are dropped on receipt (like the Polygon forex
+        spread filter in parse_price_for_forex), so the previous quote stays current until it ages out.
+        """
+        if bid <= 0 or ask <= 0 or bid_size <= 0 or ask_size <= 0:
+            return 'missing_side'
+        if bid >= ask:
+            return 'crossed_or_locked'
+        if (ask - bid) / ((bid + ask) / 2.0) * 10000 > ValiConfig.NASDAQ_QUOTE_MAX_SPREAD_BPS:
+            return 'wide_spread'
+        return None
 
-    def get_quote_at_or_before(self, trade_pair: TradePair, time_ms: int) -> PriceSource | None:
+    # ==================== Lookup ====================
+
+    def get_closest_quote(self, trade_pair: TradePair, time_ms: int) -> PriceSource | None:
+        """Closest quote to time_ms, like the other websocket sources. The newest quote is not in the
+        tracker until its sample window closes, so it is compared separately."""
         symbol = trade_pair.trade_pair
         latest = self.latest_websocket_events.get(symbol)
-        if latest is not None and latest.start_ms <= time_ms:
-            return latest
         tracker = self.trade_pair_to_recent_events.get(symbol)
-        return tracker.get_latest_event_at_or_before(time_ms) if tracker else None
+        sampled = tracker.get_closest_event(time_ms) if tracker else None
+        candidates = [ps for ps in (latest, sampled) if ps is not None]
+        return min(candidates, key=lambda ps: abs(time_ms - ps.start_ms)) if candidates else None
 
-    def get_valid_quote(self, trade_pair: TradePair, time_ms: int, fmv_ps: PriceSource | None = None,
-                        max_age_ms: int | None = None) -> tuple[PriceSource | None, str | None]:
-        """
-        Return (quote, None) for the newest quote at or before time_ms that passes every validity rule,
-        or (None, reason) for the first rule it fails.
-        """
-        if not self.is_enabled():
-            return None, 'disabled'
-        if not trade_pair.is_equities or trade_pair.src != TradePairSource.VANTA:
-            return None, 'not_applicable'
-
-        if max_age_ms is None:
-            max_age_ms = ValiConfig.NASDAQ_QUOTE_MAX_AGE_MS
-        quote = None
-        reason = None
-        if not self.is_market_open(trade_pair, time_ms):
-            reason = 'market_closed'
-        else:
-            quote = self.get_quote_at_or_before(trade_pair, time_ms)
-            if quote is None:
-                reason = 'no_quote'
-            elif TimeUtil.now_in_millis() - self.last_message_ms > ValiConfig.NASDAQ_QUOTE_FEED_HEALTH_MS:
-                reason = 'feed_unhealthy'
-            elif time_ms - quote.start_ms > max_age_ms:
-                reason = 'stale'
-            elif not (quote.bid > 0 and quote.ask > 0):
-                reason = 'missing_side'
-            elif quote.bid >= quote.ask:
-                reason = 'crossed_or_locked'
-            else:
-                mid = (quote.bid + quote.ask) / 2.0
-                spread_bps = (quote.ask - quote.bid) / mid * 10000
-                if spread_bps > ValiConfig.NASDAQ_QUOTE_MAX_SPREAD_BPS:
-                    reason = 'wide_spread'
-                elif (fmv_ps is not None and fmv_ps.open and fmv_ps.open > 0
-                      and abs(time_ms - fmv_ps.start_ms) <= ValiConfig.NASDAQ_QUOTE_FMV_MAX_AGE_MS):
-                    band_bps = max(ValiConfig.NASDAQ_QUOTE_FMV_BAND_BPS, spread_bps)
-                    if abs(mid - fmv_ps.open) / fmv_ps.open * 10000 > band_bps:
-                        reason = 'fmv_deviation'
-
-        with self._stats_lock:
-            if reason:
-                self.rejection_counts[reason] += 1
-            else:
-                self.n_valid += 1
-        return (None, reason) if reason else (quote, None)
+    def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict[TradePair, PriceSource]:
+        events = {}
+        for trade_pair in trade_pairs:
+            quote = self.get_closest_quote(trade_pair, time_ms)
+            if quote is not None:
+                events[trade_pair] = quote
+        return events
 
     def debug_log(self):
         now_s = time.time()
         with self._stats_lock:
             elapsed_s = max(now_s - self._stats_since_s, 1e-9)
             n_quotes, n_stored, n_out_of_order = self.n_quotes, self.n_quotes_stored, self.n_quotes_out_of_order
-            n_valid, rejections = self.n_valid, dict(self.rejection_counts)
-            self.n_quotes = self.n_quotes_stored = self.n_quotes_out_of_order = self.n_valid = 0
-            self.rejection_counts = Counter()
+            dropped = dict(self.dropped_counts)
+            self.n_quotes = self.n_quotes_stored = self.n_quotes_out_of_order = 0
+            self.dropped_counts = Counter()
             self._stats_since_s = now_s
         n_tracker_events = sum(t.count_events() for t in list(self.trade_pair_to_recent_events.values()))
         logger.info(
             f"[NASDAQ_BASIC] entitled={self.entitled} subscribed={self.n_subscribed} "
             f"tickers_quoted={len(self.latest_websocket_events)} quotes/s={n_quotes / elapsed_s:.1f} "
             f"stored/s={n_stored / elapsed_s:.1f} out_of_order={n_out_of_order} queue={self._raw_queue.qsize()} "
-            f"tracker_events={n_tracker_events} valid={n_valid} rejections={rejections}"
+            f"tracker_events={n_tracker_events} dropped={dropped}"
         )

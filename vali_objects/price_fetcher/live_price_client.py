@@ -120,12 +120,6 @@ class LivePriceFetcherClient(RPCClientBase):
         """Get bid/ask quote for a trade pair."""
         return self._server.get_quote(trade_pair, processed_ms)
 
-    def log_nasdaq_shadow_fill(self, trade_pair: TradePair, time_ms: int, order_type, position_type,
-                               fill_price: float, fill_source: str, order_uuid: str) -> None:
-        """Log the Nasdaq Basic quote fill an equity market order would have had (shadow mode, no pricing change)."""
-        return self._server.log_nasdaq_shadow_fill(trade_pair, time_ms, order_type, position_type,
-                                                   fill_price, fill_source, order_uuid)
-
     def get_quote_usd_conversion(self, trade_pair, time_ms, price, order_type, position_type) -> float:
         """Get the conversion rate between an order's quote currency and USD."""
         return self._server.get_quote_usd_conversion(trade_pair, time_ms, price, order_type, position_type)

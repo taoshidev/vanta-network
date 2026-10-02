@@ -19,6 +19,7 @@ import logging
 from shared_objects.log import logger
 
 POLYGON_PROVIDER_NAME = "Polygon"
+POLYGON_WS_SOURCE = f"{POLYGON_PROVIDER_NAME}_ws"  # FMV for equities
 TIINGO_PROVIDER_NAME = "Tiingo"
 HYPERLIQUID_PROVIDER_NAME = "Hyperliquid"
 

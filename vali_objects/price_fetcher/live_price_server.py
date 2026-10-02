@@ -191,12 +191,6 @@ class LivePriceFetcherServer(RPCServerBase):
         """Delegate to fetcher."""
         return self._fetcher.get_quote(trade_pair, processed_ms)
 
-    def log_nasdaq_shadow_fill(self, trade_pair: TradePair, time_ms: int, order_type, position_type,
-                               fill_price: float, fill_source: str, order_uuid: str) -> None:
-        """Delegate to fetcher."""
-        return self._fetcher.log_nasdaq_shadow_fill(trade_pair, time_ms, order_type, position_type,
-                                                    fill_price, fill_source, order_uuid)
-
     def get_quote_usd_conversion(self, trade_pair, time_ms, price, order_type, position_type):
         """Delegate to fetcher."""
         return self._fetcher.get_quote_usd_conversion(trade_pair, time_ms, price, order_type, position_type)

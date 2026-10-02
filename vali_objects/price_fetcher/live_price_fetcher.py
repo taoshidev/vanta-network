@@ -4,13 +4,15 @@ from typing import List, Optional, Tuple, Dict
 
 import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
+from data_generator.base_data_service import POLYGON_WS_SOURCE
 from data_generator.polygon_data_service import PolygonDataService
-from data_generator.polygon_nasdaq_basic_data_service import PolygonNasdaqBasicDataService
+from data_generator.polygon_nasdaq_basic_data_service import PolygonNasdaqBasicDataService, NASDAQ_BASIC_SOURCE
 from data_generator.databento_data_service import DatabentoDataService
 from data_generator.hyperliquid_data_service import HyperliquidDataService
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair, TradePairSource
+from vali_objects.vali_config import ValiConfig
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from vali_objects.vali_dataclasses.price_source import PriceSource
@@ -116,13 +118,18 @@ class LivePriceFetcher:
     def set_test_price_source(self, trade_pair: TradePair, price_source: PriceSource) -> None:
         """
         Test-only method to inject price sources for specific trade pairs.
-        Delegates to PolygonDataService.
+        Delegates to PolygonDataService, or to the Nasdaq Basic service (which it also enables) when the
+        source is a Nasdaq Basic quote.
         """
+        if price_source is not None and price_source.source == NASDAQ_BASIC_SOURCE:
+            self.polygon_nasdaq_basic_data_service.set_test_quote(trade_pair, price_source)
+            return
         self.polygon_data_service.set_test_price_source(trade_pair, price_source)
 
     def clear_test_price_sources(self) -> None:
-        """Clear all test price sources. Delegates to PolygonDataService."""
+        """Clear all test price sources, including Nasdaq Basic quotes and entitlement."""
         self.polygon_data_service.clear_test_price_sources()
+        self.polygon_nasdaq_basic_data_service.clear_test_quotes()
 
     def set_test_market_open(self, is_open: bool) -> None:
         """
@@ -130,10 +137,12 @@ class LivePriceFetcher:
         When set, all markets will return this status regardless of actual time.
         """
         self.polygon_data_service.set_test_market_open(is_open)
+        self.polygon_nasdaq_basic_data_service.set_test_market_open(is_open)
 
     def clear_test_market_open(self) -> None:
         """Clear market open override and use real calendar."""
         self.polygon_data_service.clear_test_market_open()
+        self.polygon_nasdaq_basic_data_service.clear_test_market_open()
 
     def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
         """
@@ -190,11 +199,27 @@ class LivePriceFetcher:
         if not current_time_ms:
             current_time_ms = TimeUtil.now_in_millis()
 
+        # Equities: a Nasdaq Basic quote replaces FMV if it is recent and agrees with FMV; otherwise the quote
+        # is dropped and FMV competes as before.
+        nasdaq_quote = next((e for e in valid_events if e.source == NASDAQ_BASIC_SOURCE), None)
+        if nasdaq_quote:
+            fmv = next((e for e in valid_events if e.source == POLYGON_WS_SOURCE), None)
+            mid = (nasdaq_quote.bid + nasdaq_quote.ask) / 2.0
+            spread_bps = (nasdaq_quote.ask - nasdaq_quote.bid) / mid * 10000
+            quote_is_recent = nasdaq_quote.time_delta_from_now_ms(current_time_ms) <= ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS
+            quote_agrees_with_fmv = (
+                fmv is None or not fmv.open
+                or fmv.time_delta_from_now_ms(current_time_ms) > ValiConfig.NASDAQ_QUOTE_FMV_MAX_AGE_MS
+                or abs(mid - fmv.open) / fmv.open * 10000 <= max(ValiConfig.NASDAQ_QUOTE_FMV_BAND_BPS, spread_bps)
+            )
+            dropped_source = POLYGON_WS_SOURCE if quote_is_recent and quote_agrees_with_fmv else NASDAQ_BASIC_SOURCE
+            valid_events = [e for e in valid_events if e.source != dropped_source]
+
         best_event = PriceSource.get_winning_event(valid_events, current_time_ms)
         if not best_event:
             return None
 
-        if filter_recent_only and best_event.time_delta_from_now_ms(current_time_ms) > 8000:
+        if filter_recent_only and best_event.time_delta_from_now_ms(current_time_ms) > ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS:
             return None
 
         return PriceSource.non_null_events_sorted(valid_events, current_time_ms)
@@ -284,6 +309,10 @@ class LivePriceFetcher:
         websocket_prices_polygon = self.polygon_data_service.get_closes_websocket(trade_pairs, time_ms)
         websocket_prices_tiingo_data = self.tiingo_data_service.get_closes_websocket(trade_pairs, time_ms)
 
+        websocket_prices_nasdaq = {}
+        if self.nasdaq_quotes_enabled() and equity_pairs:
+            websocket_prices_nasdaq = self.polygon_nasdaq_basic_data_service.get_closes_websocket(equity_pairs, time_ms)
+
         trade_pairs_needing_rest_data: list[TradePair] = []
         results = {}
         for tp in trade_pairs:
@@ -292,6 +321,7 @@ class LivePriceFetcher:
                 events = [websocket_prices_hyperliquid.get(mapped_tp)]
             elif mapped_tp.is_equities:
                 events = [
+                    websocket_prices_nasdaq.get(tp),
                     websocket_prices_databento.get(tp),
                     websocket_prices_polygon.get(tp)
                 ]
@@ -402,8 +432,12 @@ class LivePriceFetcher:
     def get_quote(self, trade_pair: TradePair, processed_ms: int) -> Tuple[float, float, int]:
         """
         Returns the bid and ask quote for a trade_pair at processed_ms.
-        Uses Databento for equities, Polygon for other asset classes.
+        Uses Nasdaq Basic then Databento for equities, Polygon for other asset classes.
         """
+        if trade_pair.is_equities and self.nasdaq_quotes_enabled():
+            price_source = self.polygon_nasdaq_basic_data_service.get_closes_websocket([trade_pair], processed_ms).get(trade_pair)
+            if price_source and price_source.bid and price_source.ask and price_source.bid > 0 and price_source.ask > 0:
+                return price_source.bid, price_source.ask, price_source.start_ms
         if trade_pair.is_equities and self.databento_data_service:
             price_source = self.databento_data_service.get_closes_websocket([trade_pair], processed_ms).get(trade_pair)
             if price_source and price_source.bid and price_source.ask and price_source.bid > 0 and price_source.ask > 0:
@@ -412,32 +446,6 @@ class LivePriceFetcher:
 
     def nasdaq_quotes_enabled(self) -> bool:
         return self.polygon_nasdaq_basic_data_service.is_enabled()
-
-    def get_valid_nasdaq_quote(self, trade_pair: TradePair, time_ms: int,
-                               max_age_ms: int | None = None) -> Tuple[PriceSource | None, str | None]:
-        """
-        Newest Nasdaq Basic quote at or before time_ms that passes the validity rules, checked against the
-        Business FMV at or before the same time. Returns (quote, None) or (None, rejection reason).
-        """
-        fmv_tracker = self.polygon_data_service.trade_pair_to_recent_events.get(trade_pair.trade_pair)
-        fmv_ps = fmv_tracker.get_latest_event_at_or_before(time_ms) if fmv_tracker else None
-        return self.polygon_nasdaq_basic_data_service.get_valid_quote(trade_pair, time_ms, fmv_ps, max_age_ms)
-
-    def log_nasdaq_shadow_fill(self, trade_pair: TradePair, time_ms: int, order_type, position_type,
-                               fill_price: float, fill_source: str, order_uuid: str) -> None:
-        """Log what a Nasdaq Basic quote fill would have been next to the actual fill. Pricing is unchanged."""
-        if not trade_pair.is_equities or not self.nasdaq_quotes_enabled():
-            return
-        quote, reason = self.get_valid_nasdaq_quote(trade_pair, time_ms)
-        if quote is None:
-            logger.info(f"[NASDAQ_SHADOW] {order_uuid} {trade_pair.trade_pair_id} {order_type.name}: no valid quote "
-                        f"({reason}). actual fill={fill_price} src={fill_source}")
-            return
-        shadow_price = quote.parse_appropriate_price(time_ms, trade_pair.is_forex, order_type, position_type)
-        diff_bps = (shadow_price - fill_price) / fill_price * 10000 if fill_price else 0.0
-        logger.info(f"[NASDAQ_SHADOW] {order_uuid} {trade_pair.trade_pair_id} {order_type.name}: actual fill={fill_price} "
-                    f"src={fill_source}, nasdaq fill={shadow_price} bid/ask={quote.bid}/{quote.ask} "
-                    f"quote_age_ms={time_ms - quote.start_ms} diff={diff_bps:+.2f}bps")
 
     def get_candles(self, trade_pairs, start_time_ms, end_time_ms) -> dict:
         ans = {}
