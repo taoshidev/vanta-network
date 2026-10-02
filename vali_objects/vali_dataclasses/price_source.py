@@ -12,6 +12,7 @@ from shared_objects.log import logger
 # Websocket source names built by the Polygon data services, used by apply_nasdaq_fmv_rule
 POLYGON_WS_SOURCE = "Polygon_ws"  # FMV for equities
 NASDAQ_BASIC_SOURCE = "Polygon_nasdaq_ws"
+NASDAQ_BASIC_TRADE_SOURCE = "Polygon_nasdaq_trade_ws"  # equities trades, pre-market/after-hours only
 
 
 # Point-in-time (ws) or second candles only

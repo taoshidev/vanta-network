@@ -2,7 +2,7 @@ import json
 import queue
 import threading
 import time
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from typing import List
 
 from polygon.websocket import WebSocketClient, Feed, Market
@@ -12,7 +12,7 @@ from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil
 from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.price_source import PriceSource, NASDAQ_BASIC_SOURCE
+from vali_objects.vali_dataclasses.price_source import PriceSource, NASDAQ_BASIC_SOURCE, NASDAQ_BASIC_TRADE_SOURCE
 from shared_objects.log import logger
 
 NASDAQ_BASIC_PROVIDER_NAME = f"{POLYGON_PROVIDER_NAME}_nasdaq"
@@ -28,14 +28,20 @@ class PolygonNasdaqBasicDataService(BaseDataService):
     expansion keep pricing equities from the Business FMV feed exactly as before.
 
     Storage: the newest quote per ticker is always kept, and the last quote of every
-    NASDAQ_QUOTE_TRACKER_SAMPLE_MS window goes into the recent event tracker. Messages are parsed off the
-    websocket's event loop by a worker thread so a slow parse cannot back up the socket.
+    NASDAQ_QUOTE_TRACKER_SAMPLE_MS window goes into the recent event tracker. Round-lot trades with a tradable
+    sale condition are kept during pre-market and after-hours only. Messages are parsed off the websocket's
+    event loop by a worker thread so a slow parse cannot back up the socket.
+
+    The connection stays up through pre-market and after-hours (not just regular hours) for those trades.
     """
 
     def __init__(self, api_key, disable_ws=False, running_unit_tests=False):
         self._api_key = api_key
-        enabled_websocket_categories = {TradePairCategory.EQUITIES} if self.get_tradeable_pairs(
-            category=TradePairCategory.EQUITIES, include_blocked=False, src=TradePairSource.VANTA) else set()
+        equity_pairs = self.get_tradeable_pairs(category=TradePairCategory.EQUITIES, include_blocked=False,
+                                                src=TradePairSource.VANTA)
+        enabled_websocket_categories = {TradePairCategory.EQUITIES} if equity_pairs else set()
+        # Every Vanta equity shares the same session calendar
+        self._session_trade_pair = equity_pairs[0] if equity_pairs else None
         super().__init__(
             provider_name=NASDAQ_BASIC_PROVIDER_NAME,
             running_unit_tests=running_unit_tests,
@@ -48,6 +54,10 @@ class PolygonNasdaqBasicDataService(BaseDataService):
         self._next_connect_allowed_at_s = 0.0
         self._closing_denied_client = False
         self._window_start_ms = {}
+        # Trades are not sampled (every print can trigger a limit order) and the recent event tracker drops events
+        # sharing a millisecond, which sweeps across venues do, so trades are kept in a plain per-ticker deque
+        self.trade_pair_to_recent_trades = defaultdict(deque)
+        self._session_cache = None  # (session, start_ms, end_ms)
         self._raw_queue = queue.Queue()
         self._stop_event = threading.Event()
 
@@ -57,6 +67,9 @@ class PolygonNasdaqBasicDataService(BaseDataService):
         self.n_quotes_stored = 0
         self.n_quotes_out_of_order = 0
         self.dropped_counts = Counter()
+        self.n_trades = 0
+        self.n_trades_stored = 0
+        self.trade_dropped_counts = Counter()
         self._stats_since_s = time.time()
 
         self._worker_thread = None
@@ -89,11 +102,20 @@ class PolygonNasdaqBasicDataService(BaseDataService):
             self.latest_websocket_events[symbol] = price_source
 
     @ErrorUtils.require_test_mode
+    def set_test_trade(self, trade_pair: TradePair, price: float, size: int, time_ms: int, conditions=()) -> None:
+        """Inject a trade through the same session and filter checks as received trades, and enable quotes."""
+        self.entitled = True
+        self._add_trade({'ev': 'T', 'sym': trade_pair.trade_pair, 'p': price, 's': size, 't': time_ms,
+                         'c': list(conditions)}, TimeUtil.now_in_millis())
+
+    @ErrorUtils.require_test_mode
     def clear_test_quotes(self) -> None:
         self.entitled = None
         self.latest_websocket_events.clear()
         self.trade_pair_to_recent_events.clear()
         self._window_start_ms.clear()
+        self.trade_pair_to_recent_trades.clear()
+        self._session_cache = None
 
     def stop_threads(self):
         self._stop_event.set()
@@ -127,6 +149,10 @@ class PolygonNasdaqBasicDataService(BaseDataService):
                                                       feed=Feed.NasdaqBasicBusiness, raw=True, max_reconnects=0)
         logger.info(f"Created {self.provider_name} websocket for {tpc}. feed {Feed.NasdaqBasicBusiness.name}")
 
+    def _websocket_session_active(self, trade_pair: TradePair) -> bool:
+        # Stay connected through pre-market and after-hours, when trades fill limit orders
+        return self._session_at(TimeUtil.now_in_millis()) in ('pre', 'regular', 'post')
+
     def _client_unavailable_delay_s(self, tpc) -> float:
         retry_at_s = self._entitlement_retry_at_s if self.entitled is False else 0.0
         return max(1.0, max(retry_at_s, self._next_connect_allowed_at_s) - time.time())
@@ -135,11 +161,11 @@ class PolygonNasdaqBasicDataService(BaseDataService):
         client = self.WEBSOCKET_OBJECTS.get(TradePairCategory.EQUITIES)
         if client is None:
             return
-        symbols = ["Q." + tp.trade_pair for tp in self.get_tradeable_pairs(
+        tickers = [tp.trade_pair for tp in self.get_tradeable_pairs(
             category=TradePairCategory.EQUITIES, include_blocked=False, src=TradePairSource.VANTA)]
-        client.subscribe(*symbols)
-        self.n_subscribed = len(symbols)
-        logger.info(f"{self.provider_name} subscribing to {len(symbols)} quote symbols")
+        client.subscribe(*[f"{channel}.{ticker}" for ticker in tickers for channel in ('Q', 'T')])
+        self.n_subscribed = len(tickers)
+        logger.info(f"{self.provider_name} subscribing to quotes and trades for {len(tickers)} tickers")
 
     async def handle_msg(self, raw):
         recv_ms = TimeUtil.now_in_millis()
@@ -208,8 +234,11 @@ class PolygonNasdaqBasicDataService(BaseDataService):
     def _process_raw(self, raw, recv_ms: int):
         msgs = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
         for m in msgs:
-            if m.get('ev') == 'Q':
+            ev = m.get('ev')
+            if ev == 'Q':
                 self._add_quote(m, recv_ms)
+            elif ev == 'T':
+                self._add_trade(m, recv_ms)
 
     def _add_quote(self, m: dict, now_ms: int):
         symbol = m.get('sym')
@@ -278,7 +307,75 @@ class PolygonNasdaqBasicDataService(BaseDataService):
             return 'wide_spread'
         return None
 
+    def _session_at(self, time_ms: int) -> str | None:
+        """Equities session at time_ms, cached for the span it holds so per-trade checks stay cheap."""
+        if self._session_trade_pair is None:
+            return None
+        if self._test_equity_session_override is not None:
+            return self._test_equity_session_override
+        cached = self._session_cache
+        if cached is None or not (cached[1] <= time_ms < cached[2]):
+            cached = self.market_calendar.get_equity_session_bounds(self._session_trade_pair, time_ms)
+            self._session_cache = cached
+        return cached[0]
+
+    def _add_trade(self, m: dict, now_ms: int):
+        symbol = m.get('sym')
+        tp = self.trade_pair_lookup.get(symbol)
+        t = m.get('t')
+        if tp is None or not tp.is_equities or t is None:
+            return
+
+        with self._stats_lock:
+            self.n_trades += 1
+
+        # Trades only fill limit orders outside regular hours
+        if self._session_at(t) not in ('pre', 'post'):
+            return
+
+        price = m.get('p') or 0.0
+        reason = self._trade_rejection(price, m.get('s') or 0, m.get('c') or ())
+        if reason:
+            with self._stats_lock:
+                self.trade_dropped_counts[reason] += 1
+            return
+
+        trades = self.trade_pair_to_recent_trades[symbol]
+        trades.append(PriceSource(
+            source=NASDAQ_BASIC_TRADE_SOURCE,
+            timespan_ms=0,
+            open=price,
+            close=price,
+            vwap=price,
+            high=price,
+            low=price,
+            start_ms=t,
+            websocket=True,
+            lag_ms=now_ms - t
+        ))
+        oldest_ms = now_ms - ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS
+        while trades and trades[0].start_ms < oldest_ms:
+            trades.popleft()
+        with self._stats_lock:
+            self.n_trades_stored += 1
+
+    @staticmethod
+    def _trade_rejection(price: float, size: float, conditions) -> str | None:
+        """Why a trade is not a tradable round-lot price, or None."""
+        if price <= 0:
+            return 'bad_price'
+        if size < ValiConfig.NASDAQ_TRADE_MIN_SIZE:
+            return 'odd_lot'
+        if any(c in ValiConfig.NASDAQ_TRADE_EXCLUDED_CONDITIONS for c in conditions):
+            return 'excluded_condition'
+        return None
+
     # ==================== Lookup ====================
+
+    def get_trades_in_range(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
+        """Stored trades (pre-market/after-hours, round lots, tradable conditions) with start_ms in [start_ms, end_ms]."""
+        trades = self.trade_pair_to_recent_trades.get(trade_pair.trade_pair)
+        return sorted((ps for ps in list(trades) if start_ms <= ps.start_ms <= end_ms), key=lambda ps: ps.start_ms) if trades else []
 
     def get_closest_quote(self, trade_pair: TradePair, time_ms: int) -> PriceSource | None:
         """Closest quote to time_ms, like the other websocket sources. The newest quote is not in the
@@ -314,13 +411,18 @@ class PolygonNasdaqBasicDataService(BaseDataService):
             elapsed_s = max(now_s - self._stats_since_s, 1e-9)
             n_quotes, n_stored, n_out_of_order = self.n_quotes, self.n_quotes_stored, self.n_quotes_out_of_order
             dropped = dict(self.dropped_counts)
+            n_trades, n_trades_stored = self.n_trades, self.n_trades_stored
+            trades_dropped = dict(self.trade_dropped_counts)
             self.n_quotes = self.n_quotes_stored = self.n_quotes_out_of_order = 0
+            self.n_trades = self.n_trades_stored = 0
             self.dropped_counts = Counter()
+            self.trade_dropped_counts = Counter()
             self._stats_since_s = now_s
         n_tracker_events = sum(t.count_events() for t in list(self.trade_pair_to_recent_events.values()))
         logger.info(
             f"[NASDAQ_BASIC] entitled={self.entitled} subscribed={self.n_subscribed} "
             f"tickers_quoted={len(self.latest_websocket_events)} quotes/s={n_quotes / elapsed_s:.1f} "
             f"stored/s={n_stored / elapsed_s:.1f} out_of_order={n_out_of_order} queue={self._raw_queue.qsize()} "
-            f"tracker_events={n_tracker_events} dropped={dropped}"
+            f"tracker_events={n_tracker_events} dropped={dropped} session={self._session_at(TimeUtil.now_in_millis())} "
+            f"trades/s={n_trades / elapsed_s:.1f} trades_stored={n_trades_stored} trades_dropped={trades_dropped}"
         )

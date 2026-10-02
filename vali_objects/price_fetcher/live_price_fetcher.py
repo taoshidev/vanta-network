@@ -138,8 +138,13 @@ class LivePriceFetcher:
         self.polygon_data_service.set_test_market_open(is_open)
         self.polygon_nasdaq_basic_data_service.set_test_market_open(is_open)
 
+    def set_test_equity_session(self, session: str) -> None:
+        """Test-only override of the equities session. Cleared by clear_test_market_open."""
+        self.polygon_data_service.set_test_equity_session(session)
+        self.polygon_nasdaq_basic_data_service.set_test_equity_session(session)
+
     def clear_test_market_open(self) -> None:
-        """Clear market open override and use real calendar."""
+        """Clear market open and equities session overrides and use the real calendar."""
         self.polygon_data_service.clear_test_market_open()
         self.polygon_nasdaq_basic_data_service.clear_test_market_open()
 
@@ -180,6 +185,10 @@ class LivePriceFetcher:
         if time_ms is None:
             time_ms = TimeUtil.now_in_millis()
         return self.polygon_data_service.is_market_open(trade_pair, time_ms)
+
+    def get_equity_session(self, trade_pair: TradePair, time_ms=None) -> str | None:
+        """'pre', 'regular', 'post' or 'closed' for Vanta equities, None for anything else."""
+        return self.polygon_data_service.get_equity_session(trade_pair, time_ms)
 
     def get_currency_conversion(self, base: str, quote: str):
         return self.polygon_data_service.get_currency_conversion(base=base, quote=quote)

@@ -6,15 +6,19 @@ Covers:
 - Entitlement detection from subscribe status replies, reconnect spacing
 - PriceSource.apply_nasdaq_fmv_rule: quotes replace FMV (within 8s for a single price, any quote in a window)
 - Equities events, the limit/stop trigger window and get_quote through LivePriceFetcher
+- Equities sessions (pre/regular/post/closed) and Nasdaq Basic trades kept for pre-market/after-hours
 """
 import asyncio
 import json
 import time
 import unittest
+from datetime import datetime
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 from data_generator.polygon_nasdaq_basic_data_service import PolygonNasdaqBasicDataService, NASDAQ_BASIC_SOURCE
-from time_util.time_util import TimeUtil
+from time_util.time_util import TimeUtil, UnifiedMarketCalendar
+from vali_objects.vali_dataclasses.price_source import NASDAQ_BASIC_TRADE_SOURCE
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
@@ -345,6 +349,152 @@ class TestNasdaqQuoteSelection(unittest.TestCase):
                 mock.patch.object(self.fetcher, 'databento_data_service', None):
             self.assertEqual(self.fetcher.get_quote(TradePair.AAPL, self.now_ms), (1.0, 2.0, 3))
         poly.assert_called_once()
+
+
+def et_ms(year, month, day, hour, minute=0):
+    return int(datetime(year, month, day, hour, minute, tzinfo=ZoneInfo('America/New_York')).timestamp() * 1000)
+
+
+def trade_msg(t_ms, price, size=100, conditions=(), sym='AAPL'):
+    return {'ev': 'T', 'sym': sym, 'x': 4, 'p': price, 's': size, 'c': list(conditions), 't': t_ms, 'z': 3}
+
+
+class TestEquitySession(unittest.TestCase):
+    calendar = UnifiedMarketCalendar()
+
+    def session(self, *et, trade_pair=TradePair.AAPL):
+        return self.calendar.get_equity_session(trade_pair, et_ms(*et))
+
+    def test_normal_day_boundaries(self):
+        # 2026-10-01 is a Thursday (EDT)
+        self.assertEqual(self.session(2026, 10, 1, 3, 59), 'closed')
+        self.assertEqual(self.session(2026, 10, 1, 4, 0), 'pre')
+        self.assertEqual(self.session(2026, 10, 1, 9, 29), 'pre')
+        self.assertEqual(self.session(2026, 10, 1, 9, 30), 'regular')
+        self.assertEqual(self.session(2026, 10, 1, 15, 59), 'regular')
+        self.assertEqual(self.session(2026, 10, 1, 16, 0), 'post')
+        self.assertEqual(self.session(2026, 10, 1, 19, 59), 'post')
+        self.assertEqual(self.session(2026, 10, 1, 20, 0), 'closed')
+
+    def test_winter_after_hours_past_midnight_utc(self):
+        # 19:30 EST is 00:30 UTC the next day; the session follows the Eastern date
+        self.assertEqual(self.session(2026, 12, 1, 19, 30), 'post')
+        self.assertEqual(self.session(2026, 12, 1, 20, 0), 'closed')
+
+    def test_early_close_has_no_after_hours(self):
+        # Day after Thanksgiving: 13:00 close, and the calendar has no after-hours session
+        self.assertEqual(self.session(2026, 11, 27, 8, 0), 'pre')
+        self.assertEqual(self.session(2026, 11, 27, 12, 59), 'regular')
+        self.assertEqual(self.session(2026, 11, 27, 13, 0), 'closed')
+        self.assertEqual(self.session(2026, 11, 27, 16, 30), 'closed')
+
+    def test_holiday_and_weekend_closed(self):
+        self.assertEqual(self.session(2026, 11, 26, 6, 0), 'closed')  # Thanksgiving
+        self.assertEqual(self.session(2026, 10, 3, 6, 0), 'closed')   # Saturday
+
+    def test_bounds_span_the_session(self):
+        session, start_ms, end_ms = self.calendar.get_equity_session_bounds(TradePair.AAPL, et_ms(2026, 10, 1, 17, 0))
+        self.assertEqual((session, start_ms, end_ms), ('post', et_ms(2026, 10, 1, 16, 0), et_ms(2026, 10, 1, 20, 0)))
+
+    def test_only_vanta_equities_have_sessions(self):
+        for trade_pair in (TradePair.EURUSD, TradePair.AAPLUSDC, TradePair.BTCUSDC):
+            self.assertIsNone(self.session(2026, 10, 1, 12, 0, trade_pair=trade_pair))
+
+    def test_fetcher_session_override_cleared_with_market_open_override(self):
+        fetcher = LivePriceFetcher(secrets=ValiUtils.get_secrets(running_unit_tests=True), disable_ws=True,
+                                   running_unit_tests=True)
+        fetcher.set_test_equity_session('post')
+        self.assertEqual(fetcher.get_equity_session(TradePair.AAPL), 'post')
+        self.assertIsNone(fetcher.get_equity_session(TradePair.EURUSD))
+        fetcher.clear_test_market_open()
+        self.assertEqual(fetcher.get_equity_session(TradePair.AAPL, et_ms(2026, 10, 1, 12, 0)), 'regular')
+
+
+class TestNasdaqBasicTrades(unittest.TestCase):
+    def setUp(self):
+        self.svc = PolygonNasdaqBasicDataService(api_key='test', disable_ws=True, running_unit_tests=True)
+        self.svc.set_test_equity_session('post')
+        self.now_ms = TimeUtil.now_in_millis()
+
+    def feed(self, *msgs):
+        self.svc._process_raw(json.dumps(list(msgs)), TimeUtil.now_in_millis())
+
+    def stored(self, trade_pair=TradePair.AAPL):
+        return self.svc.get_trades_in_range(trade_pair, self.now_ms - 300_000, self.now_ms + 1000)
+
+    def test_subscribes_to_quotes_and_trades(self):
+        client = mock.MagicMock()
+        self.svc.WEBSOCKET_OBJECTS[TradePairCategory.EQUITIES] = client
+        self.svc._subscribe_websockets(TradePairCategory.EQUITIES)
+        symbols = client.subscribe.call_args.args
+        self.assertIn('Q.AAPL', symbols)
+        self.assertIn('T.AAPL', symbols)
+        self.assertEqual(len(symbols), 2 * self.svc.n_subscribed)
+
+    def test_round_lot_trade_stored_in_post(self):
+        self.feed(trade_msg(self.now_ms - 100, 330.25, size=200, conditions=(12, 14, 41)))
+        trades = self.stored()
+        self.assertEqual(len(trades), 1)
+        ps = trades[0]
+        self.assertEqual(ps.source, NASDAQ_BASIC_TRADE_SOURCE)
+        self.assertEqual((ps.open, ps.close, ps.bid, ps.ask, ps.start_ms), (330.25, 330.25, 0.0, 0.0, self.now_ms - 100))
+
+    def test_trades_stored_in_pre_but_not_regular_or_closed(self):
+        self.svc.set_test_equity_session('pre')
+        self.feed(trade_msg(self.now_ms - 300, 330.0))
+        for session in ('regular', 'closed'):
+            self.svc.set_test_equity_session(session)
+            self.feed(trade_msg(self.now_ms - 200, 331.0))
+        self.assertEqual([ps.open for ps in self.stored()], [330.0])
+
+    def test_untradable_trades_dropped(self):
+        self.feed(trade_msg(self.now_ms, 330.0, size=99),                 # odd lot
+                  trade_msg(self.now_ms, 263.88, conditions=(32, 41)),    # sold out of sequence
+                  trade_msg(self.now_ms, 277.64, conditions=(2, 12)),     # average price
+                  trade_msg(self.now_ms, 330.5, conditions=(8,)),         # closing print
+                  trade_msg(self.now_ms, 0.0))
+        self.assertEqual(self.stored(), [])
+        self.assertEqual(dict(self.svc.trade_dropped_counts), {'odd_lot': 1, 'excluded_condition': 3, 'bad_price': 1})
+
+    def test_trades_in_same_millisecond_all_kept(self):
+        self.feed(trade_msg(self.now_ms, 330.10), trade_msg(self.now_ms, 330.05), trade_msg(self.now_ms, 330.00))
+        self.assertEqual(sorted(ps.open for ps in self.stored()), [330.00, 330.05, 330.10])
+
+    def test_trades_in_range_and_pruning(self):
+        old_ms = self.now_ms - ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS - 1000
+        self.feed(trade_msg(old_ms, 329.0), trade_msg(self.now_ms - 2000, 330.0), trade_msg(self.now_ms - 1000, 330.5))
+        self.assertEqual([ps.open for ps in self.stored()], [330.0, 330.5])
+        self.assertEqual([ps.open for ps in self.svc.get_trades_in_range(TradePair.AAPL, self.now_ms - 1500, self.now_ms)],
+                         [330.5])
+        self.assertEqual(self.stored(TradePair.MSFT), [])
+
+    def test_set_test_trade_applies_filter_and_clear_removes_trades(self):
+        self.svc.set_test_trade(TradePair.AAPL, 330.0, 50, self.now_ms)
+        self.svc.set_test_trade(TradePair.AAPL, 330.0, 100, self.now_ms)
+        self.assertEqual(len(self.stored()), 1)
+        self.svc.clear_test_quotes()
+        self.assertEqual(self.stored(), [])
+
+    def test_websocket_stays_up_in_pre_and_post(self):
+        for session, expected in (('pre', True), ('regular', True), ('post', True), ('closed', False)):
+            self.svc.set_test_equity_session(session)
+            self.assertEqual(self.svc._websocket_session_active(TradePair.AAPL), expected)
+
+    def test_session_lookup_cached_per_span(self):
+        self.svc.clear_test_market_open()
+        with mock.patch.object(self.svc.market_calendar, 'get_equity_session_bounds',
+                               wraps=self.svc.market_calendar.get_equity_session_bounds) as bounds:
+            self.assertEqual(self.svc._session_at(et_ms(2026, 10, 1, 17, 0)), 'post')
+            self.assertEqual(self.svc._session_at(et_ms(2026, 10, 1, 19, 0)), 'post')
+            self.assertEqual(self.svc._session_at(et_ms(2026, 10, 2, 5, 0)), 'pre')
+        self.assertEqual(bounds.call_count, 2)
+
+    def test_other_services_keep_market_hours_for_their_websocket(self):
+        fetcher = LivePriceFetcher(secrets=ValiUtils.get_secrets(running_unit_tests=True), disable_ws=True,
+                                   running_unit_tests=True)
+        fetcher.set_test_market_open(False)
+        fetcher.set_test_equity_session('post')
+        self.assertFalse(fetcher.polygon_data_service._websocket_session_active(TradePair.AAPL))
 
 
 if __name__ == '__main__':
