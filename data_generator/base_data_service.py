@@ -14,12 +14,11 @@ from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil, UnifiedMarketCalendar
 from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource
 from vali_objects.vali_dataclasses.recent_event_tracker import RecentEventTracker
-from vali_objects.vali_dataclasses.price_source import PriceSource
+from vali_objects.vali_dataclasses.price_source import PriceSource, POLYGON_WS_SOURCE  # noqa: F401 (re-exported)
 import logging
 from shared_objects.log import logger
 
 POLYGON_PROVIDER_NAME = "Polygon"
-POLYGON_WS_SOURCE = f"{POLYGON_PROVIDER_NAME}_ws"  # FMV for equities
 TIINGO_PROVIDER_NAME = "Tiingo"
 HYPERLIQUID_PROVIDER_NAME = "Hyperliquid"
 
