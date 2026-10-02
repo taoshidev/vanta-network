@@ -158,29 +158,17 @@ class PriceSource:
     @staticmethod
     def apply_nasdaq_fmv_rule(events, time_ms=None):
         """
-        Equities: a Nasdaq Basic quote replaces FMV if its mid is within max(NASDAQ_QUOTE_FMV_BAND_BPS, spread) of
-        the FMV event closest to it (when that FMV is within NASDAQ_QUOTE_FMV_MAX_AGE_MS of the quote) and, when
-        time_ms is given, the quote is within WEBSOCKET_PRICE_MAX_AGE_MS of time_ms.
+        Equities: Nasdaq Basic quotes replace FMV. When time_ms is given, only quotes within
+        WEBSOCKET_PRICE_MAX_AGE_MS of it count; a stale quote would push a fresh FMV out and send the pair to REST.
 
-        Returns events without FMV if any quote replaces FMV, otherwise without the quotes. Events with no Nasdaq
-        quote are returned unchanged. Used for a single price (time_ms given) and for a window of events.
+        Returns events without FMV if any quote counts, otherwise without the quotes. Events with no Nasdaq quote
+        are returned unchanged. Used for a single price (time_ms given) and for a window of events.
         """
         quotes = [e for e in events if e.source == NASDAQ_BASIC_SOURCE]
         if not quotes:
             return events
-        fmvs = [e for e in events if e.source == POLYGON_WS_SOURCE]
-
-        def replaces_fmv(quote):
-            if time_ms is not None and quote.time_delta_from_now_ms(time_ms) > ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS:
-                return False
-            fmv = min(fmvs, key=lambda f: abs(f.start_ms - quote.start_ms)) if fmvs else None
-            if fmv is None or not fmv.open or abs(fmv.start_ms - quote.start_ms) > ValiConfig.NASDAQ_QUOTE_FMV_MAX_AGE_MS:
-                return True
-            mid = (quote.bid + quote.ask) / 2.0
-            spread_bps = (quote.ask - quote.bid) / mid * 10000
-            return abs(mid - fmv.open) / fmv.open * 10000 <= max(ValiConfig.NASDAQ_QUOTE_FMV_BAND_BPS, spread_bps)
-
-        kept_quote_ids = {id(q) for q in quotes if replaces_fmv(q)}
+        kept_quote_ids = {id(q) for q in quotes
+                          if time_ms is None or q.time_delta_from_now_ms(time_ms) <= ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS}
         if kept_quote_ids:
             return [e for e in events if e.source != POLYGON_WS_SOURCE
                     and (e.source != NASDAQ_BASIC_SOURCE or id(e) in kept_quote_ids)]

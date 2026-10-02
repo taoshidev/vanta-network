@@ -389,8 +389,6 @@ class ValiConfig:
     NASDAQ_QUOTE_TRACKER_SAMPLE_MS = 250  # keep the last quote of each window in the recent event tracker
     NASDAQ_QUOTE_OUT_OF_ORDER_TOLERANCE_MS = 1000  # quotes arriving this much older than the latest are dropped
     NASDAQ_QUOTE_MAX_SPREAD_BPS = 50  # wider quotes are dropped on receipt
-    NASDAQ_QUOTE_FMV_BAND_BPS = 25  # a quote replaces FMV only if its mid is within max(this, spread) of FMV
-    NASDAQ_QUOTE_FMV_MAX_AGE_MS = 10000  # FMV band is only checked against an FMV this fresh
     NASDAQ_ENTITLEMENT_RETRY_S = 600  # re-check entitlement this often after "not authorized" or failed connects
     NASDAQ_MIN_RECONNECT_INTERVAL_S = 15  # Massive asks for 10-30s between reconnects
 
