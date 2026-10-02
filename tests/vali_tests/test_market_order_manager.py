@@ -24,6 +24,7 @@ from vali_objects.vali_config import TradePair, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from data_generator.polygon_nasdaq_basic_data_service import NASDAQ_BASIC_SOURCE
 
 
 class TestMarketOrderManager(TestBase):
@@ -490,3 +491,62 @@ class TestMarketOrderManager(TestBase):
 
         refreshed = self.position_client.get_positions_for_one_hotkey(self.DEFAULT_MINER_HOTKEY)
         self.assertFalse(next(p for p in refreshed if p.position_uuid == pos.position_uuid).is_closed_position)
+
+    # ============================================================================
+    # Test: equity fills from Nasdaq Basic quotes
+    # ============================================================================
+
+    def inject_equity_prices(self, now_ms, nasdaq_bid=None, nasdaq_ask=None):
+        """Business FMV at 100.0, plus a Nasdaq Basic quote when bid/ask are given."""
+        self.live_price_fetcher_client.set_test_market_open(True)
+        self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, PriceSource(
+            source='Polygon_ws', open=100.0, close=100.0, high=100.0, low=100.0, vwap=100.0,
+            start_ms=now_ms - 50, websocket=True, bid=100.0, ask=100.0))
+        if nasdaq_bid is not None:
+            mid = (nasdaq_bid + nasdaq_ask) / 2
+            self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, PriceSource(
+                source=NASDAQ_BASIC_SOURCE, open=mid, close=mid, high=mid, low=mid, vwap=mid,
+                start_ms=now_ms - 100, websocket=True, bid=nasdaq_bid, ask=nasdaq_ask))
+
+    def execute_live_equity(self, order_uuid, order_type, now_ms, value=None, bracket_pct=None):
+        """No fill_price/price_sources, so the manager prices the order from the live price fetcher."""
+        return self.market_order_manager.execute_order(
+            self.DEFAULT_MINER_HOTKEY, order_uuid, TradePair.AAPL, ExecutionType.MARKET, order_type,
+            OrderSize(value=value, bracket_pct=bracket_pct), now_ms=now_ms, enforce_cooldown=False,
+        )
+
+    def test_equity_long_fills_at_nasdaq_ask(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms, 99.99, 100.01)
+        order, _ = self.execute_live_equity("aapl_long", OrderType.LONG, now_ms, value=500.0)
+        self.assertEqual(order.price, 100.01)
+        self.assertEqual((order.bid, order.ask), (99.99, 100.01))
+        self.assertEqual(order.price_sources[0].source, NASDAQ_BASIC_SOURCE)
+
+    def test_equity_short_fills_at_nasdaq_bid(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms, 99.99, 100.01)
+        order, _ = self.execute_live_equity("aapl_short", OrderType.SHORT, now_ms, value=-500.0)
+        self.assertEqual(order.price, 99.99)
+
+    def test_equity_close_of_long_fills_at_nasdaq_bid(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms, 99.99, 100.01)
+        self.execute_live_equity("aapl_open", OrderType.LONG, now_ms, value=500.0)
+        close_order, position = self.execute_live_equity("aapl_close", OrderType.FLAT, now_ms + 1, bracket_pct=1.0)
+        self.assertTrue(position.is_closed_position)
+        self.assertEqual(close_order.price, 99.99)
+
+    def test_equity_invalid_quote_falls_back_to_fmv(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms, 99.0, 101.0)  # 200 bps spread exceeds the cap
+        order, _ = self.execute_live_equity("aapl_wide", OrderType.LONG, now_ms, value=500.0)
+        self.assertEqual(order.price, 100.0)
+        self.assertEqual(order.price_sources[0].source, 'Polygon_ws')
+
+    def test_equity_without_nasdaq_basic_fills_at_fmv(self):
+        now_ms = TimeUtil.now_in_millis()
+        self.inject_equity_prices(now_ms)
+        order, _ = self.execute_live_equity("aapl_fmv", OrderType.LONG, now_ms, value=500.0)
+        self.assertEqual(order.price, 100.0)
+        self.assertEqual(order.price_sources[0].source, 'Polygon_ws')
