@@ -4,8 +4,8 @@ Nasdaq Basic quotes for equities.
 Covers:
 - Quote message conversion, untradable quotes dropped on receipt, 250ms tracker sampling, out-of-order handling
 - Entitlement detection from subscribe status replies, reconnect spacing
-- sorted_valid_price_sources: a recent quote that agrees with FMV replaces FMV, otherwise the quote is dropped
-- Equities events and get_quote through LivePriceFetcher
+- PriceSource.apply_nasdaq_fmv_rule, for a single price (sorted_valid_price_sources) and for a window of events
+- Equities events, the limit/stop trigger window and get_quote through LivePriceFetcher
 """
 import asyncio
 import json
@@ -15,11 +15,15 @@ from unittest import mock
 
 from data_generator.polygon_nasdaq_basic_data_service import PolygonNasdaqBasicDataService, NASDAQ_BASIC_SOURCE
 from time_util.time_util import TimeUtil
+from vali_objects.enums.execution_type_enum import ExecutionType
+from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.utils.limit_order.order_trigger import evaluate_order_trigger
 from vali_objects.price_fetcher.live_price_fetcher import LivePriceFetcher
 from vali_objects.trade_pair import TradePairCategory
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import TradePair, ValiConfig
+from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import PriceSource
 
 
@@ -116,6 +120,15 @@ class TestNasdaqBasicService(unittest.TestCase):
         self.assertEqual(self.svc.get_closest_quote(TradePair.AAPL, t0 - 1000).start_ms, t0)
         self.assertEqual(self.svc.get_closes_websocket([TradePair.AAPL], self.now_ms)[TradePair.AAPL].start_ms, t0 + sample)
         self.assertEqual(self.svc.get_closes_websocket([TradePair.MSFT], self.now_ms), {})
+
+    def test_get_events_in_range_includes_latest_quote(self):
+        t0 = self.now_ms - 10_000
+        sample = ValiConfig.NASDAQ_QUOTE_TRACKER_SAMPLE_MS
+        self.feed(quote_msg(t0, 99.99, 100.01), quote_msg(t0 + sample, 99.98, 100.02))
+        in_range = self.svc.get_events_in_range(TradePair.AAPL, t0 - 1, self.now_ms)
+        self.assertEqual([ps.start_ms for ps in in_range], [t0, t0 + sample])
+        self.assertEqual([ps.start_ms for ps in self.svc.get_events_in_range(TradePair.AAPL, t0 + 1, self.now_ms)], [t0 + sample])
+        self.assertEqual(self.svc.get_events_in_range(TradePair.MSFT, t0, self.now_ms), [])
 
     # ---------- entitlement ----------
 
@@ -228,6 +241,54 @@ class TestNasdaqQuoteSelection(unittest.TestCase):
     def test_lists_without_a_quote_unchanged(self):
         self.assertEqual(self.select(fmv_source(100.0, self.now_ms - 50), None), ['Polygon_ws'])
 
+    # ---------- apply_nasdaq_fmv_rule over a window (no time_ms) ----------
+
+    def test_window_keeps_agreeing_quotes_and_drops_fmv(self):
+        fmv = fmv_source(100.0, self.now_ms - 11_000)
+        agreeing = self.nasdaq_quote(99.99, 100.01, self.now_ms - 12_000)  # >8s old is fine in a window
+        disagreeing = self.nasdaq_quote(100.99, 101.01, self.now_ms - 10_500)  # ~100 bps from the FMV beside it
+        other = PriceSource(source='Tiingo_ws', open=100.0, start_ms=self.now_ms, websocket=True)
+        kept = PriceSource.apply_nasdaq_fmv_rule([fmv, agreeing, disagreeing, other])
+        self.assertEqual(kept, [agreeing, other])
+
+    def test_window_without_agreeing_quote_keeps_fmv(self):
+        fmv = fmv_source(100.0, self.now_ms)
+        kept = PriceSource.apply_nasdaq_fmv_rule([fmv, self.nasdaq_quote(100.99, 101.01, self.now_ms)])
+        self.assertEqual(kept, [fmv])
+
+    def test_events_without_quote_returned_unchanged(self):
+        events = [fmv_source(100.0, self.now_ms)]
+        self.assertIs(PriceSource.apply_nasdaq_fmv_rule(events, self.now_ms), events)
+
+    # ---------- trigger window ----------
+
+    def limit_buy(self, limit_price):
+        return Order(trade_pair=TradePair.AAPL, order_uuid='aapl_limit', processed_ms=self.now_ms - 1000, price=0.0,
+                     order_type=OrderType.LONG, leverage=0.1, execution_type=ExecutionType.LIMIT,
+                     limit_price=limit_price, src=OrderSource.LIMIT_UNFILLED)
+
+    def test_trigger_window_uses_quotes_instead_of_fmv(self):
+        # setUp FMV is 100.0. A limit buy at 100.00 would trigger on FMV (bid = ask = 100.0).
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms - 100))
+        window = self.fetcher.get_ws_price_sources_in_window(TradePair.AAPL, self.now_ms - 30_000, self.now_ms)
+        self.assertEqual([ps.source for ps in window], [NASDAQ_BASIC_SOURCE])
+        _, trigger_price, _ = evaluate_order_trigger('hk', self.limit_buy(100.00), None, window)
+        self.assertIsNone(trigger_price)
+
+        # Ask at the limit triggers, and the fill side comes from the quote
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.98, 100.00, self.now_ms - 50))
+        window = self.fetcher.get_ws_price_sources_in_window(TradePair.AAPL, self.now_ms - 30_000, self.now_ms)
+        trigger_ps, trigger_price, _ = evaluate_order_trigger('hk', self.limit_buy(100.00), None, window)
+        self.assertEqual(trigger_price, 100.00)
+        self.assertEqual(trigger_ps.source, NASDAQ_BASIC_SOURCE)
+        self.assertEqual(trigger_ps.parse_appropriate_price(self.now_ms, False, OrderType.LONG, OrderType.LONG), 100.00)
+
+    def test_trigger_window_without_nasdaq_basic_is_fmv(self):
+        window = self.fetcher.get_ws_price_sources_in_window(TradePair.AAPL, self.now_ms - 30_000, self.now_ms)
+        self.assertEqual([ps.source for ps in window], ['Polygon_ws'])
+        _, trigger_price, _ = evaluate_order_trigger('hk', self.limit_buy(100.00), None, window)
+        self.assertEqual(trigger_price, 100.00)
+
     # ---------- equities events through LivePriceFetcher ----------
 
     def test_disabled_by_default(self):
@@ -284,9 +345,15 @@ class TestNasdaqQuoteSelection(unittest.TestCase):
     # ---------- get_quote ----------
 
     def test_get_quote_uses_closest_nasdaq_quote(self):
-        # Same as the Databento branch: closest quote with a bid and ask, no age limit
-        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms - 20_000))
-        self.assertEqual(self.fetcher.get_quote(TradePair.AAPL, self.now_ms), (99.99, 100.01, self.now_ms - 20_000))
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, self.now_ms - 5000))
+        self.assertEqual(self.fetcher.get_quote(TradePair.AAPL, self.now_ms), (99.99, 100.01, self.now_ms - 5000))
+
+    def test_get_quote_ignores_nasdaq_quote_older_than_max_age(self):
+        stale_ms = self.now_ms - ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS - 1000
+        self.fetcher.set_test_price_source(TradePair.AAPL, self.nasdaq_quote(99.99, 100.01, stale_ms))
+        with mock.patch.object(self.fetcher.polygon_data_service, 'get_quote', return_value=(1.0, 2.0, 3)), \
+                mock.patch.object(self.fetcher, 'databento_data_service', None):
+            self.assertEqual(self.fetcher.get_quote(TradePair.AAPL, self.now_ms), (1.0, 2.0, 3))
 
     def test_get_quote_without_nasdaq_basic_uses_existing_path(self):
         with mock.patch.object(self.fetcher.polygon_data_service, 'get_quote', return_value=(1.0, 2.0, 3)) as poly, \

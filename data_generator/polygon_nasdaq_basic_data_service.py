@@ -12,11 +12,10 @@ from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil
 from vali_objects.trade_pair import TradePair, TradePairCategory, TradePairSource
 from vali_objects.vali_config import ValiConfig
-from vali_objects.vali_dataclasses.price_source import PriceSource
+from vali_objects.vali_dataclasses.price_source import PriceSource, NASDAQ_BASIC_SOURCE
 from shared_objects.log import logger
 
 NASDAQ_BASIC_PROVIDER_NAME = f"{POLYGON_PROVIDER_NAME}_nasdaq"
-NASDAQ_BASIC_SOURCE = f"{NASDAQ_BASIC_PROVIDER_NAME}_ws"
 
 
 class PolygonNasdaqBasicDataService(BaseDataService):
@@ -292,6 +291,16 @@ class PolygonNasdaqBasicDataService(BaseDataService):
         sampled = tracker.get_closest_event(time_ms) if tracker else None
         candidates = [ps for ps in (latest, sampled) if ps is not None]
         return min(candidates, key=lambda ps: abs(time_ms - ps.start_ms)) if candidates else None
+
+    def get_events_in_range(self, trade_pair: TradePair, start_ms: int, end_ms: int) -> List[PriceSource]:
+        """Sampled quotes in [start_ms, end_ms] plus the newest quote, which is not sampled until its window closes."""
+        symbol = trade_pair.trade_pair
+        tracker = self.trade_pair_to_recent_events.get(symbol)
+        events = tracker.get_events_in_range(start_ms, end_ms) if tracker else []
+        latest = self.latest_websocket_events.get(symbol)
+        if latest is not None and start_ms <= latest.start_ms <= end_ms and not any(e is latest for e in events):
+            events.append(latest)
+        return events
 
     def get_closes_websocket(self, trade_pairs: List[TradePair], time_ms) -> dict[TradePair, PriceSource]:
         events = {}

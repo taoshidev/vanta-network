@@ -4,7 +4,6 @@ from typing import List, Optional, Tuple, Dict
 
 import numpy as np
 from data_generator.tiingo_data_service import TiingoDataService
-from data_generator.base_data_service import POLYGON_WS_SOURCE
 from data_generator.polygon_data_service import PolygonDataService
 from data_generator.polygon_nasdaq_basic_data_service import PolygonNasdaqBasicDataService, NASDAQ_BASIC_SOURCE
 from data_generator.databento_data_service import DatabentoDataService
@@ -199,21 +198,8 @@ class LivePriceFetcher:
         if not current_time_ms:
             current_time_ms = TimeUtil.now_in_millis()
 
-        # Equities: a Nasdaq Basic quote replaces FMV if it is recent and agrees with FMV; otherwise the quote
-        # is dropped and FMV competes as before.
-        nasdaq_quote = next((e for e in valid_events if e.source == NASDAQ_BASIC_SOURCE), None)
-        if nasdaq_quote:
-            fmv = next((e for e in valid_events if e.source == POLYGON_WS_SOURCE), None)
-            mid = (nasdaq_quote.bid + nasdaq_quote.ask) / 2.0
-            spread_bps = (nasdaq_quote.ask - nasdaq_quote.bid) / mid * 10000
-            quote_is_recent = nasdaq_quote.time_delta_from_now_ms(current_time_ms) <= ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS
-            quote_agrees_with_fmv = (
-                fmv is None or not fmv.open
-                or fmv.time_delta_from_now_ms(current_time_ms) > ValiConfig.NASDAQ_QUOTE_FMV_MAX_AGE_MS
-                or abs(mid - fmv.open) / fmv.open * 10000 <= max(ValiConfig.NASDAQ_QUOTE_FMV_BAND_BPS, spread_bps)
-            )
-            dropped_source = POLYGON_WS_SOURCE if quote_is_recent and quote_agrees_with_fmv else NASDAQ_BASIC_SOURCE
-            valid_events = [e for e in valid_events if e.source != dropped_source]
+        # Equities: a recent Nasdaq Basic quote that agrees with FMV replaces FMV, otherwise the quote is dropped
+        valid_events = PriceSource.apply_nasdaq_fmv_rule(valid_events, current_time_ms)
 
         best_event = PriceSource.get_winning_event(valid_events, current_time_ms)
         if not best_event:
@@ -265,9 +251,14 @@ class LivePriceFetcher:
         # if self.databento_data_service and trade_pair.is_equities:
         #     databento_sources = self.databento_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
 
+        nasdaq_sources = []
+        if self.nasdaq_quotes_enabled() and trade_pair.is_equities:
+            nasdaq_sources = self.polygon_nasdaq_basic_data_service.get_events_in_range(trade_pair, start_ms, end_ms)
+
         poly_sources = self.polygon_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
         t_sources = self.tiingo_data_service.trade_pair_to_recent_events[trade_pair.trade_pair].get_events_in_range(start_ms, end_ms)
-        return poly_sources + t_sources + hl_sources + databento_sources
+        # Equities: if any Nasdaq Basic quote in the window agrees with FMV, triggers use quotes instead of FMV
+        return PriceSource.apply_nasdaq_fmv_rule(poly_sources + t_sources + hl_sources + databento_sources + nasdaq_sources)
 
     def get_latest_price(self, trade_pair: TradePair, time_ms=None) -> Tuple[float, List[PriceSource]] | Tuple[None, None]:
         """
@@ -436,7 +427,8 @@ class LivePriceFetcher:
         """
         if trade_pair.is_equities and self.nasdaq_quotes_enabled():
             price_source = self.polygon_nasdaq_basic_data_service.get_closes_websocket([trade_pair], processed_ms).get(trade_pair)
-            if price_source and price_source.bid and price_source.ask and price_source.bid > 0 and price_source.ask > 0:
+            if (price_source and price_source.bid and price_source.ask and price_source.bid > 0 and price_source.ask > 0
+                    and price_source.time_delta_from_now_ms(processed_ms) <= ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS):
                 return price_source.bid, price_source.ask, price_source.start_ms
         if trade_pair.is_equities and self.databento_data_service:
             price_source = self.databento_data_service.get_closes_websocket([trade_pair], processed_ms).get(trade_pair)

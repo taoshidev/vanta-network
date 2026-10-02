@@ -557,6 +557,38 @@ class TestMDDChecker(TestBase):
         position.force_close_position(order_src=OrderSource.PRICE_FILLED_ELIMINATION_FLAT)
         self.assertEqual(position.orders[-1].price, 100.5)
 
+    def test_mdd_price_correction_prefers_valid_nasdaq_quote_over_closer_fmv(self):
+        """
+        Re-pricing applies the same Nasdaq quote vs FMV rule as live pricing: a valid quote 200ms after the
+        order wins over the order's FMV source at the exact order time.
+        """
+        from data_generator.base_data_service import POLYGON_WS_SOURCE
+        from data_generator.polygon_nasdaq_basic_data_service import NASDAQ_BASIC_SOURCE
+        from vali_objects.enums.order_source_enum import OrderSource
+
+        self.mdd_checker_client.price_correction_enabled = True
+        self.live_price_fetcher_client.set_test_market_open(True)
+        order_time_ms = TimeUtil.now_in_millis() - 60000
+
+        fmv_ps = self.create_price_source(100.0, order_time_ms=order_time_ms)
+        fmv_ps.source = POLYGON_WS_SOURCE
+        order = Order(order_type=OrderType.LONG, leverage=0.1, price=100.0, trade_pair=TradePair.AAPL,
+                      processed_ms=order_time_ms, order_uuid="aapl_fmv_fill", src=OrderSource.ORGANIC,
+                      price_sources=[fmv_ps])
+        position = self.trade_pair_to_default_position[TradePair.AAPL]
+        self.add_order_to_position_and_save_to_disk(position, order)
+
+        self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, PriceSource(
+            source=NASDAQ_BASIC_SOURCE, open=100.0, close=100.0, high=100.0, low=100.0, vwap=100.0,
+            start_ms=order_time_ms + 200, websocket=True, bid=99.99, ask=100.01))
+
+        self.mdd_checker_client.last_price_fetch_time_ms = TimeUtil.now_in_millis() - 1000 * 30
+        self.mdd_checker_client.mdd_check()
+
+        corrected = self.position_client.get_miner_position_by_uuid(self.MINER_HOTKEY, position.position_uuid).orders[0]
+        self.assertEqual(corrected.price, 100.01, "LONG should be re-priced to the Nasdaq ask")
+        self.assertEqual([ps.source for ps in corrected.price_sources], [NASDAQ_BASIC_SOURCE])
+
     def test_mdd_price_correction_closed_position_close_order(self):
         """
         Price correction of a FLAT close order on a recently closed position fills against the
