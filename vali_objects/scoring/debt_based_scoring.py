@@ -113,6 +113,8 @@ class DebtBasedScoring:
     BLOCKS_PER_DAY_FALLBACK = 7200  # ~12 seconds per block
     RAO_PER_TOKEN = 1e9
 
+    MINER_EMISSION_SHARE = 0.5
+
     # Burn address UIDs (receives excess weight when sum < 1.0)
     BURN_UID_MAINNET = 229
     BURN_UID_TESTNET = 220
@@ -796,10 +798,10 @@ class DebtBasedScoring:
             Estimated total ALPHA emissions available (float)
         """
         try:
-            total_alpha_per_tempo = sum(metagraph_client.get_emission())
+            total_alpha_per_tempo = sum(metagraph_client.get_emission()) * DebtBasedScoring.MINER_EMISSION_SHARE
             total_alpha_per_block = total_alpha_per_tempo / 360
             if verbose:
-                logger.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")
+                logger.info(f"Current miner emission rate: {total_alpha_per_block:.6f} alpha/block")
 
             # Estimate blocks until target day
             # Use approximate 12 seconds per block (7200 blocks/day)
