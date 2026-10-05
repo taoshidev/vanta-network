@@ -88,7 +88,7 @@ npm run preview  # Preview production build
 - **`template/`** - Bittensor protocol definitions and base classes
 
 ### Data Infrastructure
-- **`data_generator/`** - Financial market data services (Polygon, Tiingo, Binance, Bybit, Kraken)
+- **`data_generator/`** - Financial market data services: Polygon/Massive (Business FMV for equities, forex), Polygon/Massive Nasdaq Basic (`polygon_nasdaq_basic_data_service.py`: equities quotes and pre/post-market trades, auto-detected per key), Tiingo (forex), Hyperliquid (crypto, commodities, indices, equity perps), Databento (optional equities quotes)
 - **`vanta_api/`** - Vanta Network API layer
   - `base_rest_server.py` - Shared REST server base; `miner_rest_server.py`, `entity_miner_rest_server.py`, `validator_rest_server.py` - per-role REST servers for signal submission and queries
   - `websocket_server.py` / `websocket_client.py` - Real-time WebSocket communication
@@ -133,7 +133,7 @@ The system uses a distributed RPC architecture for inter-process communication:
 ### Signal Flow
 1. Miners submit LONG/SHORT/FLAT signals via Vanta API (REST/WebSocket)
 2. Validators receive and validate signals through `vanta_api/validator_rest_server.py`
-3. Real-time price validation using multiple data sources (Polygon, Tiingo, Binance, Bybit, Kraken)
+3. Real-time price validation using multiple data sources (Hyperliquid, Polygon/Massive, Tiingo, Databento). For equities a Nasdaq Basic quote replaces FMV when one is within 8s (`PriceSource.apply_nasdaq_fmv_rule`)
 4. Position tracking via RPC services with leverage limits and slippage modeling
 5. Performance calculation using debt-based scoring system
 
@@ -141,7 +141,8 @@ The system uses a distributed RPC architecture for inter-process communication:
 - **Crypto**: BTC/USDC, ETH/USDC, SOL/USDC, XRP/USDC, DOGE/USDC, ADA/USDC, etc. (Hyperliquid USDC pairs; native USD-denominated equivalents are blocked in favor of these)
 - **Forex**: 28 tradable currency pairs (EUR/USD, GBP/USD, USD/JPY, etc.); USDMXN is blocked
   - Grouped into G1-G5 subcategories by liquidity/volume
-- **Equities**: Russell 1000 single stocks plus HL-matched additions (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD, SPCX) - enabled via Polygon/Databento
+- **Equities**: Russell 1000 single stocks plus HL-matched additions (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD, SPCX) - priced via Massive Nasdaq Basic quotes (if the key has the expansion) or Business FMV, plus optional Databento
+  - Sessions (ET): regular 09:30–16:00; pre-market 04:00–09:30 and after-hours 16:00–20:00 are limit-only, filling at the limit price on round-lot Nasdaq Basic trades at or through it (`get_equity_session`); market orders, stops and brackets wait for the regular session
 - **Indices**: Hyperliquid index perps SP500USDC, XYZ100USDC, EWYUSDC. The 6 Vanta-native indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) are blocked. There is no `indices` MinerAssetClass — index perps are reached through `hl_all`, `all_markets` or a pro account
 - **Commodities**: Hyperliquid perps GOLDUSDC, SILVERUSDC, COPPERUSDC, NATGASUSDC, PLATINUMUSDC, WTIOILUSDC. Vanta-native spot XAU/USD and XAG/USD are blocked in their favor
 
@@ -239,7 +240,7 @@ client.set_direct_server(server_instance)
 - **Bittensor 10.3.0** - Blockchain and subnet integration
 - **Pydantic 2.10.3** - Data validation and serialization
 - **Financial APIs**:
-  - Polygon API Client 1.16.0 ($248/month)
+  - Polygon API Client 1.16.0 (Massive: Currencies Starter + Stocks Business, optional Nasdaq Basic expansion)
   - Tiingo 0.15.6 ($50/month)
   - Databento 0.69.0 (optional, supplementary equities price source)
 - **ML Stack**: scikit-learn 1.5.0, scipy 1.13.0, pandas 2.2.2

@@ -67,6 +67,17 @@ class LivePriceFetcherClient(RPCClientBase):
             time_ms = TimeUtil.now_in_millis()
         return self._market_calendar.is_market_open(trade_pair, time_ms)
 
+    def get_equity_session(self, trade_pair: TradePair, time_ms=None) -> str | None:
+        """
+        'pre', 'regular', 'post' or 'closed' for Vanta equities, None for anything else. Executes locally (no RPC).
+        """
+        if self.running_unit_tests:
+            return self._server.get_equity_session(trade_pair, time_ms)
+
+        if time_ms is None:
+            time_ms = TimeUtil.now_in_millis()
+        return self._market_calendar.get_equity_session(trade_pair, time_ms)
+
     # ========== RPC proxy methods ==========
 
     def stop_all_threads(self):
@@ -148,8 +159,12 @@ class LivePriceFetcherClient(RPCClientBase):
         return self._server.set_test_market_open(is_open)
 
     def clear_test_market_open(self) -> None:
-        """Clear market open override (test-only)."""
+        """Clear market open and equities session overrides (test-only)."""
         return self._server.clear_test_market_open()
+
+    def set_test_equity_session(self, session: str) -> None:
+        """Override the equities session (test-only). Cleared by clear_test_market_open."""
+        return self._server.set_test_equity_session(session)
 
     def set_test_candle_data(self, trade_pair: TradePair, start_ms: int, end_ms: int, candles: List[PriceSource]) -> None:
         """Set test candle data for a specific trade pair and time window (test-only)."""

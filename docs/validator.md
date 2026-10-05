@@ -31,11 +31,40 @@ Your validator:
 - **Software**: Python 3.10 (required)
 - **Token**: 1000 SN8 Alpha (theta) Token staked
 - **Data Provider Subscriptions**:
-  - [Tiingo API](https://www.tiingo.com/) with "Commercial" ($50/month) subscription
-  - [Polygon API](https://polygon.io/) with both "Currencies Starter" ($49/month) and "Stocks Advanced" (199/month) subscriptions
-  - [Databento API](https://databento.com/) (optional) — supplementary equities price source. If `databento_apikey` is omitted from `secrets.json`, equities pricing falls back to Polygon alone.
+  - [Tiingo API](https://www.tiingo.com/) with "Commercial" subscription
+  - [Massive API](https://massive.com/) (formerly Polygon.io) with:
+    - "Currencies Starter" — forex
+    - "Stocks Business" — required. Provides the real-time equities fair market value (FMV) feed.
+    - "Nasdaq Basic" expansion to Stocks Business — optional, recommended. Real-time Nasdaq quotes and trades. When present it supersedes FMV for equities pricing and is required to fill equity limit orders in pre-market and after-hours (see [Price Data Sources](#price-data-sources)).
+  - [Databento API](https://databento.com/) (optional) — supplementary equities quote source. If `databento_apikey` is omitted from `secrets.json`, equities are priced from Massive alone.
 
-> **IMPORTANT**: After subscribing to Polygon, complete the KYC questionnaire to enable realtime US equities prices. Message a Taoshi team member ASAP if you need guidance with this step!
+> **IMPORTANT**: After subscribing to Massive, complete the KYC questionnaire to enable realtime US equities prices. Message a Taoshi team member ASAP if you need guidance with this step!
+
+## Price Data Sources
+
+The validator picks the price source for each asset class automatically. All Massive feeds use the same `polygon_apikey`.
+
+| Asset class | Live source | Fallback |
+|---|---|---|
+| Crypto, commodities, indices, equity perps (Hyperliquid USDC pairs) | Hyperliquid order book websocket (best bid/ask) | Hyperliquid REST |
+| Forex | Massive forex quotes and Tiingo websockets | Massive and Tiingo REST |
+| Equities, regular session (09:30–16:00 ET) | **With Nasdaq Basic:** Massive Nasdaq Basic quotes, racing Databento quotes (if configured) on timestamp. **Without Nasdaq Basic:** Massive Business FMV, racing Databento quotes (if configured) | Massive REST per-second bars |
+| Equities, pre-market (04:00–09:30 ET) and after-hours (16:00–20:00 ET) | Massive Nasdaq Basic round-lot trades. Used only to fill limit orders; open positions are not re-valued | None. Without Nasdaq Basic, no orders fill in these sessions |
+
+### Nasdaq Basic (equities)
+
+When the key has the Nasdaq Basic expansion, Nasdaq quotes **supersede FMV for equities**:
+- Market and limit orders fill against the Nasdaq bid/ask: buys at the ask, sells at the bid.
+- Open positions are valued at the closing side: longs at the bid, shorts at the ask.
+- Limit, stop and take-profit triggers use the quotes.
+
+A quote replaces FMV only when it is within 8 seconds of the price being requested. Quotes with a missing side, crossed/locked prices, or a spread wider than 50 bps are dropped on receipt. Otherwise FMV is used as before.
+
+**No configuration is needed.** The validator opens a second Massive websocket (`nasdaq-basic-business`) next to the Business FMV websocket and subscribes to quotes and trades. If Massive replies "not authorized", the validator closes that connection, keeps pricing equities from FMV, and re-checks every 10 minutes. The FMV websocket stays connected either way. It is the fallback, and the only equities source for validators without the expansion.
+
+Validators with and without Nasdaq Basic can record different fill prices for the same equity order, and only validators with it fill equity limit orders outside regular hours. Fills and eliminations from the network's primary validator are synced daily.
+
+Use **one Massive key per validator process**. Massive limits concurrent connections per feed, and when the limit is exceeded it drops the older connection.
 
 ## Installation
 
@@ -145,7 +174,7 @@ npm install -g pm2
 brew install jq  # or apt install jq for Linux
 ```
 
-2. Create a `secrets.json` file in the repository root (copy `secrets_example.json` as a starting point):
+2. Create a `secrets.json` file in the repository root (copy `secrets_example.json` as a starting point). `polygon_apikey` is your Massive (formerly Polygon) API key; the Nasdaq Basic expansion, if subscribed, is detected on the same key:
 ```json
 {
   "polygon_apikey": "YOUR_POLYGON_API_KEY",

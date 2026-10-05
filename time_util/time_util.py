@@ -22,6 +22,7 @@ from shared_objects.log import logger
 MS_IN_1_HOUR = 3600000
 MS_IN_8_HOURS =  28800000
 MS_IN_24_HOURS = 86400000
+EASTERN_TZ = ZoneInfo('America/New_York')
 MS_IN_WEEK = 604_800_000
 S_IN_24_HOURS = 86400
 
@@ -225,6 +226,48 @@ class IndicesMarketCalendar:
             #market_open = market_calendar.open_at_time(schedule, timestamp, include_close=False)
             return cache_valid_ans
 
+    @lru_cache(maxsize=3000)
+    def extended_session_times_ms(self, et_date: date, market_name: str):
+        """(pre, market_open, market_close, post) in ms for an Eastern trading date, or None if the market is closed.
+        On early-close days the calendar sets post equal to market_close, so there is no after-hours session."""
+        if market_name == 'NYSE':
+            market_calendar = self.nyse_calendar
+        elif market_name == 'NASDAQ':
+            market_calendar = self.nasdaq_calendar
+        else:
+            raise ValueError(f"Extended hours not supported for market calendar {market_name}")
+        schedule = market_calendar.schedule(start_date=et_date, end_date=et_date, start='pre', end='post')
+        if schedule.empty:
+            return None
+        row = schedule.iloc[0]
+        return tuple(TimeUtil.timestamp_to_millis(row[col]) for col in ('pre', 'market_open', 'market_close', 'post'))
+
+    def get_equity_session_bounds(self, ticker, timestamp_ms) -> Tuple[str, int, int]:
+        """
+        ('pre' | 'regular' | 'post' | 'closed', start_ms, end_ms): the equities session at timestamp_ms and the
+        [start_ms, end_ms) span it holds for. Uses the Eastern date, since after-hours (to 20:00 ET) runs past
+        midnight UTC in winter.
+        """
+        market_calendar = self.get_market_calendar(ticker)
+        et_date = datetime.fromtimestamp(timestamp_ms / 1000, tz=EASTERN_TZ).date()
+        day_start_ms = int(datetime(et_date.year, et_date.month, et_date.day, tzinfo=EASTERN_TZ).timestamp() * 1000)
+        next_day = et_date + timedelta(days=1)
+        day_end_ms = int(datetime(next_day.year, next_day.month, next_day.day, tzinfo=EASTERN_TZ).timestamp() * 1000)
+
+        times = self.extended_session_times_ms(et_date, market_calendar.name)
+        if times is None:
+            return 'closed', day_start_ms, day_end_ms
+        pre_ms, open_ms, close_ms, post_ms = times
+        if timestamp_ms < pre_ms:
+            return 'closed', day_start_ms, pre_ms
+        if timestamp_ms < open_ms:
+            return 'pre', pre_ms, open_ms
+        if timestamp_ms < close_ms:
+            return 'regular', open_ms, close_ms
+        if timestamp_ms < post_ms:
+            return 'post', close_ms, post_ms
+        return 'closed', max(post_ms, close_ms), day_end_ms
+
 """
 Make a decorator called "timeme" which prints the function name and the time it took to complete.
 Example usage: @timeme
@@ -278,6 +321,17 @@ class UnifiedMarketCalendar:
             return ans
         else:
             raise ValueError("Unsupported trade pair category")
+
+    def get_equity_session_bounds(self, trade_pair, timestamp_ms: int) -> Tuple[str, int, int] | None:
+        """('pre' | 'regular' | 'post' | 'closed', start_ms, end_ms) for Vanta equities, None for anything else."""
+        if not trade_pair.is_equities or trade_pair.src != TradePairSource.VANTA:
+            return None
+        return self.indices_calendar.get_equity_session_bounds(trade_pair.trade_pair_id, timestamp_ms)
+
+    def get_equity_session(self, trade_pair, timestamp_ms: int) -> str | None:
+        """'pre', 'regular', 'post' or 'closed' for Vanta equities, None for anything else."""
+        bounds = self.get_equity_session_bounds(trade_pair, timestamp_ms)
+        return bounds[0] if bounds else None
 
 class TimeUtil:
 
