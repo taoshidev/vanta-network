@@ -9,7 +9,7 @@ from vali_objects.vali_dataclasses.order import Order
 from polygon.websocket import Market, EquityAgg, EquityTrade, CryptoTrade, ForexQuote, FairMarketValue, WebSocketClient, Feed
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME
+from data_generator.base_data_service import BaseDataService, POLYGON_PROVIDER_NAME, POLYGON_WS_SOURCE
 from shared_objects.error_utils import ErrorUtils
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
@@ -534,7 +534,7 @@ class PolygonDataService(BaseDataService):
 
             now_ms = TimeUtil.now_in_millis()
             price_source1 = PriceSource(
-                source=f'{POLYGON_PROVIDER_NAME}_ws',
+                source=POLYGON_WS_SOURCE,
                 timespan_ms=0,
                 open=open,
                 close=open,
@@ -553,7 +553,7 @@ class PolygonDataService(BaseDataService):
                 price_source2 = None
             else:
                 price_source2 = PriceSource(
-                    source=f'{POLYGON_PROVIDER_NAME}_ws',
+                    source=POLYGON_WS_SOURCE,
                     timespan_ms=0,
                     open=close,
                     close=close,

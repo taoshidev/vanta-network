@@ -270,6 +270,8 @@ class MDDChecker(CacheController):
             if k not in candidates_dict:
                 new_price_sources.append(existing_ps)
 
+        # Same Nasdaq Basic quote vs FMV rule as live pricing, so a closer FMV cannot override a valid quote
+        new_price_sources = PriceSource.apply_nasdaq_fmv_rule(new_price_sources, order_time_ms)
         new_price_sources = PriceSource.non_null_events_sorted(new_price_sources, order_time_ms)
         winning_event: PriceSource = new_price_sources[0] if new_price_sources else None
 

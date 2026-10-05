@@ -6,7 +6,13 @@ from typing import Optional
 from time_util.time_util import TimeUtil
 
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.vali_config import ValiConfig
 from shared_objects.log import logger
+
+# Websocket source names built by the Polygon data services, used by apply_nasdaq_fmv_rule
+POLYGON_WS_SOURCE = "Polygon_ws"  # FMV for equities
+NASDAQ_BASIC_SOURCE = "Polygon_nasdaq_ws"
+NASDAQ_BASIC_TRADE_SOURCE = "Polygon_nasdaq_trade_ws"  # equities trades, pre-market/after-hours only
 
 
 # Point-in-time (ws) or second candles only
@@ -149,6 +155,25 @@ class PriceSource:
     @staticmethod
     def get_winning_price_source(events, now_ms):
         return PriceSource.get_winning_event(events, now_ms)
+
+    @staticmethod
+    def apply_nasdaq_fmv_rule(events, time_ms=None):
+        """
+        Equities: Nasdaq Basic quotes replace FMV. When time_ms is given, only quotes within
+        WEBSOCKET_PRICE_MAX_AGE_MS of it count; a stale quote would push a fresh FMV out and send the pair to REST.
+
+        Returns events without FMV if any quote counts, otherwise without the quotes. Events with no Nasdaq quote
+        are returned unchanged. Used for a single price (time_ms given) and for a window of events.
+        """
+        quotes = [e for e in events if e.source == NASDAQ_BASIC_SOURCE]
+        if not quotes:
+            return events
+        kept_quote_ids = {id(q) for q in quotes
+                          if time_ms is None or q.time_delta_from_now_ms(time_ms) <= ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS}
+        if kept_quote_ids:
+            return [e for e in events if e.source != POLYGON_WS_SOURCE
+                    and (e.source != NASDAQ_BASIC_SOURCE or id(e) in kept_quote_ids)]
+        return [e for e in events if e.source != NASDAQ_BASIC_SOURCE]
 
     @staticmethod
     def non_null_events_sorted(events, now_ms):

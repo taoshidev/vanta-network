@@ -14,7 +14,7 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 4. Each subaccount selects an asset class (`crypto`, `forex`, `equities`, `commodities`, `hl_all`, or `all_markets`) at creation. It **cannot be changed by the entity**; the one exception is promotion onto a pro account, which moves the subaccount to `all_markets` (see [Pro account size](#pro-account-size)). HyperLiquid-linked subaccounts always use `hl_all`.
 5. New subaccounts enter a **challenge period** with stricter thresholds; HL-linked subaccounts also trade at reduced leverage during it (see [Challenge Period](#challenge-period--subaccount-lifecycle)).
 6. Entity hotkeys **cannot place orders**. Orders must be submitted using the subaccount's synthetic hotkey.
-7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours, rate limits, etc.
+7. Subaccounts follow the same trading rules as regular miners: uni-directional positions, leverage limits, market hours and per-session order types ([Market Hours and Order Types](miner.md#market-hours-and-order-types)), rate limits, etc.
 8. A maximum of **10 entities** can be registered on the network at any time.
 9. Each entity supports multiple subaccounts.
 10. **CRITICAL**: Never reuse synthetic hotkeys from eliminated subaccounts. Eliminated synthetic hotkeys are permanently blacklisted.
