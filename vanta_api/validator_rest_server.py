@@ -379,6 +379,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
         self.app.route("/admin/reset-snapshot/<hotkey>", methods=["POST"])(self.reset_account_snapshot)
+        self.app.route("/admin/account-size/<hotkey>", methods=["POST"])(self.set_account_size)
         self.app.route("/admin/drawdown-criteria", methods=["POST"])(self.update_drawdown_criteria)
         self.app.route("/admin/drawdown-stats/<hotkey>", methods=["POST"])(self.set_miner_drawdown_stats)
 
@@ -2195,6 +2196,76 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'status': 'success', 'hotkey': hotkey, 'snapshot': snapshot}), 200
         except Exception as e:
             logger.error(f"Error resetting snapshot for {hotkey}: {e}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def set_account_size(self, hotkey: str):
+        """
+        Correct an entity subaccount's account size, in any bucket.
+        Requires tier 500 access.
+
+        On the pro track this sets pro_account_size (and the live account size outside
+        PRO_CHALLENGE_TRANSITION), charging only the promotion fee above what was already assessed:
+        100k standard -> 300k pro -> 500k pro pays for the 200k increase, not the full 400k.
+        Off the pro track it sets the standard account size.
+
+        Resetting the account afterwards (POST /admin/reset/<hotkey>) is recommended: the ledgers and
+        daily snapshot were built against the old size, which can throw off drawdown checks.
+
+        Required JSON body:
+          account_size: float -- USD account size
+
+        Example:
+        curl -X POST http://localhost:48888/admin/account-size/<hotkey> \\
+          -H "Authorization: Bearer YOUR_API_KEY" \\
+          -H "Content-Type: application/json" \\
+          -d '{"account_size": 500000}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Account size endpoint requires tier 500 access'}), 403
+
+        if not is_synthetic_hotkey(hotkey):
+            return jsonify({'error': f'{hotkey} is not an entity subaccount'}), 400
+        if not self._entity_client:
+            return jsonify({'error': 'Entity management not available'}), 503
+
+        data = request.get_json(silent=True) or {}
+        account_size = data.get('account_size')
+        if (isinstance(account_size, bool) or not isinstance(account_size, (int, float))
+                or not math.isfinite(account_size) or account_size <= 0):
+            return jsonify({'error': 'account_size must be a finite positive number'}), 400
+
+        try:
+            before = self._entity_client.get_subaccount_info_for_synthetic(hotkey)
+            if not before:
+                return jsonify({'error': f'Subaccount {hotkey} not found'}), 404
+
+            bucket = self._challenge_period_client.get_miner_bucket(hotkey)
+            if bucket is not None and bucket.is_pro_track:
+                # Re-applying the current bucket resizes in place; the fee charged is the new size's
+                # fee minus pro_fee_theta already assessed
+                success, message = self._entity_client.apply_bucket_account_size(hotkey, bucket, account_size)
+            else:
+                success, message = self._entity_client.update_subaccount_account_size(hotkey, account_size)
+            if not success:
+                return jsonify({'error': message}), 400
+
+            after = self._entity_client.get_subaccount_info_for_synthetic(hotkey) or {}
+            fields = ('account_size', 'standard_account_size', 'pro_account_size', 'pro_fee_theta')
+            logger.info(f"Admin account size update for {hotkey} ({bucket.value if bucket else None}): {message}")
+            return jsonify({
+                'status': 'success',
+                'message': message,
+                'hotkey': hotkey,
+                'bucket': bucket.value if bucket else None,
+                'before': {f: before.get(f) for f in fields},
+                'after': {f: after.get(f) for f in fields},
+            }), 200
+        except Exception as e:
+            logger.error(f"Error setting account size for {hotkey}: {e}")
             logger.error(traceback.format_exc())
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
