@@ -328,7 +328,7 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "min_leverage": 0.01,
       "max_leverage": 1.0,
       "subaccount_positional_leverage_by_tier": {"1": 0.5, "2": 1.0, "3": 1.5, "4": 2.0},
-      "standard_positional_leverage_by_tier": {"1": 1.5, "2": 2.0, "3": 2.5, "-1": 1.5, "-2": 1.5, "-3": 1.5, "-4": 2.0}
+      "standard_positional_leverage_by_tier": {"1": 1.5, "2": 2.0, "3": 7.0, "-1": 1.5, "-2": 1.5, "-3": 1.5, "-4": 2.0}
     },
     {
       "trade_pair_id": "EURUSD",
@@ -339,7 +339,7 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
       "min_leverage": 0.1,
       "max_leverage": 5,
       "subaccount_positional_leverage_by_tier": {"1": 2.5, "2": 5.0, "3": 7.5, "4": 10.0},
-      "standard_positional_leverage_by_tier": {"1": 10.0, "2": 15.0, "3": 20.0, "-1": 10.0, "-2": 10.0, "-3": 10.0, "-4": 10.0}
+      "standard_positional_leverage_by_tier": {"1": 10.0, "2": 15.0, "3": 25.0, "-1": 10.0, "-2": 10.0, "-3": 10.0, "-4": 10.0}
     }
   ],
   "disabled": [
@@ -370,7 +370,7 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
     "class": {
       "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "indices": 3.0, "commodities": 1.5},
       "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "indices": 6.0, "commodities": 2.0},
-      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "indices": 8.0, "commodities": 3.0},
+      "3": {"crypto": 10.0, "forex": 30.0, "equities": 4.0, "indices": 8.0, "commodities": 6.0},
       "-1": {"crypto": 2.0, "forex": 10.0, "equities": 1.0, "indices": 3.0, "commodities": 2.0},
       "-2": {"crypto": 2.0, "forex": 10.0, "equities": 1.5, "indices": 6.0, "commodities": 2.0},
       "-3": {"crypto": 3.0, "forex": 15.0, "equities": 2.0, "indices": 8.0, "commodities": 3.0},
@@ -379,7 +379,7 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
     "portfolio": {
       "1": {"crypto": 1.5, "forex": 10.0, "equities": 1.0, "commodities": 1.5, "all_markets": 15.0},
       "2": {"crypto": 2.0, "forex": 15.0, "equities": 2.0, "commodities": 2.0, "all_markets": 20.0},
-      "3": {"crypto": 2.5, "forex": 20.0, "equities": 3.0, "commodities": 3.0, "all_markets": 25.0},
+      "3": {"crypto": 10.0, "forex": 30.0, "equities": 4.0, "commodities": 6.0, "all_markets": 40.0},
       "-1": {"crypto": 2.0, "forex": 10.0, "equities": 1.0, "commodities": 2.0, "all_markets": 15.0},
       "-2": {"crypto": 2.0, "forex": 10.0, "equities": 1.5, "commodities": 2.0, "all_markets": 15.0},
       "-3": {"crypto": 3.0, "forex": 15.0, "equities": 2.0, "commodities": 3.0, "all_markets": 18.0},

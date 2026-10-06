@@ -662,41 +662,53 @@ class ValiConfig:
         return isinstance(tier, int) and not isinstance(tier, bool) and tier in ValiConfig.STANDARD_LEVERAGE_TIERS
 
     # Per-pair groups narrower than an asset class (see leverage_utils.get_standard_leverage_group).
-    STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}
+    STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH"}
+    STANDARD_CRYPTO_SOL_XRP_DOGE_COINS = {"SOL", "XRP", "DOGE"}
+    STANDARD_FX_TOP_IDS = {"EURUSD", "AUDUSD", "USDCAD", "USDCHF"}
     STANDARD_FX_NZD_CROSS_IDS = {"EURNZD", "GBPNZD", "NZDJPY", "AUDNZD", "NZDCAD", "NZDCHF"}
     STANDARD_INDEX_OTHER_IDS = {"EWYUSDC"}
+    STANDARD_COMMODITY_OTHER_IDS = {"SILVERUSDC", "PLATINUMUSDC"}
 
     # Per-pair positional leverage, as a multiple of balance.
     STANDARD_POSITIONAL_LEVERAGE_BY_TIER = {
         1: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  1.5,
-            StandardLeverageGroup.CRYPTO_OTHER:   0.5,
-            StandardLeverageGroup.FX:             10.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 5.0,
-            StandardLeverageGroup.INDICES_US:     2.5,
-            StandardLeverageGroup.INDICES_OTHER:  1.0,
-            StandardLeverageGroup.COMMODITIES:    1.5,
-            StandardLeverageGroup.EQUITIES:       0.5,
+            StandardLeverageGroup.CRYPTO_MAJORS:       1.5,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 1.5,
+            StandardLeverageGroup.CRYPTO_OTHER:        0.5,
+            StandardLeverageGroup.FX_TOP:              10.0,
+            StandardLeverageGroup.FX:                  10.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      5.0,
+            StandardLeverageGroup.INDICES_US:          2.5,
+            StandardLeverageGroup.INDICES_OTHER:       1.0,
+            StandardLeverageGroup.COMMODITIES:         1.5,
+            StandardLeverageGroup.COMMODITIES_OTHER:   1.5,
+            StandardLeverageGroup.EQUITIES:            0.5,
         },
         2: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  2.0,
-            StandardLeverageGroup.CRYPTO_OTHER:   0.75,
-            StandardLeverageGroup.FX:             15.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 7.5,
-            StandardLeverageGroup.INDICES_US:     4.0,
-            StandardLeverageGroup.INDICES_OTHER:  1.5,
-            StandardLeverageGroup.COMMODITIES:    2.0,
-            StandardLeverageGroup.EQUITIES:       1.0,
+            StandardLeverageGroup.CRYPTO_MAJORS:       2.0,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 2.0,
+            StandardLeverageGroup.CRYPTO_OTHER:        0.75,
+            StandardLeverageGroup.FX_TOP:              15.0,
+            StandardLeverageGroup.FX:                  15.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      7.5,
+            StandardLeverageGroup.INDICES_US:          4.0,
+            StandardLeverageGroup.INDICES_OTHER:       1.5,
+            StandardLeverageGroup.COMMODITIES:         2.0,
+            StandardLeverageGroup.COMMODITIES_OTHER:   2.0,
+            StandardLeverageGroup.EQUITIES:            1.0,
         },
         3: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  2.5,
-            StandardLeverageGroup.CRYPTO_OTHER:   1.0,
-            StandardLeverageGroup.FX:             20.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 10.0,
-            StandardLeverageGroup.INDICES_US:     5.0,
-            StandardLeverageGroup.INDICES_OTHER:  2.0,
-            StandardLeverageGroup.COMMODITIES:    3.0,
-            StandardLeverageGroup.EQUITIES:       1.5,
+            StandardLeverageGroup.CRYPTO_MAJORS:       7.0,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 4.0,
+            StandardLeverageGroup.CRYPTO_OTHER:        1.5,
+            StandardLeverageGroup.FX_TOP:              25.0,
+            StandardLeverageGroup.FX:                  20.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      10.0,
+            StandardLeverageGroup.INDICES_US:          8.0,
+            StandardLeverageGroup.INDICES_OTHER:       3.0,
+            StandardLeverageGroup.COMMODITIES:         6.0,
+            StandardLeverageGroup.COMMODITIES_OTHER:   4.0,
+            StandardLeverageGroup.EQUITIES:            2.0,
         },
     }
 
@@ -704,7 +716,7 @@ class ValiConfig:
     STANDARD_CLASS_LEVERAGE_BY_TIER = {
         1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0, TradePairCategory.COMMODITIES: 1.5},
         2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 6.0, TradePairCategory.COMMODITIES: 2.0},
-        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 8.0, TradePairCategory.COMMODITIES: 3.0},
+        3: {TradePairCategory.CRYPTO: 10.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 4.0, TradePairCategory.INDICES: 8.0, TradePairCategory.COMMODITIES: 6.0},
     }
 
     # Overall portfolio cap keyed by the subaccount's own asset_class. Single-class subaccounts
@@ -712,7 +724,7 @@ class ValiConfig:
     STANDARD_PORTFOLIO_LEVERAGE_BY_TIER = {
         1: {MinerAssetClass.CRYPTO: 1.5, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 1.5, MinerAssetClass.ALL_MARKETS: 15.0},
         2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.ALL_MARKETS: 20.0},
-        3: {MinerAssetClass.CRYPTO: 2.5, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 3.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.ALL_MARKETS: 25.0},
+        3: {MinerAssetClass.CRYPTO: 10.0, MinerAssetClass.FOREX: 30.0, MinerAssetClass.EQUITIES: 4.0, MinerAssetClass.COMMODITIES: 6.0, MinerAssetClass.ALL_MARKETS: 40.0},
     }
 
     # Per-pair positional leverage.

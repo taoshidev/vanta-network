@@ -68,8 +68,12 @@ def get_standard_leverage_group(trade_pair: TradePair) -> StandardLeverageGroup:
     if category == TradePairCategory.CRYPTO:
         if trade_pair.base in ValiConfig.STANDARD_CRYPTO_MAJOR_COINS:
             return StandardLeverageGroup.CRYPTO_MAJORS
+        if trade_pair.base in ValiConfig.STANDARD_CRYPTO_SOL_XRP_DOGE_COINS:
+            return StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE
         return StandardLeverageGroup.CRYPTO_OTHER
     if category == TradePairCategory.FOREX:
+        if trade_pair.trade_pair_id in ValiConfig.STANDARD_FX_TOP_IDS:
+            return StandardLeverageGroup.FX_TOP
         if trade_pair.trade_pair_id in ValiConfig.STANDARD_FX_NZD_CROSS_IDS:
             return StandardLeverageGroup.FX_NZD_CROSSES
         return StandardLeverageGroup.FX
@@ -78,6 +82,8 @@ def get_standard_leverage_group(trade_pair: TradePair) -> StandardLeverageGroup:
             return StandardLeverageGroup.INDICES_OTHER
         return StandardLeverageGroup.INDICES_US
     if category == TradePairCategory.COMMODITIES:
+        if trade_pair.trade_pair_id in ValiConfig.STANDARD_COMMODITY_OTHER_IDS:
+            return StandardLeverageGroup.COMMODITIES_OTHER
         return StandardLeverageGroup.COMMODITIES
     if category == TradePairCategory.EQUITIES:
         return StandardLeverageGroup.EQUITIES

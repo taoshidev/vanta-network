@@ -122,11 +122,18 @@ class TestGroupResolution(unittest.TestCase):
         used = {get_standard_leverage_group(tp) for tp in _tradable_pairs()}
         self.assertEqual(used, set(StandardLeverageGroup))
 
-    def test_crypto_majors_by_coin(self):
-        majors = [tp for tp in _tradable_pairs() if get_standard_leverage_group(tp) == StandardLeverageGroup.CRYPTO_MAJORS]
-        self.assertEqual({tp.base for tp in majors}, ValiConfig.STANDARD_CRYPTO_MAJOR_COINS)
-        for tp in majors:
-            self.assertEqual(tp.trade_pair_category, TradePairCategory.CRYPTO)
+    def test_crypto_groups_by_coin(self):
+        for group, coins in (
+            (StandardLeverageGroup.CRYPTO_MAJORS, ValiConfig.STANDARD_CRYPTO_MAJOR_COINS),
+            (StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE, ValiConfig.STANDARD_CRYPTO_SOL_XRP_DOGE_COINS),
+        ):
+            with self.subTest(group=group):
+                members = [tp for tp in _tradable_pairs() if get_standard_leverage_group(tp) == group]
+                self.assertEqual({tp.base for tp in members}, coins)
+                for tp in members:
+                    self.assertEqual(tp.trade_pair_category, TradePairCategory.CRYPTO)
+        self.assertEqual(ValiConfig.STANDARD_CRYPTO_MAJOR_COINS, {"BTC", "ETH"})
+        self.assertEqual(ValiConfig.STANDARD_CRYPTO_SOL_XRP_DOGE_COINS, {"SOL", "XRP", "DOGE"})
         self.assertEqual(get_standard_leverage_group(TradePair.ADAUSDC), StandardLeverageGroup.CRYPTO_OTHER)
 
     def test_nzd_crosses_are_forex_pairs_and_nzdusd_is_not_one(self):
@@ -139,17 +146,42 @@ class TestGroupResolution(unittest.TestCase):
                 self.assertEqual(get_standard_leverage_group(tp), StandardLeverageGroup.FX_NZD_CROSSES)
         self.assertEqual(len(ValiConfig.STANDARD_FX_NZD_CROSS_IDS), 6)
         self.assertEqual(get_standard_leverage_group(TradePair.NZDUSD), StandardLeverageGroup.FX)
-        self.assertEqual(get_standard_leverage_group(TradePair.EURUSD), StandardLeverageGroup.FX)
+        self.assertEqual(get_standard_leverage_group(TradePair.USDJPY), StandardLeverageGroup.FX)
+
+    def test_fx_top_pairs_are_forex_pairs(self):
+        ids = {tp.trade_pair_id for tp in TradePair}
+        self.assertEqual(ValiConfig.STANDARD_FX_TOP_IDS, {"EURUSD", "AUDUSD", "USDCAD", "USDCHF"})
+        for pair_id in ValiConfig.STANDARD_FX_TOP_IDS:
+            with self.subTest(pair=pair_id):
+                self.assertIn(pair_id, ids)
+                tp = TradePair.from_trade_pair_id(pair_id)
+                self.assertEqual(tp.trade_pair_category, TradePairCategory.FOREX)
+                self.assertEqual(get_standard_leverage_group(tp), StandardLeverageGroup.FX_TOP)
 
     def test_indices_split(self):
         self.assertEqual(get_standard_leverage_group(TradePair.SP500USDC), StandardLeverageGroup.INDICES_US)
         self.assertEqual(get_standard_leverage_group(TradePair.XYZ100USDC), StandardLeverageGroup.INDICES_US)
         self.assertEqual(get_standard_leverage_group(TradePair.EWYUSDC), StandardLeverageGroup.INDICES_OTHER)
 
-    def test_commodities_and_equities_are_whole_classes(self):
+    def test_commodities_split(self):
+        ids = {tp.trade_pair_id for tp in TradePair}
+        for pair_id in ValiConfig.STANDARD_COMMODITY_OTHER_IDS:
+            with self.subTest(pair=pair_id):
+                self.assertIn(pair_id, ids)
+                self.assertEqual(TradePair.from_trade_pair_id(pair_id).trade_pair_category, TradePairCategory.COMMODITIES)
+        commodities = {tp.trade_pair_id: get_standard_leverage_group(tp) for tp in _tradable_pairs()
+                       if tp.trade_pair_category == TradePairCategory.COMMODITIES}
+        self.assertEqual(commodities, {
+            "GOLDUSDC": StandardLeverageGroup.COMMODITIES,
+            "WTIOILUSDC": StandardLeverageGroup.COMMODITIES,
+            "COPPERUSDC": StandardLeverageGroup.COMMODITIES,
+            "NATGASUSDC": StandardLeverageGroup.COMMODITIES,
+            "SILVERUSDC": StandardLeverageGroup.COMMODITIES_OTHER,
+            "PLATINUMUSDC": StandardLeverageGroup.COMMODITIES_OTHER,
+        })
+
+    def test_equities_are_a_whole_class(self):
         for tp in _tradable_pairs():
-            if tp.trade_pair_category == TradePairCategory.COMMODITIES:
-                self.assertEqual(get_standard_leverage_group(tp), StandardLeverageGroup.COMMODITIES)
             if tp.trade_pair_category == TradePairCategory.EQUITIES:
                 self.assertEqual(get_standard_leverage_group(tp), StandardLeverageGroup.EQUITIES)
         # HL equity perps use the equities row, same as Vanta equities.
@@ -160,25 +192,42 @@ class TestValuesMatchSpec(unittest.TestCase):
     """Rows of the Pro Launch spec §2a, (tier 1, tier 2, tier 3)."""
 
     POSITIONAL = {
-        TradePair.BTCUSDC:    (1.5, 2.0, 2.5),   # crypto majors
-        TradePair.ADAUSDC:    (0.5, 0.75, 1.0),  # all other coins
-        TradePair.EURUSD:     (10.0, 15.0, 20.0),
-        TradePair.NZDUSD:     (10.0, 15.0, 20.0),
-        TradePair.EURNZD:     (5.0, 7.5, 10.0),
-        TradePair.SP500USDC:  (2.5, 4.0, 5.0),
-        TradePair.EWYUSDC:    (1.0, 1.5, 2.0),
-        TradePair.GOLDUSDC:   (1.5, 2.0, 3.0),
-        TradePair.NVDA:       (0.5, 1.0, 1.5),
-        TradePair.NVDAUSDC:   (0.5, 1.0, 1.5),
+        TradePair.BTCUSDC:      (1.5, 2.0, 7.0),    # crypto majors
+        TradePair.ETHUSDC:      (1.5, 2.0, 7.0),
+        TradePair.SOLUSDC:      (1.5, 2.0, 4.0),    # SOL, XRP, DOGE
+        TradePair.XRPUSDC:      (1.5, 2.0, 4.0),
+        TradePair.DOGEUSDC:     (1.5, 2.0, 4.0),
+        TradePair.ADAUSDC:      (0.5, 0.75, 1.5),   # all other coins
+        TradePair.BNBUSDC:      (0.5, 0.75, 1.5),
+        TradePair.EURUSD:       (10.0, 15.0, 25.0), # EURUSD, AUDUSD, USDCAD, USDCHF
+        TradePair.AUDUSD:       (10.0, 15.0, 25.0),
+        TradePair.USDCAD:       (10.0, 15.0, 25.0),
+        TradePair.USDCHF:       (10.0, 15.0, 25.0),
+        TradePair.USDJPY:       (10.0, 15.0, 20.0), # all other forex except the NZD crosses
+        TradePair.GBPUSD:       (10.0, 15.0, 20.0),
+        TradePair.NZDUSD:       (10.0, 15.0, 20.0),
+        TradePair.EURJPY:       (10.0, 15.0, 20.0),
+        TradePair.EURNZD:       (5.0, 7.5, 10.0),
+        TradePair.SP500USDC:    (2.5, 4.0, 8.0),
+        TradePair.XYZ100USDC:   (2.5, 4.0, 8.0),
+        TradePair.EWYUSDC:      (1.0, 1.5, 3.0),
+        TradePair.GOLDUSDC:     (1.5, 2.0, 6.0),    # GOLD, WTI, COPPER, NATGAS
+        TradePair.WTIOILUSDC:   (1.5, 2.0, 6.0),
+        TradePair.COPPERUSDC:   (1.5, 2.0, 6.0),
+        TradePair.NATGASUSDC:   (1.5, 2.0, 6.0),
+        TradePair.SILVERUSDC:   (1.5, 2.0, 4.0),    # SILVER, PLATINUM
+        TradePair.PLATINUMUSDC: (1.5, 2.0, 4.0),
+        TradePair.NVDA:         (0.5, 1.0, 2.0),
+        TradePair.NVDAUSDC:     (0.5, 1.0, 2.0),
     }
     CLASS = {
-        TradePairCategory.CRYPTO:      (1.5, 2.0, 2.5),
-        TradePairCategory.FOREX:       (10.0, 15.0, 20.0),
-        TradePairCategory.COMMODITIES: (1.5, 2.0, 3.0),
+        TradePairCategory.CRYPTO:      (1.5, 2.0, 10.0),
+        TradePairCategory.FOREX:       (10.0, 15.0, 30.0),
+        TradePairCategory.COMMODITIES: (1.5, 2.0, 6.0),
         TradePairCategory.INDICES:     (3.0, 6.0, 8.0),  # raised from the spec's 2.5 / 4 / 5 on 2026-09-17
-        TradePairCategory.EQUITIES:    (1.0, 2.0, 3.0),
+        TradePairCategory.EQUITIES:    (1.0, 2.0, 4.0),
     }
-    PORTFOLIO_ALL_MARKETS = (15.0, 20.0, 25.0)
+    PORTFOLIO_ALL_MARKETS = (15.0, 20.0, 40.0)
 
     def test_positional_values(self):
         for tp, expected in self.POSITIONAL.items():

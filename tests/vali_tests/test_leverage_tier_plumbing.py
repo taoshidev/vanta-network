@@ -555,7 +555,7 @@ class TestStandardTierOrderPath(TestBase):
 
         success, msg = self._update(3)
         self.assertTrue(success, msg)
-        self.assertClampedTo(self._buy(TradePair.BTCUSDC, 3 * self.ACCOUNT_SIZE), 2.5)
+        self.assertClampedTo(self._buy(TradePair.BTCUSDC, 10 * self.ACCOUNT_SIZE), 7.0)
 
         success, msg = self._update(1)
         self.assertFalse(success)
@@ -816,18 +816,18 @@ class TestTradePairsEndpointStandardTiers(unittest.TestCase):
         # and Base) that a subaccount with no stored tier reports as its `tier`.
         btc = by_id['BTCUSDC']
         self.assertEqual(btc['standard_positional_leverage_by_tier'],
-                         {"1": 1.5, "2": 2.0, "3": 2.5, "-1": 1.5, "-2": 1.5, "-3": 1.5, "-4": 2.0})
+                         {"1": 1.5, "2": 2.0, "3": 7.0, "-1": 1.5, "-2": 1.5, "-3": 1.5, "-4": 2.0})
         self.assertEqual(set(btc['subaccount_positional_leverage_by_tier']), {"1", "2", "3", "4"})
         self.assertEqual(by_id['EURNZD']['standard_positional_leverage_by_tier'],
                          {"1": 5.0, "2": 7.5, "3": 10.0, "-1": 5.0, "-2": 5.0, "-3": 7.5, "-4": 10.0})
         self.assertEqual(by_id['NVDA']['standard_positional_leverage_by_tier'],
-                         {"1": 0.5, "2": 1.0, "3": 1.5, "-1": 0.5, "-2": 1.0, "-3": 1.5, "-4": 2.0})
+                         {"1": 0.5, "2": 1.0, "3": 2.0, "-1": 0.5, "-2": 1.0, "-3": 1.5, "-4": 2.0})
 
         tiers = data['standard_leverage_tiers']
         self.assertEqual(tiers['class']['1']['crypto'], 1.5)
-        self.assertEqual(tiers['class']['3']['equities'], 3.0)
+        self.assertEqual(tiers['class']['3']['equities'], 4.0)
         self.assertEqual(tiers['class']['-2']['indices'], 6.0)
-        self.assertEqual(tiers['portfolio']['3']['all_markets'], 25.0)
+        self.assertEqual(tiers['portfolio']['3']['all_markets'], 40.0)
         self.assertEqual(tiers['portfolio']['-1']['all_markets'], 15.0)
         self.assertEqual(set(tiers['class']), {"1", "2", "3", "-1", "-2", "-3", "-4"})
         self.assertEqual(set(tiers['portfolio']), set(tiers['class']))

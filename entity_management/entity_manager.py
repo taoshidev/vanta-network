@@ -1560,7 +1560,7 @@ class EntityManager(ValidatorBroadcastBase):
         """Change a standard subaccount's leverage tier and push it to the MinerAccount and other
         validators. Lowering the tier requires no open positions because the new caps may sit below
         the current exposure; so does leaving tier 0 (no stored tier), since a funded account's tier 0
-        values can exceed even Boost II on some rows (EWY)."""
+        values can exceed Base and Boost I on some rows (EWY)."""
         if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
             return False, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
         if not is_synthetic_hotkey(synthetic_hotkey):
@@ -1590,7 +1590,7 @@ class EntityManager(ValidatorBroadcastBase):
             same_tier = subaccount.leverage_tier == leverage_tier
             if not same_tier:
                 # No stored tier = tier 0 (max of legacy and Base). A funded account's tier 0 can
-                # exceed any tier on some rows, so leaving it counts as lowering
+                # exceed Base and Boost I on some rows, so leaving it counts as lowering
                 lowering = subaccount.leverage_tier is None or leverage_tier < subaccount.leverage_tier
                 if lowering:
                     open_positions = self._position_client.get_positions_for_one_hotkey(
