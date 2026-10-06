@@ -634,7 +634,7 @@ class TestTradePairsEndpointProUniverse(unittest.TestCase):
         return json.loads(resp.data)
 
     def test_per_pair_pro_leverage_matches_the_published_table(self):
-        """One pair per category against the spec values, read off the payload a client gets."""
+        """One pair per category against the expected values, read off the payload a client gets."""
         expected = {
             'BTCUSDC': 10.0, 'ETHUSDC': 10.0, 'SOLUSDC': 5.0, 'ADAUSDC': 2.0, 'TRXUSDC': 2.0,
             'EURUSD': 30.0, 'USDCHF': 30.0, 'USDJPY': 20.0, 'NZDJPY': 10.0,

@@ -412,7 +412,7 @@ Returns all trade pairs grouped into two categories. Use this endpoint to discov
 - `pro`: Everything a pro account is sized against.
   - `allowed_trade_pair_ids`: The pro universe (`TradePair.is_pro`), reviewed quarterly.
   - `class_leverage` / `portfolio_leverage`: Per-asset-class and overall caps. Pro runs its own **flat** tables — neither `standard_leverage_tiers` nor the legacy curve applies, and there is no tier to key on.
-  - `default_positional_leverage`: What a pro-tradable pair the spec does not name falls back to. See [pro_leverage_discrepancies.md](pro_leverage_discrepancies.md) for which pairs currently hit it.
+  - `default_positional_leverage`: What a pro-tradable pair the per-pair tables do not name falls back to.
   - `correlation_limits`: Per-side cap for every correlation group, keyed the same way as each pair's `correlation_legs`. `currency_limits`, `sector_limit` and `us_index_limit` are the same values split by group type.
   - `basis` / `denominator`: Correlated caps apply to **gross long and gross short independently** (never netted) as a multiple of the account's live `balance` — not `account_size` — and are checked **only on orders that open or increase** a position.
 - `timestamp`: Response timestamp in milliseconds
@@ -1199,7 +1199,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 
 `POST /entity/subaccount/leverage-tier`
 
-Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [entity_miner.md](entity_miner.md#leverage-limits). Raising is allowed at any time. Lowering is rejected while the subaccount has open positions, and so is any move off the pre-tier floor (no stored tier, reported as a negative `tier`), since some of its limits can exceed the target tier's. HL-linked and pro subaccounts are rejected.
+Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [entity_miner.md](entity_miner.md#leverage-limits). A change that would lower any of the subaccount's current per-pair, class or portfolio limits is rejected while it has open positions; any other change is allowed at any time. Raising never lowers a limit and lowering always does; a subaccount on the pre-tier floor (no stored tier, reported as a negative `tier`) is compared limit by limit. HL-linked and pro subaccounts are rejected.
 
 **Authentication:** Coldkey signature (no API key required). Each signature is single use.
 
@@ -1238,7 +1238,7 @@ Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [ent
 ```
 
 **Errors:**
-- `400`: missing or invalid field, or the change was rejected (unknown subaccount, HL-linked, `hl_all` or pro subaccount, subaccount not active, lowering with open positions)
+- `400`: missing or invalid field, or the change was rejected (unknown subaccount, HL-linked, `hl_all` or pro subaccount, subaccount not active, a change that lowers a limit with open positions)
 - `401`: invalid signature, reused nonce, or expired timestamp
 - `403`: coldkey does not own the hotkey
 

@@ -747,8 +747,7 @@ class ValiConfig:
     PRO_FX_TOP_POSITIONAL_LEVERAGE = 30.0
     # The six NZD crosses in STANDARD_FX_NZD_CROSS_IDS are held to half the major FX limit.
     PRO_FX_NZD_CROSS_POSITIONAL_LEVERAGE = 10.0
-    # Fallback for a pro-tradable pair none of the tables above names -- see
-    # docs/pro_leverage_discrepancies.md.
+    # Fallback for a pro-tradable pair none of the tables above names.
     PRO_DEFAULT_POSITIONAL_LEVERAGE = 1.0
     
     # Per-asset-class exposure cap.

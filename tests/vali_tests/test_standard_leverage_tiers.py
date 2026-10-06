@@ -43,6 +43,7 @@ from vali_objects.utils.leverage_utils import (
     get_standard_portfolio_leverage,
     get_standard_positional_leverage,
     is_standard_tiered,
+    tier_change_lowers_a_limit,
 )
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.position import Position
@@ -224,7 +225,7 @@ class TestValuesMatchSpec(unittest.TestCase):
         TradePairCategory.CRYPTO:      (1.5, 2.0, 10.0),
         TradePairCategory.FOREX:       (10.0, 15.0, 30.0),
         TradePairCategory.COMMODITIES: (1.5, 2.0, 6.0),
-        TradePairCategory.INDICES:     (3.0, 6.0, 8.0),  # raised from the spec's 2.5 / 4 / 5 on 2026-09-17
+        TradePairCategory.INDICES:     (3.0, 6.0, 8.0),
         TradePairCategory.EQUITIES:    (1.0, 2.0, 4.0),
     }
     PORTFOLIO_ALL_MARKETS = (15.0, 20.0, 40.0)
@@ -352,6 +353,51 @@ class TestTier0Floor(unittest.TestCase):
         self.assertEqual(get_grandfathered_class_leverage(1, TradePairCategory.CRYPTO), 2.0)
         self.assertEqual(get_grandfathered_class_leverage(1, TradePairCategory.INDICES), 3.0)
         self.assertEqual(get_grandfathered_class_leverage(1, TradePairCategory.COMMODITIES), 2.0)
+
+
+class TestTierChangeLowersALimit(unittest.TestCase):
+    """tier_change_lowers_a_limit: whether a tier change would lower any limit the account trades
+    under now, which is when the update endpoint demands a flat book."""
+
+    ASSET_CLASSES = (MinerAssetClass.ALL_MARKETS, MinerAssetClass.CRYPTO, MinerAssetClass.FOREX,
+                     MinerAssetClass.EQUITIES, MinerAssetClass.COMMODITIES)
+
+    @staticmethod
+    def _account(bucket, asset_class, leverage_tier=None):
+        account = MinerAccount(miner_hotkey="ent_0", asset_class=asset_class, miner_bucket=bucket,
+                               leverage_tier=leverage_tier)
+        account.add_collateral_record(CollateralRecord(100_000.0, 20.0, 0, is_first_record=True))
+        return account
+
+    def test_raising_a_stored_tier_never_lowers_a_limit_and_lowering_always_does(self):
+        for asset_class in self.ASSET_CLASSES:
+            for current in TIERS:
+                for new in TIERS:
+                    if new == current:
+                        continue
+                    with self.subTest(asset_class=asset_class, current=current, new=new):
+                        account = self._account(MinerBucket.SUBACCOUNT_FUNDED, asset_class, leverage_tier=current)
+                        self.assertEqual(tier_change_lowers_a_limit(account, new), new < current)
+
+    def test_leaving_tier_0_for_boost_ii_never_lowers_a_limit(self):
+        # Standard subaccounts are at most $100K, so their tier 0 floor is the challenge or the funded one
+        for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED):
+            for asset_class in self.ASSET_CLASSES:
+                with self.subTest(bucket=bucket, asset_class=asset_class):
+                    self.assertFalse(tier_change_lowers_a_limit(self._account(bucket, asset_class), 3))
+
+    def test_leaving_tier_0_for_base_or_boost_i_is_judged_row_by_row(self):
+        cases = (
+            (MinerBucket.SUBACCOUNT_CHALLENGE, MinerAssetClass.ALL_MARKETS, 1, True),   # EWY 1.5x -> 1x
+            (MinerBucket.SUBACCOUNT_CHALLENGE, MinerAssetClass.ALL_MARKETS, 2, False),
+            (MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.ALL_MARKETS, 1, True),
+            (MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.ALL_MARKETS, 2, True),      # EWY 3x -> 1.5x
+            (MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.CRYPTO, 2, True),           # other coins 1x -> 0.75x
+            (MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.FOREX, 2, False),           # only its own pairs count
+        )
+        for bucket, asset_class, tier, lowers in cases:
+            with self.subTest(bucket=bucket, asset_class=asset_class, tier=tier):
+                self.assertEqual(tier_change_lowers_a_limit(self._account(bucket, asset_class), tier), lowers)
 
 
 class TestStandardTierOrderPath(unittest.TestCase):

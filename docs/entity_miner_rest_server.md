@@ -285,13 +285,13 @@ Changes a standard subaccount's `leverage_tier` (see [entity_miner.md](entity_mi
 
 | Code | Cause |
 |------|-------|
-| 400 | Invalid `leverage_tier` or `synthetic_hotkey`, or the validator rejected the change: unknown subaccount, HL-linked, `hl_all` or pro subaccount, or lowering the tier while positions are open |
+| 400 | Invalid `leverage_tier` or `synthetic_hotkey`, or the validator rejected the change: unknown subaccount, HL-linked, `hl_all` or pro subaccount, or a change that lowers a limit while positions are open |
 | 401 | Invalid or missing API key |
 | 500 | Wallet not configured or signing error |
 | 502 | Validator unreachable |
 
 **Notes:**
-- Raising the tier is allowed at any time. Lowering it requires every position on that subaccount to be closed first. A subaccount created before tiers existed trades a grandfathered floor (each limit is the higher of its old limit and Base, reported as a negative `tier`); moving it to any tier also requires a flat book.
+- A change that would lower any of the subaccount's current limits requires every position on that subaccount to be closed first; any other change is allowed at any time. Raising the tier never lowers a limit and lowering it always does. A subaccount created before tiers existed trades a grandfathered floor (each limit is the higher of its old limit and Base, reported as a negative `tier`), which is compared limit by limit against the new tier.
 
 ### Promote Subaccount to the Pro Track
 

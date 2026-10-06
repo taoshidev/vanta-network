@@ -129,9 +129,8 @@ def get_grandfathered_portfolio_leverage(legacy_tier: int, asset_class: MinerAss
 def get_pro_positional_leverage(trade_pair: TradePair) -> float:
     """Per-pair positional leverage for a pro account, as a multiple of balance.
 
-    Pro accounts have no tier dimension: the table is flat. A pro-tradable pair the spec does
-    not name falls back to PRO_DEFAULT_POSITIONAL_LEVERAGE -- see
-    docs/pro_leverage_discrepancies.md.
+    Pro accounts have no tier dimension: the table is flat. A pro-tradable pair the tables do
+    not name falls back to PRO_DEFAULT_POSITIONAL_LEVERAGE.
     """
     category = trade_pair.trade_pair_category
     default = ValiConfig.PRO_DEFAULT_POSITIONAL_LEVERAGE
@@ -254,6 +253,18 @@ def get_per_class_leverage_cap(account: MinerAccount, trade_pair_category: Trade
         account.asset_class, account.miner_bucket, account.account_size, trade_pair_category,
     )
     return per_class_cap
+
+
+def tier_change_lowers_a_limit(account: MinerAccount, new_tier: int) -> bool:
+    """True when moving this subaccount to standard tier `new_tier` would lower any per-pair, class
+    or portfolio limit the order path applies to it now. Only pairs its asset class can trade count."""
+    pairs = [tp for tp in TradePair if account.asset_class.can_trade(tp)]
+    if any(get_standard_positional_leverage(new_tier, tp) < get_max_position_leverage(account, tp) for tp in pairs):
+        return True
+    categories = {tp.trade_pair_category for tp in pairs}
+    if any(get_standard_class_leverage(new_tier, cat) < get_per_class_leverage_cap(account, cat) for cat in categories):
+        return True
+    return get_standard_portfolio_leverage(new_tier, account.asset_class) < account.multiplier
 
 
 # Correlation group key prefixes. Groups span trade pair categories (the US index group holds both

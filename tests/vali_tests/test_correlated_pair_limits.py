@@ -166,7 +166,7 @@ class TestCorrelatedOrderSize(unittest.TestCase):
         return get_max_correlated_order_size(trade_pair, exposures, BALANCE, position_type)[0]
 
     def test_stacking_the_same_currency_is_capped(self):
-        # Spec example 1: long EURUSD 20x + long EURJPY 15x is 35x gross long EUR, above the 30x limit.
+        # Long EURUSD 20x + long EURJPY 15x is 35x gross long EUR, above the 30x limit.
         positions = [make_position(TradePair.EURUSD, 20.0)]
         self.assertAlmostEqual(self.room(TradePair.EURJPY, positions), 10.0 * BALANCE)
 

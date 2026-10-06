@@ -2883,8 +2883,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Change a standard subaccount's leverage tier (1 to 3). The entity coldkey signs the sorted
         JSON of every field except signature and version; nonce + timestamp make each signature
-        single use within a 5 minute window (NonceManager). Lowering the tier, or leaving tier 0
-        (no stored tier), requires the subaccount to have no open positions.
+        single use within a 5 minute window (NonceManager). A change that lowers any of the
+        subaccount's current limits requires it to have no open positions.
 
         Example:
         curl -X POST http://localhost:48888/entity/subaccount/leverage-tier \\

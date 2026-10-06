@@ -35,6 +35,7 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMod
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
@@ -349,18 +350,31 @@ class TestLeverageTierUpdate(TestBase):
         self.assertIsNone(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[synthetic_suffix].leverage_tier)
         return receiver, synthetic, data
 
-    def test_leaving_tier_0_with_open_position_is_rejected(self):
-        # A pre-tier subaccount trades tier 0, max(legacy, Base); a funded account's floor exceeds
-        # every tier on some rows, so any move off it may lower a cap and needs a flat book
-        receiver, synthetic, _ = self._receiver_with_legacy_subaccount(0)
-        self._open_position(synthetic)
-        for tier in ValiConfig.STANDARD_LEVERAGE_TIERS:
-            with self.subTest(tier=tier):
+    def test_leaving_tier_0_with_open_position_needs_a_flat_book_only_if_a_limit_drops(self):
+        # A pre-tier subaccount trades tier 0, max(legacy, Base) row by row, so whether a move lowers
+        # a limit depends on its bucket. The crypto subaccount here is $50K.
+        cases = (
+            (MinerBucket.SUBACCOUNT_FUNDED, 1, False),
+            (MinerBucket.SUBACCOUNT_FUNDED, 2, False),     # other coins 1x -> 0.75x
+            (MinerBucket.SUBACCOUNT_FUNDED, 3, True),
+            (MinerBucket.SUBACCOUNT_CHALLENGE, 1, False),  # crypto class 2x -> 1.5x
+            (MinerBucket.SUBACCOUNT_CHALLENGE, 2, True),
+        )
+        for suffix, (bucket, tier, allowed) in enumerate(cases):
+            with self.subTest(bucket=bucket, tier=tier):
+                receiver, synthetic, _ = self._receiver_with_legacy_subaccount(suffix)
+                self.miner_account_client.set_miner_bucket(synthetic, bucket)
+                self._open_position(synthetic)
                 success, msg = receiver.update_subaccount_leverage_tier(self.BROADCAST_ENTITY_HOTKEY, synthetic, tier)
-                self.assertFalse(success)
-                self.assertIn("open position", msg)
-        self.assertIsNone(receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[0].leverage_tier)
-        self.assertIsNone(self._account_tier(synthetic))
+                self.assertEqual(success, allowed, msg)
+                stored = receiver.get_entity_data(self.BROADCAST_ENTITY_HOTKEY).subaccounts[suffix].leverage_tier
+                if allowed:
+                    self.assertEqual(stored, tier)
+                    self.assertEqual(self._account_tier(synthetic), tier)
+                else:
+                    self.assertIn("open position", msg)
+                    self.assertIsNone(stored)
+                    self.assertIsNone(self._account_tier(synthetic))
 
     def test_leaving_tier_0_with_a_flat_book_is_allowed(self):
         for suffix, tier in ((0, 1), (1, 3)):
