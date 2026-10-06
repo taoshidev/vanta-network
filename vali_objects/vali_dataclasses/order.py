@@ -237,6 +237,12 @@ class Order(Signal):
         if self.slippage:
             results["s"] = self.slippage
 
+        # Realized PnL of this fill in USD, before fees, as set by
+        # Position.calculate_pnl. Only reducing fills have one, so opening and
+        # adding fills omit the key. The position-level `rp` is the sum of these.
+        if self.realized_pnl:
+            results["rp"] = self.realized_pnl
+
         if include_trade_pair and self.trade_pair is not None:
             results["tp"] = self.trade_pair.trade_pair
 
