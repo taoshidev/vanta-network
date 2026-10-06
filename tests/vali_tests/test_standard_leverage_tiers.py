@@ -6,7 +6,7 @@ Covers:
     portfolio asset class; HL_ALL has no row.
   * Group resolution — every tradable pair maps to exactly one group; the explicit
     coin / id sets exist and sit in the expected category.
-  * Values — match the Pro Launch spec §2a row by row and never decrease with tier.
+  * Values — match the expected table row by row and never decrease with tier.
   * Single-class portfolio cap equals the class cap.
   * Order path — get_max_order_size and MinerAccount.multiplier use the standard tables only
     for a non-HL, non-pro subaccount with a leverage_tier; everything else keeps the legacy curve.
@@ -189,7 +189,7 @@ class TestGroupResolution(unittest.TestCase):
 
 
 class TestValuesMatchSpec(unittest.TestCase):
-    """Rows of the Pro Launch spec §2a, (tier 1, tier 2, tier 3)."""
+    """Expected values per row, (tier 1, tier 2, tier 3)."""
 
     POSITIONAL = {
         TradePair.BTCUSDC:      (1.5, 2.0, 7.0),    # crypto majors

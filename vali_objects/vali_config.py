@@ -644,9 +644,9 @@ class ValiConfig:
         4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
     }
 
-    # Standard subaccount leverage tiers, per the Pro Launch spec §2a: 1 = Base, 2 = Boost I,
-    # 3 = Boost II (max). Challenge and funded share the same limits and account size does not
-    # change them. HL-linked and pro subaccounts never use these tables.
+    # Standard subaccount leverage tiers: 1 = Base, 2 = Boost I, 3 = Boost II (max). Challenge
+    # and funded share the same limits and account size does not change them. HL-linked and pro
+    # subaccounts never use these tables.
     STANDARD_LEVERAGE_TIERS = (1, 2, 3)
     STANDARD_LEVERAGE_TIER_BASE = 1
     STANDARD_LEVERAGE_TIER_DEFAULT = STANDARD_LEVERAGE_TIER_BASE  # new registrations
@@ -729,10 +729,10 @@ class ValiConfig:
 
     # Per-pair positional leverage.
     PRO_CRYPTO_POSITIONAL_LEVERAGE = {
-        "BTC": 5.0, "ETH": 5.0, "SOL": 5.0, "XRP": 5.0, "DOGE": 5.0,
-        "HYPE": 2.0, "SUI": 2.0, "BNB": 2.0,
-        "kPEPE": 1.5, "ADA": 1.5, "ZEC": 1.5, "LINK": 1.5,
-        "LTC": 1.0, "AVAX": 1.0, "TRX": 1.0,
+        "BTC": 10.0, "ETH": 10.0,
+        "SOL": 5.0, "XRP": 5.0, "DOGE": 5.0,
+        "HYPE": 2.0, "SUI": 2.0, "BNB": 2.0, "kPEPE": 2.0, "ADA": 2.0,
+        "ZEC": 2.0, "LINK": 2.0, "LTC": 2.0, "AVAX": 2.0, "TRX": 2.0,
     }
     PRO_COMMODITY_POSITIONAL_LEVERAGE = {
         "WTIOILUSDC": 8.0, "COPPERUSDC": 8.0, "GOLDUSDC": 8.0, "NATGASUSDC": 8.0,
@@ -741,8 +741,10 @@ class ValiConfig:
     PRO_INDEX_POSITIONAL_LEVERAGE = {
         "SP500USDC": 10.0, "XYZ100USDC": 10.0, "EWYUSDC": 5.0,
     }
-    PRO_EQUITIES_POSITIONAL_LEVERAGE = 2.0
+    PRO_EQUITIES_POSITIONAL_LEVERAGE = 2.5
     PRO_FX_POSITIONAL_LEVERAGE = 20.0
+    # The four pairs in STANDARD_FX_TOP_IDS (EURUSD, AUDUSD, USDCAD, USDCHF).
+    PRO_FX_TOP_POSITIONAL_LEVERAGE = 30.0
     # The six NZD crosses in STANDARD_FX_NZD_CROSS_IDS are held to half the major FX limit.
     PRO_FX_NZD_CROSS_POSITIONAL_LEVERAGE = 10.0
     # Fallback for a pro-tradable pair none of the tables above names -- see
@@ -751,16 +753,16 @@ class ValiConfig:
     
     # Per-asset-class exposure cap.
     PRO_CLASS_LEVERAGE = {
-        TradePairCategory.CRYPTO: 6.0,
+        TradePairCategory.CRYPTO: 12.0,
         TradePairCategory.EQUITIES: 6.0,
         TradePairCategory.COMMODITIES: 8.0,
         TradePairCategory.INDICES: 10.0,
-        TradePairCategory.FOREX: 35.0,
+        TradePairCategory.FOREX: 40.0,
     }
 
     # Overall portfolio cap. A single number, not a per-asset-class row: pro accounts are
     # all_markets in practice and the cap does not vary by asset class.
-    PRO_PORTFOLIO_LEVERAGE = 40.0
+    PRO_PORTFOLIO_LEVERAGE = 50.0
 
     # Correlated-exposure limits, pro accounts only. Multiples of account balance, applied
     # separately to the *gross long* and the *gross short* exposure summed across a correlation
@@ -769,7 +771,7 @@ class ValiConfig:
         "USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0,
         "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 30.0,
     }
-    PRO_SECTOR_EXPOSURE_LIMIT = 3.0
+    PRO_SECTOR_EXPOSURE_LIMIT = 4.0
     PRO_US_INDEX_EXPOSURE_LIMIT = 10.0  # shared across the six instruments below, same as the indices class limit
     # US index pairs and broad US market ETFs carry the same beta, so they share one limit.
     # EWY, single stocks, and all other ETFs are excluded.

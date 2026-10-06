@@ -63,7 +63,7 @@ def get_legacy_portfolio_caps(
 
 
 def get_standard_leverage_group(trade_pair: TradePair) -> StandardLeverageGroup:
-    """Row of the standard subaccount leverage tables this pair belongs to (Pro Launch spec §2a)."""
+    """Row of the standard subaccount leverage tables this pair belongs to."""
     category = trade_pair.trade_pair_category
     if category == TradePairCategory.CRYPTO:
         if trade_pair.base in ValiConfig.STANDARD_CRYPTO_MAJOR_COINS:
@@ -138,6 +138,8 @@ def get_pro_positional_leverage(trade_pair: TradePair) -> float:
     if category == TradePairCategory.CRYPTO:
         return ValiConfig.PRO_CRYPTO_POSITIONAL_LEVERAGE.get(trade_pair.base, default)
     if category == TradePairCategory.FOREX:
+        if trade_pair.trade_pair_id in ValiConfig.STANDARD_FX_TOP_IDS:
+            return ValiConfig.PRO_FX_TOP_POSITIONAL_LEVERAGE
         if trade_pair.trade_pair_id in ValiConfig.STANDARD_FX_NZD_CROSS_IDS:
             return ValiConfig.PRO_FX_NZD_CROSS_POSITIONAL_LEVERAGE
         return ValiConfig.PRO_FX_POSITIONAL_LEVERAGE

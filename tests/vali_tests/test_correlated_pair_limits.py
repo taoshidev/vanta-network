@@ -185,13 +185,13 @@ class TestCorrelatedOrderSize(unittest.TestCase):
         self.assertAlmostEqual(self.room(TradePair.NZDJPY, positions), 25.0 * BALANCE)
 
     def test_sector_exposure_is_capped(self):
-        # Spec example: long NVDA 2x + long XLK 2x is 4x Information Technology, above 3x.
-        positions = [make_position(TradePair.NVDA, 2.0)]
-        self.assertAlmostEqual(self.room(TradePair.XLK, positions), 1.0 * BALANCE)
+        # Long NVDA 2.5x leaves 1.5x of the 4x Information Technology limit for a long XLK.
+        positions = [make_position(TradePair.NVDA, 2.5)]
+        self.assertAlmostEqual(self.room(TradePair.XLK, positions), 1.5 * BALANCE)
 
     def test_sectors_are_independent(self):
-        positions = [make_position(TradePair.NVDA, 3.0)]
-        self.assertAlmostEqual(self.room(TradePair.XLE, positions), 3.0 * BALANCE)
+        positions = [make_position(TradePair.NVDA, 4.0)]
+        self.assertAlmostEqual(self.room(TradePair.XLE, positions), 4.0 * BALANCE)
 
     def test_us_index_instruments_share_one_limit(self):
         positions = [
@@ -223,11 +223,11 @@ class TestCorrelatedOrderSize(unittest.TestCase):
         self.assertAlmostEqual(self.room(TradePair.XAUUSD, positions), 0.0)  # long XAUUSD is short USD
 
     def test_short_positions_fill_the_short_side_of_a_sector(self):
-        # Short NVDA 3x fills the short side of Information Technology and leaves the long side
-        # untouched, so a long XLK still has the full 3x.
-        positions = [make_position(TradePair.NVDA, -3.0)]
+        # Short NVDA 4x fills the short side of Information Technology and leaves the long side
+        # untouched, so a long XLK still has the full 4x.
+        positions = [make_position(TradePair.NVDA, -4.0)]
         self.assertAlmostEqual(self.room(TradePair.XLK, positions, position_type=OrderType.SHORT), 0.0)
-        self.assertAlmostEqual(self.room(TradePair.XLK, positions), 3.0 * BALANCE)
+        self.assertAlmostEqual(self.room(TradePair.XLK, positions), 4.0 * BALANCE)
 
     def test_stacking_the_same_currency_short_is_capped(self):
         # Mirror of test_stacking_the_same_currency_is_capped. A short EURUSD is short EUR, so a
@@ -307,7 +307,7 @@ class TestGetMaxOrderSizeGating(unittest.TestCase):
         )
 
     def test_correlated_cap_binds_on_recorded_exposure(self):
-        # BREACHING holds NVDA 5x long against a 3x sector limit, so once that exposure is on
+        # BREACHING holds NVDA 5x long against a 4x sector limit, so once that exposure is on
         # the account the correlated cap is the binding one.
         self.assertIn(
             "exposure cap",

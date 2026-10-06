@@ -233,23 +233,23 @@ Per-pair positional leverage (multiples of balance):
 
 | Asset class | Leverage | Pairs |
 |---|---|---|
-| Crypto | 5x | BTC, ETH, SOL, XRP, DOGE |
-| | 2x | HYPE, SUI, BNB |
-| | 1.5x | kPEPE, ADA, ZEC, LINK |
-| | 1x | LTC, AVAX, TRX |
-| Equities | 2x | all pro-tradable US stocks and ETFs |
+| Crypto | 10x | BTC, ETH |
+| | 5x | SOL, XRP, DOGE |
+| | 2x | HYPE, SUI, BNB, kPEPE, ADA, ZEC, LINK, LTC, AVAX, TRX |
+| Equities | 2.5x | all pro-tradable US stocks and ETFs |
 | Commodities | 8x | WTI, COPPER, GOLD, NATGAS |
 | | 5x | SILVER, PLATINUM |
 | Indices | 10x | SP500, XYZ100 |
 | | 5x | EWY |
-| Forex | 20x | the 22 majors and crosses |
+| Forex | 30x | EURUSD, AUDUSD, USDCAD, USDCHF |
+| | 20x | the other 18 majors and crosses |
 | | 10x | the six NZD crosses (EURNZD, GBPNZD, NZDJPY, AUDNZD, NZDCAD, NZDCHF) |
 
 Per-asset-class and portfolio caps:
 
 | Crypto | Equities | Commodities | Indices | FX | Portfolio |
 |---|---|---|---|---|---|
-| 6x | 6x | 8x | 10x | 35x | 40x |
+| 12x | 6x | 8x | 10x | 40x | 50x |
 
 All of these apply to **gross** exposure — offsetting positions never free up room. A pro-tradable pair the table does not name falls back to `ValiConfig.PRO_DEFAULT_POSITIONAL_LEVERAGE` (1x); see [pro_leverage_discrepancies.md](pro_leverage_discrepancies.md).
 
@@ -262,7 +262,7 @@ On top of the per-pair, per-class and portfolio caps, a pro account's exposure i
 | Group | Cap (multiple of balance) |
 |---|---|
 | Each of USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD | 30x |
-| Each equity sector (11 GICS sectors) | 3x |
+| Each equity sector (11 GICS sectors) | 4x |
 | US index — `SP500USDC`, `XYZ100USDC`, `SPY`, `QQQ`, `IWM`, `DIA` combined | 10x |
 
 Three rules matter for sizing:

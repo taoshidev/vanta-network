@@ -26,7 +26,7 @@ class InstrumentType(str, Enum):
 
 
 class StandardLeverageGroup(str, Enum):
-    """Row of the standard subaccount leverage table a pair belongs to (Pro Launch spec §2a).
+    """Row of the standard subaccount leverage table a pair belongs to.
     Resolved by leverage_utils.get_standard_leverage_group."""
     CRYPTO_MAJORS = "crypto_majors"              # BTC, ETH
     CRYPTO_SOL_XRP_DOGE = "crypto_sol_xrp_doge"
