@@ -26,15 +26,18 @@ class InstrumentType(str, Enum):
 
 
 class StandardLeverageGroup(str, Enum):
-    """Row of the standard subaccount leverage table a pair belongs to (Pro Launch spec §2a).
+    """Row of the standard subaccount leverage table a pair belongs to.
     Resolved by leverage_utils.get_standard_leverage_group."""
-    CRYPTO_MAJORS = "crypto_majors"      # BTC, ETH, SOL, XRP, DOGE
+    CRYPTO_MAJORS = "crypto_majors"              # BTC, ETH
+    CRYPTO_SOL_XRP_DOGE = "crypto_sol_xrp_doge"
     CRYPTO_OTHER = "crypto_other"
-    FX = "fx"                            # all forex except the NZD crosses
+    FX_TOP = "fx_top"                            # EURUSD, AUDUSD, USDCAD, USDCHF
+    FX = "fx"                                    # all other forex except the NZD crosses
     FX_NZD_CROSSES = "fx_nzd_crosses"
-    INDICES_US = "indices_us"            # SP500, XYZ100
-    INDICES_OTHER = "indices_other"      # EWY
-    COMMODITIES = "commodities"
+    INDICES_US = "indices_us"                    # SP500, XYZ100
+    INDICES_OTHER = "indices_other"              # EWY
+    COMMODITIES = "commodities"                  # GOLD, WTI, COPPER, NATGAS
+    COMMODITIES_OTHER = "commodities_other"      # SILVER, PLATINUM
     EQUITIES = "equities"
 
 class SubaccountTierBaseLeverage(NamedTuple):

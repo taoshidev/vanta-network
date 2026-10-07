@@ -658,9 +658,9 @@ class ValiConfig:
         4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
     }
 
-    # Standard subaccount leverage tiers, per the Pro Launch spec §2a: 1 = Base, 2 = Boost I,
-    # 3 = Boost II (max). Challenge and funded share the same limits and account size does not
-    # change them. HL-linked and pro subaccounts never use these tables.
+    # Standard subaccount leverage tiers: 1 = Base, 2 = Boost I, 3 = Boost II (max). Challenge
+    # and funded share the same limits and account size does not change them. HL-linked and pro
+    # subaccounts never use these tables.
     STANDARD_LEVERAGE_TIERS = (1, 2, 3)
     STANDARD_LEVERAGE_TIER_BASE = 1
     STANDARD_LEVERAGE_TIER_DEFAULT = STANDARD_LEVERAGE_TIER_BASE  # new registrations
@@ -676,41 +676,53 @@ class ValiConfig:
         return isinstance(tier, int) and not isinstance(tier, bool) and tier in ValiConfig.STANDARD_LEVERAGE_TIERS
 
     # Per-pair groups narrower than an asset class (see leverage_utils.get_standard_leverage_group).
-    STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}
+    STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH"}
+    STANDARD_CRYPTO_SOL_XRP_DOGE_COINS = {"SOL", "XRP", "DOGE"}
+    STANDARD_FX_TOP_IDS = {"EURUSD", "AUDUSD", "USDCAD", "USDCHF"}
     STANDARD_FX_NZD_CROSS_IDS = {"EURNZD", "GBPNZD", "NZDJPY", "AUDNZD", "NZDCAD", "NZDCHF"}
     STANDARD_INDEX_OTHER_IDS = {"EWYUSDC"}
+    STANDARD_COMMODITY_OTHER_IDS = {"SILVERUSDC", "PLATINUMUSDC"}
 
     # Per-pair positional leverage, as a multiple of balance.
     STANDARD_POSITIONAL_LEVERAGE_BY_TIER = {
         1: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  1.5,
-            StandardLeverageGroup.CRYPTO_OTHER:   0.5,
-            StandardLeverageGroup.FX:             10.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 5.0,
-            StandardLeverageGroup.INDICES_US:     2.5,
-            StandardLeverageGroup.INDICES_OTHER:  1.0,
-            StandardLeverageGroup.COMMODITIES:    1.5,
-            StandardLeverageGroup.EQUITIES:       0.5,
+            StandardLeverageGroup.CRYPTO_MAJORS:       1.5,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 1.5,
+            StandardLeverageGroup.CRYPTO_OTHER:        0.5,
+            StandardLeverageGroup.FX_TOP:              10.0,
+            StandardLeverageGroup.FX:                  10.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      5.0,
+            StandardLeverageGroup.INDICES_US:          2.5,
+            StandardLeverageGroup.INDICES_OTHER:       1.0,
+            StandardLeverageGroup.COMMODITIES:         1.5,
+            StandardLeverageGroup.COMMODITIES_OTHER:   1.5,
+            StandardLeverageGroup.EQUITIES:            0.5,
         },
         2: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  2.0,
-            StandardLeverageGroup.CRYPTO_OTHER:   0.75,
-            StandardLeverageGroup.FX:             15.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 7.5,
-            StandardLeverageGroup.INDICES_US:     4.0,
-            StandardLeverageGroup.INDICES_OTHER:  1.5,
-            StandardLeverageGroup.COMMODITIES:    2.0,
-            StandardLeverageGroup.EQUITIES:       1.0,
+            StandardLeverageGroup.CRYPTO_MAJORS:       2.0,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 2.0,
+            StandardLeverageGroup.CRYPTO_OTHER:        0.75,
+            StandardLeverageGroup.FX_TOP:              15.0,
+            StandardLeverageGroup.FX:                  15.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      7.5,
+            StandardLeverageGroup.INDICES_US:          4.0,
+            StandardLeverageGroup.INDICES_OTHER:       1.5,
+            StandardLeverageGroup.COMMODITIES:         2.0,
+            StandardLeverageGroup.COMMODITIES_OTHER:   2.0,
+            StandardLeverageGroup.EQUITIES:            1.0,
         },
         3: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  2.5,
-            StandardLeverageGroup.CRYPTO_OTHER:   1.0,
-            StandardLeverageGroup.FX:             20.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 10.0,
-            StandardLeverageGroup.INDICES_US:     5.0,
-            StandardLeverageGroup.INDICES_OTHER:  2.0,
-            StandardLeverageGroup.COMMODITIES:    3.0,
-            StandardLeverageGroup.EQUITIES:       1.5,
+            StandardLeverageGroup.CRYPTO_MAJORS:       7.0,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 4.0,
+            StandardLeverageGroup.CRYPTO_OTHER:        1.5,
+            StandardLeverageGroup.FX_TOP:              25.0,
+            StandardLeverageGroup.FX:                  20.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      10.0,
+            StandardLeverageGroup.INDICES_US:          8.0,
+            StandardLeverageGroup.INDICES_OTHER:       3.0,
+            StandardLeverageGroup.COMMODITIES:         6.0,
+            StandardLeverageGroup.COMMODITIES_OTHER:   4.0,
+            StandardLeverageGroup.EQUITIES:            2.0,
         },
     }
 
@@ -718,7 +730,7 @@ class ValiConfig:
     STANDARD_CLASS_LEVERAGE_BY_TIER = {
         1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0, TradePairCategory.COMMODITIES: 1.5},
         2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 6.0, TradePairCategory.COMMODITIES: 2.0},
-        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 8.0, TradePairCategory.COMMODITIES: 3.0},
+        3: {TradePairCategory.CRYPTO: 10.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 4.0, TradePairCategory.INDICES: 8.0, TradePairCategory.COMMODITIES: 6.0},
     }
 
     # Overall portfolio cap keyed by the subaccount's own asset_class. Single-class subaccounts
@@ -726,15 +738,15 @@ class ValiConfig:
     STANDARD_PORTFOLIO_LEVERAGE_BY_TIER = {
         1: {MinerAssetClass.CRYPTO: 1.5, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 1.5, MinerAssetClass.ALL_MARKETS: 15.0},
         2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.ALL_MARKETS: 20.0},
-        3: {MinerAssetClass.CRYPTO: 2.5, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 3.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.ALL_MARKETS: 25.0},
+        3: {MinerAssetClass.CRYPTO: 10.0, MinerAssetClass.FOREX: 30.0, MinerAssetClass.EQUITIES: 4.0, MinerAssetClass.COMMODITIES: 6.0, MinerAssetClass.ALL_MARKETS: 40.0},
     }
 
     # Per-pair positional leverage.
     PRO_CRYPTO_POSITIONAL_LEVERAGE = {
-        "BTC": 5.0, "ETH": 5.0, "SOL": 5.0, "XRP": 5.0, "DOGE": 5.0,
-        "HYPE": 2.0, "SUI": 2.0, "BNB": 2.0,
-        "kPEPE": 1.5, "ADA": 1.5, "ZEC": 1.5, "LINK": 1.5,
-        "LTC": 1.0, "AVAX": 1.0, "TRX": 1.0,
+        "BTC": 10.0, "ETH": 10.0,
+        "SOL": 5.0, "XRP": 5.0, "DOGE": 5.0,
+        "HYPE": 2.0, "SUI": 2.0, "BNB": 2.0, "kPEPE": 2.0, "ADA": 2.0,
+        "ZEC": 2.0, "LINK": 2.0, "LTC": 2.0, "AVAX": 2.0, "TRX": 2.0,
     }
     PRO_COMMODITY_POSITIONAL_LEVERAGE = {
         "WTIOILUSDC": 8.0, "COPPERUSDC": 8.0, "GOLDUSDC": 8.0, "NATGASUSDC": 8.0,
@@ -743,26 +755,27 @@ class ValiConfig:
     PRO_INDEX_POSITIONAL_LEVERAGE = {
         "SP500USDC": 10.0, "XYZ100USDC": 10.0, "EWYUSDC": 5.0,
     }
-    PRO_EQUITIES_POSITIONAL_LEVERAGE = 2.0
+    PRO_EQUITIES_POSITIONAL_LEVERAGE = 2.5
     PRO_FX_POSITIONAL_LEVERAGE = 20.0
+    # The four pairs in STANDARD_FX_TOP_IDS (EURUSD, AUDUSD, USDCAD, USDCHF).
+    PRO_FX_TOP_POSITIONAL_LEVERAGE = 30.0
     # The six NZD crosses in STANDARD_FX_NZD_CROSS_IDS are held to half the major FX limit.
     PRO_FX_NZD_CROSS_POSITIONAL_LEVERAGE = 10.0
-    # Fallback for a pro-tradable pair none of the tables above names -- see
-    # docs/pro_leverage_discrepancies.md.
+    # Fallback for a pro-tradable pair none of the tables above names.
     PRO_DEFAULT_POSITIONAL_LEVERAGE = 1.0
     
     # Per-asset-class exposure cap.
     PRO_CLASS_LEVERAGE = {
-        TradePairCategory.CRYPTO: 6.0,
+        TradePairCategory.CRYPTO: 12.0,
         TradePairCategory.EQUITIES: 6.0,
         TradePairCategory.COMMODITIES: 8.0,
         TradePairCategory.INDICES: 10.0,
-        TradePairCategory.FOREX: 35.0,
+        TradePairCategory.FOREX: 40.0,
     }
 
     # Overall portfolio cap. A single number, not a per-asset-class row: pro accounts are
     # all_markets in practice and the cap does not vary by asset class.
-    PRO_PORTFOLIO_LEVERAGE = 40.0
+    PRO_PORTFOLIO_LEVERAGE = 50.0
 
     # Correlated-exposure limits, pro accounts only. Multiples of account balance, applied
     # separately to the *gross long* and the *gross short* exposure summed across a correlation
@@ -771,7 +784,7 @@ class ValiConfig:
         "USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0,
         "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 30.0,
     }
-    PRO_SECTOR_EXPOSURE_LIMIT = 3.0
+    PRO_SECTOR_EXPOSURE_LIMIT = 4.0
     PRO_US_INDEX_EXPOSURE_LIMIT = 10.0  # shared across the six instruments below, same as the indices class limit
     # US index pairs and broad US market ETFs carry the same beta, so they share one limit.
     # EWY, single stocks, and all other ETFs are excluded.

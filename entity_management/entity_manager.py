@@ -37,6 +37,7 @@ from entity_management.entity_utils import (
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.miner_account.account_snapshot import read_all_snapshots, DEFAULT_TOLERANCE_MS
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
+from vali_objects.utils.leverage_utils import tier_change_lowers_a_limit
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from datetime import datetime, timezone
@@ -1624,9 +1625,9 @@ class EntityManager(ValidatorBroadcastBase):
         self, entity_hotkey: str, synthetic_hotkey: str, leverage_tier: int
     ) -> Tuple[bool, str]:
         """Change a standard subaccount's leverage tier and push it to the MinerAccount and other
-        validators. Lowering the tier requires no open positions because the new caps may sit below
-        the current exposure; so does leaving tier 0 (no stored tier), since a funded account's tier 0
-        values can exceed even Boost II on some rows (EWY)."""
+        validators. A change that would lower any limit the subaccount trades under requires no open
+        positions, because the new caps may sit below the current exposure. Raising a stored tier never
+        lowers one; leaving tier 0 (no stored tier) is compared row by row against its floor."""
         if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
             return False, f"Invalid leverage_tier: {leverage_tier}. Must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}"
         if not is_synthetic_hotkey(synthetic_hotkey):
@@ -1655,17 +1656,14 @@ class EntityManager(ValidatorBroadcastBase):
 
             same_tier = subaccount.leverage_tier == leverage_tier
             if not same_tier:
-                # No stored tier = tier 0 (max of legacy and Base). A funded account's tier 0 can
-                # exceed any tier on some rows, so leaving it counts as lowering
-                lowering = subaccount.leverage_tier is None or leverage_tier < subaccount.leverage_tier
-                if lowering:
+                if self._tier_change_lowers_a_limit(synthetic_hotkey, subaccount.leverage_tier, leverage_tier):
                     open_positions = self._position_client.get_positions_for_one_hotkey(
                         synthetic_hotkey, only_open_positions=True
                     )
                     if open_positions:
                         return False, (
                             f"Close all open positions on {synthetic_hotkey} before moving to leverage_tier "
-                            f"{leverage_tier} ({len(open_positions)} open)"
+                            f"{leverage_tier}, which lowers one of its current limits ({len(open_positions)} open)"
                         )
                 previous_tier = subaccount.leverage_tier
                 subaccount.leverage_tier = leverage_tier
@@ -1682,6 +1680,14 @@ class EntityManager(ValidatorBroadcastBase):
             return True, f"Subaccount {synthetic_hotkey} is already at leverage_tier {leverage_tier}"
         logger.info(f"[ENTITY_MANAGER] leverage_tier {previous_tier} -> {leverage_tier} for {synthetic_hotkey}")
         return True, f"leverage_tier updated to {leverage_tier} for {synthetic_hotkey}"
+
+    def _tier_change_lowers_a_limit(self, synthetic_hotkey: str, current_tier: Optional[int], new_tier: int) -> bool:
+        """Judged on the live MinerAccount, i.e. the limits the order path applies now. Without one,
+        falls back to the stored tiers and counts leaving tier 0 as lowering."""
+        account = self._miner_account_client.get_account(synthetic_hotkey) if self._miner_account_client else None
+        if account is None or not account.asset_class:
+            return current_tier is None or new_tier < current_tier
+        return tier_change_lowers_a_limit(account, new_tier)
 
     @staticmethod
     def _sanitize_leverage_tier(tier, synthetic_hotkey: str) -> Optional[int]:

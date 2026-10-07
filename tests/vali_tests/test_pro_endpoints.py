@@ -634,13 +634,13 @@ class TestTradePairsEndpointProUniverse(unittest.TestCase):
         return json.loads(resp.data)
 
     def test_per_pair_pro_leverage_matches_the_published_table(self):
-        """One pair per category against the spec values, read off the payload a client gets."""
+        """One pair per category against the expected values, read off the payload a client gets."""
         expected = {
-            'BTCUSDC': 5.0, 'ADAUSDC': 1.5, 'TRXUSDC': 1.0,
-            'EURUSD': 20.0, 'NZDJPY': 10.0,
+            'BTCUSDC': 10.0, 'ETHUSDC': 10.0, 'SOLUSDC': 5.0, 'ADAUSDC': 2.0, 'TRXUSDC': 2.0,
+            'EURUSD': 30.0, 'USDCHF': 30.0, 'USDJPY': 20.0, 'NZDJPY': 10.0,
             'GOLDUSDC': 8.0, 'SILVERUSDC': 5.0,
             'SP500USDC': 10.0, 'EWYUSDC': 5.0,
-            'NVDA': 2.0,
+            'NVDA': 2.5,
         }
         data = self._get()
         by_id = {entry['trade_pair_id']: entry for entry in data['allowed'] + data['disabled']}

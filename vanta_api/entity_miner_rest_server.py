@@ -1371,7 +1371,8 @@ class EntityMinerRestServer(MinerRestServer):
             "synthetic_hotkey": "<entity_hotkey>_<id>",  // Required
             "leverage_tier": 1 | 2 | 3                   // Required
         }
-        Lowering the tier requires the subaccount to have no open positions.
+        A change that lowers any of the subaccount's current limits requires it to have no open
+        positions.
         """
         import requests as http_requests
 
