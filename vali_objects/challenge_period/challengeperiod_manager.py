@@ -137,6 +137,11 @@ class MinerBucketState:
     # bucket's intraday threshold in every bucket (read through the intraday_drawdown_threshold
     # property). None keeps the bucket default.
     intraday_drawdown_threshold_override: float | None = None
+    # EOD high-water-mark drawdown threshold chosen at creation (PRO_CHALLENGE_FROM_STANDARD only). Like the
+    # intraday override it is ignored in PRO_FUNDED, which always runs the pro defaults.
+    eod_hwm_threshold_override: float | None = None
+    # Payout multiplier chosen at creation; None falls back to ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
+    payout_scale: float | None = None
     rank: int | None = None
     pro_stats: ProStats = field(default_factory=ProStats)
 
@@ -172,14 +177,16 @@ class MinerBucketState:
         return MinerBucket.UNKNOWN
 
     def to_checkpoint_dict(self) -> dict:
-        """Serialize full state (entries + drawdown + drawdown_criteria +
-        intraday_drawdown_threshold_override + rank + pro_stats) for on-disk checkpoint. The latched
+        """Serialize full state (entries + drawdown + drawdown_criteria + drawdown threshold overrides +
+        payout_scale + rank + pro_stats) for on-disk checkpoint. The latched
         soft-breach days ride along inside pro_stats."""
         return {
             "entries": [entry.to_dict() for entry in self.entries],
             "drawdown": self.drawdown.to_dict(),
             "drawdown_criteria": self.drawdown_criteria.value,
             "intraday_drawdown_threshold_override": self.intraday_drawdown_threshold_override,
+            "eod_hwm_threshold_override": self.eod_hwm_threshold_override,
+            "payout_scale": self.payout_scale,
             "rank": self.rank,
             "pro_stats": self.pro_stats.to_dict(),
         }
@@ -195,6 +202,8 @@ class MinerBucketState:
             drawdown=DrawdownStats.from_dict(data.get("drawdown")),
             drawdown_criteria=criteria,
             intraday_drawdown_threshold_override=data.get("intraday_drawdown_threshold_override"),
+            eod_hwm_threshold_override=data.get("eod_hwm_threshold_override"),
+            payout_scale=data.get("payout_scale"),
             rank=data.get("rank"),
             pro_stats=ProStats.from_dict(data.get("pro_stats")),
         )
@@ -206,6 +215,7 @@ class MinerBucketState:
         criteria_str = self.drawdown_criteria.value
         return (
             f"{self.hotkey} {self.current_bucket.value} {start} rank={self.rank} criteria={criteria_str} idt_override={self.intraday_drawdown_threshold_override} "
+            f"eod_override={self.eod_hwm_threshold_override} payout_scale={self.payout_scale} "
             f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={f'{dd.daily_open_equity:.4f}' if dd.daily_open_equity is not None else 'None'} | "
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
             f"static_dd={dd.static_drawdown_pct:.2f}% static_eod_dd={dd.static_eod_drawdown_pct:.2f}% "
@@ -241,10 +251,10 @@ class MinerBucketState:
         return self.current_bucket_start_ms
 
     def _intraday_threshold_for(self, bucket: MinerBucket, threshold_time_ms: int | None) -> float:
-        """An intraday drawdown threshold chosen at creation applies in every bucket. Otherwise static accounts use
-        a flat intraday threshold regardless of bucket or registration time, and pro buckets keep their
-        own threshold even when the subaccount was created static."""
-        if self.intraday_drawdown_threshold_override is not None:
+        """An intraday drawdown threshold chosen at creation applies in every bucket but PRO_FUNDED. Otherwise
+        static accounts use a flat intraday threshold regardless of bucket or registration time, and pro buckets
+        keep their own threshold even when the subaccount was created static."""
+        if self.intraday_drawdown_threshold_override is not None and bucket != MinerBucket.PRO_FUNDED:
             return self.intraday_drawdown_threshold_override
         if self.drawdown_criteria == DrawdownCriteria.STATIC and not bucket.is_pro:
             return ValiConfig.SUBACCOUNT_STATIC_INTRADAY_DRAWDOWN_THRESHOLD
@@ -266,6 +276,12 @@ class MinerBucketState:
                 return self._intraday_threshold_for(MinerBucket.SUBACCOUNT_CHALLENGE, None)
         return self._intraday_threshold_for(self.current_bucket, self._threshold_time_ms)
 
+    def _eod_threshold_for(self, bucket: MinerBucket, threshold_time_ms: int | None) -> float:
+        """An EOD threshold chosen at creation applies in every bucket but PRO_FUNDED."""
+        if self.eod_hwm_threshold_override is not None and bucket != MinerBucket.PRO_FUNDED:
+            return self.eod_hwm_threshold_override
+        return bucket.eod_drawdown_threshold(threshold_time_ms)
+
     @property
     def intraday_drawdown_threshold_pct(self):
         return self.intraday_drawdown_threshold * 100
@@ -280,11 +296,11 @@ class MinerBucketState:
                     prev_threshold_time_ms = challenge_entry.start_time_ms if challenge_entry else None
                 else:
                     prev_threshold_time_ms = prev_entry.start_time_ms
-                return prev_entry.bucket.eod_drawdown_threshold(prev_threshold_time_ms)
+                return self._eod_threshold_for(prev_entry.bucket, prev_threshold_time_ms)
             else:
                 # Dummy threshold value for eliminated accounts to not raise Error
-                return MinerBucket.SUBACCOUNT_CHALLENGE.eod_drawdown_threshold()
-        return self.current_bucket.eod_drawdown_threshold(self._threshold_time_ms)
+                return self._eod_threshold_for(MinerBucket.SUBACCOUNT_CHALLENGE, None)
+        return self._eod_threshold_for(self.current_bucket, self._threshold_time_ms)
 
     @property
     def eod_drawdown_threshold_pct(self):
@@ -1292,10 +1308,13 @@ class ChallengePeriodManager(CacheController):
         replace_top=False,
         drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING,
         intraday_drawdown_threshold: float | None = None,
+        eod_hwm_threshold: float | None = None,
+        payout_scale: float | None = None,
     ) -> bool:
         """
         Set or update a miner's bucket information, replace_top to override most recent entry.
-        drawdown_criteria and intraday_drawdown_threshold are set only on first creation and ignored for existing states.
+        drawdown_criteria, intraday_drawdown_threshold, eod_hwm_threshold and payout_scale are set only on
+        first creation and ignored for existing states.
 
         Only persists to disk on first creation - both are write-once, and updates to
         an existing state are already covered by the caller's own batched save (see refresh()).
@@ -1306,7 +1325,9 @@ class ChallengePeriodManager(CacheController):
         with self._buckets_lock:
             if hotkey not in self.miner_states:
                 self.miner_states[hotkey] = MinerBucketState(hotkey, [BucketEntry(bucket, start_time_ms)], drawdown_criteria=drawdown_criteria,
-                                                          intraday_drawdown_threshold_override=intraday_drawdown_threshold)
+                                                          intraday_drawdown_threshold_override=intraday_drawdown_threshold,
+                                                          eod_hwm_threshold_override=eod_hwm_threshold,
+                                                          payout_scale=payout_scale)
                 is_new = True
                 self._save_to_disk()
             else:

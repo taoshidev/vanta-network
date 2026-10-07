@@ -864,6 +864,7 @@ def _frozen_subaccount_manager(
     subaccount_status='eliminated',
     standard_account_size=100_000.0,
     pro_account_size=500_000.0,
+    payout_scale=None,
     bucket_by_index=None,
     entity_hotkey='entity',
     subaccount_hotkey='entity_1',
@@ -917,6 +918,7 @@ def _frozen_subaccount_manager(
             'reg_fee_theta': 1.0,
             'standard_account_size': standard_account_size,
             'pro_account_size': pro_account_size,
+            'payout_scale': payout_scale,
         }}}
     })
     manager._perf_ledger_client = SimpleNamespace(
@@ -1060,6 +1062,44 @@ class TestSealedScaleGovernsPayment(TestBase):
         self.assertAlmostEqual(realized, 10.0 * scaled_cps * self.RATIO + 10.0 * funded_cps)
         # The week still seals the account's ratio, ungated: the gate is the checkpoint's bucket
         self.assertAlmostEqual(sealed[week_0_start].payout_scale, self.RATIO)
+
+
+class TestSubaccountPayoutScaleInWeights(TestBase):
+    """A payout_scale chosen at creation replaces PRO_TRANSITION_PAYOUT_MULTIPLIER in the entity's
+    aggregated ledger, which the weight calculator reads."""
+
+    CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+    def setUp(self):
+        super().setUp()
+        _clear_seal_ledger()
+
+    def tearDown(self):
+        _clear_seal_ledger()
+        super().tearDown()
+
+    def _aggregate(self, payout_scale, bucket_by_index=None):
+        manager, week_0_start = _frozen_subaccount_manager(
+            subaccount_status='active', payout_scale=payout_scale, bucket_by_index=bucket_by_index)
+        manager.aggregate_entity_debt_ledgers(self.CP_DURATION_MS)
+        sealed = manager.weekly_seal_ledger.get_sealed('entity_1')
+        realized = sum(cp.realized_pnl for cp in manager.debt_ledgers['entity'].checkpoints)
+        return sealed, realized, week_0_start
+
+    def test_the_chosen_payout_scale_prices_the_entity_ledger(self):
+        sealed, realized, week_0_start = self._aggregate(1.0)
+        # 28 checkpoints realizing 10 USD each at 1.0 * 100k / 500k
+        self.assertAlmostEqual(realized, 280.0 * 0.2)
+        self.assertAlmostEqual(sealed[week_0_start].payout_scale, 0.2)
+
+    def test_no_chosen_payout_scale_keeps_the_network_multiplier(self):
+        _sealed, realized, _ = self._aggregate(None)
+        self.assertAlmostEqual(realized, 280.0 * ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * 0.2)
+
+    def test_the_chosen_payout_scale_only_applies_in_pro_challenge_from_standard(self):
+        funded = {i: MinerBucket.PRO_FUNDED for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS)}
+        _sealed, realized, _ = self._aggregate(1.0, bucket_by_index=funded)
+        self.assertAlmostEqual(realized, 280.0)
 
 
 class TestWeeklySealLedger(TestBase):

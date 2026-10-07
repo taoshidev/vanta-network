@@ -36,7 +36,7 @@ from typing import Dict, Optional, Set
 from flask import jsonify, request, Response
 
 from miner_config import MinerConfig
-from entity_management.entity_utils import pro_account_size_error
+from entity_management.entity_utils import pro_account_size_error, subaccount_creation_error
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vanta_api.miner_rest_server import MinerRestServer
@@ -1046,6 +1046,10 @@ class EntityMinerRestServer(MinerRestServer):
             "account_size": float,                           // Required, must be > 0
             "leverage_tier": 1 | 2 | 3,                      // Optional, default 1 (standard leverage tier)
             "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults
+            "bucket": str,                                   // Optional, SUBACCOUNT_CREATION_BUCKETS; default SUBACCOUNT_CHALLENGE
+            "pro_account_size": float,                       // Required for pro buckets only
+            "eod_hwm_threshold": 0.05 | 0.08,                // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; PRO_CHALLENGE_FROM_STANDARD only
+            "payout_scale": float,                           // Optional, payout multiplier for PRO_CHALLENGE_FROM_STANDARD
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -1055,6 +1059,7 @@ class EntityMinerRestServer(MinerRestServer):
             "account_size": float,     // Required, must be > 0
             "payout_address": "0x...", // Optional, EVM address for USDC payouts
             "intraday_drawdown_threshold": 0.03 | 0.05,  // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults
+            "bucket": "SUBACCOUNT_CHALLENGE" | "SUBACCOUNT_FUNDED",  // Optional, HL_SUBACCOUNT_CREATION_BUCKETS
             "collateral_exempt": bool  // Optional, default false
         }
         """
@@ -1142,6 +1147,23 @@ class EntityMinerRestServer(MinerRestServer):
             if account_size <= 0:
                 return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
 
+            bucket = request_data.get("bucket")
+            pro_account_size = request_data.get("pro_account_size")
+            eod_hwm_threshold = request_data.get("eod_hwm_threshold")
+            payout_scale = request_data.get("payout_scale")
+            creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
+                                                       eod_hwm_threshold, payout_scale)
+            if creation_error:
+                return jsonify({'status': 'error', 'message': creation_error}), 400
+            if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
+                          or pro_account_size is not None or eod_hwm_threshold is not None
+                          or payout_scale is not None):
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Hyperliquid subaccounts only accept bucket '
+                               f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'
+                }), 400
+
             if is_hl:
                 if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
                     return jsonify({
@@ -1215,6 +1237,10 @@ class EntityMinerRestServer(MinerRestServer):
             # Unsigned, like drawdown_criteria, so the signature stays byte-identical to the legacy field set
             if intraday_drawdown_threshold is not None:
                 payload["intraday_drawdown_threshold"] = intraday_drawdown_threshold
+            for name, value in (("bucket", bucket), ("pro_account_size", pro_account_size),
+                                ("eod_hwm_threshold", eod_hwm_threshold), ("payout_scale", payout_scale)):
+                if value is not None:
+                    payload[name] = value
             # client_ref rides unsigned alongside drawdown_criteria. message_dict
             # above is intentionally left untouched so the coldkey signature is
             # byte-identical to the legacy field set (forward/back compatible).

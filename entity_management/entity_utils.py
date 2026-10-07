@@ -122,21 +122,65 @@ def pro_account_size_error(pro_account_size, standard_account_size=None) -> Opti
     return None
 
 
-def pro_payout_scale(standard_account_size, pro_account_size) -> float:
+def pro_payout_scale(standard_account_size, pro_account_size, payout_scale=None) -> float:
     """
     Multiplier applied to a pro account's PnL when the subaccount is paid on its standard size.
 
     A trader running the pro challenge after passing the standard challenge trades the larger pro
-    account but is paid on their standard account, uplifted by
-    ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 when either size is missing, so a
-    subaccount that never entered the pro track is paid on its own PnL unchanged.
+    account but is paid on their standard account, uplifted by the subaccount's payout_scale when
+    one was set at creation, else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 when
+    either size is missing, so a subaccount that never entered the pro track is paid on its own
+    PnL unchanged.
 
     Both payout paths (EntityManager.get_payout_scale and the debt-ledger aggregation) read this,
     so the number a trader is quoted is the number the weight calculator pays.
     """
     if not standard_account_size or not pro_account_size:
         return 1.0
-    return ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * standard_account_size / pro_account_size
+    multiplier = payout_scale if payout_scale is not None else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
+    return multiplier * standard_account_size / pro_account_size
+
+
+def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=None,
+                              eod_hwm_threshold=None, payout_scale=None) -> Optional[str]:
+    """
+    Why these subaccount creation options cannot be used together, or None when they can.
+
+    bucket is a MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS (None means
+    SUBACCOUNT_CHALLENGE). Pro buckets require a pro_account_size, which standard buckets reject.
+    eod_hwm_threshold is only accepted for PRO_CHALLENGE_FROM_STANDARD.
+    """
+    from vali_objects.enums.miner_bucket_enum import MinerBucket
+
+    if bucket is None:
+        bucket = MinerBucket.SUBACCOUNT_CHALLENGE.value
+    if (not isinstance(bucket, str) or bucket not in {b.value for b in MinerBucket}
+            or bucket not in ValiConfig.SUBACCOUNT_CREATION_BUCKETS):
+        return f"bucket must be one of {ValiConfig.SUBACCOUNT_CREATION_BUCKETS}"
+    miner_bucket = MinerBucket(bucket)
+
+    if miner_bucket.is_pro:
+        if pro_account_size is None:
+            return f"pro_account_size is required for bucket {bucket}"
+        size_error = pro_account_size_error(pro_account_size, account_size)
+        if size_error:
+            return size_error
+    elif pro_account_size is not None:
+        return f"pro_account_size is only accepted for pro buckets, not {bucket}"
+
+    if eod_hwm_threshold is not None:
+        if miner_bucket != MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+            return f"eod_hwm_threshold is only accepted for bucket {MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}"
+        if isinstance(eod_hwm_threshold, bool) or eod_hwm_threshold not in ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES:
+            return f"eod_hwm_threshold must be one of {ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES}"
+
+    if payout_scale is not None:
+        if (isinstance(payout_scale, bool) or not isinstance(payout_scale, (int, float))
+                or (isinstance(payout_scale, float) and not math.isfinite(payout_scale))
+                or not 0 < payout_scale <= ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE):
+            return f"payout_scale must be a positive number at most {ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE}"
+
+    return None
 
 
 def attach_correlated_exposure_report(account_size_data: dict | None) -> None:

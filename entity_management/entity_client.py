@@ -102,6 +102,10 @@ class EntityClient(RPCClientBase):
         leverage_tier: Optional[int] = None,
         client_ref: Optional[str] = None,
         intraday_drawdown_threshold: Optional[float] = None,
+        bucket: Optional[str] = None,
+        pro_account_size: Optional[float] = None,
+        eod_hwm_threshold: Optional[float] = None,
+        payout_scale: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -116,6 +120,7 @@ class EntityClient(RPCClientBase):
             client_ref: Optional idempotency key; the returned dict carries
                 "duplicate": True when it matched a prior creation.
             intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
+            bucket, pro_account_size, eod_hwm_threshold, payout_scale: See EntityManager.create_subaccount_ex
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -129,6 +134,10 @@ class EntityClient(RPCClientBase):
             kwargs["client_ref"] = client_ref
         if intraday_drawdown_threshold is not None:
             kwargs["intraday_drawdown_threshold"] = intraday_drawdown_threshold
+        for name, value in (("bucket", bucket), ("pro_account_size", pro_account_size),
+                            ("eod_hwm_threshold", eod_hwm_threshold), ("payout_scale", payout_scale)):
+            if value is not None:
+                kwargs[name] = value
         # fail-fast: reserves collateral + mints a subaccount; a re-execution creates a DUPLICATE
         # subaccount (fresh id) and double-reserves the fee — never auto-retry. client_ref makes a
         # *caller-driven* retry idempotent, but it is optional and callers may omit it, so the
@@ -150,6 +159,7 @@ class EntityClient(RPCClientBase):
         payout_address: Optional[str] = None,
         client_ref: Optional[str] = None,
         intraday_drawdown_threshold: Optional[float] = None,
+        bucket: Optional[str] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -162,6 +172,7 @@ class EntityClient(RPCClientBase):
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
             intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
+            bucket: Optional, one of ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS; None means SUBACCOUNT_CHALLENGE
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -175,6 +186,8 @@ class EntityClient(RPCClientBase):
             kwargs["client_ref"] = client_ref
         if intraday_drawdown_threshold is not None:
             kwargs["intraday_drawdown_threshold"] = intraday_drawdown_threshold
+        if bucket is not None:
+            kwargs["bucket"] = bucket
         return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, **kwargs)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:

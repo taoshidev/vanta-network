@@ -1,7 +1,8 @@
 """
 Subaccount intraday drawdown threshold (daily loss limit): one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
-chosen at creation, that replaces the bucket's intraday drawdown threshold in every standard and pro bucket. A subaccount that chooses none keeps each bucket's
-default threshold. The other rule (static or EOD) is unchanged.
+chosen at creation, that replaces the bucket's intraday drawdown threshold in every standard and pro bucket except
+PRO_FUNDED, which always runs the pro defaults. A subaccount that chooses none keeps each bucket's default threshold.
+The other rule (static or EOD) is unchanged.
 """
 import json
 from unittest.mock import MagicMock, patch
@@ -34,6 +35,7 @@ SUBACCOUNT_BUCKETS = (
     MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
     MinerBucket.PRO_FUNDED,
 )
+OVERRIDE_BUCKETS = tuple(b for b in SUBACCOUNT_BUCKETS if b != MinerBucket.PRO_FUNDED)
 CRITERIA = (DrawdownCriteria.STATIC, DrawdownCriteria.TRAILING)
 DAY_OPEN = 1.10  # up on the starting balance, so the static rule never binds
 HL_ADDRESS = "0x" + "c" * 40
@@ -64,12 +66,19 @@ def _seed(manager, bucket: MinerBucket, drawdown: DrawdownStats, intraday_drawdo
 # ── Threshold resolution ──────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("criteria", CRITERIA)
-@pytest.mark.parametrize("bucket", SUBACCOUNT_BUCKETS)
+@pytest.mark.parametrize("bucket", OVERRIDE_BUCKETS)
 @pytest.mark.parametrize("threshold", ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES)
 def test_the_chosen_threshold_is_the_intraday_threshold_in_every_bucket(threshold, bucket, criteria):
     state = _threshold_state(bucket, threshold, criteria)
     assert state.intraday_drawdown_threshold == threshold
     assert state.intraday_drawdown_threshold_pct == pytest.approx(threshold * 100)
+
+
+@pytest.mark.parametrize("criteria", CRITERIA)
+@pytest.mark.parametrize("threshold", ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES)
+def test_pro_funded_ignores_the_chosen_threshold(threshold, criteria):
+    state = _threshold_state(MinerBucket.PRO_FUNDED, threshold, criteria)
+    assert state.intraday_drawdown_threshold == ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
 
 
 @pytest.mark.parametrize("criteria", CRITERIA)
@@ -96,15 +105,18 @@ def test_no_chosen_threshold_keeps_each_bucket_default():
     assert legacy.intraday_drawdown_threshold == ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0
 
 
-def test_the_chosen_threshold_carries_through_every_promotion(manager):
+def test_the_chosen_threshold_carries_through_every_promotion_until_pro_funded(manager):
     manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE, NOW_MS - 4 * DAILY_MS,
                              drawdown_criteria=DrawdownCriteria.STATIC, intraday_drawdown_threshold=0.03)
-    for offset, bucket in enumerate((MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION,
-                                     MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
-                                     MinerBucket.ELIMINATED)):
+    pro_default = ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+    for offset, (bucket, expected) in enumerate(((MinerBucket.SUBACCOUNT_FUNDED, 0.03),
+                                                 (MinerBucket.PRO_CHALLENGE_TRANSITION, 0.03),
+                                                 (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 0.03),
+                                                 (MinerBucket.PRO_FUNDED, pro_default),
+                                                 (MinerBucket.ELIMINATED, pro_default))):
         manager.set_miner_bucket(HOTKEY, bucket, NOW_MS - (3 - offset) * DAILY_MS)
         assert manager.miner_states[HOTKEY].current_bucket == bucket
-        assert manager.miner_states[HOTKEY].intraday_drawdown_threshold == 0.03
+        assert manager.miner_states[HOTKEY].intraday_drawdown_threshold == expected
 
 
 def test_the_chosen_threshold_is_write_once(manager):
@@ -122,7 +134,7 @@ def test_the_dashboard_reports_the_chosen_threshold_as_the_intraday_threshold(ma
 # ── Checkpoint ────────────────────────────────────────────────────────────────
 
 def test_the_chosen_threshold_round_trips_through_the_checkpoint():
-    state = _threshold_state(MinerBucket.PRO_FUNDED, 0.03)
+    state = _threshold_state(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 0.03)
     restored = MinerBucketState.from_checkpoint_dict(HOTKEY, state.to_checkpoint_dict())
     assert restored.intraday_drawdown_threshold_override == 0.03
     assert restored.intraday_drawdown_threshold == 0.03
@@ -147,7 +159,7 @@ INTRADAY_REASON = {
 
 
 @pytest.mark.parametrize("criteria", CRITERIA)
-@pytest.mark.parametrize("bucket", tuple(INTRADAY_REASON))
+@pytest.mark.parametrize("bucket", tuple(b for b in INTRADAY_REASON if b != MinerBucket.PRO_FUNDED))
 @pytest.mark.parametrize("threshold", ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES)
 def test_a_drop_just_past_the_chosen_threshold_eliminates(manager, threshold, bucket, criteria):
     _seed(manager, bucket, _below_day_open(threshold + 0.001), threshold, criteria)

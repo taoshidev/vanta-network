@@ -999,7 +999,8 @@ class DebtLedgerManager():
                         continue
 
                     scale = entity_utils.pro_payout_scale(
-                        subaccount.get('standard_account_size'), subaccount.get('pro_account_size')
+                        subaccount.get('standard_account_size'), subaccount.get('pro_account_size'),
+                        subaccount.get('payout_scale')
                     )
                     if scale != 1.0:
                         subaccount_payout_scale[synthetic_hotkey] = scale

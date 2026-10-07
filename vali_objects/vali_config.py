@@ -558,6 +558,15 @@ class ValiConfig:
 
     # Intraday drawdown thresholds (daily loss limit) a subaccount may choose from at creation
     SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES = [0.03, 0.05]
+    # EOD high-water-mark drawdown thresholds a subaccount created into PRO_CHALLENGE_FROM_STANDARD may choose from
+    SUBACCOUNT_EOD_DRAWDOWN_VALUES = [0.05, 0.08]
+    # Buckets a subaccount may be created directly into (MinerBucket values)
+    SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED",
+                                   "PRO_CHALLENGE_FROM_STANDARD", "PRO_CHALLENGE_DIRECT"]
+    # Hyperliquid subaccounts have no pro track
+    HL_SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED"]
+    # Intraday drawdown threshold forced on subaccounts created directly into PRO_CHALLENGE_FROM_STANDARD
+    PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
 
     # Pro account (entity subaccount) rules. The promotion criteria and transition grace period can
     # be overridden for testnet through environment variables of the same name (docs/entity_miner.md).
@@ -594,6 +603,11 @@ class ValiConfig:
     # earned on this multiple of their standard account size: at 2.0, $5K of eligible PnL on a
     # $500K pro account pays a $100K standard account (5K / 500K) * 2 * 100K = $2K.
     PRO_TRANSITION_PAYOUT_MULTIPLIER = 2.0
+    # Multiplier used instead when a subaccount is created directly into PRO_CHALLENGE_FROM_STANDARD
+    # without an explicit payout_scale
+    PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER = 1.0
+    # Largest payout_scale a subaccount may be created with
+    MAX_SUBACCOUNT_PAYOUT_SCALE = 2.0
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA

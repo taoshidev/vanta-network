@@ -32,6 +32,7 @@ from entity_management.entity_utils import (
     parse_synthetic_hotkey,
     pro_account_size_error,
     pro_payout_scale,
+    subaccount_creation_error,
 )
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.miner_account.account_snapshot import read_all_snapshots, DEFAULT_TOLERANCE_MS
@@ -82,6 +83,9 @@ class SubaccountInfo(BaseModel):
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     intraday_drawdown_threshold: Optional[float] = Field(default=None, description="Chosen intraday drawdown threshold (daily loss limit) as a fraction, applied in every bucket (immutable once set). None keeps each bucket's default")
+    eod_hwm_threshold: Optional[float] = Field(default=None, description="Chosen EOD high-water-mark drawdown threshold as a fraction (PRO_CHALLENGE_FROM_STANDARD creation only, immutable once set). None keeps each bucket's default")
+    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FROM_STANDARD (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
+    initial_bucket: Optional[str] = Field(default=None, description="MinerBucket the subaccount was created into. None means SUBACCOUNT_CHALLENGE")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
     leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades tier 0 (each limit is max of its legacy value and Base)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
@@ -462,6 +466,10 @@ class EntityManager(ValidatorBroadcastBase):
         client_ref: Optional[str] = None,
         leverage_tier: Optional[int] = None,
         intraday_drawdown_threshold: Optional[float] = None,
+        bucket: Optional[str] = None,
+        pro_account_size: Optional[float] = None,
+        eod_hwm_threshold: Optional[float] = None,
+        payout_scale: Optional[float] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """Backward-compatible 3-tuple wrapper around create_subaccount_ex.
 
@@ -474,6 +482,8 @@ class EntityManager(ValidatorBroadcastBase):
             hl_address=hl_address, payout_address=payout_address,
             drawdown_criteria=drawdown_criteria, client_ref=client_ref,
             leverage_tier=leverage_tier, intraday_drawdown_threshold=intraday_drawdown_threshold,
+            bucket=bucket, pro_account_size=pro_account_size, eod_hwm_threshold=eod_hwm_threshold,
+            payout_scale=payout_scale,
         )
         return success, info, message
 
@@ -489,6 +499,10 @@ class EntityManager(ValidatorBroadcastBase):
         client_ref: Optional[str] = None,
         leverage_tier: Optional[int] = None,
         intraday_drawdown_threshold: Optional[float] = None,
+        bucket: Optional[str] = None,
+        pro_account_size: Optional[float] = None,
+        eod_hwm_threshold: Optional[float] = None,
+        payout_scale: Optional[float] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str, bool]:
         """
         Create a new subaccount for an entity.
@@ -509,14 +523,26 @@ class EntityManager(ValidatorBroadcastBase):
             leverage_tier: Standard leverage tier 1 to 3. Defaults to
                    ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
             intraday_drawdown_threshold: One of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES (e.g. 0.03).
-                   None keeps each bucket's default.
+                   None keeps each bucket's default. Forced to
+                   ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD for PRO_CHALLENGE_FROM_STANDARD.
+            bucket: MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS. None means SUBACCOUNT_CHALLENGE.
+            pro_account_size: Required for pro buckets, rejected otherwise.
+            eod_hwm_threshold: One of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, PRO_CHALLENGE_FROM_STANDARD only.
+            payout_scale: Payout multiplier for PRO_CHALLENGE_FROM_STANDARD. Defaults to
+                   ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER when created into that bucket.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
         """
         t_start = time.time()
 
-        initial_bucket = MinerBucket.SUBACCOUNT_CHALLENGE
+        if isinstance(bucket, MinerBucket):
+            bucket = bucket.value
+        creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
+                                                   eod_hwm_threshold, payout_scale)
+        if creation_error:
+            return False, None, creation_error, False
+        initial_bucket = MinerBucket(bucket) if bucket else MinerBucket.SUBACCOUNT_CHALLENGE
 
         if hl_address:
             if leverage_tier is not None:
@@ -533,6 +559,12 @@ class EntityManager(ValidatorBroadcastBase):
                     f"Invalid intraday_drawdown_threshold: {intraday_drawdown_threshold}. "
                     f"Must be one of {ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES}"
                 ), False
+
+        if initial_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+            # Fixed for now; drop this override to honor the caller's choice
+            intraday_drawdown_threshold = ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD
+            if payout_scale is None:
+                payout_scale = ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -581,6 +613,9 @@ class EntityManager(ValidatorBroadcastBase):
             # Calculate required collateral: account_size / ENTITY_COST_PER_THETA (lower rate for <=10k accounts)
             cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
             required_theta = account_size / cpt if not collateral_exempt else 0
+            # A pro bucket is also charged the pro promotion fee (by apply_bucket_account_size below)
+            pro_fee_theta = (ValiConfig.pro_promotion_fee_theta(pro_account_size, account_size)
+                             if initial_bucket.is_pro and not collateral_exempt else 0)
 
             # Verify collateral balance
             try:
@@ -591,14 +626,14 @@ class EntityManager(ValidatorBroadcastBase):
                         logger.warning(f"[ENTITY_MANAGER] Unable to verify collateral for {entity_hotkey} - balance check returned None")
                         return False, None, "Unable to verify collateral balance", False
 
-                    if current_balance < required_theta:
+                    if current_balance < required_theta + pro_fee_theta:
                         logger.warning(
                             f"[ENTITY_MANAGER] Insufficient collateral for subaccount creation: "
-                            f"entity {entity_hotkey} has {current_balance} theta, needs {required_theta} theta "
+                            f"entity {entity_hotkey} has {current_balance} theta, needs {required_theta + pro_fee_theta} theta "
                             f"to create new subaccount with ${account_size} account size"
                         )
                         return False, None, (
-                            f"Insufficient collateral: has {current_balance} theta, needs {required_theta} theta "
+                            f"Insufficient collateral: has {current_balance} theta, needs {required_theta + pro_fee_theta} theta "
                             f"to create new subaccount with ${account_size} account size"
                         ), False
 
@@ -686,6 +721,9 @@ class EntityManager(ValidatorBroadcastBase):
                 asset_class=asset_class,
                 drawdown_criteria=drawdown_criteria,
                 intraday_drawdown_threshold=intraday_drawdown_threshold,
+                eod_hwm_threshold=eod_hwm_threshold,
+                payout_scale=payout_scale,
+                initial_bucket=initial_bucket.value,
                 leverage_tier=leverage_tier,
                 hl_address=hl_address,
                 payout_address=payout_address,
@@ -700,12 +738,31 @@ class EntityManager(ValidatorBroadcastBase):
 
             self._write_entities_from_memory_to_disk()
 
+            # Pro buckets start on the pro account: record the sizes, switch to the pro size, charge the fee
+            if initial_bucket.is_pro_track:
+                sized, size_message = self.apply_bucket_account_size(synthetic_hotkey, initial_bucket, pro_account_size)
+                if not sized:
+                    logger.warning(f"[ENTITY_MANAGER] Rolling back {synthetic_hotkey}: {size_message}")
+                    del entity_data.subaccounts[subaccount_id]
+                    entity_data.next_subaccount_id -= 1
+                    with self._entities_lock:
+                        self._uuid_to_hotkey.pop(subaccount_uuid, None)
+                    self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+                    self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
+                    if required_theta > 0:
+                        self._entity_collateral_client.offset_collateral_cache(entity_hotkey, required_theta)
+                    self._write_entities_from_memory_to_disk()
+                    return False, None, size_message, False
+                subaccount_info = entity_data.subaccounts[subaccount_id]
+
             # Register subaccount with challenge period
             try:
                 self._challenge_period_client.set_miner_bucket(
                     synthetic_hotkey, initial_bucket, now_ms,
                     drawdown_criteria=DrawdownCriteria(drawdown_criteria),
                     intraday_drawdown_threshold=intraday_drawdown_threshold,
+                    eod_hwm_threshold=eod_hwm_threshold,
+                    payout_scale=payout_scale,
                 )
             except Exception as e:
                 logger.error(
@@ -724,8 +781,8 @@ class EntityManager(ValidatorBroadcastBase):
             total_ms = int((time.time() - t_start) * 1000)
             logger.info(
                 f"[ENTITY_MANAGER] Created subaccount {subaccount_id} for entity {entity_hotkey}: "
-                f"{synthetic_hotkey}, account_size=${account_size}, asset_class={asset_class}, "
-                f"status=active ({total_ms} ms)"
+                f"{synthetic_hotkey}, account_size=${subaccount_info.account_size}, asset_class={subaccount_info.asset_class}, "
+                f"bucket={initial_bucket.value}, status=active ({total_ms} ms)"
             )
             remaining_theta = (current_balance - required_theta) if current_balance else 0.0
             return True, subaccount_info, f"Slashing {required_theta} theta, {remaining_theta:.2f} theta remaining", False
@@ -764,12 +821,13 @@ class EntityManager(ValidatorBroadcastBase):
         payout_address: Optional[str] = None,
         client_ref: Optional[str] = None,
         intraday_drawdown_threshold: Optional[float] = None,
+        bucket: Optional[str] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """Backward-compatible 3-tuple wrapper around create_hl_subaccount_ex."""
         success, info, message, _duplicate = self.create_hl_subaccount_ex(
             entity_hotkey, account_size, hl_address, asset_class=asset_class,
             collateral_exempt=collateral_exempt, payout_address=payout_address, client_ref=client_ref,
-            intraday_drawdown_threshold=intraday_drawdown_threshold,
+            intraday_drawdown_threshold=intraday_drawdown_threshold, bucket=bucket,
         )
         return success, info, message
 
@@ -783,6 +841,7 @@ class EntityManager(ValidatorBroadcastBase):
         payout_address: Optional[str] = None,
         client_ref: Optional[str] = None,
         intraday_drawdown_threshold: Optional[float] = None,
+        bucket: Optional[str] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str, bool]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -800,6 +859,7 @@ class EntityManager(ValidatorBroadcastBase):
             payout_address: Optional EVM address for payouts (0x-prefixed, 40 hex chars)
             client_ref: Optional idempotency key (see NOTE below).
             intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES (see create_subaccount_ex).
+            bucket: One of ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS; None means SUBACCOUNT_CHALLENGE.
 
         NOTE on idempotency: without a client_ref, a repeat with the SAME hl_address
         is rejected by the duplicate-address guard below. With a client_ref that
@@ -812,6 +872,11 @@ class EntityManager(ValidatorBroadcastBase):
             (success, subaccount_info, message, duplicate) — duplicate is True when
             client_ref matched a prior creation.
         """
+        if isinstance(bucket, MinerBucket):
+            bucket = bucket.value
+        if bucket is not None and bucket not in ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS:
+            return False, None, f"bucket must be one of {ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} for Hyperliquid subaccounts", False
+
         # Validate HL address format
         if not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
             return False, None, f"Invalid Hyperliquid address format: {hl_address}. Must be 0x followed by 40 hex characters.", False
@@ -857,7 +922,7 @@ class EntityManager(ValidatorBroadcastBase):
             entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
             hl_address=hl_address, payout_address=payout_address,
             drawdown_criteria="trailing", client_ref=client_ref,
-            intraday_drawdown_threshold=intraday_drawdown_threshold,
+            intraday_drawdown_threshold=intraday_drawdown_threshold, bucket=bucket,
         )
 
         if not success:
@@ -1298,7 +1363,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         A miner completing the pro challenge after passing the standard challenge trades the
         larger pro account but is paid on the size of the standard account they came from,
-        uplifted by ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 for every other
+        uplifted by the subaccount's payout_scale (else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER). Returns 1.0 for every other
         subaccount, whose PnL is paid unscaled.
 
         Returns 0.0 when the subaccount cannot be found at all.
@@ -1310,7 +1375,8 @@ class EntityManager(ValidatorBroadcastBase):
                 f"defaults to 0 rather than paying at an unknown ratio"
             )
             return 0.0
-        return pro_payout_scale(subaccount.standard_account_size, subaccount.pro_account_size)
+        return pro_payout_scale(subaccount.standard_account_size, subaccount.pro_account_size,
+                                subaccount.payout_scale)
 
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
         """
@@ -3044,6 +3110,8 @@ class EntityManager(ValidatorBroadcastBase):
                 if subaccount_info.leverage_tier is not None and self._miner_account_client:
                     self._miner_account_client.set_leverage_tier(synthetic_hotkey, subaccount_info.leverage_tier)
 
+                initial_bucket = MinerBucket(subaccount_info.initial_bucket or MinerBucket.SUBACCOUNT_CHALLENGE.value)
+
                 # Set account size for synthetic hotkey (mirrors create_subaccount)
                 if self._miner_account_client:
                     cpt = ValiConfig.ENTITY_COST_PER_THETA_LOW if account_size <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD else ValiConfig.ENTITY_COST_PER_THETA
@@ -3052,7 +3120,7 @@ class EntityManager(ValidatorBroadcastBase):
                         collateral_balance_theta=account_size / cpt,
                         timestamp_ms=TimeUtil.now_in_millis(),
                         account_size=account_size,
-                        bucket=MinerBucket.SUBACCOUNT_CHALLENGE
+                        bucket=initial_bucket
                     )
                     if not set_size_success:
                         logger.warning(
@@ -3069,9 +3137,11 @@ class EntityManager(ValidatorBroadcastBase):
                 # Register with challenge period
                 try:
                     self._challenge_period_client.set_miner_bucket(
-                        synthetic_hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, subaccount_info.created_at_ms,
+                        synthetic_hotkey, initial_bucket, subaccount_info.created_at_ms,
                         drawdown_criteria=DrawdownCriteria(subaccount_info.drawdown_criteria),
                         intraday_drawdown_threshold=subaccount_info.intraday_drawdown_threshold,
+                        eod_hwm_threshold=subaccount_info.eod_hwm_threshold,
+                        payout_scale=subaccount_info.payout_scale,
                     )
                 except Exception as e:
                     logger.error(

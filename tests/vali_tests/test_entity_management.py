@@ -251,6 +251,132 @@ class TestEntityManagement(TestBase):
         self.assertEqual(len(entity_data['subaccounts']), 0)
         self.assertEqual(entity_data['next_subaccount_id'], 0)
 
+    # ==================== Creation bucket ====================
+
+    def _create(self, **kwargs):
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        return self.entity_client.create_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=100_000, asset_class="crypto", **kwargs)
+
+    def test_create_subaccount_defaults_to_the_challenge_bucket(self):
+        success, subaccount_info, message = self._create()
+        self.assertTrue(success, message)
+        self.assertEqual(subaccount_info['initial_bucket'], MinerBucket.SUBACCOUNT_CHALLENGE.value)
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey']),
+                         MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    def test_create_subaccount_directly_into_funded(self):
+        success, subaccount_info, message = self._create(bucket=MinerBucket.SUBACCOUNT_FUNDED.value)
+        self.assertTrue(success, message)
+        hotkey = subaccount_info['synthetic_hotkey']
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(hotkey), MinerBucket.SUBACCOUNT_FUNDED)
+        self.assertEqual(subaccount_info['account_type'], 'standard')
+        self.assertEqual(subaccount_info['account_size'], 100_000)
+
+    def test_create_subaccount_directly_into_pro_challenge_from_standard(self):
+        """Starts on the pro account, with the intraday limit forced, the chosen EOD limit, and a 1x payout scale."""
+        success, subaccount_info, message = self._create(
+            bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000,
+            eod_hwm_threshold=0.05, intraday_drawdown_threshold=0.05)
+        self.assertTrue(success, message)
+        hotkey = subaccount_info['synthetic_hotkey']
+
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(hotkey), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        self.assertEqual(subaccount_info['account_type'], 'pro')
+        self.assertEqual(subaccount_info['account_size'], 500_000)
+        self.assertEqual(subaccount_info['standard_account_size'], 100_000)
+        self.assertEqual(subaccount_info['pro_account_size'], 500_000)
+        self.assertEqual(subaccount_info['asset_class'], 'all_markets')
+        self.assertEqual(subaccount_info['payout_scale'], ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER)
+
+        stats = self.challenge_period_client.get_drawdown_stats(hotkey)
+        self.assertEqual(stats['intraday_drawdown_threshold'],
+                         ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertEqual(stats['eod_drawdown_threshold'], 0.05)
+        self.assertAlmostEqual(self.entity_client.get_payout_scale(hotkey),
+                               ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER * 100_000 / 500_000)
+
+    def test_an_explicit_payout_scale_replaces_the_default(self):
+        success, subaccount_info, message = self._create(
+            bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000, payout_scale=1.5)
+        self.assertTrue(success, message)
+        self.assertAlmostEqual(self.entity_client.get_payout_scale(subaccount_info['synthetic_hotkey']),
+                               1.5 * 100_000 / 500_000)
+
+    def test_create_subaccount_directly_into_pro_challenge_direct(self):
+        success, subaccount_info, message = self._create(
+            bucket=MinerBucket.PRO_CHALLENGE_DIRECT.value, pro_account_size=250_000)
+        self.assertTrue(success, message)
+        hotkey = subaccount_info['synthetic_hotkey']
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(hotkey), MinerBucket.PRO_CHALLENGE_DIRECT)
+        self.assertEqual(subaccount_info['account_size'], 250_000)
+        stats = self.challenge_period_client.get_drawdown_stats(hotkey)
+        self.assertEqual(stats['intraday_drawdown_threshold'], ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertEqual(stats['eod_drawdown_threshold'], ValiConfig.PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD)
+
+    def test_promotion_to_pro_funded_restores_the_pro_drawdown_defaults(self):
+        success, subaccount_info, message = self._create(
+            bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000, eod_hwm_threshold=0.05)
+        self.assertTrue(success, message)
+        hotkey = subaccount_info['synthetic_hotkey']
+
+        self.challenge_period_client.set_miner_bucket(hotkey, MinerBucket.PRO_FUNDED, TimeUtil.now_in_millis())
+        stats = self.challenge_period_client.get_drawdown_stats(hotkey)
+        self.assertEqual(stats['intraday_drawdown_threshold'], ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertEqual(stats['eod_drawdown_threshold'], ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD)
+
+    def test_create_hl_subaccount_directly_into_funded(self):
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        success, subaccount_info, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=100_000, hl_address="0x" + "d" * 40,
+            bucket=MinerBucket.SUBACCOUNT_FUNDED.value)
+        self.assertTrue(success, message)
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey']),
+                         MinerBucket.SUBACCOUNT_FUNDED)
+
+    def test_create_hl_subaccount_rejects_pro_buckets(self):
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        for bucket in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
+            with self.subTest(bucket=bucket):
+                success, subaccount_info, message = self.entity_client.create_hl_subaccount(
+                    entity_hotkey=self.ENTITY_HOTKEY_1, account_size=100_000, hl_address="0x" + "d" * 40,
+                    bucket=bucket.value)
+                self.assertFalse(success)
+                self.assertIn("bucket", message)
+        self.assertEqual(len(self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)['subaccounts']), 0)
+
+    def test_create_subaccount_rejects_invalid_bucket_options(self):
+        """Every invalid combination is rejected before anything is created."""
+        from_standard = MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value
+        cases = (
+            ({"bucket": "PRO_FUNDED"}, "bucket"),
+            ({"bucket": "ELIMINATED"}, "bucket"),
+            ({"bucket": "NOT_A_BUCKET"}, "bucket"),
+            ({"bucket": from_standard}, "pro_account_size"),
+            ({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value}, "pro_account_size"),
+            ({"bucket": from_standard, "pro_account_size": 50_000}, "below"),
+            ({"bucket": from_standard, "pro_account_size": 2_000_000}, "at most"),
+            ({"pro_account_size": 500_000}, "pro_account_size"),
+            ({"eod_hwm_threshold": 0.05}, "eod_hwm_threshold"),
+            ({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value, "pro_account_size": 500_000,
+              "eod_hwm_threshold": 0.05}, "eod_hwm_threshold"),
+            ({"bucket": from_standard, "pro_account_size": 500_000, "eod_hwm_threshold": 0.06}, "eod_hwm_threshold"),
+            ({"bucket": from_standard, "pro_account_size": 500_000, "payout_scale": 0}, "payout_scale"),
+            ({"bucket": from_standard, "pro_account_size": 500_000,
+              "payout_scale": ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE + 0.1}, "payout_scale"),
+            ({"bucket": from_standard, "pro_account_size": 500_000, "payout_scale": True}, "payout_scale"),
+        )
+        for kwargs, fragment in cases:
+            with self.subTest(**kwargs):
+                success, subaccount_info, message = self._create(**kwargs)
+                self.assertFalse(success, f"{kwargs} should be rejected")
+                self.assertIsNone(subaccount_info)
+                self.assertIn(fragment, message)
+
+        entity_data = self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)
+        self.assertEqual(len(entity_data['subaccounts']), 0)
+        self.assertEqual(entity_data['next_subaccount_id'], 0)
+
     def test_create_multiple_subaccounts(self):
         """Test creating multiple subaccounts for an entity."""
         # Register entity
@@ -1009,7 +1135,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
     def _payout_result(self, blocked_checkpoint_indices=(), week_buckets=None,
                        current_bucket=MinerBucket.PRO_FUNDED, payout_scale=1.0,
                        sealed_weeks=None, settled_segments=(), orders=None,
-                       checkpoint_buckets=None, has_perf_ledger=True):
+                       checkpoint_buckets=None, has_perf_ledger=True, subaccount=None):
         """Two payout weeks of 12h checkpoints. `week_buckets` maps a payout-week index (0 or 1) to
         the bucket stamped on that week's checkpoints (default PRO_FUNDED); `checkpoint_buckets`
         overrides individual checkpoints, which is how a bucket change lands mid-week;
@@ -1017,7 +1143,8 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         pro_account_size; `settled_segments` are stretches settled early by an account switch;
         `orders` overrides the default one-order-per-cell history (pass [] for an account that has
         not traded since); `has_perf_ledger=False` is the state a switch leaves behind, where the
-        perf ledger bundle is dropped along with the positions."""
+        perf ledger bundle is dropped along with the positions. `subaccount`, when given, replaces
+        the `payout_scale` stub with the real get_payout_scale read off that record."""
         from entity_management.entity_manager import EntityManager
 
         week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
@@ -1050,7 +1177,10 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         manager.running_unit_tests = True
         manager.get_synthetic_hotkey_from_uuid = lambda _uuid: self.SUBACCOUNT_HOTKEY
         manager.get_entity_data = lambda _hk: SimpleNamespace(subaccounts={1: {'id': 1}})
-        manager.get_payout_scale = lambda _hk: payout_scale
+        if subaccount is not None:
+            manager.get_subaccount_info_for_synthetic = lambda _hk: subaccount
+        else:
+            manager.get_payout_scale = lambda _hk: payout_scale
         manager._debt_ledger_client = SimpleNamespace(
             get_ledger=lambda _hk: DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=debt_checkpoints),
             # Nothing sealed by default: every week is recomputed, which is what most cases exercise
@@ -1177,6 +1307,26 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [0.2, 1.0])
         self.assertEqual(per_week, [28.0, 140.0])
         self.assertAlmostEqual(result['payout'], 168.0)
+
+    def test_the_chosen_payout_scale_prices_the_subaccount_payout(self):
+        """A payout_scale set at creation replaces PRO_TRANSITION_PAYOUT_MULTIPLIER in the USDC payout,
+        and only while the account is in PRO_CHALLENGE_FROM_STANDARD."""
+        subaccount = SimpleNamespace(standard_account_size=100_000.0, pro_account_size=500_000.0, payout_scale=1.0)
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 1: MinerBucket.PRO_FUNDED},
+            subaccount=subaccount,
+        )
+        self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [0.2, 1.0])
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [28.0, 140.0])
+
+    def test_no_chosen_payout_scale_keeps_the_network_multiplier_in_the_payout(self):
+        subaccount = SimpleNamespace(standard_account_size=100_000.0, pro_account_size=500_000.0, payout_scale=None)
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 1: MinerBucket.PRO_CHALLENGE_FROM_STANDARD},
+            subaccount=subaccount,
+        )
+        scale = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * 0.2
+        self.assertAlmostEqual(result['payout'], 280.0 * scale)
 
     def test_a_breach_after_a_mid_week_promotion_still_pays_the_pre_promotion_stretch(self):
         """A soft breach is a pro rule, so it cannot reach back past the promotion that imposed it.

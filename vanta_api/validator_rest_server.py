@@ -20,7 +20,7 @@ from bittensor_wallet import Keypair
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from entity_management.entity_utils import create_subaccount_dashboard
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error, subaccount_creation_error
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.metagraph_client import MetagraphClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -2624,7 +2624,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
           }'
 
         intraday_drawdown_threshold is optional: one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
-        applied in every bucket. Omitted keeps each bucket's default.
+        applied in every bucket but PRO_FUNDED. Omitted keeps each bucket's default.
+
+        Optional bucket options (see EntityManager.create_subaccount_ex):
+          bucket: one of ValiConfig.SUBACCOUNT_CREATION_BUCKETS (default SUBACCOUNT_CHALLENGE)
+          pro_account_size: required for pro buckets
+          eod_hwm_threshold: one of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, PRO_CHALLENGE_FROM_STANDARD only
+          payout_scale: payout multiplier for PRO_CHALLENGE_FROM_STANDARD
+        Hyperliquid subaccounts only accept bucket, limited to ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS.
 
         Example (HL-linked):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
@@ -2687,6 +2694,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Intraday drawdown threshold, one of SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES, for standard and HL
             # subaccounts alike. Omitted keeps each bucket's default. Unsigned, like drawdown_criteria.
             intraday_drawdown_threshold = data.get('intraday_drawdown_threshold')
+            bucket = data.get('bucket')
+            pro_account_size = data.get('pro_account_size')
+            eod_hwm_threshold = data.get('eod_hwm_threshold')
+            payout_scale = data.get('payout_scale')
             # Optional idempotency key. Deliberately NOT part of the signed
             # payload (sig_dict below is frozen) so that a new gateway signing
             # the legacy field set still verifies against an older validator,
@@ -2717,6 +2728,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': 'account_size must be a positive number'}), 400
             except (TypeError, ValueError):
                 return jsonify({'error': 'account_size must be a valid number'}), 400
+
+            creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
+                                                       eod_hwm_threshold, payout_scale)
+            if creation_error:
+                return jsonify({'error': creation_error}), 400
+            if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
+                          or pro_account_size is not None or eod_hwm_threshold is not None
+                          or payout_scale is not None):
+                return jsonify({'error': f'Hyperliquid subaccounts only accept bucket '
+                                         f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'}), 400
 
             # Validate asset_class is a non-empty string
             if not isinstance(asset_class, str) or not asset_class.strip():
@@ -2776,13 +2797,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
                     entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
                     payout_address=payout_address, client_ref=client_ref,
-                    intraday_drawdown_threshold=intraday_drawdown_threshold,
+                    intraday_drawdown_threshold=intraday_drawdown_threshold, bucket=bucket,
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
                     entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
                     drawdown_criteria=drawdown_criteria, leverage_tier=leverage_tier,
                     client_ref=client_ref, intraday_drawdown_threshold=intraday_drawdown_threshold,
+                    bucket=bucket, pro_account_size=pro_account_size, eod_hwm_threshold=eod_hwm_threshold,
+                    payout_scale=payout_scale,
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
