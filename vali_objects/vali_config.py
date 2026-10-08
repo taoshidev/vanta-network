@@ -565,7 +565,7 @@ class ValiConfig:
                                    "PRO_CHALLENGE_FROM_STANDARD", "PRO_CHALLENGE_DIRECT"]
     # Hyperliquid subaccounts have no pro track
     HL_SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED"]
-    # Intraday drawdown threshold forced on subaccounts created directly into PRO_CHALLENGE_FROM_STANDARD
+    # The only intraday drawdown threshold for a subaccount created directly into PRO_CHALLENGE_FROM_STANDARD
     PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
 
     # Pro account (entity subaccount) rules. The promotion criteria and transition grace period can

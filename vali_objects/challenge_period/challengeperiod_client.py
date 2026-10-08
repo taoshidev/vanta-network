@@ -104,11 +104,10 @@ class ChallengePeriodClient(RPCClientBase):
         drawdown_criteria: DrawdownCriteria = DrawdownCriteria.TRAILING,
         intraday_drawdown_threshold: float | None = None,
         eod_hwm_threshold: float | None = None,
-        payout_scale: float | None = None,
     ) -> bool:
         """Set or update a miner's bucket information."""
         return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms, drawdown_criteria, intraday_drawdown_threshold,
-                                                 eod_hwm_threshold, payout_scale)
+                                                 eod_hwm_threshold)
 
     def can_admin_set_bucket(self, hotkey: str, bucket: MinerBucket) -> Tuple[bool, str]:
         """Report whether admin_set_bucket would reject this move, without changing anything."""

@@ -1045,11 +1045,11 @@ class EntityMinerRestServer(MinerRestServer):
             "asset_class": "crypto" | "forex" | "equities",  // Required
             "account_size": float,                           // Required, must be > 0
             "leverage_tier": 1 | 2 | 3,                      // Optional, default 1 (standard leverage tier)
-            "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults
+            "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults; only 0.03 for PRO_CHALLENGE_FROM_STANDARD
             "bucket": str,                                   // Optional, SUBACCOUNT_CREATION_BUCKETS; default SUBACCOUNT_CHALLENGE
             "pro_account_size": float,                       // Required for pro buckets only
             "eod_hwm_threshold": 0.05 | 0.08,                // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; PRO_CHALLENGE_FROM_STANDARD only
-            "payout_scale": float,                           // Optional, payout multiplier for PRO_CHALLENGE_FROM_STANDARD
+            "payout_scale": float,                           // Optional, payout multiplier; PRO_CHALLENGE_FROM_STANDARD only
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -1151,10 +1151,6 @@ class EntityMinerRestServer(MinerRestServer):
             pro_account_size = request_data.get("pro_account_size")
             eod_hwm_threshold = request_data.get("eod_hwm_threshold")
             payout_scale = request_data.get("payout_scale")
-            creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
-                                                       eod_hwm_threshold, payout_scale)
-            if creation_error:
-                return jsonify({'status': 'error', 'message': creation_error}), 400
             if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
                           or pro_account_size is not None or eod_hwm_threshold is not None
                           or payout_scale is not None):
@@ -1163,6 +1159,10 @@ class EntityMinerRestServer(MinerRestServer):
                     'message': f'Hyperliquid subaccounts only accept bucket '
                                f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'
                 }), 400
+            creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
+                                                       eod_hwm_threshold, payout_scale, intraday_drawdown_threshold)
+            if creation_error:
+                return jsonify({'status': 'error', 'message': creation_error}), 400
 
             if is_hl:
                 if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
@@ -1237,6 +1237,7 @@ class EntityMinerRestServer(MinerRestServer):
             # Unsigned, like drawdown_criteria, so the signature stays byte-identical to the legacy field set
             if intraday_drawdown_threshold is not None:
                 payload["intraday_drawdown_threshold"] = intraday_drawdown_threshold
+            # Unsigned, like intraday_drawdown_threshold
             for name, value in (("bucket", bucket), ("pro_account_size", pro_account_size),
                                 ("eod_hwm_threshold", eod_hwm_threshold), ("payout_scale", payout_scale)):
                 if value is not None:

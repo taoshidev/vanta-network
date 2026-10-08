@@ -2624,13 +2624,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
           }'
 
         intraday_drawdown_threshold is optional: one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
-        applied in every bucket but PRO_FUNDED. Omitted keeps each bucket's default.
+        applied in every bucket but PRO_FUNDED. Omitted keeps each bucket's default. PRO_CHALLENGE_FROM_STANDARD
+        only accepts ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD.
 
-        Optional bucket options (see EntityManager.create_subaccount_ex):
+        Optional bucket options (see EntityManager.create_subaccount_ex), unsigned like intraday_drawdown_threshold:
           bucket: one of ValiConfig.SUBACCOUNT_CREATION_BUCKETS (default SUBACCOUNT_CHALLENGE)
           pro_account_size: required for pro buckets
           eod_hwm_threshold: one of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, PRO_CHALLENGE_FROM_STANDARD only
-          payout_scale: payout multiplier for PRO_CHALLENGE_FROM_STANDARD
+          payout_scale: payout multiplier, PRO_CHALLENGE_FROM_STANDARD only
         Hyperliquid subaccounts only accept bucket, limited to ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS.
 
         Example (HL-linked):
@@ -2729,15 +2730,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             except (TypeError, ValueError):
                 return jsonify({'error': 'account_size must be a valid number'}), 400
 
-            creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
-                                                       eod_hwm_threshold, payout_scale)
-            if creation_error:
-                return jsonify({'error': creation_error}), 400
             if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
                           or pro_account_size is not None or eod_hwm_threshold is not None
                           or payout_scale is not None):
                 return jsonify({'error': f'Hyperliquid subaccounts only accept bucket '
                                          f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'}), 400
+            creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
+                                                       eod_hwm_threshold, payout_scale, intraday_drawdown_threshold)
+            if creation_error:
+                return jsonify({'error': creation_error}), 400
 
             # Validate asset_class is a non-empty string
             if not isinstance(asset_class, str) or not asset_class.strip():

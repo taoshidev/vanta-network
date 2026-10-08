@@ -274,11 +274,14 @@ class TestEntityManagement(TestBase):
         self.assertEqual(subaccount_info['account_size'], 100_000)
 
     def test_create_subaccount_directly_into_pro_challenge_from_standard(self):
-        """Starts on the pro account, with the intraday limit forced, the chosen EOD limit, and a 1x payout scale."""
+        """Starts on the pro account, with the fixed intraday limit, the chosen EOD limit, and a 1x payout scale."""
         success, subaccount_info, message = self._create(
             bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000,
-            eod_hwm_threshold=0.05, intraday_drawdown_threshold=0.05)
+            eod_hwm_threshold=0.05)
         self.assertTrue(success, message)
+        self.assertGreater(subaccount_info['pro_fee_theta'], 0)
+        self.assertIn(f"{subaccount_info['reg_fee_theta'] + subaccount_info['pro_fee_theta']} theta", message)
+        self.assertIn("pro fee", message)
         hotkey = subaccount_info['synthetic_hotkey']
 
         self.assertEqual(self.challenge_period_client.get_miner_bucket(hotkey), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
@@ -365,6 +368,12 @@ class TestEntityManagement(TestBase):
             ({"bucket": from_standard, "pro_account_size": 500_000,
               "payout_scale": ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE + 0.1}, "payout_scale"),
             ({"bucket": from_standard, "pro_account_size": 500_000, "payout_scale": True}, "payout_scale"),
+            ({"payout_scale": 1.0}, "payout_scale"),
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "payout_scale": 1.0}, "payout_scale"),
+            ({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value, "pro_account_size": 500_000,
+              "payout_scale": 1.0}, "payout_scale"),
+            ({"bucket": from_standard, "pro_account_size": 500_000, "intraday_drawdown_threshold": 0.05},
+             "intraday_drawdown_threshold"),
         )
         for kwargs, fragment in cases:
             with self.subTest(**kwargs):

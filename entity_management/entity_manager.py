@@ -524,12 +524,12 @@ class EntityManager(ValidatorBroadcastBase):
             leverage_tier: Standard leverage tier 1 to 3. Defaults to
                    ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
             intraday_drawdown_threshold: One of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES (e.g. 0.03).
-                   None keeps each bucket's default. Forced to
-                   ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD for PRO_CHALLENGE_FROM_STANDARD.
+                   None keeps each bucket's default. PRO_CHALLENGE_FROM_STANDARD only accepts (and defaults to)
+                   ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD.
             bucket: MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS. None means SUBACCOUNT_CHALLENGE.
             pro_account_size: Required for pro buckets, rejected otherwise.
             eod_hwm_threshold: One of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, PRO_CHALLENGE_FROM_STANDARD only.
-            payout_scale: Payout multiplier for PRO_CHALLENGE_FROM_STANDARD. Defaults to
+            payout_scale: Payout multiplier, PRO_CHALLENGE_FROM_STANDARD only. Defaults to
                    ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER when created into that bucket.
 
         Returns:
@@ -540,7 +540,7 @@ class EntityManager(ValidatorBroadcastBase):
         if isinstance(bucket, MinerBucket):
             bucket = bucket.value
         creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
-                                                   eod_hwm_threshold, payout_scale)
+                                                   eod_hwm_threshold, payout_scale, intraday_drawdown_threshold)
         if creation_error:
             return False, None, creation_error, False
         initial_bucket = MinerBucket(bucket) if bucket else MinerBucket.SUBACCOUNT_CHALLENGE
@@ -562,7 +562,7 @@ class EntityManager(ValidatorBroadcastBase):
                 ), False
 
         if initial_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
-            # Fixed for now; drop this override to honor the caller's choice
+            # Only one value is accepted for now (see subaccount_creation_error); omitted means that value
             intraday_drawdown_threshold = ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD
             if payout_scale is None:
                 payout_scale = ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER
@@ -763,7 +763,6 @@ class EntityManager(ValidatorBroadcastBase):
                     drawdown_criteria=DrawdownCriteria(drawdown_criteria),
                     intraday_drawdown_threshold=intraday_drawdown_threshold,
                     eod_hwm_threshold=eod_hwm_threshold,
-                    payout_scale=payout_scale,
                 )
             except Exception as e:
                 logger.error(
@@ -785,8 +784,13 @@ class EntityManager(ValidatorBroadcastBase):
                 f"{synthetic_hotkey}, account_size=${subaccount_info.account_size}, asset_class={subaccount_info.asset_class}, "
                 f"bucket={initial_bucket.value}, status=active ({total_ms} ms)"
             )
-            remaining_theta = (current_balance - required_theta) if current_balance else 0.0
-            return True, subaccount_info, f"Slashing {required_theta} theta, {remaining_theta:.2f} theta remaining", False
+            charged_theta = required_theta + subaccount_info.pro_fee_theta
+            remaining_theta = (current_balance - charged_theta) if current_balance else 0.0
+            fee_note = (f" ({required_theta} registration + {subaccount_info.pro_fee_theta:.4f} pro fee)"
+                        if subaccount_info.pro_fee_theta else "")
+            return True, subaccount_info, (
+                f"Slashing {charged_theta} theta{fee_note}, {remaining_theta:.2f} theta remaining"
+            ), False
 
     def _get_hl_max_addresses(self) -> int:
         """
@@ -3147,7 +3151,6 @@ class EntityManager(ValidatorBroadcastBase):
                         drawdown_criteria=DrawdownCriteria(subaccount_info.drawdown_criteria),
                         intraday_drawdown_threshold=subaccount_info.intraday_drawdown_threshold,
                         eod_hwm_threshold=subaccount_info.eod_hwm_threshold,
-                        payout_scale=subaccount_info.payout_scale,
                     )
                 except Exception as e:
                     logger.error(
