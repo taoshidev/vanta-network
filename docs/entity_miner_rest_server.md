@@ -293,22 +293,23 @@ Changes a standard subaccount's `leverage_tier` (see [entity_miner.md](entity_mi
 **Notes:**
 - Raising the tier is allowed at any time. Lowering it requires every position on that subaccount to be closed first. A subaccount created before tiers existed trades a grandfathered floor (each limit is the higher of its old limit and Base, reported as a negative `tier`); moving it to any tier also requires a flat book.
 
-### Promote Subaccount to the Pro Track
+### Promote Subaccount
 
 `POST /api/promote`
 
-Moves one of this entity's subaccounts one step up the pro account track. The server signs the
+Moves one of this entity's subaccounts one step: up the pro account track, or from the standard
+challenge to standard funded. The server signs the
 request with the entity coldkey and forwards it to the validator's
 `POST /entity/subaccount/promote`, which verifies the signature, that the coldkey owns the entity
 hotkey on chain, and that the subaccount belongs to that hotkey. See
 [entity_miner.md](entity_miner.md#account-types) for what each bucket means.
 
-The validator picks the target bucket from the subaccount's current one, and only these three hops
-exist (`MinerBucket.promotion_target`):
+Only these hops exist (`MinerBucket.promotion_targets`); `target_bucket` picks one, and omitting it
+takes the first:
 
 | From | To |
 |------|----|
-| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` |
+| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` (default) or `SUBACCOUNT_FUNDED` |
 | `SUBACCOUNT_FUNDED` | `PRO_CHALLENGE_TRANSITION` |
 | `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
 
@@ -318,12 +319,16 @@ exist (`MinerBucket.promotion_target`):
 ```json
 {
   "synthetic_hotkey": "5GhDr3xy...abc_0",
-  "pro_account_size": 500000
+  "pro_account_size": 500000,
+  "target_bucket": "PRO_CHALLENGE_DIRECT"
 }
 ```
 
 **Parameters:**
 - `synthetic_hotkey` (string, required): The subaccount to promote. Must belong to this entity.
+- `target_bucket` (string, optional): The bucket to promote into, from the table above. Promoting
+  to `SUBACCOUNT_FUNDED` keeps the standard size and the subaccount's chosen
+  `intraday_drawdown_threshold`, and closes positions, cancels limit orders and restarts the ledgers.
 - `pro_account_size` (number, conditional): USD size of the pro account. Must be finite and
   positive, at most `$1,000,000` (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`), and not below the
   subaccount's own standard account size. **Required** when entering the pro track

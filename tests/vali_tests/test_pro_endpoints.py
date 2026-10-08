@@ -192,6 +192,28 @@ class TestValidatorPromoteEndpoint(unittest.TestCase):
         self.assertEqual(self._post(body)[0], 401)
         self._promote().assert_not_called()
 
+    # ==================== the target bucket ====================
+
+    def test_the_target_bucket_is_forwarded(self):
+        status, data = self._post(self._body(signed={"target_bucket": "SUBACCOUNT_FUNDED"}))
+        self.assertEqual(status, 200, data)
+        self.assertEqual(self._promote().call_args.kwargs, {"target_bucket": MinerBucket.SUBACCOUNT_FUNDED})
+
+    def test_an_unknown_target_bucket_is_400(self):
+        for target in ("NOT_A_BUCKET", 123, ["SUBACCOUNT_FUNDED"]):
+            with self.subTest(target_bucket=target):
+                status, data = self._post(self._body(signed={"target_bucket": target}))
+                self.assertEqual(status, 400, data)
+                self.assertIn("target_bucket", data['error'])
+        self._promote().assert_not_called()
+
+    def test_the_target_bucket_is_part_of_what_is_signed(self):
+        self.assertEqual(self._post(self._body(target_bucket="SUBACCOUNT_FUNDED"))[0], 401)
+        body = self._body(signed={"target_bucket": "SUBACCOUNT_FUNDED"})
+        body["target_bucket"] = "PRO_CHALLENGE_DIRECT"
+        self.assertEqual(self._post(body)[0], 401)
+        self._promote().assert_not_called()
+
     # ==================== auth, ownership and validation ====================
 
     def test_manager_rejection_is_a_400(self):
@@ -380,6 +402,22 @@ class TestGatewayPromoteEndpoint(unittest.TestCase):
         self.assertEqual(set(payload), set(PROMOTE_SIGNED_FIELDS) | {"signature", "version"})
         self._assert_signed(payload, PROMOTE_SIGNED_FIELDS)
 
+    def test_the_target_bucket_is_signed_and_sent(self):
+        _, _, payload = self._forward({"synthetic_hotkey": self.synthetic, "target_bucket": "SUBACCOUNT_FUNDED"})
+        self.assertEqual(payload['target_bucket'], "SUBACCOUNT_FUNDED")
+        self.assertEqual(set(payload), set(PROMOTE_SIGNED_FIELDS) | {"target_bucket", "signature", "version"})
+        self._assert_signed(payload, PROMOTE_SIGNED_FIELDS + ("target_bucket",))
+
+    def test_a_target_bucket_off_every_promotion_path_is_refused_before_signing(self):
+        self.gw._coldkey = MagicMock()
+        for target in ("PRO_FUNDED", "NOT_A_BUCKET", 123):
+            with self.subTest(target_bucket=target), patch("requests.post") as post:
+                status, data = self._post({"synthetic_hotkey": self.synthetic, "target_bucket": target})
+                self.assertEqual(status, 400, data)
+                self.assertIn("target_bucket", data['message'])
+                post.assert_not_called()
+        self.gw._coldkey.sign.assert_not_called()
+
     def test_an_invalid_size_is_refused_before_signing(self):
         self.gw._coldkey = MagicMock()
         for size, fragment in INVALID_SIZES:
@@ -407,7 +445,8 @@ class TestGatewayPromoteEndpoint(unittest.TestCase):
     def test_gateway_payload_is_accepted_by_the_validator_endpoint(self):
         """The contract between the two halves, with and without a size, replay included."""
         for body in ({"synthetic_hotkey": self.synthetic, "pro_account_size": GRANTED_SIZE},
-                     {"synthetic_hotkey": self.synthetic}):
+                     {"synthetic_hotkey": self.synthetic},
+                     {"synthetic_hotkey": self.synthetic, "target_bucket": "SUBACCOUNT_FUNDED"}):
             with self.subTest(body=body):
                 payload = self._forward(body)[2]
                 server, client = _validator_promote_client()
@@ -417,6 +456,9 @@ class TestGatewayPromoteEndpoint(unittest.TestCase):
                 promote.assert_called_once()
                 self.assertEqual(promote.call_args.args[0], self.synthetic)
                 self.assertEqual(promote.call_args.args[2], body.get("pro_account_size"))
+                expected_target = body.get("target_bucket")
+                self.assertEqual(promote.call_args.kwargs.get("target_bucket"),
+                                 MinerBucket(expected_target) if expected_target else None)
                 # The same bytes a second time are a replay
                 self.assertEqual(client.post("/entity/subaccount/promote", json=payload).status_code, 401)
 

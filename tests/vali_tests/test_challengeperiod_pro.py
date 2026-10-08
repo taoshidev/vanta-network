@@ -1333,6 +1333,51 @@ def test_unknown_hotkey_is_rejected(hop_manager):
     hop_manager._entity_client.apply_bucket_account_size.assert_not_called()
 
 
+def test_the_standard_challenge_can_promote_to_standard_funded(hop_manager):
+    _in_bucket(hop_manager, MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    success, message = hop_manager.promote_subaccount(
+        HOTKEY, NOW_MS, target_bucket=MinerBucket.SUBACCOUNT_FUNDED)
+
+    assert success, message
+    assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
+    hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
+        HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, None)
+    hop_manager._position_client.close_all_positions.assert_called_once()
+    hop_manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_called_once_with([HOTKEY])
+    hop_manager._miner_account_client.reset_account.assert_called_once_with(
+        HOTKEY, MinerBucket.SUBACCOUNT_FUNDED)
+
+
+def test_promoting_to_standard_funded_keeps_the_chosen_intraday_threshold(hop_manager):
+    hop_manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE, NOW_MS,
+                                 drawdown_criteria=DrawdownCriteria.STATIC, intraday_drawdown_threshold=0.03)
+
+    assert hop_manager.promote_subaccount(HOTKEY, NOW_MS, target_bucket=MinerBucket.SUBACCOUNT_FUNDED)[0]
+
+    state = hop_manager.miner_states[HOTKEY]
+    assert state.current_bucket == MinerBucket.SUBACCOUNT_FUNDED
+    assert state.intraday_drawdown_threshold_override == 0.03
+    assert state.intraday_drawdown_threshold == 0.03
+
+
+@pytest.mark.parametrize("source,target", [
+    (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.PRO_FUNDED),
+    (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_FUNDED),
+    (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.SUBACCOUNT_FUNDED),
+])
+def test_a_target_off_the_bucket_promotion_path_is_refused(hop_manager, source, target):
+    _in_bucket(hop_manager, source)
+
+    success, message = hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE, target_bucket=target)
+
+    assert not success
+    assert target.value in message
+    assert hop_manager.miner_states[HOTKEY].current_bucket == source
+    hop_manager._entity_client.apply_bucket_account_size.assert_not_called()
+    hop_manager._position_client.close_all_positions.assert_not_called()
+
+
 # ==================== sizing through a real EntityManager ====================
 
 def _with_real_entity_manager(manager, bucket=MinerBucket.SUBACCOUNT_FUNDED,
@@ -1386,6 +1431,19 @@ def test_the_direct_hop_trades_the_size_immediately_and_widens_the_asset_class(h
     assert info.pro_account_size == 450_000
     assert info.account_size == 450_000
     assert info.asset_class == "all_markets"
+
+
+def test_the_standard_funded_hop_keeps_the_standard_size(hop_manager):
+    entity_manager, hotkey = _with_real_entity_manager(
+        hop_manager, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+
+    assert hop_manager.promote_subaccount(hotkey, NOW_MS, target_bucket=MinerBucket.SUBACCOUNT_FUNDED)[0]
+
+    assert hop_manager.miner_states[hotkey].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
+    info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
+    assert info.account_size == STANDARD_SIZE
+    assert info.pro_account_size is None
+    assert info.asset_class == "forex"
 
 
 def test_entering_the_track_without_a_size_is_rejected(hop_manager):

@@ -17,7 +17,7 @@ Entity-specific endpoints:
     GET  /api/hl/<hl_address>/stream     - SSE real-time stream
     POST /api/create-subaccount          - Create standard subaccount
     POST /api/create-hl-subaccount       - Create HL-linked subaccount
-    POST /api/promote                    - Promote a subaccount a step up the pro track
+    POST /api/promote                    - Promote a subaccount a step (pro track or standard funded)
     GET  /api/health                     - Health check (extended with WS status)
 """
 import asyncio
@@ -37,6 +37,7 @@ from flask import jsonify, request, Response
 
 from miner_config import MinerConfig
 from entity_management.entity_utils import pro_account_size_error
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vanta_api.miner_rest_server import MinerRestServer
@@ -51,6 +52,8 @@ try:
     from bittensor_wallet import Wallet
 except ImportError:
     Wallet = None
+
+PROMOTION_TARGET_VALUES = frozenset(t.value for b in MinerBucket for t in b.promotion_targets)
 
 
 # ==================== Data Classes ====================
@@ -1411,21 +1414,23 @@ class EntityMinerRestServer(MinerRestServer):
 
     def promote_endpoint(self):
         """
-        POST /api/promote - Promote one of this entity's subaccounts a step up the pro track.
+        POST /api/promote - Promote one of this entity's subaccounts one step.
 
         Request body (JSON):
         {
             "synthetic_hotkey": "<entity_hotkey>_<id>",  // Required
-            "pro_account_size": 500000                   // Required entering the pro track, else optional
+            "pro_account_size": 500000,                  // Required entering the pro track, else optional
+            "target_bucket": "SUBACCOUNT_FUNDED"         // Optional, defaults to the first hop below
         }
 
         The gateway signs the request with the entity coldkey and forwards it to the validator's
         POST /entity/subaccount/promote, which verifies the signature, that the coldkey owns the
         entity hotkey on chain, and that the subaccount belongs to that hotkey. The validator picks
         the target bucket from the subaccount's current one and allows only these hops:
-          SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT
+          SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT | SUBACCOUNT_FUNDED
           SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
           PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
+        The subaccount's chosen intraday_drawdown_threshold carries into the target bucket.
 
         pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is not
         below the subaccount's own standard account size. Send one the first time a subaccount enters
@@ -1433,9 +1438,9 @@ class EntityMinerRestServer(MinerRestServer):
         entity pays the promotion fee out of its collateral once the pro account goes live, and a pro
         size equal to the standard size is charged nothing at the registration rate.
 
-        Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
-        PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
-        restarts the ledgers, so neither can be undone. Promoting into PRO_CHALLENGE_TRANSITION keeps
+        Promoting into PRO_CHALLENGE_DIRECT, PRO_CHALLENGE_FROM_STANDARD or SUBACCOUNT_FUNDED closes
+        every open position, cancels every pending limit order and restarts the ledgers, so none can
+        be undone. Promoting into PRO_CHALLENGE_TRANSITION keeps
         trading the standard account and wipes nothing: positions, limit orders and ledgers all carry
         on, and only the resting orders that could open or increase a position are cancelled.
         """
@@ -1462,6 +1467,11 @@ class EntityMinerRestServer(MinerRestServer):
             if size_error:
                 return jsonify({'status': 'error', 'message': size_error}), 400
 
+        target_bucket = request_data.get("target_bucket")
+        if target_bucket is not None and target_bucket not in PROMOTION_TARGET_VALUES:
+            return jsonify({'status': 'error',
+                            'message': f'target_bucket must be one of {sorted(PROMOTION_TARGET_VALUES)}'}), 400
+
         if not self._coldkey or not self._hotkey or not self._validator_url:
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500
 
@@ -1477,6 +1487,8 @@ class EntityMinerRestServer(MinerRestServer):
             }
             if pro_account_size is not None:
                 signed_fields["pro_account_size"] = pro_account_size
+            if target_bucket is not None:
+                signed_fields["target_bucket"] = target_bucket
             message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
         except Exception as e:

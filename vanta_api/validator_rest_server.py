@@ -2987,12 +2987,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
     def promote_subaccount(self):
         """
-        Promote a subaccount one step up the pro track on the entity's own signed request.
+        Promote a subaccount one step on the entity's own signed request.
 
-        The only moves allowed are the three hops in MinerBucket.promotion_target:
-          SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT
+        The only moves allowed are the hops in MinerBucket.promotion_targets (first is the default):
+          SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT | SUBACCOUNT_FUNDED
           SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
           PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
+
+        target_bucket is optional and signed when sent; omitted takes the default hop. The chosen
+        intraday_drawdown_threshold carries into the target bucket.
 
         Requires a tier 200 API key.
         Ownership is proven via entity coldkey
@@ -3001,9 +3004,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         and never below the subaccount's own standard account size. The request fails when the entity's
         collateral cannot cover it and it is needed.
 
-        Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
-        PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
-        restarts the ledgers against the pro size, so neither is reversible. The hop into
+        Promoting into PRO_CHALLENGE_DIRECT, PRO_CHALLENGE_FROM_STANDARD or SUBACCOUNT_FUNDED closes
+        every open position, cancels every pending limit order and restarts the ledgers, so none is
+        reversible. The hop into
         PRO_CHALLENGE_TRANSITION keeps trading the standard account, so it wipes nothing: positions,
         limit orders and ledgers all carry on, and only the resting orders that could open or increase
         a position are cancelled (OrderSource.PRO_TRANSITION_CANCELLED).
@@ -3017,6 +3020,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             "entity_coldkey": "5FxY...",
             "synthetic_hotkey": "5GhDr..._0",
             "pro_account_size": 500000,
+            "target_bucket": "PRO_CHALLENGE_DIRECT",
             "nonce": "3f9c1e...",
             "timestamp": 1749234567890,
             "signature": "0x..."
@@ -3076,6 +3080,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if size_error:
                     return jsonify({'error': size_error}), 400
 
+            target_bucket_value = data.get('target_bucket')
+            target_bucket = None
+            if target_bucket_value is not None:
+                try:
+                    target_bucket = MinerBucket(target_bucket_value)
+                except (ValueError, TypeError):
+                    return jsonify({'error': f'Invalid target_bucket: {target_bucket_value}'}), 400
+
             # A synthetic hotkey carries its owner: <entity_hotkey>_<subaccount_id>. Pairing that with
             # the signature and the on-chain coldkey check below is what makes ownership cryptographic.
             parsed_entity_hotkey, _ = parse_synthetic_hotkey(synthetic_hotkey)
@@ -3096,6 +3108,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             }
             if pro_account_size is not None:
                 signed_fields["pro_account_size"] = pro_account_size
+            if target_bucket_value is not None:
+                signed_fields["target_bucket"] = target_bucket_value
 
             keypair = Keypair(ss58_address=entity_coldkey)
             signed_message = json.dumps(signed_fields, sort_keys=True).encode('utf-8')
@@ -3121,8 +3135,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Gates the hop, sizes the account, charges the promotion fee, closes positions, cancels
             # limit orders, restarts the ledgers, and moves the bucket - rolling the sizing back if
             # any of it fails.
+            promote_kwargs = {"target_bucket": target_bucket} if target_bucket is not None else {}
             success, message = self._challenge_period_client.promote_subaccount(
-                synthetic_hotkey, TimeUtil.now_in_millis(), pro_account_size
+                synthetic_hotkey, TimeUtil.now_in_millis(), pro_account_size, **promote_kwargs
             )
             if not success:
                 return jsonify({'error': message}), 400

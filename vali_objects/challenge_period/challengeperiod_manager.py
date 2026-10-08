@@ -802,18 +802,21 @@ class ChallengePeriodManager(CacheController):
         return state_changed
 
     def promote_subaccount(
-        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
+        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None,
+        target_bucket: MinerBucket | None = None,
     ) -> tuple[bool, str]:
-        """Promote a subaccount one step up the pro track on the entity miner's request.
+        """Promote a subaccount one step on the entity miner's request.
 
-        The only moves allowed are the three hops in MinerBucket.promotion_target; a subaccount in
-        any other bucket is rejected. pro_account_size is the size the entity asked for: entering the
-        pro track needs one, and None keeps the size already recorded (see
-        EntityManager.apply_bucket_account_size, which rejects a subaccount that has neither).
+        The only moves allowed are the hops in MinerBucket.promotion_targets; target_bucket picks
+        among them and None takes the first. The chosen intraday drawdown threshold lives on the
+        MinerBucketState, so it carries into every target. pro_account_size is the size the entity
+        asked for: entering the pro track needs one, and None keeps the size already recorded (see
+        EntityManager.apply_bucket_account_size, which rejects a subaccount that has neither). A
+        standard target ignores it.
 
-        Only a target with switches_account wipes trading state, which is the two hops landing on a
-        pro account (PRO_CHALLENGE_DIRECT and PRO_CHALLENGE_FROM_STANDARD): positions closed, limit
-        orders cancelled, ledgers restarted. PRO_CHALLENGE_TRANSITION is a wind-down week on the
+        Only a target with switches_account wipes trading state (PRO_CHALLENGE_DIRECT,
+        PRO_CHALLENGE_FROM_STANDARD and SUBACCOUNT_FUNDED): positions closed, limit orders
+        cancelled, ledgers restarted. PRO_CHALLENGE_TRANSITION is a wind-down week on the
         standard account, so the hop into it keeps the positions, limit orders and ledgers as they
         are and only sweeps the entry orders (see admin_set_bucket).
         """
@@ -822,9 +825,14 @@ class ChallengePeriodManager(CacheController):
             return False, f"{hotkey} not found in challenge period manager"
 
         current_bucket = state.current_bucket
-        target_bucket = current_bucket.promotion_target
-        if target_bucket is None:
+        allowed_targets = current_bucket.promotion_targets
+        if not allowed_targets:
             return False, f"{hotkey} cannot be promoted out of {current_bucket.value}"
+        if target_bucket is None:
+            target_bucket = allowed_targets[0]
+        elif target_bucket not in allowed_targets:
+            return False, (f"{hotkey} cannot be promoted from {current_bucket.value} to {target_bucket.value}; "
+                           f"allowed: {', '.join(b.value for b in allowed_targets)}")
 
         logger.info(f"[CHALLENGE] promotion to {target_bucket.value} requested "
                     f"(pro_account_size={pro_account_size}): {state}")
