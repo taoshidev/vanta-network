@@ -207,6 +207,13 @@ class TestValidatorPromoteEndpoint(unittest.TestCase):
                 self.assertIn("target_bucket", data['error'])
         self._promote().assert_not_called()
 
+    def test_a_standard_target_skips_the_size_check(self):
+        for size, _ in INVALID_SIZES:
+            with self.subTest(pro_account_size=size):
+                status, data = self._post(self._body(
+                    signed={"target_bucket": "SUBACCOUNT_FUNDED", "pro_account_size": size}))
+                self.assertEqual(status, 200, data)
+
     def test_the_target_bucket_is_part_of_what_is_signed(self):
         self.assertEqual(self._post(self._body(target_bucket="SUBACCOUNT_FUNDED"))[0], 401)
         body = self._body(signed={"target_bucket": "SUBACCOUNT_FUNDED"})
@@ -417,6 +424,14 @@ class TestGatewayPromoteEndpoint(unittest.TestCase):
                 self.assertIn("target_bucket", data['message'])
                 post.assert_not_called()
         self.gw._coldkey.sign.assert_not_called()
+
+    def test_a_standard_target_skips_the_size_check(self):
+        for size, _ in INVALID_SIZES:
+            with self.subTest(pro_account_size=size):
+                status, data, payload = self._forward({"synthetic_hotkey": self.synthetic, "pro_account_size": size,
+                                                       "target_bucket": "SUBACCOUNT_FUNDED"})
+                self.assertEqual(status, 200, data)
+                self.assertEqual(payload['target_bucket'], "SUBACCOUNT_FUNDED")
 
     def test_an_invalid_size_is_refused_before_signing(self):
         self.gw._coldkey = MagicMock()

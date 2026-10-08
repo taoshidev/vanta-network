@@ -868,13 +868,13 @@ Response:
 Promotes one of this entity's subaccounts a step up the pro track, or to standard funded. The gateway signs the request with
 the entity coldkey and forwards it to the validator's `POST /entity/subaccount/promote`, which proves
 the entity owns the subaccount before anything moves. The target bucket comes from the subaccount's
-current one, and only these hops exist: `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT` (default) or
+current one, and only these hops exist: `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT` or
 `SUBACCOUNT_FUNDED`, `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, and `PRO_CHALLENGE_TRANSITION` →
-`PRO_CHALLENGE_FROM_STANDARD`. Send `target_bucket` to pick `SUBACCOUNT_FUNDED`; the subaccount's
+`PRO_CHALLENGE_FROM_STANDARD`. `target_bucket` is required out of `SUBACCOUNT_CHALLENGE` and optional elsewhere. On the hop to `SUBACCOUNT_FUNDED` the subaccount's
 chosen `intraday_drawdown_threshold` carries over, and positions, limit orders and ledgers are reset.
 
-`pro_account_size` is required entering the pro track and optional on the hop within it (omitted
-keeps the recorded size) — see [Pro account size](#pro-account-size).
+`pro_account_size` is required entering the pro track, optional on the hop within it (omitted
+keeps the recorded size), and ignored on the hop to `SUBACCOUNT_FUNDED` — see [Pro account size](#pro-account-size).
 
 Only the two hops onto a pro account wipe trading state: promoting into `PRO_CHALLENGE_DIRECT` or
 `PRO_CHALLENGE_FROM_STANDARD` force closes every open position, cancels every pending limit order and

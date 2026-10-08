@@ -1420,7 +1420,7 @@ class EntityMinerRestServer(MinerRestServer):
         {
             "synthetic_hotkey": "<entity_hotkey>_<id>",  // Required
             "pro_account_size": 500000,                  // Required entering the pro track, else optional
-            "target_bucket": "SUBACCOUNT_FUNDED"         // Optional, defaults to the first hop below
+            "target_bucket": "SUBACCOUNT_FUNDED"         // Required out of SUBACCOUNT_CHALLENGE, else optional
         }
 
         The gateway signs the request with the entity coldkey and forwards it to the validator's
@@ -1430,7 +1430,8 @@ class EntityMinerRestServer(MinerRestServer):
           SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT | SUBACCOUNT_FUNDED
           SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
           PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
-        The subaccount's chosen intraday_drawdown_threshold carries into the target bucket.
+        The subaccount's chosen intraday_drawdown_threshold carries into the target bucket, and a
+        standard target ignores pro_account_size without checking it.
 
         pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is not
         below the subaccount's own standard account size. Send one the first time a subaccount enters
@@ -1461,16 +1462,17 @@ class EntityMinerRestServer(MinerRestServer):
         # Checked here as well as on the validator so a bad size never costs a signature or a nonce.
         # The gateway cannot see the subaccount, so only the shape and the cap are checked here; the
         # validator's entity_manager enforces the floor at the standard account size.
-        pro_account_size = request_data.get("pro_account_size")
-        if pro_account_size is not None:
-            size_error = pro_account_size_error(pro_account_size)
-            if size_error:
-                return jsonify({'status': 'error', 'message': size_error}), 400
-
         target_bucket = request_data.get("target_bucket")
         if target_bucket is not None and target_bucket not in PROMOTION_TARGET_VALUES:
             return jsonify({'status': 'error',
                             'message': f'target_bucket must be one of {sorted(PROMOTION_TARGET_VALUES)}'}), 400
+
+        # A standard target ignores the size, so it is not checked
+        pro_account_size = request_data.get("pro_account_size")
+        if pro_account_size is not None and (target_bucket is None or MinerBucket(target_bucket).is_pro_track):
+            size_error = pro_account_size_error(pro_account_size)
+            if size_error:
+                return jsonify({'status': 'error', 'message': size_error}), 400
 
         if not self._coldkey or not self._hotkey or not self._validator_url:
             return jsonify({'status': 'error', 'message': 'Wallet not configured'}), 500

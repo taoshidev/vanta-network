@@ -1253,12 +1253,12 @@ Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [ent
 Move one of an entity's subaccounts a step up the pro account track, or from the standard challenge to
 standard funded, on the entity's own request. This is the only way onto the pro track — see [entity_miner.md](entity_miner.md#account-types).
 
-Only these hops exist (`MinerBucket.promotion_targets`); `target_bucket` picks one, and omitting it
-takes the first:
+Only these hops exist (`MinerBucket.promotion_targets`); `target_bucket` picks one. It is required
+out of `SUBACCOUNT_CHALLENGE`, which has two targets, and may be omitted elsewhere:
 
 | From | To |
 | --- | --- |
-| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` (default) or `SUBACCOUNT_FUNDED` |
+| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` or `SUBACCOUNT_FUNDED` |
 | `SUBACCOUNT_FUNDED` | `PRO_CHALLENGE_TRANSITION` |
 | `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
 
@@ -1300,7 +1300,9 @@ subaccount it does not own.
   - **Required entering the pro track** (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`).
   - **Optional on the hop within the track** (out of `PRO_CHALLENGE_TRANSITION`): a new size replaces
     the recorded one; omitted, the recorded size is kept.
-- `target_bucket` (string, optional): The bucket to promote into, from the table above. Promoting to
+  - **Ignored, and not checked,** when `target_bucket` is `SUBACCOUNT_FUNDED`.
+- `target_bucket` (string, conditional): The bucket to promote into, from the table above. **Required**
+  out of `SUBACCOUNT_CHALLENGE` (a 400 without it); optional elsewhere. Promoting to
   `SUBACCOUNT_FUNDED` keeps the standard size and the subaccount's chosen `intraday_drawdown_threshold`,
   and closes positions, cancels limit orders and restarts the ledgers.
 - `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.

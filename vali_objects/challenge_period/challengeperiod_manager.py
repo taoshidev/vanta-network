@@ -808,11 +808,11 @@ class ChallengePeriodManager(CacheController):
         """Promote a subaccount one step on the entity miner's request.
 
         The only moves allowed are the hops in MinerBucket.promotion_targets; target_bucket picks
-        among them and None takes the first. The chosen intraday drawdown threshold lives on the
-        MinerBucketState, so it carries into every target. pro_account_size is the size the entity
-        asked for: entering the pro track needs one, and None keeps the size already recorded (see
-        EntityManager.apply_bucket_account_size, which rejects a subaccount that has neither). A
-        standard target ignores it.
+        among them, and may be omitted only when the bucket has a single target. The chosen intraday
+        drawdown threshold lives on the MinerBucketState, so it carries into every target.
+        pro_account_size is the size the entity asked for: entering the pro track needs one, and None
+        keeps the size already recorded (see EntityManager.apply_bucket_account_size, which rejects a
+        subaccount that has neither). A standard target ignores it, unchecked.
 
         Only a target with switches_account wipes trading state (PRO_CHALLENGE_DIRECT,
         PRO_CHALLENGE_FROM_STANDARD and SUBACCOUNT_FUNDED): positions closed, limit orders
@@ -828,11 +828,16 @@ class ChallengePeriodManager(CacheController):
         allowed_targets = current_bucket.promotion_targets
         if not allowed_targets:
             return False, f"{hotkey} cannot be promoted out of {current_bucket.value}"
+        allowed = ', '.join(b.value for b in allowed_targets)
         if target_bucket is None:
+            if len(allowed_targets) > 1:
+                return False, f"target_bucket is required to promote out of {current_bucket.value}; allowed: {allowed}"
             target_bucket = allowed_targets[0]
         elif target_bucket not in allowed_targets:
             return False, (f"{hotkey} cannot be promoted from {current_bucket.value} to {target_bucket.value}; "
-                           f"allowed: {', '.join(b.value for b in allowed_targets)}")
+                           f"allowed: {allowed}")
+        if not target_bucket.is_pro_track:
+            pro_account_size = None
 
         logger.info(f"[CHALLENGE] promotion to {target_bucket.value} requested "
                     f"(pro_account_size={pro_account_size}): {state}")

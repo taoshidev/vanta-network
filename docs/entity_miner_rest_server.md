@@ -304,12 +304,12 @@ request with the entity coldkey and forwards it to the validator's
 hotkey on chain, and that the subaccount belongs to that hotkey. See
 [entity_miner.md](entity_miner.md#account-types) for what each bucket means.
 
-Only these hops exist (`MinerBucket.promotion_targets`); `target_bucket` picks one, and omitting it
-takes the first:
+Only these hops exist (`MinerBucket.promotion_targets`); `target_bucket` picks one. It is required
+out of `SUBACCOUNT_CHALLENGE`, which has two targets, and may be omitted elsewhere:
 
 | From | To |
 |------|----|
-| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` (default) or `SUBACCOUNT_FUNDED` |
+| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` or `SUBACCOUNT_FUNDED` |
 | `SUBACCOUNT_FUNDED` | `PRO_CHALLENGE_TRANSITION` |
 | `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
 
@@ -326,15 +326,15 @@ takes the first:
 
 **Parameters:**
 - `synthetic_hotkey` (string, required): The subaccount to promote. Must belong to this entity.
-- `target_bucket` (string, optional): The bucket to promote into, from the table above. Promoting
-  to `SUBACCOUNT_FUNDED` keeps the standard size and the subaccount's chosen
+- `target_bucket` (string, conditional): The bucket to promote into, from the table above. **Required**
+  out of `SUBACCOUNT_CHALLENGE`; optional elsewhere. Promoting to `SUBACCOUNT_FUNDED` keeps the standard size and the subaccount's chosen
   `intraday_drawdown_threshold`, and closes positions, cancels limit orders and restarts the ledgers.
 - `pro_account_size` (number, conditional): USD size of the pro account. Must be finite and
   positive, at most `$1,000,000` (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`), and not below the
   subaccount's own standard account size. **Required** when entering the pro track
   (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`); **optional** on the hop out of
   `PRO_CHALLENGE_TRANSITION`, where sending one replaces the recorded size and omitting it keeps
-  it. The gateway rejects a malformed size with a 400 before signing, so no signature or nonce is
+  it. Ignored, and not checked, when `target_bucket` is `SUBACCOUNT_FUNDED`. The gateway rejects a malformed size with a 400 before signing, so no signature or nonce is
   spent on a bad request.
 
 **Success Response (200):** the validator response.

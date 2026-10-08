@@ -174,7 +174,7 @@ class MinerBucket(Enum):
     def promotion_targets(self) -> "tuple[MinerBucket, ...]":
         """Where a miner may promote itself with its own signed request (POST /entity/subaccount/promote).
 
-        The first target is the default when the request names none. These are the only self-service
+        A request must name its target when there is more than one. These are the only self-service
         bucket moves on the network; every other bucket returns () and cannot be promoted this way.
         """
         if self == MinerBucket.SUBACCOUNT_CHALLENGE:

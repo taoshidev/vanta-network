@@ -2989,13 +2989,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Promote a subaccount one step on the entity's own signed request.
 
-        The only moves allowed are the hops in MinerBucket.promotion_targets (first is the default):
+        The only moves allowed are the hops in MinerBucket.promotion_targets:
           SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT | SUBACCOUNT_FUNDED
           SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
           PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
 
-        target_bucket is optional and signed when sent; omitted takes the default hop. The chosen
-        intraday_drawdown_threshold carries into the target bucket.
+        target_bucket is signed when sent. It is required when the current bucket has more than one
+        target (SUBACCOUNT_CHALLENGE), and optional otherwise. pro_account_size is ignored, unchecked,
+        for a standard target. The chosen intraday_drawdown_threshold carries into the target bucket.
 
         Requires a tier 200 API key.
         Ownership is proven via entity coldkey
@@ -3074,12 +3075,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # request.get_json() parses the literals NaN and Infinity, and NaN passes a plain range
             # check, so the size must be a finite positive number within the pro cap. The floor at the
             # subaccount's standard size is checked in entity_manager, which can see the subaccount.
-            pro_account_size = data.get('pro_account_size')
-            if pro_account_size is not None:
-                size_error = pro_account_size_error(pro_account_size)
-                if size_error:
-                    return jsonify({'error': size_error}), 400
-
             target_bucket_value = data.get('target_bucket')
             target_bucket = None
             if target_bucket_value is not None:
@@ -3087,6 +3082,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     target_bucket = MinerBucket(target_bucket_value)
                 except (ValueError, TypeError):
                     return jsonify({'error': f'Invalid target_bucket: {target_bucket_value}'}), 400
+
+            # A standard target ignores the size, so it is not checked
+            pro_account_size = data.get('pro_account_size')
+            if pro_account_size is not None and (target_bucket is None or target_bucket.is_pro_track):
+                size_error = pro_account_size_error(pro_account_size)
+                if size_error:
+                    return jsonify({'error': size_error}), 400
 
             # A synthetic hotkey carries its owner: <entity_hotkey>_<subaccount_id>. Pairing that with
             # the signature and the on-chain coldkey check below is what makes ownership cryptographic.
