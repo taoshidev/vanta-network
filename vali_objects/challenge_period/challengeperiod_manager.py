@@ -13,7 +13,6 @@ from typing import Tuple
 
 from shared_objects.log import logger
 import threading
-import time
 from datetime import datetime
 
 from vali_objects.enums.order_source_enum import OrderSource
@@ -28,7 +27,7 @@ from vali_objects.utils.asset_selection.asset_selection_client import AssetSelec
 from shared_objects.cache_controller import CacheController
 from vali_objects.scoring.scoring import Scoring
 from vali_objects.utils.metrics import Metrics
-from time_util.time_util import TimeUtil
+from time_util.time_util import StageTimer, TimeUtil
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
@@ -396,22 +395,14 @@ class ChallengePeriodManager(CacheController):
 
         logger.info(f"[CHALLENGE] Starting challenge period loop {current_time_ms} iteration_epoch={iteration_epoch}")
 
-        loop_start = time.perf_counter()
-        stage_start = loop_start
-        stage_timings: list[tuple[str, float]] = []
-
-        def lap(stage: str):
-            nonlocal stage_start
-            now = time.perf_counter()
-            stage_timings.append((stage, (now - stage_start) * 1000))
-            stage_start = now
+        timer = StageTimer()
 
         asset_selections = self._asset_selection_client.get_asset_selections()
         # Only first order times here; full positions are fetched below for rank-based miners only
         hk_to_first_order_time = self._position_client.get_first_order_times()
         hotkeys_elimination_sync = list(self._elimination_client.get_eliminated_hotkeys())
         hotkeys_plagiarism_sync = list(self._plagiarism_client.get_plagiarism_miners())
-        lap("fetch_inputs")
+        timer.lap("fetch_inputs")
 
         state_changed = False
         state_changed |= self._sync_positions(
@@ -423,7 +414,7 @@ class ChallengePeriodManager(CacheController):
         state_changed |= self.sync_plagiarism_miners(hotkeys_plagiarism_sync, current_time_ms)
         state_changed |= self.sync_elimination_miners(hotkeys_elimination_sync, current_time_ms)
         state_changed |= self._prune_hotkeys_no_positions()
-        lap("sync")
+        timer.lap("sync")
 
         self._current_iteration_epoch = iteration_epoch
 
@@ -433,16 +424,16 @@ class ChallengePeriodManager(CacheController):
         accounts = self._miner_account_client.get_accounts(evaluation_hotkeys)
         ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
         rank_positions, _ = self._position_client.filtered_positions_for_scoring(hotkeys=rank_hotkeys)
-        lap("fetch_eval_data")
+        timer.lap("fetch_eval_data")
         self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, set(hk_to_first_order_time), current_time_ms)
-        lap("drawdown_cache")
+        timer.lap("drawdown_cache")
         self._refresh_pro_stats(evaluation_hotkeys, ledgers, accounts)
-        lap("pro_stats")
+        timer.lap("pro_stats")
         # Latch before any bucket move below: soft_breach reads the bucket the miner traded today
         self._latch_soft_breaches(evaluation_hotkeys, current_time_ms)
-        lap("latch_soft_breaches")
+        timer.lap("latch_soft_breaches")
         self._refresh_rank_cache(rank_hotkeys, ledgers, rank_positions, accounts, asset_selections, current_time_ms)
-        lap("rank_cache")
+        timer.lap("rank_cache")
 
         eliminations: dict[str, EliminationReason] = {}
         demotions: dict[str, MinerBucket] = {}
@@ -517,7 +508,7 @@ class ChallengePeriodManager(CacheController):
                 promotions.append(hotkey)
                 continue
 
-        lap("evaluate")
+        timer.lap("evaluate")
 
         state_changed |= self.eliminate_hotkeys(eliminations, current_time_ms)
         state_changed |= self.demote_hotkeys(demotions, current_time_ms)
@@ -525,10 +516,10 @@ class ChallengePeriodManager(CacheController):
 
         if state_changed:
             self._sync_buckets_to_accounts(hotkeys=list({*eliminations, *demotions, *promotions}))
-        lap("apply_changes")
+        timer.lap("apply_changes")
 
         self._save_to_disk()
-        lap("save_to_disk")
+        timer.lap("save_to_disk")
 
         counts = {}
         for state in self.miner_states.values():
@@ -536,9 +527,7 @@ class ChallengePeriodManager(CacheController):
         snapshot = " | ".join(f"{b.value}={n}" for b, n in sorted(counts.items(), key=lambda x: x[0].value))
         logger.info(f"[CHALLENGE] snapshot: {snapshot} (total={len(self.miner_states)})")
 
-        total_ms = (time.perf_counter() - loop_start) * 1000
-        timings = " | ".join(f"{stage}={ms:.0f}ms" for stage, ms in stage_timings)
-        logger.info(f"[CHALLENGE] timings: total={total_ms:.0f}ms | {timings} "
+        logger.info(f"[CHALLENGE] timings: {timer.summary()} "
                     f"(evaluated={len(evaluation_hotkeys)}, ranked={len(rank_hotkeys)})")
 
         return self._to_slack_message(promotions)

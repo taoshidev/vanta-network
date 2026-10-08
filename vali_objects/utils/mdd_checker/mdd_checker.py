@@ -17,7 +17,7 @@ from typing import List, Dict
 
 from shared_objects.cache_controller import CacheController
 from shared_objects.rpc.common_data_client import CommonDataClient
-from time_util.time_util import TimeUtil
+from time_util.time_util import StageTimer, TimeUtil
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from shared_objects.locks.position_lock_client import PositionLockClient
@@ -148,6 +148,8 @@ class MDDChecker(CacheController):
         self.lock_acquisition_sum_ms = 0.0
         self.position_refresh_count = 0
 
+        timer = StageTimer()
+
         # Time the RPC read of positions
         rpc_start = time.perf_counter()
         hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
@@ -162,11 +164,13 @@ class MDDChecker(CacheController):
             f"[MDD_RPC_TIMING] get_positions_for_hotkeys RPC read={rpc_ms:.2f}ms, "
             f"total_positions={total_positions}"
         )
+        timer.lap("fetch_positions")
 
         # Time price source fetching
         price_fetch_start = time.perf_counter()
         tp_to_price_sources = self.get_sorted_price_sources(hotkey_to_positions)
         price_fetch_ms = (time.perf_counter() - price_fetch_start) * 1000
+        timer.lap("price_sources")
 
         now_ms = TimeUtil.now_in_millis()
         for tp, sources in tp_to_price_sources.items():
@@ -192,6 +196,7 @@ class MDDChecker(CacheController):
                 self.last_corporate_actions_date = today_date_str
             except Exception as e:
                 logger.error(f"[CORPORATE ACTIONS] Failed to fetch or apply: {e}")
+        timer.lap("corporate_actions")
 
         for hotkey, sorted_positions in hotkey_to_positions.items():
             corrected = self.perform_price_corrections(hotkey, sorted_positions, tp_to_price_sources, iteration_epoch)
@@ -202,6 +207,7 @@ class MDDChecker(CacheController):
                     logger.info(f"Rebuilt account state for {hotkey}... after price correction")
                 except Exception as e:
                     logger.error(f"Failed to rebuild account state for {hotkey}...: {e}")
+        timer.lap("price_corrections")
 
         # Update unrealized PNL on MinerAccount for all miners
         hotkey_to_unrealized_pnl = {}
@@ -209,6 +215,7 @@ class MDDChecker(CacheController):
             hotkey_to_unrealized_pnl[hotkey] = self._position_client.get_unrealized_pnl(hotkey)
         if hotkey_to_unrealized_pnl:
             self._miner_account_client.update_unrealized_pnl(hotkey_to_unrealized_pnl)
+        timer.lap("unrealized_pnl")
 
         # Log aggregate timing statistics
         if self.position_refresh_count > 0:
@@ -227,6 +234,10 @@ class MDDChecker(CacheController):
             f"n miners corrected: {len(self.miners_corrected)}. n_poly_api_requests: {self.n_poly_api_requests}."
         )
         self.set_last_update_time(skip_message=False)
+
+        logger.info(f"[MDD] timings: {timer.summary()} "
+                    f"(hotkeys={len(hotkey_to_positions)}, positions={total_positions}, "
+                    f"positions_refreshed={self.position_refresh_count})")
 
     def update_order_with_newest_price_sources(
         self,

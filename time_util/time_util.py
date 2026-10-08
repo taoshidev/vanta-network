@@ -333,6 +333,41 @@ class UnifiedMarketCalendar:
         bounds = self.get_equity_session_bounds(trade_pair, timestamp_ms)
         return bounds[0] if bounds else None
 
+class StageTimer:
+    """
+    Times consecutive stages of a loop. Each lap() records the time since the previous lap
+    (or since construction) under the given stage name.
+
+        timer = StageTimer()
+        fetch()
+        timer.lap("fetch")
+        compute()
+        timer.lap("compute")
+        logger.info(f"timings: {timer.summary()}")  # total=12ms | fetch=8ms | compute=4ms
+    """
+
+    def __init__(self):
+        self._start = time.perf_counter()
+        self._last = self._start
+        self.stages: list[tuple[str, float]] = []
+
+    def lap(self, stage: str) -> float:
+        """Record the elapsed ms since the previous lap under stage, and return it."""
+        now = time.perf_counter()
+        elapsed_ms = (now - self._last) * 1000
+        self.stages.append((stage, elapsed_ms))
+        self._last = now
+        return elapsed_ms
+
+    @property
+    def total_ms(self) -> float:
+        return (time.perf_counter() - self._start) * 1000
+
+    def summary(self) -> str:
+        stages = " | ".join(f"{stage}={ms:.0f}ms" for stage, ms in self.stages)
+        return f"total={self.total_ms:.0f}ms | {stages}" if stages else f"total={self.total_ms:.0f}ms"
+
+
 class TimeUtil:
 
     @staticmethod
