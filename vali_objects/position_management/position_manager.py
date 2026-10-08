@@ -730,6 +730,21 @@ class PositionManager:
 
         return filtered_positions, hk_to_first_order_time
 
+    def get_first_order_times(self, hotkeys: List[str] = None) -> Dict[str, int]:
+        """
+        First order time per hotkey with live positions, without shipping the positions themselves.
+        Same values as the hk_to_first_order_time half of filtered_positions_for_scoring.
+        """
+        if hotkeys is None:
+            hotkeys = list(self.hotkey_to_positions.keys())
+
+        hk_to_first_order_time = {}
+        for hotkey in hotkeys:
+            positions_dict = self.hotkey_to_positions.get(hotkey)
+            if positions_dict:
+                hk_to_first_order_time[hotkey] = min(p.orders[0].processed_ms for p in positions_dict.values())
+        return hk_to_first_order_time
+
     def force_close_deprecated_trade_pair_positions(self, trade_pairs: list[TradePair]) -> int:
         """
         Force-close all open positions for suspended trade pairs using the last known price.

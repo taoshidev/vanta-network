@@ -407,17 +407,15 @@ class ChallengePeriodManager(CacheController):
             stage_start = now
 
         asset_selections = self._asset_selection_client.get_asset_selections()
-        all_hotkeys = self._position_client.get_all_hotkeys()
-        filtered_positions, hk_to_first_order_time = self._position_client.filtered_positions_for_scoring(
-            hotkeys=all_hotkeys
-        )
+        # Only first order times here; full positions are fetched below for rank-based miners only
+        hk_to_first_order_time = self._position_client.get_first_order_times()
         hotkeys_elimination_sync = list(self._elimination_client.get_eliminated_hotkeys())
         hotkeys_plagiarism_sync = list(self._plagiarism_client.get_plagiarism_miners())
         lap("fetch_inputs")
 
         state_changed = False
         state_changed |= self._sync_positions(
-            hotkeys=list(filtered_positions.keys()),
+            hotkeys=list(hk_to_first_order_time.keys()),
             eliminated_hotkeys=hotkeys_elimination_sync,
             hk_to_first_order_time_ms=hk_to_first_order_time,
             default_time=current_time_ms,
@@ -434,16 +432,16 @@ class ChallengePeriodManager(CacheController):
 
         accounts = self._miner_account_client.get_accounts(evaluation_hotkeys)
         ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
-        positions = self._position_client.get_positions_for_hotkeys(evaluation_hotkeys)
+        rank_positions, _ = self._position_client.filtered_positions_for_scoring(hotkeys=rank_hotkeys)
         lap("fetch_eval_data")
-        self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, positions, current_time_ms)
+        self._refresh_drawdown_cache(evaluation_hotkeys, accounts, ledgers, set(hk_to_first_order_time), current_time_ms)
         lap("drawdown_cache")
         self._refresh_pro_stats(evaluation_hotkeys, ledgers, accounts)
         lap("pro_stats")
         # Latch before any bucket move below: soft_breach reads the bucket the miner traded today
         self._latch_soft_breaches(evaluation_hotkeys, current_time_ms)
         lap("latch_soft_breaches")
-        self._refresh_rank_cache(rank_hotkeys, ledgers, filtered_positions, accounts, asset_selections, current_time_ms)
+        self._refresh_rank_cache(rank_hotkeys, ledgers, rank_positions, accounts, asset_selections, current_time_ms)
         lap("rank_cache")
 
         eliminations: dict[str, EliminationReason] = {}
@@ -1012,7 +1010,7 @@ class ChallengePeriodManager(CacheController):
         hotkeys: list[str],
         accounts: dict[str, MinerAccount],
         ledgers: dict[str, PerfLedger],
-        positions: dict[str, list[Position]],
+        hotkeys_with_positions: set[str],
         current_time_ms: int
     ) -> None:
         for hotkey in hotkeys:
@@ -1028,7 +1026,7 @@ class ChallengePeriodManager(CacheController):
                 logger.error(f"[CHALLENGE] {hotkey} invalid account, skipping evaluation")
                 continue
 
-            if not positions.get(hotkey):
+            if hotkey not in hotkeys_with_positions:
                 # skip log: no positions mean new account or recently promoted, no ledger
                 continue
 

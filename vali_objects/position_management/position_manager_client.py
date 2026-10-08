@@ -382,6 +382,13 @@ class PositionManagerClient(RPCClientBase):
             include_development_positions=include_development_positions
         )
 
+    def get_first_order_times(self, hotkeys: List[str] = None) -> Dict[str, int]:
+        """
+        First order time per hotkey with live positions. A cheap alternative to
+        filtered_positions_for_scoring when the positions themselves aren't needed.
+        """
+        return self._server.get_first_order_times_rpc(hotkeys=hotkeys)
+
     def split_position_on_flat(self, position: Position, track_stats: bool = False) -> tuple[list[Position], dict]:
         """
         Split a position on FLAT orders or implicit flats.
