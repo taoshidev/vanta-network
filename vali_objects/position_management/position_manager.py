@@ -402,6 +402,34 @@ class PositionManager:
 
         return result
 
+    def get_price_correction_candidates(
+        self,
+        hotkeys: List[str] = None,
+        now_ms: int = None
+    ) -> Dict[str, List[Position]]:
+        """
+        Positions the MDD checker needs (see Position.is_price_correction_candidate), sorted by close_ms.
+        Every requested non-eliminated hotkey is present in the result, with an empty list if it has no
+        candidates. Eliminated hotkeys are always dropped: their positions stay in memory until deletion
+        and the elimination flat order makes them look recent.
+
+        Args:
+            hotkeys: Hotkeys to fetch. If None, uses all hotkeys with live positions.
+            now_ms: Reference time for the recent-order check. Defaults to now.
+        """
+        if hotkeys is None:
+            hotkeys = list(self.hotkey_to_positions.keys())
+        if now_ms is None:
+            now_ms = TimeUtil.now_in_millis()
+
+        hotkey_to_positions = self.get_positions_for_hotkeys(
+            hotkeys, filter_eliminations=True, sort_positions=True
+        )
+        return {
+            hotkey: [p for p in positions if p.is_price_correction_candidate(now_ms)]
+            for hotkey, positions in hotkey_to_positions.items()
+        }
+
     def clear_all_miner_positions(self):
         """Clear all positions (for testing). Also clears the open positions index and split statistics."""
         self.hotkey_to_positions.clear()

@@ -365,6 +365,15 @@ class Position(BaseModel):
             return now_ms - self.orders[-1].processed_ms
         return -1
 
+    def is_price_correction_candidate(self, now_ms: int) -> bool:
+        """
+        Whether the MDD checker should process this position: open positions are re-marked to the
+        live price every pass, and positions whose newest order is recent may still get their order
+        prices corrected.
+        """
+        return (self.is_open_position or
+                self.newest_order_age_ms(now_ms) <= ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS)
+
     def __str__(self):
         return json.dumps(self.to_dict())
 

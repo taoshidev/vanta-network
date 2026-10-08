@@ -92,11 +92,6 @@ class MDDChecker(CacheController):
         self.n_orders_corrected = 0
         self.miners_corrected = set()
 
-    def _position_is_candidate_for_price_correction(self, position: Position, now_ms: int) -> bool:
-        """Check if position is candidate for price correction."""
-        return (position.is_open_position or
-                position.newest_order_age_ms(now_ms) <= ValiConfig.RECENT_EVENT_TRACKER_OLDEST_ALLOWED_RECORD_MS)
-
     def get_sorted_price_sources(self, hotkey_positions: Dict[str, List[Position]]) -> Dict[TradePair, List[PriceSource]]:
         """Get sorted price sources for all required trade pairs."""
         try:
@@ -106,7 +101,7 @@ class MDDChecker(CacheController):
 
             for sorted_positions in hotkey_positions.values():
                 for position in sorted_positions:
-                    if self._position_is_candidate_for_price_correction(position, now_ms):
+                    if position.is_price_correction_candidate(now_ms):
                         tp = position.trade_pair
                         if tp not in trade_pair_to_market_open:
                             trade_pair_to_market_open[tp] = self._live_price_client.is_market_open(tp, now_ms)
@@ -152,16 +147,13 @@ class MDDChecker(CacheController):
 
         # Time the RPC read of positions
         rpc_start = time.perf_counter()
-        hotkey_to_positions = self._position_client.get_positions_for_hotkeys(
-            self._position_client.get_all_hotkeys(),
-            filter_eliminations=True,
-            sort_positions=True
-        )
+        # Only open positions and positions with a recent order, for every non-eliminated hotkey
+        hotkey_to_positions = self._position_client.get_price_correction_candidates(now_ms=TimeUtil.now_in_millis())
         rpc_ms = (time.perf_counter() - rpc_start) * 1000
 
         total_positions = sum(len(positions) for positions in hotkey_to_positions.values())
         logger.info(
-            f"[MDD_RPC_TIMING] get_positions_for_hotkeys RPC read={rpc_ms:.2f}ms, "
+            f"[MDD_RPC_TIMING] get_price_correction_candidates RPC read={rpc_ms:.2f}ms, "
             f"total_positions={total_positions}"
         )
         timer.lap("fetch_positions")
@@ -464,7 +456,7 @@ class MDDChecker(CacheController):
         any_corrected = False
         now_ms = TimeUtil.now_in_millis()
         for position in sorted_positions:
-            if self._position_is_candidate_for_price_correction(position, now_ms):
+            if position.is_price_correction_candidate(now_ms):
                 corrected = self._update_position_returns_and_persist_to_disk(
                     hotkey, position, tp_to_price_sources, iteration_epoch
                 )
