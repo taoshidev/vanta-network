@@ -288,8 +288,11 @@ After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is
 
 ### Account Types
 
-Every subaccount is created as `standard`. A pro account is reached by promoting an existing
-subaccount through `POST /api/promote` — there is no way to create one directly.
+By default a subaccount is created as `standard` in `SUBACCOUNT_CHALLENGE`. Creation can instead
+place it directly in `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` (Instant Funded, below) or
+`PRO_CHALLENGE_DIRECT` through the `bucket` field (`ValiConfig.SUBACCOUNT_CREATION_BUCKETS`;
+HL-linked subaccounts only the first two). Otherwise a pro account is reached by promoting an
+existing subaccount through `POST /api/promote`.
 
 Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
 margin-interest rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs.
@@ -301,7 +304,7 @@ pro positions pay live HL funding plus the standard schedule.
 | Bucket                        | Account traded | Earns payouts | Payout basis            |
 |-------------------------------|----------------|---------------|-------------------------|
 | `PRO_CHALLENGE_TRANSITION`    | standard       | yes           | standard account size   |
-| `PRO_CHALLENGE_FROM_STANDARD` | pro            | yes           | 2x standard account size |
+| `PRO_CHALLENGE_FROM_STANDARD` | pro            | yes           | 2x standard account size (`payout_scale` × standard size for Instant Funded) |
 | `PRO_CHALLENGE_DIRECT`        | pro            | no            | —                       |
 | `PRO_FUNDED`                  | pro            | yes           | pro account size        |
 
@@ -330,10 +333,37 @@ otherwise reach only part of it. `PRO_CHALLENGE_TRANSITION` is still on the stan
 keeps its registered class.
 
 Every pro bucket is subject to two drawdown rules:
-- **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day, or the subaccount's chosen `intraday_drawdown_threshold` (3% or 5%) if it set one at creation. Checked continuously.
+- **Daily loss limit:** equity cannot drop **5%** below the day's opening equity at any point during the day, or the subaccount's chosen `intraday_drawdown_threshold` (3% or 5%) if it set one at creation, except in `PRO_FUNDED`, which always uses 5%. Checked continuously.
 - **EOD trailing loss limit:** end-of-day equity cannot drop **8%** below the end-of-day equity high-water mark. Evaluated once per UTC day against the midnight snapshot, not in real time — an intraday dip below the mark that recovers before midnight does not breach.
 
-`PRO_CHALLENGE_TRANSITION` is still trading the standard account, so it keeps the `SUBACCOUNT_FUNDED` rules instead.
+`PRO_CHALLENGE_TRANSITION` is still trading the standard account, so it keeps the `SUBACCOUNT_FUNDED` rules instead. Instant Funded accounts replace both limits until `PRO_FUNDED` (see below).
+
+#### Instant Funded
+
+An Instant Funded subaccount is created directly into `PRO_CHALLENGE_FROM_STANDARD` with
+`"bucket": "PRO_CHALLENGE_FROM_STANDARD"` (standard subaccounts only, not HL-linked):
+
+- **`account_size`** is the funded account it is paid on ($25K, $50K or $100K in the Command Center).
+  **`pro_account_size`** (required) is the pro account it trades. A trader who takes the Pro challenge
+  sends the pro size they chose; one who does not sends `pro_account_size` equal to `account_size`.
+- **Payouts start immediately**, on `payout_scale × account_size / pro_account_size × PnL`.
+  `payout_scale` defaults to `1.0` (`ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than
+  the `2.0` of a standard-to-pro transition, and may be set up to `2.0`
+  (`ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE`).
+- **Drawdown limits:** the daily loss limit is fixed at **3%**
+  (`ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD`; any other
+  `intraday_drawdown_threshold` is rejected). The EOD high-water-mark limit is **5%** or **8%**
+  (`eod_hwm_threshold`, `ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES`; omitted keeps 8%). Breaching
+  either eliminates.
+- **Everything else is the pro challenge:** pro leverage, `all_markets`, the pro universe and the
+  [promotion criteria](#passing-the-pro-challenge). Creation charges the registration collateral plus
+  the pro promotion fee for `pro_account_size`.
+- **After passing**, the subaccount is in `PRO_FUNDED`: it is paid on the pro account size, and both
+  creation-time limits are dropped for the pro defaults, a **5%** daily loss limit and an **8%** EOD
+  limit. From then on it follows every `PRO_FUNDED` rule.
+
+`eod_hwm_threshold` and `payout_scale` are accepted only for this bucket, and every pro bucket requires
+`pro_account_size`. All creation options are fixed for the life of the subaccount.
 
 #### Traders who have already passed the standard challenge
 
@@ -681,7 +711,11 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `account_size` | float | Yes | Account size in USD                                                          |
 | `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
 | `leverage_tier` | int | No | Standard leverage tier `1` (default), `2` or `3` — see [Leverage Limits](#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later via [Change Leverage Tier](#change-leverage-tier). |
-| `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit): `0.03` or `0.05` (`ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES`) — see [Challenge Period Requirements](#challenge-period-requirements). Any other value is rejected. Accepted for standard and HL-linked subaccounts. Omitted keeps each bucket's default. Set once at creation; immutable afterward. |
+| `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit): `0.03` or `0.05` (`ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES`) — see [Challenge Period Requirements](#challenge-period-requirements). Any other value is rejected. Accepted for standard and HL-linked subaccounts. Omitted keeps each bucket's default. Set once at creation; immutable afterward. Only `0.03` for `PRO_CHALLENGE_FROM_STANDARD`. |
+| `bucket` | string | No | Bucket to create into: `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` or `PRO_CHALLENGE_DIRECT`. HL-linked subaccounts accept only the first two. See [Instant Funded](#instant-funded). |
+| `pro_account_size` | float | Pro buckets | Pro account size traded; required for pro buckets, rejected otherwise. |
+| `eod_hwm_threshold` | float | No | EOD high-water-mark drawdown limit `0.05` or `0.08`. `PRO_CHALLENGE_FROM_STANDARD` only. |
+| `payout_scale` | float | No | Payout multiplier, `> 0` and `≤ 2.0` (default `1.0`). `PRO_CHALLENGE_FROM_STANDARD` only. |
 
 #### Change Leverage Tier
 
@@ -832,7 +866,7 @@ The signature is produced by signing `{"entity_coldkey": "...", "entity_hotkey":
 }
 ```
 
-The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys). `drawdown_criteria` is optional (defaults to `"trailing"` if omitted) and is not currently part of the signed payload. `intraday_drawdown_threshold` is optional (`0.03` or `0.05`; omitted keeps each bucket's default) and is likewise not part of the signed payload.
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys). `drawdown_criteria` is optional (defaults to `"trailing"` if omitted) and is not currently part of the signed payload. `intraday_drawdown_threshold` is optional (`0.03` or `0.05`; omitted keeps each bucket's default) and is likewise not part of the signed payload, as are the optional `bucket`, `pro_account_size`, `eod_hwm_threshold` and `payout_scale` (see [Instant Funded](#instant-funded)).
 
 Response:
 
@@ -945,7 +979,7 @@ Subaccounts can be eliminated for:
 - **Trailing criteria, challenge period failure** — drawdown exceeds 5% before achieving the return threshold
 - **Trailing criteria, funded period failure** — drawdown exceeds 8%
 - **Static criteria (challenge or funded)** — equity drops more than 5% below starting balance, or intraday drawdown from the day's opening equity reaches 5%
-- **Chosen intraday drawdown threshold (any bucket)** — intraday drawdown from the day's opening equity exceeds the `intraday_drawdown_threshold` chosen at creation, which replaces the intraday threshold in each rule above
+- **Chosen intraday drawdown threshold (any bucket but `PRO_FUNDED`)** — intraday drawdown from the day's opening equity exceeds the `intraday_drawdown_threshold` chosen at creation, which replaces the intraday threshold in each rule above
 - **Plagiarism** — detected order similarity with other miners
 
 Eliminated subaccount ids are permanently retired. Create a new subaccount to replace an eliminated one.
@@ -1030,6 +1064,7 @@ curl -X POST http://localhost:8088/api/create-hl-subaccount \
 | `account_size` | float | Yes | Account size in USD |
 | `payout_address` | string | No | Optional EVM payout address |
 | `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit): `0.03` or `0.05` — see [Challenge Period Requirements](#challenge-period-requirements). Omitted keeps each bucket's default. |
+| `bucket` | string | No | `SUBACCOUNT_CHALLENGE` (default) or `SUBACCOUNT_FUNDED`. HL-linked subaccounts have no pro options. |
 
 ### Monitoring
 

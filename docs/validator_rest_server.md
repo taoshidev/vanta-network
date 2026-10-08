@@ -1156,7 +1156,13 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules). Fixed for the life of the subaccount once created. HL-linked subaccounts always get `"trailing"` regardless of what's passed.
+- `bucket` (string, optional): bucket to create into, `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` (Instant Funded) or `PRO_CHALLENGE_DIRECT` (`ValiConfig.SUBACCOUNT_CREATION_BUCKETS`). HL-linked subaccounts accept only the first two and none of the pro options below. See [entity_miner.md](entity_miner.md#instant-funded).
+- `pro_account_size` (float): required for pro buckets, rejected otherwise. Creation also charges the pro promotion fee.
+- `eod_hwm_threshold` (float, optional): `0.05` or `0.08`, `PRO_CHALLENGE_FROM_STANDARD` only (default `0.08`). That bucket's `intraday_drawdown_threshold` is fixed at `0.03`. Both are dropped for the pro defaults on reaching `PRO_FUNDED`.
+- `payout_scale` (float, optional): payout multiplier `> 0` and `≤ 2.0`, `PRO_CHALLENGE_FROM_STANDARD` only (default `1.0`).
 - `version` (string, optional): vanta-cli version string for compatibility checking.
+
+`bucket`, `pro_account_size`, `eod_hwm_threshold` and `payout_scale` are not part of the signed payload.
 
 **Response:**
 ```json
