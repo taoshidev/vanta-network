@@ -1250,15 +1250,15 @@ Change a standard subaccount's `leverage_tier` (1 to 3) after creation, see [ent
 
 `POST /entity/subaccount/promote`
 
-Move one of an entity's subaccounts a step up the pro account track, on the entity's own request.
-This is the only way onto the pro track — see [entity_miner.md](entity_miner.md#account-types).
+Move one of an entity's subaccounts a step up the pro account track, or from the standard challenge to
+standard funded, on the entity's own request. This is the only way onto the pro track — see [entity_miner.md](entity_miner.md#account-types).
 
-The target bucket is derived from the subaccount's current one, and only these three hops exist
-(`MinerBucket.promotion_target`):
+Only these hops exist (`MinerBucket.promotion_targets`); `target_bucket` picks one. It is required
+out of `SUBACCOUNT_CHALLENGE`, which has two targets, and may be omitted elsewhere:
 
 | From | To |
 | --- | --- |
-| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` |
+| `SUBACCOUNT_CHALLENGE` | `PRO_CHALLENGE_DIRECT` or `SUBACCOUNT_FUNDED` |
 | `SUBACCOUNT_FUNDED` | `PRO_CHALLENGE_TRANSITION` |
 | `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
 
@@ -1279,6 +1279,7 @@ subaccount it does not own.
   "entity_coldkey": "5FxY...",
   "synthetic_hotkey": "5GhDr3xy...abc_0",
   "pro_account_size": 500000,
+  "target_bucket": "PRO_CHALLENGE_DIRECT",
   "nonce": "3f9c1e5a...",
   "timestamp": 1749234567890,
   "signature": "0x...",
@@ -1299,11 +1300,16 @@ subaccount it does not own.
   - **Required entering the pro track** (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`).
   - **Optional on the hop within the track** (out of `PRO_CHALLENGE_TRANSITION`): a new size replaces
     the recorded one; omitted, the recorded size is kept.
+  - **Ignored, and not checked,** when `target_bucket` is `SUBACCOUNT_FUNDED`.
+- `target_bucket` (string, conditional): The bucket to promote into, from the table above. **Required**
+  out of `SUBACCOUNT_CHALLENGE` (a 400 without it); optional elsewhere. Promoting to
+  `SUBACCOUNT_FUNDED` keeps the standard size and the subaccount's chosen `intraday_drawdown_threshold`,
+  and closes positions, cancels limit orders and restarts the ledgers.
 - `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
 - `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
 - `signature` (string, required): Coldkey signature over the sorted-JSON of
-  `{entity_coldkey, entity_hotkey, nonce, synthetic_hotkey, timestamp}`, plus `pro_account_size` when
-  one is sent. A size omitted is not signed as `null`.
+  `{entity_coldkey, entity_hotkey, nonce, synthetic_hotkey, timestamp}`, plus `pro_account_size` and
+  `target_bucket` when sent. An omitted field is not signed as `null`.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
 **What a promotion does.** Entering the pro track snapshots the subaccount's existing size, which

@@ -171,19 +171,19 @@ class MinerBucket(Enum):
         return None
 
     @property
-    def promotion_target(self) -> "MinerBucket | None":
+    def promotion_targets(self) -> "tuple[MinerBucket, ...]":
         """Where a miner may promote itself with its own signed request (POST /entity/subaccount/promote).
 
-        These three hops onto the pro track are the only self-service bucket moves on the network;
-        every other bucket returns None and cannot be promoted this way.
+        A request must name its target when there is more than one. These are the only self-service
+        bucket moves on the network; every other bucket returns () and cannot be promoted this way.
         """
         if self == MinerBucket.SUBACCOUNT_CHALLENGE:
-            return MinerBucket.PRO_CHALLENGE_DIRECT
+            return MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.SUBACCOUNT_FUNDED
         elif self == MinerBucket.SUBACCOUNT_FUNDED:
-            return MinerBucket.PRO_CHALLENGE_TRANSITION
+            return (MinerBucket.PRO_CHALLENGE_TRANSITION,)
         elif self == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            return MinerBucket.PRO_CHALLENGE_FROM_STANDARD
-        return None
+            return (MinerBucket.PRO_CHALLENGE_FROM_STANDARD,)
+        return ()
 
     @property
     def switches_account(self) -> bool:
