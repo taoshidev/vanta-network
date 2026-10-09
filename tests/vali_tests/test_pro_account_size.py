@@ -627,6 +627,33 @@ class TestPromotionFeeCharged(unittest.TestCase):
         info = self._promote(hotkey, MinerBucket.PRO_FUNDED, 1_000_000)
         self.assertAlmostEqual(info.pro_fee_theta, 1_000_000 / 3000 - STANDARD_SIZE / 1500)
 
+    def _legacy_pro(self, standard_size=50_000.0, pro_size=1_000_000.0, paid=247.14):
+        """A pro account already trading its pro size, which paid the old (lower) promotion fee for it."""
+        hotkey = self._standard()
+        info = self.manager.get_subaccount_info_for_synthetic(hotkey)
+        info.standard_account_size = standard_size
+        info.pro_account_size = pro_size
+        info.account_size = pro_size
+        info.account_type = AccountType.PRO.value
+        info.pro_fee_theta = paid
+        return hotkey
+
+    def test_re_applying_the_size_already_traded_charges_nothing(self):
+        """An admin move within the pro track re-applies the recorded size: nothing goes live, so nothing is
+        billed, even though today's formula (1M / 3,000 - 50K / 1,500 = 300) exceeds the 247.14 paid."""
+        hotkey = self._legacy_pro()
+        for bucket in (MinerBucket.PRO_FUNDED, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
+            with self.subTest(bucket=bucket):
+                info = self._promote(hotkey, bucket)
+                self.assertAlmostEqual(info.pro_fee_theta, 247.14)
+                self.assertEqual(info.pro_fee_theta_pending, 0.0)
+        self.manager._entity_collateral_client.offset_collateral_cache.assert_not_called()
+
+    def test_a_new_size_is_billed_at_todays_formula(self):
+        hotkey = self._legacy_pro()
+        info = self._promote(hotkey, MinerBucket.PRO_FUNDED, 900_000.0)
+        self.assertAlmostEqual(info.pro_fee_theta, 900_000 / 3000 - 50_000 / 1500)
+
     def test_a_recorded_size_below_the_new_floor_still_completes_the_journey(self):
         """A subaccount granted a size under the old floor (pro >= standard) mid-transition is not stranded:
         the recorded size is not re-checked, and the fee floors at zero."""

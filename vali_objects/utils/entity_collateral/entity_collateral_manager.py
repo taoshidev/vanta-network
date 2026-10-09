@@ -288,7 +288,7 @@ class EntityCollateralManager(CacheController):
             if bucket is None or not bucket.is_subaccount_earning:
                 continue
 
-            margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey, bucket)
+            margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey, bucket, sa_info)
             multiplier = 1.0
             if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
                 payout_scale = sa_info.get("payout_scale")
@@ -301,6 +301,7 @@ class EntityCollateralManager(CacheController):
         self,
         synthetic_hotkey: str,
         bucket: MinerBucket | None = None,
+        subaccount_info: dict | None = None,
     ) -> float:
         """
         Compute the margin requirement in USD for a single funded subaccount.
@@ -318,6 +319,7 @@ class EntityCollateralManager(CacheController):
             synthetic_hotkey: The subaccount's synthetic hotkey.
             bucket: The subaccount's bucket; pass it when already known so the pro account's
                 drawdown threshold and account size are used without an extra lookup.
+            subaccount_info: The subaccount's record, when the caller already has it (see get_max_slash).
 
         Returns:
             Margin requirement in USD.
@@ -330,7 +332,7 @@ class EntityCollateralManager(CacheController):
 
         total_position_value = sum(abs(p.net_value) for p in open_positions)
 
-        max_slash = self.get_max_slash(synthetic_hotkey, bucket)
+        max_slash = self.get_max_slash(synthetic_hotkey, bucket, subaccount_info)
         cumulative_slashed = self.get_cumulative_slashed(synthetic_hotkey)
         remaining_headroom = max(0.0, max_slash - cumulative_slashed)
 
@@ -382,7 +384,18 @@ class EntityCollateralManager(CacheController):
         current_position_value = sum(abs(p.net_value) for p in open_positions)
         projected_position_value = current_position_value + abs(additional_position_value)
 
-        max_slash = self.get_max_slash(synthetic_hotkey, bucket)
+        # PRO_CHALLENGE_FROM_STANDARD reads its record twice (the standard size it is exposed at and the
+        # payout multiplier its margin backs), so look it up once. Unreadable, it is {}: the exposure is
+        # withheld (see _exposed_account_size), so no margin is required.
+        subaccount_info = None
+        if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+            try:
+                subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}
+            except Exception as e:
+                logger.warning(f"[ENTITY_COLLATERAL] Failed to read the subaccount record for {synthetic_hotkey}: {e}")
+                subaccount_info = {}
+
+        max_slash = self.get_max_slash(synthetic_hotkey, bucket, subaccount_info)
         cumulative_slashed = self.get_cumulative_slashed(synthetic_hotkey)
         remaining_headroom = max(0.0, max_slash - cumulative_slashed)
 
@@ -391,12 +404,7 @@ class EntityCollateralManager(CacheController):
         margin_delta_usd = projected_margin_usd - current_margin_usd
         multiplier = 1.0
         if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
-            # Unreadable subaccount info falls back to the network multiplier, the larger margin
-            try:
-                payout_scale = (self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}).get("payout_scale")
-            except Exception as e:
-                logger.warning(f"[ENTITY_COLLATERAL] Failed to read the payout scale for {synthetic_hotkey}: {e}")
-                payout_scale = None
+            payout_scale = subaccount_info.get("payout_scale")
             multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
         margin_delta_theta = ValiConfig.margin_theta(margin_delta_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
 
@@ -457,7 +465,7 @@ class EntityCollateralManager(CacheController):
             return 0.0
 
         # Collateral-exempt subaccounts (reg_fee_theta == 0) are never slashed on losses
-        payout_scale = None
+        subaccount_info = None
         entity_data = self._entity_client.get_entity_data(entity_hotkey)
         if entity_data:
             subaccounts = entity_data.get("subaccounts", {})
@@ -465,15 +473,16 @@ class EntityCollateralManager(CacheController):
                 if isinstance(sa, dict) and sa.get("synthetic_hotkey") == synthetic_hotkey:
                     if sa.get("reg_fee_theta", 0) == 0:
                         return 0.0
-                    payout_scale = sa.get("payout_scale")
+                    subaccount_info = sa
                     break
+        payout_scale = (subaccount_info or {}).get("payout_scale")
         # Losses are slashed at the rate the subaccount's margin is held at (see compute_entity_required_collateral)
         multiplier = 1.0
         if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
             multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
         pro_funded = bucket == MinerBucket.PRO_FUNDED
 
-        max_slash = self.get_max_slash(synthetic_hotkey, bucket)
+        max_slash = self.get_max_slash(synthetic_hotkey, bucket, subaccount_info)
         if max_slash <= 0:
             logger.warning(
                 f"[ENTITY_COLLATERAL] Cannot compute max slash for {synthetic_hotkey}, skipping"
@@ -602,8 +611,7 @@ class EntityCollateralManager(CacheController):
                 # compute_entity_required_collateral): PRO_MARGIN_CPT in PRO_FUNDED, MARGIN_CPT otherwise,
                 # times the payout multiplier in PRO_CHALLENGE_FROM_STANDARD.
                 pending_loss_theta: Dict[str, float] = {}  # synthetic hotkey -> theta
-                payout_scales = {s.get("synthetic_hotkey"): s.get("payout_scale")
-                                 for s in subaccounts.values() if isinstance(s, dict)}
+                records = {s.get("synthetic_hotkey"): s for s in subaccounts.values() if isinstance(s, dict)}
                 eligible_hotkeys = {hk for hk in synthetic_hotkeys if hk and hk not in exempt_hotkeys}
                 buckets = self._challenge_period_client.get_miner_buckets(list(eligible_hotkeys))
                 with self._slash_lock:
@@ -611,7 +619,7 @@ class EntityCollateralManager(CacheController):
                         bucket = buckets.get(synthetic_hotkey)
                         if not bucket or not bucket.is_subaccount_earning:
                             continue
-                        max_slash = self.get_max_slash(synthetic_hotkey, bucket)
+                        max_slash = self.get_max_slash(synthetic_hotkey, bucket, records.get(synthetic_hotkey))
                         if max_slash <= 0:
                             continue
                         tracking = self._slash_tracking.setdefault(synthetic_hotkey, {
@@ -629,7 +637,7 @@ class EntityCollateralManager(CacheController):
                             pending_loss_usd[synthetic_hotkey] = slash_usd
                             multiplier = 1.0
                             if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
-                                payout_scale = payout_scales.get(synthetic_hotkey)
+                                payout_scale = records.get(synthetic_hotkey, {}).get("payout_scale")
                                 multiplier = (ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
                                               if payout_scale is None else payout_scale)
                             pending_loss_theta[synthetic_hotkey] = ValiConfig.margin_theta(
@@ -780,7 +788,8 @@ class EntityCollateralManager(CacheController):
             raise RuntimeError("get_test_slash_file_path can only be used in unit test mode")
         return self._slash_file
 
-    def get_max_slash(self, synthetic_hotkey: str, bucket: MinerBucket | None = None) -> float:
+    def get_max_slash(self, synthetic_hotkey: str, bucket: MinerBucket | None = None,
+                      subaccount_info: dict | None = None) -> float:
         """
         Get the maximum slashable amount for a subaccount (exposed account size * MDD%).
 
@@ -789,18 +798,21 @@ class EntityCollateralManager(CacheController):
             bucket: The subaccount's bucket; pass it when already known to skip the lookup.
                 When omitted it is resolved here, so every caller gets the threshold and the
                 account size that actually apply (a pro account's are not the standard one's).
+            subaccount_info: The subaccount's record, when the caller already has it; None looks it
+                up when needed (only PRO_CHALLENGE_FROM_STANDARD reads it).
 
         Returns:
             Maximum slash amount in USD.
         """
         if bucket is None:
             bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-        account_size = self._exposed_account_size(synthetic_hotkey, bucket)
+        account_size = self._exposed_account_size(synthetic_hotkey, bucket, subaccount_info)
         if account_size <= 0:
             return 0.0
         return account_size * self._mdd_percent(bucket)
 
-    def _exposed_account_size(self, synthetic_hotkey: str, bucket: MinerBucket | None) -> float:
+    def _exposed_account_size(self, synthetic_hotkey: str, bucket: MinerBucket | None,
+                              subaccount_info: dict | None = None) -> float:
         """
         Account size the entity's collateral is exposed to, normally the account the
         subaccount trades.
@@ -814,14 +826,15 @@ class EntityCollateralManager(CacheController):
         if account_size <= 0 or bucket != MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
             return account_size
 
-        try:
-            subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}
-        except Exception as e:
-            logger.warning(
-                f"[ENTITY_COLLATERAL] Failed to read the standard account size for {synthetic_hotkey}, "
-                f"witholding charge: {e}"
-            )
-            return 0
+        if subaccount_info is None:
+            try:
+                subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}
+            except Exception as e:
+                logger.warning(
+                    f"[ENTITY_COLLATERAL] Failed to read the standard account size for {synthetic_hotkey}, "
+                    f"witholding charge: {e}"
+                )
+                return 0
 
         standard_size = subaccount_info.get("standard_account_size") or 0.0
         if standard_size <= 0:

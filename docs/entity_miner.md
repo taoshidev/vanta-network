@@ -64,6 +64,7 @@ P ≥ 2 × S                                                   (ValiConfig.PRO_A
 Both CPTs are taken at the subaccount's own daily loss limit, so a pro account of exactly twice the standard size costs nothing. The credit is what registering the standard size costs at today's full rate, whatever the subaccount actually paid to register. `ValiConfig.promotion_fee_theta` computes it.
 
 - The fee is charged when the pro account goes live: on entering `PRO_CHALLENGE_DIRECT` or `PRO_CHALLENGE_FROM_STANDARD`, not on entering `PRO_CHALLENGE_TRANSITION`.
+- It is charged only when the account size actually changes. Moving a subaccount between pro buckets at the size it already trades (an admin move, for example) charges nothing, even if the fee formula has changed since it paid.
 - Only the increase over a promotion fee already charged is billed, so re-entering the pro track at a size already paid for is free.
 - An Instant Funded subaccount created into `PRO_CHALLENGE_FROM_STANDARD` pays it at its fixed 3% daily loss limit, on top of its Instant Funded registration fee.
 - Collateral-exempt subaccounts pay nothing.
@@ -415,7 +416,8 @@ Both forms share:
   `intraday_drawdown_threshold` is rejected). The EOD high-water-mark limit is **5%** or **8%**
   (`eod_hwm_threshold`, `ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES`; omitted keeps 8%), and it sets
   the registration price: `account_size / 400` at 5%, `account_size / 300` at 8%. Breaching
-  either limit eliminates.
+  either limit eliminates. `drawdown_criteria` must be `"trailing"`: the static rules never check the
+  EOD high-water mark.
 - **Margin:** 5% of `account_size` at 35 USD per theta, the same as any standard funded account.
 
 The eligible form runs the pro challenge in every other respect: pro leverage, `all_markets`, the pro
@@ -772,7 +774,7 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 |---|---|---|------------------------------------------------------------------------------|
 | `asset_class` | string | Yes | `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, `"hl_all"` |
 | `account_size` | float | Yes | Account size in USD                                                          |
-| `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
+| `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. Instant Funded (`SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD`) accepts only `"trailing"`. |
 | `leverage_tier` | int | No | Standard leverage tier `1` (default), `2` or `3` — see [Leverage Limits](#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later via [Change Leverage Tier](#change-leverage-tier). |
 | `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit): `0.03` or `0.05` (`ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES`) — see [Challenge Period Requirements](#challenge-period-requirements). Any other value is rejected. Accepted for standard and HL-linked subaccounts. Omitted keeps each bucket's default. Set once at creation; immutable afterward. Only `0.03` for Instant Funded (`SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD`); `0.03` registers at a lower [CPT](#registration-fee). |
 | `bucket` | string | No | Bucket to create into: `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` or `PRO_CHALLENGE_DIRECT`. HL-linked subaccounts accept only the first two. See [Instant Funded](#instant-funded). |

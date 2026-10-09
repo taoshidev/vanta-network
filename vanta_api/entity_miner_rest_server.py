@@ -1158,7 +1158,8 @@ class EntityMinerRestServer(MinerRestServer):
                                f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'
                 }), 400
             creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
-                                                       eod_hwm_threshold, intraday_drawdown_threshold)
+                                                       eod_hwm_threshold, intraday_drawdown_threshold,
+                                                       drawdown_criteria)
             if creation_error:
                 return jsonify({'status': 'error', 'message': creation_error}), 400
 

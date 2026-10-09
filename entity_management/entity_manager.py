@@ -546,7 +546,8 @@ class EntityManager(ValidatorBroadcastBase):
         if isinstance(bucket, MinerBucket):
             bucket = bucket.value
         creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
-                                                   eod_hwm_threshold, intraday_drawdown_threshold)
+                                                   eod_hwm_threshold, intraday_drawdown_threshold,
+                                                   drawdown_criteria)
         if creation_error:
             return False, None, creation_error, False
         initial_bucket = MinerBucket(bucket) if bucket else MinerBucket.SUBACCOUNT_CHALLENGE
@@ -1052,8 +1053,9 @@ class EntityManager(ValidatorBroadcastBase):
 
         Entering the pro track snapshots the standard size and records the granted pro size.
         PRO_CHALLENGE_TRANSITION keeps trading the standard account, so only the sizes are
-        recorded; every other pro bucket switches the live account size to the pro size and
-        charges the promotion fee, ValiConfig.promotion_fee_theta at the subaccount's daily loss limit.
+        recorded; every other pro bucket switches the live account size to the pro size and, when that
+        changes the account size, charges the promotion fee (ValiConfig.promotion_fee_theta at the
+        subaccount's daily loss limit). Re-applying the size an account already trades charges nothing.
         Returning to a standard bucket restores the standard size.
 
         broadcast=False leaves telling the other validators to the caller: create_subaccount_ex
@@ -1122,20 +1124,22 @@ class EntityManager(ValidatorBroadcastBase):
             standard_account_size = standard_size_floor
             account_type = AccountType.PRO.value
 
-            # The pro size only goes live outside TRANSITION, so that is when the grant is charged.
-            # Only the increase over the fee already assessed is billed, and the charge floors at
-            # zero: a size already paid for is free rather than crediting theta back. Collateral-exempt
-            # subaccounts (reg_fee_theta == 0) stay exempt on the pro track.
-            if target_bucket.is_pro and subaccount.reg_fee_theta > 0:
+            # TRANSITION winds down the standard account, so it keeps the standard size
+            target_size = pro_account_size if target_bucket.is_pro else standard_account_size
+
+            # The grant is charged when a pro size goes live, i.e. when the account size actually changes
+            # (never in TRANSITION). Re-applying the size an account already trades, as an admin move within
+            # the pro track does, charges nothing even if the fee formula has changed since it paid. Only
+            # the increase over the fee already assessed is billed, and the charge floors at zero: a size
+            # already paid for is free rather than crediting theta back. Collateral-exempt subaccounts
+            # (reg_fee_theta == 0) stay exempt on the pro track.
+            if target_bucket.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size:
                 target_fee_theta = ValiConfig.promotion_fee_theta(pro_account_size, standard_account_size,
                                                                   subaccount.intraday_drawdown_threshold)
                 promotion_fee_theta = max(0.0, target_fee_theta - subaccount.pro_fee_theta)
                 affordable, fee_error = self._verify_promotion_collateral(entity_hotkey, promotion_fee_theta)
                 if not affordable:
                     return False, fee_error
-
-            # TRANSITION winds down the standard account, so it keeps the standard size
-            target_size = pro_account_size if target_bucket.is_pro else standard_account_size
         else:
             # A standard bucket never records a pro size; keep whatever is already there
             pro_account_size = subaccount.pro_account_size

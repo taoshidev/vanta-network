@@ -2734,8 +2734,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                           or pro_account_size is not None):
                 return jsonify({'error': f'Hyperliquid subaccounts only accept bucket '
                                          f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'}), 400
+            # HL-linked subaccounts are always trailing, whatever drawdown_criteria was sent
             creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
-                                                       eod_hwm_threshold, intraday_drawdown_threshold)
+                                                       eod_hwm_threshold, intraday_drawdown_threshold,
+                                                       "trailing" if is_hl else drawdown_criteria)
             if creation_error:
                 return jsonify({'error': creation_error}), 400
 

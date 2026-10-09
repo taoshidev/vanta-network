@@ -24,7 +24,8 @@ def instant_reg_theta(size, eod=None):
 
 
 def margin(size, pro_funded=False, multiplier=1.0):
-    return ValiConfig.margin_theta(size * ValiConfig.ENTITY_MARGIN_RATE, pro_funded, multiplier)
+    # The slash ceiling: 5% of the account in every earning bucket
+    return ValiConfig.margin_theta(size * 0.05, pro_funded, multiplier)
 
 
 class TestCptValuesRedesignTable(unittest.TestCase):
@@ -105,11 +106,12 @@ class TestRegistrationCpt(unittest.TestCase):
         self.assertEqual(ValiConfig.std_reg_cpt(just_over, FIVE), 1500)
         self.assertEqual(ValiConfig.instant_reg_cpt(just_over, 0.05), 400)
 
-    def test_unknown_threshold_is_refused(self):
-        with self.assertRaises(KeyError):
-            ValiConfig.std_reg_cpt(S, 0.04)
-        with self.assertRaises(KeyError):
-            ValiConfig.instant_reg_cpt(S, 0.03)
+    def test_an_unknown_threshold_prices_at_the_default(self):
+        """Creation only stores listed values, so an unknown one is corrupt data: priced at the default
+        rather than raising inside a promotion or a peer's sync."""
+        self.assertEqual(ValiConfig.std_reg_cpt(S, 0.04), ValiConfig.std_reg_cpt(S, FIVE))
+        self.assertEqual(ValiConfig.instant_reg_cpt(S, 0.03), ValiConfig.instant_reg_cpt(S, 0.08))
+        self.assertAlmostEqual(ValiConfig.promotion_fee_theta(P, S, 0.04), ValiConfig.promotion_fee_theta(P, S, FIVE))
 
 
 class TestPromotionFee(unittest.TestCase):

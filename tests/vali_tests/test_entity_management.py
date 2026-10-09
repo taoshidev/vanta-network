@@ -433,6 +433,10 @@ class TestEntityManagement(TestBase):
              "intraday_drawdown_threshold"),
             ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "eod_hwm_threshold": 0.06}, "eod_hwm_threshold"),
             ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "pro_account_size": 500_000}, "pro_account_size"),
+            # Static rules never check the EOD high-water mark an Instant Funded account is priced on
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "drawdown_criteria": "static"}, "drawdown_criteria"),
+            ({"bucket": from_standard, "pro_account_size": 500_000, "drawdown_criteria": "static"},
+             "drawdown_criteria"),
         )
         for kwargs, fragment in cases:
             with self.subTest(**kwargs):

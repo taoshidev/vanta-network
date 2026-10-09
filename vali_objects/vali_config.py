@@ -818,26 +818,32 @@ class ValiConfig:
     PRO_REG_CPT = {0.05: 3000, 0.03: 5000}  # Charged on the pro account size
     # Account sizes at or below this register at half the standard and Instant Funded CPT (double the theta)
     REG_CPT_HALVING_THRESHOLD = 10_000
-    # Margin held for a subaccount that earns payouts: account size * ENTITY_MARGIN_RATE / CPT, for
-    # every account regardless of its daily loss limit. PRO_FUNDED uses PRO_MARGIN_CPT. Realized losses are
-    # slashed at the same rate, so the most a subaccount can be slashed is the margin it holds.
-    ENTITY_MARGIN_RATE = 0.05
+    # Margin held for a subaccount that earns payouts: its slash ceiling (account size * the bucket's 5%
+    # intraday threshold, whatever daily loss limit it chose) / CPT. PRO_FUNDED uses PRO_MARGIN_CPT. Realized
+    # losses are slashed at the same rate, so the most a subaccount can be slashed is the margin it holds.
     MARGIN_CPT = 35
     PRO_MARGIN_CPT = 70
 
     @staticmethod
     def std_reg_cpt(account_size: float, intraday_drawdown_threshold: float | None = None) -> float:
         """Registration CPT for a standard account at this daily loss limit (None is the 5% default),
-        halved at or below REG_CPT_HALVING_THRESHOLD."""
+        halved at or below REG_CPT_HALVING_THRESHOLD. A limit outside STD_REG_CPT prices at the default."""
         dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD if intraday_drawdown_threshold is None else intraday_drawdown_threshold
+        if dll not in ValiConfig.STD_REG_CPT:
+            logger.warning(f"[VALI_CONFIG] No registration CPT for daily loss limit {dll!r}; pricing at the default")
+            dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
         cpt = ValiConfig.STD_REG_CPT[dll]
         return cpt / 2 if (account_size or 0.0) <= ValiConfig.REG_CPT_HALVING_THRESHOLD else cpt
 
     @staticmethod
     def instant_reg_cpt(account_size: float, eod_hwm_threshold: float | None = None) -> float:
         """Registration CPT for an Instant Funded account at this EOD high-water-mark threshold (None
-        is the 8% default), halved at or below REG_CPT_HALVING_THRESHOLD."""
+        is the 8% default), halved at or below REG_CPT_HALVING_THRESHOLD. A threshold outside
+        INSTANT_REG_CPT prices at the default."""
         eod = ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD if eod_hwm_threshold is None else eod_hwm_threshold
+        if eod not in ValiConfig.INSTANT_REG_CPT:
+            logger.warning(f"[VALI_CONFIG] No Instant Funded CPT for EOD threshold {eod!r}; pricing at the default")
+            eod = ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
         cpt = ValiConfig.INSTANT_REG_CPT[eod]
         return cpt / 2 if (account_size or 0.0) <= ValiConfig.REG_CPT_HALVING_THRESHOLD else cpt
 
@@ -851,9 +857,13 @@ class ValiConfig:
 
         both at the subaccount's daily loss limit (None is the 5% default). The credit is what
         registering the standard size costs at the full standard CPT, never the halved one, so a pro
-        size of twice the standard size costs nothing and anything below it is clamped to zero.
+        size of twice the standard size costs nothing and anything below it is clamped to zero. A limit
+        outside the CPT tables prices at the default.
         """
         dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD if intraday_drawdown_threshold is None else intraday_drawdown_threshold
+        if dll not in ValiConfig.PRO_REG_CPT or dll not in ValiConfig.STD_REG_CPT:
+            logger.warning(f"[VALI_CONFIG] No promotion CPT for daily loss limit {dll!r}; pricing at the default")
+            dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
         pro_theta = (pro_account_size or 0.0) / ValiConfig.PRO_REG_CPT[dll]
         credit_theta = max(0.0, standard_account_size or 0.0) / ValiConfig.STD_REG_CPT[dll]
         return max(0.0, pro_theta - credit_theta)

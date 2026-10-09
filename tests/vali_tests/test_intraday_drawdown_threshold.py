@@ -418,3 +418,33 @@ def test_gateway_rejects_hl_options_outside_instant_funded(gateway, options):
     resp, post = _gateway_post(gateway, {"account_size": 100_000, "hl_address": HL_ADDRESS, **options})
     assert resp.status_code == 400
     post.assert_not_called()
+
+
+# ── REST: Instant Funded is trailing only ─────────────────────────────────────
+
+def test_validator_rejects_static_instant_funded(validator, keys):
+    server, client = validator
+    body = _signed_create_body(keys, bucket=MinerBucket.SUBACCOUNT_FUNDED.value)
+    body["drawdown_criteria"] = "static"
+    resp = client.post("/entity/create-subaccount", json=body)
+    assert resp.status_code == 400
+    assert "drawdown_criteria" in json.loads(resp.data)["error"]
+    server._entity_client.create_subaccount.assert_not_called()
+
+
+def test_validator_ignores_static_sent_for_hl_instant_funded(validator, keys):
+    """HL-linked subaccounts are always trailing, so a stray static is not a reason to refuse them."""
+    server, client = validator
+    body = _signed_create_body(keys, hl=True, **HL_INSTANT_FUNDED)
+    body["drawdown_criteria"] = "static"
+    resp = client.post("/entity/create-subaccount", json=body)
+    assert resp.status_code == 200, resp.data
+    server._entity_client.create_hl_subaccount.assert_called_once()
+
+
+def test_gateway_rejects_static_instant_funded(gateway):
+    resp, post = _gateway_post(gateway, {"account_size": 100_000, "asset_class": "crypto",
+                                         "bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "drawdown_criteria": "static"})
+    assert resp.status_code == 400
+    assert "drawdown_criteria" in json.loads(resp.data)["message"]
+    post.assert_not_called()

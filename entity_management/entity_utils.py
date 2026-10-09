@@ -161,7 +161,8 @@ def registration_cpt(account_size, initial_bucket=None, intraday_drawdown_thresh
 
 
 def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=None,
-                              eod_hwm_threshold=None, intraday_drawdown_threshold=None) -> Optional[str]:
+                              eod_hwm_threshold=None, intraday_drawdown_threshold=None,
+                              drawdown_criteria=None) -> Optional[str]:
     """
     Why these subaccount creation options cannot be used together, or None when they can.
 
@@ -169,7 +170,8 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
     SUBACCOUNT_CHALLENGE). Pro buckets require a pro_account_size, which standard buckets reject.
     eod_hwm_threshold is only accepted for the Instant Funded buckets (SUBACCOUNT_FUNDED and
     PRO_CHALLENGE_FROM_STANDARD), which also only accept
-    ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD as their intraday_drawdown_threshold.
+    ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD as their intraday_drawdown_threshold, and only
+    trailing drawdown_criteria: static rules never check the EOD high-water mark the account is priced on.
     """
     from vali_objects.enums.miner_bucket_enum import MinerBucket
 
@@ -202,6 +204,9 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
                  or intraday_drawdown_threshold != ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)):
         return (f"intraday_drawdown_threshold must be "
                 f"{ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD} for bucket {bucket}")
+
+    if instant_funded and drawdown_criteria == "static":
+        return f"drawdown_criteria must be trailing for bucket {bucket}"
 
     return None
 

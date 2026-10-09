@@ -1232,14 +1232,25 @@ class TestMarginCpt(unittest.TestCase):
                 self.manager.slash_on_realized_loss(self.ENTITY, self.HOTKEY, 7_000.0)
                 self.assertAlmostEqual(self.manager.get_cached_collateral(self.ENTITY), 1_000.0 - expected_theta)
 
-    def test_an_unreadable_payout_scale_margins_at_the_network_multiplier(self):
-        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, position_value=0.0,
-                         payout_scale=ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER)
-        self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = [
-            {"standard_account_size": self.STANDARD_SIZE}, RuntimeError("entity server down")]
-        self.manager._collateral_cache = {self.ENTITY: 2 * 5_000 / 35 - 0.01}
-        allowed, _ = self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)
-        self.assertFalse(allowed)
+    def test_an_order_looks_the_subaccount_up_once(self):
+        """The standard size it is exposed at and the payout multiplier come from one record."""
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, position_value=0.0)
+        self.manager._collateral_cache = {self.ENTITY: 1_000.0}
+        self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)
+        self.manager._entity_client.get_subaccount_info_for_synthetic.assert_called_once_with(self.HOTKEY)
+
+    def test_required_collateral_reuses_the_entity_record(self):
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE)
+        self.manager.compute_entity_required_collateral(self.ENTITY)
+        self.manager._entity_client.get_subaccount_info_for_synthetic.assert_not_called()
+
+    def test_an_unreadable_record_withholds_the_charge(self):
+        """As for the exposure itself: without the record the standard size is unknown, so nothing is charged."""
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, position_value=0.0)
+        self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = RuntimeError("entity server down")
+        self.manager._collateral_cache = {self.ENTITY: 0.0}
+        allowed, reason = self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)
+        self.assertTrue(allowed, reason)
 
 
 class TestProPromotionFeeSlashing(unittest.TestCase):
