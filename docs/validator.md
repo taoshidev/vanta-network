@@ -228,9 +228,17 @@ pm2 start run.sh --name sn8 -- --wallet.name validator --wallet.hotkey default -
 pm2 start run.sh --name sn8 -- --wallet.name validator --wallet.hotkey default --netuid 116 --subtensor.network test [--start-generate]
 ```
 
-These commands initialize two PM2 processes:
-- Validator process (named `vanta`)
-- Auto-update process (named `sn8`) that checks for and applies updates every 30 minutes
+`sn8` is the auto-update process (`run.sh`). It checks for and applies updates every 30 minutes, and every time it starts it (re)creates the validator's PM2 apps, in this order:
+
+| PM2 app | Started when | Role |
+|---|---|---|
+| `vanta-state` | `--split-state` is passed | Order-write state servers (positions, limit/market orders, miner accounts, collateral, prices) |
+| `vanta` | always | Core validator: wallet/chain, metagraph, scoring, weight setting |
+| `vanta-orders` | `--no-axon` is passed | Axon and order reception |
+| `vanta-rest`, `vanta-ws` | `--serve` is passed | REST and WebSocket APIs |
+| `generate` | `--start-generate` is passed | Trade data JSON generation |
+
+Each app's PM2 settings (graceful-stop timeout, restart policy) are written by `run.sh` when it creates the app. Restarting an app with `pm2 restart` keeps its old settings, so after an update, restart the validator through `sn8` as described in [Stopping and Restarting Your Validator](#stopping-and-restarting-your-validator).
 
 ### Manual Synchronization
 
@@ -248,20 +256,86 @@ python neurons/validator.py --netuid 116 --subtensor.network test --wallet.name 
 
 Note this won't launch the autoupdater. To launch with the autoupdater, use the run.sh command.
 
-### Stopping Your Validator
+### Stopping and Restarting Your Validator
 
-Press CTRL+C in the terminal or use:
+Use this procedure whenever you stop the validator, or restart all of its services together, for example to deploy an update by hand. `vanta` and `vanta-state` must always be restarted together: they talk to each other over RPC and must run the same code version. The apps that depend on them (`vanta-orders`, `vanta-rest`, `vanta-ws`) are restarted with them.
+
+`lsof` must be installed (`sudo apt install lsof`). The validator's servers use it on startup to clear a stale listener from their port.
+
+#### 1. Stop
+
 ```bash
-pm2 stop sn8 vanta
+pm2 stop sn8
+pm2 stop vanta-ws vanta-rest vanta-orders vanta vanta-state generate
 ```
 
-### Relaunching with Different Configuration
-You will need to do this if you want to change any runtime configuration to run.sh such as adding or removing the `--start-generate`/ `--autosync` flags. Prepare your new `pm2 start run.sh ...` command before proceeding to minimize downtime.
+- Stop `sn8` first. While it runs, an update check can restart apps in the middle of the procedure.
+- Leave out any app you don't run (see the table in [Launch Options](#launch-options)). The order is deliberate: clients first, `vanta-state` last.
+- Each app should stop within 10 seconds; `vanta` and `vanta-state` usually take about 5.
+
+#### 2. Check that every RPC port is free
+
+```bash
+lsof -nP -iTCP:50000-50027 -sTCP:LISTEN
+```
+
+This should print nothing. A clean stop leaves no validator process running, so no port stays held. If something is still listening, the stop did not complete: look at that app's log (`pm2 logs <app> --lines 200`) before starting again.
+
+#### 3. Update (only when deploying new code)
+
 ```bash
 cd vanta-network/
 . venv/bin/activate
-pm2 stop sn8 vanta
-pm2 delete sn8 vanta
+git pull
+pip install -r requirements.txt
+```
+
+#### 4. Start
+
+```bash
+pm2 start sn8
+```
+
+`sn8` deletes and recreates every app with its current settings, in the order shown in [Launch Options](#launch-options). You don't need to start the other apps yourself or wait between them.
+
+#### 5. Confirm the restart is healthy
+
+```bash
+pm2 status
+pm2 logs vanta-state --lines 100
+pm2 logs vanta --lines 100
+```
+
+- `vanta-state` logs `State servers up and daemons started`.
+- `vanta` logs `vanta-state tier is up`.
+- `pm2 status` shows every app `online` with a restart count of 0.
+- There are no repeated `Connection refused` errors after startup.
+
+On a cold start (for example right after an update), the servers that load the most data from disk can take several minutes to come up. The logs show this as progress, not as errors:
+
+- `<Server> still starting (PID ..., Ns elapsed)`: a server is still loading its data. This is logged every 30 seconds, for up to 15 minutes.
+- `Waiting for vanta-state (Ns elapsed); not yet listening: [...]`: `vanta` is waiting for `vanta-state`. This is logged every 30 seconds, for up to 20 minutes.
+
+### How Shutdown and Startup Work
+
+These behaviors are why the procedure above is enough on its own:
+
+- **Bounded, graceful shutdown.** When an app gets PM2's stop signal, it sets a shutdown flag shared with its server subprocesses. The subprocesses exit on their own: they finish their work, save state, and release their ports. Any still running after 4 seconds are force-killed. The whole shutdown takes about 5 seconds, inside the 10-second limit `run.sh` gives `vanta` and `vanta-state` before PM2 force-kills them. Server subprocesses ignore PM2's stop signal and respond only to the shared flag, so the stop signal can't cut them off partway through saving state. If `vanta-state` hasn't finished shutting down after 9 seconds, it force-kills its own subprocesses before exiting, so none of them is left running and holding a port.
+- **No leftover servers on the next start.** Each start uses a new shutdown flag, so server processes left behind by a crashed run can't be revived. Each server also clears any stale listener from its own port before it binds.
+- **Startup waits instead of failing.**
+  - A server binds its port only after loading its data from disk. Startup waits for each server for as long as it is loading, up to 15 minutes, and fails at once if a server process dies.
+  - `vanta` waits for every `vanta-state` server to be listening before it uses them, instead of failing on connection-refused while `vanta-state` loads.
+- **Automatic recovery from a slow start.** If an app does crash during startup, PM2 restarts it with increasing delays (1 second, growing to 15 seconds), up to 20 times. Only an app that keeps crashing beyond that is left `errored`.
+- **Queued requests survive a connection reset.** A request queued inside the validator while a connection to a restarting server is being reset is retried on the new connection instead of failing with an error.
+
+### Relaunching with Different Configuration
+You will need to do this if you want to change any runtime configuration to run.sh such as adding or removing the `--start-generate`/ `--autosync` flags. Prepare your new `pm2 start run.sh ...` command before proceeding to minimize downtime.
+
+Stop and check the ports as in steps 1 and 2 of [Stopping and Restarting Your Validator](#stopping-and-restarting-your-validator). Then delete the apps and relaunch `sn8` with your new options (leave out any app you don't run):
+```bash
+cd vanta-network/
+. venv/bin/activate
+pm2 delete sn8 vanta-ws vanta-rest vanta-orders vanta vanta-state generate
 pm2 start run.sh --name sn8 -- [YOUR NEW OPTIONS]
 pm2 save
 ```

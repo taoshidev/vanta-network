@@ -63,6 +63,7 @@ Usage in validator.py:
     ShutdownCoordinator.signal_shutdown("Validator shutting down")
 """
 import time
+import signal
 import socket
 import inspect
 import threading
@@ -112,6 +113,23 @@ def _enable_tcp_nodelay_on_listener(server) -> None:
     except Exception as e:
         # Non-critical optimization - log but don't fail
         logger.debug(f"Failed to enable TCP_NODELAY on server: {e}")
+
+def ignore_termination_signals_in_child() -> None:
+    """
+    Make a spawned server subprocess ignore SIGTERM and SIGINT; it exits only via the shutdown flag
+    (or SIGKILL from its parent).
+
+    A forked child inherits the parent's Python signal handlers. vanta-state's and the orchestrator's
+    handlers return early once shutdown is signaled, so before this, the parent's terminate() of a
+    straggler was silently swallowed and cost the full join timeout. Restoring SIG_DFL instead would
+    be wrong too: PM2 (treekill) sends SIGTERM to every process in the tree, so children would die
+    at once and skip their graceful shutdown(). Ignoring both signals leaves one shutdown path: the
+    parent sets the shared flag, children exit on it, and the parent kill()s anything still running
+    after its grace window.
+    """
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
 
 class ServerProcessHandle:
     """
@@ -172,15 +190,25 @@ class ServerProcessHandle:
         """Check if server process is running."""
         return self._health_monitor.is_alive()
 
+    def stop_monitoring(self) -> None:
+        """Stop the HealthMonitor so an exiting process is not auto-restarted."""
+        self._health_monitor.stop()
+
     def stop(self, timeout: float = 5.0):
         """
-        Stop the server process gracefully.
+        Stop the server process.
+
+        The child ignores SIGTERM (see ignore_termination_signals_in_child), so there is no
+        per-process graceful signal. If the shared shutdown flag is set, the child is given up to
+        `timeout` seconds to exit on it; whatever is still running after that is SIGKILLed.
+        ServerOrchestrator.shutdown_all_servers does the same for all handles at once, against one
+        shared deadline.
 
         Args:
-            timeout: Seconds to wait for graceful shutdown before force kill
+            timeout: Seconds to wait for a flag-driven exit, and then for the kill to be reaped
         """
         # Stop health monitoring first
-        self._health_monitor.stop()
+        self.stop_monitoring()
 
         if self.process is None or not self.process.is_alive():
             logger.debug(f"{self.service_name} process already stopped")
@@ -188,15 +216,13 @@ class ServerProcessHandle:
 
         logger.info(f"{self.service_name} stopping process (PID: {self.process.pid})...")
 
-        # Terminate gracefully
-        self.process.terminate()
-        self.process.join(timeout=timeout)
+        if ShutdownCoordinator.is_shutdown():
+            self.process.join(timeout=timeout)
 
-        # Force kill if still alive
         if self.process.is_alive():
             logger.warning(f"{self.service_name} force killing process")
             self.process.kill()
-            self.process.join()
+            self.process.join(timeout=timeout)
 
         logger.info(f"{self.service_name} process stopped")
 
@@ -228,6 +254,13 @@ class RPCServerBase(ABC):
     """
     service_name = None
     service_port = None
+
+    # spawn_process readiness wait. A server binds its port only AFTER __init__ finishes loading its
+    # on-disk state, and a cold boot after a deploy (empty page cache) can take minutes for the
+    # heavy loaders (position_manager, debt_ledger, perf_ledger). The wait therefore keeps going for
+    # as long as the child is alive, up to this cap, logging progress every interval.
+    SPAWN_READY_TIMEOUT_S = 900.0
+    SPAWN_READY_PROGRESS_LOG_S = 30.0
 
     @classmethod
     def shutdown_all(cls, force_kill_ports: bool = True) -> None:
@@ -1015,6 +1048,9 @@ class RPCServerBase(ABC):
         assert cls.service_name, f"{cls.__name__} must set service_name class attribute"
         assert cls.service_port, f"{cls.__name__} must set service_port class attribute"
 
+        # First, before any slow init: shutdown reaches this process only via the flag / SIGKILL.
+        ignore_termination_signals_in_child()
+
         # Set process title for monitoring
         setproctitle(f"vali_{cls.service_name}")
 
@@ -1070,7 +1106,7 @@ class RPCServerBase(ABC):
         health_check_interval_s: float = 30.0,
         enable_auto_restart: bool = True,
         wait_for_ready: bool = True,
-        ready_timeout: float = 30.0,
+        ready_timeout: Optional[float] = None,
         **server_kwargs
     ) -> 'ServerProcessHandle':
         """
@@ -1087,7 +1123,8 @@ class RPCServerBase(ABC):
             health_check_interval_s: Seconds between health checks (default: 30.0)
             enable_auto_restart: Whether to auto-restart if process dies (default: True)
             wait_for_ready: Whether to wait for server to be ready before returning (default: True)
-            ready_timeout: Seconds to wait for server readiness (default: 30.0)
+            ready_timeout: Max seconds to wait for readiness while the process is alive
+                           (default: SPAWN_READY_TIMEOUT_S). A process that dies raises at once.
             **server_kwargs: Additional server-specific constructor parameters
                             (e.g., secrets for LivePriceFetcherServer, market_order_manager for LimitOrderServer)
 
@@ -1156,14 +1193,40 @@ class RPCServerBase(ABC):
 
         # Wait for server to be ready (unless wait_for_ready=False)
         if wait_for_ready:
+            if ready_timeout is None:
+                ready_timeout = cls.SPAWN_READY_TIMEOUT_S
             t4 = time.time()
-            if server_ready.wait(timeout=ready_timeout):
+            deadline = t4 + ready_timeout
+            next_progress_log = t4 + cls.SPAWN_READY_PROGRESS_LOG_S
+            # Poll in 1s slices rather than one long wait: a child that dies is reported at once
+            # instead of after the full timeout, and a shutdown signaled mid-boot stops the wait.
+            # Returning early on shutdown (instead of raising) still hands back the handle, so the
+            # orchestrator tracks the child and shutdown_all_servers reaps it.
+            ready = False
+            while True:
+                if server_ready.wait(timeout=max(0.0, min(1.0, deadline - time.time()))):
+                    ready = True
+                    break
+                if not process.is_alive() or time.time() >= deadline:
+                    break
+                if ShutdownCoordinator.is_shutdown():
+                    logger.warning(f"{cls.service_name} shutdown signaled while waiting for readiness")
+                    break
+                if time.time() >= next_progress_log:
+                    logger.info(
+                        f"{cls.service_name} still starting (PID: {process.pid}, "
+                        f"{time.time() - t4:.0f}s elapsed) — waiting for it to finish loading and bind"
+                    )
+                    next_progress_log += cls.SPAWN_READY_PROGRESS_LOG_S
+            if ready:
                 t5 = time.time()
                 ready_ms = (t5 - t4) * 1000
                 total_ms = (t5 - start_time) * 1000
                 logger.info(
                     f"{cls.service_name} server ready ({total_ms:.0f}ms) [ready={ready_ms:.0f}ms]"
                 )
+            elif ShutdownCoordinator.is_shutdown() and process.is_alive():
+                pass  # Logged above; the caller's shutdown path reaps the child.
             else:
                 # Check if process died during startup
                 if not process.is_alive():
@@ -1172,7 +1235,7 @@ class RPCServerBase(ABC):
                         f"❌ {cls.service_name} process died during startup!\n"
                         f"Exit code: {exit_code}\n"
                         f"Common causes:\n"
-                        f"  - Stale shutdown flag (should be fixed by reset_on_attach=True)\n"
+                        f"  - Stale shutdown flag (entrypoints call ShutdownCoordinator.initialize_fresh)\n"
                         f"  - Missing dependencies or configuration\n"
                         f"  - Port already in use\n"
                         f"  - Initialization error in server __init__"
@@ -1184,10 +1247,15 @@ class RPCServerBase(ABC):
                         f"{cls.service_name} process died during startup (exit code: {exit_code})"
                     )
                 else:
-                    logger.warning(
-                        f"{cls.service_name} server may not be fully ready after {ready_timeout}s timeout. "
-                        f"Process is alive but didn't signal ready."
+                    # Still alive after the full cap: almost certainly hung in __init__. Alert, but
+                    # keep the previous continue-anyway behavior — clients retry their connect.
+                    error_msg = (
+                        f"⚠️ {cls.service_name} not ready after {ready_timeout:.0f}s "
+                        f"(PID: {process.pid} alive but never bound its port)"
                     )
+                    logger.error(error_msg)
+                    if slack_notifier:
+                        slack_notifier.send_message(error_msg, level="error")
 
         # Create and return handle with health monitoring
         handle = ServerProcessHandle(

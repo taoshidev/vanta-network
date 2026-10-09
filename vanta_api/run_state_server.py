@@ -51,6 +51,12 @@ from vanta_api.server_readiness import start_readiness_watchdog  # noqa: E402
 # live_price_fetcher, market_order) either have no deferred daemon or start it at spawn.
 STATE_DAEMONS = ['miner_account', 'position_manager', 'limit_order', 'entity_collateral']
 
+# Backstop that force-exits if graceful shutdown hangs. Kept under this tier's PM2 kill_timeout
+# (10s, set in run.sh) so that we SIGKILL our own server subprocesses before PM2 SIGKILLs us; a
+# SIGKILL of this process alone would orphan them and leak their RPC ports. The normal path
+# (shutdown_all_servers: 4s grace + 1s reap) finishes well inside it.
+GRACEFUL_SHUTDOWN_DEADLINE_S = 9
+
 
 def main() -> int:
     # Reuse the validator's config parser for exact parity with core (netuid, wallet.*, serve,
@@ -70,9 +76,10 @@ def main() -> int:
 
     alert_hotkey = validator_hotkey or f"vanta-state@{socket.gethostname()}"
 
-    # Initialize our own (isolated) shutdown namespace; clear any stale flag from a previous run of
-    # THIS app, mirroring how the validator main process initializes.
-    ShutdownCoordinator.initialize(reset_on_attach=True)
+    # Initialize our own (isolated) shutdown namespace in a fresh segment, mirroring the validator
+    # main process. Never reset a previous run's segment in place: orphaned children of a killed
+    # run still read it, and a reset would bring them back to serving on our ports.
+    ShutdownCoordinator.initialize_fresh()
 
     # Secrets are needed by live_price_fetcher (API keys). Same source as core.
     secrets = ValiUtils.get_secrets()
@@ -102,13 +109,33 @@ def main() -> int:
     orchestrator = ServerOrchestrator.get_instance()
     stop = threading.Event()
 
-    # Keep SIGINT default (raises KeyboardInterrupt, breaking blocking sleeps during a slow startup).
-    # Route SIGTERM (PM2's stop signal) to the same path so shutdown is graceful.
-    def _sigterm_to_keyboard_interrupt(signum, _frame):
-        bt.logging.info(f"[vanta-state] Received signal {signum} — interrupting for graceful shutdown.")
-        raise KeyboardInterrupt()
+    # Arms the backstop alarm, then sets the shared shutdown flag, which the spawned state
+    # subprocesses poll to leave their serve loop and shut down gracefully. The main loop also
+    # polls the flag every second, so this handler deliberately does NOT call stop.set():
+    # Event.set() takes a non-reentrant lock that the interrupted main thread may already hold
+    # inside stop.wait(). SIGINT is handled the same way, so it no longer raises KeyboardInterrupt;
+    # startup checks the flag between phases instead.
+    def _signal_handler(signum, _frame):
+        if ShutdownCoordinator.is_shutdown():
+            return
+        signal.alarm(GRACEFUL_SHUTDOWN_DEADLINE_S)  # arm the backstop before anything can block
+        bt.logging.info(f"[vanta-state] Received signal {signum} — initiating graceful shutdown.")
+        ShutdownCoordinator.signal_shutdown(f"vanta-state received signal {signum}")
 
-    signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+    def _alarm_handler(_signum, _frame):
+        # Can fire anywhere, including inside shutdown_all_servers, so nothing here takes an
+        # orchestrator lock. Leave via os._exit, not sys.exit: our server subprocesses ignore
+        # SIGTERM, so multiprocessing's exit hook (terminate + join() with no timeout) would hang
+        # on any survivor until PM2's SIGKILL orphaned it.
+        bt.logging.error("[vanta-state] Graceful shutdown exceeded deadline — killing server "
+                         "subprocesses and force-exiting.")
+        ServerOrchestrator.force_kill_child_processes()
+        ShutdownCoordinator.cleanup()
+        os._exit(1)
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGALRM, _alarm_handler)
 
     try:
         # Run on-disk state migrations BEFORE any server loads that state. vanta-state starts
@@ -123,10 +150,14 @@ def main() -> int:
             bt.logging.error("[vanta-state] Migration failed. Starting state servers without executing migrations")
         else:
             bt.logging.info("[vanta-state] Migrations completed successfully.")
+        if ShutdownCoordinator.is_shutdown():
+            return 0  # stopped during migrations; don't start servers just to tear them down
 
         # Start the include-set (scoped start: skips the global RPC-port kill so we never take down
         # core's subtensor_ops or other core-held ports).
         orchestrator.start_state_servers(context)
+        if ShutdownCoordinator.is_shutdown():
+            return 0
         # pre_run_setup + daemons run HERE (position_manager lives in this tier now), not in core.
         # BOOT ORDER: vanta-state starts BEFORE core, so core-tier servers (elimination, perf_ledger)
         # may not be up yet. pre_run_setup's one-time order-corrections path can touch them, but it is
@@ -135,6 +166,8 @@ def main() -> int:
         # corrections are ever re-enabled with a future TARGET_MS, they will no-op until core is up
         # and re-apply on a later boot — acceptable for a one-time migration mechanism.
         orchestrator.call_pre_run_setup(perform_order_corrections=True)
+        if ShutdownCoordinator.is_shutdown():
+            return 0
         orchestrator.start_server_daemons(STATE_DAEMONS)
         bt.logging.success("[vanta-state] State servers up and daemons started. Blocking until signal.")
 
@@ -153,9 +186,6 @@ def main() -> int:
         while not ShutdownCoordinator.is_shutdown():
             stop.wait(1.0)
         return 0
-    except KeyboardInterrupt:
-        bt.logging.info("[vanta-state] Interrupt received — shutting down.")
-        return 0
     except Exception as e:
         bt.logging.error(f"[vanta-state] FATAL: {type(e).__name__}: {e}")
         bt.logging.error(traceback.format_exc())
@@ -172,6 +202,7 @@ def main() -> int:
             bt.logging.warning(f"[vanta-state] error during shutdown: {e}")
         # Unlink our OWN coordinator segment so it doesn't leak; safe because this app owns its namespace.
         ShutdownCoordinator.cleanup()
+        signal.alarm(0)  # teardown finished in time; cancel the backstop
 
 
 if __name__ == "__main__":

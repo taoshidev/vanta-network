@@ -279,3 +279,183 @@ def monkeypatch_connect(client, fn):
     """Replace the instance's connect with a plain function (no `self`), matching how
     _invoke_rpc calls self.connect(max_retries=..., retry_delay=...)."""
     client.connect = fn
+
+
+def test_reset_connection_recycles_bounded_executor(client):
+    """
+    A transient reset must retire the bounded-call executor so its worker threads (which hold the
+    now-dead per-thread proxy connections) terminate, instead of lingering until GC. A fresh
+    executor is then created lazily on the next bounded call.
+    """
+    # Materialize the executor as a real bounded call would.
+    first = client._get_rpc_executor()
+    assert first is not None
+    assert client._rpc_executor is first
+
+    client._connected = True
+    client._proxy = object()
+    client._reset_connection()
+
+    # The old executor was handed off for shutdown and cleared...
+    assert client._rpc_executor is None
+    assert first._shutdown is True
+    # ...and the next call gets a brand-new, live executor.
+    second = client._get_rpc_executor()
+    assert second is not first
+    assert second._shutdown is False
+
+
+def test_submit_bounded_call_recovers_from_concurrent_recycle(client):
+    """
+    If the executor is recycled between _get_rpc_executor() and submit() (a concurrent reset),
+    submit() raises RuntimeError('cannot schedule new futures after shutdown'). _submit_bounded_call
+    must swallow that once and retry on a fresh executor rather than surfacing a bogus RuntimeError
+    that _invoke_rpc would mis-classify as a business error.
+    """
+    # Pre-shut-down the current executor so the first submit attempt raises RuntimeError.
+    stale = client._get_rpc_executor()
+    stale.shutdown(wait=False)
+
+    ran = {"count": 0}
+
+    def work():
+        ran["count"] += 1
+        return "done"
+
+    future = client._submit_bounded_call(work, (), {})
+    assert future.result(timeout=5) == "done"
+    assert ran["count"] == 1
+    # The retry created a fresh, usable executor.
+    assert client._rpc_executor is not None
+    assert client._rpc_executor is not stale
+
+
+def _wait_until(predicate, timeout=5.0):
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return True
+        _time.sleep(0.01)
+    return False
+
+
+def _inflight_total(client):
+    with client._rpc_executor_lock:
+        return sum(client._rpc_inflight.values())
+
+
+def test_queued_call_cancelled_by_concurrent_reset_self_heals(client):
+    """
+    A call QUEUED on the bounded executor (all workers busy) when another thread's transient error
+    resets the connection gets its future cancelled by the recycle. That must surface as a
+    transient RPCCallCancelledError which _invoke_rpc self-heals, not as a raw CancelledError,
+    which _invoke_rpc used to re-raise as a permanent business error (a spurious order failure).
+    """
+    client.RPC_EXECUTOR_WORKERS = 1  # one worker, so the second call has to queue
+
+    release = threading.Event()
+
+    def behavior(name, args, kwargs):
+        if name == "block_rpc":
+            release.wait(10)
+            return "UNBLOCKED"
+        return "OK"
+
+    _seed_live_but_poisoned(client, behavior)
+
+    def fake_connect(max_retries=None, retry_delay=None):
+        client._proxy = _ScriptedProxy(behavior)
+        client._connected = True
+        client._connection_generation += 1
+        return True
+
+    monkeypatch_connect(client, fake_connect)
+
+    results = {}
+
+    def run(key, method):
+        try:
+            results[key] = client._invoke_rpc(method)
+        except BaseException as e:  # noqa: BLE001 - recorded for the assertions
+            results[key] = e
+
+    blocker = threading.Thread(target=run, args=("blocker", "block_rpc"))
+    blocker.start()
+    assert _wait_until(lambda: _inflight_total(client) == 1)
+    queued = threading.Thread(target=run, args=("queued", "echo_rpc"))
+    queued.start()
+    assert _wait_until(lambda: _inflight_total(client) == 2)  # echo is queued behind block
+
+    # Another thread hit a dead transport and resets (exactly what _invoke_rpc does).
+    with client._conn_lock:
+        client._reset_connection()
+
+    queued.join(5)
+    assert not queued.is_alive()
+    assert results["queued"] == "OK", f"queued call should self-heal, got {results['queued']!r}"
+
+    release.set()
+    blocker.join(5)
+    assert results["blocker"] == "UNBLOCKED"  # the running call finished on its old worker
+
+
+def test_invoke_bounded_maps_cancelled_future_to_transient_error(client):
+    """The cancelled-before-run signal is an RPCCallCancelledError: transient, so retryable."""
+    from shared_objects.error_utils import ErrorUtils
+
+    client.RPC_EXECUTOR_WORKERS = 1
+    release = threading.Event()
+    executor = client._get_rpc_executor()
+    executor.submit(release.wait, 10)  # park the only worker
+
+    errors = {}
+
+    def call():
+        try:
+            client._invoke_bounded("echo_rpc", lambda: "never runs", (), {})
+        except BaseException as e:  # noqa: BLE001
+            errors["e"] = e
+
+    t = threading.Thread(target=call)
+    t.start()
+    assert _wait_until(lambda: _inflight_total(client) == 1)
+    client._recycle_rpc_executor()
+    t.join(5)
+    release.set()
+
+    assert isinstance(errors.get("e"), rcb.RPCCallCancelledError)
+    assert ErrorUtils.is_transient_rpc_error(errors["e"])
+
+
+def test_recycle_is_skipped_once_too_many_threads_are_stranded(client):
+    """Repeated resets during a wedge must not grow threads without bound."""
+    client.RPC_EXECUTOR_WORKERS = 1
+    client.MAX_STRANDED_RPC_THREADS = 1
+    release = threading.Event()
+
+    first = client._get_rpc_executor()
+    client._track_inflight(first, first.submit(release.wait, 10))  # a call parked on a wedge
+    client._recycle_rpc_executor()  # nothing stranded yet -> recycles; 1 thread now stranded
+    assert client._rpc_executor is None
+
+    second = client._get_rpc_executor()
+    client._recycle_rpc_executor()  # 1 stranded >= cap -> keep the current executor
+    assert client._rpc_executor is second
+    assert second._shutdown is False
+
+    release.set()  # the wedge clears; the parked call finishes and the stranded count drains
+    assert _wait_until(lambda: _inflight_total(client) == 0)
+    client._recycle_rpc_executor()
+    assert client._rpc_executor is None
+    assert second._shutdown is True
+
+
+def test_disconnect_shares_the_recycle_path(client):
+    """disconnect() retires the executor through _recycle_rpc_executor (under its lock), even
+    past the stranded-thread cap."""
+    client.MAX_STRANDED_RPC_THREADS = 0  # would block a non-forced recycle
+    executor = client._get_rpc_executor()
+    client.disconnect()
+    assert client._rpc_executor is None
+    assert executor._shutdown is True

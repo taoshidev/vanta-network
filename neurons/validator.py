@@ -82,7 +82,9 @@ def alarm_handler(signum, frame):
     print("Graceful shutdown failed, force killing the process")
     sys.exit(1)  # Exit immediately
 
-# Set up signal handling
+# Set up signal handling. These cover only early boot: ServerOrchestrator.get_instance() (in
+# Validator.__init__) installs its own SIGINT/SIGTERM handler, which replaces these and runs
+# shutdown_all_servers() directly (bounded: grace + kill, inside core's 10s PM2 kill_timeout).
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGALRM, alarm_handler)
@@ -201,8 +203,9 @@ class Validator(ValidatorBase):
         # Initialize ShutdownCoordinator singleton for graceful shutdown coordination
         # Uses shared memory for cross-process communication (no RPC needed)
         # This must be initialized before any RPC servers are created
-        # Reset flag on attach to clear any stale shutdown state from crashed/killed processes
-        ShutdownCoordinator.initialize(reset_on_attach=True)
+        # Fresh segment (unlink any stale one, never reset it in place): a stale segment is still
+        # mapped by orphans of a killed previous run, and a reset would revive them.
+        ShutdownCoordinator.initialize_fresh()
         logger.info("[INIT] ShutdownCoordinator initialized (shared memory)")
 
         logger.info(f"Wallet: {self.wallet}")
@@ -226,6 +229,9 @@ class Validator(ValidatorBase):
         elif self.split_state:
             logger.info("[INIT] --split-state: core hosts its tier only; state servers run in vanta-state")
             orchestrator.start_core_servers(context)
+            # Core's clients, daemons and (on mainnet) startup checks call the vanta-state servers.
+            # Wait for them instead of crash-looping on connection-refused while vanta-state loads.
+            orchestrator.wait_for_state_tier()
         else:
             orchestrator.start_validator_servers(context)
         logger.info("[INIT] Server startup phase complete")

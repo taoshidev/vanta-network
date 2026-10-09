@@ -103,7 +103,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from shared_objects.rpc.port_manager import PortManager
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from shared_objects.rpc.rpc_server_base import RPCServerBase
+from shared_objects.rpc.rpc_server_base import RPCServerBase, ServerProcessHandle
 from vali_objects.vali_config import RPCConnectionMode
 from shared_objects.log import logger
 
@@ -174,6 +174,12 @@ class ServerOrchestrator:
 
     _instance: Optional['ServerOrchestrator'] = None
     _lock = threading.Lock()
+
+    # Window shutdown_all_servers waits for spawned subprocesses to self-exit on the shutdown flag
+    # before SIGKILLing them, then how long it waits for the kills to be reaped. Their sum stays
+    # under vanta-state's 9s alarm and the 10s PM2 kill_timeout that core and vanta-state get.
+    _SERVER_SHUTDOWN_GRACE_S = 4.0
+    _SERVER_KILL_REAP_S = 1.0
 
     # Server registry - defines all available servers
     # Format: server_name -> ServerConfig
@@ -530,9 +536,11 @@ class ServerOrchestrator:
 
         def signal_handler(signum, frame):
             """Handle SIGINT and SIGTERM gracefully."""
+            # shutdown_all_servers sets _shutting_down itself. Setting it here first (as this
+            # handler used to) made that call return immediately, so a SIGTERM never set the
+            # shutdown flag and never reaped the server subprocesses.
             if self._shutting_down:
                 return
-            self._shutting_down = True
 
             signal_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
             logger.info(f"\n{signal_name} received, shutting down servers gracefully...")
@@ -555,7 +563,7 @@ class ServerOrchestrator:
 
     def _cleanup_on_exit(self):
         """Cleanup handler called by atexit on normal exit."""
-        if not self._shutting_down and self._started:
+        if not self._shutting_down and (self._started or self._servers):
             try:
                 self.shutdown_all_servers()
             except Exception:
@@ -662,9 +670,13 @@ class ServerOrchestrator:
             # Store context for use in _start_server
             self._context = context
 
-            # Clean up any stale shared memory from previous runs (before initializing)
+            # Clean up any stale shared memory from previous runs (before initializing). Skipped
+            # when this process already initialized the coordinator (the entrypoints call
+            # initialize_fresh first): unlinking the segment this process is mapped to would split
+            # it from any process that later attaches by name.
             from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
-            ShutdownCoordinator.cleanup_stale_memory()
+            if not ShutdownCoordinator.is_initialized():
+                ShutdownCoordinator.cleanup_stale_memory()
 
             # Determine which servers to start based on mode + explicit include/exclude sets.
             servers_to_start = self._select_servers(mode, include_servers, exclude_servers)
@@ -1601,6 +1613,54 @@ class ServerOrchestrator:
         subtensor_ops.wait_for_initial_update(max_wait_time=metagraph_timeout)
         logger.info("[INIT] Core servers started, metagraph populated")
 
+    def wait_for_state_tier(self, timeout_s: float = 1200.0, poll_s: float = 2.0,
+                            progress_log_s: float = 30.0) -> None:
+        """
+        Block until every vanta-state server (VANTA_STATE_SERVERS) is listening on its port.
+
+        run.sh starts core right after `pm2 start vanta-state` returns, which is as soon as the
+        process launches, not when its servers are up. vanta-state's servers bind only after loading
+        their on-disk state (minutes on a cold mainnet boot), so without this gate core's first
+        state-tier call (5 quick connect attempts) hits connection-refused, core crashes, and PM2's
+        unstable-restart budget runs out. A listening port means ready: servers bind at the end of
+        __init__.
+
+        Raises RuntimeError on timeout so PM2 restarts core with a fresh window. Returns early if
+        shutdown is signaled.
+        """
+        self._load_classes()
+        pending = {}
+        for name in sorted(self.VANTA_STATE_SERVERS):
+            port = getattr(self.SERVERS[name].server_class, 'service_port', None)
+            if isinstance(port, int):
+                pending[name] = port
+
+        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        start = time.time()
+        next_progress_log = start + progress_log_s
+        while True:
+            pending = {n: p for n, p in pending.items()
+                       if not PortManager.is_port_listening(p, host='127.0.0.1')}
+            if not pending:
+                logger.info(f"[INIT] vanta-state tier is up ({time.time() - start:.0f}s wait)")
+                return
+            if ShutdownCoordinator.is_shutdown():
+                logger.warning("[INIT] Shutdown signaled while waiting for vanta-state")
+                return
+            now = time.time()
+            if now - start >= timeout_s:
+                raise RuntimeError(
+                    f"vanta-state servers not listening after {timeout_s:.0f}s: "
+                    f"{sorted(pending)}. Is the vanta-state PM2 app running?"
+                )
+            if now >= next_progress_log:
+                logger.info(
+                    f"[INIT] Waiting for vanta-state ({now - start:.0f}s elapsed); "
+                    f"not yet listening: {sorted(pending)}"
+                )
+                next_progress_log += progress_log_s
+            time.sleep(poll_s)
+
     def start_validator_servers(
         self,
         context: NeuronContext,
@@ -1629,14 +1689,21 @@ class ServerOrchestrator:
         context.is_miner = True
         self.start_neuron_servers(context=context, metagraph_timeout=metagraph_timeout)
 
-    def shutdown_all_servers(self) -> None:
+    def shutdown_all_servers(self, grace_s: Optional[float] = None) -> None:
         """
         Shutdown all servers and disconnect all clients.
 
         This is called automatically at process exit.
         Can also be called manually for cleanup.
+
+        Args:
+            grace_s: How long spawned server subprocesses get to exit on the shutdown flag before
+                     they are SIGKILLed (default _SERVER_SHUTDOWN_GRACE_S). Total time spent on
+                     subprocesses is at most grace_s + _SERVER_KILL_REAP_S.
         """
-        if not self._started:
+        # Also proceed when a startup was interrupted part-way (_started still False but some
+        # subprocesses already spawned), so those children are reaped rather than orphaned.
+        if not self._started and not self._servers:
             try:
                 logger.debug("No servers to shutdown")
             except (ValueError, OSError):
@@ -1654,16 +1721,31 @@ class ServerOrchestrator:
         except (ValueError, OSError):
             pass  # Logging stream already closed (pytest teardown)
 
-        # Disconnect all clients first
+        # Set the shutdown flag FIRST so spawned subprocesses start leaving their serve loop while
+        # the clients below are torn down (each client disconnect can wait up to 2s on its cache
+        # thread). Their grace window starts now. Idempotent — a no-op if the caller's signal
+        # handler already signaled.
+        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        ShutdownCoordinator.signal_shutdown("orchestrator.shutdown_all_servers")
+        grace_deadline = time.time() + (self._SERVER_SHUTDOWN_GRACE_S if grace_s is None else grace_s)
+
         RPCClientBase.disconnect_all()
         self._clients.clear()
 
-        # Shutdown all servers
+        # Stop spawned server subprocesses via their handles. Their RPCServerBase instances live in
+        # the child (entry_point_start_server), so the in-process ServerRegistry used by
+        # RPCServerBase.shutdown_all() below is empty here and cannot reach them; only the parent's
+        # ServerProcessHandle can. Left unstopped, a child orphaned on a parent SIGKILL leaks its port.
+        with self._servers_lock:
+            handles = [(n, h) for n, h in self._servers.items()
+                       if isinstance(h, ServerProcessHandle)]
+        self._reap_server_processes(handles, grace_deadline)
+
+        # Shutdown in-process (LOCAL-mode) servers via the registry + force-clear any ports still held.
         RPCServerBase.shutdown_all(force_kill_ports=True)
         self._servers.clear()
 
-        # Cleanup shared memory
-        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        # Unlink the shared-memory segment last, after children have exited, so none reads it unlinked.
         ShutdownCoordinator.cleanup()
 
         self._started = False
@@ -1673,6 +1755,75 @@ class ServerOrchestrator:
             logger.info("All servers shutdown complete")
         except (ValueError, OSError):
             pass  # Logging stream already closed (pytest teardown)
+
+    @classmethod
+    def _reap_server_processes(cls, handles, grace_deadline: float) -> None:
+        """
+        Stop spawned server subprocesses in bounded time: done by grace_deadline +
+        _SERVER_KILL_REAP_S.
+
+        The shutdown flag must already be set. Children ignore SIGTERM
+        (ignore_termination_signals_in_child), so a straggler can only be SIGKILLed. Every step
+        runs against one shared deadline, rather than one timeout per child, so several slow
+        children cost no more than one.
+        """
+        # Stop the HealthMonitors first so a child exiting during the grace window isn't respawned.
+        for name, handle in handles:
+            try:
+                handle.stop_monitoring()
+            except Exception as e:
+                logger.warning(f"Error stopping {name} health monitor: {e}")
+
+        procs = [(name, handle.process) for name, handle in handles if handle.process is not None]
+
+        # Grace window: children see the flag, run shutdown(), release their ports, and exit.
+        for name, proc in procs:
+            remaining = grace_deadline - time.time()
+            if remaining <= 0:
+                break
+            proc.join(timeout=remaining)
+
+        stragglers = [(name, proc) for name, proc in procs if proc.is_alive()]
+        if not stragglers:
+            return
+        logger.warning(
+            f"{len(stragglers)} server process(es) still running after the shutdown grace window; "
+            f"killing: {[name for name, _ in stragglers]}"
+        )
+        for name, proc in stragglers:
+            try:
+                proc.kill()
+            except Exception as e:
+                logger.warning(f"Error killing {name} server process: {e}")
+        deadline = time.time() + cls._SERVER_KILL_REAP_S
+        for name, proc in stragglers:
+            proc.join(timeout=max(0.0, deadline - time.time()))
+            if proc.is_alive():
+                logger.error(f"{name} server process (PID {proc.pid}) survived SIGKILL")
+
+    @staticmethod
+    def force_kill_child_processes() -> None:
+        """
+        SIGKILL every live multiprocessing child of this process and briefly reap them.
+
+        Last resort for a force-exit path (vanta-state's shutdown alarm). It takes no orchestrator
+        locks, so it is safe from a signal handler that may have interrupted shutdown_all_servers.
+        The caller must then leave via os._exit: children ignore SIGTERM, so multiprocessing's
+        exit hook (terminate() + join() with no timeout) would hang on any survivor.
+        """
+        import multiprocessing
+        children = multiprocessing.active_children()
+        for proc in children:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        deadline = time.time() + 1.0
+        for proc in children:
+            try:
+                proc.join(timeout=max(0.0, deadline - time.time()))
+            except Exception:
+                pass
 
     def __del__(self):
         """Cleanup on destruction."""
