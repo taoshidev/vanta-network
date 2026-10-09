@@ -847,6 +847,60 @@ class ValiConfig:
         registration_theta = size_granted / ValiConfig.entity_cost_per_theta(pro_account_size)
         return max(0.0, premium_theta + registration_theta)
 
+    # CPT schedule: USD of account size per theta. Registration CPTs are keyed by the daily loss limit
+    # (intraday drawdown threshold) the subaccount registered with; Instant Funded's by its EOD
+    # high-water-mark threshold. A lower CPT costs more theta per dollar.
+    STD_REG_CPT = {0.05: 1500, 0.03: 2500}
+    INSTANT_REG_CPT = {0.05: 400, 0.08: 300}
+    PRO_REG_CPT = {0.05: 3000, 0.03: 5000}  # Charged on the pro account size
+    # Account sizes at or below this register at half the standard and Instant Funded CPT (double the theta)
+    REG_CPT_HALVING_THRESHOLD = 10_000
+    # Margin held for a subaccount that earns payouts: account size * ENTITY_MARGIN_RATE / CPT, for
+    # every account regardless of its daily loss limit. PRO_FUNDED uses PRO_MARGIN_CPT.
+    ENTITY_MARGIN_RATE = 0.05
+    MARGIN_CPT = 35
+    PRO_MARGIN_CPT = 70
+
+    @staticmethod
+    def std_reg_cpt(account_size: float, intraday_drawdown_threshold: float | None = None) -> float:
+        """Registration CPT for a standard account at this daily loss limit (None is the 5% default),
+        halved at or below REG_CPT_HALVING_THRESHOLD."""
+        dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD if intraday_drawdown_threshold is None else intraday_drawdown_threshold
+        cpt = ValiConfig.STD_REG_CPT[dll]
+        return cpt / 2 if (account_size or 0.0) <= ValiConfig.REG_CPT_HALVING_THRESHOLD else cpt
+
+    @staticmethod
+    def instant_reg_cpt(account_size: float, eod_hwm_threshold: float | None = None) -> float:
+        """Registration CPT for an Instant Funded account at this EOD high-water-mark threshold (None
+        is the 8% default), halved at or below REG_CPT_HALVING_THRESHOLD."""
+        eod = ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD if eod_hwm_threshold is None else eod_hwm_threshold
+        cpt = ValiConfig.INSTANT_REG_CPT[eod]
+        return cpt / 2 if (account_size or 0.0) <= ValiConfig.REG_CPT_HALVING_THRESHOLD else cpt
+
+    @staticmethod
+    def promotion_fee_theta(pro_account_size: float, standard_account_size: float,
+                            intraday_drawdown_threshold: float | None = None) -> float:
+        """
+        Theta owed to put a subaccount on a pro account of `pro_account_size`:
+
+            pro_size / PRO_REG_CPT - standard_size / STD_REG_CPT
+
+        both at the subaccount's daily loss limit (None is the 5% default). The credit is what
+        registering the standard size costs at the full standard CPT, never the halved one, so a pro
+        size of twice the standard size costs nothing and anything below it is clamped to zero.
+        """
+        dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD if intraday_drawdown_threshold is None else intraday_drawdown_threshold
+        pro_theta = (pro_account_size or 0.0) / ValiConfig.PRO_REG_CPT[dll]
+        credit_theta = max(0.0, standard_account_size or 0.0) / ValiConfig.STD_REG_CPT[dll]
+        return max(0.0, pro_theta - credit_theta)
+
+    @staticmethod
+    def margin_theta(margin_usd: float, pro_funded: bool = False, multiplier: float = 1.0) -> float:
+        """Theta held against `margin_usd` of a subaccount's remaining loss capacity. `multiplier` is
+        the payout multiplier the margin backs (2 for a standard account growing into pro)."""
+        cpt = ValiConfig.PRO_MARGIN_CPT if pro_funded else ValiConfig.MARGIN_CPT
+        return max(0.0, margin_usd or 0.0) * multiplier / cpt
+
     # Entity margin collateral requirement (funded subaccounts only):
     #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
     #   for each funded subaccount with open positions (or placing this order)
