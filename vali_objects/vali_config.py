@@ -558,6 +558,16 @@ class ValiConfig:
 
     # Intraday drawdown thresholds (daily loss limit) a subaccount may choose from at creation
     SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES = [0.03, 0.05]
+    # EOD high-water-mark drawdown thresholds an Instant Funded subaccount (created into SUBACCOUNT_FUNDED or
+    # PRO_CHALLENGE_FROM_STANDARD) may choose from
+    SUBACCOUNT_EOD_DRAWDOWN_VALUES = [0.05, 0.08]
+    # Buckets a subaccount may be created directly into (MinerBucket values)
+    SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED",
+                                   "PRO_CHALLENGE_FROM_STANDARD", "PRO_CHALLENGE_DIRECT"]
+    # Hyperliquid subaccounts have no pro track
+    HL_SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED"]
+    # The only intraday drawdown threshold for an Instant Funded subaccount
+    INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
 
     # Pro account (entity subaccount) rules. The promotion criteria and transition grace period can
     # be overridden for testnet through environment variables of the same name (docs/entity_miner.md).
@@ -575,7 +585,7 @@ class ValiConfig:
     PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
     PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.08
     PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
-    PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08 # Also affects promotion cost
+    PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
 
     # Pro promotion criteria.
     PRO_CHALLENGE_MINIMUM_DAYS = _env_override("PRO_CHALLENGE_MINIMUM_DAYS", 90, int, maximum=3650)
@@ -594,6 +604,9 @@ class ValiConfig:
     # earned on this multiple of their standard account size: at 2.0, $5K of eligible PnL on a
     # $500K pro account pays a $100K standard account (5K / 500K) * 2 * 100K = $2K.
     PRO_TRANSITION_PAYOUT_MULTIPLIER = 2.0
+    # Multiplier used instead when a subaccount is created directly into PRO_CHALLENGE_FROM_STANDARD
+    # (Instant Funded). Not caller-selectable: the fee does not price a larger multiplier.
+    GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER = 1.0
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA
@@ -644,9 +657,9 @@ class ValiConfig:
         4: {MinerAssetClass.CRYPTO: 4.0, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 4.0, MinerAssetClass.HL_ALL: 12.0, MinerAssetClass.ALL_MARKETS: 24.0},
     }
 
-    # Standard subaccount leverage tiers, per the Pro Launch spec §2a: 1 = Base, 2 = Boost I,
-    # 3 = Boost II (max). Challenge and funded share the same limits and account size does not
-    # change them. HL-linked and pro subaccounts never use these tables.
+    # Standard subaccount leverage tiers: 1 = Base, 2 = Boost I, 3 = Boost II (max). Challenge
+    # and funded share the same limits and account size does not change them. HL-linked and pro
+    # subaccounts never use these tables.
     STANDARD_LEVERAGE_TIERS = (1, 2, 3)
     STANDARD_LEVERAGE_TIER_BASE = 1
     STANDARD_LEVERAGE_TIER_DEFAULT = STANDARD_LEVERAGE_TIER_BASE  # new registrations
@@ -662,41 +675,53 @@ class ValiConfig:
         return isinstance(tier, int) and not isinstance(tier, bool) and tier in ValiConfig.STANDARD_LEVERAGE_TIERS
 
     # Per-pair groups narrower than an asset class (see leverage_utils.get_standard_leverage_group).
-    STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH", "SOL", "XRP", "DOGE"}
+    STANDARD_CRYPTO_MAJOR_COINS = {"BTC", "ETH"}
+    STANDARD_CRYPTO_SOL_XRP_DOGE_COINS = {"SOL", "XRP", "DOGE"}
+    STANDARD_FX_TOP_IDS = {"EURUSD", "AUDUSD", "USDCAD", "USDCHF"}
     STANDARD_FX_NZD_CROSS_IDS = {"EURNZD", "GBPNZD", "NZDJPY", "AUDNZD", "NZDCAD", "NZDCHF"}
     STANDARD_INDEX_OTHER_IDS = {"EWYUSDC"}
+    STANDARD_COMMODITY_OTHER_IDS = {"SILVERUSDC", "PLATINUMUSDC"}
 
     # Per-pair positional leverage, as a multiple of balance.
     STANDARD_POSITIONAL_LEVERAGE_BY_TIER = {
         1: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  1.5,
-            StandardLeverageGroup.CRYPTO_OTHER:   0.5,
-            StandardLeverageGroup.FX:             10.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 5.0,
-            StandardLeverageGroup.INDICES_US:     2.5,
-            StandardLeverageGroup.INDICES_OTHER:  1.0,
-            StandardLeverageGroup.COMMODITIES:    1.5,
-            StandardLeverageGroup.EQUITIES:       0.5,
+            StandardLeverageGroup.CRYPTO_MAJORS:       1.5,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 1.5,
+            StandardLeverageGroup.CRYPTO_OTHER:        0.5,
+            StandardLeverageGroup.FX_TOP:              10.0,
+            StandardLeverageGroup.FX:                  10.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      5.0,
+            StandardLeverageGroup.INDICES_US:          2.5,
+            StandardLeverageGroup.INDICES_OTHER:       1.0,
+            StandardLeverageGroup.COMMODITIES:         1.5,
+            StandardLeverageGroup.COMMODITIES_OTHER:   1.5,
+            StandardLeverageGroup.EQUITIES:            0.5,
         },
         2: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  2.0,
-            StandardLeverageGroup.CRYPTO_OTHER:   0.75,
-            StandardLeverageGroup.FX:             15.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 7.5,
-            StandardLeverageGroup.INDICES_US:     4.0,
-            StandardLeverageGroup.INDICES_OTHER:  1.5,
-            StandardLeverageGroup.COMMODITIES:    2.0,
-            StandardLeverageGroup.EQUITIES:       1.0,
+            StandardLeverageGroup.CRYPTO_MAJORS:       2.0,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 2.0,
+            StandardLeverageGroup.CRYPTO_OTHER:        0.75,
+            StandardLeverageGroup.FX_TOP:              15.0,
+            StandardLeverageGroup.FX:                  15.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      7.5,
+            StandardLeverageGroup.INDICES_US:          4.0,
+            StandardLeverageGroup.INDICES_OTHER:       1.5,
+            StandardLeverageGroup.COMMODITIES:         2.0,
+            StandardLeverageGroup.COMMODITIES_OTHER:   2.0,
+            StandardLeverageGroup.EQUITIES:            1.0,
         },
         3: {
-            StandardLeverageGroup.CRYPTO_MAJORS:  2.5,
-            StandardLeverageGroup.CRYPTO_OTHER:   1.0,
-            StandardLeverageGroup.FX:             20.0,
-            StandardLeverageGroup.FX_NZD_CROSSES: 10.0,
-            StandardLeverageGroup.INDICES_US:     5.0,
-            StandardLeverageGroup.INDICES_OTHER:  2.0,
-            StandardLeverageGroup.COMMODITIES:    3.0,
-            StandardLeverageGroup.EQUITIES:       1.5,
+            StandardLeverageGroup.CRYPTO_MAJORS:       7.0,
+            StandardLeverageGroup.CRYPTO_SOL_XRP_DOGE: 4.0,
+            StandardLeverageGroup.CRYPTO_OTHER:        1.5,
+            StandardLeverageGroup.FX_TOP:              25.0,
+            StandardLeverageGroup.FX:                  20.0,
+            StandardLeverageGroup.FX_NZD_CROSSES:      10.0,
+            StandardLeverageGroup.INDICES_US:          8.0,
+            StandardLeverageGroup.INDICES_OTHER:       3.0,
+            StandardLeverageGroup.COMMODITIES:         6.0,
+            StandardLeverageGroup.COMMODITIES_OTHER:   4.0,
+            StandardLeverageGroup.EQUITIES:            2.0,
         },
     }
 
@@ -704,7 +729,7 @@ class ValiConfig:
     STANDARD_CLASS_LEVERAGE_BY_TIER = {
         1: {TradePairCategory.CRYPTO: 1.5, TradePairCategory.FOREX: 10.0, TradePairCategory.EQUITIES: 1.0, TradePairCategory.INDICES: 3.0, TradePairCategory.COMMODITIES: 1.5},
         2: {TradePairCategory.CRYPTO: 2.0, TradePairCategory.FOREX: 15.0, TradePairCategory.EQUITIES: 2.0, TradePairCategory.INDICES: 6.0, TradePairCategory.COMMODITIES: 2.0},
-        3: {TradePairCategory.CRYPTO: 2.5, TradePairCategory.FOREX: 20.0, TradePairCategory.EQUITIES: 3.0, TradePairCategory.INDICES: 8.0, TradePairCategory.COMMODITIES: 3.0},
+        3: {TradePairCategory.CRYPTO: 10.0, TradePairCategory.FOREX: 30.0, TradePairCategory.EQUITIES: 4.0, TradePairCategory.INDICES: 8.0, TradePairCategory.COMMODITIES: 6.0},
     }
 
     # Overall portfolio cap keyed by the subaccount's own asset_class. Single-class subaccounts
@@ -712,15 +737,15 @@ class ValiConfig:
     STANDARD_PORTFOLIO_LEVERAGE_BY_TIER = {
         1: {MinerAssetClass.CRYPTO: 1.5, MinerAssetClass.FOREX: 10.0, MinerAssetClass.EQUITIES: 1.0, MinerAssetClass.COMMODITIES: 1.5, MinerAssetClass.ALL_MARKETS: 15.0},
         2: {MinerAssetClass.CRYPTO: 2.0, MinerAssetClass.FOREX: 15.0, MinerAssetClass.EQUITIES: 2.0, MinerAssetClass.COMMODITIES: 2.0, MinerAssetClass.ALL_MARKETS: 20.0},
-        3: {MinerAssetClass.CRYPTO: 2.5, MinerAssetClass.FOREX: 20.0, MinerAssetClass.EQUITIES: 3.0, MinerAssetClass.COMMODITIES: 3.0, MinerAssetClass.ALL_MARKETS: 25.0},
+        3: {MinerAssetClass.CRYPTO: 10.0, MinerAssetClass.FOREX: 30.0, MinerAssetClass.EQUITIES: 4.0, MinerAssetClass.COMMODITIES: 6.0, MinerAssetClass.ALL_MARKETS: 40.0},
     }
 
     # Per-pair positional leverage.
     PRO_CRYPTO_POSITIONAL_LEVERAGE = {
-        "BTC": 5.0, "ETH": 5.0, "SOL": 5.0, "XRP": 5.0, "DOGE": 5.0,
-        "HYPE": 2.0, "SUI": 2.0, "BNB": 2.0,
-        "kPEPE": 1.5, "ADA": 1.5, "ZEC": 1.5, "LINK": 1.5,
-        "LTC": 1.0, "AVAX": 1.0, "TRX": 1.0,
+        "BTC": 10.0, "ETH": 10.0,
+        "SOL": 5.0, "XRP": 5.0, "DOGE": 5.0,
+        "HYPE": 2.0, "SUI": 2.0, "BNB": 2.0, "kPEPE": 2.0, "ADA": 2.0,
+        "ZEC": 2.0, "LINK": 2.0, "LTC": 2.0, "AVAX": 2.0, "TRX": 2.0,
     }
     PRO_COMMODITY_POSITIONAL_LEVERAGE = {
         "WTIOILUSDC": 8.0, "COPPERUSDC": 8.0, "GOLDUSDC": 8.0, "NATGASUSDC": 8.0,
@@ -729,26 +754,27 @@ class ValiConfig:
     PRO_INDEX_POSITIONAL_LEVERAGE = {
         "SP500USDC": 10.0, "XYZ100USDC": 10.0, "EWYUSDC": 5.0,
     }
-    PRO_EQUITIES_POSITIONAL_LEVERAGE = 2.0
+    PRO_EQUITIES_POSITIONAL_LEVERAGE = 2.5
     PRO_FX_POSITIONAL_LEVERAGE = 20.0
+    # The four pairs in STANDARD_FX_TOP_IDS (EURUSD, AUDUSD, USDCAD, USDCHF).
+    PRO_FX_TOP_POSITIONAL_LEVERAGE = 30.0
     # The six NZD crosses in STANDARD_FX_NZD_CROSS_IDS are held to half the major FX limit.
     PRO_FX_NZD_CROSS_POSITIONAL_LEVERAGE = 10.0
-    # Fallback for a pro-tradable pair none of the tables above names -- see
-    # docs/pro_leverage_discrepancies.md.
+    # Fallback for a pro-tradable pair none of the tables above names.
     PRO_DEFAULT_POSITIONAL_LEVERAGE = 1.0
     
     # Per-asset-class exposure cap.
     PRO_CLASS_LEVERAGE = {
-        TradePairCategory.CRYPTO: 6.0,
+        TradePairCategory.CRYPTO: 12.0,
         TradePairCategory.EQUITIES: 6.0,
         TradePairCategory.COMMODITIES: 8.0,
         TradePairCategory.INDICES: 10.0,
-        TradePairCategory.FOREX: 35.0,
+        TradePairCategory.FOREX: 40.0,
     }
 
     # Overall portfolio cap. A single number, not a per-asset-class row: pro accounts are
     # all_markets in practice and the cap does not vary by asset class.
-    PRO_PORTFOLIO_LEVERAGE = 40.0
+    PRO_PORTFOLIO_LEVERAGE = 50.0
 
     # Correlated-exposure limits, pro accounts only. Multiples of account balance, applied
     # separately to the *gross long* and the *gross short* exposure summed across a correlation
@@ -757,7 +783,7 @@ class ValiConfig:
         "USD": 30.0, "EUR": 30.0, "GBP": 30.0, "JPY": 30.0,
         "CHF": 30.0, "CAD": 30.0, "AUD": 30.0, "NZD": 30.0,
     }
-    PRO_SECTOR_EXPOSURE_LIMIT = 3.0
+    PRO_SECTOR_EXPOSURE_LIMIT = 4.0
     PRO_US_INDEX_EXPOSURE_LIMIT = 10.0  # shared across the six instruments below, same as the indices class limit
     # US index pairs and broad US market ETFs carry the same beta, so they share one limit.
     # EWY, single stocks, and all other ETFs are excluded.
@@ -774,61 +800,88 @@ class ValiConfig:
 
     # Entity Miner Collateral
     ENTITY_REGISTRATION_FEE = 1000  # Theta required to register an entity
-    ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
-    ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
-    ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
     # Largest pro account size in USD. There is no network default: the entity picks the size when it
     # promotes onto the pro track (POST /entity/subaccount/promote), and the network enforces only that
-    # the size is finite, positive, at most this cap, and never below the subaccount's own standard
-    # account size - a pro account cannot shrink the account the subaccount already trades.
+    # the size is finite, positive, at most this cap, and at least PRO_ACCOUNT_SIZE_MIN_MULTIPLE times
+    # the subaccount's own standard account size.
     MAX_PRO_ACCOUNT_SIZE = 1_000_000
+    # A pro account is at least this multiple of the standard account it grows from. Below it the
+    # promotion fee (pro size / PRO_REG_CPT - standard size / STD_REG_CPT) would be negative.
+    PRO_ACCOUNT_SIZE_MIN_MULTIPLE = 2
 
-    # Pro promotion price. The premium term buys the drawdown the entity is already exposed to on
-    # the standard account, priced in theta at the token's USD price; the second term charges
-    # registration's own per-dollar rate on the size granted above the standard account.
-    PRO_PROMOTION_PREMIUM_RATE = 0.10  # Share of the standard account's drawdown allowance charged up front
-    THETA_USD_PRICE = 7.0  # Assumed USD price of one theta
+    # CPT schedule: USD of account size per theta. Registration CPTs are keyed by the daily loss limit
+    # (intraday drawdown threshold) the subaccount registered with; Instant Funded's by its EOD
+    # high-water-mark threshold. A lower CPT costs more theta per dollar.
+    STD_REG_CPT = {0.05: 1500, 0.03: 2500}
+    INSTANT_REG_CPT = {0.05: 400, 0.08: 300}
+    PRO_REG_CPT = {0.05: 3000, 0.03: 5000}  # Charged on the pro account size
+    # Account sizes at or below this register at half the standard and Instant Funded CPT (double the theta)
+    REG_CPT_HALVING_THRESHOLD = 10_000
+    # Margin held for a subaccount that earns payouts: its slash ceiling (account size * the bucket's 5%
+    # intraday threshold, whatever daily loss limit it chose) / CPT. PRO_FUNDED uses PRO_MARGIN_CPT. Realized
+    # losses are slashed at the same rate, so the most a subaccount can be slashed is the margin it holds.
+    MARGIN_CPT = 35
+    PRO_MARGIN_CPT = 70
 
     @staticmethod
-    def entity_cost_per_theta(account_size: float) -> float:
-        """USD of account size per theta that registration charges for an account of this size."""
-        return (ValiConfig.ENTITY_COST_PER_THETA_LOW
-                if (account_size or 0.0) <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD
-                else ValiConfig.ENTITY_COST_PER_THETA)
+    def std_reg_cpt(account_size: float, intraday_drawdown_threshold: float | None = None) -> float:
+        """Registration CPT for a standard account at this daily loss limit (None is the 5% default),
+        halved at or below REG_CPT_HALVING_THRESHOLD. A limit outside STD_REG_CPT prices at the default."""
+        dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD if intraday_drawdown_threshold is None else intraday_drawdown_threshold
+        if dll not in ValiConfig.STD_REG_CPT:
+            logger.warning(f"[VALI_CONFIG] No registration CPT for daily loss limit {dll!r}; pricing at the default")
+            dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+        cpt = ValiConfig.STD_REG_CPT[dll]
+        return cpt / 2 if (account_size or 0.0) <= ValiConfig.REG_CPT_HALVING_THRESHOLD else cpt
 
     @staticmethod
-    def pro_promotion_fee_theta(pro_account_size: float, standard_account_size: float) -> float:
+    def instant_reg_cpt(account_size: float, eod_hwm_threshold: float | None = None) -> float:
+        """Registration CPT for an Instant Funded account at this EOD high-water-mark threshold (None
+        is the 8% default), halved at or below REG_CPT_HALVING_THRESHOLD. A threshold outside
+        INSTANT_REG_CPT prices at the default."""
+        eod = ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD if eod_hwm_threshold is None else eod_hwm_threshold
+        if eod not in ValiConfig.INSTANT_REG_CPT:
+            logger.warning(f"[VALI_CONFIG] No Instant Funded CPT for EOD threshold {eod!r}; pricing at the default")
+            eod = ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
+        cpt = ValiConfig.INSTANT_REG_CPT[eod]
+        return cpt / 2 if (account_size or 0.0) <= ValiConfig.REG_CPT_HALVING_THRESHOLD else cpt
+
+    @staticmethod
+    def promotion_fee_theta(pro_account_size: float, standard_account_size: float,
+                            intraday_drawdown_threshold: float | None = None) -> float:
         """
         Theta owed to put a subaccount on a pro account of `pro_account_size`:
 
-            PREMIUM_RATE * (FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size) / THETA_USD_PRICE
-                + (pro_size - standard_size) / registration CPT
+            pro_size / PRO_REG_CPT - standard_size / STD_REG_CPT
 
-        Registration already paid for `standard_account_size`, so only the size granted above it is
-        charged per dollar: a pro account the same size as the standard one grants no extra dollars
-        and so owes nothing at the registration rate. Callers subtract the fee already assessed, so
-        re-entering the pro track at the same size is free and a larger grant costs only the increase.
-
-        Never negative: both terms are clamped at zero, so a pro size at or below the standard size
-        can only ever cost the premium.
+        both at the subaccount's daily loss limit (None is the 5% default). The credit is what
+        registering the standard size costs at the full standard CPT, never the halved one, so a pro
+        size of twice the standard size costs nothing and anything below it is clamped to zero. A limit
+        outside the CPT tables prices at the default.
         """
-        standard_size = max(0.0, standard_account_size or 0.0)
-        size_granted = max(0.0, (pro_account_size or 0.0) - standard_size)
+        dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD if intraday_drawdown_threshold is None else intraday_drawdown_threshold
+        if dll not in ValiConfig.PRO_REG_CPT or dll not in ValiConfig.STD_REG_CPT:
+            logger.warning(f"[VALI_CONFIG] No promotion CPT for daily loss limit {dll!r}; pricing at the default")
+            dll = ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
+        pro_theta = (pro_account_size or 0.0) / ValiConfig.PRO_REG_CPT[dll]
+        credit_theta = max(0.0, standard_account_size or 0.0) / ValiConfig.STD_REG_CPT[dll]
+        return max(0.0, pro_theta - credit_theta)
 
-        drawdown_allowance_usd = ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size
-        premium_theta = max(0.0, ValiConfig.PRO_PROMOTION_PREMIUM_RATE * drawdown_allowance_usd
-                            / ValiConfig.THETA_USD_PRICE)
-        registration_theta = size_granted / ValiConfig.entity_cost_per_theta(pro_account_size)
-        return max(0.0, premium_theta + registration_theta)
+    @staticmethod
+    def margin_theta(margin_usd: float, pro_funded: bool = False, multiplier: float = 1.0) -> float:
+        """Theta held against `margin_usd` of a subaccount's remaining loss capacity. `multiplier` is
+        the payout multiplier the margin backs (2 for a standard account growing into pro)."""
+        cpt = ValiConfig.PRO_MARGIN_CPT if pro_funded else ValiConfig.MARGIN_CPT
+        return max(0.0, margin_usd or 0.0) * multiplier / cpt
 
     # Entity margin collateral requirement (funded subaccounts only):
-    #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
+    #   required_theta = sum(margin_theta(min(position_value, max_slash_usd - cumulative_slashed_usd)))
     #   for each funded subaccount with open positions (or placing this order)
     # max_slash_usd = account_size * the bucket's intraday drawdown threshold. A subaccount in
     # PRO_CHALLENGE_FROM_STANDARD trades the pro account but is charged against its standard
-    # account size, so the pro account's margin only lands when it reaches PRO_FUNDED.
-    ENTITY_COLLATERAL_CPT_RISK = 35  # USD of remaining loss capacity per theta ($35 of capacity = 1 theta)
+    # account size, so the pro account's margin only lands when it reaches PRO_FUNDED. Realized losses
+    # are slashed through margin_theta as well.
 
     # Hyperliquid tracking configuration
     HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints

@@ -98,7 +98,8 @@ def pro_account_size_error(pro_account_size, standard_account_size=None) -> Opti
     A pro account size is an int or float (never a bool) that is finite, positive and at most
     ValiConfig.MAX_PRO_ACCOUNT_SIZE. The size presets offered by the Command Center are a UI concern.
 
-    `standard_account_size`, when known, is the floor
+    `standard_account_size`, when known, sets the floor: a pro account is at least
+    ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE times the standard account it grows from.
 
     Sizes arrive as parsed JSON, and Python's JSON parser (so Flask's request.get_json) accepts the
     literals NaN, Infinity and -Infinity. NaN fails every ordered comparison, so a plain range check
@@ -114,29 +115,100 @@ def pro_account_size_error(pro_account_size, standard_account_size=None) -> Opti
             f"pro_account_size ${pro_account_size} must be positive and at most "
             f"${ValiConfig.MAX_PRO_ACCOUNT_SIZE:,}"
         )
-    if standard_account_size is not None and pro_account_size < standard_account_size:
-        return (
-            f"pro_account_size ${pro_account_size:,} is below the subaccount's standard account size "
-            f"${standard_account_size:,}"
-        )
+    if standard_account_size is not None:
+        floor = ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE * standard_account_size
+        if pro_account_size < floor:
+            return (
+                f"pro_account_size ${pro_account_size:,} is below {ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE}x "
+                f"the subaccount's standard account size ${standard_account_size:,} (${floor:,})"
+            )
     return None
 
 
-def pro_payout_scale(standard_account_size, pro_account_size) -> float:
+def pro_payout_scale(standard_account_size, pro_account_size, payout_scale=None) -> float:
     """
     Multiplier applied to a pro account's PnL when the subaccount is paid on its standard size.
 
     A trader running the pro challenge after passing the standard challenge trades the larger pro
-    account but is paid on their standard account, uplifted by
-    ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 when either size is missing, so a
-    subaccount that never entered the pro track is paid on its own PnL unchanged.
+    account but is paid on their standard account, uplifted by the subaccount's payout_scale when
+    one was set at creation, else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 when
+    either size is missing, so a subaccount that never entered the pro track is paid on its own
+    PnL unchanged.
 
     Both payout paths (EntityManager.get_payout_scale and the debt-ledger aggregation) read this,
     so the number a trader is quoted is the number the weight calculator pays.
     """
     if not standard_account_size or not pro_account_size:
         return 1.0
-    return ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * standard_account_size / pro_account_size
+    multiplier = payout_scale if payout_scale is not None else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
+    return multiplier * standard_account_size / pro_account_size
+
+
+def is_instant_funded(initial_bucket: Optional[str]) -> bool:
+    """True for a subaccount created straight into a funded bucket (SUBACCOUNT_FUNDED or
+    PRO_CHALLENGE_FROM_STANDARD) rather than earning it through SUBACCOUNT_CHALLENGE."""
+    return initial_bucket in ("SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FROM_STANDARD")
+
+
+def registration_cpt(account_size, initial_bucket=None, intraday_drawdown_threshold=None,
+                     eod_hwm_threshold=None) -> float:
+    """USD of account size per theta a subaccount registers at: the Instant Funded CPT for its EOD
+    high-water-mark threshold when it was created straight into a funded bucket, else the standard CPT
+    for its daily loss limit. Both are halved at or below ValiConfig.REG_CPT_HALVING_THRESHOLD."""
+    if is_instant_funded(initial_bucket):
+        return ValiConfig.instant_reg_cpt(account_size, eod_hwm_threshold)
+    return ValiConfig.std_reg_cpt(account_size, intraday_drawdown_threshold)
+
+
+def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=None,
+                              eod_hwm_threshold=None, intraday_drawdown_threshold=None,
+                              drawdown_criteria=None) -> Optional[str]:
+    """
+    Why these subaccount creation options cannot be used together, or None when they can.
+
+    bucket is a MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS (None means
+    SUBACCOUNT_CHALLENGE). Pro buckets require a pro_account_size, which standard buckets reject.
+    eod_hwm_threshold is only accepted for the Instant Funded buckets (SUBACCOUNT_FUNDED and
+    PRO_CHALLENGE_FROM_STANDARD), which also only accept
+    ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD as their intraday_drawdown_threshold, and only
+    trailing drawdown_criteria: static rules never check the EOD high-water mark the account is priced on.
+    """
+    from vali_objects.enums.miner_bucket_enum import MinerBucket
+
+    if bucket is None:
+        bucket = MinerBucket.SUBACCOUNT_CHALLENGE.value
+    if (not isinstance(bucket, str) or bucket not in {b.value for b in MinerBucket}
+            or bucket not in ValiConfig.SUBACCOUNT_CREATION_BUCKETS):
+        return f"bucket must be one of {ValiConfig.SUBACCOUNT_CREATION_BUCKETS}"
+    miner_bucket = MinerBucket(bucket)
+
+    if miner_bucket.is_pro:
+        if pro_account_size is None:
+            return f"pro_account_size is required for bucket {bucket}"
+        size_error = pro_account_size_error(pro_account_size, account_size)
+        if size_error:
+            return size_error
+    elif pro_account_size is not None:
+        return f"pro_account_size is only accepted for pro buckets, not {bucket}"
+
+    instant_funded = is_instant_funded(bucket)
+    if eod_hwm_threshold is not None:
+        if not instant_funded:
+            return (f"eod_hwm_threshold is only accepted for buckets {MinerBucket.SUBACCOUNT_FUNDED.value} "
+                    f"and {MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}")
+        if isinstance(eod_hwm_threshold, bool) or eod_hwm_threshold not in ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES:
+            return f"eod_hwm_threshold must be one of {ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES}"
+
+    if (instant_funded and intraday_drawdown_threshold is not None
+            and (isinstance(intraday_drawdown_threshold, bool)
+                 or intraday_drawdown_threshold != ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)):
+        return (f"intraday_drawdown_threshold must be "
+                f"{ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD} for bucket {bucket}")
+
+    if instant_funded and drawdown_criteria == "static":
+        return f"drawdown_criteria must be trailing for bucket {bucket}"
+
+    return None
 
 
 def attach_correlated_exposure_report(account_size_data: dict | None) -> None:

@@ -36,7 +36,7 @@ from typing import Dict, Optional, Set
 from flask import jsonify, request, Response
 
 from miner_config import MinerConfig
-from entity_management.entity_utils import pro_account_size_error
+from entity_management.entity_utils import pro_account_size_error, subaccount_creation_error
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vanta_api.miner_rest_server import MinerRestServer
@@ -1045,7 +1045,10 @@ class EntityMinerRestServer(MinerRestServer):
             "asset_class": "crypto" | "forex" | "equities",  // Required
             "account_size": float,                           // Required, must be > 0
             "leverage_tier": 1 | 2 | 3,                      // Optional, default 1 (standard leverage tier)
-            "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults
+            "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults; only 0.03 for Instant Funded
+            "bucket": str,                                   // Optional, SUBACCOUNT_CREATION_BUCKETS; default SUBACCOUNT_CHALLENGE
+            "pro_account_size": float,                       // Required for pro buckets only
+            "eod_hwm_threshold": 0.05 | 0.08,                // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; Instant Funded (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FROM_STANDARD) only
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -1055,6 +1058,8 @@ class EntityMinerRestServer(MinerRestServer):
             "account_size": float,     // Required, must be > 0
             "payout_address": "0x...", // Optional, EVM address for USDC payouts
             "intraday_drawdown_threshold": 0.03 | 0.05,  // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults
+            "bucket": "SUBACCOUNT_CHALLENGE" | "SUBACCOUNT_FUNDED",  // Optional, HL_SUBACCOUNT_CREATION_BUCKETS
+            "eod_hwm_threshold": 0.05 | 0.08,  // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; SUBACCOUNT_FUNDED (Instant Funded) only
             "collateral_exempt": bool  // Optional, default false
         }
         """
@@ -1142,6 +1147,22 @@ class EntityMinerRestServer(MinerRestServer):
             if account_size <= 0:
                 return jsonify({'status': 'error', 'message': 'account_size must be positive'}), 400
 
+            bucket = request_data.get("bucket")
+            pro_account_size = request_data.get("pro_account_size")
+            eod_hwm_threshold = request_data.get("eod_hwm_threshold")
+            if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
+                          or pro_account_size is not None):
+                return jsonify({
+                    'status': 'error',
+                    'message': f'Hyperliquid subaccounts only accept bucket '
+                               f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'
+                }), 400
+            creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
+                                                       eod_hwm_threshold, intraday_drawdown_threshold,
+                                                       drawdown_criteria)
+            if creation_error:
+                return jsonify({'status': 'error', 'message': creation_error}), 400
+
             if is_hl:
                 if not isinstance(hl_address, str) or not re.match(ValiConfig.HL_ADDRESS_REGEX, hl_address):
                     return jsonify({
@@ -1191,6 +1212,11 @@ class EntityMinerRestServer(MinerRestServer):
                 message_dict["hl_address"] = hl_address
                 if payout_address is not None:
                     message_dict["payout_address"] = payout_address
+            # Signed only when sent, so a request without them signs the legacy field set
+            for name, value in (("intraday_drawdown_threshold", intraday_drawdown_threshold), ("bucket", bucket),
+                                ("pro_account_size", pro_account_size), ("eod_hwm_threshold", eod_hwm_threshold)):
+                if value is not None:
+                    message_dict[name] = value
             message = json.dumps(message_dict, sort_keys=True).encode('utf-8')
             signature = self._coldkey.sign(message).hex()
         except Exception as e:
@@ -1212,12 +1238,13 @@ class EntityMinerRestServer(MinerRestServer):
                 payload["collateral_exempt"] = collateral_exempt
             if leverage_tier is not None:
                 payload["leverage_tier"] = leverage_tier
-            # Unsigned, like drawdown_criteria, so the signature stays byte-identical to the legacy field set
-            if intraday_drawdown_threshold is not None:
-                payload["intraday_drawdown_threshold"] = intraday_drawdown_threshold
-            # client_ref rides unsigned alongside drawdown_criteria. message_dict
-            # above is intentionally left untouched so the coldkey signature is
-            # byte-identical to the legacy field set (forward/back compatible).
+            # Sent exactly as signed in message_dict above
+            for name, value in (("intraday_drawdown_threshold", intraday_drawdown_threshold), ("bucket", bucket),
+                                ("pro_account_size", pro_account_size), ("eod_hwm_threshold", eod_hwm_threshold)):
+                if value is not None:
+                    payload[name] = value
+            # client_ref rides unsigned alongside drawdown_criteria and is never
+            # added to message_dict, so it never changes the coldkey signature.
             if client_ref is not None:
                 payload["client_ref"] = client_ref
             if is_hl:
@@ -1345,7 +1372,8 @@ class EntityMinerRestServer(MinerRestServer):
             "synthetic_hotkey": "<entity_hotkey>_<id>",  // Required
             "leverage_tier": 1 | 2 | 3                   // Required
         }
-        Lowering the tier requires the subaccount to have no open positions.
+        A change that lowers any of the subaccount's current limits requires it to have no open
+        positions.
         """
         import requests as http_requests
 
@@ -1426,12 +1454,15 @@ class EntityMinerRestServer(MinerRestServer):
           SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT
           SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
           PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
+        Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FROM_STANDARD)
+        are refused the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_TRANSITION hop.
 
-        pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is not
-        below the subaccount's own standard account size. Send one the first time a subaccount enters
-        the pro track; afterwards sending one replaces the recorded size and omitting it keeps it. The
-        entity pays the promotion fee out of its collateral once the pro account goes live, and a pro
-        size equal to the standard size is charged nothing at the registration rate.
+        pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is at
+        least twice the subaccount's own standard account size. Send one the first time a subaccount
+        enters the pro track; afterwards sending one replaces the recorded size and omitting it keeps it.
+        The entity pays the promotion fee out of its collateral once the pro account goes live:
+        pro size / PRO_REG_CPT minus standard size / STD_REG_CPT, both at the subaccount's daily loss
+        limit, so a pro size of exactly twice the standard size is charged nothing.
 
         Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
         PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and

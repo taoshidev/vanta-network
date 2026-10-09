@@ -603,11 +603,23 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
         self.assertIsNone(data["entity_collateral"]["headroom_theta"])
         self.assertIsNone(data["entity_collateral"]["headroom_usd"])
 
-    def test_headroom_is_converted_to_usd(self):
-        _, data = self._get()
-        self.assertEqual(
-            data["entity_collateral"]["headroom_usd"], 100.0 * ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+    def test_headroom_is_converted_to_usd_at_the_subaccount_margin_rate(self):
+        """100 theta of headroom is $7,000 of pro funded margin, $3,500 of standard funded margin, and $1,750
+        of margin for a standard account growing into pro (held at twice the rate for its 2x payouts)."""
+        cases = (
+            (MinerBucket.PRO_FUNDED, None, 100.0 * ValiConfig.PRO_MARGIN_CPT),
+            (MinerBucket.SUBACCOUNT_FUNDED, None, 100.0 * ValiConfig.MARGIN_CPT),
+            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, None,
+             100.0 * ValiConfig.MARGIN_CPT / ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER),
+            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER,
+             100.0 * ValiConfig.MARGIN_CPT),
         )
+        for bucket, payout_scale, expected in cases:
+            with self.subTest(bucket=bucket, payout_scale=payout_scale):
+                self.server._miner_account_client.get_account.return_value = _pro_account(bucket=bucket)
+                self.server._entity_client.get_subaccount_info_for_synthetic.return_value = {"payout_scale": payout_scale}
+                _, data = self._get()
+                self.assertAlmostEqual(data["entity_collateral"]["headroom_usd"], expected)
 
     def test_non_subaccount_hotkey_is_rejected(self):
         status, _ = self._get("not_a_subaccount")
@@ -634,13 +646,13 @@ class TestTradePairsEndpointProUniverse(unittest.TestCase):
         return json.loads(resp.data)
 
     def test_per_pair_pro_leverage_matches_the_published_table(self):
-        """One pair per category against the spec values, read off the payload a client gets."""
+        """One pair per category against the expected values, read off the payload a client gets."""
         expected = {
-            'BTCUSDC': 5.0, 'ADAUSDC': 1.5, 'TRXUSDC': 1.0,
-            'EURUSD': 20.0, 'NZDJPY': 10.0,
+            'BTCUSDC': 10.0, 'ETHUSDC': 10.0, 'SOLUSDC': 5.0, 'ADAUSDC': 2.0, 'TRXUSDC': 2.0,
+            'EURUSD': 30.0, 'USDCHF': 30.0, 'USDJPY': 20.0, 'NZDJPY': 10.0,
             'GOLDUSDC': 8.0, 'SILVERUSDC': 5.0,
             'SP500USDC': 10.0, 'EWYUSDC': 5.0,
-            'NVDA': 2.0,
+            'NVDA': 2.5,
         }
         data = self._get()
         by_id = {entry['trade_pair_id']: entry for entry in data['allowed'] + data['disabled']}

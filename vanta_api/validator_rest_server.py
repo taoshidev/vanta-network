@@ -20,7 +20,7 @@ from bittensor_wallet import Keypair
 from entity_management.entity_client import EntityClient
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from entity_management.entity_utils import create_subaccount_dashboard
-from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error
+from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey, pro_account_size_error, subaccount_creation_error
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.metagraph_client import MetagraphClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -2624,7 +2624,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
           }'
 
         intraday_drawdown_threshold is optional: one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
-        applied in every bucket. Omitted keeps each bucket's default.
+        applied in every bucket but PRO_FUNDED. Omitted keeps each bucket's default. Instant Funded
+        (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FROM_STANDARD) only accepts ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD.
+
+        Optional bucket options (see EntityManager.create_subaccount_ex):
+          bucket: one of ValiConfig.SUBACCOUNT_CREATION_BUCKETS (default SUBACCOUNT_CHALLENGE)
+          pro_account_size: required for pro buckets
+          eod_hwm_threshold: one of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, Instant Funded only
+        intraday_drawdown_threshold and the bucket options are each signed only when sent, so a request
+        without them verifies against the legacy field set.
+        Hyperliquid subaccounts accept bucket, limited to ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS, and
+        eod_hwm_threshold when created into SUBACCOUNT_FUNDED; they have no pro options.
 
         Example (HL-linked):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
@@ -2685,12 +2695,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Standard leverage tier 1 to 3; EntityManager applies the default when omitted
             leverage_tier = data.get('leverage_tier')
             # Intraday drawdown threshold, one of SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES, for standard and HL
-            # subaccounts alike. Omitted keeps each bucket's default. Unsigned, like drawdown_criteria.
+            # subaccounts alike. Omitted keeps each bucket's default.
             intraday_drawdown_threshold = data.get('intraday_drawdown_threshold')
+            bucket = data.get('bucket')
+            pro_account_size = data.get('pro_account_size')
+            eod_hwm_threshold = data.get('eod_hwm_threshold')
             # Optional idempotency key. Deliberately NOT part of the signed
-            # payload (sig_dict below is frozen) so that a new gateway signing
-            # the legacy field set still verifies against an older validator,
-            # and vice versa. Absent/None => today's behavior (no dedupe).
+            # payload so that a gateway sending it still verifies against an
+            # older validator, and vice versa. Absent/None => today's behavior (no dedupe).
             # required_fields must NEVER gain 'client_ref' — it stays optional.
             client_ref = data.get('client_ref')
             if client_ref is not None:
@@ -2717,6 +2729,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': 'account_size must be a positive number'}), 400
             except (TypeError, ValueError):
                 return jsonify({'error': 'account_size must be a valid number'}), 400
+
+            if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
+                          or pro_account_size is not None):
+                return jsonify({'error': f'Hyperliquid subaccounts only accept bucket '
+                                         f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'}), 400
+            # HL-linked subaccounts are always trailing, whatever drawdown_criteria was sent
+            creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
+                                                       eod_hwm_threshold, intraday_drawdown_threshold,
+                                                       "trailing" if is_hl else drawdown_criteria)
+            if creation_error:
+                return jsonify({'error': creation_error}), 400
 
             # Validate asset_class is a non-empty string
             if not isinstance(asset_class, str) or not asset_class.strip():
@@ -2754,6 +2777,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 sig_dict["hl_address"] = hl_address
                 if payout_address is not None:
                     sig_dict["payout_address"] = payout_address
+            # Signed only when sent, so a legacy request without them verifies unchanged
+            for name, value in (("intraday_drawdown_threshold", intraday_drawdown_threshold), ("bucket", bucket),
+                                ("pro_account_size", pro_account_size), ("eod_hwm_threshold", eod_hwm_threshold)):
+                if value is not None:
+                    sig_dict[name] = value
             message = json.dumps(sig_dict, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
@@ -2776,13 +2804,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 success, subaccount_info, message = self._entity_client.create_hl_subaccount(
                     entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
                     payout_address=payout_address, client_ref=client_ref,
-                    intraday_drawdown_threshold=intraday_drawdown_threshold,
+                    intraday_drawdown_threshold=intraday_drawdown_threshold, bucket=bucket,
+                    eod_hwm_threshold=eod_hwm_threshold,
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(
                     entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
                     drawdown_criteria=drawdown_criteria, leverage_tier=leverage_tier,
                     client_ref=client_ref, intraday_drawdown_threshold=intraday_drawdown_threshold,
+                    bucket=bucket, pro_account_size=pro_account_size, eod_hwm_threshold=eod_hwm_threshold,
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 
@@ -2883,8 +2913,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Change a standard subaccount's leverage tier (1 to 3). The entity coldkey signs the sorted
         JSON of every field except signature and version; nonce + timestamp make each signature
-        single use within a 5 minute window (NonceManager). Lowering the tier, or leaving tier 0
-        (no stored tier), requires the subaccount to have no open positions.
+        single use within a 5 minute window (NonceManager). A change that lowers any of the
+        subaccount's current limits requires it to have no open positions.
 
         Example:
         curl -X POST http://localhost:48888/entity/subaccount/leverage-tier \\
@@ -2994,12 +3024,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
           SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
           PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
 
+        Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FROM_STANDARD)
+        cannot take the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_TRANSITION hop. One created into
+        PRO_CHALLENGE_FROM_STANDARD still reaches PRO_FUNDED by passing its challenge.
+
         Requires a tier 200 API key.
         Ownership is proven via entity coldkey
 
         pro_account_size is the size the entity is asking for, capped at ValiConfig.MAX_PRO_ACCOUNT_SIZE
-        and never below the subaccount's own standard account size. The request fails when the entity's
-        collateral cannot cover it and it is needed.
+        and at least ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE times the subaccount's own standard account
+        size. The promotion fee is ValiConfig.promotion_fee_theta at the subaccount's daily loss limit; the
+        request fails when the entity's collateral cannot cover it and it is needed.
 
         Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
         PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
@@ -3782,9 +3817,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         try:
             headroom_theta = self._entity_collateral_client.get_entity_collateral_headroom(entity_hotkey)
             collateral['headroom_theta'] = headroom_theta
+            # The margin this subaccount could still open against the headroom: theta * CPT / multiplier,
+            # at this subaccount's margin CPT and payout multiplier (see compute_entity_required_collateral).
+            margin_cpt = ValiConfig.PRO_MARGIN_CPT if bucket == MinerBucket.PRO_FUNDED else ValiConfig.MARGIN_CPT
+            multiplier = 1.0
+            if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+                payout_scale = (self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}).get('payout_scale')
+                multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
             # None means the entity's balance is unknown, which is not the same as no headroom.
             collateral['headroom_usd'] = (None if headroom_theta is None
-                                          else headroom_theta * ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
+                                          else headroom_theta * margin_cpt / multiplier)
             collateral['subaccount_margin_usd'] = self._entity_collateral_client.compute_subaccount_margin_requirement(
                 synthetic_hotkey, bucket
             )

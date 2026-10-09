@@ -151,6 +151,7 @@ def manager():
             stack.enter_context(patch(path))
         mgr = ChallengePeriodManager(is_backtesting=True)
         mgr._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
+        mgr._entity_client.is_instant_funded.return_value = False
         yield mgr
 
 
@@ -1311,6 +1312,28 @@ def test_entity_rejection_blocks_the_promotion(hop_manager):
     hop_manager._position_client.close_all_positions.assert_not_called()
 
 
+@pytest.mark.parametrize("instant_funded,allowed", [(False, True), (True, False)])
+def test_instant_funded_cannot_enter_the_transition(hop_manager, instant_funded, allowed):
+    _in_bucket(hop_manager, MinerBucket.SUBACCOUNT_FUNDED)
+    hop_manager._entity_client.is_instant_funded.return_value = instant_funded
+
+    success, _ = hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
+
+    assert success == allowed
+    expected = MinerBucket.PRO_CHALLENGE_TRANSITION if allowed else MinerBucket.SUBACCOUNT_FUNDED
+    assert hop_manager.miner_states[HOTKEY].current_bucket == expected
+
+
+def test_instant_funded_cannot_be_admin_moved_into_the_transition(hop_manager):
+    _in_bucket(hop_manager, MinerBucket.SUBACCOUNT_FUNDED)
+    hop_manager._entity_client.is_instant_funded.return_value = True
+
+    success, _ = hop_manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)
+
+    assert not success
+    assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
+
+
 @pytest.mark.parametrize("bucket", NO_PROMOTION)
 def test_buckets_off_the_promotion_path_are_refused(hop_manager, bucket):
     """Each hop is single use, so the target of the last one has no promotion of its own."""
@@ -1756,6 +1779,7 @@ class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
             stack.enter_context(patch(path))
         self.manager = ChallengePeriodManager(is_backtesting=True)
         self.manager._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
+        self.manager._entity_client.is_instant_funded.return_value = False
         stack.enter_context(patch.object(self.manager, "_sync_buckets_to_accounts"))
         stack.enter_context(patch.object(self.manager, "_save_to_disk"))
         self.manager.set_miner_bucket(ORDER_HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, ORDER_NOW_MS)

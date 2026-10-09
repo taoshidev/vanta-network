@@ -50,7 +50,7 @@ STANDARD_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUN
 # types. Each is (size, fragment of the rejection message). These are refused on shape alone, so every entry
 # point rejects them whether or not it can see the subaccount's standard account size.
 OUT_OF_RANGE = "must be positive and at most"
-BELOW_STANDARD = "is below the subaccount's standard account size"
+BELOW_STANDARD = "is below 2x the subaccount's standard account size"
 NOT_FINITE = "must be a finite number"
 NOT_A_NUMBER = "must be a number"
 INVALID_SIZES = (
@@ -156,17 +156,12 @@ class TestProAccountSizeConfig(unittest.TestCase):
             self.assertNotIn("MIN_PRO_ACCOUNT_SIZE", f.read())
 
     def test_the_promotion_fee_is_never_negative(self):
-        """A pro size at or below the standard size grants no dollars, so nothing is owed at the
-        registration rate and the fee is the premium alone - never a credit back."""
-        premium = (ValiConfig.PRO_PROMOTION_PREMIUM_RATE
-                   * ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD * STANDARD_SIZE
-                   / ValiConfig.THETA_USD_PRICE)
-        for pro_size in (STANDARD_SIZE, STANDARD_SIZE - 1, 1.0, 0.0):
+        """At or below twice the standard size the pro registration is worth no more than the standard
+        registration it is credited with, so the fee is zero - never a credit back."""
+        for pro_size in (2 * STANDARD_SIZE, STANDARD_SIZE, STANDARD_SIZE - 1, 1.0, 0.0):
             with self.subTest(pro_account_size=pro_size):
-                fee = ValiConfig.pro_promotion_fee_theta(pro_size, STANDARD_SIZE)
-                self.assertGreaterEqual(fee, 0.0)
-                self.assertAlmostEqual(fee, premium)
-        self.assertGreaterEqual(ValiConfig.pro_promotion_fee_theta(0.0, 0.0), 0.0)
+                self.assertEqual(ValiConfig.promotion_fee_theta(pro_size, STANDARD_SIZE), 0.0)
+        self.assertEqual(ValiConfig.promotion_fee_theta(0.0, 0.0), 0.0)
 
 
 class TestAdoptProSizing(unittest.TestCase):
@@ -237,14 +232,14 @@ class TestProAccountSizeError(unittest.TestCase):
             with self.subTest(size=size):
                 self.assertIsNone(pro_account_size_error(size))
 
-    def test_the_standard_account_size_is_the_floor_when_the_caller_knows_it(self):
-        """A promotion grants size; it never shrinks the account the subaccount already trades."""
-        for size in (STANDARD_SIZE - 0.01, STANDARD_SIZE / 2, 1):
+    def test_twice_the_standard_account_size_is_the_floor_when_the_caller_knows_it(self):
+        """A pro account is at least twice the standard account it grows from."""
+        for size in (2 * STANDARD_SIZE - 0.01, STANDARD_SIZE, STANDARD_SIZE / 2, 1):
             with self.subTest(size=size):
                 error = pro_account_size_error(size, STANDARD_SIZE)
                 self.assertIn(BELOW_STANDARD, error)
                 self.assertIn("pro_account_size", error)
-        for size in (STANDARD_SIZE, STANDARD_SIZE + 0.01, GRANTED_SIZE, 1_000_000):
+        for size in (2 * STANDARD_SIZE, 2 * STANDARD_SIZE + 0.01, GRANTED_SIZE, 1_000_000):
             with self.subTest(size=size):
                 self.assertIsNone(pro_account_size_error(size, STANDARD_SIZE))
 
@@ -336,8 +331,8 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.set_size.assert_not_called()
 
     def test_range_bounds_are_inclusive(self):
-        """The floor is the subaccount's own standard size and the cap is MAX_PRO_ACCOUNT_SIZE; both inclusive."""
-        for size, reason in ((STANDARD_SIZE - 1, BELOW_STANDARD), (STANDARD_SIZE, None), (200_000, None),
+        """The floor is twice the subaccount's own standard size and the cap is MAX_PRO_ACCOUNT_SIZE; both inclusive."""
+        for size, reason in ((2 * STANDARD_SIZE - 1, BELOW_STANDARD), (2 * STANDARD_SIZE, None), (500_000, None),
                              (1_000_000, None), (1_000_001, OUT_OF_RANGE)):
             with self.subTest(pro_account_size=size):
                 manager = self.manager = _bare_manager()
@@ -351,13 +346,9 @@ class TestApplyBucketAccountSize(unittest.TestCase):
                 info = self._info(hotkey)
                 self.assertEqual(info.pro_account_size, size)
                 self.assertEqual(info.account_size, size)
-                if size == STANDARD_SIZE:
-                    # Already trading that size, so there is nothing to resize
-                    self.set_size.assert_not_called()
-                    continue
                 self.assertEqual(self.set_size.call_args.kwargs["account_size"], size)
                 self.assertEqual(self.set_size.call_args.kwargs["collateral_balance_theta"],
-                                 size / ValiConfig.ENTITY_COST_PER_THETA)
+                                 size / ValiConfig.std_reg_cpt(size))
 
     def test_invalid_explicit_sizes_are_rejected_for_every_target_and_change_nothing(self):
         pro = _add_pro(self.manager)
@@ -369,31 +360,31 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.assertIsNone(self._info(self.standard).pro_account_size)
         self.assertEqual(self._info(pro).pro_account_size, GRANTED_SIZE)
 
-    def test_a_size_below_the_standard_account_is_rejected_for_every_target(self):
-        """Promoting grants size. A subaccount trading $100K cannot be put on a smaller pro account,
-        whether the standard size is the one it trades now or the one snapshotted on entry."""
+    def test_a_size_below_twice_the_standard_account_is_rejected_for_every_target(self):
+        """A subaccount trading $100K cannot be put on a pro account below $200K, whether the standard
+        size is the one it trades now or the one snapshotted on entry."""
         pro = _add_pro(self.manager)
         for hotkey in (self.standard, pro):
             for bucket in PRO_BUCKETS + STANDARD_BUCKETS:
-                for size in (STANDARD_SIZE - 0.01, STANDARD_SIZE / 2, 1):
+                for size in (2 * STANDARD_SIZE - 0.01, STANDARD_SIZE, STANDARD_SIZE / 2, 1):
                     with self.subTest(hotkey=hotkey, bucket=bucket, pro_account_size=size):
                         self._assert_rejected_unchanged(hotkey, bucket, size, BELOW_STANDARD)
         self.assertIsNone(self._info(self.standard).pro_account_size)
         self.assertEqual(self._info(pro).pro_account_size, GRANTED_SIZE)
 
-    def test_a_pro_size_equal_to_the_standard_account_is_allowed(self):
+    def test_a_pro_size_of_twice_the_standard_account_is_allowed_and_free(self):
         success, message = self.manager.apply_bucket_account_size(
-            self.standard, MinerBucket.PRO_CHALLENGE_DIRECT, STANDARD_SIZE
+            self.standard, MinerBucket.PRO_CHALLENGE_DIRECT, 2 * STANDARD_SIZE
         )
         self.assertTrue(success, message)
         info = self._info(self.standard)
-        self.assertEqual(info.pro_account_size, STANDARD_SIZE)
+        self.assertEqual(info.pro_account_size, 2 * STANDARD_SIZE)
         self.assertEqual(info.standard_account_size, STANDARD_SIZE)
-        self.assertEqual(info.account_size, STANDARD_SIZE)
+        self.assertEqual(info.account_size, 2 * STANDARD_SIZE)
         self.assertEqual(info.account_type, AccountType.PRO.value)
-        # Nothing to resize: the pro account is the size it was already trading
-        self.set_size.assert_not_called()
-        self.assertAlmostEqual(self.manager.get_payout_scale(self.standard), PAYOUT_MULTIPLIER)
+        self.assertEqual(info.pro_fee_theta, 0.0)
+        # Paid on the standard account, uplifted by the multiplier: never more than the PnL itself
+        self.assertAlmostEqual(self.manager.get_payout_scale(self.standard), PAYOUT_MULTIPLIER / 2)
 
     def test_reoffer_after_demotion_requires_a_size_again(self):
         """The size recorded on an earlier pro journey is never silently reused when re-entering the track."""
@@ -472,7 +463,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         pro = _add_pro(self.manager)
 
         self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, 1_000_001, OUT_OF_RANGE)
-        self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, STANDARD_SIZE - 1, BELOW_STANDARD)
+        self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, 2 * STANDARD_SIZE - 1, BELOW_STANDARD)
 
         success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED, 750_000)
         self.assertTrue(success, message)
@@ -591,6 +582,92 @@ class TestApplyBucketAccountSizeLog(unittest.TestCase):
                                      (self.standard, MinerBucket.SUBACCOUNT_CHALLENGE, GRANTED_SIZE)):
             with self.subTest(bucket=bucket):
                 self.assertNotIn("source", self._logged(hotkey, bucket, size))
+
+
+class TestPromotionFeeCharged(unittest.TestCase):
+    """apply_bucket_account_size charges ValiConfig.promotion_fee_theta at the subaccount's daily loss limit,
+    crediting the standard size at the full standard CPT whatever was actually paid to register."""
+
+    def setUp(self):
+        self.manager = _bare_manager()
+        self.manager._entity_collateral_client = MagicMock()
+        self.manager._entity_collateral_client.get_cached_collateral.return_value = None
+
+    def _standard(self, intraday_drawdown_threshold=None, reg_fee_theta=20.0):
+        hotkey = _add_standard(self.manager)
+        info = self.manager.get_subaccount_info_for_synthetic(hotkey)
+        # A legacy registration fee (100K at the old 5,000 CPT): the credit is still the new-CPT amount
+        info.reg_fee_theta = reg_fee_theta
+        info.intraday_drawdown_threshold = intraday_drawdown_threshold
+        return hotkey
+
+    def _promote(self, hotkey, bucket, size=None):
+        success, message = self.manager.apply_bucket_account_size(hotkey, bucket, size)
+        self.assertTrue(success, message)
+        return self.manager.get_subaccount_info_for_synthetic(hotkey)
+
+    def test_the_fee_follows_the_daily_loss_limit(self):
+        for dll, expected in ((None, 100.0), (0.05, 100.0), (0.03, 60.0)):
+            with self.subTest(intraday_drawdown_threshold=dll):
+                self.setUp()
+                info = self._promote(self._standard(dll), MinerBucket.PRO_CHALLENGE_DIRECT, GRANTED_SIZE)
+                self.assertAlmostEqual(info.pro_fee_theta, expected)
+                self.assertAlmostEqual(info.pro_fee_theta_pending, expected)
+                self.manager._entity_collateral_client.offset_collateral_cache.assert_called_once_with(
+                    ENTITY_HOTKEY, -info.pro_fee_theta)
+
+    def test_the_transition_defers_the_fee_until_the_pro_account_goes_live(self):
+        hotkey = self._standard()
+        self.assertEqual(self._promote(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE).pro_fee_theta, 0.0)
+        self.assertAlmostEqual(self._promote(hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD).pro_fee_theta, 100.0)
+
+    def test_a_larger_size_is_charged_only_the_increase(self):
+        hotkey = self._standard()
+        self._promote(hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, GRANTED_SIZE)
+        info = self._promote(hotkey, MinerBucket.PRO_FUNDED, 1_000_000)
+        self.assertAlmostEqual(info.pro_fee_theta, 1_000_000 / 3000 - STANDARD_SIZE / 1500)
+
+    def _legacy_pro(self, standard_size=50_000.0, pro_size=1_000_000.0, paid=247.14):
+        """A pro account already trading its pro size, which paid the old (lower) promotion fee for it."""
+        hotkey = self._standard()
+        info = self.manager.get_subaccount_info_for_synthetic(hotkey)
+        info.standard_account_size = standard_size
+        info.pro_account_size = pro_size
+        info.account_size = pro_size
+        info.account_type = AccountType.PRO.value
+        info.pro_fee_theta = paid
+        return hotkey
+
+    def test_re_applying_the_size_already_traded_charges_nothing(self):
+        """An admin move within the pro track re-applies the recorded size: nothing goes live, so nothing is
+        billed, even though today's formula (1M / 3,000 - 50K / 1,500 = 300) exceeds the 247.14 paid."""
+        hotkey = self._legacy_pro()
+        for bucket in (MinerBucket.PRO_FUNDED, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
+            with self.subTest(bucket=bucket):
+                info = self._promote(hotkey, bucket)
+                self.assertAlmostEqual(info.pro_fee_theta, 247.14)
+                self.assertEqual(info.pro_fee_theta_pending, 0.0)
+        self.manager._entity_collateral_client.offset_collateral_cache.assert_not_called()
+
+    def test_a_new_size_is_billed_at_todays_formula(self):
+        hotkey = self._legacy_pro()
+        info = self._promote(hotkey, MinerBucket.PRO_FUNDED, 900_000.0)
+        self.assertAlmostEqual(info.pro_fee_theta, 900_000 / 3000 - 50_000 / 1500)
+
+    def test_a_recorded_size_below_the_new_floor_still_completes_the_journey(self):
+        """A subaccount granted a size under the old floor (pro >= standard) mid-transition is not stranded:
+        the recorded size is not re-checked, and the fee floors at zero."""
+        hotkey = self._standard()
+        self._promote(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 2 * STANDARD_SIZE)
+        self.manager.get_subaccount_info_for_synthetic(hotkey).pro_account_size = 150_000.0
+        info = self._promote(hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        self.assertEqual(info.account_size, 150_000.0)
+        self.assertEqual(info.pro_fee_theta, 0.0)
+
+    def test_collateral_exempt_subaccounts_pay_nothing(self):
+        info = self._promote(self._standard(reg_fee_theta=0.0), MinerBucket.PRO_CHALLENGE_DIRECT, GRANTED_SIZE)
+        self.assertEqual(info.pro_fee_theta, 0.0)
+        self.manager._entity_collateral_client.offset_collateral_cache.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -213,8 +213,24 @@ Authorization: Bearer <api_key>
 **Parameters:**
 - `asset_class` (string, required): `"crypto"`, `"forex"`, `"equities"`, `"commodities"`, or `"all_markets"`. `"hl_all"` is accepted on this route and mapped to `"all_markets"` — it is reserved for HL-linked subaccounts, which are forced to it by `/api/create-hl-subaccount`.
 - `account_size` (float, required): Account size in USD. Must be positive.
-- `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [entity_miner.md](entity_miner.md#elimination). Fixed for the life of the subaccount once created. Always forced to `"trailing"` for HL-linked subaccounts (`hl_address` present), regardless of what's passed.
+- `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [entity_miner.md](entity_miner.md#elimination). Fixed for the life of the subaccount once created. Always forced to `"trailing"` for HL-linked subaccounts (`hl_address` present), regardless of what's passed. Instant Funded buckets (`SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD`) accept only `"trailing"` for standard subaccounts.
 - `leverage_tier` (int, optional): standard leverage tier `1` (default), `2` or `3` — see [entity_miner.md](entity_miner.md#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later with `/api/update-subaccount-leverage-tier`.
+- `bucket` (string, optional): bucket to create into, `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED` (Instant Funded, not eligible for Pro), `PRO_CHALLENGE_FROM_STANDARD` (Instant Funded, eligible for Pro) or `PRO_CHALLENGE_DIRECT`. HL-linked subaccounts accept only the first two. See [entity_miner.md](entity_miner.md#instant-funded).
+- `pro_account_size` (float): required for pro buckets, rejected otherwise. At least twice `account_size`.
+- `eod_hwm_threshold` (float, optional): `0.05` or `0.08`, Instant Funded (`SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD`) only (default `0.08`). Both buckets fix `intraday_drawdown_threshold` at `0.03`.
+
+The registration fee is `account_size / CPT`, at a CPT set by the bucket and the chosen limits, and a pro bucket also pays the pro promotion fee — see [entity_miner.md](entity_miner.md#registration-fee). The `message` of a successful response states the theta charged.
+
+Instant Funded example:
+```json
+{
+  "asset_class": "all_markets",
+  "account_size": 50000.0,
+  "bucket": "PRO_CHALLENGE_FROM_STANDARD",
+  "pro_account_size": 200000.0,
+  "eod_hwm_threshold": 0.05
+}
+```
 
 **Success Response (200):**
 ```json
@@ -240,7 +256,7 @@ Authorization: Bearer <api_key>
 
 | Code | Cause |
 |------|-------|
-| 400 | Missing/invalid field (`asset_class`, `account_size`, `drawdown_criteria`, `leverage_tier`) |
+| 400 | Missing/invalid field (`asset_class`, `account_size`, `drawdown_criteria`, `leverage_tier`, `bucket`, `pro_account_size`, `eod_hwm_threshold`), or an option used with a bucket that does not accept it |
 | 401 | Invalid or missing API key |
 | 403 | Max HL traders limit reached (HL path only) |
 | 500 | Wallet not configured or signing error |
@@ -285,13 +301,13 @@ Changes a standard subaccount's `leverage_tier` (see [entity_miner.md](entity_mi
 
 | Code | Cause |
 |------|-------|
-| 400 | Invalid `leverage_tier` or `synthetic_hotkey`, or the validator rejected the change: unknown subaccount, HL-linked, `hl_all` or pro subaccount, or lowering the tier while positions are open |
+| 400 | Invalid `leverage_tier` or `synthetic_hotkey`, or the validator rejected the change: unknown subaccount, HL-linked, `hl_all` or pro subaccount, or a change that lowers a limit while positions are open |
 | 401 | Invalid or missing API key |
 | 500 | Wallet not configured or signing error |
 | 502 | Validator unreachable |
 
 **Notes:**
-- Raising the tier is allowed at any time. Lowering it requires every position on that subaccount to be closed first. A subaccount created before tiers existed trades a grandfathered floor (each limit is the higher of its old limit and Base, reported as a negative `tier`); moving it to any tier also requires a flat book.
+- A change that would lower any of the subaccount's current limits requires every position on that subaccount to be closed first; any other change is allowed at any time. Raising the tier never lowers a limit and lowering it always does. A subaccount created before tiers existed trades a grandfathered floor (each limit is the higher of its old limit and Base, reported as a negative `tier`), which is compared limit by limit against the new tier.
 
 ### Promote Subaccount to the Pro Track
 
@@ -325,7 +341,7 @@ exist (`MinerBucket.promotion_target`):
 **Parameters:**
 - `synthetic_hotkey` (string, required): The subaccount to promote. Must belong to this entity.
 - `pro_account_size` (number, conditional): USD size of the pro account. Must be finite and
-  positive, at most `$1,000,000` (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`), and not below the
+  positive, at most `$1,000,000` (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`), and at least twice the
   subaccount's own standard account size. **Required** when entering the pro track
   (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`); **optional** on the hop out of
   `PRO_CHALLENGE_TRANSITION`, where sending one replaces the recorded size and omitting it keeps
@@ -342,13 +358,14 @@ exist (`MinerBucket.promotion_target`):
   "bucket": "PRO_CHALLENGE_DIRECT",
   "pro_account_size": 500000,
   "account_size": 500000,
-  "pro_fee_theta": 194.29,
-  "pro_fee_theta_pending": 194.29
+  "pro_fee_theta": 100.0,
+  "pro_fee_theta_pending": 100.0
 }
 ```
 
-(`194.29` is `ValiConfig.pro_promotion_fee_theta(500_000, 100_000)` — the premium on the standard
-account's drawdown allowance plus the registration rate on the $400K of size granted above it.)
+(`100` is `ValiConfig.promotion_fee_theta(500_000, 100_000)` at a 5% daily loss limit:
+`500,000 / 3,000 − 100,000 / 1,500`. At a 3% daily loss limit it is `500,000 / 5,000 − 100,000 / 2,500 = 60`.
+See [entity_miner.md](entity_miner.md#pro-promotion-fee).)
 
 - `pro_fee_theta`: Total theta assessed for this subaccount's pro account so far
 - `pro_fee_theta_pending`: The portion charged but not yet slashed on-chain by the collateral daemon
@@ -357,7 +374,7 @@ account's drawdown allowance plus the registration rate on the $400K of size gra
 
 | Code | Cause |
 |------|-------|
-| 400 | Missing/invalid `synthetic_hotkey` or `pro_account_size`, or the validator rejected the promotion: a bucket with no promotion target, a size below the standard account size, missing size when entering the track, or insufficient entity collateral for the promotion fee |
+| 400 | Missing/invalid `synthetic_hotkey` or `pro_account_size`, or the validator rejected the promotion: a bucket with no promotion target, a size below twice the standard account size, an Instant Funded subaccount in `SUBACCOUNT_FUNDED`, missing size when entering the track, or insufficient entity collateral for the promotion fee |
 | 401 | Invalid or missing API key, or a rejected signature/nonce at the validator |
 | 403 | API key below tier 200, or the coldkey does not own the entity hotkey / the subaccount |
 | 404 | Subaccount not found |
@@ -374,8 +391,8 @@ account's drawdown allowance plus the registration rate on the $400K of size gra
   increase a position are cancelled (`PRO_TRANSITION_CANCELLED`).
 - The entity pays the promotion fee out of its collateral once the pro account goes live, and only
   the increase over the fee already assessed is billed — so re-entering the pro track at the same
-  size is free, and a pro size equal to the standard size is charged nothing at the registration
-  rate. A collateral-exempt subaccount (`reg_fee_theta == 0`) stays exempt on the pro track.
+  size is free, and a pro size of exactly twice the standard size is charged nothing. A
+  collateral-exempt subaccount (`reg_fee_theta == 0`) stays exempt on the pro track.
 - A subaccount left in `PRO_CHALLENGE_TRANSITION` is advanced automatically at the first Monday
   00:00 UTC after it entered the bucket, on the first challenge-period refresh at or after that
   boundary.

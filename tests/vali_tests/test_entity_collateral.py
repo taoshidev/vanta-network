@@ -136,12 +136,9 @@ class TestEntityCollateral(TestBase):
         return entity_hotkey, synthetic_hotkey, subaccount_info
 
     def _expected_promotion_fee(self, pro_size, standard_size):
-        """The promotion price: an up-front premium on the standard account's drawdown allowance
-        plus registration's per-dollar rate on the size granted above it."""
-        premium = (ValiConfig.PRO_PROMOTION_PREMIUM_RATE
-                   * ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size
-                   / ValiConfig.THETA_USD_PRICE)
-        return premium + (pro_size - standard_size) / ValiConfig.entity_cost_per_theta(pro_size)
+        """The promotion price at the default 5% daily loss limit: the pro size at the pro registration
+        CPT less the standard size at the standard registration CPT."""
+        return pro_size / ValiConfig.PRO_REG_CPT[0.05] - standard_size / ValiConfig.STD_REG_CPT[0.05]
 
     def _set_bucket(self, synthetic_hotkey, bucket):
         """Helper: Move a subaccount into a bucket."""
@@ -437,13 +434,13 @@ class TestEntityCollateral(TestBase):
         )
         self._set_collateral_cache(entity_hotkey, 5000.0)  # 5000 theta
 
-        # Slash $5,000 → decrement by 5000 / CPT_RISK(35) ≈ 142.857 theta
+        # Slash $5,000 → decrement by 5000 / MARGIN_CPT(35) ≈ 142.857 theta
         self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
 
         from vali_objects.vali_config import ValiConfig
-        expected_cache = 5000.0 - (5_000.0 / ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
+        expected_cache = 5000.0 - (5_000.0 / ValiConfig.MARGIN_CPT)
         cached = self.entity_collateral_client.get_cached_collateral(entity_hotkey)
         self.assertAlmostEqual(cached, expected_cache)
 
@@ -559,7 +556,7 @@ class TestEntityCollateral(TestBase):
         )
         self.assertTrue(success, message)
 
-        expected_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 1.6 + 180 theta
+        expected_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 333.33 - 66.67 theta
         subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
         self.assertAlmostEqual(subaccount["pro_fee_theta"], expected_fee)
         self.assertAlmostEqual(subaccount["pro_fee_theta_pending"], expected_fee)
@@ -593,7 +590,7 @@ class TestEntityCollateral(TestBase):
 
         self.assertTrue(self.entity_client.apply_bucket_account_size(
             synthetic_hotkey, MinerBucket.PRO_FUNDED, 500_000)[0])
-        first_fee = self._expected_promotion_fee(500_000, 100_000)  # 1.6 + 80 theta
+        first_fee = self._expected_promotion_fee(500_000, 100_000)  # 166.67 - 66.67 theta
 
         # Back to standard, then up to a larger pro account
         self.assertTrue(self.entity_client.apply_bucket_account_size(
@@ -601,7 +598,7 @@ class TestEntityCollateral(TestBase):
         self.assertTrue(self.entity_client.apply_bucket_account_size(
             synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000)[0])
 
-        total_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 1.6 + 180 theta
+        total_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 333.33 - 66.67 theta
         subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
         self.assertAlmostEqual(subaccount["pro_fee_theta"], total_fee)
         self.assertAlmostEqual(subaccount["pro_fee_theta_pending"], total_fee)
@@ -804,13 +801,13 @@ class TestEntityCollateral(TestBase):
         )
         self.assertTrue(allowed)
 
-        # Slash $5K → cache decremented by 5000 / CPT_RISK(35) ≈ 142.857 theta
+        # Slash $5K → cache decremented by 5000 / MARGIN_CPT(35) ≈ 142.857 theta
         self.entity_collateral_client.slash_on_realized_loss(
             entity_hotkey, synthetic_hotkey, 5_000.0
         )
 
         from vali_objects.vali_config import ValiConfig
-        expected_cache = 5000.0 - (5_000.0 / ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
+        expected_cache = 5000.0 - (5_000.0 / ValiConfig.MARGIN_CPT)
         cached = self.entity_collateral_client.get_cached_collateral(entity_hotkey)
         self.assertAlmostEqual(cached, expected_cache)
 
@@ -1124,6 +1121,138 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
 
 
+class TestMarginCpt(unittest.TestCase):
+    """Theta held per USD of margin: PRO_MARGIN_CPT in PRO_FUNDED, MARGIN_CPT elsewhere, and twice the margin for
+    a standard account growing into pro (PRO_CHALLENGE_FROM_STANDARD paid at the 2x payout multiplier)."""
+
+    ENTITY = "entity"
+    HOTKEY = "entity_0"
+    STANDARD_SIZE = 100_000
+    PRO_SIZE = 500_000
+
+    def setUp(self):
+        from vali_objects.utils.entity_collateral.entity_collateral_manager import EntityCollateralManager
+
+        self.manager = EntityCollateralManager(
+            running_unit_tests=True, connection_mode=RPCConnectionMode.LOCAL
+        )
+        self.manager._slash_tracking = {}
+        self.manager._collateral_cache = {}
+        self.manager._miner_account_client = MagicMock()
+        self.manager._challenge_period_client = MagicMock()
+        self.manager._position_client = MagicMock()
+        self.manager._entity_client = MagicMock()
+
+    def _subaccount(self, bucket, account_size, position_value=1_000_000.0, payout_scale=None):
+        """One active subaccount with a position large enough to margin at its full 5% slash ceiling."""
+        self.manager._slash_tracking = {}
+        info = {"status": "active", "reg_fee_theta": 20.0, "synthetic_hotkey": self.HOTKEY,
+                "standard_account_size": self.STANDARD_SIZE, "payout_scale": payout_scale}
+        self.manager._entity_client.get_entity_data.return_value = {"subaccounts": {"0": info}}
+        self.manager._entity_client.get_subaccount_info_for_synthetic.return_value = info
+        self.manager._challenge_period_client.get_miner_bucket.return_value = bucket
+        self.manager._miner_account_client.get_miner_account_size.return_value = account_size
+        self.manager._position_client.get_positions_for_one_hotkey.return_value = (
+            [SimpleNamespace(net_value=position_value)] if position_value else [])
+
+    def test_required_collateral_by_state(self):
+        cases = (
+            ("standard funded", MinerBucket.SUBACCOUNT_FUNDED, self.STANDARD_SIZE, None, 5_000 / 35),
+            ("pro funded", MinerBucket.PRO_FUNDED, self.PRO_SIZE, None, 25_000 / 70),
+            ("grow", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, None, 2 * 5_000 / 35),
+            ("instant funded, eligible", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE,
+             ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER, 5_000 / 35),
+            ("pro challenge", MinerBucket.PRO_CHALLENGE_DIRECT, self.PRO_SIZE, None, 0.0),
+        )
+        for name, bucket, account_size, payout_scale, expected_theta in cases:
+            with self.subTest(name):
+                self._subaccount(bucket, account_size, payout_scale=payout_scale)
+                self.assertAlmostEqual(self.manager.compute_entity_required_collateral(self.ENTITY), expected_theta)
+
+    def test_an_order_is_gated_on_the_bucket_margin(self):
+        """Opening a position worth more than the slash ceiling adds the full margin of the subaccount's state."""
+        cases = (
+            (MinerBucket.SUBACCOUNT_FUNDED, self.STANDARD_SIZE, 5_000 / 35),
+            (MinerBucket.PRO_FUNDED, self.PRO_SIZE, 25_000 / 70),
+            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, 2 * 5_000 / 35),
+        )
+        for bucket, account_size, needed_theta in cases:
+            with self.subTest(bucket=bucket):
+                self._subaccount(bucket, account_size, position_value=0.0)
+                self.manager._collateral_cache = {self.ENTITY: needed_theta - 0.01}
+                allowed, reason = self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)
+                self.assertFalse(allowed)
+                self.assertIn("Insufficient entity collateral", reason)
+
+                self.manager._collateral_cache = {self.ENTITY: needed_theta + 0.01}
+                allowed, reason = self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)
+                self.assertTrue(allowed, reason)
+
+    def _pending_loss_slash(self, bucket, account_size, realized_loss, payout_scale=None):
+        """Run the slashing daemon over one subaccount carrying `realized_loss`; return the theta slashed."""
+        self._subaccount(bucket, account_size, position_value=0.0, payout_scale=payout_scale)
+        info = self.manager._entity_client.get_subaccount_info_for_synthetic.return_value
+        info["reg_fee_slashed_ms"] = 1
+        self.manager._entity_client.get_all_entities.return_value = {self.ENTITY: {"subaccounts": {"0": info}}}
+        self.manager._challenge_period_client.get_miner_buckets.return_value = {self.HOTKEY: bucket}
+        self.manager._slash_tracking = {self.HOTKEY: {"cumulative_realized_loss": realized_loss,
+                                                      "cumulative_slashed": 0.0}}
+        self.manager._contract_client = MagicMock()
+        self.manager._contract_client.slash_miner_collateral.return_value = True
+        self.manager.process_pending_slashes()
+        return self.manager._contract_client.slash_miner_collateral.call_args.args[1]
+
+    def test_a_maximum_loss_slashes_exactly_the_margin_held(self):
+        """Losses are slashed at the margin rate, so the whole 5% slash ceiling costs what the margin holds."""
+        cases = (
+            ("standard funded", MinerBucket.SUBACCOUNT_FUNDED, self.STANDARD_SIZE, None),
+            ("pro funded", MinerBucket.PRO_FUNDED, self.PRO_SIZE, None),
+            ("grow", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, None),
+            ("instant funded, eligible", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE,
+             ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER),
+        )
+        for name, bucket, account_size, payout_scale in cases:
+            with self.subTest(name):
+                self._subaccount(bucket, account_size, payout_scale=payout_scale)
+                held = self.manager.compute_entity_required_collateral(self.ENTITY)
+                slashed = self._pending_loss_slash(bucket, account_size, 10_000_000.0, payout_scale)
+                self.assertAlmostEqual(slashed, held)
+        self.assertAlmostEqual(self._pending_loss_slash(MinerBucket.PRO_FUNDED, self.PRO_SIZE, 10_000_000.0),
+                               357.14, places=2)
+
+    def test_a_realized_loss_reserves_theta_at_the_margin_rate(self):
+        for bucket, account_size, expected_theta in ((MinerBucket.SUBACCOUNT_FUNDED, self.STANDARD_SIZE, 7_000 / 35),
+                                                     (MinerBucket.PRO_FUNDED, self.PRO_SIZE, 7_000 / 70),
+                                                     (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE,
+                                                      2 * 7_000 / 35)):
+            with self.subTest(bucket=bucket):
+                self._subaccount(bucket, account_size, position_value=0.0)
+                self.manager._slash_tracking = {}
+                self.manager._collateral_cache = {self.ENTITY: 1_000.0}
+                self.manager.slash_on_realized_loss(self.ENTITY, self.HOTKEY, 7_000.0)
+                self.assertAlmostEqual(self.manager.get_cached_collateral(self.ENTITY), 1_000.0 - expected_theta)
+
+    def test_an_order_looks_the_subaccount_up_once(self):
+        """The standard size it is exposed at and the payout multiplier come from one record."""
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, position_value=0.0)
+        self.manager._collateral_cache = {self.ENTITY: 1_000.0}
+        self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)
+        self.manager._entity_client.get_subaccount_info_for_synthetic.assert_called_once_with(self.HOTKEY)
+
+    def test_required_collateral_reuses_the_entity_record(self):
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE)
+        self.manager.compute_entity_required_collateral(self.ENTITY)
+        self.manager._entity_client.get_subaccount_info_for_synthetic.assert_not_called()
+
+    def test_an_unreadable_record_withholds_the_charge(self):
+        """As for the exposure itself: without the record the standard size is unknown, so nothing is charged."""
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, position_value=0.0)
+        self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = RuntimeError("entity server down")
+        self.manager._collateral_cache = {self.ENTITY: 0.0}
+        allowed, reason = self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)
+        self.assertTrue(allowed, reason)
+
+
 class TestProPromotionFeeSlashing(unittest.TestCase):
     """The daemon leg: a charged promotion fee is slashed on-chain and cleared, or restored."""
 
@@ -1183,57 +1312,6 @@ class TestProPromotionFeeSlashing(unittest.TestCase):
 
         manager._contract_client.slash_miner_collateral.assert_not_called()
         manager._entity_client.set_pro_fee_pending.assert_not_called()
-
-
-class TestProPromotionFeeConfig(unittest.TestCase):
-    """
-    The promotion price:
-
-        PREMIUM_RATE * (FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size) / THETA_USD_PRICE
-            + (pro_size - standard_size) / registration CPT
-    """
-
-    def test_the_fee_is_the_drawdown_premium_plus_the_granted_size(self):
-        fee = ValiConfig.pro_promotion_fee_theta(1_000_000, 100_000)
-
-        premium = 0.10 * (0.08 * 100_000) / ValiConfig.THETA_USD_PRICE
-        granted = 900_000 / ValiConfig.ENTITY_COST_PER_THETA
-        self.assertAlmostEqual(fee, premium + granted)
-
-    def test_the_premium_scales_with_the_standard_account(self):
-        """Doubling the standard account doubles the premium, holding the granted size fixed."""
-        small = ValiConfig.pro_promotion_fee_theta(200_000, 100_000)
-        large = ValiConfig.pro_promotion_fee_theta(300_000, 200_000)
-
-        granted = 100_000 / ValiConfig.ENTITY_COST_PER_THETA
-        self.assertAlmostEqual(large - granted, 2 * (small - granted))
-
-    def test_every_term_is_configurable(self):
-        with patch.object(ValiConfig, "PRO_PROMOTION_PREMIUM_RATE", 0.20), \
-                patch.object(ValiConfig, "THETA_USD_PRICE", 250.0), \
-                patch.object(ValiConfig, "ENTITY_COST_PER_THETA", 10_000):
-            fee = ValiConfig.pro_promotion_fee_theta(1_000_000, 100_000)
-
-        self.assertAlmostEqual(fee, 0.20 * (0.08 * 100_000) / 250.0 + 900_000 / 10_000)
-
-    def test_a_pro_size_at_or_below_the_standard_size_costs_only_the_premium(self):
-        premium = 0.10 * (0.08 * 100_000) / ValiConfig.THETA_USD_PRICE
-        self.assertAlmostEqual(ValiConfig.pro_promotion_fee_theta(100_000, 100_000), premium)
-        self.assertAlmostEqual(ValiConfig.pro_promotion_fee_theta(50_000, 100_000), premium)
-
-    def test_a_missing_standard_size_prices_the_whole_pro_account_with_no_premium(self):
-        """No standard account means no drawdown allowance to buy, so only the size is charged."""
-        fee = ValiConfig.pro_promotion_fee_theta(500_000, None)
-        self.assertAlmostEqual(fee, 500_000 / ValiConfig.ENTITY_COST_PER_THETA)
-
-    def test_the_granted_size_uses_the_registration_cost_per_theta(self):
-        """Registration's own rate, including its lower rate for small accounts."""
-        self.assertAlmostEqual(ValiConfig.entity_cost_per_theta(10_000), ValiConfig.ENTITY_COST_PER_THETA_LOW)
-        self.assertAlmostEqual(ValiConfig.entity_cost_per_theta(10_001), ValiConfig.ENTITY_COST_PER_THETA)
-
-        fee = ValiConfig.pro_promotion_fee_theta(10_000, 5_000)
-        premium = 0.10 * (0.08 * 5_000) / ValiConfig.THETA_USD_PRICE
-        self.assertAlmostEqual(fee, premium + 5_000 / ValiConfig.ENTITY_COST_PER_THETA_LOW)
 
 
 if __name__ == '__main__':

@@ -157,6 +157,9 @@ class EntityServer(RPCServerBase):
         leverage_tier: Optional[int] = None,
         client_ref: Optional[str] = None,
         intraday_drawdown_threshold: Optional[float] = None,
+        bucket: Optional[str] = None,
+        pro_account_size: Optional[float] = None,
+        eod_hwm_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -172,6 +175,7 @@ class EntityServer(RPCServerBase):
                 (entity_hotkey, client_ref) returns the existing subaccount
                 dict with an added "duplicate": True and creates nothing.
             intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
+            bucket, pro_account_size, eod_hwm_threshold: See EntityManager.create_subaccount_ex
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -183,6 +187,7 @@ class EntityServer(RPCServerBase):
             entity_hotkey, account_size, asset_class, collateral_exempt=collateral_exempt,
             drawdown_criteria=drawdown_criteria, leverage_tier=leverage_tier,
             client_ref=client_ref, intraday_drawdown_threshold=intraday_drawdown_threshold,
+            bucket=bucket, pro_account_size=pro_account_size, eod_hwm_threshold=eod_hwm_threshold,
         )
 
         # Convert SubaccountInfo to dict for RPC serialization
@@ -202,6 +207,8 @@ class EntityServer(RPCServerBase):
         payout_address: Optional[str] = None,
         client_ref: Optional[str] = None,
         intraday_drawdown_threshold: Optional[float] = None,
+        bucket: Optional[str] = None,
+        eod_hwm_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -214,6 +221,8 @@ class EntityServer(RPCServerBase):
             collateral_exempt: If True, skip collateral slashing
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
             intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
+            bucket: Optional, one of ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS; None means SUBACCOUNT_CHALLENGE
+            eod_hwm_threshold: Optional, one of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES; SUBACCOUNT_FUNDED only
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -221,7 +230,8 @@ class EntityServer(RPCServerBase):
         success, subaccount_info, message, duplicate = self._manager.create_hl_subaccount_ex(
             entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
             payout_address=payout_address, client_ref=client_ref,
-            intraday_drawdown_threshold=intraday_drawdown_threshold,
+            intraday_drawdown_threshold=intraday_drawdown_threshold, bucket=bucket,
+            eod_hwm_threshold=eod_hwm_threshold,
         )
         subaccount_dict = subaccount_info.model_dump() if subaccount_info else None
         if subaccount_dict is not None and duplicate:
@@ -248,6 +258,9 @@ class EntityServer(RPCServerBase):
             Synthetic hotkey if found, None otherwise
         """
         return self._manager.get_synthetic_hotkey_for_hl_address(hl_address)
+
+    def is_instant_funded_rpc(self, synthetic_hotkey: str) -> bool:
+        return self._manager.is_instant_funded(synthetic_hotkey)
 
     def get_subaccount_info_for_synthetic_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
         """
