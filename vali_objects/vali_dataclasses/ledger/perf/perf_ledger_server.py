@@ -167,6 +167,10 @@ class PerfLedgerServer(RPCServerBase):
         """Sync frozen performance ledgers from auto sync checkpoint data."""
         self._manager.sync_frozen_ledgers(frozen_ledgers_data)
 
+    def sync_perf_ledgers_rpc(self, perf_ledgers_data: dict) -> None:
+        """Replace perf ledgers with auto sync checkpoint data."""
+        self._manager.sync_perf_ledgers(perf_ledgers_data)
+
     def filtered_ledger_for_scoring_rpc(
         self,
         hotkeys: List[str] = None

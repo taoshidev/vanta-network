@@ -382,6 +382,26 @@ class PositionManagerClient(RPCClientBase):
             include_development_positions=include_development_positions
         )
 
+    def get_price_correction_candidates(
+        self,
+        hotkeys: List[str] = None,
+        now_ms: int = None
+    ) -> Dict[str, List[Position]]:
+        """
+        Open positions plus positions with a recent order (Position.is_price_correction_candidate),
+        sorted by close_ms. Eliminated hotkeys are excluded; every other hotkey is present, with an
+        empty list if it has no candidates.
+        Much smaller payload than get_positions_for_hotkeys over all positions.
+        """
+        return self._server.get_price_correction_candidates_rpc(hotkeys=hotkeys, now_ms=now_ms)
+
+    def get_first_order_times(self, hotkeys: List[str] = None) -> Dict[str, int]:
+        """
+        First order time per hotkey with live positions. A cheap alternative to
+        filtered_positions_for_scoring when the positions themselves aren't needed.
+        """
+        return self._server.get_first_order_times_rpc(hotkeys=hotkeys)
+
     def split_position_on_flat(self, position: Position, track_stats: bool = False) -> tuple[list[Position], dict]:
         """
         Split a position on FLAT orders or implicit flats.

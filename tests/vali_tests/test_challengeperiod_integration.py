@@ -22,7 +22,6 @@ The two tiers are complementary:
   - Tier-1 integration tests check the RPC boundary and cross-process state.
 """
 import contextlib
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
@@ -105,11 +104,9 @@ def _local_manager() -> ChallengePeriodManager:
 
 def _wire_refresh_clients(mgr, hk: str, now: int, elapsed_ms: int = 0):
     """Minimal stub wiring so refresh() doesn't crash on missing client calls."""
-    mgr._position_client.filtered_positions_for_scoring.return_value = (
-        {hk: []}, {hk: now - elapsed_ms}
-    )
+    mgr._position_client.get_first_order_times.return_value = {hk: now - elapsed_ms}
+    mgr._position_client.filtered_positions_for_scoring.return_value = ({hk: []}, {hk: now - elapsed_ms})
     mgr._position_client.get_all_hotkeys.return_value = [hk]
-    mgr._position_client.get_positions_for_hotkeys.return_value = {hk: []}
     mgr._elimination_client.get_eliminated_hotkeys.return_value = []
     mgr._plagiarism_client.get_plagiarism_miners.return_value = []
     mgr._miner_account_client.get_accounts.return_value = {}
@@ -646,15 +643,15 @@ class TestChallengePeriodManagerLogic(TestBase):
         # Live equity 7% below account size; a non-empty position list is required for the cache
         # to update (production skips hotkeys with no open positions).
         accounts = {hk: _make_account(hk, account_size, account_size * (1 - intraday_drop), now)}
-        positions = {hk: [_make_position(hk, yesterday_midnight_ms)]}
+        hotkeys_with_positions = {hk}
 
         mgr, stack = self._make_manager()
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 5)
             # First refresh locks today's EOD/open snapshot from the ledger; the second updates the
             # live intraday equity (the two-phase cadence a real per-day refresh loop follows).
-            mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, positions, now)
-            mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, positions, now)
+            mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, hotkeys_with_positions, now)
+            mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, hotkeys_with_positions, now)
 
             dd = mgr.miner_states[hk].drawdown
             self.assertAlmostEqual(dd.intraday_drawdown_pct, intraday_drop * 100, delta=0.1)
@@ -677,13 +674,13 @@ class TestChallengePeriodManagerLogic(TestBase):
         ])
 
         accounts = {hk: _make_account(hk, account_size, account_size * 1.04, now)}
-        positions = {hk: [_make_position(hk, today_midnight_ms - 5 * 86400000)]}
+        hotkeys_with_positions = {hk}
 
         mgr, stack = self._make_manager()
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 10)
             # EOD fields (last_eod_equity / eod_hwm) are locked on the first refresh of the day.
-            mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, positions, now)
+            mgr._refresh_drawdown_cache([hk], accounts, {hk: ledger}, hotkeys_with_positions, now)
 
             dd = mgr.miner_states[hk].drawdown
             expected_eod_dd_pct = (1.0 - 1.04 / 1.10) * 100
@@ -701,7 +698,7 @@ class TestChallengePeriodManagerLogic(TestBase):
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 3)
             default_dd = DrawdownStats()
             # Non-empty positions so evaluation reaches the ledger lookup, which is missing → skipped.
-            mgr._refresh_drawdown_cache([hk], accounts, {}, {hk: [SimpleNamespace()]}, now)
+            mgr._refresh_drawdown_cache([hk], accounts, {}, {hk}, now)
 
             dd = mgr.miner_states[hk].drawdown
             self.assertEqual(dd.intraday_drawdown_pct, default_dd.intraday_drawdown_pct)

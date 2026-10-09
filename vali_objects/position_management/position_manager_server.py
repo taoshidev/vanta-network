@@ -186,6 +186,14 @@ class PositionManagerServer(RPCServerBase):
             archived_positions=archived_positions
         )
 
+    def get_price_correction_candidates_rpc(
+        self,
+        hotkeys: List[str] = None,
+        now_ms: int = None
+    ) -> Dict[str, List[Position]]:
+        """Positions the MDD checker needs - delegates to manager."""
+        return self._manager.get_price_correction_candidates(hotkeys, now_ms)
+
     def clear_all_miner_positions_rpc(self):
         """Clear all positions from memory - delegates to manager."""
         self._manager.clear_all_miner_positions()
@@ -242,6 +250,10 @@ class PositionManagerServer(RPCServerBase):
     ) -> tuple:
         """Filter positions for scoring - delegates to manager."""
         return self._manager.filtered_positions_for_scoring(hotkeys, include_development_positions)
+
+    def get_first_order_times_rpc(self, hotkeys: List[str] = None) -> Dict[str, int]:
+        """First order time per hotkey with live positions - delegates to manager."""
+        return self._manager.get_first_order_times(hotkeys)
 
     def close_all_positions_rpc(
         self,
