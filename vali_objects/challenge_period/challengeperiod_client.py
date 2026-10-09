@@ -162,6 +162,10 @@ class ChallengePeriodClient(RPCClientBase):
 
     # ==================== Daemon Methods ====================
 
+    def request_refresh(self) -> None:
+        """Ask the challenge period daemon to refresh now. Returns immediately"""
+        self._server.request_refresh_rpc()
+
     def get_daemon_info(self) -> dict:
         """
         Get daemon information for testing/debugging.

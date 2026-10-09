@@ -65,6 +65,7 @@ def _state(bucket: MinerBucket, start_ms: int = NOW_MS) -> MinerBucketState:
 def _setup_refresh_clients(manager, hk: str):
     """Minimal client stubs so refresh() doesn't crash."""
     manager._position_client.get_all_hotkeys.return_value = [hk]
+    manager._position_client.get_first_order_times.return_value = {}
     manager._position_client.filtered_positions_for_scoring.return_value = ({hk: []}, {})
     manager._elimination_client.get_eliminated_hotkeys.return_value = []
     manager._plagiarism_client.get_plagiarism_miners.return_value = []
@@ -487,7 +488,7 @@ def _snapshot_refresh(manager, hk, day_ms, equity_return):
     """One refresh on day_ms with the account's daily open snapshot taken that day."""
     account = MagicMock(account_size=100.0, equity=100.0 * equity_return, balance=100.0 * equity_return)
     account.daily_open_snapshot = MagicMock(snapshot_ms=day_ms, equity_return=equity_return)
-    manager._refresh_drawdown_cache([hk], {hk: account}, {}, {hk: [MagicMock()]}, day_ms + 60_000)
+    manager._refresh_drawdown_cache([hk], {hk: account}, {}, {hk}, day_ms + 60_000)
 
 
 def test_set_drawdown_stats_lowered_eod_hwm_sticks_across_snapshot_days(manager):

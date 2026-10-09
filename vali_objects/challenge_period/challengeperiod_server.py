@@ -7,7 +7,7 @@ This server runs in its own process and exposes challenge period management via 
 Clients connect using ChallengePeriodClient.
 
 """
-import time
+import threading
 from typing import Tuple
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
@@ -65,13 +65,13 @@ class ChallengePeriodServer(RPCServerBase):
 
         logger.info("[CP_SERVER] ChallengePeriodManager initialized")
 
+        # Set by the MDD checker after each pass (request_refresh_rpc). The daemon waits on it so the
+        # refresh always runs on the equity MDD just updated. Created before the RPC server starts.
+        self._refresh_requested = threading.Event()
+        self._fallback_refresh_s = ValiConfig.CHALLENGE_PERIOD_FALLBACK_REFRESH_TIME_MS / 1000
+
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
         # At this point, self._manager exists, so RPC calls won't fail
-        # daemon_interval_s: 5 minutes (challenge period checks)
-        # hang_timeout_s: Dynamically set to 2x interval to prevent false alarms during normal sleep
-        daemon_interval_s = ValiConfig.CHALLENGE_PERIOD_REFRESH_TIME_MS // 1000
-        hang_timeout_s = daemon_interval_s * 2  # 2x daemon interval s
-
         RPCServerBase.__init__(
             self,
             service_name=ValiConfig.RPC_CHALLENGEPERIOD_SERVICE_NAME,
@@ -79,10 +79,9 @@ class ChallengePeriodServer(RPCServerBase):
             slack_notifier=slack_notifier,
             start_server=start_server,
             start_daemon=False,  # We'll start daemon after full initialization
-            daemon_interval_s=daemon_interval_s,
-            hang_timeout_s=hang_timeout_s,
+            daemon_interval_s=1,  # pacing comes from waiting on the MDD trigger in run_daemon_iteration
+            hang_timeout_s=self._fallback_refresh_s * 2,
             connection_mode=connection_mode,
-            daemon_stagger_s=daemon_interval_s//2
         )
 
         # Start daemon if requested (deferred until all initialization complete)
@@ -95,11 +94,17 @@ class ChallengePeriodServer(RPCServerBase):
         """
         Single iteration of daemon work. Called by RPCServerBase daemon loop.
 
-        Checks for sync in progress, then refreshes challenge period.
+        Waits for the MDD checker's trigger (or the fallback interval), checks for sync in progress,
+        then refreshes challenge period.
         """
+        # Clear before refreshing so a trigger that arrives mid-refresh queues the next one. Any number
+        # of triggers during a refresh collapse into a single follow-up refresh.
+        if not self._refresh_requested.wait(timeout=self._fallback_refresh_s):
+            logger.warning(f"[CP_SERVER] No MDD trigger in {self._fallback_refresh_s:.0f}s, refreshing on fallback")
+        self._refresh_requested.clear()
+
         if self.sync_in_progress:
-            logger.warning("ChallengePeriodManager: Sync in progress, pausing...")
-            time.sleep(1)
+            logger.warning("ChallengePeriodManager: Sync in progress, skipping refresh until MDD's next pass")
             return
 
         # Capture epoch at START of iteration
@@ -119,6 +124,10 @@ class ChallengePeriodServer(RPCServerBase):
         return self._common_data_client.get_sync_epoch()
 
     # ==================== RPC Methods (exposed to client) ====================
+
+    def request_refresh_rpc(self) -> None:
+        """Ask the daemon to refresh now. Called by the MDD checker after each pass; returns immediately."""
+        self._refresh_requested.set()
 
     def get_health_check_details(self) -> dict:
         return {"active_miners_count": len(self._manager.miner_states)}

@@ -270,8 +270,8 @@ def _run_refresh(manager, hk: str, ledger: PerfLedger | None = None,
                  account_size: float | None = ACCOUNT_SIZE, now_ms: int = NOW_MS) -> None:
     """One refresh() pass with the drawdown cache pinned, so pro stats and routing run for real."""
     manager._position_client.get_all_hotkeys.return_value = [hk]
+    manager._position_client.get_first_order_times.return_value = {}
     manager._position_client.filtered_positions_for_scoring.return_value = ({hk: []}, {})
-    manager._position_client.get_positions_for_hotkeys.return_value = {hk: []}
     manager._elimination_client.get_eliminated_hotkeys.return_value = []
     manager._plagiarism_client.get_plagiarism_miners.return_value = []
     manager._miner_account_client.get_accounts.return_value = _accounts(hk, account_size)
