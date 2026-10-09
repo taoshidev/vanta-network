@@ -210,6 +210,10 @@ class EntityClient(RPCClientBase):
         """
         return self._server.get_synthetic_hotkey_for_hl_address_rpc(hl_address)
 
+    def is_instant_funded(self, synthetic_hotkey: str) -> bool:
+        """True if the subaccount was created straight into a funded bucket (Instant Funded)."""
+        return self._server.is_instant_funded_rpc(synthetic_hotkey)
+
     def get_subaccount_info_for_synthetic(self, synthetic_hotkey: str) -> Optional[dict]:
         """
         Get SubaccountInfo for a synthetic hotkey.

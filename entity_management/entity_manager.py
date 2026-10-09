@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 import template.protocol
 from entity_management.entity_utils import (
     attach_correlated_exposure_report,
+    is_instant_funded,
     is_synthetic_hotkey,
     parse_synthetic_hotkey,
     pro_account_size_error,
@@ -92,6 +93,10 @@ class SubaccountInfo(BaseModel):
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
     client_ref: Optional[str] = Field(default=None, description="Caller-supplied idempotency key, unique per (entity_hotkey, client_ref). Normalized lowercase, <=64 chars.")
+
+    @property
+    def instant_funded(self) -> bool:
+        return is_instant_funded(self.initial_bucket)
 
     # Note: Challenge period tracking has been migrated to ChallengePeriodManager
     # Synthetic hotkeys are added to challenge period bucket and evaluated via inspect()
@@ -999,6 +1004,10 @@ class EntityManager(ValidatorBroadcastBase):
             return None
         with self._entities_lock:
             return self._hl_address_to_synthetic.get(normalized_hl_address)
+
+    def is_instant_funded(self, synthetic_hotkey: str) -> bool:
+        info = self.get_subaccount_info_for_synthetic(synthetic_hotkey)
+        return bool(info and info.instant_funded)
 
     def get_subaccount_info_for_synthetic(self, synthetic_hotkey: str) -> Optional[SubaccountInfo]:
         """

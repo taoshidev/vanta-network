@@ -141,6 +141,12 @@ def pro_payout_scale(standard_account_size, pro_account_size, payout_scale=None)
     return multiplier * standard_account_size / pro_account_size
 
 
+def is_instant_funded(initial_bucket: Optional[str]) -> bool:
+    """True for a subaccount created straight into a funded bucket (SUBACCOUNT_FUNDED or
+    PRO_CHALLENGE_FROM_STANDARD) rather than earning it through SUBACCOUNT_CHALLENGE."""
+    return initial_bucket in ("SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FROM_STANDARD")
+
+
 def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=None,
                               eod_hwm_threshold=None, intraday_drawdown_threshold=None) -> Optional[str]:
     """

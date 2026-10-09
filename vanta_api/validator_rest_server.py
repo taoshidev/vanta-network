@@ -3020,6 +3020,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
           SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
           PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
 
+        Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FROM_STANDARD)
+        cannot take the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_TRANSITION hop. One created into
+        PRO_CHALLENGE_FROM_STANDARD still reaches PRO_FUNDED by passing its challenge.
+
         Requires a tier 200 API key.
         Ownership is proven via entity coldkey
 

@@ -256,6 +256,9 @@ class EntityServer(RPCServerBase):
         """
         return self._manager.get_synthetic_hotkey_for_hl_address(hl_address)
 
+    def is_instant_funded_rpc(self, synthetic_hotkey: str) -> bool:
+        return self._manager.is_instant_funded(synthetic_hotkey)
+
     def get_subaccount_info_for_synthetic_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
         """
         Get SubaccountInfo for a synthetic hotkey.
