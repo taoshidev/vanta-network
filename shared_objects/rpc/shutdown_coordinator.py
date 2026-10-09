@@ -95,6 +95,26 @@ class ShutdownCoordinator:
         cls._initialized = True
 
     @classmethod
+    def initialize_fresh(cls):
+        """
+        Process-entrypoint init: unlink any stale segment, then create a new one.
+
+        Prefer this over initialize(reset_on_attach=True) in a main process. A segment left behind
+        by a previous run that was killed before cleanup() is still mapped by any children that
+        run orphaned. Resetting it IN PLACE flips their flag back to 0, so they abandon their
+        shutdown and keep serving on the ports the new run needs. Unlinking first gives this run a
+        separate segment and leaves the orphans reading the old flag.
+        """
+        if cls._initialized:
+            return
+        cls.cleanup_stale_memory()
+        cls.initialize()
+
+    @classmethod
+    def is_initialized(cls) -> bool:
+        return cls._initialized
+
+    @classmethod
     def _read_flag(cls) -> int:
         cls.initialize()
         return struct.unpack_from("q", cls._shm.buf, 0)[0]

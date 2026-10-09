@@ -43,7 +43,7 @@ import os
 import time
 import socket
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import CancelledError, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from multiprocessing.managers import BaseManager
 from typing import Optional, Any, Dict
 
@@ -124,6 +124,26 @@ class RPCCallTimeoutError(TimeoutError):
         super().__init__(
             f"{service_name}.{method_name} timed out after {timeout_s}s "
             f"(service alive but unresponsive)"
+        )
+
+
+class RPCCallCancelledError(ConnectionResetError):
+    """A queued bounded RPC call was cancelled before it ran, because a concurrent connection
+    reset retired the executor (_recycle_rpc_executor cancels queued futures).
+
+    The call NEVER reached the server, so re-running it is always safe. It subclasses
+    ConnectionResetError so ErrorUtils.is_transient_rpc_error() treats it as transient: _invoke_rpc
+    reconnects and retries, and callers that only classify errors (the order path's should_retry)
+    see a retryable failure rather than a business error. Before this, the raw
+    concurrent.futures.CancelledError, a plain Exception, was re-raised as a permanent error.
+    """
+
+    def __init__(self, service_name: str, method_name: str):
+        self.service_name = service_name
+        self.method_name = method_name
+        super().__init__(
+            f"{service_name}.{method_name} was cancelled before it ran (connection reset by a "
+            f"concurrent call)"
         )
 
 
@@ -245,6 +265,12 @@ class RPCClientBase:
     # heavy concurrent fan-out; tune rpc_call_timeout_s (not workers) for
     # legitimately slow calls.
     RPC_EXECUTOR_WORKERS = 16
+    # A recycle retires the executor without waiting, so a worker still blocked on a live-but-wedged
+    # service stays parked until that call returns. Repeated resets during a long wedge would add up
+    # to RPC_EXECUTOR_WORKERS such threads each. Once this many are parked on retired executors,
+    # stop recycling: the current executor (and its connections) is kept, so thread count stays
+    # bounded. The pre-recycle behavior was the same: one fixed pool per client.
+    MAX_STRANDED_RPC_THREADS = 4 * RPC_EXECUTOR_WORKERS
 
     @classmethod
     def disconnect_all(cls, reset_counts: bool = True) -> None:
@@ -397,6 +423,9 @@ class RPCClientBase:
         self._rpc_executor: Optional[ThreadPoolExecutor] = None
         self._rpc_executor_lock = threading.Lock()
         self._rpc_timeout_log_ts: Dict[str, float] = {}
+        # Unfinished bounded calls per executor (queued + running), so a recycle can tell how many
+        # worker threads it leaves parked. Guarded by _rpc_executor_lock.
+        self._rpc_inflight: Dict[ThreadPoolExecutor, int] = {}
 
         # Local cache state
         self._local_cache_refresh_period_ms = local_cache_refresh_period_ms
@@ -479,20 +508,62 @@ class RPCClientBase:
                     )
         return self._rpc_executor
 
-    def _recycle_rpc_executor(self) -> None:
+    def _recycle_rpc_executor(self, force: bool = False) -> None:
         """
         Retire the bounded-call executor so its worker threads exit and release their per-thread
         multiprocessing proxy connections (which dropping self._proxy alone does not close); a fresh
         one is created lazily on the next call. Non-blocking so a parked worker can't stall a reset.
+
+        Queued calls are cancelled; their callers get RPCCallCancelledError (transient, safe to
+        retry) from _invoke_bounded. Running calls finish on their old worker, which then exits.
+
+        Unless force (disconnect), the recycle is skipped once MAX_STRANDED_RPC_THREADS workers are
+        still parked on previously retired executors, which caps thread growth during a long wedge.
         """
         with self._rpc_executor_lock:
             old_executor = self._rpc_executor
+            if old_executor is None:
+                return
+            stranded = self._stranded_rpc_threads_locked()
+            if not force and stranded >= self.MAX_STRANDED_RPC_THREADS:
+                logger.warning(
+                    f"{self.service_name}Client: {stranded} RPC worker threads still blocked on "
+                    f"retired executors; keeping the current executor instead of recycling it"
+                )
+                return
             self._rpc_executor = None
-        if old_executor is not None:
-            try:
-                old_executor.shutdown(wait=False, cancel_futures=True)
-            except Exception as e:
-                logger.debug(f"{self.service_name}Client error recycling RPC executor: {e}")
+        try:
+            old_executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            logger.debug(f"{self.service_name}Client error recycling RPC executor: {e}")
+        # Cancelled futures have run their done-callbacks by now, so what is left is running calls.
+        with self._rpc_executor_lock:
+            stranded = self._stranded_rpc_threads_locked()
+        if stranded >= self.RPC_EXECUTOR_WORKERS:
+            logger.warning(
+                f"{self.service_name}Client: {stranded} RPC worker threads still blocked on "
+                f"retired executors after a connection reset (service may be wedged)"
+            )
+
+    def _stranded_rpc_threads_locked(self) -> int:
+        """Unfinished calls on retired executors, i.e. parked worker threads. Hold _rpc_executor_lock."""
+        return sum(n for ex, n in self._rpc_inflight.items() if ex is not self._rpc_executor)
+
+    def _track_inflight(self, executor: ThreadPoolExecutor, future) -> None:
+        """Count a submitted call until its future finishes (completes, fails, or is cancelled)."""
+        with self._rpc_executor_lock:
+            self._rpc_inflight[executor] = self._rpc_inflight.get(executor, 0) + 1
+
+        def _done(_f, ex=executor):
+            with self._rpc_executor_lock:
+                remaining = self._rpc_inflight.get(ex, 0) - 1
+                if remaining > 0:
+                    self._rpc_inflight[ex] = remaining
+                else:
+                    self._rpc_inflight.pop(ex, None)
+
+        # Runs immediately (in this thread) if the future already finished, so the count can't leak.
+        future.add_done_callback(_done)
 
     def _submit_bounded_call(self, bound_method, args, kwargs):
         """
@@ -503,7 +574,9 @@ class RPCClientBase:
         for attempt in (1, 2):
             executor = self._get_rpc_executor()
             try:
-                return executor.submit(bound_method, *args, **kwargs)
+                future = executor.submit(bound_method, *args, **kwargs)
+                self._track_inflight(executor, future)
+                return future
             except RuntimeError:
                 if attempt == 2:
                     raise
@@ -533,6 +606,9 @@ class RPCClientBase:
         future = self._submit_bounded_call(bound_method, args, kwargs)
         try:
             return future.result(timeout=timeout_s)
+        except CancelledError:
+            # Queued call cancelled by a concurrent _recycle_rpc_executor: it never ran.
+            raise RPCCallCancelledError(self.service_name, method_name) from None
         except FuturesTimeoutError:
             # Python >= 3.11 aliases concurrent.futures.TimeoutError to the builtin
             # TimeoutError, so a TimeoutError raised by the SERVER'S own logic (e.g. a
@@ -543,6 +619,8 @@ class RPCClientBase:
             # business error behind a bogus "exceeded Ns" and rob _invoke_rpc's transport
             # probe of the chance to classify it.
             if future.done():
+                if future.cancelled():
+                    raise RPCCallCancelledError(self.service_name, method_name) from None
                 completed_error = future.exception(timeout=0)
                 if completed_error is not None:
                     raise completed_error
@@ -825,8 +903,8 @@ class RPCClientBase:
             # Disambiguate by probing the SAME connection: if it still serves calls, the error
             # came from the server's logic — re-executing the method would multiply real work
             # (6x the full order pipeline per the review) for nothing. Probe cost is one cheap
-            # RPC, on error paths only.
-            if self._transport_probe_ok(proxy):
+            # RPC, on error paths only. A cancelled call is client-side and never ran: no probe.
+            if not isinstance(e, RPCCallCancelledError) and self._transport_probe_ok(proxy):
                 raise
             last_error = e
 
@@ -880,7 +958,7 @@ class RPCClientBase:
                 except Exception as e2:
                     if not ErrorUtils.is_transient_rpc_error(e2):
                         raise
-                    if self._transport_probe_ok(proxy):
+                    if not isinstance(e2, RPCCallCancelledError) and self._transport_probe_ok(proxy):
                         # Fresh connection works — this is the server's own OSError-family
                         # business exception; stop re-executing (see first-attempt comment).
                         raise
@@ -1034,10 +1112,9 @@ class RPCClientBase:
         # BaseManager creates IPC resources that need explicit cleanup
         self._teardown_transport()
         self._direct_server = None
-        if self._rpc_executor is not None:
-            # Don't wait: parked workers may be blocked on a dead service.
-            self._rpc_executor.shutdown(wait=False, cancel_futures=True)
-            self._rpc_executor = None
+        # Same path (and lock) as a connection reset. Doesn't wait: parked workers may be blocked
+        # on a dead service.
+        self._recycle_rpc_executor(force=True)
 
         # Unregister from instance tracking
         RPCClientBase._unregister_instance(self)
@@ -1181,6 +1258,7 @@ class RPCClientBase:
         # an older build never carries a stale facade object across the process boundary.
         state['_rpc_executor'] = None
         state['_rpc_executor_lock'] = None
+        state['_rpc_inflight'] = {}
         state['_bounded_proxy'] = None
 
         # Apply subclass-specific excludes/transforms
@@ -1283,6 +1361,7 @@ class RPCClientBase:
         self._rpc_executor = None
         self._rpc_executor_lock = threading.Lock()
         self._rpc_timeout_log_ts = {}
+        self._rpc_inflight = {}
 
         # Restart cache refresh daemon if it was configured and in RPC mode
         if (self._local_cache_refresh_period_ms is not None

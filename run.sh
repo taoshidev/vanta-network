@@ -398,7 +398,13 @@ current_version=$(read_version_value)
 
 # check_and_restart_pm2 proc_name script_path args_array_name [kill_timeout_ms]
 # kill_timeout_ms: PM2's default is only 1.6s before it SIGKILLs — too short for the API apps'
-# graceful shutdown (close WS clients, cancel tasks, unlink shared memory), so they pass 10s.
+# graceful shutdown (close WS clients, cancel tasks, unlink shared memory), so they pass 10s. Core
+# and vanta-state pass 10s too: shutdown_all_servers gives their server subprocesses a grace window
+# to exit on the shutdown flag before force-killing the stragglers.
+# Restart policy: a cold boot after a deploy can crash a few times before its dependencies are up.
+# With PM2's default immediate restarts, 5 crashes inside min_uptime marked the app 'errored' for
+# good and needed a manual restart. Exponential backoff (1s growing to 15s) plus a larger budget
+# lets a slow boot recover by itself, while a truly broken build still ends up 'errored'.
 check_and_restart_pm2() {
     local proc_name=$1
     local script_path=$2
@@ -442,7 +448,8 @@ check_and_restart_pm2() {
         script : '$script_path',
         interpreter: 'python3',
         min_uptime: '5m',
-        max_restarts: '5',$kill_timeout_line
+        max_restarts: '20',
+        exp_backoff_restart_delay: 1000,$kill_timeout_line
         args: [$joined_args]
       }]
     }" > $proc_name.app.config.js
@@ -486,7 +493,7 @@ teardown_disabled_split_apps
 if [ "$split_state_enabled" = true ]; then
     check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
 fi
-check_and_restart_pm2 "$proc_name" "$script" args
+check_and_restart_pm2 "$proc_name" "$script" args 10000
 if [ "$orders_split_enabled" = true ]; then
     # After core: vanta-orders seeds dedup + primes its blacklist cache from core's metagraph on boot.
     check_and_restart_pm2 "$orders_proc_name" "$orders_script" orders_args 10000
@@ -567,7 +574,7 @@ while true; do
                 if [ "$split_state_enabled" = true ]; then
                     check_and_restart_pm2 "$state_proc_name" "$state_script" state_args 10000
                 fi
-                check_and_restart_pm2 "$proc_name" "$script" args
+                check_and_restart_pm2 "$proc_name" "$script" args 10000
                 if [ "$orders_split_enabled" = true ]; then
                     check_and_restart_pm2 "$orders_proc_name" "$orders_script" orders_args 10000
                 fi
