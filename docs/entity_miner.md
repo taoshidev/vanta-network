@@ -350,7 +350,7 @@ An Instant Funded subaccount is created directly into `PRO_CHALLENGE_FROM_STANDA
   of `1.0` (`ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than the `2.0` of a
   standard-to-pro transition. It is not selectable at creation.
 - **Drawdown limits:** the daily loss limit is fixed at **3%**
-  (`ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD`; any other
+  (`ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD`; any other
   `intraday_drawdown_threshold` is rejected). The EOD high-water-mark limit is **5%** or **8%**
   (`eod_hwm_threshold`, `ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES`; omitted keeps 8%). Breaching
   either eliminates.

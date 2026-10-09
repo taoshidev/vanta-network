@@ -375,3 +375,46 @@ def test_gateway_rejects_an_invalid_limit(gateway, bad):
     assert resp.status_code == 400
     assert "intraday_drawdown_threshold" in json.loads(resp.data)["message"]
     post.assert_not_called()
+
+
+# ── REST: Hyperliquid Instant Funded ──────────────────────────────────────────
+
+HL_INSTANT_FUNDED = {"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "eod_hwm_threshold": 0.05,
+                     "intraday_drawdown_threshold": 0.03}
+
+
+def test_validator_forwards_hl_instant_funded_options(validator, keys):
+    server, client = validator
+    resp = client.post("/entity/create-subaccount", json=_signed_create_body(keys, hl=True, **HL_INSTANT_FUNDED))
+    assert resp.status_code == 200, resp.data
+    kwargs = server._entity_client.create_hl_subaccount.call_args.kwargs
+    assert {name: kwargs[name] for name in HL_INSTANT_FUNDED} == HL_INSTANT_FUNDED
+
+
+@pytest.mark.parametrize("options,fragment", [
+    ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "pro_account_size": 500_000}, "Hyperliquid"),
+    ({"bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, "pro_account_size": 500_000}, "Hyperliquid"),
+    ({"eod_hwm_threshold": 0.05}, "eod_hwm_threshold"),
+])
+def test_validator_rejects_hl_options_outside_instant_funded(validator, keys, options, fragment):
+    server, client = validator
+    resp = client.post("/entity/create-subaccount", json=_signed_create_body(keys, hl=True, **options))
+    assert resp.status_code == 400
+    assert fragment in json.loads(resp.data)["error"]
+    server._entity_client.create_hl_subaccount.assert_not_called()
+
+
+def test_gateway_signs_hl_instant_funded_options(gateway, keys):
+    resp, post = _gateway_post(gateway, {"account_size": 100_000, "hl_address": HL_ADDRESS, **HL_INSTANT_FUNDED})
+    assert resp.status_code == 200, resp.data
+    payload = post.call_args.kwargs["json"]
+    assert {name: payload[name] for name in HL_INSTANT_FUNDED} == HL_INSTANT_FUNDED
+    _assert_signed_over(keys, payload, *HL_INSTANT_FUNDED)
+
+
+@pytest.mark.parametrize("options", [{"eod_hwm_threshold": 0.05},
+                                     {"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "pro_account_size": 500_000}])
+def test_gateway_rejects_hl_options_outside_instant_funded(gateway, options):
+    resp, post = _gateway_post(gateway, {"account_size": 100_000, "hl_address": HL_ADDRESS, **options})
+    assert resp.status_code == 400
+    post.assert_not_called()

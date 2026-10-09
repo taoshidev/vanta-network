@@ -147,6 +147,16 @@ def is_instant_funded(initial_bucket: Optional[str]) -> bool:
     return initial_bucket in ("SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FROM_STANDARD")
 
 
+def registration_cpt(account_size, initial_bucket=None, intraday_drawdown_threshold=None,
+                     eod_hwm_threshold=None) -> float:
+    """USD of account size per theta a subaccount registers at: the Instant Funded CPT for its EOD
+    high-water-mark threshold when it was created straight into a funded bucket, else the standard CPT
+    for its daily loss limit. Both are halved at or below ValiConfig.REG_CPT_HALVING_THRESHOLD."""
+    if is_instant_funded(initial_bucket):
+        return ValiConfig.instant_reg_cpt(account_size, eod_hwm_threshold)
+    return ValiConfig.std_reg_cpt(account_size, intraday_drawdown_threshold)
+
+
 def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=None,
                               eod_hwm_threshold=None, intraday_drawdown_threshold=None) -> Optional[str]:
     """
@@ -154,9 +164,9 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
 
     bucket is a MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS (None means
     SUBACCOUNT_CHALLENGE). Pro buckets require a pro_account_size, which standard buckets reject.
-    eod_hwm_threshold is only accepted for PRO_CHALLENGE_FROM_STANDARD, which also
-    only accepts ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD as its
-    intraday_drawdown_threshold.
+    eod_hwm_threshold is only accepted for the Instant Funded buckets (SUBACCOUNT_FUNDED and
+    PRO_CHALLENGE_FROM_STANDARD), which also only accept
+    ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD as their intraday_drawdown_threshold.
     """
     from vali_objects.enums.miner_bucket_enum import MinerBucket
 
@@ -176,18 +186,19 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
     elif pro_account_size is not None:
         return f"pro_account_size is only accepted for pro buckets, not {bucket}"
 
+    instant_funded = is_instant_funded(bucket)
     if eod_hwm_threshold is not None:
-        if miner_bucket != MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
-            return f"eod_hwm_threshold is only accepted for bucket {MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}"
+        if not instant_funded:
+            return (f"eod_hwm_threshold is only accepted for buckets {MinerBucket.SUBACCOUNT_FUNDED.value} "
+                    f"and {MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}")
         if isinstance(eod_hwm_threshold, bool) or eod_hwm_threshold not in ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES:
             return f"eod_hwm_threshold must be one of {ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES}"
 
-    if (miner_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD and intraday_drawdown_threshold is not None
+    if (instant_funded and intraday_drawdown_threshold is not None
             and (isinstance(intraday_drawdown_threshold, bool)
-                 or intraday_drawdown_threshold != ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD)):
+                 or intraday_drawdown_threshold != ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)):
         return (f"intraday_drawdown_threshold must be "
-                f"{ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD} "
-                f"for bucket {MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}")
+                f"{ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD} for bucket {bucket}")
 
     return None
 

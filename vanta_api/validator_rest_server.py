@@ -2624,16 +2624,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
           }'
 
         intraday_drawdown_threshold is optional: one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES,
-        applied in every bucket but PRO_FUNDED. Omitted keeps each bucket's default. PRO_CHALLENGE_FROM_STANDARD
-        only accepts ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD.
+        applied in every bucket but PRO_FUNDED. Omitted keeps each bucket's default. Instant Funded
+        (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FROM_STANDARD) only accepts ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD.
 
         Optional bucket options (see EntityManager.create_subaccount_ex):
           bucket: one of ValiConfig.SUBACCOUNT_CREATION_BUCKETS (default SUBACCOUNT_CHALLENGE)
           pro_account_size: required for pro buckets
-          eod_hwm_threshold: one of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, PRO_CHALLENGE_FROM_STANDARD only
+          eod_hwm_threshold: one of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, Instant Funded only
         intraday_drawdown_threshold and the bucket options are each signed only when sent, so a request
         without them verifies against the legacy field set.
-        Hyperliquid subaccounts only accept bucket, limited to ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS.
+        Hyperliquid subaccounts accept bucket, limited to ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS, and
+        eod_hwm_threshold when created into SUBACCOUNT_FUNDED; they have no pro options.
 
         Example (HL-linked):
         curl -X POST http://localhost:48888/entity/create-subaccount \\
@@ -2730,7 +2731,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': 'account_size must be a valid number'}), 400
 
             if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
-                          or pro_account_size is not None or eod_hwm_threshold is not None):
+                          or pro_account_size is not None):
                 return jsonify({'error': f'Hyperliquid subaccounts only accept bucket '
                                          f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'}), 400
             creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
@@ -2802,6 +2803,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     entity_hotkey, account_size, hl_address, asset_class=asset_class, collateral_exempt=collateral_exempt,
                     payout_address=payout_address, client_ref=client_ref,
                     intraday_drawdown_threshold=intraday_drawdown_threshold, bucket=bucket,
+                    eod_hwm_threshold=eod_hwm_threshold,
                 )
             else:
                 success, subaccount_info, message = self._entity_client.create_subaccount(

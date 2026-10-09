@@ -357,7 +357,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
                     continue
                 self.assertEqual(self.set_size.call_args.kwargs["account_size"], size)
                 self.assertEqual(self.set_size.call_args.kwargs["collateral_balance_theta"],
-                                 size / ValiConfig.ENTITY_COST_PER_THETA)
+                                 size / ValiConfig.std_reg_cpt(size))
 
     def test_invalid_explicit_sizes_are_rejected_for_every_target_and_change_nothing(self):
         pro = _add_pro(self.manager)

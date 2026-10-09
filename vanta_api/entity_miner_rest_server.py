@@ -1045,10 +1045,10 @@ class EntityMinerRestServer(MinerRestServer):
             "asset_class": "crypto" | "forex" | "equities",  // Required
             "account_size": float,                           // Required, must be > 0
             "leverage_tier": 1 | 2 | 3,                      // Optional, default 1 (standard leverage tier)
-            "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults; only 0.03 for PRO_CHALLENGE_FROM_STANDARD
+            "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults; only 0.03 for Instant Funded
             "bucket": str,                                   // Optional, SUBACCOUNT_CREATION_BUCKETS; default SUBACCOUNT_CHALLENGE
             "pro_account_size": float,                       // Required for pro buckets only
-            "eod_hwm_threshold": 0.05 | 0.08,                // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; PRO_CHALLENGE_FROM_STANDARD only
+            "eod_hwm_threshold": 0.05 | 0.08,                // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; Instant Funded (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FROM_STANDARD) only
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -1059,6 +1059,7 @@ class EntityMinerRestServer(MinerRestServer):
             "payout_address": "0x...", // Optional, EVM address for USDC payouts
             "intraday_drawdown_threshold": 0.03 | 0.05,  // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults
             "bucket": "SUBACCOUNT_CHALLENGE" | "SUBACCOUNT_FUNDED",  // Optional, HL_SUBACCOUNT_CREATION_BUCKETS
+            "eod_hwm_threshold": 0.05 | 0.08,  // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; SUBACCOUNT_FUNDED (Instant Funded) only
             "collateral_exempt": bool  // Optional, default false
         }
         """
@@ -1150,7 +1151,7 @@ class EntityMinerRestServer(MinerRestServer):
             pro_account_size = request_data.get("pro_account_size")
             eod_hwm_threshold = request_data.get("eod_hwm_threshold")
             if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
-                          or pro_account_size is not None or eod_hwm_threshold is not None):
+                          or pro_account_size is not None):
                 return jsonify({
                     'status': 'error',
                     'message': f'Hyperliquid subaccounts only accept bucket '

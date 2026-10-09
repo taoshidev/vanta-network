@@ -159,6 +159,7 @@ class EntityClient(RPCClientBase):
         client_ref: Optional[str] = None,
         intraday_drawdown_threshold: Optional[float] = None,
         bucket: Optional[str] = None,
+        eod_hwm_threshold: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount linked to a Hyperliquid address.
@@ -172,6 +173,7 @@ class EntityClient(RPCClientBase):
             payout_address: Optional EVM address (0x + 40 hex) for USDC payouts
             intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
             bucket: Optional, one of ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS; None means SUBACCOUNT_CHALLENGE
+            eod_hwm_threshold: Optional, one of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES; SUBACCOUNT_FUNDED only
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -187,6 +189,8 @@ class EntityClient(RPCClientBase):
             kwargs["intraday_drawdown_threshold"] = intraday_drawdown_threshold
         if bucket is not None:
             kwargs["bucket"] = bucket
+        if eod_hwm_threshold is not None:
+            kwargs["eod_hwm_threshold"] = eod_hwm_threshold
         return self._server.create_hl_subaccount_rpc(entity_hotkey, account_size, hl_address, **kwargs)
 
     def get_all_active_hl_subaccounts(self) -> List[Tuple[str, dict]]:

@@ -294,7 +294,7 @@ class TestEntityManagement(TestBase):
 
         stats = self.challenge_period_client.get_drawdown_stats(hotkey)
         self.assertEqual(stats['intraday_drawdown_threshold'],
-                         ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD)
+                         ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
         self.assertEqual(stats['eod_drawdown_threshold'], 0.05)
         self.assertAlmostEqual(self.entity_client.get_payout_scale(hotkey),
                                ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER * 100_000 / 500_000)
@@ -330,6 +330,73 @@ class TestEntityManagement(TestBase):
         self.assertEqual(self.challenge_period_client.get_miner_bucket(subaccount_info['synthetic_hotkey']),
                          MinerBucket.SUBACCOUNT_FUNDED)
 
+    def test_registration_fee_by_creation_bucket(self):
+        """Standard buckets pay the standard CPT for their daily loss limit; Instant Funded buckets pay the
+        Instant Funded CPT for their EOD threshold (omitted is 8%)."""
+        from_standard = MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value
+        cases = (
+            ({}, 100_000 / 1500),
+            ({"intraday_drawdown_threshold": 0.03}, 100_000 / 2500),
+            ({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value, "pro_account_size": 500_000}, 100_000 / 1500),
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value}, 100_000 / 300),
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "eod_hwm_threshold": 0.05}, 100_000 / 400),
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "eod_hwm_threshold": 0.08}, 100_000 / 300),
+            ({"bucket": from_standard, "pro_account_size": 500_000, "eod_hwm_threshold": 0.05}, 100_000 / 400),
+        )
+        for kwargs, expected_theta in cases:
+            with self.subTest(**kwargs):
+                success, subaccount_info, message = self._create(**kwargs)
+                self.assertTrue(success, message)
+                self.assertAlmostEqual(subaccount_info['reg_fee_theta'], expected_theta)
+
+    def test_small_accounts_register_at_half_the_cpt(self):
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        for bucket, expected_theta in ((MinerBucket.SUBACCOUNT_CHALLENGE, 10_000 / 750),
+                                       (MinerBucket.SUBACCOUNT_FUNDED, 10_000 / 150)):
+            with self.subTest(bucket=bucket):
+                success, subaccount_info, message = self.entity_client.create_subaccount(
+                    entity_hotkey=self.ENTITY_HOTKEY_1, account_size=10_000, asset_class="crypto",
+                    bucket=bucket.value)
+                self.assertTrue(success, message)
+                self.assertAlmostEqual(subaccount_info['reg_fee_theta'], expected_theta)
+
+    def test_instant_funded_into_funded_has_the_fixed_intraday_and_chosen_eod_limits(self):
+        success, subaccount_info, message = self._create(
+            bucket=MinerBucket.SUBACCOUNT_FUNDED.value, eod_hwm_threshold=0.05)
+        self.assertTrue(success, message)
+        self.assertEqual(subaccount_info['intraday_drawdown_threshold'],
+                         ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertEqual(subaccount_info['eod_hwm_threshold'], 0.05)
+        self.assertIsNone(subaccount_info['payout_scale'])
+        stats = self.challenge_period_client.get_drawdown_stats(subaccount_info['synthetic_hotkey'])
+        self.assertEqual(stats['intraday_drawdown_threshold'], ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertEqual(stats['eod_drawdown_threshold'], 0.05)
+
+    def test_create_hl_subaccount_is_priced_like_a_standard_subaccount(self):
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        cases = (
+            ({}, 100_000 / 1500, None),
+            ({"intraday_drawdown_threshold": 0.03}, 100_000 / 2500, 0.03),
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "eod_hwm_threshold": 0.05}, 100_000 / 400, 0.03),
+        )
+        for i, (kwargs, expected_theta, expected_intraday) in enumerate(cases):
+            with self.subTest(**kwargs):
+                success, subaccount_info, message = self.entity_client.create_hl_subaccount(
+                    entity_hotkey=self.ENTITY_HOTKEY_1, account_size=100_000, hl_address="0x" + f"{i}" * 40,
+                    **kwargs)
+                self.assertTrue(success, message)
+                self.assertAlmostEqual(subaccount_info['reg_fee_theta'], expected_theta)
+                self.assertEqual(subaccount_info['intraday_drawdown_threshold'], expected_intraday)
+
+    def test_create_hl_subaccount_rejects_eod_outside_funded(self):
+        self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
+        success, subaccount_info, message = self.entity_client.create_hl_subaccount(
+            entity_hotkey=self.ENTITY_HOTKEY_1, account_size=100_000, hl_address="0x" + "e" * 40,
+            eod_hwm_threshold=0.05)
+        self.assertFalse(success)
+        self.assertIn("eod_hwm_threshold", message)
+        self.assertEqual(len(self.entity_client.get_entity_data(self.ENTITY_HOTKEY_1)['subaccounts']), 0)
+
     def test_create_hl_subaccount_rejects_pro_buckets(self):
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
         for bucket in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
@@ -359,6 +426,10 @@ class TestEntityManagement(TestBase):
             ({"bucket": from_standard, "pro_account_size": 500_000, "eod_hwm_threshold": 0.06}, "eod_hwm_threshold"),
             ({"bucket": from_standard, "pro_account_size": 500_000, "intraday_drawdown_threshold": 0.05},
              "intraday_drawdown_threshold"),
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "intraday_drawdown_threshold": 0.05},
+             "intraday_drawdown_threshold"),
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "eod_hwm_threshold": 0.06}, "eod_hwm_threshold"),
+            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "pro_account_size": 500_000}, "pro_account_size"),
         )
         for kwargs, fragment in cases:
             with self.subTest(**kwargs):

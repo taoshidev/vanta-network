@@ -558,15 +558,16 @@ class ValiConfig:
 
     # Intraday drawdown thresholds (daily loss limit) a subaccount may choose from at creation
     SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES = [0.03, 0.05]
-    # EOD high-water-mark drawdown thresholds a subaccount created into PRO_CHALLENGE_FROM_STANDARD may choose from
+    # EOD high-water-mark drawdown thresholds an Instant Funded subaccount (created into SUBACCOUNT_FUNDED or
+    # PRO_CHALLENGE_FROM_STANDARD) may choose from
     SUBACCOUNT_EOD_DRAWDOWN_VALUES = [0.05, 0.08]
     # Buckets a subaccount may be created directly into (MinerBucket values)
     SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED",
                                    "PRO_CHALLENGE_FROM_STANDARD", "PRO_CHALLENGE_DIRECT"]
     # Hyperliquid subaccounts have no pro track
     HL_SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED"]
-    # The only intraday drawdown threshold for a subaccount created directly into PRO_CHALLENGE_FROM_STANDARD
-    PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
+    # The only intraday drawdown threshold for an Instant Funded subaccount
+    INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
 
     # Pro account (entity subaccount) rules. The promotion criteria and transition grace period can
     # be overridden for testnet through environment variables of the same name (docs/entity_miner.md).
