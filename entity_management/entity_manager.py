@@ -736,24 +736,20 @@ class EntityManager(ValidatorBroadcastBase):
 
             self._write_entities_from_memory_to_disk()
 
-            # Pro buckets start on the pro account: record the sizes, switch to the pro size, charge the fee
+            # Pro buckets start on the pro account: record the sizes, switch to the pro size, charge the fee.
+            # Not broadcast here: peers hear about the subaccount once, below, after it is fully registered.
             if initial_bucket.is_pro_track:
-                sized, size_message = self.apply_bucket_account_size(synthetic_hotkey, initial_bucket, pro_account_size)
+                sized, size_message = self.apply_bucket_account_size(
+                    synthetic_hotkey, initial_bucket, pro_account_size, broadcast=False
+                )
                 if not sized:
-                    logger.warning(f"[ENTITY_MANAGER] Rolling back {synthetic_hotkey}: {size_message}")
-                    del entity_data.subaccounts[subaccount_id]
-                    entity_data.next_subaccount_id -= 1
-                    with self._entities_lock:
-                        self._uuid_to_hotkey.pop(subaccount_uuid, None)
-                    self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
-                    self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
-                    if required_theta > 0:
-                        self._entity_collateral_client.offset_collateral_cache(entity_hotkey, required_theta)
-                    self._write_entities_from_memory_to_disk()
+                    self._rollback_subaccount_creation(entity_data, subaccount_id, required_theta, size_message)
                     return False, None, size_message, False
                 subaccount_info = entity_data.subaccounts[subaccount_id]
 
-            # Register subaccount with challenge period
+            # Register subaccount with challenge period. Without this state the subaccount would be
+            # picked up later by _sync_positions as a trailing SUBACCOUNT_CHALLENGE with none of the
+            # bucket, drawdown criteria or thresholds chosen here, so a failure undoes the creation.
             try:
                 self._challenge_period_client.set_miner_bucket(
                     synthetic_hotkey, initial_bucket, now_ms,
@@ -762,9 +758,10 @@ class EntityManager(ValidatorBroadcastBase):
                     eod_hwm_threshold=eod_hwm_threshold,
                 )
             except Exception as e:
-                logger.error(
-                    f"[ENTITY_MANAGER] Failed to register {synthetic_hotkey} with challenge period: {e}"
-                )
+                message = f"Failed to register {synthetic_hotkey} with challenge period: {e}"
+                logger.error(f"[ENTITY_MANAGER] {message}")
+                self._rollback_subaccount_creation(entity_data, subaccount_id, required_theta, message)
+                return False, None, message, False
 
             if not self.running_unit_tests:
                 try:
@@ -788,6 +785,32 @@ class EntityManager(ValidatorBroadcastBase):
             return True, subaccount_info, (
                 f"Slashing {charged_theta} theta{fee_note}, {remaining_theta:.2f} theta remaining"
             ), False
+
+    def _rollback_subaccount_creation(
+        self, entity_data, subaccount_id: int, required_theta: float, reason: str
+    ) -> None:
+        """Undo a subaccount stored by create_subaccount_ex whose sizing or challenge period
+        registration then failed. Called under the entity lock, before anything is broadcast.
+        """
+        subaccount = entity_data.subaccounts.pop(subaccount_id)
+        synthetic_hotkey = subaccount.synthetic_hotkey
+        entity_hotkey, _ = parse_synthetic_hotkey(synthetic_hotkey)
+        logger.warning(f"[ENTITY_MANAGER] Rolling back {synthetic_hotkey}: {reason}")
+
+        entity_data.next_subaccount_id -= 1
+        with self._entities_lock:
+            self._uuid_to_hotkey.pop(subaccount.subaccount_uuid, None)
+        self._asset_selection_client.delete_asset_selection(synthetic_hotkey)
+        self._miner_account_client.delete_miner_account_size(synthetic_hotkey)
+        try:
+            self._challenge_period_client.remove_miners([synthetic_hotkey])
+        except Exception as e:
+            logger.error(f"[ENTITY_MANAGER] Could not clear challenge period state for {synthetic_hotkey}: {e}")
+
+        refund_theta = (required_theta or 0.0) + max(0.0, subaccount.pro_fee_theta_pending)
+        if refund_theta > 0:
+            self._entity_collateral_client.offset_collateral_cache(entity_hotkey, refund_theta)
+        self._write_entities_from_memory_to_disk()
 
     def _get_hl_max_addresses(self) -> int:
         """
@@ -1003,6 +1026,7 @@ class EntityManager(ValidatorBroadcastBase):
         synthetic_hotkey: str,
         target_bucket: MinerBucket,
         pro_account_size: Optional[float] = None,
+        broadcast: bool = True,
     ) -> Tuple[bool, str]:
         """
         Point a subaccount at the account size its target bucket trades.
@@ -1012,6 +1036,9 @@ class EntityManager(ValidatorBroadcastBase):
         recorded; every other pro bucket switches the live account size to the pro size and
         charges the promotion fee for the size granted above the standard account.
         Returning to a standard bucket restores the standard size.
+
+        broadcast=False leaves telling the other validators to the caller: create_subaccount_ex
+        broadcasts the new subaccount once, after it is registered with the challenge period.
 
         There is no network default pro size. The entity picks it when it promotes the subaccount
         (POST /entity/subaccount/promote), and this is the last check before it is stored:
@@ -1133,7 +1160,7 @@ class EntityManager(ValidatorBroadcastBase):
             self._apply_pro_asset_class(synthetic_hotkey, target_bucket)
 
         # Hand the sizing to the other validators.
-        if not self.running_unit_tests:
+        if broadcast and not self.running_unit_tests:
             self.broadcast_subaccount_registration(entity_hotkey, subaccount)
 
         pro_size_note = f" (pro size source: {pro_size_source})" if pro_size_source else ""

@@ -1627,5 +1627,80 @@ class TestEntityRegistrationMothershipOnly(TestBase):
         self.assertNotIn("5Entity", m.entities)
 
 
+
+class TestSubaccountCreationRollback(unittest.TestCase):
+    """create_subaccount_ex run in-process (the orchestrator servers above cannot be made to fail), so
+    a failed challenge period registration and the broadcast order can be checked directly."""
+
+    ENTITY = "entity_alpha"
+
+    def setUp(self):
+        from unittest.mock import MagicMock
+        from entity_management.entity_manager import EntityData
+        from tests.vali_tests.test_pro_account_size import _bare_manager
+
+        self.manager = _bare_manager()
+        self.manager._uuid_to_hotkey = {}
+        self.manager._entity_collateral_client = MagicMock()
+        self.manager._entity_collateral_client.get_cached_collateral.return_value = 1_000_000.0
+        self.manager._entity_collateral_client.compute_entity_required_collateral.return_value = 0.0
+        self.manager.entities[self.ENTITY] = EntityData(entity_hotkey=self.ENTITY, registered_at_ms=0)
+
+    def _net_cache_offset(self) -> float:
+        offsets = self.manager._entity_collateral_client.offset_collateral_cache.call_args_list
+        return sum(call.args[1] for call in offsets)
+
+    def test_a_failed_challenge_period_registration_undoes_the_creation(self):
+        """The record, its id, both fees and any challenge period state go; a retry reuses the id."""
+        cases = (
+            {},
+            {"bucket": MinerBucket.SUBACCOUNT_FUNDED.value},
+            {"bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, "pro_account_size": 500_000},
+        )
+        for options in cases:
+            with self.subTest(**options):
+                self.setUp()
+                challenge_period = self.manager._challenge_period_client
+                challenge_period.set_miner_bucket.side_effect = RuntimeError("rpc down")
+
+                success, info, message, _ = self.manager.create_subaccount_ex(self.ENTITY, 100_000, "crypto", **options)
+
+                self.assertFalse(success)
+                self.assertIsNone(info)
+                self.assertIn("challenge period", message)
+                entity = self.manager.entities[self.ENTITY]
+                self.assertEqual(entity.subaccounts, {})
+                self.assertEqual(entity.next_subaccount_id, 0)
+                self.assertAlmostEqual(self._net_cache_offset(), 0.0)
+                challenge_period.remove_miners.assert_called_once_with([f"{self.ENTITY}_0"])
+
+                challenge_period.set_miner_bucket.side_effect = None
+                success, info, message, _ = self.manager.create_subaccount_ex(self.ENTITY, 100_000, "crypto", **options)
+                self.assertTrue(success, message)
+                self.assertEqual(info.synthetic_hotkey, f"{self.ENTITY}_0")
+                # The successful retry holds its fees: registration, plus the pro fee for a pro bucket
+                self.assertAlmostEqual(self._net_cache_offset(), -(info.reg_fee_theta + info.pro_fee_theta))
+
+    def test_a_pro_creation_broadcasts_once_after_registration(self):
+        """apply_bucket_account_size does not broadcast during creation; peers get the finished record once."""
+        from unittest.mock import MagicMock
+
+        self.manager.running_unit_tests = False
+        self.manager._websocket_client = MagicMock()
+        self.manager.broadcast_subaccount_dashboard = MagicMock()
+        order = []
+        self.manager._challenge_period_client.set_miner_bucket.side_effect = lambda *a, **k: order.append("registered")
+        self.manager.broadcast_subaccount_registration = MagicMock(side_effect=lambda *a, **k: order.append("broadcast"))
+
+        success, info, message, _ = self.manager.create_subaccount_ex(
+            self.ENTITY, 100_000, "crypto",
+            bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000)
+
+        self.assertTrue(success, message)
+        self.assertEqual(order, ["registered", "broadcast"])
+        broadcast_info = self.manager.broadcast_subaccount_registration.call_args.args[1]
+        self.assertEqual(broadcast_info.account_size, 500_000)
+        self.assertEqual(broadcast_info.asset_class, "all_markets")
+
 if __name__ == '__main__':
     unittest.main()
