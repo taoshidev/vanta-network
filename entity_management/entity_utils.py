@@ -98,7 +98,8 @@ def pro_account_size_error(pro_account_size, standard_account_size=None) -> Opti
     A pro account size is an int or float (never a bool) that is finite, positive and at most
     ValiConfig.MAX_PRO_ACCOUNT_SIZE. The size presets offered by the Command Center are a UI concern.
 
-    `standard_account_size`, when known, is the floor
+    `standard_account_size`, when known, sets the floor: a pro account is at least
+    ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE times the standard account it grows from.
 
     Sizes arrive as parsed JSON, and Python's JSON parser (so Flask's request.get_json) accepts the
     literals NaN, Infinity and -Infinity. NaN fails every ordered comparison, so a plain range check
@@ -114,11 +115,13 @@ def pro_account_size_error(pro_account_size, standard_account_size=None) -> Opti
             f"pro_account_size ${pro_account_size} must be positive and at most "
             f"${ValiConfig.MAX_PRO_ACCOUNT_SIZE:,}"
         )
-    if standard_account_size is not None and pro_account_size < standard_account_size:
-        return (
-            f"pro_account_size ${pro_account_size:,} is below the subaccount's standard account size "
-            f"${standard_account_size:,}"
-        )
+    if standard_account_size is not None:
+        floor = ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE * standard_account_size
+        if pro_account_size < floor:
+            return (
+                f"pro_account_size ${pro_account_size:,} is below {ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE}x "
+                f"the subaccount's standard account size ${standard_account_size:,} (${floor:,})"
+            )
     return None
 
 

@@ -279,7 +279,8 @@ class TestEntityManagement(TestBase):
             bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000,
             eod_hwm_threshold=0.05)
         self.assertTrue(success, message)
-        self.assertGreater(subaccount_info['pro_fee_theta'], 0)
+        # The promotion fee of a 3% daily loss limit account: 500K / 5,000 - 100K / 2,500
+        self.assertAlmostEqual(subaccount_info['pro_fee_theta'], 60.0)
         self.assertIn(f"{subaccount_info['reg_fee_theta'] + subaccount_info['pro_fee_theta']} theta", message)
         self.assertIn("pro fee", message)
         hotkey = subaccount_info['synthetic_hotkey']
@@ -303,6 +304,8 @@ class TestEntityManagement(TestBase):
         success, subaccount_info, message = self._create(
             bucket=MinerBucket.PRO_CHALLENGE_DIRECT.value, pro_account_size=250_000)
         self.assertTrue(success, message)
+        # 250K / 3,000 - 100K / 1,500 at the default 5% daily loss limit
+        self.assertAlmostEqual(subaccount_info['pro_fee_theta'], 250_000 / 3000 - 100_000 / 1500)
         hotkey = subaccount_info['synthetic_hotkey']
         self.assertEqual(self.challenge_period_client.get_miner_bucket(hotkey), MinerBucket.PRO_CHALLENGE_DIRECT)
         self.assertEqual(subaccount_info['account_size'], 250_000)

@@ -585,7 +585,7 @@ class ValiConfig:
     PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
     PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD = 0.08
     PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD = 0.05
-    PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08 # Also affects promotion cost
+    PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD = 0.08
 
     # Pro promotion criteria.
     PRO_CHALLENGE_MINIMUM_DAYS = _env_override("PRO_CHALLENGE_MINIMUM_DAYS", 90, int, maximum=3650)
@@ -800,53 +800,15 @@ class ValiConfig:
 
     # Entity Miner Collateral
     ENTITY_REGISTRATION_FEE = 1000  # Theta required to register an entity
-    ENTITY_COST_PER_THETA = 5000  # USD account size per theta of collateral for entity subaccounts
-    ENTITY_COST_PER_THETA_LOW = 2500  # CPT value used for smaller account sizes <=10k
-    ENTITY_COST_PER_THETA_LOW_THRESHOLD = 10_000  # Account sizes at or below this use ENTITY_COST_PER_THETA_LOW
     MAX_SUBACCOUNT_ACCOUNT_SIZE = 100_000  # Maximum account size in USD for entity subaccounts
     # Largest pro account size in USD. There is no network default: the entity picks the size when it
     # promotes onto the pro track (POST /entity/subaccount/promote), and the network enforces only that
-    # the size is finite, positive, at most this cap, and never below the subaccount's own standard
-    # account size - a pro account cannot shrink the account the subaccount already trades.
+    # the size is finite, positive, at most this cap, and at least PRO_ACCOUNT_SIZE_MIN_MULTIPLE times
+    # the subaccount's own standard account size.
     MAX_PRO_ACCOUNT_SIZE = 1_000_000
-
-    # Pro promotion price. The premium term buys the drawdown the entity is already exposed to on
-    # the standard account, priced in theta at the token's USD price; the second term charges
-    # registration's own per-dollar rate on the size granted above the standard account.
-    PRO_PROMOTION_PREMIUM_RATE = 0.10  # Share of the standard account's drawdown allowance charged up front
-    THETA_USD_PRICE = 7.0  # Assumed USD price of one theta
-
-    @staticmethod
-    def entity_cost_per_theta(account_size: float) -> float:
-        """USD of account size per theta that registration charges for an account of this size."""
-        return (ValiConfig.ENTITY_COST_PER_THETA_LOW
-                if (account_size or 0.0) <= ValiConfig.ENTITY_COST_PER_THETA_LOW_THRESHOLD
-                else ValiConfig.ENTITY_COST_PER_THETA)
-
-    @staticmethod
-    def pro_promotion_fee_theta(pro_account_size: float, standard_account_size: float) -> float:
-        """
-        Theta owed to put a subaccount on a pro account of `pro_account_size`:
-
-            PREMIUM_RATE * (FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size) / THETA_USD_PRICE
-                + (pro_size - standard_size) / registration CPT
-
-        Registration already paid for `standard_account_size`, so only the size granted above it is
-        charged per dollar: a pro account the same size as the standard one grants no extra dollars
-        and so owes nothing at the registration rate. Callers subtract the fee already assessed, so
-        re-entering the pro track at the same size is free and a larger grant costs only the increase.
-
-        Never negative: both terms are clamped at zero, so a pro size at or below the standard size
-        can only ever cost the premium.
-        """
-        standard_size = max(0.0, standard_account_size or 0.0)
-        size_granted = max(0.0, (pro_account_size or 0.0) - standard_size)
-
-        drawdown_allowance_usd = ValiConfig.PRO_FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size
-        premium_theta = max(0.0, ValiConfig.PRO_PROMOTION_PREMIUM_RATE * drawdown_allowance_usd
-                            / ValiConfig.THETA_USD_PRICE)
-        registration_theta = size_granted / ValiConfig.entity_cost_per_theta(pro_account_size)
-        return max(0.0, premium_theta + registration_theta)
+    # A pro account is at least this multiple of the standard account it grows from. Below it the
+    # promotion fee (pro size / PRO_REG_CPT - standard size / STD_REG_CPT) would be negative.
+    PRO_ACCOUNT_SIZE_MIN_MULTIPLE = 2
 
     # CPT schedule: USD of account size per theta. Registration CPTs are keyed by the daily loss limit
     # (intraday drawdown threshold) the subaccount registered with; Instant Funded's by its EOD

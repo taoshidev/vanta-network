@@ -1456,11 +1456,12 @@ class EntityMinerRestServer(MinerRestServer):
         Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FROM_STANDARD)
         are refused the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_TRANSITION hop.
 
-        pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is not
-        below the subaccount's own standard account size. Send one the first time a subaccount enters
-        the pro track; afterwards sending one replaces the recorded size and omitting it keeps it. The
-        entity pays the promotion fee out of its collateral once the pro account goes live, and a pro
-        size equal to the standard size is charged nothing at the registration rate.
+        pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is at
+        least twice the subaccount's own standard account size. Send one the first time a subaccount
+        enters the pro track; afterwards sending one replaces the recorded size and omitting it keeps it.
+        The entity pays the promotion fee out of its collateral once the pro account goes live:
+        pro size / PRO_REG_CPT minus standard size / STD_REG_CPT, both at the subaccount's daily loss
+        limit, so a pro size of exactly twice the standard size is charged nothing.
 
         Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
         PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and

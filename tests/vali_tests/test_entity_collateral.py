@@ -136,12 +136,9 @@ class TestEntityCollateral(TestBase):
         return entity_hotkey, synthetic_hotkey, subaccount_info
 
     def _expected_promotion_fee(self, pro_size, standard_size):
-        """The promotion price: an up-front premium on the standard account's drawdown allowance
-        plus registration's per-dollar rate on the size granted above it."""
-        premium = (ValiConfig.PRO_PROMOTION_PREMIUM_RATE
-                   * ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size
-                   / ValiConfig.THETA_USD_PRICE)
-        return premium + (pro_size - standard_size) / ValiConfig.entity_cost_per_theta(pro_size)
+        """The promotion price at the default 5% daily loss limit: the pro size at the pro registration
+        CPT less the standard size at the standard registration CPT."""
+        return pro_size / ValiConfig.PRO_REG_CPT[0.05] - standard_size / ValiConfig.STD_REG_CPT[0.05]
 
     def _set_bucket(self, synthetic_hotkey, bucket):
         """Helper: Move a subaccount into a bucket."""
@@ -559,7 +556,7 @@ class TestEntityCollateral(TestBase):
         )
         self.assertTrue(success, message)
 
-        expected_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 1.6 + 180 theta
+        expected_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 333.33 - 66.67 theta
         subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
         self.assertAlmostEqual(subaccount["pro_fee_theta"], expected_fee)
         self.assertAlmostEqual(subaccount["pro_fee_theta_pending"], expected_fee)
@@ -593,7 +590,7 @@ class TestEntityCollateral(TestBase):
 
         self.assertTrue(self.entity_client.apply_bucket_account_size(
             synthetic_hotkey, MinerBucket.PRO_FUNDED, 500_000)[0])
-        first_fee = self._expected_promotion_fee(500_000, 100_000)  # 1.6 + 80 theta
+        first_fee = self._expected_promotion_fee(500_000, 100_000)  # 166.67 - 66.67 theta
 
         # Back to standard, then up to a larger pro account
         self.assertTrue(self.entity_client.apply_bucket_account_size(
@@ -601,7 +598,7 @@ class TestEntityCollateral(TestBase):
         self.assertTrue(self.entity_client.apply_bucket_account_size(
             synthetic_hotkey, MinerBucket.PRO_FUNDED, 1_000_000)[0])
 
-        total_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 1.6 + 180 theta
+        total_fee = self._expected_promotion_fee(1_000_000, 100_000)  # 333.33 - 66.67 theta
         subaccount = self.entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey)
         self.assertAlmostEqual(subaccount["pro_fee_theta"], total_fee)
         self.assertAlmostEqual(subaccount["pro_fee_theta_pending"], total_fee)
@@ -1183,57 +1180,6 @@ class TestProPromotionFeeSlashing(unittest.TestCase):
 
         manager._contract_client.slash_miner_collateral.assert_not_called()
         manager._entity_client.set_pro_fee_pending.assert_not_called()
-
-
-class TestProPromotionFeeConfig(unittest.TestCase):
-    """
-    The promotion price:
-
-        PREMIUM_RATE * (FUNDED_EOD_DRAWDOWN_THRESHOLD * standard_size) / THETA_USD_PRICE
-            + (pro_size - standard_size) / registration CPT
-    """
-
-    def test_the_fee_is_the_drawdown_premium_plus_the_granted_size(self):
-        fee = ValiConfig.pro_promotion_fee_theta(1_000_000, 100_000)
-
-        premium = 0.10 * (0.08 * 100_000) / ValiConfig.THETA_USD_PRICE
-        granted = 900_000 / ValiConfig.ENTITY_COST_PER_THETA
-        self.assertAlmostEqual(fee, premium + granted)
-
-    def test_the_premium_scales_with_the_standard_account(self):
-        """Doubling the standard account doubles the premium, holding the granted size fixed."""
-        small = ValiConfig.pro_promotion_fee_theta(200_000, 100_000)
-        large = ValiConfig.pro_promotion_fee_theta(300_000, 200_000)
-
-        granted = 100_000 / ValiConfig.ENTITY_COST_PER_THETA
-        self.assertAlmostEqual(large - granted, 2 * (small - granted))
-
-    def test_every_term_is_configurable(self):
-        with patch.object(ValiConfig, "PRO_PROMOTION_PREMIUM_RATE", 0.20), \
-                patch.object(ValiConfig, "THETA_USD_PRICE", 250.0), \
-                patch.object(ValiConfig, "ENTITY_COST_PER_THETA", 10_000):
-            fee = ValiConfig.pro_promotion_fee_theta(1_000_000, 100_000)
-
-        self.assertAlmostEqual(fee, 0.20 * (0.08 * 100_000) / 250.0 + 900_000 / 10_000)
-
-    def test_a_pro_size_at_or_below_the_standard_size_costs_only_the_premium(self):
-        premium = 0.10 * (0.08 * 100_000) / ValiConfig.THETA_USD_PRICE
-        self.assertAlmostEqual(ValiConfig.pro_promotion_fee_theta(100_000, 100_000), premium)
-        self.assertAlmostEqual(ValiConfig.pro_promotion_fee_theta(50_000, 100_000), premium)
-
-    def test_a_missing_standard_size_prices_the_whole_pro_account_with_no_premium(self):
-        """No standard account means no drawdown allowance to buy, so only the size is charged."""
-        fee = ValiConfig.pro_promotion_fee_theta(500_000, None)
-        self.assertAlmostEqual(fee, 500_000 / ValiConfig.ENTITY_COST_PER_THETA)
-
-    def test_the_granted_size_uses_the_registration_cost_per_theta(self):
-        """Registration's own rate, including its lower rate for small accounts."""
-        self.assertAlmostEqual(ValiConfig.entity_cost_per_theta(10_000), ValiConfig.ENTITY_COST_PER_THETA_LOW)
-        self.assertAlmostEqual(ValiConfig.entity_cost_per_theta(10_001), ValiConfig.ENTITY_COST_PER_THETA)
-
-        fee = ValiConfig.pro_promotion_fee_theta(10_000, 5_000)
-        premium = 0.10 * (0.08 * 5_000) / ValiConfig.THETA_USD_PRICE
-        self.assertAlmostEqual(fee, premium + 5_000 / ValiConfig.ENTITY_COST_PER_THETA_LOW)
 
 
 if __name__ == '__main__':

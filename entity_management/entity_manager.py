@@ -621,7 +621,7 @@ class EntityManager(ValidatorBroadcastBase):
             cpt = registration_cpt(account_size, initial_bucket.value, intraday_drawdown_threshold, eod_hwm_threshold)
             required_theta = account_size / cpt if not collateral_exempt else 0
             # A pro bucket is also charged the pro promotion fee (by apply_bucket_account_size below)
-            pro_fee_theta = (ValiConfig.pro_promotion_fee_theta(pro_account_size, account_size)
+            pro_fee_theta = (ValiConfig.promotion_fee_theta(pro_account_size, account_size, intraday_drawdown_threshold)
                              if initial_bucket.is_pro and not collateral_exempt else 0)
 
             # Verify collateral balance
@@ -1053,7 +1053,7 @@ class EntityManager(ValidatorBroadcastBase):
         Entering the pro track snapshots the standard size and records the granted pro size.
         PRO_CHALLENGE_TRANSITION keeps trading the standard account, so only the sizes are
         recorded; every other pro bucket switches the live account size to the pro size and
-        charges the promotion fee for the size granted above the standard account.
+        charges the promotion fee, ValiConfig.promotion_fee_theta at the subaccount's daily loss limit.
         Returning to a standard bucket restores the standard size.
 
         broadcast=False leaves telling the other validators to the caller: create_subaccount_ex
@@ -1062,8 +1062,9 @@ class EntityManager(ValidatorBroadcastBase):
         There is no network default pro size. The entity picks it when it promotes the subaccount
         (POST /entity/subaccount/promote), and this is the last check before it is stored:
           * An explicit pro_account_size, for any target, must be an int or float (not a bool),
-            finite, positive, at most ValiConfig.MAX_PRO_ACCOUNT_SIZE, and never below the
-            subaccount's own standard account size: a promotion grants size, it never takes it away.
+            finite, positive, at most ValiConfig.MAX_PRO_ACCOUNT_SIZE, and at least
+            ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE times the subaccount's own standard account size.
+            A recorded size is not re-checked, so a subaccount mid-journey is never stranded by it.
           * Entering the pro track from a subaccount whose account_type is not "pro" requires an
             explicit size. A size recorded on an earlier pro journey, which a move back to a standard
             bucket keeps, is never reused: a re-offer needs a size again.
@@ -1126,8 +1127,8 @@ class EntityManager(ValidatorBroadcastBase):
             # zero: a size already paid for is free rather than crediting theta back. Collateral-exempt
             # subaccounts (reg_fee_theta == 0) stay exempt on the pro track.
             if target_bucket.is_pro and subaccount.reg_fee_theta > 0:
-                target_fee_theta = max(0.0, ValiConfig.pro_promotion_fee_theta(pro_account_size,
-                                                                               standard_account_size))
+                target_fee_theta = ValiConfig.promotion_fee_theta(pro_account_size, standard_account_size,
+                                                                  subaccount.intraday_drawdown_threshold)
                 promotion_fee_theta = max(0.0, target_fee_theta - subaccount.pro_fee_theta)
                 affordable, fee_error = self._verify_promotion_collateral(entity_hotkey, promotion_fee_theta)
                 if not affordable:

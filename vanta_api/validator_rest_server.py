@@ -3030,8 +3030,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Ownership is proven via entity coldkey
 
         pro_account_size is the size the entity is asking for, capped at ValiConfig.MAX_PRO_ACCOUNT_SIZE
-        and never below the subaccount's own standard account size. The request fails when the entity's
-        collateral cannot cover it and it is needed.
+        and at least ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE times the subaccount's own standard account
+        size. The promotion fee is ValiConfig.promotion_fee_theta at the subaccount's daily loss limit; the
+        request fails when the entity's collateral cannot cover it and it is needed.
 
         Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
         PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
