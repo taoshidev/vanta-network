@@ -23,6 +23,7 @@ from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
 from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.vali_config import ValiConfig, TradePair, RPCConnectionMode
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.enums.order_source_enum import OrderSource
@@ -66,6 +67,7 @@ class MDDChecker(CacheController):
         self._position_client = PositionManagerClient()
         self._position_lock_client = PositionLockClient(running_unit_tests=running_unit_tests)
         self._miner_account_client = MinerAccountClient(connection_mode=connection_mode)
+        self._challenge_period_client = ChallengePeriodClient(connection_mode=connection_mode)
 
         self.all_trade_pairs = [trade_pair for trade_pair in TradePair if not trade_pair.is_blocked]
         self.reset_debug_counters()
@@ -208,6 +210,13 @@ class MDDChecker(CacheController):
         if hotkey_to_unrealized_pnl:
             self._miner_account_client.update_unrealized_pnl(hotkey_to_unrealized_pnl)
         timer.lap("unrealized_pnl")
+
+        # The challenge period's drawdown checks read account equity, which is now fresh
+        try:
+            self._challenge_period_client.request_refresh()
+        except Exception as e:
+            logger.error(f"[MDD] Failed to trigger challenge period refresh: {e}")
+        timer.lap("trigger_challenge_period")
 
         # Log aggregate timing statistics
         if self.position_refresh_count > 0:
