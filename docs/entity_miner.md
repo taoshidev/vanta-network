@@ -347,7 +347,7 @@ An Instant Funded subaccount is created directly into `PRO_CHALLENGE_FROM_STANDA
   **`pro_account_size`** (required) is the pro account it trades. A trader who takes the Pro challenge
   sends the pro size they chose; one who does not sends `pro_account_size` equal to `account_size`.
 - **Payouts start immediately**, on `account_size / pro_account_size × PnL`: a fixed payout scale
-  of `1.0` (`ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than the `2.0` of a
+  of `1.0` (`ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than the `2.0` of a
   standard-to-pro transition. It is not selectable at creation.
 - **Drawdown limits:** the daily loss limit is fixed at **3%**
   (`ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD`; any other

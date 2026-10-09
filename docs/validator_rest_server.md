@@ -1161,7 +1161,7 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `eod_hwm_threshold` (float, optional): `0.05` or `0.08`, `PRO_CHALLENGE_FROM_STANDARD` only (default `0.08`). That bucket's `intraday_drawdown_threshold` is fixed at `0.03`. Both are dropped for the pro defaults on reaching `PRO_FUNDED`.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
-Instant Funded subaccounts are always paid at a payout scale of `1.0` (`ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER`); it is not a request field.
+Instant Funded subaccounts are always paid at a payout scale of `1.0` (`ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER`); it is not a request field.
 
 **Response:**
 ```json

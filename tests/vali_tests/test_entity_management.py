@@ -290,14 +290,14 @@ class TestEntityManagement(TestBase):
         self.assertEqual(subaccount_info['standard_account_size'], 100_000)
         self.assertEqual(subaccount_info['pro_account_size'], 500_000)
         self.assertEqual(subaccount_info['asset_class'], 'all_markets')
-        self.assertEqual(subaccount_info['payout_scale'], ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER)
+        self.assertEqual(subaccount_info['payout_scale'], ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER)
 
         stats = self.challenge_period_client.get_drawdown_stats(hotkey)
         self.assertEqual(stats['intraday_drawdown_threshold'],
                          ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD)
         self.assertEqual(stats['eod_drawdown_threshold'], 0.05)
         self.assertAlmostEqual(self.entity_client.get_payout_scale(hotkey),
-                               ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER * 100_000 / 500_000)
+                               ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER * 100_000 / 500_000)
 
     def test_create_subaccount_directly_into_pro_challenge_direct(self):
         success, subaccount_info, message = self._create(
