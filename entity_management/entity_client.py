@@ -105,7 +105,6 @@ class EntityClient(RPCClientBase):
         bucket: Optional[str] = None,
         pro_account_size: Optional[float] = None,
         eod_hwm_threshold: Optional[float] = None,
-        payout_scale: Optional[float] = None,
     ) -> Tuple[bool, Optional[dict], str]:
         """
         Create a new subaccount for an entity.
@@ -120,7 +119,7 @@ class EntityClient(RPCClientBase):
             client_ref: Optional idempotency key; the returned dict carries
                 "duplicate": True when it matched a prior creation.
             intraday_drawdown_threshold: Optional, one of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; None keeps bucket defaults
-            bucket, pro_account_size, eod_hwm_threshold, payout_scale: See EntityManager.create_subaccount_ex
+            bucket, pro_account_size, eod_hwm_threshold: See EntityManager.create_subaccount_ex
 
         Returns:
             (success: bool, subaccount_info_dict: Optional[dict], message: str)
@@ -135,7 +134,7 @@ class EntityClient(RPCClientBase):
         if intraday_drawdown_threshold is not None:
             kwargs["intraday_drawdown_threshold"] = intraday_drawdown_threshold
         for name, value in (("bucket", bucket), ("pro_account_size", pro_account_size),
-                            ("eod_hwm_threshold", eod_hwm_threshold), ("payout_scale", payout_scale)):
+                            ("eod_hwm_threshold", eod_hwm_threshold)):
             if value is not None:
                 kwargs[name] = value
         # fail-fast: reserves collateral + mints a subaccount; a re-execution creates a DUPLICATE

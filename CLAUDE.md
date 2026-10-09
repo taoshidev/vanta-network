@@ -180,7 +180,7 @@ The system uses a distributed RPC architecture for inter-process communication:
   - Minimal weights during challenge period
   - Entity subaccounts run a separate returns-based challenge (10% crypto/equities/commodities/multi-class, 8% forex) with no rank requirement and no time limit
   - Entity subaccounts (standard and HL-linked) may choose an `intraday_drawdown_threshold` (daily loss limit) of 3% or 5% (sent as 0.03 or 0.05, the values in `SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES`) at creation; it replaces the intraday drawdown threshold in every standard and pro bucket except PRO_FUNDED. Omitted keeps each bucket's default
-  - Subaccounts may be created directly into a bucket (`bucket`, `ValiConfig.SUBACCOUNT_CREATION_BUCKETS`). **Instant Funded** = created into `PRO_CHALLENGE_FROM_STANDARD`: paid immediately on `account_size` (× `payout_scale`, default 1.0) while trading `pro_account_size` under pro rules, with a fixed 3% daily loss limit and a chosen 5%/8% EOD HWM limit (`eod_hwm_threshold`); on reaching PRO_FUNDED it is paid on the pro size and reverts to the pro 5%/8% limits
+  - Subaccounts may be created directly into a bucket (`bucket`, `ValiConfig.SUBACCOUNT_CREATION_BUCKETS`). **Instant Funded** = created into `PRO_CHALLENGE_FROM_STANDARD`: paid immediately on `account_size` (fixed payout scale 1.0) while trading `pro_account_size` under pro rules, with a fixed 3% daily loss limit and a chosen 5%/8% EOD HWM limit (`eod_hwm_threshold`); on reaching PRO_FUNDED it is paid on the pro size and reverts to the pro 5%/8% limits
 - **Probation**: Miners below rank 25 in asset class
   - 90-day probation period
   - Must achieve rank 25 or better to avoid elimination

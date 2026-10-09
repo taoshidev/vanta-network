@@ -216,16 +216,21 @@ def validator(keys):
     return server, app.test_client()
 
 
-def _signed_create_body(keys, hl: bool = False, **unsigned) -> dict:
-    """A create body signed over the legacy field set, as the gateway sends it."""
+def _signed_create_body(keys, hl: bool = False, unsigned: dict | None = None, **options) -> dict:
+    """A create body as the gateway sends it: the legacy field set plus any options, all signed.
+    `unsigned` is merged in after signing, to model a request altered in transit."""
     coldkey, hotkey = keys
     signed = {"account_size": 100_000.0, "asset_class": "hl_all" if hl else "crypto",
-              "entity_coldkey": coldkey.ss58_address, "entity_hotkey": hotkey.ss58_address}
+              "entity_coldkey": coldkey.ss58_address, "entity_hotkey": hotkey.ss58_address, **options}
     if hl:
         signed["hl_address"] = HL_ADDRESS
     message = json.dumps(signed, sort_keys=True).encode("utf-8")
     return {**signed, "signature": coldkey.sign(message).hex(), "version": ValiConfig.VANTA_CLI_MINIMUM_VERSION,
-            **unsigned}
+            **(unsigned or {})}
+
+
+INSTANT_FUNDED = {"bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, "pro_account_size": 500_000,
+                  "eod_hwm_threshold": 0.08, "intraday_drawdown_threshold": 0.03}
 
 
 @pytest.mark.parametrize("hl", [False, True])
@@ -244,6 +249,42 @@ def test_validator_forwards_none_when_omitted(validator, keys, hl):
     assert resp.status_code == 200, resp.data
     create = server._entity_client.create_hl_subaccount if hl else server._entity_client.create_subaccount
     assert create.call_args.kwargs["intraday_drawdown_threshold"] is None
+
+
+def test_validator_forwards_signed_instant_funded_options(validator, keys):
+    server, client = validator
+    resp = client.post("/entity/create-subaccount", json=_signed_create_body(keys, **INSTANT_FUNDED))
+    assert resp.status_code == 200, resp.data
+    kwargs = server._entity_client.create_subaccount.call_args.kwargs
+    assert {name: kwargs[name] for name in INSTANT_FUNDED} == INSTANT_FUNDED
+    assert "payout_scale" not in kwargs
+
+
+@pytest.mark.parametrize("name", sorted(INSTANT_FUNDED))
+def test_validator_rejects_an_option_added_after_signing(validator, keys, name):
+    """Every creation option is covered by the signature: adding one in transit fails verification."""
+    server, client = validator
+    signed = {k: v for k, v in INSTANT_FUNDED.items() if k != name}
+    body = _signed_create_body(keys, unsigned={name: INSTANT_FUNDED[name]}, **signed)
+    resp = client.post("/entity/create-subaccount", json=body)
+    assert resp.status_code == 401, resp.data
+    server._entity_client.create_subaccount.assert_not_called()
+
+
+def test_validator_rejects_a_pro_account_size_changed_after_signing(validator, keys):
+    server, client = validator
+    body = _signed_create_body(keys, unsigned={"pro_account_size": 1_000_000}, **INSTANT_FUNDED)
+    resp = client.post("/entity/create-subaccount", json=body)
+    assert resp.status_code == 401, resp.data
+    server._entity_client.create_subaccount.assert_not_called()
+
+
+def test_validator_ignores_payout_scale(validator, keys):
+    server, client = validator
+    body = _signed_create_body(keys, unsigned={"payout_scale": 2.0}, **INSTANT_FUNDED)
+    resp = client.post("/entity/create-subaccount", json=body)
+    assert resp.status_code == 200, resp.data
+    assert "payout_scale" not in server._entity_client.create_subaccount.call_args.kwargs
 
 
 @pytest.mark.parametrize("bad", [0.04, 0.07 - 0.04, 0.02, 0.06, 0.035, 3, 5, "0.03", True, [0.03]])
@@ -287,27 +328,45 @@ def _gateway_post(client, body):
     return resp, post
 
 
+def _assert_signed_over(keys, payload, *option_names):
+    signed = {k: payload[k] for k in ("account_size", "asset_class", "entity_coldkey", "entity_hotkey",
+                                      *option_names)}
+    if "hl_address" in payload:
+        signed["hl_address"] = payload["hl_address"]
+    message = json.dumps(signed, sort_keys=True).encode("utf-8")
+    assert Keypair(ss58_address=keys[0].ss58_address).verify(message, bytes.fromhex(payload["signature"]))
+
+
 @pytest.mark.parametrize("hl", [False, True])
-def test_gateway_forwards_the_chosen_threshold_unsigned(gateway, keys, hl):
+def test_gateway_signs_the_chosen_threshold(gateway, keys, hl):
     body = {"account_size": 100_000, "intraday_drawdown_threshold": 0.03}
     body.update({"hl_address": HL_ADDRESS} if hl else {"asset_class": "crypto"})
     resp, post = _gateway_post(gateway, body)
     assert resp.status_code == 200, resp.data
     payload = post.call_args.kwargs["json"]
     assert payload["intraday_drawdown_threshold"] == 0.03
-
-    # The signature still covers only the legacy field set
-    signed = {k: payload[k] for k in ("account_size", "asset_class", "entity_coldkey", "entity_hotkey")}
-    if hl:
-        signed["hl_address"] = HL_ADDRESS
-    message = json.dumps(signed, sort_keys=True).encode("utf-8")
-    assert Keypair(ss58_address=keys[0].ss58_address).verify(message, bytes.fromhex(payload["signature"]))
+    _assert_signed_over(keys, payload, "intraday_drawdown_threshold")
 
 
-def test_gateway_omits_the_limit_when_not_chosen(gateway):
+def test_gateway_signs_instant_funded_options(gateway, keys):
+    resp, post = _gateway_post(gateway, {"account_size": 100_000, "asset_class": "crypto",
+                                         "payout_scale": 2.0, **INSTANT_FUNDED})
+    assert resp.status_code == 200, resp.data
+    payload = post.call_args.kwargs["json"]
+    assert {name: payload[name] for name in INSTANT_FUNDED} == INSTANT_FUNDED
+    assert "payout_scale" not in payload
+    _assert_signed_over(keys, payload, *INSTANT_FUNDED)
+
+
+def test_gateway_signs_only_the_legacy_field_set_without_options(gateway, keys):
+    """A request with no creation options signs exactly what a legacy gateway signs, so either
+    gateway verifies against either validator."""
     resp, post = _gateway_post(gateway, {"account_size": 100_000, "asset_class": "crypto"})
     assert resp.status_code == 200, resp.data
-    assert "intraday_drawdown_threshold" not in post.call_args.kwargs["json"]
+    payload = post.call_args.kwargs["json"]
+    for name in INSTANT_FUNDED:
+        assert name not in payload
+    _assert_signed_over(keys, payload)
 
 
 @pytest.mark.parametrize("bad", [0.04, 0.07 - 0.04, 0.02, 0.06, 0.035, 3, 5, "0.03", True, [0.03]])

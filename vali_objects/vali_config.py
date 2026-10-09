@@ -604,10 +604,8 @@ class ValiConfig:
     # $500K pro account pays a $100K standard account (5K / 500K) * 2 * 100K = $2K.
     PRO_TRANSITION_PAYOUT_MULTIPLIER = 2.0
     # Multiplier used instead when a subaccount is created directly into PRO_CHALLENGE_FROM_STANDARD
-    # without an explicit payout_scale
-    PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER = 1.0
-    # Largest payout_scale a subaccount may be created with
-    MAX_SUBACCOUNT_PAYOUT_SCALE = 2.0
+    # (Instant Funded). Not caller-selectable: the fee does not price a larger multiplier.
+    GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER = 1.0
 
     # Subaccount promotion requirements
     SUBACCOUNT_FUNDED_MINIMUM_DAYS = 90  # Minimum days in FUNDED before promoting to ALPHA

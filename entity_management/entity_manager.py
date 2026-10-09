@@ -85,7 +85,7 @@ class SubaccountInfo(BaseModel):
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     intraday_drawdown_threshold: Optional[float] = Field(default=None, description="Chosen intraday drawdown threshold (daily loss limit) as a fraction, applied in every bucket (immutable once set). None keeps each bucket's default")
     eod_hwm_threshold: Optional[float] = Field(default=None, description="Chosen EOD high-water-mark drawdown threshold as a fraction (PRO_CHALLENGE_FROM_STANDARD creation only, immutable once set). None keeps each bucket's default")
-    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FROM_STANDARD (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
+    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FROM_STANDARD, set to ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER on Instant Funded creation (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
     initial_bucket: Optional[str] = Field(default=None, description="MinerBucket the subaccount was created into. None means SUBACCOUNT_CHALLENGE")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
     leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades tier 0 (each limit is max of its legacy value and Base)")
@@ -470,7 +470,6 @@ class EntityManager(ValidatorBroadcastBase):
         bucket: Optional[str] = None,
         pro_account_size: Optional[float] = None,
         eod_hwm_threshold: Optional[float] = None,
-        payout_scale: Optional[float] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str]:
         """Backward-compatible 3-tuple wrapper around create_subaccount_ex.
 
@@ -484,7 +483,6 @@ class EntityManager(ValidatorBroadcastBase):
             drawdown_criteria=drawdown_criteria, client_ref=client_ref,
             leverage_tier=leverage_tier, intraday_drawdown_threshold=intraday_drawdown_threshold,
             bucket=bucket, pro_account_size=pro_account_size, eod_hwm_threshold=eod_hwm_threshold,
-            payout_scale=payout_scale,
         )
         return success, info, message
 
@@ -503,7 +501,6 @@ class EntityManager(ValidatorBroadcastBase):
         bucket: Optional[str] = None,
         pro_account_size: Optional[float] = None,
         eod_hwm_threshold: Optional[float] = None,
-        payout_scale: Optional[float] = None,
     ) -> Tuple[bool, Optional[SubaccountInfo], str, bool]:
         """
         Create a new subaccount for an entity.
@@ -529,8 +526,7 @@ class EntityManager(ValidatorBroadcastBase):
             bucket: MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS. None means SUBACCOUNT_CHALLENGE.
             pro_account_size: Required for pro buckets, rejected otherwise.
             eod_hwm_threshold: One of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, PRO_CHALLENGE_FROM_STANDARD only.
-            payout_scale: Payout multiplier, PRO_CHALLENGE_FROM_STANDARD only. Defaults to
-                   ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER when created into that bucket.
+                   A subaccount created into that bucket is paid at ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER.
 
         Returns:
             (success: bool, subaccount_info: Optional[SubaccountInfo], message: str)
@@ -540,7 +536,7 @@ class EntityManager(ValidatorBroadcastBase):
         if isinstance(bucket, MinerBucket):
             bucket = bucket.value
         creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
-                                                   eod_hwm_threshold, payout_scale, intraday_drawdown_threshold)
+                                                   eod_hwm_threshold, intraday_drawdown_threshold)
         if creation_error:
             return False, None, creation_error, False
         initial_bucket = MinerBucket(bucket) if bucket else MinerBucket.SUBACCOUNT_CHALLENGE
@@ -564,8 +560,9 @@ class EntityManager(ValidatorBroadcastBase):
         if initial_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
             # Only one value is accepted for now (see subaccount_creation_error); omitted means that value
             intraday_drawdown_threshold = ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD
-            if payout_scale is None:
-                payout_scale = ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER
+            payout_scale = ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER
+        else:
+            payout_scale = None
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:

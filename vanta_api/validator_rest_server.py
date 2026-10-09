@@ -2627,11 +2627,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         applied in every bucket but PRO_FUNDED. Omitted keeps each bucket's default. PRO_CHALLENGE_FROM_STANDARD
         only accepts ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD.
 
-        Optional bucket options (see EntityManager.create_subaccount_ex), unsigned like intraday_drawdown_threshold:
+        Optional bucket options (see EntityManager.create_subaccount_ex):
           bucket: one of ValiConfig.SUBACCOUNT_CREATION_BUCKETS (default SUBACCOUNT_CHALLENGE)
           pro_account_size: required for pro buckets
           eod_hwm_threshold: one of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, PRO_CHALLENGE_FROM_STANDARD only
-          payout_scale: payout multiplier, PRO_CHALLENGE_FROM_STANDARD only
+        intraday_drawdown_threshold and the bucket options are each signed only when sent, so a request
+        without them verifies against the legacy field set.
         Hyperliquid subaccounts only accept bucket, limited to ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS.
 
         Example (HL-linked):
@@ -2693,16 +2694,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             # Standard leverage tier 1 to 3; EntityManager applies the default when omitted
             leverage_tier = data.get('leverage_tier')
             # Intraday drawdown threshold, one of SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES, for standard and HL
-            # subaccounts alike. Omitted keeps each bucket's default. Unsigned, like drawdown_criteria.
+            # subaccounts alike. Omitted keeps each bucket's default.
             intraday_drawdown_threshold = data.get('intraday_drawdown_threshold')
             bucket = data.get('bucket')
             pro_account_size = data.get('pro_account_size')
             eod_hwm_threshold = data.get('eod_hwm_threshold')
-            payout_scale = data.get('payout_scale')
             # Optional idempotency key. Deliberately NOT part of the signed
-            # payload (sig_dict below is frozen) so that a new gateway signing
-            # the legacy field set still verifies against an older validator,
-            # and vice versa. Absent/None => today's behavior (no dedupe).
+            # payload so that a gateway sending it still verifies against an
+            # older validator, and vice versa. Absent/None => today's behavior (no dedupe).
             # required_fields must NEVER gain 'client_ref' — it stays optional.
             client_ref = data.get('client_ref')
             if client_ref is not None:
@@ -2731,12 +2730,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': 'account_size must be a valid number'}), 400
 
             if is_hl and (bucket not in (None, *ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS)
-                          or pro_account_size is not None or eod_hwm_threshold is not None
-                          or payout_scale is not None):
+                          or pro_account_size is not None or eod_hwm_threshold is not None):
                 return jsonify({'error': f'Hyperliquid subaccounts only accept bucket '
                                          f'{ValiConfig.HL_SUBACCOUNT_CREATION_BUCKETS} and have no pro options'}), 400
             creation_error = subaccount_creation_error(bucket, account_size, pro_account_size,
-                                                       eod_hwm_threshold, payout_scale, intraday_drawdown_threshold)
+                                                       eod_hwm_threshold, intraday_drawdown_threshold)
             if creation_error:
                 return jsonify({'error': creation_error}), 400
 
@@ -2776,6 +2774,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 sig_dict["hl_address"] = hl_address
                 if payout_address is not None:
                     sig_dict["payout_address"] = payout_address
+            # Signed only when sent, so a legacy request without them verifies unchanged
+            for name, value in (("intraday_drawdown_threshold", intraday_drawdown_threshold), ("bucket", bucket),
+                                ("pro_account_size", pro_account_size), ("eod_hwm_threshold", eod_hwm_threshold)):
+                if value is not None:
+                    sig_dict[name] = value
             message = json.dumps(sig_dict, sort_keys=True).encode('utf-8')
 
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
@@ -2806,7 +2809,6 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     drawdown_criteria=drawdown_criteria, leverage_tier=leverage_tier,
                     client_ref=client_ref, intraday_drawdown_threshold=intraday_drawdown_threshold,
                     bucket=bucket, pro_account_size=pro_account_size, eod_hwm_threshold=eod_hwm_threshold,
-                    payout_scale=payout_scale,
                 )
             timings['create_subaccount_rpc'] = int((time.time() - t0) * 1000)
 

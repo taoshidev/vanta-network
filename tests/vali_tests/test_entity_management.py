@@ -299,13 +299,6 @@ class TestEntityManagement(TestBase):
         self.assertAlmostEqual(self.entity_client.get_payout_scale(hotkey),
                                ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER * 100_000 / 500_000)
 
-    def test_an_explicit_payout_scale_replaces_the_default(self):
-        success, subaccount_info, message = self._create(
-            bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000, payout_scale=1.5)
-        self.assertTrue(success, message)
-        self.assertAlmostEqual(self.entity_client.get_payout_scale(subaccount_info['synthetic_hotkey']),
-                               1.5 * 100_000 / 500_000)
-
     def test_create_subaccount_directly_into_pro_challenge_direct(self):
         success, subaccount_info, message = self._create(
             bucket=MinerBucket.PRO_CHALLENGE_DIRECT.value, pro_account_size=250_000)
@@ -364,14 +357,6 @@ class TestEntityManagement(TestBase):
             ({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value, "pro_account_size": 500_000,
               "eod_hwm_threshold": 0.05}, "eod_hwm_threshold"),
             ({"bucket": from_standard, "pro_account_size": 500_000, "eod_hwm_threshold": 0.06}, "eod_hwm_threshold"),
-            ({"bucket": from_standard, "pro_account_size": 500_000, "payout_scale": 0}, "payout_scale"),
-            ({"bucket": from_standard, "pro_account_size": 500_000,
-              "payout_scale": ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE + 0.1}, "payout_scale"),
-            ({"bucket": from_standard, "pro_account_size": 500_000, "payout_scale": True}, "payout_scale"),
-            ({"payout_scale": 1.0}, "payout_scale"),
-            ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "payout_scale": 1.0}, "payout_scale"),
-            ({"bucket": MinerBucket.PRO_CHALLENGE_DIRECT.value, "pro_account_size": 500_000,
-              "payout_scale": 1.0}, "payout_scale"),
             ({"bucket": from_standard, "pro_account_size": 500_000, "intraday_drawdown_threshold": 0.05},
              "intraday_drawdown_threshold"),
         )

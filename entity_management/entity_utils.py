@@ -142,14 +142,13 @@ def pro_payout_scale(standard_account_size, pro_account_size, payout_scale=None)
 
 
 def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=None,
-                              eod_hwm_threshold=None, payout_scale=None,
-                              intraday_drawdown_threshold=None) -> Optional[str]:
+                              eod_hwm_threshold=None, intraday_drawdown_threshold=None) -> Optional[str]:
     """
     Why these subaccount creation options cannot be used together, or None when they can.
 
     bucket is a MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS (None means
     SUBACCOUNT_CHALLENGE). Pro buckets require a pro_account_size, which standard buckets reject.
-    eod_hwm_threshold and payout_scale are only accepted for PRO_CHALLENGE_FROM_STANDARD, which also
+    eod_hwm_threshold is only accepted for PRO_CHALLENGE_FROM_STANDARD, which also
     only accepts ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD as its
     intraday_drawdown_threshold.
     """
@@ -183,14 +182,6 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
         return (f"intraday_drawdown_threshold must be "
                 f"{ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD} "
                 f"for bucket {MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}")
-
-    if payout_scale is not None:
-        if miner_bucket != MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
-            return f"payout_scale is only accepted for bucket {MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}"
-        if (isinstance(payout_scale, bool) or not isinstance(payout_scale, (int, float))
-                or (isinstance(payout_scale, float) and not math.isfinite(payout_scale))
-                or not 0 < payout_scale <= ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE):
-            return f"payout_scale must be a positive number at most {ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE}"
 
     return None
 

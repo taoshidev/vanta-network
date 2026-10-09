@@ -304,7 +304,7 @@ pro positions pay live HL funding plus the standard schedule.
 | Bucket                        | Account traded | Earns payouts | Payout basis            |
 |-------------------------------|----------------|---------------|-------------------------|
 | `PRO_CHALLENGE_TRANSITION`    | standard       | yes           | standard account size   |
-| `PRO_CHALLENGE_FROM_STANDARD` | pro            | yes           | 2x standard account size (`payout_scale` × standard size for Instant Funded) |
+| `PRO_CHALLENGE_FROM_STANDARD` | pro            | yes           | 2x standard account size (1x for Instant Funded) |
 | `PRO_CHALLENGE_DIRECT`        | pro            | no            | —                       |
 | `PRO_FUNDED`                  | pro            | yes           | pro account size        |
 
@@ -346,10 +346,9 @@ An Instant Funded subaccount is created directly into `PRO_CHALLENGE_FROM_STANDA
 - **`account_size`** is the funded account it is paid on ($25K, $50K or $100K in the Command Center).
   **`pro_account_size`** (required) is the pro account it trades. A trader who takes the Pro challenge
   sends the pro size they chose; one who does not sends `pro_account_size` equal to `account_size`.
-- **Payouts start immediately**, on `payout_scale × account_size / pro_account_size × PnL`.
-  `payout_scale` defaults to `1.0` (`ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than
-  the `2.0` of a standard-to-pro transition, and may be set up to `2.0`
-  (`ValiConfig.MAX_SUBACCOUNT_PAYOUT_SCALE`).
+- **Payouts start immediately**, on `account_size / pro_account_size × PnL`: a fixed payout scale
+  of `1.0` (`ValiConfig.PRO_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than the `2.0` of a
+  standard-to-pro transition. It is not selectable at creation.
 - **Drawdown limits:** the daily loss limit is fixed at **3%**
   (`ValiConfig.PRO_CHALLENGE_FROM_STANDARD_CREATION_INTRADAY_DRAWDOWN_THRESHOLD`; any other
   `intraday_drawdown_threshold` is rejected). The EOD high-water-mark limit is **5%** or **8%**
@@ -362,7 +361,7 @@ An Instant Funded subaccount is created directly into `PRO_CHALLENGE_FROM_STANDA
   creation-time limits are dropped for the pro defaults, a **5%** daily loss limit and an **8%** EOD
   limit. From then on it follows every `PRO_FUNDED` rule.
 
-`eod_hwm_threshold` and `payout_scale` are accepted only for this bucket, and every pro bucket requires
+`eod_hwm_threshold` is accepted only for this bucket, and every pro bucket requires
 `pro_account_size`. All creation options are fixed for the life of the subaccount.
 
 #### Traders who have already passed the standard challenge
@@ -715,7 +714,6 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `bucket` | string | No | Bucket to create into: `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` or `PRO_CHALLENGE_DIRECT`. HL-linked subaccounts accept only the first two. See [Instant Funded](#instant-funded). |
 | `pro_account_size` | float | Pro buckets | Pro account size traded; required for pro buckets, rejected otherwise. |
 | `eod_hwm_threshold` | float | No | EOD high-water-mark drawdown limit `0.05` or `0.08`. `PRO_CHALLENGE_FROM_STANDARD` only. |
-| `payout_scale` | float | No | Payout multiplier, `> 0` and `≤ 2.0` (default `1.0`). `PRO_CHALLENGE_FROM_STANDARD` only. |
 
 #### Change Leverage Tier
 
@@ -866,7 +864,7 @@ The signature is produced by signing `{"entity_coldkey": "...", "entity_hotkey":
 }
 ```
 
-The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys). `drawdown_criteria` is optional (defaults to `"trailing"` if omitted) and is not currently part of the signed payload. `intraday_drawdown_threshold` is optional (`0.03` or `0.05`; omitted keeps each bucket's default) and is likewise not part of the signed payload, as are the optional `bucket`, `pro_account_size`, `eod_hwm_threshold` and `payout_scale` (see [Instant Funded](#instant-funded)).
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey}` (JSON, sorted keys). `drawdown_criteria` is optional (defaults to `"trailing"` if omitted) and is not currently part of the signed payload. `intraday_drawdown_threshold` (`0.03` or `0.05`; omitted keeps each bucket's default), `bucket`, `pro_account_size` and `eod_hwm_threshold` (see [Instant Funded](#instant-funded)) are optional and each is added to the signed payload when sent; an omitted one is left out, so a request without any of them signs the legacy field set.
 
 Response:
 
@@ -1128,7 +1126,7 @@ HL-linked subaccount creation (include `hl_address`; `asset_class` is always `"h
 }
 ```
 
-The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey, hl_address}` (JSON, sorted keys), plus `payout_address` if provided. An optional `intraday_drawdown_threshold` (`0.03` or `0.05`) rides unsigned alongside.
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey, hl_address}` (JSON, sorted keys), plus `payout_address` if provided. An optional `intraday_drawdown_threshold` (`0.03` or `0.05`) and `bucket` are added to the signed payload when sent.
 
 #### Entity Miner Gateway (port 8088)
 

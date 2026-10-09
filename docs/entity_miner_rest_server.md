@@ -218,7 +218,6 @@ Authorization: Bearer <api_key>
 - `bucket` (string, optional): bucket to create into, `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` (Instant Funded) or `PRO_CHALLENGE_DIRECT`. HL-linked subaccounts accept only the first two. See [entity_miner.md](entity_miner.md#instant-funded).
 - `pro_account_size` (float): required for pro buckets, rejected otherwise.
 - `eod_hwm_threshold` (float, optional): `0.05` or `0.08`, `PRO_CHALLENGE_FROM_STANDARD` only (default `0.08`). That bucket's `intraday_drawdown_threshold` is fixed at `0.03`.
-- `payout_scale` (float, optional): payout multiplier `> 0` and `≤ 2.0`, `PRO_CHALLENGE_FROM_STANDARD` only (default `1.0`).
 
 Instant Funded example:
 ```json
@@ -255,7 +254,7 @@ Instant Funded example:
 
 | Code | Cause |
 |------|-------|
-| 400 | Missing/invalid field (`asset_class`, `account_size`, `drawdown_criteria`, `leverage_tier`, `bucket`, `pro_account_size`, `eod_hwm_threshold`, `payout_scale`), or an option used with a bucket that does not accept it |
+| 400 | Missing/invalid field (`asset_class`, `account_size`, `drawdown_criteria`, `leverage_tier`, `bucket`, `pro_account_size`, `eod_hwm_threshold`), or an option used with a bucket that does not accept it |
 | 401 | Invalid or missing API key |
 | 403 | Max HL traders limit reached (HL path only) |
 | 500 | Wallet not configured or signing error |
