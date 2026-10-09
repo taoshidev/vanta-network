@@ -6,7 +6,7 @@ orders, eliminations, perf ledgers, debt/emissions/penalty ledgers, challenge pe
 accounts, asset selections, entities and weekly seals. Each service's manager is created in-process
 in LOCAL mode with no RPC servers, so a running validator's ports are never touched. Never run this against the mothership.
 
-Always writes to validation/ and backs it up first. Stop the validator before running.
+Always writes to validation/. Stop the validator before running.
 """
 import json
 import gzip
@@ -15,7 +15,6 @@ import shutil
 import time
 
 import traceback
-from datetime import datetime
 
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import RPCConnectionMode
@@ -41,19 +40,6 @@ CONNECTION_MODE = RPCConnectionMode.LOCAL
 
 # Per-hotkey directories under miners/ that the checkpoint fully describes
 MINER_SUBDIRS_TO_OVERWRITE = ("positions", "limit_orders", "archived_positions")
-
-
-def backup_validation_directory():
-    dir_to_backup = ValiBkpUtils.get_vali_dir(running_unit_tests=RUNNING_UNIT_TESTS)
-    if not os.path.exists(dir_to_backup):
-        logger.info(f"Nothing to back up at {dir_to_backup}")
-        return
-    # Write to the backup location. Make sure it is a function of the date. No dashes. Days and months get 2 digits.
-    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_location = ValiBkpUtils.get_vali_bkp_dir() + date_str + '/'
-    # Sync directory to the backup location using python shutil
-    shutil.copytree(dir_to_backup, backup_location)
-    logger.info(f"backed up {dir_to_backup} to {backup_location}")
 
 
 def load_checkpoint() -> dict:
@@ -157,8 +143,6 @@ def regenerate_miner_positions():
         else:
             logger.info(f"    {key}: {value}")
     logger.info(f"    backup_creation_time: {TimeUtil.millis_to_formatted_date_str(data['created_timestamp_ms'])}")
-
-    backup_validation_directory()
 
     clear_restore_targets()
 
