@@ -253,11 +253,14 @@ class EntityCollateralManager(CacheController):
 
         Formula per qualifying subaccount:
             margin_usd     = min(open_position_value, max_slash_usd - cumulative_slashed_usd)
-            required_theta += margin_usd / CPT_RISK
+            required_theta += margin_usd * multiplier / CPT
 
-        where max_slash_usd = exposed account size * the bucket's intraday drawdown threshold.
-        The exposed size is the traded account except in PRO_CHALLENGE_FROM_STANDARD, which
-        stays at the standard account size until it reaches PRO_FUNDED.
+        where max_slash_usd = exposed account size * the bucket's intraday drawdown threshold (5% in
+        every earning bucket). The exposed size is the traded account except in
+        PRO_CHALLENGE_FROM_STANDARD, which stays at the standard account size until it reaches
+        PRO_FUNDED. CPT is ValiConfig.PRO_MARGIN_CPT in PRO_FUNDED and ValiConfig.MARGIN_CPT
+        otherwise. multiplier is the payout multiplier the margin backs: in PRO_CHALLENGE_FROM_STANDARD
+        the subaccount's payout_scale (2 growing from standard funded, 1 Instant Funded), else 1.
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -286,7 +289,11 @@ class EntityCollateralManager(CacheController):
                 continue
 
             margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey, bucket)
-            total_required_theta += margin_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+            multiplier = 1.0
+            if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+                payout_scale = sa_info.get("payout_scale")
+                multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
+            total_required_theta += ValiConfig.margin_theta(margin_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
 
         return total_required_theta
 
@@ -346,7 +353,7 @@ class EntityCollateralManager(CacheController):
         Computes the projected required collateral in theta if this order goes through:
             For all other funded subaccounts: margin = min(position_value, max_slash - slashed)
             For the ordering subaccount:      margin = min(position_value + additional, max_slash - slashed)
-            projected_required_theta = sum(margin_usd) / CPT_RISK
+            projected_required_theta = sum(margin_usd * multiplier / CPT)   (see compute_entity_required_collateral)
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -382,7 +389,16 @@ class EntityCollateralManager(CacheController):
         current_margin_usd = min(current_position_value, remaining_headroom)
         projected_margin_usd = min(projected_position_value, remaining_headroom)
         margin_delta_usd = projected_margin_usd - current_margin_usd
-        margin_delta_theta = margin_delta_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+        multiplier = 1.0
+        if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+            # Unreadable subaccount info falls back to the network multiplier, the larger margin
+            try:
+                payout_scale = (self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}).get("payout_scale")
+            except Exception as e:
+                logger.warning(f"[ENTITY_COLLATERAL] Failed to read the payout scale for {synthetic_hotkey}: {e}")
+                payout_scale = None
+            multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
+        margin_delta_theta = ValiConfig.margin_theta(margin_delta_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
 
         projected_required_theta = current_required_theta + margin_delta_theta
 
@@ -441,6 +457,7 @@ class EntityCollateralManager(CacheController):
             return 0.0
 
         # Collateral-exempt subaccounts (reg_fee_theta == 0) are never slashed on losses
+        payout_scale = None
         entity_data = self._entity_client.get_entity_data(entity_hotkey)
         if entity_data:
             subaccounts = entity_data.get("subaccounts", {})
@@ -448,7 +465,13 @@ class EntityCollateralManager(CacheController):
                 if isinstance(sa, dict) and sa.get("synthetic_hotkey") == synthetic_hotkey:
                     if sa.get("reg_fee_theta", 0) == 0:
                         return 0.0
+                    payout_scale = sa.get("payout_scale")
                     break
+        # Losses are slashed at the rate the subaccount's margin is held at (see compute_entity_required_collateral)
+        multiplier = 1.0
+        if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+            multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
+        pro_funded = bucket == MinerBucket.PRO_FUNDED
 
         max_slash = self.get_max_slash(synthetic_hotkey, bucket)
         if max_slash <= 0:
@@ -473,14 +496,14 @@ class EntityCollateralManager(CacheController):
             slash_usd = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, max_slash)
 
             logger.info(
-                f"[ENTITY_COLLATERAL] Queued ({slash_usd / ValiConfig.ENTITY_COLLATERAL_CPT_RISK:.4f} theta) "
+                f"[ENTITY_COLLATERAL] Queued ({ValiConfig.margin_theta(slash_usd, pro_funded, multiplier):.4f} theta) "
                 f"loss slash for entity {entity_hotkey} subaccount {synthetic_hotkey}. "
                 f"cumulative_loss=${cumulative_realized_loss:.2f}, cumulative_slashed=${cumulative_slashed:.2f}"
             )
 
         # Decrement cache outside slash lock as an optimistic reservation until
         # refresh_collateral_cache resets it from the on-chain value.
-        self.offset_collateral_cache(entity_hotkey, -realized_loss / ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
+        self.offset_collateral_cache(entity_hotkey, -ValiConfig.margin_theta(realized_loss, pro_funded, multiplier))
 
         self._save_slash_tracking_to_disk()
         return slash_usd
@@ -575,6 +598,12 @@ class EntityCollateralManager(CacheController):
                     if isinstance(s, dict) and s.get("reg_fee_theta", 0) == 0
                 }
                 pending_loss_usd: Dict[str, float] = {}  # synthetic hotkey -> USD
+                # Losses are slashed at the rate the subaccount's margin is held at (see
+                # compute_entity_required_collateral): PRO_MARGIN_CPT in PRO_FUNDED, MARGIN_CPT otherwise,
+                # times the payout multiplier in PRO_CHALLENGE_FROM_STANDARD.
+                pending_loss_theta: Dict[str, float] = {}  # synthetic hotkey -> theta
+                payout_scales = {s.get("synthetic_hotkey"): s.get("payout_scale")
+                                 for s in subaccounts.values() if isinstance(s, dict)}
                 eligible_hotkeys = {hk for hk in synthetic_hotkeys if hk and hk not in exempt_hotkeys}
                 buckets = self._challenge_period_client.get_miner_buckets(list(eligible_hotkeys))
                 with self._slash_lock:
@@ -598,7 +627,14 @@ class EntityCollateralManager(CacheController):
                         slash_usd = self._get_loss_slash_usd(cumulative_realized_loss, cumulative_slashed, max_slash)
                         if slash_usd > 0:
                             pending_loss_usd[synthetic_hotkey] = slash_usd
-                total_pending_loss_theta = sum(pending_loss_usd.values()) / ValiConfig.ENTITY_COLLATERAL_CPT_RISK
+                            multiplier = 1.0
+                            if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+                                payout_scale = payout_scales.get(synthetic_hotkey)
+                                multiplier = (ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
+                                              if payout_scale is None else payout_scale)
+                            pending_loss_theta[synthetic_hotkey] = ValiConfig.margin_theta(
+                                slash_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
+                total_pending_loss_theta = sum(pending_loss_theta.values())
 
                 pending_reg_theta: Dict[int, float] = {} # subaccount id -> theta
                 pending_pro_theta: Dict[int, float] = {} # subaccount id -> theta

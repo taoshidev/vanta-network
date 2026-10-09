@@ -3815,9 +3815,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         try:
             headroom_theta = self._entity_collateral_client.get_entity_collateral_headroom(entity_hotkey)
             collateral['headroom_theta'] = headroom_theta
+            # The margin this subaccount could still open against the headroom: theta * CPT / multiplier,
+            # at this subaccount's margin CPT and payout multiplier (see compute_entity_required_collateral).
+            margin_cpt = ValiConfig.PRO_MARGIN_CPT if bucket == MinerBucket.PRO_FUNDED else ValiConfig.MARGIN_CPT
+            multiplier = 1.0
+            if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+                payout_scale = (self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}).get('payout_scale')
+                multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
             # None means the entity's balance is unknown, which is not the same as no headroom.
             collateral['headroom_usd'] = (None if headroom_theta is None
-                                          else headroom_theta * ValiConfig.ENTITY_COLLATERAL_CPT_RISK)
+                                          else headroom_theta * margin_cpt / multiplier)
             collateral['subaccount_margin_usd'] = self._entity_collateral_client.compute_subaccount_margin_requirement(
                 synthetic_hotkey, bucket
             )

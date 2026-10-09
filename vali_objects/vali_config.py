@@ -819,7 +819,8 @@ class ValiConfig:
     # Account sizes at or below this register at half the standard and Instant Funded CPT (double the theta)
     REG_CPT_HALVING_THRESHOLD = 10_000
     # Margin held for a subaccount that earns payouts: account size * ENTITY_MARGIN_RATE / CPT, for
-    # every account regardless of its daily loss limit. PRO_FUNDED uses PRO_MARGIN_CPT.
+    # every account regardless of its daily loss limit. PRO_FUNDED uses PRO_MARGIN_CPT. Realized losses are
+    # slashed at the same rate, so the most a subaccount can be slashed is the margin it holds.
     ENTITY_MARGIN_RATE = 0.05
     MARGIN_CPT = 35
     PRO_MARGIN_CPT = 70
@@ -865,12 +866,12 @@ class ValiConfig:
         return max(0.0, margin_usd or 0.0) * multiplier / cpt
 
     # Entity margin collateral requirement (funded subaccounts only):
-    #   required_theta = sum(max_slash_usd - cumulative_slashed_usd) / CPT_RISK
+    #   required_theta = sum(margin_theta(min(position_value, max_slash_usd - cumulative_slashed_usd)))
     #   for each funded subaccount with open positions (or placing this order)
     # max_slash_usd = account_size * the bucket's intraday drawdown threshold. A subaccount in
     # PRO_CHALLENGE_FROM_STANDARD trades the pro account but is charged against its standard
-    # account size, so the pro account's margin only lands when it reaches PRO_FUNDED.
-    ENTITY_COLLATERAL_CPT_RISK = 35  # USD of remaining loss capacity per theta ($35 of capacity = 1 theta)
+    # account size, so the pro account's margin only lands when it reaches PRO_FUNDED. Realized losses
+    # are slashed through margin_theta as well.
 
     # Hyperliquid tracking configuration
     HL_USE_TESTNET = False  # Set to True to use Hyperliquid testnet endpoints
