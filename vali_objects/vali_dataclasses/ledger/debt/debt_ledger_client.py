@@ -329,6 +329,30 @@ class DebtLedgerClient(RPCClientBase):
             logger.error(f"DebtLedgerClient: Sync weekly seals failed: {e}")
             return {}
 
+    def sync_debt_ledgers(self, debt_ledgers_data: dict) -> int:
+        """Replace all debt ledgers with the checkpoint's. Returns ledger count, 0 on error."""
+        try:
+            return self._server.sync_debt_ledgers_rpc(debt_ledgers_data)
+        except Exception as e:
+            logger.error(f"DebtLedgerClient: Sync debt ledgers failed: {e}")
+            return 0
+
+    def sync_emissions_ledgers(self, emissions_ledgers_data: dict) -> int:
+        """Replace all emissions ledgers with the checkpoint's. Returns ledger count, 0 on error."""
+        try:
+            return self._server.sync_emissions_ledgers_rpc(emissions_ledgers_data)
+        except Exception as e:
+            logger.error(f"DebtLedgerClient: Sync emissions ledgers failed: {e}")
+            return 0
+
+    def sync_penalty_ledgers(self, penalty_ledgers_data: dict) -> int:
+        """Replace all penalty ledgers with the checkpoint's. Returns ledger count, 0 on error."""
+        try:
+            return self._server.sync_penalty_ledgers_rpc(penalty_ledgers_data)
+        except Exception as e:
+            logger.error(f"DebtLedgerClient: Sync penalty ledgers failed: {e}")
+            return 0
+
     def clear_weekly_seals_for_test(self) -> bool:
         """
         Drop every seal record, in memory and on disk. Unit tests only.

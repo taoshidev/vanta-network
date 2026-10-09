@@ -80,6 +80,15 @@ class PerfLedgerClient(RPCClientBase):
         """
         self._server.sync_frozen_ledgers_rpc(frozen_ledgers_data)
 
+    def sync_perf_ledgers(self, perf_ledgers_data: dict) -> None:
+        """
+        Replace performance ledgers with auto sync checkpoint data.
+
+        Args:
+            perf_ledgers_data: Dict mapping hotkey to perf ledger dict
+        """
+        self._server.sync_perf_ledgers_rpc(perf_ledgers_data)
+
     def generate_perf_ledgers_for_analysis(self, hotkey_to_positions, t_ms: int = None) -> dict:
         """Generate performance ledgers for analysis."""
         return self._server.generate_perf_ledgers_for_analysis_rpc(hotkey_to_positions, t_ms=t_ms)
