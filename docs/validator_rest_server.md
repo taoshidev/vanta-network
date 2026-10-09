@@ -1156,12 +1156,14 @@ Create a new trading subaccount under an entity. The subaccount receives a uniqu
 - `hl_address` (string, optional): Hyperliquid wallet address (`0x` + 40 hex chars). Presence selects the HL subaccount path.
 - `payout_address` (string, optional, HL only): EVM address for USDC payouts (`0x` + 40 hex chars).
 - `drawdown_criteria` (string, optional): `"trailing"` (default) or `"static"` — see [Static vs. Trailing Drawdown Rules](#static-vs-trailing-drawdown-rules). Fixed for the life of the subaccount once created. HL-linked subaccounts always get `"trailing"` regardless of what's passed.
-- `bucket` (string, optional): bucket to create into, `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` (Instant Funded) or `PRO_CHALLENGE_DIRECT` (`ValiConfig.SUBACCOUNT_CREATION_BUCKETS`). HL-linked subaccounts accept only the first two and none of the pro options below. See [entity_miner.md](entity_miner.md#instant-funded).
-- `pro_account_size` (float): required for pro buckets, rejected otherwise. Creation also charges the pro promotion fee.
-- `eod_hwm_threshold` (float, optional): `0.05` or `0.08`, `PRO_CHALLENGE_FROM_STANDARD` only (default `0.08`). That bucket's `intraday_drawdown_threshold` is fixed at `0.03`. Both are dropped for the pro defaults on reaching `PRO_FUNDED`.
+- `bucket` (string, optional): bucket to create into, `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED` (Instant Funded, not eligible for Pro), `PRO_CHALLENGE_FROM_STANDARD` (Instant Funded, eligible for Pro) or `PRO_CHALLENGE_DIRECT` (`ValiConfig.SUBACCOUNT_CREATION_BUCKETS`). HL-linked subaccounts accept only the first two and no `pro_account_size`. See [entity_miner.md](entity_miner.md#instant-funded).
+- `pro_account_size` (float): required for pro buckets, rejected otherwise. At least twice `account_size`. Creation also charges the pro promotion fee.
+- `eod_hwm_threshold` (float, optional): `0.05` or `0.08`, Instant Funded (`SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD`, including HL-linked `SUBACCOUNT_FUNDED`) only (default `0.08`). Both buckets fix `intraday_drawdown_threshold` at `0.03`. In `PRO_CHALLENGE_FROM_STANDARD` both are dropped for the pro defaults on reaching `PRO_FUNDED`.
 - `version` (string, optional): vanta-cli version string for compatibility checking.
 
 Instant Funded subaccounts are always paid at a payout scale of `1.0` (`ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER`); it is not a request field.
+
+The registration fee is `account_size / CPT`: the standard CPT for the chosen daily loss limit (1,500 at 5%, 2,500 at 3%), or for Instant Funded the Instant Funded CPT for the chosen EOD limit (400 at 5%, 300 at 8%), halved for accounts of $10,000 or less. A pro bucket also pays the pro promotion fee. See [entity_miner.md](entity_miner.md#registration-fee).
 
 **Response:**
 ```json
@@ -1297,7 +1299,7 @@ subaccount it does not own.
 - `synthetic_hotkey` (string, required): The subaccount to promote. Must belong to `entity_hotkey`.
 - `pro_account_size` (number, conditional): USD size of the pro account. There is no network default.
   When sent it must be a finite positive number no greater than $1,000,000
-  (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`) and no smaller than the subaccount's standard account size;
+  (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`) and at least twice the subaccount's standard account size;
   `NaN`, `Infinity`, strings and booleans are rejected with a 400 before the signature is checked or
   the nonce is used, so the same nonce can be retried with a corrected size. The network enforces only
   this range, not the Command Center presets.
@@ -1316,6 +1318,10 @@ becomes its `standard_account_size` and the basis for payouts during the pro cha
 the requested size as `pro_account_size`. The entity is charged the pro promotion fee out of its
 collateral once the pro account goes live — the hops into `PRO_CHALLENGE_DIRECT` and
 `PRO_CHALLENGE_FROM_STANDARD` — and the request fails if the entity's collateral cannot cover it.
+The fee is `pro_account_size / PRO_REG_CPT − standard_account_size / STD_REG_CPT` at the subaccount's
+daily loss limit (3,000 and 1,500 at 5%; 5,000 and 2,500 at 3%), floored at zero, less any promotion
+fee already charged — see [entity_miner.md](entity_miner.md#pro-promotion-fee). An Instant Funded
+subaccount created into `SUBACCOUNT_FUNDED` cannot be promoted onto the pro track.
 
 **Only the two hops onto a pro account wipe trading state.** A hop switches accounts when the target
 bucket changes the account size (`MinerBucket.switches_account`), and `PRO_CHALLENGE_TRANSITION` does
@@ -2688,6 +2694,7 @@ All USD figures are against the live `balance`, which is what the order path app
 - `max_asset_class_usd`: Per-asset-class exposure cap in USD, from the account's own curve.
 - `correlation_limits`: Present for pro accounts only. Groups with no exposure are omitted — they are at full room, which a client fills from `pro.correlation_limits` in `/trade-pairs`. A pro account with no exposure at all still returns the block with an empty `groups`, so "pro with nothing open" is distinguishable from "not pro".
 - `entity_collateral.headroom_theta`: The parent entity's spare collateral (deposited minus what all its subaccounts require). **`null` means the entity's balance is unknown, not that there is no headroom** — do not render it as zero.
+- `entity_collateral.headroom_usd`: The headroom as margin this subaccount could still open: `headroom_theta` × its margin CPT (70 in `PRO_FUNDED`, else 35), divided by 2 for a standard account growing into pro (`PRO_CHALLENGE_FROM_STANDARD` at the 2x payout scale). `null` when `headroom_theta` is.
 
 **Example:**
 ```bash

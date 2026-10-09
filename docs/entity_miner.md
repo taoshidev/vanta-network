@@ -22,53 +22,99 @@ The **entity hotkey** identifies the operator on the validator. Under it, the en
 
 ## Collateral Requirements
 
-Collateral is denominated in **Theta**, deposited via the Vanta CLI. Entity miners must hold theta for two distinct purposes: a one-time registration fee per subaccount, and an ongoing cross-margin requirement based on open positions.
+Collateral is denominated in **Theta**, deposited via the Vanta CLI. Entity miners must hold theta for two distinct purposes: one-time fees (a registration fee per subaccount, and a promotion fee when a subaccount moves onto a pro account), and an ongoing cross-margin requirement based on open positions.
 
 ### Registration Fee
 
-When a subaccount is created, the required theta is burned from the entity's collateral balance. The amount depends on account size:
+When a subaccount is created, the registration fee is burned from the entity's collateral balance. The price per dollar of account size (CPT, USD per theta) depends on the bucket the subaccount is created into and the drawdown limit it chooses. Standard and Hyperliquid-linked subaccounts are priced the same.
 
-| Action | Theta Required |
-|---|----------------|
-| Entity registration (one-time) | 1,000 Theta    |
-| Subaccount with $5,000 account size | 2 Theta        |
-| Subaccount with $10,000 account size | 4 Theta        |
-| Subaccount with $25,000 account size | 5 Theta        |
-| Subaccount with $50,000 account size | 10 Theta       |
-| Subaccount with $100,000 account size (max) | 20 Theta       |
+| Created into | Priced by | CPT | Fee at $100,000 | Fee at $10,000 |
+|---|---|---|---|---|
+| Entity registration (one-time) | — | — | 1,000 Theta | — |
+| `SUBACCOUNT_CHALLENGE` or `PRO_CHALLENGE_DIRECT` | 5% daily loss limit (default) | 1,500 | 66.67 Theta | 13.33 Theta |
+| `SUBACCOUNT_CHALLENGE` or `PRO_CHALLENGE_DIRECT` | 3% daily loss limit | 2,500 | 40 Theta | 8 Theta |
+| Instant Funded (`SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_FROM_STANDARD`) | 5% EOD limit | 400 | 250 Theta | 50 Theta |
+| Instant Funded (`SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_FROM_STANDARD`) | 8% EOD limit (default) | 300 | 333.33 Theta | 66.67 Theta |
+
+A subaccount created into a pro bucket also pays the [pro promotion fee](#pro-promotion-fee) at creation.
 
 ### Registration Fee Formula
 
 ```
 required_theta = account_size / CPT
 
-CPT = 2,500  (if account_size ≤ $10,000)
-CPT = 5,000  (if account_size > $10,000)
+CPT (standard)       = 1,500 at a 5% daily loss limit, 2,500 at 3%     (ValiConfig.STD_REG_CPT)
+CPT (Instant Funded) = 400 at a 5% EOD limit, 300 at 8%                 (ValiConfig.INSTANT_REG_CPT)
+Both are halved for an account_size ≤ $10,000                           (ValiConfig.REG_CPT_HALVING_THRESHOLD)
 ```
 If the entity's balance is below the required theta, subaccount creation is rejected immediately. Otherwise the subaccount is created with `status = "pending"` and collateral is burned asynchronously — transitioning to `active` on success or `failed` if the balance is insufficient.
 
+### Pro Promotion Fee
+
+Moving a subaccount onto a pro account of size `P` from a standard account of size `S` costs:
+
+```
+promotion_fee_theta = max(0, P / PRO_REG_CPT - S / STD_REG_CPT)
+
+PRO_REG_CPT = 3,000 at a 5% daily loss limit, 5,000 at 3%   (ValiConfig.PRO_REG_CPT)
+STD_REG_CPT = 1,500 at a 5% daily loss limit, 2,500 at 3%   (always the full rate, never the halved one)
+P ≥ 2 × S                                                   (ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE)
+```
+
+Both CPTs are taken at the subaccount's own daily loss limit, so a pro account of exactly twice the standard size costs nothing. The credit is what registering the standard size costs at today's full rate, whatever the subaccount actually paid to register. `ValiConfig.promotion_fee_theta` computes it.
+
+- The fee is charged when the pro account goes live: on entering `PRO_CHALLENGE_DIRECT` or `PRO_CHALLENGE_FROM_STANDARD`, not on entering `PRO_CHALLENGE_TRANSITION`.
+- Only the increase over a promotion fee already charged is billed, so re-entering the pro track at a size already paid for is free.
+- An Instant Funded subaccount created into `PRO_CHALLENGE_FROM_STANDARD` pays it at its fixed 3% daily loss limit, on top of its Instant Funded registration fee.
+- Collateral-exempt subaccounts pay nothing.
+
+| Promotion ($100,000 → $500,000) | Fee |
+|---|---|
+| 5% daily loss limit | 166.67 − 66.67 = **100 Theta** |
+| 3% daily loss limit | 100 − 40 = **60 Theta** |
+| Instant Funded, created into `PRO_CHALLENGE_FROM_STANDARD`, 5% EOD | 250 + 60 = **310 Theta** (registration included) |
+| Instant Funded, created into `PRO_CHALLENGE_FROM_STANDARD`, 8% EOD | 333.33 + 60 = **393.33 Theta** (registration included) |
+
 ### Cross-Margin Requirement
 
-After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all *earning* subaccounts — `SUBACCOUNT_FUNDED`, `SUBACCOUNT_ALPHA`, `PRO_FUNDED`, `PRO_CHALLENGE_TRANSITION` and `PRO_CHALLENGE_FROM_STANDARD` (`MinerBucket.is_subaccount_earning`). Each one's margin is capped at its bucket's **intraday** drawdown threshold — **5%** of account size for every earning bucket today — and theta is consumed at a rate of **35 USD per theta**. The challenge buckets (`SUBACCOUNT_CHALLENGE` and `PRO_CHALLENGE_DIRECT`) are fully exempt, and do not require or consume any margin collateral.
+After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all *earning* subaccounts — `SUBACCOUNT_FUNDED`, `SUBACCOUNT_ALPHA`, `PRO_FUNDED`, `PRO_CHALLENGE_TRANSITION` and `PRO_CHALLENGE_FROM_STANDARD` (`MinerBucket.is_subaccount_earning`). Each one's margin is capped at **5%** of its account size, whatever daily loss limit it chose. Theta is held at **35 USD per theta** (`ValiConfig.MARGIN_CPT`), except in `PRO_FUNDED`, which holds **70 USD per theta** (`ValiConfig.PRO_MARGIN_CPT`). A standard account growing into pro (`PRO_CHALLENGE_FROM_STANDARD` reached by promotion, paid at 2x) holds **twice** its standard margin to back the double payouts; an Instant Funded account in the same bucket is paid at 1x and holds 1x. The challenge buckets (`SUBACCOUNT_CHALLENGE` and `PRO_CHALLENGE_DIRECT`) are fully exempt, and do not require or consume any margin collateral.
 
 Incoming orders from funded subaccounts are blocked if the projected required collateral would exceed the entity's deposited balance. The validator reads deposited balances from an on-chain cache refreshed every ~30 minutes — if the cache has no entry for the entity, orders are rejected.
 
-Collateral is slashed proportionally to realized losses each time a position closes at a loss, up to a maximum of 5% of the subaccount's account size. If a subaccount is eliminated, all remaining collateral headroom is slashed in a single call. Withdrawals are rejected if they would leave the entity below its current cross-margin requirement.
+Collateral is slashed proportionally to realized losses each time a position closes at a loss, up to a maximum of 5% of the subaccount's account size, at the **same rate as its margin** — so the most a subaccount can ever be slashed is exactly the margin it holds. If a subaccount is eliminated, all remaining collateral headroom is slashed in a single call. Withdrawals are rejected if they would leave the entity below its current cross-margin requirement.
+
+Full margin at a glance ($100,000 standard account, $500,000 pro account):
+
+| State | Margin held (= maximum slash) |
+|---|---|
+| Standard funded, `PRO_CHALLENGE_TRANSITION`, `SUBACCOUNT_ALPHA` | 5,000 / 35 = **142.86 Theta** |
+| Grow (`PRO_CHALLENGE_FROM_STANDARD` reached by promotion) | 2 × 5,000 / 35 = **285.71 Theta** |
+| Instant Funded (`SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_FROM_STANDARD`) | 5,000 / 35 = **142.86 Theta** |
+| `PRO_FUNDED` | 25,000 / 70 = **357.14 Theta** |
+| `SUBACCOUNT_CHALLENGE`, `PRO_CHALLENGE_DIRECT` | 0 |
+
+`PRO_CHALLENGE_FROM_STANDARD` is margined on the standard account size it came from; the pro account's margin lands when it reaches `PRO_FUNDED`.
 
 ### Cross-Margin Formulas
 
 Per-subaccount margin (USD):
 
 ```
-max_slash_usd      = account_size × the bucket's intraday drawdown threshold (5%)
+max_slash_usd      = account_size × 5% (the bucket's intraday drawdown threshold)
 remaining_headroom = max_slash_usd - cumulative_slashed_usd
 margin_usd         = min(total_open_position_value, remaining_headroom)
 ```
 
-Entity-level required collateral (theta):
+Per-subaccount margin (theta), and entity-level required collateral (theta):
 
 ```
-required_theta = sum(margin_usd across all earning subaccounts) / 35
+margin_theta   = margin_usd × multiplier / CPT          (ValiConfig.margin_theta)
+
+CPT            = 70 in PRO_FUNDED, else 35
+multiplier     = the subaccount's payout multiplier in PRO_CHALLENGE_FROM_STANDARD
+                 (2 growing from standard funded, 1 Instant Funded), else 1
+
+required_theta = sum(margin_theta across all earning subaccounts)
 ```
 
 <details>
@@ -76,7 +122,7 @@ required_theta = sum(margin_usd across all earning subaccounts) / 35
 
 ### Cross-Margin Example
 
-Entity has three subaccounts. `CPT_RISK = 35`, intraday drawdown threshold `= 5%`.
+Entity has three standard subaccounts. `MARGIN_CPT = 35`, intraday drawdown threshold `= 5%`.
 
 | Subaccount | Account Size | Max Slash (5%) | Cum. Slashed | Remaining Headroom | Open Position Value | Margin (USD) | Margin (theta) |
 |-----------|-------------|---------------|-------------|-------------------|---------------------|-------------|---------------|
@@ -89,7 +135,7 @@ Entity has three subaccounts. `CPT_RISK = 35`, intraday drawdown threshold `= 5%
 
 ```
 margin_delta_usd   = min(current_position + new_position, headroom) - min(current_position, headroom)
-margin_delta_theta = margin_delta_usd / 35
+margin_delta_theta = margin_theta(margin_delta_usd)    (the ordering subaccount's CPT and multiplier)
 projected_required = current_required_theta + margin_delta_theta
 
 if projected_required > deposited_theta → ORDER REJECTED
@@ -101,20 +147,22 @@ if projected_required > deposited_theta → ORDER REJECTED
 cumulative_realized_loss += abs(realized_pnl)
 target_slash  = min(cumulative_realized_loss, max_slash_usd)
 slash_delta   = target_slash - cumulative_slashed
-slash_theta   = slash_delta / 35
+slash_theta   = margin_theta(slash_delta)            (the same CPT and multiplier as the margin)
 
 if slash_delta > 0:
     slash_miner_collateral(entity_hotkey, slash_theta)
     cumulative_slashed += slash_delta
 ```
 
-**Example** (\$25,000 account, 5% intraday threshold → \$1,250 max slash, CPT_RISK = 35):
+**Example** (\$25,000 standard funded account, 5% intraday threshold → \$1,250 max slash, `MARGIN_CPT = 35`):
 
 | Trade | Loss   | Cum. Loss | Target Slash | Cum. Slashed | Slash Delta | Theta Slashed |
 |-------|--------|-----------|-------------|-------------|-------------|---------------|
 | 1     | $400   | $400      | $400        | $0          | $400        | 11.4 theta |
 | 2     | $500   | $900      | $900        | $400        | $500        | 14.3 theta |
 | 3     | $600   | $1,500    | $1,250 (cap)| $900        | $350        | 10.0 theta (eliminated) |
+
+The same losses on a `PRO_FUNDED` account slash half the theta (`/ 70`), and on a Grow account twice the theta (`× 2 / 35`).
 
 ### Slashing on Elimination
 
@@ -137,13 +185,17 @@ If the entity has no open positions, `required_theta = 0` and the full balance i
 
 | Config Key | Value | Description |
 |-----------|-------|-------------|
-| `ENTITY_COST_PER_THETA` | 5,000 | USD per theta for subaccount registration (accounts > $10k) |
-| `ENTITY_COST_PER_THETA_LOW` | 2,500 | USD per theta for subaccount registration (accounts ≤ $10k) |
-| `ENTITY_COST_PER_THETA_LOW_THRESHOLD` | $10,000 | Account size threshold for two-tier CPT |
+| `STD_REG_CPT` | {5%: 1,500, 3%: 2,500} | USD per theta for standard registration, keyed by daily loss limit |
+| `INSTANT_REG_CPT` | {5%: 400, 8%: 300} | USD per theta for Instant Funded registration, keyed by EOD limit |
+| `PRO_REG_CPT` | {5%: 3,000, 3%: 5,000} | USD per theta of pro account size in the promotion fee |
+| `REG_CPT_HALVING_THRESHOLD` | $10,000 | Account sizes at or below this register at half the standard and Instant Funded CPT |
+| `PRO_ACCOUNT_SIZE_MIN_MULTIPLE` | 2 | A pro account is at least this multiple of its standard account |
+| `MAX_PRO_ACCOUNT_SIZE` | $1,000,000 | Maximum USD pro account size |
 | `MAX_SUBACCOUNT_ACCOUNT_SIZE` | $100,000 | Maximum USD account size per subaccount |
 | `ENTITY_MAX_SUBACCOUNTS` | 10,000 | Maximum subaccounts per entity |
 | `FUNDED_INTRADAY_DRAWDOWN_THRESHOLD` | 5% | Intraday drawdown threshold; also the slash/margin cap applied to earning subaccounts |
-| `ENTITY_COLLATERAL_CPT_RISK` | 35 | USD of loss capacity per theta (used for margin and slash-to-theta conversion) |
+| `MARGIN_CPT` | 35 | USD of margin (and of realized loss slashed) per theta, every earning bucket but `PRO_FUNDED` |
+| `PRO_MARGIN_CPT` | 70 | USD of margin (and of realized loss slashed) per theta in `PRO_FUNDED` |
 | `ENTITY_COLLATERAL_CACHE_REFRESH_S` | 1800 | Seconds between on-chain collateral cache refreshes (30 min) |
 
 </details>
@@ -289,9 +341,9 @@ After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is
 ### Account Types
 
 By default a subaccount is created as `standard` in `SUBACCOUNT_CHALLENGE`. Creation can instead
-place it directly in `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` (Instant Funded, below) or
-`PRO_CHALLENGE_DIRECT` through the `bucket` field (`ValiConfig.SUBACCOUNT_CREATION_BUCKETS`;
-HL-linked subaccounts only the first two). Otherwise a pro account is reached by promoting an
+place it directly in `SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_FROM_STANDARD` (both Instant Funded, below)
+or `PRO_CHALLENGE_DIRECT` through the `bucket` field (`ValiConfig.SUBACCOUNT_CREATION_BUCKETS`;
+HL-linked subaccounts only `SUBACCOUNT_CHALLENGE` and `SUBACCOUNT_FUNDED`). Otherwise a pro account is reached by promoting an
 existing subaccount through `POST /api/promote`.
 
 Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
@@ -312,14 +364,17 @@ pro positions pay live HL funding plus the standard schedule.
 
 There is no network default pro account size. The entity picks it in the `pro_account_size` of the
 promotion request. The network accepts any finite positive amount up to **$1,000,000**
-(`ValiConfig.MAX_PRO_ACCOUNT_SIZE`) that is not below the subaccount's own standard account size — a
-promotion grants size, it never shrinks the account the subaccount already trades. The preset amounts
-offered in the Command Center are a UI choice, not a network rule.
+(`ValiConfig.MAX_PRO_ACCOUNT_SIZE`) that is at least **twice** the subaccount's own standard account
+size (`ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE`). The entity pays the
+[pro promotion fee](#pro-promotion-fee) for it out of its collateral. The preset amounts offered in
+the Command Center are a UI choice, not a network rule.
 
 - **Entering the pro track** (`SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, or
   `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`) requires a size.
 - **Moving within the pro track** (`PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD`) keeps
   the recorded size, or takes a new one (still within the allowed range) when the request sends one.
+  A recorded size is never re-checked, so a subaccount granted a size under an earlier rule finishes
+  its journey on it.
 - **Standard buckets** never record a pro size.
 
 The granted size is published as `subaccount_info.pro_account_size` in the v2 subaccount dashboard
@@ -340,28 +395,37 @@ Every pro bucket is subject to two drawdown rules:
 
 #### Instant Funded
 
-An Instant Funded subaccount is created directly into `PRO_CHALLENGE_FROM_STANDARD` with
-`"bucket": "PRO_CHALLENGE_FROM_STANDARD"` (standard subaccounts only, not HL-linked):
+An Instant Funded subaccount skips the standard challenge: it is created straight into a funded
+bucket and earns payouts from its first day. It comes in two forms:
+
+| | Not eligible for Pro | Eligible for Pro |
+|---|---|---|
+| Created with | `"bucket": "SUBACCOUNT_FUNDED"` | `"bucket": "PRO_CHALLENGE_FROM_STANDARD"` |
+| Subaccount types | standard and HL-linked | standard only |
+| Trades | `account_size` | `pro_account_size` (required, at least 2 × `account_size`) |
+| Paid on | `account_size` | `account_size / pro_account_size × PnL` (payout scale 1.0) |
+| Pro track | never: the `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION` hop is refused | reaches `PRO_FUNDED` by passing the [pro challenge](#passing-the-pro-challenge) |
+| Fee | [Instant Funded registration](#registration-fee) | Instant Funded registration + [promotion fee](#pro-promotion-fee) at 3% |
+
+Both forms share:
 
 - **`account_size`** is the funded account it is paid on ($25K, $50K or $100K in the Command Center).
-  **`pro_account_size`** (required) is the pro account it trades. A trader who takes the Pro challenge
-  sends the pro size they chose; one who does not sends `pro_account_size` equal to `account_size`.
-- **Payouts start immediately**, on `account_size / pro_account_size × PnL`: a fixed payout scale
-  of `1.0` (`ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than the `2.0` of a
-  standard-to-pro transition. It is not selectable at creation.
 - **Drawdown limits:** the daily loss limit is fixed at **3%**
   (`ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD`; any other
   `intraday_drawdown_threshold` is rejected). The EOD high-water-mark limit is **5%** or **8%**
-  (`eod_hwm_threshold`, `ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES`; omitted keeps 8%). Breaching
-  either eliminates.
-- **Everything else is the pro challenge:** pro leverage, `all_markets`, the pro universe and the
-  [promotion criteria](#passing-the-pro-challenge). Creation charges the registration collateral plus
-  the pro promotion fee for `pro_account_size`.
-- **After passing**, the subaccount is in `PRO_FUNDED`: it is paid on the pro account size, and both
-  creation-time limits are dropped for the pro defaults, a **5%** daily loss limit and an **8%** EOD
-  limit. From then on it follows every `PRO_FUNDED` rule.
+  (`eod_hwm_threshold`, `ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES`; omitted keeps 8%), and it sets
+  the registration price: `account_size / 400` at 5%, `account_size / 300` at 8%. Breaching
+  either limit eliminates.
+- **Margin:** 5% of `account_size` at 35 USD per theta, the same as any standard funded account.
 
-`eod_hwm_threshold` is accepted only for this bucket, and every pro bucket requires
+The eligible form runs the pro challenge in every other respect: pro leverage, `all_markets`, the pro
+universe and the promotion criteria. Its payout scale is fixed at `1.0`
+(`ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than the `2.0` of a standard-to-pro
+transition, and is not selectable. **After passing**, it is in `PRO_FUNDED`: it is paid on the pro
+account size, and both creation-time limits are dropped for the pro defaults, a **5%** daily loss
+limit and an **8%** EOD limit. From then on it follows every `PRO_FUNDED` rule.
+
+`eod_hwm_threshold` is accepted only for the two Instant Funded buckets, and every pro bucket requires
 `pro_account_size`. All creation options are fixed for the life of the subaccount.
 
 #### Traders who have already passed the standard challenge
@@ -710,10 +774,10 @@ curl -X POST http://localhost:8088/api/create-subaccount \
 | `account_size` | float | Yes | Account size in USD                                                          |
 | `drawdown_criteria` | string | No | `"trailing"` (default) or `"static"` — see [Elimination](#elimination). Set once at creation; immutable afterward. |
 | `leverage_tier` | int | No | Standard leverage tier `1` (default), `2` or `3` — see [Leverage Limits](#leverage-limits). Not accepted for HL-linked subaccounts. Can be changed later via [Change Leverage Tier](#change-leverage-tier). |
-| `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit): `0.03` or `0.05` (`ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES`) — see [Challenge Period Requirements](#challenge-period-requirements). Any other value is rejected. Accepted for standard and HL-linked subaccounts. Omitted keeps each bucket's default. Set once at creation; immutable afterward. Only `0.03` for `PRO_CHALLENGE_FROM_STANDARD`. |
+| `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit): `0.03` or `0.05` (`ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES`) — see [Challenge Period Requirements](#challenge-period-requirements). Any other value is rejected. Accepted for standard and HL-linked subaccounts. Omitted keeps each bucket's default. Set once at creation; immutable afterward. Only `0.03` for Instant Funded (`SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD`); `0.03` registers at a lower [CPT](#registration-fee). |
 | `bucket` | string | No | Bucket to create into: `SUBACCOUNT_CHALLENGE` (default), `SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD` or `PRO_CHALLENGE_DIRECT`. HL-linked subaccounts accept only the first two. See [Instant Funded](#instant-funded). |
-| `pro_account_size` | float | Pro buckets | Pro account size traded; required for pro buckets, rejected otherwise. |
-| `eod_hwm_threshold` | float | No | EOD high-water-mark drawdown limit `0.05` or `0.08`. `PRO_CHALLENGE_FROM_STANDARD` only. |
+| `pro_account_size` | float | Pro buckets | Pro account size traded, at least twice `account_size`; required for pro buckets, rejected otherwise. Charged the [pro promotion fee](#pro-promotion-fee). |
+| `eod_hwm_threshold` | float | No | EOD high-water-mark drawdown limit `0.05` or `0.08` (omitted keeps 8%). Instant Funded (`SUBACCOUNT_FUNDED`, `PRO_CHALLENGE_FROM_STANDARD`) only; sets the [registration CPT](#registration-fee). |
 
 #### Change Leverage Tier
 
@@ -1062,7 +1126,8 @@ curl -X POST http://localhost:8088/api/create-hl-subaccount \
 | `account_size` | float | Yes | Account size in USD |
 | `payout_address` | string | No | Optional EVM payout address |
 | `intraday_drawdown_threshold` | float | No | Intraday drawdown threshold (daily loss limit): `0.03` or `0.05` — see [Challenge Period Requirements](#challenge-period-requirements). Omitted keeps each bucket's default. |
-| `bucket` | string | No | `SUBACCOUNT_CHALLENGE` (default) or `SUBACCOUNT_FUNDED`. HL-linked subaccounts have no pro options. |
+| `bucket` | string | No | `SUBACCOUNT_CHALLENGE` (default) or `SUBACCOUNT_FUNDED` ([Instant Funded](#instant-funded), not eligible for Pro). HL-linked subaccounts have no pro options. |
+| `eod_hwm_threshold` | float | No | EOD high-water-mark drawdown limit `0.05` or `0.08` (omitted keeps 8%). `SUBACCOUNT_FUNDED` only; sets the [registration CPT](#registration-fee). |
 
 ### Monitoring
 
@@ -1126,7 +1191,7 @@ HL-linked subaccount creation (include `hl_address`; `asset_class` is always `"h
 }
 ```
 
-The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey, hl_address}` (JSON, sorted keys), plus `payout_address` if provided. An optional `intraday_drawdown_threshold` (`0.03` or `0.05`) and `bucket` are added to the signed payload when sent.
+The signature covers `{account_size, admin, asset_class, entity_coldkey, entity_hotkey, hl_address}` (JSON, sorted keys), plus `payout_address` if provided. An optional `intraday_drawdown_threshold` (`0.03` or `0.05`), `bucket` and `eod_hwm_threshold` are added to the signed payload when sent.
 
 #### Entity Miner Gateway (port 8088)
 
