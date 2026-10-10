@@ -366,6 +366,107 @@ class TestPositionManager(TestBase):
         self.assertEqual(inc_fo["sl_order@1"]["pr"], 3990.0)
         self.assertEqual(inc_fo["sl_order@2"]["pr"], 4013.5489)
 
+    def _partial_close_position(self, close_prices, close_uuids=None):
+        """LONG opened at 0.5x, closed in three steps (0.1x, 0.2x, then FLAT)."""
+        from vali_objects.vali_dataclasses.order import Order
+
+        open_ms = 1000
+        close_uuids = close_uuids or ["close_1", "close_2", "close_3"]
+        position = deepcopy(self.default_position)
+
+        def mk(order_type, price, leverage, uuid, ms):
+            return Order(
+                price=price,
+                slippage=0.0,
+                quote_usd_rate=1.0,
+                processed_ms=ms,
+                order_uuid=uuid,
+                trade_pair=position.trade_pair,
+                order_type=order_type,
+                leverage=leverage,
+            )
+
+        position.orders = [
+            mk(OrderType.LONG, 100_000.0, 0.5, "open_order", open_ms),
+            mk(OrderType.SHORT, close_prices[0], -0.1, close_uuids[0], open_ms + 1000),
+            mk(OrderType.SHORT, close_prices[1], -0.2, close_uuids[1], open_ms + 2000),
+            mk(OrderType.FLAT, close_prices[2], -0.2, close_uuids[2], open_ms + 3000),
+        ]
+        position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+        return position
+
+    def test_dashboard_fills_carry_per_close_realized_pnl(self):
+        """
+        Each reducing fill carries its own realized PnL as `rp`, and the
+        per-close figures sum to the position-level `rp`. Opening fills omit it.
+        """
+        position = self._partial_close_position([101_000.0, 99_000.0, 102_000.0])
+        self.position_client.save_miner_position(position)
+
+        dashboard = self.position_client.get_dashboard(self.DEFAULT_MINER_HOTKEY, 0)
+        frame = dashboard["positions"][position.position_uuid]
+        fo = frame["fo"]
+
+        self.assertNotIn("rp", fo["open_order"])
+        self.assertGreater(fo["close_1"]["rp"], 0)
+        # A losing close carries a negative rp.
+        self.assertLess(fo["close_2"]["rp"], 0)
+        self.assertGreater(fo["close_3"]["rp"], 0)
+        self.assertAlmostEqual(
+            fo["close_1"]["rp"] + fo["close_2"]["rp"] + fo["close_3"]["rp"],
+            frame["rp"], places=6
+        )
+
+    def test_dashboard_repeat_fills_each_carry_their_own_realized_pnl(self):
+        """Fills sharing one order_uuid (`uuid`, `uuid@1`) keep separate `rp`."""
+        position = self._partial_close_position(
+            [101_000.0, 99_000.0, 102_000.0], close_uuids=["close_1", "sl_order", "sl_order"])
+        self.position_client.save_miner_position(position)
+
+        dashboard = self.position_client.get_dashboard(self.DEFAULT_MINER_HOTKEY, 0)
+        fo = dashboard["positions"][position.position_uuid]["fo"]
+
+        self.assertEqual(fo["sl_order"]["rp"], position.orders[2].realized_pnl)
+        self.assertEqual(fo["sl_order@1"]["rp"], position.orders[3].realized_pnl)
+        self.assertNotEqual(fo["sl_order"]["rp"], fo["sl_order@1"]["rp"])
+
+    def test_dashboard_resends_fills_after_price_correction(self):
+        """
+        MDDChecker corrects an order price after the fact and rebuilds the
+        position, changing its fills' realized PnL. Those fills are older than
+        the client's watermark, so the next incremental frame must re-send all
+        of the position's fills (even though it is closed), then stop.
+        """
+        position = self._partial_close_position([101_000.0, 99_000.0, 102_000.0])
+        self.position_client.save_miner_position(position)
+        watermark = self.position_client.get_dashboard(
+            self.DEFAULT_MINER_HOTKEY, 0)["positions_time_ms"]
+        self.assertIsNone(self.position_client.get_dashboard(
+            self.DEFAULT_MINER_HOTKEY, watermark).get("positions"))
+
+        # What MDDChecker does on a correction of the closing fill.
+        position = self.position_client.get_miner_position_by_uuid(
+            self.DEFAULT_MINER_HOTKEY, position.position_uuid)
+        position.orders[3].price = 101_500.0
+        position.rebuild_position_with_updated_orders(self.live_price_fetcher_client)
+        position.last_price_correction_ms = watermark + 60_000
+        self.position_client.save_miner_position(position)
+
+        incremental = self.position_client.get_dashboard(self.DEFAULT_MINER_HOTKEY, watermark)
+        frame = incremental["positions"][position.position_uuid]
+        fo = frame["fo"]
+        self.assertEqual(set(fo.keys()), {"open_order", "close_1", "close_2", "close_3"})
+        self.assertEqual(fo["close_3"]["rp"], position.orders[3].realized_pnl)
+        self.assertAlmostEqual(
+            fo["close_1"]["rp"] + fo["close_2"]["rp"] + fo["close_3"]["rp"],
+            frame["rp"], places=6
+        )
+        self.assertEqual(incremental["positions_time_ms"], watermark + 60_000)
+
+        # Once the client advances past the correction, the position is quiet again.
+        self.assertIsNone(self.position_client.get_dashboard(
+            self.DEFAULT_MINER_HOTKEY, incremental["positions_time_ms"]).get("positions"))
+
     # ==================== RACE CONDITION TESTS ====================
     # These tests demonstrate race conditions in PositionManager when accessed concurrently.
     # Based on actual access patterns in the codebase (market_order_manager.py, etc.)

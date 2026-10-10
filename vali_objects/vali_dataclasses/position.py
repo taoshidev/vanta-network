@@ -67,6 +67,11 @@ class Position(BaseModel):
 
     # Only used for UI to associate bracket orders
     unfilled_orders: list = Field(default=[], exclude=True)
+    # Only used for UI: when MDDChecker last corrected an order price and rebuilt
+    # this position. The rebuild changes the orders' realized_pnl after the fact,
+    # so get_dashboard re-sends all of the position's fills while this is newer
+    # than the client's watermark.
+    last_price_correction_ms: Optional[int] = Field(default=None, exclude=True)
 
     @model_validator(mode='before')
     def add_trade_pair_to_orders_and_self(cls, values):

@@ -405,6 +405,7 @@ class MDDChecker(CacheController):
             # Rebuild the position with the newest price
             if n_orders_updated:
                 position.rebuild_position_with_updated_orders(self._live_price_client)
+                position.last_price_correction_ms = TimeUtil.now_in_millis()
                 logger.info(
                     f"Retroactively updated {n_orders_updated} order prices for {position.miner_hotkey} "
                     f"{position.trade_pair.trade_pair} return_at_close changed from {orig_return:.8f} to "

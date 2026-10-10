@@ -556,10 +556,16 @@ class PositionManager:
         dashboard_positions = {}
         new_closed_positions = False
         for position in positions:
+            # A price correction rebuilt this position after the client's
+            # watermark, changing its fills' realized PnL. Re-send the position
+            # with all of its fills, even if it closed before the watermark.
+            corrected = (position.last_price_correction_ms or 0) > positions_time_ms
+            if corrected:
+                snapshot_time_ms = max(snapshot_time_ms, position.last_price_correction_ms)
 
             if position.is_closed_position:
                 snapshot_time_ms = max(snapshot_time_ms, position.close_ms)
-                if position.close_ms <= positions_time_ms:
+                if position.close_ms <= positions_time_ms and not corrected:
                     continue
                 new_closed_positions = True
 
@@ -575,7 +581,7 @@ class PositionManager:
             for order in position.orders:
                 occurrence = fill_counts.get(order.order_uuid, 0)
                 fill_counts[order.order_uuid] = occurrence + 1
-                if order.processed_ms > positions_time_ms:
+                if corrected or order.processed_ms > positions_time_ms:
                     snapshot_time_ms = max(snapshot_time_ms, order.processed_ms)
                     key = dashboard_fill_key(order.order_uuid, occurrence)
                     dashboard_filled_orders[key] = order.to_dashboard()
