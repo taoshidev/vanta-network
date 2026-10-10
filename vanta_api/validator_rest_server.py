@@ -1906,8 +1906,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         derived from actual on-chain collateral and cannot be set here.
         Requires tier 500 access.
 
-        Optional JSON body (to also update account size in the same call; subaccounts only):
-          account_size: float -- USD account size
+        Optional JSON body:
+          account_size: float -- USD account size (subaccounts only)
+          move_to_funded: bool -- move a SUBACCOUNT_CHALLENGE miner to SUBACCOUNT_FUNDED (default false)
 
         Example:
         curl -X POST http://localhost:48888/admin/reset/<hotkey> \\
@@ -1923,6 +1924,11 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         data = request.get_json(silent=True) or {}
         account_size = data.get('account_size')
+        move_to_funded = data.get('move_to_funded')
+        if move_to_funded is None:
+            move_to_funded = False
+        elif not isinstance(move_to_funded, bool):
+            return jsonify({'error': f'move_to_funded must be a boolean, got "{move_to_funded}"'}), 400
         is_subaccount = is_synthetic_hotkey(hotkey)
         if account_size is not None:
             try:
@@ -1939,6 +1945,20 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not self._entity_client:
                 return jsonify({'error': 'account_size update requires the entity client, which is unavailable'}), 500
 
+        if move_to_funded:
+            if not is_subaccount:
+                return jsonify({'error': 'move_to_funded can only be set for entity subaccounts'}), 400
+            # The bucket the reset leaves the miner in: an elimination is reverted to the bucket before it
+            history = self._challenge_period_client.get_bucket_history(hotkey) or []
+            buckets = [entry['bucket'] for entry in history]
+            if buckets[-1:] == [MinerBucket.ELIMINATED.value] and len(buckets) >= 2:
+                buckets.pop()
+            if buckets[-1:] != [MinerBucket.SUBACCOUNT_CHALLENGE.value]:
+                return jsonify({
+                    'error': f'move_to_funded requires {hotkey} to be in {MinerBucket.SUBACCOUNT_CHALLENGE.value}, '
+                             f'found {buckets[-1] if buckets else None}'
+                }), 400
+
         try:
             result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
@@ -1949,6 +1969,20 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             if is_subaccount and self._entity_client:
                 self._entity_client.restore_subaccount(hotkey)
+
+            if move_to_funded:
+                bucket = self._challenge_period_client.get_miner_bucket(hotkey)
+                if bucket != MinerBucket.SUBACCOUNT_CHALLENGE:
+                    return jsonify({'error': f'Reset succeeded but {hotkey} is in '
+                                             f'{bucket.value if bucket else None}, not moved to funded'}), 500
+                success, message = self._challenge_period_client.admin_set_bucket(
+                    hotkey, MinerBucket.SUBACCOUNT_FUNDED, TimeUtil.now_in_millis()
+                )
+                bucket = self._challenge_period_client.get_miner_bucket(hotkey)
+                # An RPC retry of a move that already landed reports "already in" as a failure
+                if not success and bucket != MinerBucket.SUBACCOUNT_FUNDED:
+                    return jsonify({'error': f'Reset succeeded but failed to move {hotkey} to funded: {message}'}), 500
+                result['bucket'] = bucket.value
 
             if account_size is not None:
                 success, message = self._entity_client.update_subaccount_account_size(hotkey, account_size)
