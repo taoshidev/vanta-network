@@ -1,8 +1,8 @@
 """
 Migration runner for the validator.
 
-Scans the migrations/ directory for migration scripts and runs any that
-haven't been executed yet, sorted alphabetically by filename.
+Runs the migrations in migrations/<subnet_version>/ (from meta/meta.json) that
+haven't been executed yet, sorted alphabetically.
 
 Each migration must have a main() function that returns True on success, False on failure.
 
@@ -11,11 +11,18 @@ Usage:
 """
 
 import importlib.util
+import json
 import os
 import sys
 
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 COMPLETED_FILE = os.path.join(MIGRATIONS_DIR, "migrations_completed.txt")
+META_FILE = os.path.join(os.path.dirname(__file__), "..", "meta", "meta.json")
+
+
+def get_current_version() -> str:
+    with open(META_FILE, "r") as f:
+        return json.load(f)["subnet_version"]
 
 
 def get_completed_migrations() -> set[str]:
@@ -34,21 +41,22 @@ def mark_completed(migration_name: str) -> None:
 
 
 def get_pending_migrations() -> list[str]:
-    """Get list of migration files that haven't been run yet, sorted alphabetically."""
-    if not os.path.exists(MIGRATIONS_DIR):
+    """Get "<version>/<filename>" for each unrun migration in the current version's folder."""
+    version = get_current_version()
+    version_dir = os.path.join(MIGRATIONS_DIR, version)
+    if not os.path.isdir(version_dir):
         return []
 
     completed = get_completed_migrations()
     migrations = []
 
-    for filename in os.listdir(MIGRATIONS_DIR):
+    for filename in sorted(os.listdir(version_dir)):
         if not filename.endswith(".py") or filename.startswith("_"):
             continue
-        if filename in completed:
-            continue
-        migrations.append(filename)
+        name = f"{version}/{filename}"
+        if name not in completed:
+            migrations.append(name)
 
-    migrations.sort()
     return migrations
 
 
@@ -61,14 +69,15 @@ def run_migration(filename: str, dry_run: bool = False) -> bool:
     if dry_run:
         return True
 
+    module_name = os.path.basename(filename)[:-3]
     try:
-        spec = importlib.util.spec_from_file_location(filename[:-3], filepath)
+        spec = importlib.util.spec_from_file_location(module_name, filepath)
         if spec is None or spec.loader is None:
             print(f"  Failed to load migration: {filename}")
             return False
 
         module = importlib.util.module_from_spec(spec)
-        sys.modules[filename[:-3]] = module
+        sys.modules[module_name] = module
         spec.loader.exec_module(module)
 
         if hasattr(module, "main"):
@@ -90,7 +99,11 @@ def main() -> bool:
     if dry_run:
         print("*** DRY RUN MODE - No migrations will be executed ***\n")
 
-    pending = get_pending_migrations()
+    try:
+        pending = get_pending_migrations()
+    except (OSError, KeyError, json.JSONDecodeError) as e:
+        print(f"Could not read subnet_version from {META_FILE}: {e}")
+        return False
 
     if not pending:
         print("No pending migrations.")
