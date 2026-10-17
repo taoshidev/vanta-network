@@ -107,6 +107,11 @@ class MinerAccount:
         return self.balance + self.unrealized_pnl
 
     @property
+    def is_hl_linked(self) -> bool:
+        # HL_ALL is only ever assigned to HL-linked subaccounts; it guards accounts that predate hl_address
+        return bool(self.hl_address) or self.asset_class == MinerAssetClass.HL_ALL
+
+    @property
     def buying_power(self) -> float:
         """Available buying power"""
         if self.asset_class == MinerAssetClass.EQUITIES:

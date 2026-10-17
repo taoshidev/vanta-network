@@ -68,6 +68,7 @@ Both CPTs are taken at the subaccount's own daily loss limit, so a pro account o
 - Only the increase over a promotion fee already charged is billed, so re-entering the pro track at a size already paid for is free.
 - An Instant Funded subaccount created into `PRO_CHALLENGE_FROM_STANDARD` pays it at its fixed 3% daily loss limit, on top of its Instant Funded registration fee.
 - Collateral-exempt subaccounts pay nothing.
+- An [auto-promoted](#auto-promotion) subaccount pays nothing, and its move is not checked against the entity's collateral.
 
 | Promotion ($100,000 → $500,000) | Fee |
 |---|---|
@@ -232,6 +233,8 @@ Passing is evaluated continuously — a subaccount is promoted immediately once 
 - **Trailing** (default): eliminated if intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaches **5%**.
 - **Static**: eliminated if equity (including unrealized PnL) drops more than **5%** below the subaccount's starting balance, or if intraday drawdown from the day's opening equity reaches **5%** (same intraday drawdown check as trailing, with a flat 5% threshold).
 
+**Day-open balance:** for standard subaccounts (not HL-linked, not Instant Funded), the intraday drawdown in both rule sets is measured from the day's opening **balance** instead of the opening equity: equity cannot drop more than the threshold below the balance at 00:00 UTC. This applies in `SUBACCOUNT_CHALLENGE`, `SUBACCOUNT_FUNDED` and `PRO_CHALLENGE_TRANSITION`. A position carried overnight at a loss therefore leaves less room that day, and one carried at a gain leaves more.
+
 **Intraday drawdown threshold (daily loss limit):** a subaccount may choose its own intraday drawdown threshold at creation (`intraday_drawdown_threshold`): **3%** or **5%**, sent as a decimal (`0.03` or `0.05`; the allowed values are `ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES`). It replaces the intraday drawdown threshold above. If omitted, each bucket keeps its default threshold.
 
 ### Leverage Limits
@@ -335,9 +338,9 @@ Once in SUBACCOUNT_FUNDED, the subaccount keeps the same `drawdown_criteria` it 
 - **Trailing** (default): the same two rules as regular miners — eliminated at a **5%** intraday drawdown from the day's opening equity, or an **8%** drawdown from the end-of-day equity high-water mark. Subaccounts registered before the cutoffs in `ValiConfig.FUNDED_V0_CUTOFF_MS` / `FUNDED_V1_CUTOFF_MS` keep the looser thresholds they were registered under.
 - **Static**: still eliminated at **5%** below starting balance, or **5%** intraday drawdown from the day's opening equity, same thresholds as during challenge — this rule set does not loosen after funding.
 
-A subaccount that chose an `intraday_drawdown_threshold` at creation keeps that value as its intraday threshold instead of the 5% above.
+A subaccount that chose an `intraday_drawdown_threshold` at creation keeps that value as its intraday threshold instead of the 5% above. Standard subaccounts keep measuring it from the day's opening balance (see [Day-open balance](#challenge-period-requirements) above).
 
-After **90 days** in SUBACCOUNT_FUNDED meeting the thresholds, the subaccount is eligible for additional funding.
+A standard funded subaccount that meets the [auto-promotion](#auto-promotion) criteria is moved onto the pro track automatically.
 
 ### Account Types
 
@@ -345,7 +348,8 @@ By default a subaccount is created as `standard` in `SUBACCOUNT_CHALLENGE`. Crea
 place it directly in `SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_FROM_STANDARD` (both Instant Funded, below)
 or `PRO_CHALLENGE_DIRECT` through the `bucket` field (`ValiConfig.SUBACCOUNT_CREATION_BUCKETS`;
 HL-linked subaccounts only `SUBACCOUNT_CHALLENGE` and `SUBACCOUNT_FUNDED`). Otherwise a pro account is reached by promoting an
-existing subaccount through `POST /api/promote`.
+existing subaccount through `POST /api/promote`, or by [auto-promotion](#auto-promotion) of a
+standard funded one.
 
 Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
 margin-interest rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs.
@@ -368,7 +372,8 @@ promotion request. The network accepts any finite positive amount up to **$1,000
 (`ValiConfig.MAX_PRO_ACCOUNT_SIZE`) that is at least **twice** the subaccount's own standard account
 size (`ValiConfig.PRO_ACCOUNT_SIZE_MIN_MULTIPLE`). The entity pays the
 [pro promotion fee](#pro-promotion-fee) for it out of its collateral. The preset amounts offered in
-the Command Center are a UI choice, not a network rule.
+the Command Center are a UI choice, not a network rule. An [auto-promoted](#auto-promotion)
+subaccount is the exception: the network sets its size, free of the fee.
 
 - **Entering the pro track** (`SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, or
   `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`) requires a size.
@@ -440,7 +445,8 @@ reductions are accepted. They move to `PRO_CHALLENGE_FROM_STANDARD` as soon as t
 (`POST /api/promote`), or automatically at the first **Monday 00:00 UTC** after they entered the
 bucket — on the first challenge-period refresh at or after that boundary — at which point any
 remaining positions are force closed, the account is resized to the pro account size, and the
-ledgers restart.
+ledgers restart. An [auto-promoted](#auto-promotion) trader instead stays exactly 7 days and cannot
+be promoted on early.
 
 Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro account but is paid on
 **twice** the size of the standard account they came from:
@@ -448,6 +454,50 @@ Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro accoun
 multiplier at `2.0`. So $5K of eligible PnL on a $500K pro account pays a $100K standard account
 `(5K / 500K) × 2 × 100K = $2K`. A soft breach (all-time Calmar) does **not** withhold their payout
 during either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
+
+#### Auto-promotion
+
+The network also moves standard funded subaccounts onto the pro track by itself, with no entity
+request. Only a standard subaccount in `SUBACCOUNT_FUNDED` that was created through
+`SUBACCOUNT_CHALLENGE` is eligible: Instant Funded and HL-linked subaccounts are never auto-promoted.
+The entity cannot refuse it.
+
+A subaccount qualifies on whichever of two paths it meets first:
+
+| Path | Requirements | Pro account size |
+|---|---|---|
+| Fast track | Total payouts above 10% of the account size | 3x the standard account size |
+| Steady track | All of: at least 60 full days on its funded ledger, at least 3 paid weeks, total payouts above 3% of the account size, return consistency of at most 50%, and all-time Calmar of at least 1.5 | 5x the standard account size, or 10x at a Calmar of at least 2.0 |
+
+Meeting both on the same check takes the larger multiple. The thresholds are the
+`ValiConfig.AUTO_PROMOTION_*` values.
+
+- **Payouts** are the weekly `payout` figures of the funded account
+  (`POST /entity/subaccount/payout`, `weekly_settlements`), over closed payout weeks only (Monday
+  00:00 UTC to Monday 00:00 UTC). A paid week is one whose payout is above zero. The week the
+  account became funded counts its funded part. A week's payout is read from 01:00 UTC on the
+  Monday it closes.
+- **Return consistency** and **all-time Calmar** are measured as in the
+  [pro challenge](#passing-the-pro-challenge), over the funded account. Calmar's drawdown is the
+  largest drop of live equity below the end-of-day equity high-water mark, and it ratchets. Time
+  before a validator began tracking it live is replayed from the perf ledger's lowest equity in each
+  checkpoint.
+- The paths are checked on every challenge-period refresh.
+
+Once it qualifies:
+
+1. It moves to `PRO_CHALLENGE_TRANSITION` with the pro account size above. The wind-down works as
+   in any transition (see [above](#traders-who-have-already-passed-the-standard-challenge)), but it
+   lasts exactly **7 days** from the auto-promotion (`ValiConfig.AUTO_PROMOTION_TRANSITION_DAYS`),
+   whatever the day of the week. The entity cannot move it on early: `POST /api/promote` is rejected.
+2. Seven days later it moves to `PRO_CHALLENGE_FROM_STANDARD`: remaining positions are force closed,
+   the account is resized to the pro account size, and the ledgers restart. From then on it is like
+   any subaccount promoted there, paid at twice its standard account size and holding twice its
+   standard margin (see [Cross-Margin Requirement](#cross-margin-requirement)).
+3. No [promotion fee](#pro-promotion-fee) is charged, and the entity's collateral is not checked for
+   the move.
+
+A subaccount is auto-promoted at most once.
 
 #### Traders who have not passed the standard challenge
 
@@ -970,7 +1020,8 @@ the entity coldkey and forwards it to the validator's `POST /entity/subaccount/p
 the entity owns the subaccount before anything moves. The target bucket comes from the subaccount's
 current one, and only three hops exist: `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT`,
 `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION`, and `PRO_CHALLENGE_TRANSITION` →
-`PRO_CHALLENGE_FROM_STANDARD`.
+`PRO_CHALLENGE_FROM_STANDARD`. A subaccount the network [auto-promoted](#auto-promotion) is refused
+the last hop: it moves on by itself after 7 days.
 
 `pro_account_size` is required entering the pro track and optional on the hop within it (omitted
 keeps the recorded size) — see [Pro account size](#pro-account-size).
@@ -1044,6 +1095,7 @@ Subaccounts can be eliminated for:
 - **Trailing criteria, funded period failure** — drawdown exceeds 8%
 - **Static criteria (challenge or funded)** — equity drops more than 5% below starting balance, or intraday drawdown from the day's opening equity reaches 5%
 - **Chosen intraday drawdown threshold (any bucket but `PRO_FUNDED`)** — intraday drawdown from the day's opening equity exceeds the `intraday_drawdown_threshold` chosen at creation, which replaces the intraday threshold in each rule above
+- Standard subaccounts (not HL-linked, not Instant Funded) in `SUBACCOUNT_CHALLENGE`, `SUBACCOUNT_FUNDED` and `PRO_CHALLENGE_TRANSITION` measure every intraday drawdown above from the day's opening balance instead of the opening equity
 - **Plagiarism** — detected order similarity with other miners
 
 Eliminated subaccount ids are permanently retired. Create a new subaccount to replace an eliminated one.

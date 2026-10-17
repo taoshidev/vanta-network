@@ -129,6 +129,14 @@ class MinerBucket(Enum):
         return self == MinerBucket.PRO_FUNDED
 
     @property
+    def daily_loss_from_balance(self) -> bool:
+        """True for the standard buckets whose daily loss limit is measured from the day-open balance
+        instead of the day-open equity, for subaccounts created through SUBACCOUNT_CHALLENGE that are
+        not HL-linked."""
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
+                        MinerBucket.PRO_CHALLENGE_TRANSITION)
+
+    @property
     def payout_scale_applies(self) -> bool:
         """True for buckets whose PnL is scaled by standard_account_size / pro_account_size."""
         return self == MinerBucket.PRO_CHALLENGE_FROM_STANDARD

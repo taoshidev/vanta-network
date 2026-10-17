@@ -170,9 +170,7 @@ def is_standard_tiered(account: MinerAccount) -> bool:
     subaccount. Pro accounts use the flat pro tables; HL-linked subaccounts and regular miners
     use the legacy curve.
     A subaccount whose leverage_tier is still None trades tier 0 (see get_grandfathered_*)."""
-    # HL_ALL is only ever assigned to HL-linked subaccounts; it guards accounts whose MinerAccount
-    # predates the hl_address field.
-    if account.hl_address or account.asset_class == MinerAssetClass.HL_ALL:
+    if account.is_hl_linked:
         return False
     if account.miner_bucket and account.miner_bucket.is_pro:
         return False

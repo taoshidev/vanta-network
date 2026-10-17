@@ -332,6 +332,29 @@ class TestPerfLedgerCore(TestBase):
         self.assertLess(fee_checkpoint.equity_ret, fee_checkpoint.prev_portfolio_ret,
                          "equity_ret should be depressed relative to the raw portfolio return once fees accrue")
 
+    def test_min_equity_ret_recorded_with_account_size(self):
+        """A miner with an account size records the lowest equity_ret of every checkpoint, including
+        the void ones after its last position closes."""
+        base_time = self.now_ms - (10 * MS_IN_24_HOURS)
+        self.miner_account_client.set_miner_account_size(
+            self.TEST_HOTKEY, self.DEFAULT_ACCOUNT_SIZE / 500, base_time
+        )
+        position = self._create_position(
+            "min_equity_test", TradePair.BTCUSD,
+            base_time, base_time + (5 * MS_IN_24_HOURS),
+            50000.0, 50000.0, OrderType.LONG
+        )
+        position.record_fee_event(FeeType.CARRY, 25.0, base_time + (2 * MS_IN_24_HOURS))
+        self.position_client.save_miner_position(position)
+
+        self.perf_ledger_client.update(t_ms=base_time + (6 * MS_IN_24_HOURS))
+
+        ledger = self.perf_ledger_client.get_perf_ledgers()[self.TEST_HOTKEY]
+        self.assertGreater(len(ledger.cps), 1)
+        for cp in ledger.cps:
+            self.assertIsNotNone(cp.min_equity_ret, f"checkpoint {cp} has no min_equity_ret")
+            self.assertLessEqual(cp.min_equity_ret, cp.equity_ret)
+
     def test_checkpoint_time_alignment(self):
         """Test that checkpoints align to expected time boundaries."""
         # Align to checkpoint boundary

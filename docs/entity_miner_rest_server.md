@@ -374,7 +374,7 @@ See [entity_miner.md](entity_miner.md#pro-promotion-fee).)
 
 | Code | Cause |
 |------|-------|
-| 400 | Missing/invalid `synthetic_hotkey` or `pro_account_size`, or the validator rejected the promotion: a bucket with no promotion target, a size below twice the standard account size, an Instant Funded subaccount in `SUBACCOUNT_FUNDED`, missing size when entering the track, or insufficient entity collateral for the promotion fee |
+| 400 | Missing/invalid `synthetic_hotkey` or `pro_account_size`, or the validator rejected the promotion: a bucket with no promotion target, a size below twice the standard account size, an Instant Funded subaccount in `SUBACCOUNT_FUNDED`, an auto-promoted subaccount in `PRO_CHALLENGE_TRANSITION`, a request that overlapped another promotion of the same subaccount which moved it first, missing size when entering the track, or insufficient entity collateral for the promotion fee |
 | 401 | Invalid or missing API key, or a rejected signature/nonce at the validator |
 | 403 | API key below tier 200, or the coldkey does not own the entity hotkey / the subaccount |
 | 404 | Subaccount not found |
@@ -396,6 +396,10 @@ See [entity_miner.md](entity_miner.md#pro-promotion-fee).)
 - A subaccount left in `PRO_CHALLENGE_TRANSITION` is advanced automatically at the first Monday
   00:00 UTC after it entered the bucket, on the first challenge-period refresh at or after that
   boundary.
+- A subaccount the network auto-promoted (see
+  [entity_miner.md](entity_miner.md#auto-promotion)) is refused the `PRO_CHALLENGE_TRANSITION` →
+  `PRO_CHALLENGE_FROM_STANDARD` hop with a 400: it is advanced automatically 7 days after its
+  auto-promotion, free of the promotion fee.
 
 ### Create Hyperliquid-Linked Subaccount
 

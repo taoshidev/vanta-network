@@ -1047,6 +1047,7 @@ class EntityManager(ValidatorBroadcastBase):
         target_bucket: MinerBucket,
         pro_account_size: Optional[float] = None,
         broadcast: bool = True,
+        waive_promotion_fee: bool = False,
     ) -> Tuple[bool, str]:
         """
         Point a subaccount at the account size its target bucket trades.
@@ -1060,6 +1061,9 @@ class EntityManager(ValidatorBroadcastBase):
 
         broadcast=False leaves telling the other validators to the caller: create_subaccount_ex
         broadcasts the new subaccount once, after it is registered with the challenge period.
+
+        waive_promotion_fee grants the pro size without the promotion fee or its collateral check: the
+        network, not the entity, promoted the subaccount (auto-promotion).
 
         There is no network default pro size. The entity picks it when it promotes the subaccount
         (POST /entity/subaccount/promote), and this is the last check before it is stored:
@@ -1133,7 +1137,8 @@ class EntityManager(ValidatorBroadcastBase):
             # the increase over the fee already assessed is billed, and the charge floors at zero: a size
             # already paid for is free rather than crediting theta back. Collateral-exempt subaccounts
             # (reg_fee_theta == 0) stay exempt on the pro track.
-            if target_bucket.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size:
+            if (target_bucket.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size
+                    and not waive_promotion_fee):
                 target_fee_theta = ValiConfig.promotion_fee_theta(pro_account_size, standard_account_size,
                                                                   subaccount.intraday_drawdown_threshold)
                 promotion_fee_theta = max(0.0, target_fee_theta - subaccount.pro_fee_theta)
@@ -1879,6 +1884,33 @@ class EntityManager(ValidatorBroadcastBase):
         if not synthetic_hotkey:
             return None
         return self._calculate_payout_for_hotkey(synthetic_hotkey, start_time_ms, end_time_ms)
+
+    def get_funded_week_payouts(self, synthetic_hotkey: str, end_time_ms: int) -> Optional[Dict[int, float]]:
+        """
+        The payout, as the payout endpoint reports it, of each payout week a subaccount in
+        SUBACCOUNT_FUNDED traded there, up to end_time_ms, keyed by the week's Monday 00:00 UTC. Every
+        such week of the account counts, across a reverted elimination too; a week split by a bucket
+        change counts only its funded part. Read by auto-promotion, which passes a payout week boundary.
+
+        Returns:
+            week_start_ms -> payout in USD, or None when no payout can be calculated or its weeks
+            cannot be told apart by bucket yet
+        """
+        result = self._calculate_payout_for_hotkey(synthetic_hotkey, 0, end_time_ms,
+                                                   bucket_override=MinerBucket.SUBACCOUNT_FUNDED)
+        if result is None:
+            return None
+        # Rows carry no bucket while the subaccount has no debt ledger yet (it is built every 12h):
+        # unknown, not unpaid
+        if any(row['bucket'] in (None, MinerBucket.UNKNOWN.value) for row in result['weekly_settlements']):
+            return None
+        weeks: Dict[int, float] = {}
+        for row in result['weekly_settlements']:
+            if row['bucket'] != MinerBucket.SUBACCOUNT_FUNDED.value or row['end_ms'] > end_time_ms:
+                continue
+            week_start_ms = TimeUtil.ms_at_start_of_week(row['start_ms'])
+            weeks[week_start_ms] = weeks.get(week_start_ms, 0.0) + row['payout']
+        return weeks
 
     def _calculate_payout_for_hotkey(
         self,

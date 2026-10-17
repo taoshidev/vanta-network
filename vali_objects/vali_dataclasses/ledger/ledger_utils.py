@@ -227,6 +227,40 @@ class LedgerUtils:
         return ledger.realized_pnl_net_usd / account_size
 
     @staticmethod
+    def eod_hwm_drawdown(ledger: PerfLedger, before_ms: Optional[int] = None) -> Optional[float]:
+        """
+        Worst equity against the end-of-day high-water mark in force at the time, in mdd ratio form
+        (0.95 is a 5% drawdown), replayed from each checkpoint's lowest equity. The mark is the highest
+        UTC midnight equity_ret up to the start of the checkpoint's window, floored at 1.0, as in the
+        drawdown cache. It approximates the live ratchet: the ledger samples equity once a minute and
+        does not update it while the account is flat, so a closing fee only lands when the next
+        position opens.
+
+        Args:
+            ledger: PerfLedger - the ledger of the miner
+            before_ms: only replay checkpoints whose window starts before this time; None replays all
+
+        Returns:
+            The worst ratio, or None when a checkpoint has no recorded low although equity moved in it:
+            it tracked equity before the field existed, or had a position open while equity was not
+            tracked (no account size). A checkpoint with neither has no low to replay and is skipped.
+        """
+        worst = 1.0
+        eod_hwm = 1.0
+        for cp in ledger.cps:
+            if before_ms is not None and cp.lowerbound_time_created_ms >= before_ms:
+                break
+            if cp.min_equity_ret is None:
+                if cp.equity_ret or cp.open_ms > 0:
+                    return None
+            else:
+                # A 12h checkpoint never spans a midnight, so one mark governs its whole window
+                worst = min(worst, cp.min_equity_ret / eod_hwm)
+            if cp.last_update_ms % ValiConfig.DAILY_MS == 0 and cp.equity_ret > 0:
+                eod_hwm = max(eod_hwm, cp.equity_ret)
+        return worst
+
+    @staticmethod
     def daily_pnl_by_date(ledger: PerfLedger) -> dict[datetime.date, float]:
         """
         Calculate daily PnL from performance checkpoints, only including full days

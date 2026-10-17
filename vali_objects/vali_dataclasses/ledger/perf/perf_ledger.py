@@ -28,6 +28,9 @@ class PerfCheckpoint:
         unrealized_pnl: float = 0.0,
         equity_ret: float = 0.0,        # (account_size + prev_portfolio_realized_pnl - cumulative_fees_usd + unrealized_pnl) / account_size
         cumulative_fees_usd: float = 0.0,  # Running total of all fees paid up to this checkpoint
+        # Lowest equity_ret reached in this checkpoint. None where equity is not tracked, and on
+        # checkpoints started before this field existed
+        min_equity_ret: float | None = None,
         **kwargs  # Support extra fields like BaseModel's extra="allow"
     ):
         # Type coercion to match BaseModel behavior (handles numpy types and ensures correct types)
@@ -46,6 +49,7 @@ class PerfCheckpoint:
         self.unrealized_pnl = float(unrealized_pnl)
         self.equity_ret = float(equity_ret)
         self.cumulative_fees_usd = float(cumulative_fees_usd)
+        self.min_equity_ret = None if min_equity_ret is None else float(min_equity_ret)
 
         # Store any extra fields (equivalent to model_config extra="allow")
         for key, value in kwargs.items():
@@ -298,6 +302,7 @@ class PerfLedger():
                     mpv=last_portfolio_return,
                     equity_ret=self.cps[-1].equity_ret,
                     cumulative_fees_usd=self.cps[-1].cumulative_fees_usd,
+                    min_equity_ret=self._opening_min_equity_ret(),
                 )
                 assert new_cp.last_update_ms % self.target_cp_duration_ms == 0, f"Checkpoint not aligned: {new_cp.last_update_ms}"
                 self.cps.append(new_cp)
@@ -324,6 +329,7 @@ class PerfLedger():
                 open_ms=final_open_ms,
                 equity_ret=self.cps[-1].equity_ret,          # carried forward, updated below
                 cumulative_fees_usd=self.cps[-1].cumulative_fees_usd,  # carried forward, updated below
+                min_equity_ret=self._opening_min_equity_ret(),  # updated below
             )
             self.cps.append(new_cp)
         else:
@@ -373,7 +379,20 @@ class PerfLedger():
         if account_size is not None and account_size > 0 and cumulative_fees_usd is not None:
             current_cp.cumulative_fees_usd = cumulative_fees_usd
             equity = account_size + current_realized_pnl_usd - cumulative_fees_usd + current_unrealized_pnl_usd
+            tracked_before = bool(current_cp.equity_ret)
             current_cp.equity_ret = equity / account_size
+            if current_cp.min_equity_ret is not None:
+                current_cp.min_equity_ret = min(current_cp.min_equity_ret, current_cp.equity_ret)
+            elif not tracked_before:
+                # The checkpoint's first equity sample
+                current_cp.min_equity_ret = current_cp.equity_ret
+            # Otherwise the checkpoint tracked equity before this field existed: its low is unknown,
+            # so it stays None rather than recording only the part seen since
+
+    def _opening_min_equity_ret(self) -> float | None:
+        """A new checkpoint's lowest equity starts at the equity it opens on, carried over from the
+        last checkpoint. None when equity is not tracked (equity_ret stays 0.0)."""
+        return self.cps[-1].equity_ret or None
 
 
     def count_events(self):

@@ -150,6 +150,12 @@ def is_instant_funded(initial_bucket: Optional[str]) -> bool:
     return initial_bucket in ("SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FROM_STANDARD")
 
 
+def is_created_through_challenge(initial_bucket: Optional[str]) -> bool:
+    """True for a subaccount created into SUBACCOUNT_CHALLENGE (None is the default from before
+    initial_bucket was recorded)."""
+    return initial_bucket in (None, "SUBACCOUNT_CHALLENGE")
+
+
 def registration_cpt(account_size, initial_bucket=None, intraday_drawdown_threshold=None,
                      eod_hwm_threshold=None) -> float:
     """USD of account size per theta a subaccount registers at: the Instant Funded CPT for its EOD
