@@ -9,7 +9,7 @@ that need historical account state (e.g., entity payout unrealized PnL).
 import json
 import os
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -27,6 +27,11 @@ class AccountSnapshot:
     account_size: float
     balance: float
     equity: float
+    # Drawdown as the challenge period last evaluated it. None on rows written before these
+    # fields existed, or when the challenge period could not be reached
+    intraday_drawdown_pct: Optional[float] = None
+    eod_drawdown_pct: Optional[float] = None
+    eod_hwm: Optional[float] = None
 
     @property
     def equity_return(self) -> float:
@@ -43,6 +48,9 @@ class AccountSnapshot:
             'balance': self.balance,
             'equity': self.equity,
             'equity_return': self.equity_return,
+            'intraday_drawdown_pct': self.intraday_drawdown_pct,
+            'eod_drawdown_pct': self.eod_drawdown_pct,
+            'eod_hwm': self.eod_hwm,
         }
 
     @staticmethod
@@ -52,6 +60,9 @@ class AccountSnapshot:
             account_size=d['account_size'],
             balance=d['balance'],
             equity=d['equity'],
+            intraday_drawdown_pct=d.get('intraday_drawdown_pct'),
+            eod_drawdown_pct=d.get('eod_drawdown_pct'),
+            eod_hwm=d.get('eod_hwm'),
         )
 
 

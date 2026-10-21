@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_WEEK, TimeUtil
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -36,6 +36,10 @@ import os
 from shared_objects.log import logger
 
 logger.setLevel(logging.INFO)
+
+
+# Ledger status of a checkpoint stamped during the SUBACCOUNT_FUNDED transition week
+TRANSITION_STATUS = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True).status
 
 
 def _clear_seal_ledger():
@@ -665,7 +669,7 @@ class TestDebtLedgers(TestBase):
         try:
             self.assertTrue(self.debt_ledger_client.record_settled_segment(
                 hotkey, week_start_ms, week_start_ms, promotion_ms,
-                MinerBucket.PRO_CHALLENGE_TRANSITION.value, 1843.20, 1843.20, 1.0, 1.0,
+                TRANSITION_STATUS, 1843.20, 1843.20, 1.0, 1.0,
             ))
 
             self.debt_ledger_client.delete_debt_ledger(hotkey)
@@ -673,7 +677,7 @@ class TestDebtLedgers(TestBase):
             segments = self.debt_ledger_client.get_settled_segments(hotkey)
             self.assertEqual(len(segments), 1)
             self.assertEqual(segments[0].payout_usd, 1843.20)
-            self.assertEqual(segments[0].bucket, MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+            self.assertEqual(segments[0].bucket, TRANSITION_STATUS)
         finally:
             self.debt_ledger_client.remove_settled_segment(hotkey, promotion_ms)
             _clear_seal_ledger()
@@ -788,7 +792,7 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         week_0, week_1 = self._aggregate(
             blocked_checkpoint_indices=(promoted_at + 3,),
             bucket_by_index={
-                i: MinerBucket.PRO_CHALLENGE_FROM_STANDARD for i in range(promoted_at)
+                i: MinerBucket.PRO_CHALLENGE_FUNDED for i in range(promoted_at)
             },
         )
         self.assertAlmostEqual(week_0, 70.0)
@@ -808,7 +812,7 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         ledger, week_0_start = self._subaccount_ledger(
             blocked_checkpoint_indices=(promoted_at + 3,),
             bucket_by_index={
-                i: MinerBucket.PRO_CHALLENGE_FROM_STANDARD for i in range(promoted_at)
+                i: MinerBucket.PRO_CHALLENGE_FUNDED for i in range(promoted_at)
             },
         )
         manager = self._build_manager(ledger)
@@ -841,7 +845,7 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
             week_start_ms=week_0_start,
             segment_start_ms=week_0_start,
             segment_end_ms=week_0_start + MS_IN_WEEK // 2,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket=TRANSITION_STATUS,
             payout_usd=1000.0,
             gross_payout_usd=1000.0,
             weekly_penalty=1.0,
@@ -872,8 +876,8 @@ def _frozen_subaccount_manager(
     """A manager whose only subaccount reaches the aggregation through a frozen ledger.
 
     Two closed payout weeks of 12h checkpoints realizing 10 USD each. `bucket_by_index` overrides
-    the bucket stamped on individual checkpoints; the rest are PRO_CHALLENGE_FROM_STANDARD, the
-    one bucket whose payouts are scaled by the standard/pro ratio.
+    the bucket stamped on individual checkpoints; the rest are PRO_CHALLENGE_FUNDED (out of
+    transition), the one bucket whose payouts are scaled by the standard/pro ratio.
     """
     cp_duration = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
     week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
@@ -895,7 +899,7 @@ def _frozen_subaccount_manager(
         ts: SimpleNamespace(
             timestamp_ms=ts, weekly_penalty=1.0,
             challenge_period_status=bucket_by_index.get(
-                i, MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+                i, MinerBucket.PRO_CHALLENGE_FUNDED
             ).value,
         )
         for i, ts in enumerate(timestamps)
@@ -1225,7 +1229,7 @@ class TestDebtLedgerBucketHelpers(TestBase):
 
     def test_bucket_change_times_marks_the_promotion_boundary(self):
         ledger, base_ms = self._ledger([
-            MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED, MinerBucket.PRO_FUNDED,
+            MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_FUNDED, MinerBucket.PRO_FUNDED,
         ])
         # The switch happened at the end of the last challenge window
         self.assertEqual(ledger.bucket_change_times(), [base_ms + self.CP_DURATION_MS])
@@ -1241,7 +1245,7 @@ class TestDebtLedgerBucketHelpers(TestBase):
         the subaccount made before it, under rules that did not govern it at the time.
         """
         ledger, _ = self._ledger([
-            MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
+            MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_FUNDED,
         ])
         challenge_cp, funded_cp = ledger.checkpoints
         self.assertEqual(DebtLedger.checkpoint_weekly_penalty(challenge_cp, 0.0), 1.0)
@@ -1252,13 +1256,44 @@ class TestDebtLedgerBucketHelpers(TestBase):
 
     def test_bucket_at_reads_the_segment_that_starts_on_a_boundary(self):
         ledger, base_ms = self._ledger([
-            MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
+            MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_FUNDED,
         ])
         boundary_ms = base_ms + self.CP_DURATION_MS
         # An event exactly on the boundary belongs to the window that just closed...
-        self.assertIs(ledger.bucket_at(boundary_ms), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        self.assertEqual(ledger.bucket_at(boundary_ms), MinerBucket.PRO_CHALLENGE_FUNDED.phase())
         # ...while the segment starting there is governed by the next one
-        self.assertIs(ledger.bucket_at(boundary_ms + 1), MinerBucket.PRO_FUNDED)
+        self.assertEqual(ledger.bucket_at(boundary_ms + 1), MinerBucket.PRO_FUNDED.phase())
+
+    def _status_ledger(self, statuses):
+        base_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - MS_IN_WEEK
+        return DebtLedger(self.HOTKEY, checkpoints=[
+            DebtCheckpoint(timestamp_ms=base_ms + (i + 1) * self.CP_DURATION_MS, challenge_period_status=status)
+            for i, status in enumerate(statuses)
+        ]), base_ms
+
+    def test_the_transition_is_paid_unscaled_and_splits_from_the_pro_phase(self):
+        """Both phases are PRO_CHALLENGE_FUNDED, but only the pro phase is paid at the payout scale,
+        so the flip is a segment boundary of its own."""
+        ledger, base_ms = self._status_ledger([
+            TRANSITION_STATUS, TRANSITION_STATUS, MinerBucket.PRO_CHALLENGE_FUNDED.value,
+        ])
+        transition_cp, _, pro_cp = ledger.checkpoints
+        self.assertEqual(DebtLedger.checkpoint_payout_scale(transition_cp, 0.4), 1.0)
+        self.assertEqual(DebtLedger.checkpoint_payout_scale(pro_cp, 0.4), 0.4)
+        self.assertEqual(ledger.bucket_change_times(), [base_ms + 2 * self.CP_DURATION_MS])
+        self.assertTrue(ledger.bucket_at(base_ms + 1).in_transition)
+        # Both earn, so the payout basis starts at the transition
+        self.assertEqual(ledger.first_earning_checkpoint_ms(), base_ms + self.CP_DURATION_MS)
+
+    def test_checkpoints_stamped_with_the_replaced_names_keep_their_phase(self):
+        """Ledgers built before the merge carry PRO_CHALLENGE_TRANSITION / PRO_CHALLENGE_FROM_STANDARD."""
+        ledger, _ = self._status_ledger(["PRO_CHALLENGE_TRANSITION", "PRO_CHALLENGE_FROM_STANDARD"])
+        transition_cp, pro_cp = ledger.checkpoints
+        self.assertEqual(ledger.checkpoint_bucket(transition_cp), BucketPhase.from_status(TRANSITION_STATUS))
+        self.assertEqual(DebtLedger.checkpoint_payout_scale(transition_cp, 0.4), 1.0)
+        self.assertEqual(DebtLedger.checkpoint_payout_scale(pro_cp, 0.4), 0.4)
+        for status in (TRANSITION_STATUS, "PRO_CHALLENGE_TRANSITION", "PRO_CHALLENGE_FROM_STANDARD"):
+            self.assertIn(status, DebtBasedScoring.EARNING_MINER_BUCKETS)
 
 
 class TestSettledSegment(TestBase):
@@ -1288,7 +1323,7 @@ class TestSettledSegment(TestBase):
             week_start_ms=self.week_start_ms,
             segment_start_ms=self.week_start_ms,
             segment_end_ms=self.promotion_ms,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket=TRANSITION_STATUS,
             payout_usd=payout_usd,
             gross_payout_usd=payout_usd,
             weekly_penalty=1.0,
@@ -1299,7 +1334,7 @@ class TestSettledSegment(TestBase):
         self.assertTrue(self._settle(self.ledger))
         segment = self.ledger.get_settled(self.HOTKEY)[0]
         self.assertEqual(segment.payout_usd, 1843.20)
-        self.assertEqual(segment.bucket, MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertEqual(segment.bucket, TRANSITION_STATUS)
         self.assertEqual(segment.segment_end_ms, self.promotion_ms)
 
     def test_resettling_the_same_switch_never_double_pays(self):
@@ -1372,7 +1407,7 @@ class TestSettledSegment(TestBase):
             week_start_ms=self.week_start_ms,
             segment_start_ms=self.week_start_ms,
             segment_end_ms=self.promotion_ms,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket=TRANSITION_STATUS,
             payout_usd=1843.20,
             gross_payout_usd=1843.20,
             weekly_penalty=1.0,

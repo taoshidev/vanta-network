@@ -290,6 +290,13 @@ class CoreOutputsManager:
         except Exception as e:
             logger.warning(f"Could not fetch weekly seal records: {e}")
 
+        # Bucket segment summaries; each validator keeps the segment files themselves locally
+        bucket_history = {}
+        try:
+            bucket_history = self._challengeperiod_client.get_bucket_history_checkpoint_dict()
+        except Exception as e:
+            logger.warning(f"Could not fetch bucket history: {e}")
+
         debt_ledgers = {}
         try:
             debt_ledgers = self._debt_ledger_client.get_all_debt_ledgers()
@@ -327,6 +334,7 @@ class CoreOutputsManager:
             'asset_selections': asset_selections,
             'limit_orders': limit_orders_dict,
             'weekly_seals': weekly_seals,
+            'bucket_history': bucket_history,
             'archived_positions': archived_positions or {}
         }
 

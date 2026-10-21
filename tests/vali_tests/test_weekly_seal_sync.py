@@ -40,7 +40,7 @@ def sealed_week_dict(week_start_ms, weekly_penalty=1.0, payout_scale=1.0, track=
     ).to_dict()
 
 
-def settled_segment_dict(week_start_ms, bucket="PRO_CHALLENGE_TRANSITION", payout_usd=100.0,
+def settled_segment_dict(week_start_ms, bucket="SUBACCOUNT_FUNDED:in_transition", payout_usd=100.0,
                          gross_payout_usd=120.0, segment_end_ms=None):
     return SettledSegment(
         week_start_ms=week_start_ms,
@@ -76,7 +76,7 @@ class TestWeeklySealLedgerPersistence(TestBase):
                          track="OFF_TRACK", first_earning_ms=WEEK_0 + 10)
         self.ledger.record_settled(
             "hk1", week_start_ms=WEEK_0, segment_start_ms=WEEK_0, segment_end_ms=WEEK_0 + 5000,
-            bucket="PRO_CHALLENGE_TRANSITION", payout_usd=42.5, gross_payout_usd=50.0,
+            bucket="SUBACCOUNT_FUNDED:in_transition", payout_usd=42.5, gross_payout_usd=50.0,
             weekly_penalty=0.0, payout_scale=0.5,
         )
         self.ledger.save_to_disk()
@@ -170,7 +170,7 @@ class TestWeeklySealLedgerPersistence(TestBase):
         """A retried account switch has a fresh segment_end_ms; it must not pay the week twice."""
         self.ledger.record_settled(
             "hk1", week_start_ms=WEEK_0, segment_start_ms=WEEK_0, segment_end_ms=WEEK_0 + 1,
-            bucket="PRO_CHALLENGE_TRANSITION", payout_usd=100.0, gross_payout_usd=120.0,
+            bucket="SUBACCOUNT_FUNDED:in_transition", payout_usd=100.0, gross_payout_usd=120.0,
             weekly_penalty=1.0, payout_scale=1.0,
         )
         stats = self.ledger.sync_from_checkpoint({
@@ -183,7 +183,7 @@ class TestWeeklySealLedgerPersistence(TestBase):
     def test_a_different_bucket_in_the_same_week_is_its_own_record(self):
         self.ledger.sync_from_checkpoint({
             'settled': {'hk1': [
-                settled_segment_dict(WEEK_0, bucket="PRO_CHALLENGE_TRANSITION"),
+                settled_segment_dict(WEEK_0, bucket="SUBACCOUNT_FUNDED:in_transition"),
                 settled_segment_dict(WEEK_0, bucket="PRO_FUNDED", segment_end_ms=WEEK_0 + 9000),
             ]},
         })

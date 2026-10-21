@@ -43,7 +43,7 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 from time_util.time_util import TimeUtil
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 
 
 class WeekTrack(Enum):
@@ -336,15 +336,13 @@ class DebtLedger:
         return self.checkpoints[-1] if self.checkpoints else None
 
     @staticmethod
-    def _bucket_from_status(challenge_period_status: str) -> MinerBucket:
-        """Convert a stored status string to a MinerBucket, tolerating unknown/legacy values."""
-        try:
-            return MinerBucket(challenge_period_status)
-        except ValueError:
-            return MinerBucket.UNKNOWN
+    def _bucket_from_status(challenge_period_status: str) -> BucketPhase:
+        """Convert a stored status string to a BucketPhase, tolerating unknown/legacy values. The
+        phase keeps the SUBACCOUNT_FUNDED transition apart: it is paid unscaled."""
+        return BucketPhase.from_status(challenge_period_status)
 
-    def checkpoint_bucket(self, cp: DebtCheckpoint) -> MinerBucket:
-        """The bucket this checkpoint was stamped with."""
+    def checkpoint_bucket(self, cp: DebtCheckpoint) -> BucketPhase:
+        """The bucket phase this checkpoint was stamped with."""
         return self._bucket_from_status(cp.challenge_period_status)
 
     @staticmethod
@@ -375,25 +373,25 @@ class DebtLedger:
                 return cp.timestamp_ms
         return None
 
-    def bucket_at(self, timestamp_ms: int) -> MinerBucket:
-        """The bucket governing an event at `timestamp_ms`.
+    def bucket_at(self, timestamp_ms: int) -> BucketPhase:
+        """The bucket phase governing an event at `timestamp_ms`.
 
         A checkpoint stamped at T covers the window *ending* at T, so an order is governed by the
         checkpoint its timestamp snaps forward to - the same lookup the payout paths use to find an
         order's penalty. Events past the last checkpoint inherit the last known bucket.
         """
         if not self.checkpoints:
-            return MinerBucket.UNKNOWN
+            return BucketPhase(MinerBucket.UNKNOWN)
         aligned_ms = TimeUtil.align_to_12hour_checkpoint_boundary(timestamp_ms)
         if aligned_ms >= self.checkpoints[-1].timestamp_ms:
             return self._bucket_from_status(self.checkpoints[-1].challenge_period_status)
         for cp in self.checkpoints:
             if cp.timestamp_ms >= aligned_ms:
                 return self._bucket_from_status(cp.challenge_period_status)
-        return MinerBucket.UNKNOWN
+        return BucketPhase(MinerBucket.UNKNOWN)
 
     def bucket_change_times(self) -> List[int]:
-        """Timestamps at which the governing bucket changes, oldest first.
+        """Timestamps at which the governing bucket phase changes, oldest first.
 
         A checkpoint stamped at T covers the window ending at T, so when checkpoint i carries a
         different bucket from checkpoint i-1 the switch happened at checkpoint i-1's timestamp -

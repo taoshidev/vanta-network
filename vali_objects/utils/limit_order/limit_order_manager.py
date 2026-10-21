@@ -8,7 +8,6 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.exceptions.bracket_order_exception import BracketOrderException
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.limit_order.order_trigger import (
@@ -353,10 +352,10 @@ class LimitOrderManager(CacheController):
     def _is_transitioning_to_pro(self, miner_hotkey):
         """True while the miner is winding their standard account down to start a pro account."""
         account = self._miner_account_client.get_account(miner_hotkey)
-        return account is not None and account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+        return account is not None and account.in_transition
 
     def _blocked_by_pro_transition(self, miner_hotkey, order):
-        """Whether PRO_CHALLENGE_TRANSITION blocks this order, fetching the position only when it
+        """Whether the SUBACCOUNT_FUNDED transition blocks this order, fetching the position only when it
         could matter. Used at fill time as well as at placement: a resting order that reduced a
         position when it was placed becomes an entry order once that position closes."""
         if order.execution_type == ExecutionType.BRACKET or order.order_type == OrderType.FLAT:

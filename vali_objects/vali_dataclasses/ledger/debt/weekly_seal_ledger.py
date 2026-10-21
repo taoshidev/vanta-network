@@ -85,7 +85,7 @@ class SettledSegment:
     week_start_ms: int          # Monday 00:00 UTC, TimeUtil.ms_at_start_of_week
     segment_start_ms: int
     segment_end_ms: int
-    bucket: str                 # the bucket wound down, e.g. PRO_CHALLENGE_TRANSITION
+    bucket: str                 # BucketPhase status of the bucket wound down, e.g. SUBACCOUNT_FUNDED:in_transition
     payout_usd: float           # settled - what both payout paths add
     gross_payout_usd: float     # pre-penalty, for audit
     weekly_penalty: float

@@ -948,9 +948,6 @@ class ChallengePeriodManager(CacheController):
                 promoted_count += moved
                 logger.info(f"[CHALLENGE] promoted to {target_bucket.value}: {from_state}")
 
-        if promoted_count:
-            logger.info(f"[CHALLENGE] attempted to promote {len(promotions)}, "
-                        f"successfully promoted {promoted_count} miners")
         return state_changed
 
     def promote_subaccount(
