@@ -178,8 +178,14 @@ def regenerate_miner_positions():
     perf_ledger_manager.sync_frozen_ledgers(frozen_perf_ledgers)
 
     challengeperiod = data.get('challengeperiod', {})
+    challenge_period_manager = ChallengePeriodManager(**kwargs)
+    # Bucket segment summaries first, so the challenge period sync below finds the segments its
+    # bucket entries describe instead of recreating them
+    bucket_history = data.get('bucket_history', {})
+    logger.info(f"syncing bucket history for {len(bucket_history)} miners")
+    challenge_period_manager.sync_bucket_history(bucket_history)
     logger.info(f"syncing {len(challengeperiod)} challenge period records")
-    ChallengePeriodManager(**kwargs).sync_challenge_period_data(challengeperiod)
+    challenge_period_manager.sync_challenge_period_data(challengeperiod)
 
     # Asset selections before miner accounts: the account sync reads asset selections from disk
     asset_selections = data.get('asset_selections', {})

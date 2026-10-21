@@ -23,7 +23,7 @@ import uuid
 import time
 import threading
 from typing import Dict, Optional, Tuple, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import template.protocol
 from entity_management.entity_utils import (
@@ -58,7 +58,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLed
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from shared_objects.log import logger
@@ -86,14 +86,21 @@ class SubaccountInfo(BaseModel):
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     intraday_drawdown_threshold: Optional[float] = Field(default=None, description="Chosen intraday drawdown threshold (daily loss limit) as a fraction, applied in every bucket (immutable once set). None keeps each bucket's default")
-    eod_hwm_threshold: Optional[float] = Field(default=None, description="Chosen EOD high-water-mark drawdown threshold as a fraction (PRO_CHALLENGE_FROM_STANDARD creation only, immutable once set). None keeps each bucket's default")
-    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FROM_STANDARD, set to ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER on Instant Funded creation (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
+    eod_hwm_threshold: Optional[float] = Field(default=None, description="Chosen EOD high-water-mark drawdown threshold as a fraction (Instant Funded creation only, immutable once set). None keeps each bucket's default")
+    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FUNDED, set to ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER on Instant Funded creation (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
     initial_bucket: Optional[str] = Field(default=None, description="MinerBucket the subaccount was created into. None means SUBACCOUNT_CHALLENGE")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
     leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades tier 0 (each limit is max of its legacy value and Base)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
     client_ref: Optional[str] = Field(default=None, description="Caller-supplied idempotency key, unique per (entity_hotkey, client_ref). Normalized lowercase, <=64 chars.")
+
+    @field_validator("initial_bucket")
+    @classmethod
+    def _normalize_initial_bucket(cls, value: Optional[str]) -> Optional[str]:
+        """Subaccounts created before PRO_CHALLENGE_FUNDED replaced PRO_CHALLENGE_FROM_STANDARD
+        stored the old name."""
+        return MinerBucket(value).value if value else value
 
     @property
     def instant_funded(self) -> bool:
@@ -527,13 +534,13 @@ class EntityManager(ValidatorBroadcastBase):
             leverage_tier: Standard leverage tier 1 to 3. Defaults to
                    ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
             intraday_drawdown_threshold: One of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES (e.g. 0.03).
-                   None keeps each bucket's default. Instant Funded (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FROM_STANDARD)
+                   None keeps each bucket's default. Instant Funded (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FUNDED)
                    only accepts (and defaults to) ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD.
             bucket: MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS. None means SUBACCOUNT_CHALLENGE.
             pro_account_size: Required for pro buckets, rejected otherwise.
             eod_hwm_threshold: One of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, Instant Funded only. None keeps the
-                   bucket's default. A subaccount created into PRO_CHALLENGE_FROM_STANDARD is paid at
-                   ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER.
+                   bucket's default. A subaccount created into PRO_CHALLENGE_FUNDED
+                   is paid at ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER.
 
         The registration fee is account_size / registration_cpt: the Instant Funded CPT for its EOD
         threshold when created into a funded bucket, else the standard CPT for its daily loss limit.
@@ -572,7 +579,7 @@ class EntityManager(ValidatorBroadcastBase):
             # Only one value is accepted for now (see subaccount_creation_error); omitted means that value
             intraday_drawdown_threshold = ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
         payout_scale = (ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER
-                        if initial_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD else None)
+                        if initial_bucket == MinerBucket.PRO_CHALLENGE_FUNDED else None)
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -1047,23 +1054,20 @@ class EntityManager(ValidatorBroadcastBase):
         target_bucket: MinerBucket,
         pro_account_size: Optional[float] = None,
         broadcast: bool = True,
-        waive_promotion_fee: bool = False,
+        in_transition: bool = False,
     ) -> Tuple[bool, str]:
         """
         Point a subaccount at the account size its target bucket trades.
 
         Entering the pro track snapshots the standard size and records the granted pro size.
-        PRO_CHALLENGE_TRANSITION keeps trading the standard account, so only the sizes are
-        recorded; every other pro bucket switches the live account size to the pro size and, when that
+        The SUBACCOUNT_FUNDED transition (in_transition) keeps trading the standard account, so
+        only the sizes are recorded; every other pro bucket switches the live account size to the pro size and, when that
         changes the account size, charges the promotion fee (ValiConfig.promotion_fee_theta at the
         subaccount's daily loss limit). Re-applying the size an account already trades charges nothing.
         Returning to a standard bucket restores the standard size.
 
         broadcast=False leaves telling the other validators to the caller: create_subaccount_ex
         broadcasts the new subaccount once, after it is registered with the challenge period.
-
-        waive_promotion_fee grants the pro size without the promotion fee or its collateral check: the
-        network, not the entity, promoted the subaccount (auto-promotion).
 
         There is no network default pro size. The entity picks it when it promotes the subaccount
         (POST /entity/subaccount/promote), and this is the last check before it is stored:
@@ -1075,7 +1079,7 @@ class EntityManager(ValidatorBroadcastBase):
             explicit size. A size recorded on an earlier pro journey, which a move back to a standard
             bucket keeps, is never reused: a re-offer needs a size again.
           * A move within the pro track uses the explicit size when one is sent (the entity re-setting
-            it, e.g. promoting out of PRO_CHALLENGE_TRANSITION), else the size recorded when the
+            it, e.g. leaving the SUBACCOUNT_FUNDED transition early), else the size recorded when the
             subaccount entered the track (the organic promotions send none). With neither, it is rejected.
           * A standard bucket never records a pro size; an explicit one is ignored.
 
@@ -1091,6 +1095,7 @@ class EntityManager(ValidatorBroadcastBase):
             return False, f"{synthetic_hotkey} is not a known subaccount"
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        target = BucketPhase(target_bucket, in_transition)
 
         # Work out the new sizes and the fee they cost without touching the stored subaccount
         standard_account_size = subaccount.standard_account_size
@@ -1128,17 +1133,16 @@ class EntityManager(ValidatorBroadcastBase):
             standard_account_size = standard_size_floor
             account_type = AccountType.PRO.value
 
-            # TRANSITION winds down the standard account, so it keeps the standard size
-            target_size = pro_account_size if target_bucket.is_pro else standard_account_size
+            # The transition winds down the standard account, so it keeps the standard size
+            target_size = pro_account_size if target.is_pro else standard_account_size
 
             # The grant is charged when a pro size goes live, i.e. when the account size actually changes
-            # (never in TRANSITION). Re-applying the size an account already trades, as an admin move within
+            # (never in the transition). Re-applying the size an account already trades, as an admin move within
             # the pro track does, charges nothing even if the fee formula has changed since it paid. Only
             # the increase over the fee already assessed is billed, and the charge floors at zero: a size
             # already paid for is free rather than crediting theta back. Collateral-exempt subaccounts
             # (reg_fee_theta == 0) stay exempt on the pro track.
-            if (target_bucket.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size
-                    and not waive_promotion_fee):
+            if target.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size:
                 target_fee_theta = ValiConfig.promotion_fee_theta(pro_account_size, standard_account_size,
                                                                   subaccount.intraday_drawdown_threshold)
                 promotion_fee_theta = max(0.0, target_fee_theta - subaccount.pro_fee_theta)
@@ -1184,7 +1188,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         # A live pro account trades the whole pro universe, so it moves to all_markets whatever it
         # was registered under.
-        if target_bucket.is_pro:
+        if target.is_pro:
             self._apply_pro_asset_class(synthetic_hotkey, target_bucket)
 
         # Hand the sizing to the other validators.
@@ -1195,7 +1199,7 @@ class EntityManager(ValidatorBroadcastBase):
         fee_note = (f", promotion_fee={promotion_fee_theta:.4f} theta "
                     f"(assessed {subaccount.pro_fee_theta:.4f} theta total)") if promotion_fee_theta else ""
         logger.info(
-            f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}: account_size=${subaccount.account_size}, "
+            f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target}: account_size=${subaccount.account_size}, "
             f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}{fee_note}"
         )
         return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
@@ -1329,8 +1333,8 @@ class EntityManager(ValidatorBroadcastBase):
         marked "pro" with a pro size on record, and the size-less branch of the next offer is gated on
         exactly that marking — so a re-offer with the size field blank would silently reuse the stale
         size instead of demanding one. Worse, an entry that trades the pro size (PRO_CHALLENGE_DIRECT,
-        PRO_CHALLENGE_FROM_STANDARD) would leave the account live at that size in a bucket that never
-        moved.
+        PRO_CHALLENGE_FUNDED) would leave the account live at that size in a bucket
+        that never moved.
 
         `snapshot` is what snapshot_bucket_account_size returned before the apply. The live account size
         is put back first and the record is left untouched if that fails: a record restored behind a
@@ -1890,7 +1894,7 @@ class EntityManager(ValidatorBroadcastBase):
         synthetic_hotkey: str,
         start_time_ms: int,
         end_time_ms: Optional[int],
-        bucket_override: Optional[MinerBucket] = None,
+        bucket_override: Optional[BucketPhase] = None,
     ) -> Optional[dict]:
         """Payout for one subaccount, keyed by synthetic hotkey. See calculate_subaccount_payout.
         """
@@ -1900,7 +1904,7 @@ class EntityManager(ValidatorBroadcastBase):
             realtime = True
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
-        if not entity_hotkey or subaccount_id is None:
+        if not entity_hotkey or not subaccount_id:
             return None
         entity_data = self.get_entity_data(entity_hotkey)
         if not entity_data:
@@ -1921,7 +1925,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             miner_bucket = (
                 bucket_override if bucket_override is not None
-                else self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
+                else self._challenge_period_client.get_miner_phase(synthetic_hotkey, end_time_ms)
             )
             # Escrow is only held while the bucket withholds on a soft breach; anywhere else it is forfeited
             off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
@@ -1935,7 +1939,8 @@ class EntityManager(ValidatorBroadcastBase):
             settled_settlements = [{
                 'start_ms': segment.segment_start_ms,
                 'end_ms': segment.segment_end_ms,
-                'bucket': segment.bucket,
+                'bucket': BucketPhase.from_status(segment.bucket).value,
+                'in_transition': BucketPhase.from_status(segment.bucket).in_transition,
                 'settled_segment': True,
                 'eow_balance': 0.0,
                 'eow_unrealized': 0.0,
@@ -1972,7 +1977,7 @@ class EntityManager(ValidatorBroadcastBase):
             perf_ledger = _perf_ledger.get(synthetic_hotkey) if _perf_ledger else None
             if not perf_ledger:
                 is_currently_eliminated = (
-                    bucket_override == MinerBucket.ELIMINATED if bucket_override is not None
+                    bucket_override.bucket == MinerBucket.ELIMINATED if bucket_override is not None
                     else self._challenge_period_client.get_miner_bucket(synthetic_hotkey) == MinerBucket.ELIMINATED
                 )
                 if is_currently_eliminated:
@@ -2046,7 +2051,7 @@ class EntityManager(ValidatorBroadcastBase):
                     # Nothing earned in a non-earning bucket is ever paid.
                     gross_payout = 0.0
                     scale = 1.0
-                    if bucket != MinerBucket.ELIMINATED:
+                    if bucket.bucket != MinerBucket.ELIMINATED:
                         # A challenge phase: what was earned there must not become payable later
                         # either, so the basis restarts from wherever this segment ends.
                         payout_hwm = payable
@@ -2078,6 +2083,7 @@ class EntityManager(ValidatorBroadcastBase):
                     'start_ms': start_ms,
                     'end_ms': end_ms,
                     'bucket': bucket.value if bucket is not None else None,
+                    'in_transition': bucket.in_transition if bucket is not None else False,
                     'settled_segment': False,
                     'eow_balance': balance,
                     'eow_unrealized': eow_unrealized,
@@ -2196,14 +2202,15 @@ class EntityManager(ValidatorBroadcastBase):
 
         Args:
             synthetic_hotkey: The subaccount being wound down
-            from_bucket: MinerBucket value of the bucket it is leaving
+            from_bucket: BucketPhase status of the bucket it is leaving (the bucket value, suffixed
+                while in the SUBACCOUNT_FUNDED transition)
             promotion_ms: The moment of the switch; identifies the record with the hotkey
 
         Returns:
             True if a new settled segment was recorded
         """
         try:
-            bucket = MinerBucket(from_bucket)
+            bucket = BucketPhase.from_status(from_bucket)
             week_start_ms = TimeUtil.ms_at_start_of_week(promotion_ms)
             # end_time_ms=None takes the realtime branch, which reads unrealized PnL straight off
             # the (now closed) positions rather than hunting for an account snapshot at a timestamp

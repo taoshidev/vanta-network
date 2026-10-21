@@ -1,5 +1,5 @@
 
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_manager import MinerAccount
@@ -19,6 +19,9 @@ def get_position_leverage_bounds(trade_pair: TradePair) -> tuple[float, float]:
 def get_legacy_leverage_tier(miner_bucket, account_size: float) -> int:
     """Return legacy leverage tier (1-4) for HL-linked subaccounts and regular miners.
 
+    miner_bucket is a MinerBucket or a BucketPhase; pass the phase where the account has one, so
+    the SUBACCOUNT_FUNDED transition (still on the funded account) is tiered by size.
+
     Pro accounts do not use this: their table is flat (see get_pro_positional_leverage).
 
       Tier 1: any subaccount challenge bucket (any size)
@@ -37,7 +40,7 @@ def get_legacy_leverage_tier(miner_bucket, account_size: float) -> int:
 
 def get_legacy_portfolio_caps(
     subaccount_asset_class: MinerAssetClass,
-    miner_bucket: MinerBucket,
+    miner_bucket: MinerBucket | BucketPhase,
     account_size: float,
     trade_pair_category: TradePairCategory,
 ) -> tuple[float, float]:
@@ -159,10 +162,10 @@ def get_pro_class_leverage(trade_pair_category: TradePairCategory) -> float:
 def is_pro_leveraged(account: MinerAccount) -> bool:
     """True when the account's limits come from the flat pro tables.
 
-    PRO_CHALLENGE_TRANSITION is excluded (it is not is_pro): it still trades the standard
-    account, so it keeps the standard curve.
+    The SUBACCOUNT_FUNDED transition is excluded (it is not is_pro): it still trades the
+    standard account, so it keeps the standard curve.
     """
-    return bool(account.miner_bucket and account.miner_bucket.is_pro)
+    return account.is_pro_bucket
 
 
 def is_standard_tiered(account: MinerAccount) -> bool:
@@ -172,7 +175,7 @@ def is_standard_tiered(account: MinerAccount) -> bool:
     A subaccount whose leverage_tier is still None trades tier 0 (see get_grandfathered_*)."""
     if account.is_hl_linked:
         return False
-    if account.miner_bucket and account.miner_bucket.is_pro:
+    if account.is_pro_bucket:
         return False
     if account.leverage_tier is not None:
         return True
@@ -188,7 +191,7 @@ def get_effective_leverage_tier(account: MinerAccount) -> int:
 
 
 def _legacy_tier_of(account: MinerAccount) -> int:
-    return get_legacy_leverage_tier(account.miner_bucket, account.account_size)
+    return get_legacy_leverage_tier(account.bucket_phase, account.account_size)
 
 
 def get_standard_account_positional_leverage(account: MinerAccount, trade_pair: TradePair) -> float:
@@ -248,7 +251,7 @@ def get_per_class_leverage_cap(account: MinerAccount, trade_pair_category: Trade
     if is_standard_tiered(account):
         return get_standard_account_class_leverage(account, trade_pair_category)
     per_class_cap, _ = get_legacy_portfolio_caps(
-        account.asset_class, account.miner_bucket, account.account_size, trade_pair_category,
+        account.asset_class, account.bucket_phase, account.account_size, trade_pair_category,
     )
     return per_class_cap
 

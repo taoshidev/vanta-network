@@ -146,8 +146,9 @@ def pro_payout_scale(standard_account_size, pro_account_size, payout_scale=None)
 
 def is_instant_funded(initial_bucket: Optional[str]) -> bool:
     """True for a subaccount created straight into a funded bucket (SUBACCOUNT_FUNDED or
-    PRO_CHALLENGE_FROM_STANDARD) rather than earning it through SUBACCOUNT_CHALLENGE."""
-    return initial_bucket in ("SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FROM_STANDARD")
+    PRO_CHALLENGE_FUNDED) rather than earning it through SUBACCOUNT_CHALLENGE.
+    PRO_CHALLENGE_FROM_STANDARD is the name stored before the merge."""
+    return initial_bucket in ("SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FUNDED", "PRO_CHALLENGE_FROM_STANDARD")
 
 
 def is_created_through_challenge(initial_bucket: Optional[str]) -> bool:
@@ -175,7 +176,7 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
     bucket is a MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS (None means
     SUBACCOUNT_CHALLENGE). Pro buckets require a pro_account_size, which standard buckets reject.
     eod_hwm_threshold is only accepted for the Instant Funded buckets (SUBACCOUNT_FUNDED and
-    PRO_CHALLENGE_FROM_STANDARD), which also only accept
+    PRO_CHALLENGE_FUNDED), which also only accept
     ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD as their intraday_drawdown_threshold, and only
     trailing drawdown_criteria: static rules never check the EOD high-water mark the account is priced on.
     """
@@ -183,6 +184,9 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
 
     if bucket is None:
         bucket = MinerBucket.SUBACCOUNT_CHALLENGE.value
+    # A request may still name PRO_CHALLENGE_FROM_STANDARD, which PRO_CHALLENGE_FUNDED replaced
+    if bucket == "PRO_CHALLENGE_FROM_STANDARD":
+        bucket = MinerBucket.PRO_CHALLENGE_FUNDED.value
     if (not isinstance(bucket, str) or bucket not in {b.value for b in MinerBucket}
             or bucket not in ValiConfig.SUBACCOUNT_CREATION_BUCKETS):
         return f"bucket must be one of {ValiConfig.SUBACCOUNT_CREATION_BUCKETS}"
@@ -201,7 +205,7 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
     if eod_hwm_threshold is not None:
         if not instant_funded:
             return (f"eod_hwm_threshold is only accepted for buckets {MinerBucket.SUBACCOUNT_FUNDED.value} "
-                    f"and {MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}")
+                    f"and {MinerBucket.PRO_CHALLENGE_FUNDED.value}")
         if isinstance(eod_hwm_threshold, bool) or eod_hwm_threshold not in ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES:
             return f"eod_hwm_threshold must be one of {ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES}"
 

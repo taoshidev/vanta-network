@@ -25,7 +25,7 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
@@ -80,6 +80,7 @@ class MinerAccount:
     asset_class: Optional[MinerAssetClass] = None  # CRYPTO, FOREX, EQUITIES, COMMODITIES, HL_ALL
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
+    in_transition: bool = False  # Pushed with miner_bucket: the SUBACCOUNT_FUNDED transition week
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
     leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = tier 0 (pre-tier floor) for standard subaccounts, unused by HL and pro
     max_return: float = 1.0  # High water mark for portfolio return
@@ -95,6 +96,20 @@ class MinerAccount:
         """Initialize collateral_records to empty list if None."""
         if self.collateral_records is None:
             self.collateral_records = []
+
+    @property
+    def bucket_phase(self) -> Optional[BucketPhase]:
+        """The bucket and transition flag together, or None before the first bucket push."""
+        if self.miner_bucket is None:
+            return None
+        return BucketPhase(self.miner_bucket, self.in_transition)
+
+    @property
+    def is_pro_bucket(self) -> bool:
+        """True when the account trades the pro account. The SUBACCOUNT_FUNDED transition is
+        still on the standard account."""
+        phase = self.bucket_phase
+        return bool(phase and phase.is_pro)
 
     @property
     def balance(self) -> float:
@@ -144,7 +159,7 @@ class MinerAccount:
             return ValiConfig.PRO_PORTFOLIO_LEVERAGE
         if is_standard_tiered(self):
             return get_standard_account_portfolio_leverage(self)
-        tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
+        tier = get_legacy_leverage_tier(self.bucket_phase, self.get_account_size())
         return ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
     def leverage_limits(self) -> dict:
@@ -172,7 +187,7 @@ class MinerAccount:
         elif standard:
             tier_curve, tier = "standard", get_standard_account_tier_key(self)
         else:
-            tier_curve, tier = "legacy", get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
+            tier_curve, tier = "legacy", get_legacy_leverage_tier(self.bucket_phase, self.get_account_size())
         return {
             "is_pro": pro,
             "tier_curve": tier_curve,
@@ -248,6 +263,7 @@ class MinerAccount:
             'total_fees_paid': self.total_fees_paid,
             'total_dividend_income': self.total_dividend_income,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
+            'in_transition': self.in_transition,
             'hl_address': self.hl_address,
             'leverage_tier': self.leverage_tier,
             'max_return': self.max_return,
@@ -450,6 +466,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_fees_paid = last_record.get("total_fees_paid", 0.0)
                     total_dividend_income = last_record.get("total_dividend_income", 0.0)
                     miner_bucket_str = last_record.get("miner_bucket")
+                    in_transition = bool(last_record.get("in_transition", False))
                     hl_address = last_record.get("hl_address")
                     leverage_tier = last_record.get("leverage_tier")
                     max_return = last_record.get("max_return", 1.0)
@@ -464,6 +481,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_fees_paid = 0.0
                     total_dividend_income = 0.0
                     miner_bucket_str = None
+                    in_transition = False
                     hl_address = None
                     leverage_tier = None
                     max_return = 1.0
@@ -522,6 +540,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 if miner_bucket_str:
                     try:
                         miner_bucket = MinerBucket(miner_bucket_str)
+                        # Accounts saved before the merge carry the old bucket name instead of the flag
+                        in_transition = BucketPhase.from_status(miner_bucket_str).in_transition or in_transition
                     except ValueError:
                         logger.warning(f"Unknown miner_bucket '{miner_bucket_str}' for {hotkey}")
 
@@ -542,6 +562,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     asset_class=asset_class,
                     collateral_records=collateral_records,
                     miner_bucket=miner_bucket,
+                    in_transition=in_transition,
                     hl_address=hl_address,
                     leverage_tier=leverage_tier,
                     max_return=max_return,
@@ -639,7 +660,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         return collateral_record
 
-    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
+    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None, in_transition: bool = False) -> bool:
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
             if not account:
@@ -648,6 +669,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account.reset_account_fields()
             if miner_bucket:
                 account.miner_bucket = miner_bucket
+                account.in_transition = BucketPhase(miner_bucket, in_transition).in_transition
 
             self.take_account_snapshot(hotkey=hotkey, reset_snapshot=True)
             account.max_return = 1.0
@@ -815,21 +837,24 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             self._save_accounts_to_disk()
 
-    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
+    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket], in_transition: bool = False) -> None:
         """Set the miner bucket on an account. Called by ChallengePeriodManager via RPC."""
         with self._accounts_lock:
             account = self.get_or_create(hotkey)
             account.miner_bucket = bucket
+            account.in_transition = bucket is not None and BucketPhase(bucket, in_transition).in_transition
             self._save_accounts_to_disk()
 
-    def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket]) -> None:
-        """Bulk update miner buckets across multiple accounts. Saves to disk once."""
+    def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket | BucketPhase]) -> None:
+        """Bulk update miner buckets (or bucket phases) across multiple accounts. Saves to disk once."""
         if not hotkey_to_bucket:
             return
         with self._accounts_lock:
             for hotkey, bucket in hotkey_to_bucket.items():
+                phase = bucket if isinstance(bucket, BucketPhase) else BucketPhase(bucket)
                 account = self.get_or_create(hotkey)
-                account.miner_bucket = bucket
+                account.miner_bucket = phase.bucket
+                account.in_transition = phase.in_transition
             self._save_accounts_to_disk()
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
@@ -1015,6 +1040,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         timestamp_ms: Optional[int] = None,
         reset_snapshot: bool = False,
         update_daily_open: bool = False,
+        drawdown_by_hotkey: Optional[Dict[str, dict]] = None,
     ) -> int:
         """Snapshot account state at the current (or given) UTC day open.
 
@@ -1027,6 +1053,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             update_daily_open: If True, update daily_open_snapshot when a new day is detected.
                                Should only be passed True when firing at the top of the UTC day
                                (hour == 0) to avoid recording a mid-day value as the day open.
+            drawdown_by_hotkey: Optional {hotkey: {intraday_drawdown_pct, eod_drawdown_pct, eod_hwm}}
+                                (ChallengePeriodClient.get_drawdown_snapshot_fields) stamped onto the
+                                snapshot. Hotkeys missing from it keep those fields None.
 
         Returns the number of snapshots recorded.
         """
@@ -1046,11 +1075,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
             else:
                 targets = [a for a in self.accounts.values() if a.miner_bucket != MinerBucket.ELIMINATED]
             for account in targets:
+                drawdown = (drawdown_by_hotkey or {}).get(account.miner_hotkey) or {}
                 snapshot = AccountSnapshot(
                     snapshot_ms=timestamp_ms,
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
+                    intraday_drawdown_pct=drawdown.get('intraday_drawdown_pct'),
+                    eod_drawdown_pct=drawdown.get('eod_drawdown_pct'),
+                    eod_hwm=drawdown.get('eod_hwm'),
                 )
                 stored = account.daily_open_snapshot
                 stored_day_open_ms = TimeUtil.get_start_of_day_ms(stored.snapshot_ms) if stored else None

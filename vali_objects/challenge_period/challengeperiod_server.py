@@ -9,7 +9,7 @@ Clients connect using ChallengePeriodClient.
 """
 import threading
 from typing import Tuple
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -149,11 +149,12 @@ class ChallengePeriodServer(RPCServerBase):
                                               intraday_drawdown_threshold=intraday_drawdown_threshold,
                                               eod_hwm_threshold=eod_hwm_threshold)
 
-    def can_admin_set_bucket_rpc(self, hotkey: str, bucket: MinerBucket) -> Tuple[bool, str]:
-        return self._manager.can_admin_set_bucket(hotkey, bucket)
+    def can_admin_set_bucket_rpc(self, hotkey: str, bucket: MinerBucket, in_transition: bool = False) -> Tuple[bool, str]:
+        return self._manager.can_admin_set_bucket(hotkey, bucket, in_transition)
 
-    def admin_set_bucket_rpc(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> Tuple[bool, str]:
-        return self._manager.admin_set_bucket(hotkey, bucket, current_time_ms)
+    def admin_set_bucket_rpc(self, hotkey: str, bucket: MinerBucket, current_time_ms: int,
+                             in_transition: bool = False) -> Tuple[bool, str]:
+        return self._manager.admin_set_bucket(hotkey, bucket, current_time_ms, in_transition)
 
     def promote_subaccount_rpc(
         self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
@@ -176,6 +177,12 @@ class ChallengePeriodServer(RPCServerBase):
     def get_miner_buckets_rpc(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, MinerBucket | None]:
         return self._manager.get_miner_buckets(hotkeys, timestamp_ms)
 
+    def get_miner_phase_rpc(self, hotkey: str, timestamp_ms: int | None = None) -> BucketPhase | None:
+        return self._manager.get_miner_phase(hotkey, timestamp_ms)
+
+    def get_miner_phases_rpc(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, BucketPhase | None]:
+        return self._manager.get_miner_phases(hotkeys, timestamp_ms)
+
     def get_miner_start_time_rpc(self, hotkey: str) -> int | None:
         return self._manager.get_miner_start_time(hotkey)
 
@@ -188,6 +195,12 @@ class ChallengePeriodServer(RPCServerBase):
     def get_miners_rpc(self, buckets: MinerBucket | list[MinerBucket]) -> dict[str, int]:
         return self._manager.get_miners(buckets)
 
+    def get_testing_miners_rpc(self) -> dict[str, int]:
+        return self._manager.get_testing_miners()
+
+    def get_success_miners_rpc(self) -> dict[str, int]:
+        return self._manager.get_success_miners()
+
     def get_miner_scores_rpc(self) -> tuple:
         return self._manager.get_miner_scores()
 
@@ -196,6 +209,19 @@ class ChallengePeriodServer(RPCServerBase):
 
     def get_bucket_history_rpc(self, hotkey: str) -> list[dict] | None:
         return self._manager.get_bucket_history(hotkey)
+
+    def get_bucket_statistics_rpc(self, hotkey: str, bucket: str | None = None, start_ms: int | None = None,
+                                  include: list[str] | None = None, limit: int | None = None) -> dict | None:
+        return self._manager.get_bucket_statistics(hotkey, bucket, start_ms, include, limit)
+
+    def get_bucket_history_checkpoint_dict_rpc(self) -> dict:
+        return self._manager.get_bucket_history_checkpoint_dict()
+
+    def sync_bucket_history_rpc(self, checkpoint_dict: dict) -> dict:
+        return self._manager.sync_bucket_history(checkpoint_dict)
+
+    def get_drawdown_snapshot_fields_rpc(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
+        return self._manager.get_drawdown_snapshot_fields(hotkeys)
 
     def get_drawdown_stats_rpc(self, hotkey: str) -> dict | None:
         return self._manager.get_drawdown_stats(hotkey)
@@ -212,6 +238,13 @@ class ChallengePeriodServer(RPCServerBase):
     def revert_elimination_rpc(self, hotkey: str) -> bool:
         return self._manager.revert_elimination(hotkey)
 
+    def get_soft_breach_weeks_rpc(self, hotkey: str) -> dict | None:
+        return self._manager.get_soft_breach_weeks(hotkey)
+
+    def admin_set_soft_breach_week_rpc(self, hotkey: str, week_start_ms: int,
+                                       days: list[int] | None) -> Tuple[bool, str]:
+        return self._manager.admin_set_soft_breach_week(hotkey, week_start_ms, days)
+
     def set_miner_drawdown_stats_rpc(self, hotkey: str, updates: dict, force: bool = False) -> Tuple[bool, str, dict | None]:
         return self._manager.set_miner_drawdown_stats(hotkey, updates, force)
 
@@ -220,3 +253,5 @@ class ChallengePeriodServer(RPCServerBase):
         assert self.running_unit_tests, "clear_test_state_rpc should only be called in unit tests"
         with self._manager._buckets_lock:
             self._manager.miner_states.clear()
+        if self._manager._bucket_history.enabled:
+            self._manager._bucket_history.clear_for_test()

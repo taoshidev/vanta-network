@@ -50,7 +50,7 @@ from time_util.time_util import MS_IN_WEEK, TimeUtil
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 from vali_objects.vali_config import ValiConfig
 from vali_objects.scoring.scoring import Scoring
 from collections import defaultdict
@@ -122,7 +122,7 @@ class DebtBasedScoring:
         MinerBucket.MAINCOMP.value,
         MinerBucket.PROBATION.value,
         MinerBucket.ENTITY.value,
-        *(b.value for b in MinerBucket if b.is_subaccount_earning),
+        *(status for b in MinerBucket if b.is_subaccount_earning for status in BucketPhase.statuses_of(b)),
     }
 
     @staticmethod
