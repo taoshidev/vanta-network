@@ -1,4 +1,5 @@
 import copy
+import time
 
 import numpy as np
 
@@ -149,6 +150,9 @@ class RiskProfiling:
             Position: A copy of the position with only the monotonically increasing leverage orders
                      on losing trades. Returns an empty position if no such orders are found.
         """
+        # Release GIL to avoid starving other threads
+        time.sleep(0.0005)
+
         # Copy attributes from the original position
         result_position: Position = copy.deepcopy(position)
         position_orders: list[Order] = [order for order in position.orders]
