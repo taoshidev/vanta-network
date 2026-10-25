@@ -867,7 +867,7 @@ class ChallengePeriodManager(CacheController):
             state = self.miner_states.get(hotkey)
             waive_fee = state is not None and state.auto_promotion is not None
             success, message = self._entity_client.apply_bucket_account_size(
-                hotkey, target_bucket, waive_promotion_fee=waive_fee)
+                hotkey, target.bucket, in_transition=target.in_transition, waive_promotion_fee=waive_fee)
             if not success:
                 logger.error(
                     f"[CHALLENGE] {hotkey} bucket change to {target_bucket.value} ABORTED - "
@@ -875,16 +875,11 @@ class ChallengePeriodManager(CacheController):
                 )
                 return False
 
-        # Close all existing positions
-        self._position_client.close_all_positions(
-            hotkey=hotkey,
-            close_time_ms=current_time_ms,
-            order_source=OrderSource.SUBACCOUNT_PROMOTION
-        )
-        # Track payout information already gathered before promotion since account will be wound down
-        from_bucket = self.miner_states[hotkey].current_bucket
-        if is_synthetic_hotkey(hotkey) and from_bucket.is_subaccount_earning:
-            self._entity_client.settle_wound_down_segment(hotkey, from_bucket.value, current_time_ms)
+        self._close_out_account(hotkey, current_time_ms)
+        # Keep the closed positions and final stats of the account in its bucket segment before
+        # anything below archives or resets them
+        self._record_wound_down_account(hotkey, current_time_ms)
+        self._record_segment_payout(hotkey, current_time_ms)
         # Reset account fields (PnL, capital used, borrowed amount, interest)
         self._miner_account_client.reset_account(hotkey, target_bucket)
         # Archive all positions (disk move + memory removal)
@@ -1030,7 +1025,8 @@ class ChallengePeriodManager(CacheController):
         # Every pro bucket past TRANSITION trades the pro size
         sizing_snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
         success, message = self._entity_client.apply_bucket_account_size(
-            hotkey, target_bucket, pro_account_size, waive_promotion_fee=auto_promoted
+            hotkey, target.bucket, pro_account_size, in_transition=target.in_transition,
+            waive_promotion_fee=auto_promoted
         )
         if not success:
             logger.warning(f"[CHALLENGE] promotion rejected for {hotkey}: {message}")
@@ -1597,6 +1593,274 @@ class ChallengePeriodManager(CacheController):
             last_eod_checked_ms=previous.last_eod_checked_ms,
         )
 
+    # ==================== Bucket History ====================
+
+    def _reconcile_bucket_history(self, hotkeys: list[str], current_time_ms: int | None = None) -> None:
+        """Open and close bucket segments to match each hotkey's bucket entries. Never raises: the
+        history is a record of the bucket moves, and must not be able to block one."""
+        if not self._bucket_history.enabled or not hotkeys:
+            return
+        now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
+        changed = []
+        for hotkey in hotkeys:
+            state = self.miner_states.get(hotkey)
+            if state is None:
+                continue
+            try:
+                if self._bucket_history.reconcile(hotkey, list(state.entries), now_ms,
+                                                  on_open=self._on_segment_open,
+                                                  on_close=self._on_segment_close, save=False):
+                    changed.append(hotkey)
+            except Exception as e:
+                logger.error(f"[BUCKET_HISTORY] reconcile failed for {hotkey}: {e}", exc_info=True)
+        if changed:
+            try:
+                self._bucket_history.save_to_disk(changed)
+            except Exception as e:
+                logger.error(f"[BUCKET_HISTORY] save failed for {len(changed)} hotkeys: {e}", exc_info=True)
+
+    def _get_account(self, hotkey: str) -> MinerAccount | None:
+        try:
+            return self._miner_account_client.get_accounts([hotkey]).get(hotkey)
+        except Exception as e:
+            logger.warning(f"[BUCKET_HISTORY] could not read the account of {hotkey}: {e}")
+            return None
+
+    def _on_segment_open(self, segment: BucketSegment) -> None:
+        account = self._get_account(segment.hotkey)
+        if account is None:
+            return
+        try:
+            segment.account_size = account.get_account_size()
+            segment.start_balance = account.balance
+        except Exception as e:
+            logger.warning(f"[BUCKET_HISTORY] could not read the opening account of {segment.hotkey}: {e}")
+
+    def _on_segment_close(self, segment: BucketSegment) -> None:
+        """Copy what the segment traded into its directory as the stint ends.
+
+        After an account switch the positions are already copied and archived and the final stats
+        already taken (_record_wound_down_account), so only the snapshots are left to copy. On a hop
+        that keeps the account the positions are still live: every position the segment traded is
+        copied as it stands now, and the open ones carry on into the next segment.
+        """
+        hotkey = segment.hotkey
+        try:
+            positions = [
+                p for p in self._position_client.get_positions_for_one_hotkey(hotkey)
+                if p.open_ms < segment.end_ms and (p.is_open_position or p.close_ms >= segment.start_ms)
+            ]
+            self._bucket_history.write_positions(segment, positions)
+        except Exception as e:
+            logger.error(f"[BUCKET_HISTORY] could not copy the positions of {hotkey} into {segment.dir_name}: {e}")
+        try:
+            self._bucket_history.write_snapshots(segment, [
+                s.to_dict() for s in read_all_snapshots(hotkey, self.running_unit_tests)
+                if segment.contains(s.snapshot_ms)
+            ])
+        except Exception as e:
+            logger.error(f"[BUCKET_HISTORY] could not copy the snapshots of {hotkey} into {segment.dir_name}: {e}")
+        if segment.final_drawdown is None:
+            segment.update_from_final_state(**self._final_account_state(hotkey))
+
+    def _final_account_state(self, hotkey: str) -> dict:
+        """The account's closing figures, as recorded on a segment or an in-segment account switch."""
+        state = self.miner_states[hotkey]
+        account = self._get_account(hotkey)
+        return {
+            "end_balance": getattr(account, "balance", None),
+            "end_equity": getattr(account, "equity", None),
+            "drawdown": state.drawdown.to_dict(),
+            "pro_stats": state.pro_stats.to_dict(),
+        }
+
+    def _record_wound_down_account(self, hotkey: str, current_time_ms: int) -> None:
+        """Called from _switch_account once the positions are closed, before they are archived and
+        the account is reset: copies the closed positions into the segment being left and records
+        the account's final stats on it. The bucket entry added after the switch closes it."""
+        if not self._bucket_history.enabled:
+            return
+        try:
+            segment = self._bucket_history.get_live_segment(hotkey)
+            if segment is None:
+                self._reconcile_bucket_history([hotkey], current_time_ms)
+                segment = self._bucket_history.get_live_segment(hotkey)
+            if segment is None:
+                return
+            self._bucket_history.write_positions(segment, self._position_client.get_positions_for_one_hotkey(hotkey))
+            segment.update_from_final_state(**self._final_account_state(hotkey))
+            self._bucket_history.save_segment(segment)
+        except Exception as e:
+            logger.error(f"[BUCKET_HISTORY] could not record the wound-down account of {hotkey}: {e}", exc_info=True)
+
+    def _record_segment_payout(self, hotkey: str, current_time_ms: int) -> None:
+        """Pin what the earning segment being left is owed, once its positions are closed. The
+        payout paths read the record from now on instead of recomputing the segment. Never raises:
+        a failure must not block the bucket move."""
+        if not (self._bucket_history.enabled and is_synthetic_hotkey(hotkey)
+                and self.miner_states[hotkey].current_phase.is_subaccount_earning):
+            return
+        try:
+            segment = self._bucket_history.get_live_segment(hotkey)
+            if segment is None:
+                self._reconcile_bucket_history([hotkey], current_time_ms)
+                segment = self._bucket_history.get_live_segment(hotkey)
+            if segment is None:
+                return
+            live = self._position_client.get_positions_for_one_hotkey(hotkey)
+            if self._bucket_history.write_positions(segment, live):
+                positions = self._bucket_history.read_positions(segment)
+            else:
+                positions = [p.to_dict() for p in live]
+            self._store_payout_record(segment, positions, current_time_ms)
+        except Exception as e:
+            logger.error(f"[BUCKET_HISTORY] could not record the payout of {hotkey}: {e}", exc_info=True)
+
+    def _store_payout_record(self, segment: BucketSegment, positions: list[dict], end_ms: int) -> bool:
+        record = self._entity_client.calculate_segment_payout_record(
+            segment.hotkey, segment.to_dict(), positions, end_ms)
+        if record is None:
+            logger.error(f"[BUCKET_HISTORY] no payout record could be calculated for {segment.hotkey} {segment.dir_name}")
+            return False
+        segment.payout_record = record
+        self._bucket_history.save_segment(segment)
+        logger.info(f"[BUCKET_HISTORY] payout record for {segment.hotkey} {segment.dir_name}: ${record['payout_usd']:.2f}")
+        return True
+
+    def _record_bucket_stats(self, hotkeys: list[str], current_time_ms: int) -> None:
+        """Append the day's drawdown and ProStats row to each hotkey's live segment, once per UTC day."""
+        if not self._bucket_history.enabled:
+            return
+        day_ms = TimeUtil.get_start_of_day_ms(current_time_ms)
+        for hotkey in hotkeys:
+            state = self.miner_states.get(hotkey)
+            segment = self._bucket_history.get_live_segment(hotkey)
+            if state is None or segment is None:
+                continue
+            if segment.payout_scale is None and is_synthetic_hotkey(hotkey):
+                # Captured here rather than when the segment opens: a segment can open inside an
+                # entity server call (subaccount creation), which must not be called back into
+                try:
+                    segment.payout_scale = self._entity_client.get_payout_scale(hotkey)
+                    self._bucket_history.save_segment(segment)
+                except Exception as e:
+                    logger.warning(f"[BUCKET_HISTORY] could not read the payout scale of {hotkey}: {e}")
+            pro_stats = state.pro_stats
+            try:
+                self._bucket_history.append_stats_row(segment, {
+                    "time_ms": current_time_ms,
+                    "bucket": state.current_phase.status,
+                    **state.drawdown.to_dict(),
+                    "calmar": pro_stats.calmar,
+                    "max_drawdown": pro_stats.max_drawdown,
+                    "daily_consistency": pro_stats.daily_consistency,
+                    "trading_days": pro_stats.trading_days,
+                    "soft_breach": state.is_soft_breach_latched(day_ms),
+                }, day_ms)
+            except Exception as e:
+                logger.error(f"[BUCKET_HISTORY] could not write the stats row of {hotkey}: {e}")
+
+    def get_bucket_statistics(self, hotkey: str, bucket: str | None = None, start_ms: int | None = None,
+                              include: list[str] | None = None, limit: int | None = None) -> dict | None:
+        """A miner's bucket segments, oldest first, with the sections asked for.
+
+        bucket filters by bucket (any status BucketPhase.from_status reads, legacy names included),
+        start_ms picks one segment. A live segment's positions and snapshots are read from the live
+        state (the positions of its account, so a PRO_FUNDED segment includes those carried over);
+        a closed one's from its segment directory. limit keeps the last snapshot and
+        stats rows. Returns None when the miner has no segments.
+        """
+        include = set(include or ("summary",))
+        segments = [s for s in self._bucket_history.get_segments(hotkey) if s.reverted_ms is None]
+        if not segments:
+            return None
+        if bucket:
+            bucket_value = BucketPhase.from_status(bucket).bucket.value
+            segments = [s for s in segments if s.bucket == bucket_value]
+        if start_ms is not None:
+            segments = [s for s in segments if s.start_ms == start_ms]
+
+        out = []
+        for segment in segments:
+            row = segment.to_dict()
+            row["live"] = segment.is_live
+            if "positions" in include:
+                if segment.is_live:
+                    # Live positions only ever hold the current account: earlier accounts are archived
+                    row["positions"] = [
+                        p.to_dict() for p in self._position_client.get_positions_for_one_hotkey(hotkey, sort_positions=True)
+                    ]
+                else:
+                    row["positions"] = self._bucket_history.read_positions(segment)
+            if "snapshots" in include:
+                if segment.is_live:
+                    snapshots = [s.to_dict() for s in read_all_snapshots(hotkey, self.running_unit_tests)
+                                 if segment.contains(s.snapshot_ms)]
+                    row["snapshots"] = snapshots[-limit:] if limit else snapshots
+                else:
+                    row["snapshots"] = self._bucket_history.read_snapshots(segment, limit)
+            if "stats" in include:
+                row["stats"] = self._bucket_history.read_stats(segment, limit)
+            out.append(row)
+        return {"hotkey": hotkey, "segments": out}
+
+    def get_bucket_history_checkpoint_dict(self) -> dict:
+        return self._bucket_history.to_checkpoint_dict()
+
+    def get_bucket_segments(self, hotkey: str) -> list[dict]:
+        """A miner's segment summaries, oldest first, without reverted ones."""
+        return [s.to_dict() for s in self._bucket_history.get_segments(hotkey) if s.reverted_ms is None]
+
+    def get_payout_records(self, hotkey: str) -> list[dict]:
+        return [{"bucket": s.bucket, "start_ms": s.start_ms, "end_ms": s.end_ms, "payout_record": s.payout_record}
+                for s in self._bucket_history.get_segments(hotkey)
+                if s.reverted_ms is None and s.payout_record is not None]
+
+    def admin_update_payout_record(self, hotkey: str, segment_start_ms: int, payout_usd: float | None = None,
+                                   remove: bool = False, recompute: bool = False) -> Tuple[bool, str, dict | None]:
+        """Correct a segment's payout record: amend its amount, drop it, or rebuild it from the
+        positions in the segment directory."""
+        segment = self._bucket_history.get_segment(hotkey, segment_start_ms)
+        if segment is None or segment.reverted_ms is not None:
+            return False, f"{hotkey} has no segment starting at {segment_start_ms}", None
+        if remove:
+            segment.payout_record = None
+        elif recompute:
+            if segment.end_ms is None or not BucketPhase.from_status(segment.bucket).is_subaccount_earning:
+                return False, f"{segment.dir_name} is not a closed earning segment", None
+            if not self._store_payout_record(segment, self._bucket_history.read_positions(segment), segment.end_ms):
+                return False, f"payout record for {segment.dir_name} could not be calculated", None
+        else:
+            record = segment.payout_record
+            if record is None:
+                return False, f"{segment.dir_name} has no payout record to amend", None
+            delta = payout_usd - record['payout_usd']
+            if record['settlements']:
+                record['settlements'][-1]['payout'] += delta
+            record['payout_usd'] = payout_usd
+            record['amended_ms'] = TimeUtil.now_in_millis()
+        logger.warning(f"[BUCKET_HISTORY] {hotkey} {segment.dir_name} payout record manually "
+                       f"{'removed' if remove else 'recomputed' if recompute else 'amended'}: {segment.payout_record}")
+        self._bucket_history.save_segment(segment)
+        return True, f"payout record for {segment.dir_name} updated", segment.payout_record
+
+    def sync_bucket_history(self, checkpoint_dict: dict) -> dict:
+        return self._bucket_history.sync_from_checkpoint(checkpoint_dict)
+
+    def get_drawdown_snapshot_fields(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
+        """The drawdown fields stamped onto account snapshots, per hotkey."""
+        targets = self.miner_states.keys() if hotkeys is None else hotkeys
+        out = {}
+        for hotkey in targets:
+            state = self.miner_states.get(hotkey)
+            if state is None:
+                continue
+            out[hotkey] = {
+                "intraday_drawdown_pct": state.drawdown.intraday_drawdown_pct,
+                "eod_drawdown_pct": state.drawdown.eod_drawdown_pct,
+                "eod_hwm": state.drawdown.eod_hwm,
+            }
+        return out
 
     # ==================== Sync Methods ====================
 

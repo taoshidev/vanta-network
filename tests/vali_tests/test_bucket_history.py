@@ -399,7 +399,7 @@ def test_leaving_an_earning_bucket_pins_a_payout_record(subaccount):
 
     assert manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T3)[0]
     manager._position_client.add(_position("pro_open", T4))
-    assert manager.promote_hotkeys([HOTKEY], T5)
+    assert manager.promote_hotkeys({HOTKEY: MinerBucket.PRO_CHALLENGE_FUNDED}, T5)
 
     # Each record is computed from the positions copied into its own segment directory
     assert calls == [("SUBACCOUNT_FUNDED", ["standard_open"], T3), ("PRO_CHALLENGE_FUNDED", ["pro_open"], T5)]
@@ -425,7 +425,7 @@ def test_a_failed_record_does_not_block_the_move(subaccount):
     manager._entity_client.calculate_segment_payout_record.return_value = None
     manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
 
-    assert manager.promote_hotkeys([HOTKEY], T2)
+    assert manager.promote_hotkeys({HOTKEY: MinerBucket.PRO_CHALLENGE_FUNDED}, T2)
 
     assert manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_FUNDED
     assert _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T1).payout_record is None
@@ -447,7 +447,7 @@ def test_a_reopened_segment_drops_its_record(subaccount):
 def test_the_record_rides_the_checkpoint(subaccount):
     manager, _ = subaccount
     manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
-    assert manager.promote_hotkeys([HOTKEY], T2)
+    assert manager.promote_hotkeys({HOTKEY: MinerBucket.PRO_CHALLENGE_FUNDED}, T2)
     checkpoint = json.loads(json.dumps(manager.get_bucket_history_checkpoint_dict()))
 
     manager._bucket_history.clear_for_test()
@@ -461,7 +461,7 @@ def test_admin_amends_removes_and_recomputes_a_record(subaccount):
     manager, calls = subaccount
     manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
     manager._position_client.add(_position("pro_open", T1 + 1))
-    assert manager.promote_hotkeys([HOTKEY], T2)
+    assert manager.promote_hotkeys({HOTKEY: MinerBucket.PRO_CHALLENGE_FUNDED}, T2)
     segment = _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
 
     ok, _, record = manager.admin_update_payout_record(HOTKEY, T1, payout_usd=25.0)

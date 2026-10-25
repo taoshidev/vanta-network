@@ -1056,6 +1056,7 @@ class EntityManager(ValidatorBroadcastBase):
         pro_account_size: Optional[float] = None,
         broadcast: bool = True,
         in_transition: bool = False,
+        waive_promotion_fee: bool = False,
     ) -> Tuple[bool, str]:
         """
         Point a subaccount at the account size its target bucket trades.
@@ -1069,6 +1070,9 @@ class EntityManager(ValidatorBroadcastBase):
 
         broadcast=False leaves telling the other validators to the caller: create_subaccount_ex
         broadcasts the new subaccount once, after it is registered with the challenge period.
+
+        waive_promotion_fee grants the pro size without the promotion fee or its collateral check: the
+        network, not the entity, promoted the subaccount (auto-promotion).
 
         There is no network default pro size. The entity picks it when it promotes the subaccount
         (POST /entity/subaccount/promote), and this is the last check before it is stored:
@@ -1112,7 +1116,7 @@ class EntityManager(ValidatorBroadcastBase):
         promotion_fee_theta = 0.0
         # Where the pro size came from ("explicit" or "recorded"), for the log; None for standard buckets
         pro_size_source = None
-        if target_bucket.is_pro_track:
+        if target.is_pro_track:
             if pro_account_size is not None:
                 pro_size_source = "explicit"
             elif subaccount.account_type == AccountType.PRO.value and subaccount.pro_account_size is not None:
@@ -1143,7 +1147,8 @@ class EntityManager(ValidatorBroadcastBase):
             # the increase over the fee already assessed is billed, and the charge floors at zero: a size
             # already paid for is free rather than crediting theta back. Collateral-exempt subaccounts
             # (reg_fee_theta == 0) stay exempt on the pro track.
-            if target.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size:
+            if (target.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size
+                    and not waive_promotion_fee):
                 target_fee_theta = ValiConfig.promotion_fee_theta(pro_account_size, standard_account_size,
                                                                   subaccount.intraday_drawdown_threshold)
                 promotion_fee_theta = max(0.0, target_fee_theta - subaccount.pro_fee_theta)
@@ -1907,7 +1912,7 @@ class EntityManager(ValidatorBroadcastBase):
             end_time_ms = TimeUtil.now_in_millis()
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
-        if not entity_hotkey or not subaccount_id:
+        if not entity_hotkey or subaccount_id is None:
             return None
         entity_data = self.get_entity_data(entity_hotkey)
         if not entity_data:

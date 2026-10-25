@@ -29,7 +29,7 @@ from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
@@ -84,7 +84,7 @@ from shared_objects.log import logger
 
 # current_equity and current_balance are recomputed from the account on every refresh, so they are
 # not settable. The manager enforces the rules between the settable fields.
-SETTABLE_DRAWDOWN_FIELDS = ('daily_open_equity', 'eod_hwm', 'last_eod_equity', 'last_eod_checked_ms')
+SETTABLE_DRAWDOWN_FIELDS = ('daily_open_equity', 'daily_open_balance', 'eod_hwm', 'last_eod_equity', 'last_eod_checked_ms')
 
 
 class ValidatorRestServer(BaseRestServer, RPCServerBase):
@@ -346,6 +346,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/debt-ledger/<minerid>", methods=["GET"])(self.get_miner_debt_ledger)
         self.app.route("/perf-ledger/<minerid>", methods=["GET"])(self.get_perf_ledger)
         self.app.route("/account-snapshots/<minerid>", methods=["GET"])(self.get_account_snapshots)
+        self.app.route("/bucket-statistics/<minerid>", methods=["GET"])(self.get_bucket_statistics)
         self.app.route("/debt-ledger", methods=["GET"])(self.get_debt_ledger)
         self.app.route("/penalty-ledger/<minerid>", methods=["GET"])(self.get_penalty_ledger)
 
@@ -729,6 +730,58 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'snapshots': [s.to_dict() for s in snapshots],
         })
 
+    BUCKET_STATISTICS_SECTIONS = ("summary", "positions", "snapshots", "stats")
+
+    def get_bucket_statistics(self, minerid):
+        """A miner's statistics per bucket stint, oldest first.
+
+        Query params:
+            bucket: only segments of this bucket (legacy names such as PRO_CHALLENGE_FROM_STANDARD accepted)
+            start_ms: only the segment that started at this time
+            include: comma list of summary, positions, snapshots, stats (default summary)
+            limit: keep the last N snapshot and stats rows (default and cap as /account-snapshots)
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self._challenge_period_client:
+            return jsonify({'error': 'Challenge period data not available'}), 503
+
+        bucket = request.args.get('bucket')
+        if bucket and BucketPhase.from_status(bucket).bucket == MinerBucket.UNKNOWN:
+            return jsonify({'error': f'Unknown bucket {bucket}'}), 400
+
+        start_ms = request.args.get('start_ms')
+        if start_ms is not None:
+            try:
+                start_ms = int(start_ms)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'start_ms must be an integer'}), 400
+
+        include = [part.strip() for part in request.args.get('include', 'summary').split(',') if part.strip()]
+        unknown = [part for part in include if part not in self.BUCKET_STATISTICS_SECTIONS]
+        if unknown or not include:
+            return jsonify({'error': f'include must be a comma list of {", ".join(self.BUCKET_STATISTICS_SECTIONS)}'}), 400
+
+        try:
+            limit = int(request.args.get('limit', DEFAULT_SNAPSHOT_LIMIT))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'limit must be an integer'}), 400
+        if limit < 1:
+            return jsonify({'error': 'limit must be >= 1'}), 400
+        limit = min(limit, MAX_SNAPSHOT_LIMIT)
+
+        try:
+            data = self._challenge_period_client.get_bucket_statistics(
+                minerid, bucket=bucket, start_ms=start_ms, include=include, limit=limit)
+        except Exception as e:
+            logger.error(f"Error retrieving bucket statistics for {minerid}: {e}")
+            return jsonify({'error': 'Internal server error retrieving bucket statistics'}), 500
+
+        if not data or not data.get('segments'):
+            return jsonify({'error': f'No bucket statistics found for miner {minerid}'}), 404
+        return self._jsonify_with_custom_encoder(data)
+
     def get_debt_ledger(self):
         api_key = self._get_api_key_safe()
 
@@ -802,63 +855,45 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         show_checkpoints = request.args.get("checkpoints", "true").lower()
         include_checkpoints = show_checkpoints == "true"
 
-        # PRIMARY: Try to use pre-compressed payload from memory cache (fastest)
-        if self._statistics_client:
-            compressed_data = self._statistics_client.get_compressed_statistics(include_checkpoints)
-            if compressed_data:
-                # Return pre-compressed JSON directly
-                return Response(compressed_data, content_type='application/json', headers={
-                    'Content-Encoding': 'gzip'
-                })
+        if include_checkpoints:
+            stats_filename = ValiBkpUtils.get_miner_stats_compressed_path(self.running_unit_tests)
+        else:
+            stats_filename = ValiBkpUtils.get_miner_stats_no_checkpoints_compressed_path(self.running_unit_tests)
 
-        # FALLBACK 1: If no modification needed, serve compressed file directly
-        if show_checkpoints == "true":
-            f_gz = ValiBkpUtils.get_miner_stats_dir() + ".gz"
-            if os.path.exists(f_gz):
-                compressed_data = self._get_file(f_gz, binary=True)
-                return Response(compressed_data, content_type='application/json', headers={
-                    'Content-Encoding': 'gzip'
-                })
+        if os.path.exists(stats_filename):
+            response = make_response(send_file(stats_filename, mimetype="application/json"))
+            response.headers["Content-Encoding"] = "gzip"
+            return response
 
-        # FALLBACK 2: Decompress and modify if needed (checkpoints=false or no .gz file)
-        f = ValiBkpUtils.get_miner_stats_dir()
-        data = self._get_file(f)
-        if not data:
-            return jsonify({'error': 'Statistics data not found'}), 404
+        # FALLBACK to the old uncompressed file until the first statistics are generated
+        # This can be removed after the upgrade
+        stats_filename = ValiBkpUtils.get_miner_stats_path(self.running_unit_tests)
+        data = self._get_file(stats_filename)
+        if data:
+            # If no checkpoints, remove the "checkpoints" key from each element in data
+            if not include_checkpoints:
+                for element in data.get("data", []):
+                    element.pop("checkpoints", None)
 
-        # If checkpoints=false, remove the "checkpoints" key from each element in data
-        if show_checkpoints == "false":
-            for element in data.get("data", []):
-                element.pop("checkpoints", None)
+            return self._jsonify_with_custom_encoder(data)
 
-        return self._jsonify_with_custom_encoder(data)
+        return jsonify({'error': 'Statistics data not found'}), 404
 
     def get_validator_checkpoint_statistics_unique(self, minerid):
         api_key = self._get_api_key_safe()
         if not self.is_valid_api_key(api_key):
             return jsonify({'error': 'Unauthorized access'}), 401
 
-        # Get statistics data from disk
-        f = ValiBkpUtils.get_miner_stats_dir()
-        data = self._get_file(f)
-        if not data:
-            return jsonify({'error': 'Statistics data not found'}), 404
-
-        data_summary = data.get("data", [])
-        if not data_summary:
-            return jsonify({'error': 'No data found'}), 404
-
         # Grab the optional "checkpoints" query param; default it to "true"
         show_checkpoints = request.args.get("checkpoints", "true").lower()
+        include_checkpoints = show_checkpoints == "true"
 
-        for element in data_summary:
-            if element.get("hotkey", None) == minerid:
-                # If the user set checkpoints=false, remove them from this element
-                if show_checkpoints == "false":
-                    element.pop("checkpoints", None)
-                return jsonify(element)
+        data = self._statistics_client.get_miner_statistics_for_hotkey(minerid, include_checkpoints)
 
-        return jsonify({'error': f'Miner ID {minerid} not found'}), 404
+        if not data:
+            return jsonify({'error': f'Miner ID {minerid} not found'}), 404
+
+        return self._jsonify_with_custom_encoder(data)
 
     def get_challenge_period(self, minerid):
         """
@@ -2052,12 +2087,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         in the body are changed; the rest are left as they are.
         Requires tier 500 access.
 
-        Settable fields: daily_open_equity, eod_hwm, last_eod_equity, last_eod_checked_ms.
+        Settable fields: daily_open_equity, daily_open_balance, eod_hwm, last_eod_equity, last_eod_checked_ms.
         - last_eod_checked_ms must be a UTC day boundary no later than today
-        - daily_open_equity and last_eod_equity require last_eod_checked_ms to be today's open
+        - daily_open_equity, daily_open_balance and last_eod_equity require last_eod_checked_ms to be today's open
+        - daily_open_balance only on accounts whose daily loss limit is measured from it
         - eod_hwm cannot go below 1.0, last_eod_equity or daily_open_equity
         - "force": true is required when a change pushes a drawdown past its threshold or deepens
-          a pro account's max_drawdown
+          the max_drawdown of a pro account or of an auto-promotion candidate
 
         Example:
         curl -X POST http://localhost:48888/admin/drawdown-stats/<hotkey> \\
@@ -3183,7 +3219,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FUNDED) cannot
         enter the transition. One created into PRO_CHALLENGE_FUNDED still reaches PRO_FUNDED by
-        passing its challenge.
+        passing its challenge. A subaccount the network promoted automatically may leave the
+        transition early for PRO_CHALLENGE_FUNDED, on the pro size the network granted and free of the
+        promotion fee: a request that sends a pro_account_size for it is rejected.
 
         Requires a tier 200 API key.
         Ownership is proven via entity coldkey
@@ -3571,7 +3609,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
             if is_synthetic_hotkey(hotkey):
                 entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)
-                if not entity_hotkey or not subaccount_id:
+                if not entity_hotkey or subaccount_id is None:
                     return jsonify({'error': f'Invalid synthetic hotkey: {hotkey}'}), 400
                 success, message = self._entity_client.eliminate_subaccount(
                     entity_hotkey=entity_hotkey,

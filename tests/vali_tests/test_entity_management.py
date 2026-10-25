@@ -1770,13 +1770,13 @@ class TestSubaccountPayout(unittest.TestCase):
         from tests.vali_tests.test_pro_account_size import _add_standard, _bare_manager
 
         entity_manager = _bare_manager()
-        entity_manager._debt_ledger_client.get_settled_segments.return_value = []
-        entity_manager._debt_ledger_client.get_sealed_weeks.return_value = {}
+        entity_manager._challenge_period_client.get_miner_phase.return_value = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED)
+        entity_manager._challenge_period_client.get_bucket_segments.return_value = []
         entity_manager._perf_ledger_client = MagicMock()
         order = SimpleNamespace(processed_ms=MONDAY_MS - 2 * MS_IN_WEEK + 3_600_000, realized_pnl=12_000.0,
                                 to_python_dict=lambda: {})
         entity_manager._position_client.get_positions_for_one_hotkey.return_value = [
-            SimpleNamespace(orders=[order], fee_history=[], unrealized_pnl=0.0)]
+            SimpleNamespace(orders=[order], fee_history=[], unrealized_pnl=0.0, open_ms=order.processed_ms)]
         checkpoint = SimpleNamespace(unrealized_pnl=0.0)
 
         payouts = {}
@@ -1786,7 +1786,7 @@ class TestSubaccountPayout(unittest.TestCase):
                 hotkey: SimpleNamespace(get_checkpoint_at_time=lambda *_: checkpoint)}
             with patch("entity_management.entity_manager.read_all_snapshots", return_value=[]):
                 result = entity_manager._calculate_payout_for_hotkey(
-                    hotkey, 0, MONDAY_MS, bucket_override=MinerBucket.SUBACCOUNT_FUNDED)
+                    hotkey, 0, MONDAY_MS)
             payouts[subaccount_id] = [(row['start_ms'], row['payout']) for row in result['weekly_settlements']]
 
         self.assertEqual(payouts[0], payouts[1])

@@ -23,7 +23,7 @@ from tests.vali_tests.test_challengeperiod_pro import (  # noqa: F401 - manager 
 from vali_objects.challenge_period.challengeperiod_manager import DrawdownStats, ProStats
 from vali_objects.enums.misc import TradePairReturnStatus
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
 from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
@@ -33,7 +33,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint
 HL_ADDRESS = "0x" + "d" * 40
 DAYS = 60
 REALIZED_USD = 7_000.0  # 7% on the account
-PRO_BUCKETS = (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+PRO_BUCKETS = (BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True), MinerBucket.PRO_CHALLENGE_FUNDED,
                MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
 
 
@@ -54,9 +54,10 @@ def _ledger(low: float = 1.0, close: float = 1.0, days: int = DAYS) -> PerfLedge
     return ledger
 
 
-def _seed(manager, hotkey: str = HOTKEY, bucket: MinerBucket = MinerBucket.SUBACCOUNT_FUNDED,
+def _seed(manager, hotkey: str = HOTKEY, bucket: MinerBucket | BucketPhase = MinerBucket.SUBACCOUNT_FUNDED,
           current_equity: float = 1.0, eod_hwm: float = 1.0) -> None:
-    manager.set_miner_bucket(hotkey, bucket, NOW_MS - DAYS * DAILY_MS)
+    phase = bucket.phase() if isinstance(bucket, MinerBucket) else bucket
+    manager.set_miner_bucket(hotkey, phase.bucket, NOW_MS - DAYS * DAILY_MS, in_transition=phase.in_transition)
     manager.miner_states[hotkey].drawdown = DrawdownStats(current_equity=current_equity, current_balance=current_equity,
                                                           eod_hwm=eod_hwm, last_eod_equity=1.0,
                                                           last_eod_checked_ms=MIDNIGHT_MS)
@@ -259,7 +260,7 @@ def test_the_live_ratchet_and_the_replay_both_count_and_only_the_ratchet_is_kept
 
 @pytest.mark.parametrize("record", [
     {"initial_bucket": MinerBucket.SUBACCOUNT_FUNDED.value},             # Instant Funded
-    {"initial_bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value},   # Instant Funded
+    {"initial_bucket": MinerBucket.PRO_CHALLENGE_FUNDED.value},          # Instant Funded
     None,                                                                # no entity record
 ])
 def test_only_subaccounts_created_through_the_challenge_are_candidates(manager, record):

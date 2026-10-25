@@ -144,9 +144,8 @@ class MinerBucket(Enum):
     def daily_loss_from_balance(self) -> bool:
         """True for the standard buckets whose daily loss limit is measured from the day-open balance
         instead of the day-open equity, for subaccounts created through SUBACCOUNT_CHALLENGE that are
-        not HL-linked."""
-        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                        MinerBucket.PRO_CHALLENGE_TRANSITION)
+        not HL-linked. SUBACCOUNT_FUNDED includes its transition week, still on the standard account."""
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED)
 
     @property
     def payout_scale_applies(self) -> bool:
@@ -278,7 +277,8 @@ class BucketPhase:
     In transition, a SUBACCOUNT_FUNDED subaccount has asked to move onto the pro track and is
     winding down its standard funded account: it still trades and is paid under SUBACCOUNT_FUNDED
     rules, may not add exposure, and must leave the transition by the first Monday 00:00 UTC after
-    entering it. Leaving it is the hop to PRO_CHALLENGE_FUNDED, which switches onto the pro account.
+    entering it (an auto-promoted one once it is flat, or AUTO_PROMOTION_TRANSITION_DAYS after its
+    promotion). Leaving it is the hop to PRO_CHALLENGE_FUNDED, which switches onto the pro account.
     Every rule but the pro-track ones reads straight off the bucket.
 
     The flag is meaningless for any other bucket and is normalized to False.

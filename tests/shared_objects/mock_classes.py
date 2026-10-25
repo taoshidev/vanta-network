@@ -51,6 +51,7 @@ class MockLivePriceFetcherServer(LivePriceFetcherServer):
         super().__init__(
             secrets=secrets,
             disable_ws=disable_ws,
+            running_unit_tests=True,
             connection_mode=RPCConnectionMode.LOCAL,
             start_server=False,
             start_daemon=False

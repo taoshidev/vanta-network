@@ -262,6 +262,10 @@ class EntityServer(RPCServerBase):
     def is_instant_funded_rpc(self, synthetic_hotkey: str) -> bool:
         return self._manager.is_instant_funded(synthetic_hotkey)
 
+    def is_mothership_rpc(self) -> bool:
+        """Whether this validator is the mothership, the one whose subaccount sizing is broadcast."""
+        return self._manager.is_mothership
+
     def get_subaccount_info_for_synthetic_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
         """
         Get SubaccountInfo for a synthetic hotkey.
