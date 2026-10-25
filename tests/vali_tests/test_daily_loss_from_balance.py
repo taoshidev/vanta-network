@@ -1,5 +1,5 @@
 """
-Standard subaccounts in SUBACCOUNT_CHALLENGE, SUBACCOUNT_FUNDED and PRO_CHALLENGE_TRANSITION measure the
+Standard subaccounts in SUBACCOUNT_CHALLENGE and SUBACCOUNT_FUNDED (its transition included) measure the
 daily loss limit (intraday drawdown) from the day-open balance instead of the day-open equity, under both
 drawdown criteria. HL-linked and Instant Funded subaccounts, pro buckets and regular miners keep the
 day-open equity.
@@ -22,21 +22,21 @@ from vali_objects.challenge_period.challengeperiod_manager import ChallengePerio
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, BucketPhase, MinerBucket
 from vali_objects.miner_account.account_snapshot import AccountSnapshot
 from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint, PerfLedger
 
-BALANCE_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                   MinerBucket.PRO_CHALLENGE_TRANSITION)
-EQUITY_BUCKETS = (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+TRANSITION = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
+BALANCE_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, TRANSITION)
+EQUITY_BUCKETS = (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FUNDED,
                   MinerBucket.PRO_FUNDED, MinerBucket.CHALLENGE, MinerBucket.MAINCOMP)
 CRITERIA = (DrawdownCriteria.TRAILING, DrawdownCriteria.STATIC)
 INTRADAY_REASON = {
     MinerBucket.SUBACCOUNT_CHALLENGE: EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN,
     MinerBucket.SUBACCOUNT_FUNDED: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
-    MinerBucket.PRO_CHALLENGE_TRANSITION: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
+    TRANSITION: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
 }
 LIMIT = 0.05
 HL_ADDRESS = "0x" + "c" * 40
@@ -71,9 +71,14 @@ def _standard_subaccount(manager):
     manager._entity_client.get_subaccount_info_for_synthetic.return_value = {"initial_bucket": None}
 
 
-def _seed(manager, bucket: MinerBucket, criteria: DrawdownCriteria = DrawdownCriteria.TRAILING) -> None:
-    manager.set_miner_bucket(HOTKEY, bucket, NOW_MS - DAILY_MS, drawdown_criteria=criteria,
-                             intraday_drawdown_threshold=LIMIT)
+def _phase(bucket: MinerBucket | BucketPhase) -> BucketPhase:
+    return bucket.phase() if isinstance(bucket, MinerBucket) else bucket
+
+
+def _seed(manager, bucket: MinerBucket | BucketPhase, criteria: DrawdownCriteria = DrawdownCriteria.TRAILING) -> None:
+    phase = _phase(bucket)
+    manager.set_miner_bucket(HOTKEY, phase.bucket, NOW_MS - DAILY_MS, drawdown_criteria=criteria,
+                             intraday_drawdown_threshold=LIMIT, in_transition=phase.in_transition)
 
 
 def _refresh_cache(manager, account: MinerAccount, ledger: PerfLedger | None = None, now_ms: int = NOW) -> DrawdownStats:
@@ -119,7 +124,7 @@ def test_hl_linked_subaccounts_keep_the_day_open_equity(manager, bucket, account
 @pytest.mark.parametrize("record,from_balance", [
     ({"initial_bucket": MinerBucket.SUBACCOUNT_CHALLENGE.value}, True),
     ({"initial_bucket": MinerBucket.SUBACCOUNT_FUNDED.value}, False),               # Instant Funded
-    ({"initial_bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}, False),     # Instant Funded
+    ({"initial_bucket": MinerBucket.PRO_CHALLENGE_FUNDED.value}, False),            # Instant Funded
     (None, False),                                                                  # no entity record
 ])
 def test_only_subaccounts_created_through_the_challenge_track_the_balance(manager, record, from_balance):
@@ -226,7 +231,7 @@ def test_an_overnight_gain_loosens_the_day(manager, bucket, criteria):
     _seed(manager, bucket, criteria)
     _refresh_cache(manager, _account(OPEN_BALANCE * (1 - 0.04), OPEN_EQUITY_GAIN))
     _run_refresh(manager, HOTKEY, now_ms=NOW)
-    assert manager.get_miner_bucket(HOTKEY) == bucket
+    assert manager.get_miner_phase(HOTKEY) == _phase(bucket)
 
 
 @pytest.mark.parametrize("open_equity,eliminated", [(OPEN_EQUITY_GAIN, False), (OPEN_EQUITY_LOSS, True)])

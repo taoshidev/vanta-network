@@ -34,13 +34,14 @@ from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.elimination_reason_enum import EliminationReason
+from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.enums.miner_bucket_enum import BucketEntry, BucketPhase, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from shared_objects.rpc.common_data_client import CommonDataClient
-from entity_management.entity_utils import is_synthetic_hotkey
+from entity_management.entity_utils import is_created_through_challenge, is_synthetic_hotkey
 from entity_management.entity_client import EntityClient
 from vali_objects.challenge_period.bucket_history import BucketHistoryStore, BucketSegment
 from vali_objects.miner_account.account_snapshot import read_all_snapshots
@@ -51,15 +52,22 @@ class DrawdownStats:
     current_equity: float = 1.0
     current_balance: float = 1.0
     daily_open_equity: float | None = 1.0
+    # Set only on accounts whose daily loss limit is measured from the day-open balance; None uses daily_open_equity
+    daily_open_balance: float | None = None
     eod_hwm: float = 1.0
     last_eod_equity: float = 1.0
     last_eod_checked_ms: int | None = None
+    # Auto-promotion candidates only: the worst live equity against eod_hwm, in mdd ratio form, ratcheted
+    # every refresh as in the pro challenge, and when that tracking began
+    max_drawdown: float = 1.0
+    max_drawdown_since_ms: int | None = None
 
     @property
     def intraday_drawdown_pct(self) -> float:
-        if not self.daily_open_equity:
+        day_open = self.daily_open_balance if self.daily_open_balance is not None else self.daily_open_equity
+        if not day_open:
             return 0.0
-        return (1.0 - self.current_equity / self.daily_open_equity) * 100.0
+        return (1.0 - self.current_equity / day_open) * 100.0
 
     @property
     def eod_drawdown_pct(self) -> float:
@@ -134,6 +142,47 @@ class ProStats:
 
 
 @dataclass
+class AutoPromotionStats:
+    """An auto-promotion candidate's track record, measured as in the pro challenge and recomputed every
+    refresh. max_drawdown is the worse of the live ratchet (DrawdownStats.max_drawdown) and the perf
+    ledger replayed over the time before that tracking began."""
+    calmar: float
+    daily_consistency: float
+    max_drawdown: float
+    trading_days: int
+
+
+@dataclass
+class AutoPromotion:
+    """How a standard funded subaccount was promoted automatically, and what it qualified on. Kept for the
+    rest of its pro journey. Every field has a default so a record written by another version still loads.
+    multiplier is the pro size over the standard size, which is the path's multiple unless the size was
+    already set by the mothership."""
+    FAST_TRACK = "fast_track"
+    STEADY_TRACK = "steady_track"
+
+    path: str = ""
+    multiplier: float = 0.0
+    pro_account_size: float = 0.0
+    promoted_ms: int = 0
+    equity_return: float = 0.0
+    balance_return: float = 0.0
+    calmar: float = 0.0
+    daily_consistency: float = 1.0
+    trading_days: int = 0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> 'AutoPromotion | None':
+        if not d:
+            return None
+        valid_keys = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in valid_keys and v is not None})
+
+
+@dataclass
 class MinerBucketState:
     hotkey: str
     entries: list[BucketEntry]
@@ -148,6 +197,7 @@ class MinerBucketState:
     eod_hwm_threshold_override: float | None = None
     rank: int | None = None
     pro_stats: ProStats = field(default_factory=ProStats)
+    auto_promotion: AutoPromotion | None = None
 
     def __post_init__(self):
         if not self.entries:
@@ -190,7 +240,7 @@ class MinerBucketState:
 
     def to_checkpoint_dict(self) -> dict:
         """Serialize full state (entries + drawdown + drawdown_criteria + drawdown threshold overrides +
-        rank + pro_stats) for on-disk checkpoint. The latched
+        rank + pro_stats + auto_promotion) for on-disk checkpoint. The latched
         soft-breach days ride along inside pro_stats."""
         return {
             "entries": [entry.to_dict() for entry in self.entries],
@@ -200,6 +250,7 @@ class MinerBucketState:
             "eod_hwm_threshold_override": self.eod_hwm_threshold_override,
             "rank": self.rank,
             "pro_stats": self.pro_stats.to_dict(),
+            "auto_promotion": self.auto_promotion.to_dict() if self.auto_promotion else None,
         }
 
     @classmethod
@@ -216,6 +267,7 @@ class MinerBucketState:
             eod_hwm_threshold_override=data.get("eod_hwm_threshold_override"),
             rank=data.get("rank"),
             pro_stats=ProStats.from_dict(data.get("pro_stats")),
+            auto_promotion=AutoPromotion.from_dict(data.get("auto_promotion")),
         )
 
     def __str__(self) -> str:
@@ -226,7 +278,8 @@ class MinerBucketState:
         return (
             f"{self.hotkey} {self.current_phase} {start} rank={self.rank} criteria={criteria_str} idt_override={self.intraday_drawdown_threshold_override} "
             f"eod_override={self.eod_hwm_threshold_override} "
-            f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={f'{dd.daily_open_equity:.4f}' if dd.daily_open_equity is not None else 'None'} | "
+            f"equity={dd.current_equity:.4f} balance={dd.current_balance:.4f} daily_open={f'{dd.daily_open_equity:.4f}' if dd.daily_open_equity is not None else 'None'} "
+            f"daily_open_balance={f'{dd.daily_open_balance:.4f}' if dd.daily_open_balance is not None else 'None'} | "
             f"intraday_dd={dd.intraday_drawdown_pct:.2f}% eod_dd={dd.eod_drawdown_pct:.2f}% "
             f"static_dd={dd.static_drawdown_pct:.2f}% static_eod_dd={dd.static_eod_drawdown_pct:.2f}% "
             f"eod_hwm={dd.eod_hwm:.4f} | "
@@ -368,6 +421,8 @@ class ChallengePeriodManager(CacheController):
     - Manager creates its own clients internally (forward compatibility)
     """
     DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-10-01 00:00:00")   # TODO: remove
+    # The fast track's equity must hold on every refresh for this long, so a bad price tick cannot promote
+    AUTO_PROMOTION_FAST_TRACK_HOLD_MS = 3 * 60 * 1000
 
     def __init__(
         self,
@@ -413,6 +468,21 @@ class ChallengePeriodManager(CacheController):
         # Cached scores for MinerStatisticsManager
         self._cached_asset_softmaxed_scores: dict[MinerAssetClass, dict[str, float]] = {}
         self._cached_asset_competitiveness: dict[MinerAssetClass, float] = {}
+
+        # Auto-promotion: subaccounts' creation buckets (fixed once created), the candidates seen on the
+        # last refresh, the stats of those whose ledger covers the time before live tracking, since when
+        # each candidate's equity has held the fast track's return, the payout week a failed move was last
+        # logged in, the ledgers logged incomplete, and whether this validator is the mothership
+        self._initial_buckets: dict[str, str | None] = {}
+        self._auto_promotion_candidates: set[str] = set()
+        self._auto_promotion_stats: dict[str, AutoPromotionStats] = {}
+        self._fast_track_since_ms: dict[str, int] = {}
+        self._move_failure_logged: dict[str, int] = {}
+        self._incomplete_ledgers_logged: set[str] = set()
+        self._mothership: bool | None = None
+        # One lock per miner, held across a promotion of it (an auto-promotion's from its decision on)
+        self._promotion_locks: dict[str, threading.RLock] = {}
+        self._promotion_locks_guard = threading.Lock()
 
         logger.info(f"[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
 
@@ -461,6 +531,16 @@ class ChallengePeriodManager(CacheController):
         timer.lap("drawdown_cache")
         self._refresh_pro_stats(evaluation_hotkeys, ledgers, accounts)
         timer.lap("pro_stats")
+        # Before the eliminations, so a failure here must not stop them: nothing is evaluated this refresh
+        try:
+            self._refresh_auto_promotion_stats(evaluation_hotkeys, ledgers, accounts, current_time_ms)
+        except Exception as e:
+            logger.error(f"[CHALLENGE] auto-promotion stats failed, skipping auto-promotion this refresh: {e}",
+                         exc_info=True)
+            self._auto_promotion_stats = {}
+            # A refresh that could not check the fast track's equity starts its hold over
+            self._fast_track_since_ms.clear()
+        timer.lap("auto_promotion_stats")
         # Latch before any bucket move below: soft_breach reads the bucket the miner traded today
         self._latch_soft_breaches(evaluation_hotkeys, current_time_ms)
         timer.lap("latch_soft_breaches")
@@ -468,10 +548,17 @@ class ChallengePeriodManager(CacheController):
         timer.lap("bucket_stats")
         self._refresh_rank_cache(rank_hotkeys, ledgers, rank_positions, accounts, asset_selections, current_time_ms)
         timer.lap("rank_cache")
+        try:
+            flat_transitions = self._flat_auto_promoted_transitions()
+        except Exception as e:
+            logger.error(f"[CHALLENGE] open position lookup failed, auto-promoted transitions keep their "
+                         f"schedule this refresh: {e}", exc_info=True)
+            flat_transitions = set()
+        timer.lap("flat_transitions")
 
         eliminations: dict[str, EliminationReason] = {}
         demotions: dict[str, MinerBucket] = {}
-        promotions = []
+        promotions: dict[str, BucketPhase] = {}  # the phase each was evaluated in
         for hotkey, state in self.miner_states.items():
             if hotkey not in evaluation_hotkeys:
                 if state.current_bucket == MinerBucket.UNKNOWN:
@@ -520,9 +607,9 @@ class ChallengePeriodManager(CacheController):
                         eliminations[hotkey] = reason
                     continue
 
-            # The transition wind-down ends on the week boundary, regardless of performance
-            if self._check_transition_expiry(state, current_time_ms):
-                promotions.append(hotkey)
+            # The transition wind-down ends on schedule (see _check_transition_expiry), regardless of performance
+            if self._check_transition_expiry(state, current_time_ms, hotkey in flat_transitions):
+                promotions[hotkey] = state.current_phase
                 continue
 
             _asset = asset_selections.get(hotkey)
@@ -539,7 +626,7 @@ class ChallengePeriodManager(CacheController):
             if hotkey == "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_87": # remove once eliminated or promoted
                 returns_threshold = 0.08
             if self._check_promotion(state, returns_threshold, current_time_ms):
-                promotions.append(hotkey)
+                promotions[hotkey] = state.current_phase
                 continue
 
         timer.lap("evaluate")
@@ -551,6 +638,14 @@ class ChallengePeriodManager(CacheController):
         if state_changed:
             self._sync_buckets_to_accounts(hotkeys=list({*eliminations, *demotions, *promotions}))
         timer.lap("apply_changes")
+
+        # Last, so a failure here cannot hold up the moves above; each move syncs and saves itself
+        try:
+            auto_promotions = self._auto_promote(accounts, set(eliminations), current_time_ms)
+        except Exception as e:
+            logger.error(f"[CHALLENGE] auto-promotion pass failed, retrying next refresh: {e}", exc_info=True)
+            auto_promotions = []
+        timer.lap("auto_promote")
 
         self._save_to_disk()
         timer.lap("save_to_disk")
@@ -564,7 +659,7 @@ class ChallengePeriodManager(CacheController):
         logger.info(f"[CHALLENGE] timings: {timer.summary()} "
                     f"(evaluated={len(evaluation_hotkeys)}, ranked={len(rank_hotkeys)})")
 
-        return self._to_slack_message(promotions)
+        return self._to_slack_message([*promotions, *auto_promotions])
 
     # ==================== Evaluation Methods ====================
 
@@ -641,14 +736,32 @@ class ChallengePeriodManager(CacheController):
             logger.info(f"[CHALLENGE] near static drawdown {threshold_pct}%: {state}")
         return None
 
+    def _flat_auto_promoted_transitions(self) -> set[str]:
+        """Auto-promoted subaccounts in the SUBACCOUNT_FUNDED transition with no open position. The
+        transition cannot open one, so nothing is left to wind down."""
+        hotkeys = [hotkey for hotkey, state in self.miner_states.items()
+                   if state.in_transition and state.auto_promotion is not None]
+        if not hotkeys:
+            return set()
+        open_positions = self._position_client.get_positions_for_hotkeys(hotkeys, only_open_positions=True)
+        return {hotkey for hotkey in hotkeys if not open_positions.get(hotkey)}
+
     @staticmethod
-    def _check_transition_expiry(state: MinerBucketState, current_time_ms: int) -> bool:
-        """True once the SUBACCOUNT_FUNDED transition has run past the first Monday 00:00 UTC
+    def _check_transition_expiry(state: MinerBucketState, current_time_ms: int, flat: bool = False) -> bool:
+        """True once the SUBACCOUNT_FUNDED transition has run its course: after an auto-promotion, once the
+        account is flat or AUTO_PROMOTION_TRANSITION_DAYS have passed, else past the first Monday 00:00 UTC
         after the miner entered it"""
         if not state.in_transition:
             return False
-        expired = (TimeUtil.ms_at_start_of_week(current_time_ms)
-                   > TimeUtil.ms_at_start_of_week(state.current_bucket_start_ms))
+        if state.auto_promotion is not None and flat:
+            logger.info(f"[CHALLENGE] transition ended early, no open positions: {state}")
+            return True
+        if state.auto_promotion is not None:
+            promoted_ms = state.auto_promotion.promoted_ms or state.current_bucket_start_ms
+            expired = current_time_ms >= promoted_ms + ValiConfig.AUTO_PROMOTION_TRANSITION_DAYS * ValiConfig.DAILY_MS
+        else:
+            expired = (TimeUtil.ms_at_start_of_week(current_time_ms)
+                       > TimeUtil.ms_at_start_of_week(state.current_bucket_start_ms))
         if expired:
             logger.info(f"[CHALLENGE] transition window closed: {state}")
         return expired
@@ -732,7 +845,7 @@ class ChallengePeriodManager(CacheController):
 
             # Pro runs the pro rules even on a static subaccount, so static reporting is non-pro only
             is_static = state.drawdown_criteria == DrawdownCriteria.STATIC and not is_pro
-            # intraday_drawdown_pct always holds the literal equity-vs-day-open number
+            # intraday_drawdown_pct always holds the equity-vs-day-open number (day-open balance or equity)
             intraday_drawdown_pct = state.drawdown.intraday_drawdown_pct
             # eod_drawdown_pct holds the account's other rule: static equity-vs-starting-balance for
             # static accounts, or the EOD-vs-high-water-mark check otherwise
@@ -776,10 +889,13 @@ class ChallengePeriodManager(CacheController):
         """
         if isinstance(target, MinerBucket):
             target = target.phase()
-        # Point the subaccount at the size the target bucket trades before resetting the account
+        # Point the subaccount at the size the target bucket trades before resetting the account. An
+        # auto-promoted subaccount goes onto its pro account free of the promotion fee.
         if is_synthetic_hotkey(hotkey):
+            state = self.miner_states.get(hotkey)
+            waive_fee = state is not None and state.auto_promotion is not None
             success, message = self._entity_client.apply_bucket_account_size(
-                hotkey, target.bucket, in_transition=target.in_transition)
+                hotkey, target.bucket, in_transition=target.in_transition, waive_promotion_fee=waive_fee)
             if not success:
                 logger.error(
                     f"[CHALLENGE] {hotkey} bucket change to {target} ABORTED - "
@@ -791,10 +907,7 @@ class ChallengePeriodManager(CacheController):
         # Keep the closed positions and final stats of the account in its bucket segment before
         # anything below archives or resets them
         self._record_wound_down_account(hotkey, current_time_ms)
-        # Track payout information already gathered before promotion since account will be wound down
-        from_phase = self.miner_states[hotkey].current_phase
-        if is_synthetic_hotkey(hotkey) and from_phase.is_subaccount_earning:
-            self._entity_client.settle_wound_down_segment(hotkey, from_phase.status, current_time_ms)
+        self._record_segment_payout(hotkey, current_time_ms)
         # Reset account fields (PnL, capital used, borrowed amount, interest)
         self._miner_account_client.reset_account(hotkey, target.bucket, in_transition=target.in_transition)
         # Archive all positions (disk move + memory removal)
@@ -849,42 +962,58 @@ class ChallengePeriodManager(CacheController):
             self._reconcile_bucket_history([hotkey], current_time_ms)
         return state_changed
 
-    def promote_hotkeys(self, hotkeys: list[str], current_time_ms: int) -> bool:
-        """Promote miners to next tier."""
-        if hotkeys:
-            logger.info(f"[CHALLENGE] promoting {len(hotkeys)} miners")
+    def promote_hotkeys(self, promotions: dict[str, BucketPhase | MinerBucket], current_time_ms: int) -> bool:
+        """Promote miners to next tier. promotions maps each miner to the phase it was evaluated in (a bare
+        MinerBucket means the bucket out of transition); one that has left it since, e.g. through an
+        entity promotion, is not promoted again."""
+        if promotions:
+            logger.info(f"[CHALLENGE] promoting {len(promotions)} miners")
 
         state_changed = False
-        for hotkey in hotkeys:
-            state = self.miner_states[hotkey]
-            target = state.current_phase.next_phase
-            if target is None:
-                logger.warning(f"[CHALLENGE] no next bucket for promotion: {state}")
-                continue
+        for hotkey, evaluated_phase in promotions.items():
+            if isinstance(evaluated_phase, MinerBucket):
+                evaluated_phase = evaluated_phase.phase()
+            # The lock an entity promotion holds, so one cannot land between the check and the move
+            with self._promotion_lock(hotkey):
+                state = self.miner_states.get(hotkey)
+                if state is None or state.current_phase != evaluated_phase:
+                    logger.info(f"[CHALLENGE] {hotkey} left {evaluated_phase} after it was evaluated, "
+                                f"not promoting: {state}")
+                    continue
+                target = evaluated_phase.next_phase
+                if target is None:
+                    logger.warning(f"[CHALLENGE] no next bucket for promotion: {state}")
+                    continue
 
-            logger.info(f"[CHALLENGE] promoting to {target}: {state}")
+                logger.info(f"[CHALLENGE] promoting to {target}: {state}")
 
-            # Leave the miner where they are when the account switch fails; the next refresh retries
-            if not self._leave_phase(hotkey, target, current_time_ms):
-                continue
+                # Leave the miner where they are when the account switch fails; the next refresh retries
+                if not self._leave_phase(hotkey, target, current_time_ms):
+                    continue
 
-            with self._buckets_lock:
-                state_changed |= self.miner_states[hotkey].add_bucket_entry(
-                    target.bucket, current_time_ms, in_transition=target.in_transition)
-            self._reconcile_bucket_history([hotkey], current_time_ms)
+                with self._buckets_lock:
+                    state_changed |= self.miner_states[hotkey].add_bucket_entry(
+                        target.bucket, current_time_ms, in_transition=target.in_transition)
+                self._reconcile_bucket_history([hotkey], current_time_ms)
 
         return state_changed
 
     def promote_subaccount(
-        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
+        self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None,
+        from_phase: BucketPhase | None = None,
     ) -> tuple[bool, str]:
-        """Promote a subaccount one step up the pro track on the entity miner's request.
+        """Promote a subaccount one step up the pro track on the entity miner's request, or by
+        auto-promotion (_auto_promote).
 
         The only moves allowed are the three hops in BucketPhase.promotion_target; a subaccount in
         any other bucket is rejected, as is an Instant Funded subaccount in SUBACCOUNT_FUNDED.
         pro_account_size is the size the entity asked for: entering the pro track needs one, and None
         keeps the size already recorded (see EntityManager.apply_bucket_account_size, which rejects a
-        subaccount that has neither).
+        subaccount that has neither). from_phase, when given, rejects the call unless the subaccount
+        is still in it, so a caller that decided on one hop never makes the next. A subaccount promoted
+        automatically may leave the SUBACCOUNT_FUNDED transition early, but only on the size the
+        network granted and free of the promotion fee: a request that sends a pro_account_size is
+        rejected.
 
         Only a target with switches_account wipes trading state, which is the two hops landing on a
         pro account (PRO_CHALLENGE_DIRECT, and PRO_CHALLENGE_FUNDED):
@@ -892,12 +1021,30 @@ class ChallengePeriodManager(CacheController):
         transition is a wind-down week on the standard account, so the hop into it keeps the
         positions, limit orders and ledgers as they are and only sweeps the entry orders (see
         admin_set_bucket).
+
+        Runs under the subaccount's promotion lock, so two promotions of it never interleave their
+        sizing and bucket moves. Without from_phase the phase at the time of the call is used, so a
+        duplicate request that waited on the lock is rejected instead of making the next hop.
         """
+        if from_phase is None and hotkey in self.miner_states:
+            from_phase = self.miner_states[hotkey].current_phase
+        with self._promotion_lock(hotkey):
+            return self._promote_subaccount(hotkey, current_time_ms, pro_account_size, from_phase)
+
+    def _promote_subaccount(self, hotkey: str, current_time_ms: int, pro_account_size: float | None,
+                            from_phase: BucketPhase | None) -> tuple[bool, str]:
+        """promote_subaccount, run under the subaccount's promotion lock."""
         state = self.miner_states.get(hotkey)
         if state is None:
             return False, f"{hotkey} not found in challenge period manager"
 
         current_phase = state.current_phase
+        if from_phase is not None and current_phase != from_phase:
+            return False, f"{hotkey} is in {current_phase}, no longer {from_phase}"
+        auto_promoted = current_phase.in_transition and state.auto_promotion is not None
+        if auto_promoted and pro_account_size is not None:
+            return False, (f"{hotkey} was promoted automatically: its pro account size is set by the network "
+                           f"and cannot be changed")
         target = current_phase.promotion_target
         if target is None:
             return False, f"{hotkey} cannot be promoted out of {current_phase}"
@@ -913,7 +1060,8 @@ class ChallengePeriodManager(CacheController):
         # Every pro phase past the transition trades the pro size
         sizing_snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
         success, message = self._entity_client.apply_bucket_account_size(
-            hotkey, target.bucket, pro_account_size, in_transition=target.in_transition
+            hotkey, target.bucket, pro_account_size, in_transition=target.in_transition,
+            waive_promotion_fee=auto_promoted
         )
         if not success:
             logger.warning(f"[CHALLENGE] promotion rejected for {hotkey}: {message}")
@@ -1060,10 +1208,11 @@ class ChallengePeriodManager(CacheController):
     # ==================== Drawdown/Rank Refresh methods ====================
 
     @staticmethod
-    def _parse_eod_checkpoints(ledger: PerfLedger, now_ms: int) -> tuple[float, float | None, float, int | None]:
+    def _parse_eod_checkpoints(ledger: PerfLedger, now_ms: int, account_size: float | None = None
+                               ) -> tuple[float, float | None, float, int | None, float | None]:
         """
         Parse midnight checkpoints from a ledger.
-        Returns (last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms).
+        Returns (last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms, daily_open_balance).
         """
         midnight_cps = [cp for cp in ledger.cps if cp.last_update_ms % 86400000 == 0 and cp.equity_ret > 0]
         last_eod = midnight_cps[-1].equity_ret if midnight_cps else 1.0
@@ -1072,7 +1221,28 @@ class ChallengePeriodManager(CacheController):
         today_open_cp = next((cp for cp in midnight_cps if cp.last_update_ms == today_midnight_ms), None)
         daily_open_equity = today_open_cp.equity_ret if today_open_cp else (None if last_eod else 1.0)
         eod_hwm = max(max(cp.equity_ret for cp in midnight_cps), 1.0) if midnight_cps else 1.0
-        return last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms
+        daily_open_balance = (today_open_cp.equity_ret - today_open_cp.unrealized_pnl / account_size
+                              if today_open_cp and account_size else None)
+        return last_eod, daily_open_equity, eod_hwm, last_eod_checked_ms, daily_open_balance
+
+    @staticmethod
+    def _daily_open_balance(account: MinerAccount, now_ms: int) -> float | None:
+        """Today's opening balance over account size, from the daily open snapshot. None when no snapshot
+        holds today's open, which leaves the day on the day-open equity."""
+        snapshot = account.daily_open_snapshot
+        if (snapshot and snapshot.account_size
+                and TimeUtil.get_start_of_day_ms(snapshot.snapshot_ms) == TimeUtil.get_start_of_day_ms(now_ms)):
+            return snapshot.balance / snapshot.account_size
+        return None
+
+    def _daily_loss_from_balance(self, hotkey: str, account: MinerAccount) -> bool:
+        """Standard subaccounts, created through SUBACCOUNT_CHALLENGE and not HL-linked, measure the daily
+        loss limit from the day-open balance while in the standard buckets. Every other account keeps the
+        day-open equity."""
+        if not self.miner_states[hotkey].current_bucket.daily_loss_from_balance or account.is_hl_linked:
+            return False
+        info = self._entity_client.get_subaccount_info_for_synthetic(hotkey)
+        return bool(info) and is_created_through_challenge(info.get("initial_bucket"))
 
     def _refresh_drawdown_cache(
         self,
@@ -1101,11 +1271,19 @@ class ChallengePeriodManager(CacheController):
 
             now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
             current_day_open_ms = TimeUtil.get_start_of_day_ms(now_ms)
+            try:
+                from_balance = self._daily_loss_from_balance(hotkey, account)
+            except Exception as e:
+                # Keep the account on the reference it has rather than abort every miner's drawdown check
+                from_balance = self.miner_states[hotkey].drawdown.daily_open_balance is not None
+                logger.warning(f"[CHALLENGE] {hotkey} entity lookup failed, keeping its daily loss reference: {e}")
             # Held so a manual set_miner_drawdown_stats cannot land between reading and writing eod_hwm
             with self._buckets_lock:
                 existing = self.miner_states[hotkey].drawdown
                 existing.current_equity = current_equity
                 existing.current_balance = current_balance
+                if not from_balance:
+                    existing.daily_open_balance = None
 
                 # EOD fields are locked in for today once the snapshot has been captured
                 if existing.last_eod_checked_ms == current_day_open_ms:
@@ -1117,18 +1295,25 @@ class ChallengePeriodManager(CacheController):
                     last_eod_equity = daily_open_equity = snapshot.equity_return
                     eod_hwm = max(existing.eod_hwm, daily_open_equity)
                     last_eod_checked_ms = current_day_open_ms
+                    daily_open_balance = self._daily_open_balance(account, now_ms)
                 else:
                     ledger = ledgers.get(hotkey)
                     if ledger is None:
                         logger.warning(f"[CHALLENGE] {hotkey} missing ledger, skipping drawdown cache")
                         continue
-                    last_eod_equity, daily_open_equity, eod_hwm, last_eod_checked_ms = self._parse_eod_checkpoints(ledger, now_ms)
+                    last_eod_equity, daily_open_equity, eod_hwm, last_eod_checked_ms, daily_open_balance = (
+                        self._parse_eod_checkpoints(ledger, now_ms, account.account_size))
 
                 if last_eod_checked_ms == current_day_open_ms:
                     existing.current_equity = current_equity
                     existing.current_balance = current_balance
                     existing.last_eod_equity = last_eod_equity
                     existing.daily_open_equity = daily_open_equity
+                    if from_balance:
+                        existing.daily_open_balance = daily_open_balance
+                        if daily_open_balance is None:
+                            logger.warning(f"[CHALLENGE] {hotkey} has no day-open balance, today's daily loss "
+                                           f"limit is measured from the day-open equity: {self.miner_states[hotkey]}")
                     existing.eod_hwm = max(existing.eod_hwm, last_eod_equity, eod_hwm)
                     existing.last_eod_checked_ms = last_eod_checked_ms
 
@@ -1168,6 +1353,203 @@ class ChallengePeriodManager(CacheController):
                 # Recomputed metrics, but the latch is a history: carry it
                 soft_breach_weeks=state.pro_stats.soft_breach_weeks,
             )
+
+    def _refresh_auto_promotion_stats(self, hotkeys: list[str], ledgers: dict[str, PerfLedger],
+                                      accounts: dict[str, MinerAccount], current_time_ms: int) -> None:
+        """Track every auto-promotion candidate's drawdown and measure its track record as in the pro
+        challenge.
+
+        From the first refresh that sees a candidate, its worst live equity against eod_hwm is ratcheted
+        in DrawdownStats, as the pro challenge ratchets its own. The time before has no live record, so it
+        is replayed from the perf ledger's per-checkpoint lowest equity, and the worse of the two is the
+        drawdown. A candidate whose ledger cannot replay that time gets no stats, so it is not evaluated.
+
+        Also times how long each candidate's equity has held the fast track's return: any refresh below
+        it starts the hold over.
+        """
+        candidates = set()
+        stats = {}
+        for hotkey in hotkeys:
+            state = self.miner_states[hotkey]
+            account = accounts.get(hotkey)
+            if (state.current_phase != BucketPhase(MinerBucket.SUBACCOUNT_FUNDED)
+                    or not self._is_auto_promotion_candidate(hotkey, account)):
+                continue
+            candidates.add(hotkey)
+
+            drawdown = state.drawdown
+            with self._buckets_lock:
+                if drawdown.max_drawdown_since_ms is None:
+                    drawdown.max_drawdown_since_ms = current_time_ms
+                if drawdown.eod_hwm > 0:
+                    drawdown.max_drawdown = min(drawdown.max_drawdown, 1.0,
+                                                drawdown.current_equity / drawdown.eod_hwm)
+            if drawdown.current_equity - 1.0 >= ValiConfig.AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN:
+                self._fast_track_since_ms.setdefault(hotkey, current_time_ms)
+            else:
+                self._fast_track_since_ms.pop(hotkey, None)
+
+            ledger = ledgers.get(hotkey)
+            if ledger is None or account.account_size <= 0:
+                continue
+            history = LedgerUtils.eod_hwm_drawdown(ledger, before_ms=drawdown.max_drawdown_since_ms)
+            if history is None:
+                if hotkey not in self._incomplete_ledgers_logged:
+                    self._incomplete_ledgers_logged.add(hotkey)
+                    logger.warning(f"[CHALLENGE] {hotkey} ledger does not record every checkpoint's lowest equity; "
+                                   f"not evaluated for auto-promotion until the ledger is regenerated")
+                continue
+
+            max_drawdown = min(drawdown.max_drawdown, history)
+            log_returns = LedgerUtils.daily_return_log(ledger)
+            stats[hotkey] = AutoPromotionStats(
+                calmar=Metrics.all_time_calmar(
+                    LedgerUtils.realized_return(ledger, account.account_size), max_drawdown),
+                daily_consistency=Metrics.return_consistency(log_returns),
+                max_drawdown=max_drawdown,
+                trading_days=len(log_returns),
+            )
+
+        self._auto_promotion_candidates = candidates
+        self._auto_promotion_stats = stats
+        # Forget accounts that are no longer candidates
+        for cache in (self._fast_track_since_ms, self._move_failure_logged):
+            for hotkey in cache.keys() - candidates:
+                del cache[hotkey]
+        self._incomplete_ledgers_logged &= candidates
+        with self._buckets_lock:
+            known = set(self.miner_states)
+        for hotkey in self._initial_buckets.keys() - known:
+            del self._initial_buckets[hotkey]
+
+    def _is_auto_promotion_candidate(self, hotkey: str, account: MinerAccount | None) -> bool:
+        """A standard subaccount that can be auto-promoted into its SUBACCOUNT_FUNDED transition: created through
+        SUBACCOUNT_CHALLENGE (not Instant Funded) and not HL-linked. A failed lookup reads as not
+        a candidate until the next refresh."""
+        try:
+            if account is None or account.is_hl_linked:
+                return False
+            if hotkey not in self._initial_buckets:
+                info = self._entity_client.get_subaccount_info_for_synthetic(hotkey)
+                if not info:
+                    return False
+                self._initial_buckets[hotkey] = info.get("initial_bucket")
+            return is_created_through_challenge(self._initial_buckets[hotkey])
+        except Exception as e:
+            logger.warning(f"[CHALLENGE] {hotkey} auto-promotion candidacy lookup failed, skipping this refresh: {e}")
+            return False
+
+    def _auto_promote(self, accounts: dict[str, MinerAccount], eliminating: set[str],
+                      current_time_ms: int) -> list[str]:
+        """Move every auto-promotion candidate that qualifies into its SUBACCOUNT_FUNDED transition. Only
+        candidates with stats are evaluated (their drawdown covers the whole funded account), never one
+        this refresh is eliminating, even if that elimination failed, and a subaccount is promoted
+        automatically at most once. Returns the hotkeys moved."""
+        promoted = []
+        for hotkey, stats in list(self._auto_promotion_stats.items()):
+            state = self.miner_states.get(hotkey)
+            account = accounts.get(hotkey)
+            if (hotkey in eliminating or state is None or state.current_phase != BucketPhase(MinerBucket.SUBACCOUNT_FUNDED)
+                    or state.auto_promotion or account is None or account.account_size <= 0):
+                continue
+            since_ms = self._fast_track_since_ms.get(hotkey)
+            held = since_ms is not None and current_time_ms - since_ms >= self.AUTO_PROMOTION_FAST_TRACK_HOLD_MS
+            qualified = self._auto_promotion_path(stats, held, state.drawdown.current_return)
+            if qualified is None:
+                continue
+            with self._promotion_lock(hotkey):
+                if self._move_to_auto_promotion(hotkey, account, stats, qualified, current_time_ms):
+                    promoted.append(hotkey)
+        return promoted
+
+    def _move_to_auto_promotion(self, hotkey: str, account: MinerAccount, stats: AutoPromotionStats,
+                                qualified: tuple[str, int], current_time_ms: int) -> bool:
+        """Move one qualifying candidate into its SUBACCOUNT_FUNDED transition. Called with its promotion lock held.
+        True when it moved.
+
+        Only the mothership chooses the pro size (the path's multiple of the standard account), and its
+        sizing reaches the other validators by broadcast, or by the nightly sync when a broadcast is
+        missed. Every other validator moves only once that size is on its record, and follows it.
+        """
+        # Checked again under the lock: the entity may have promoted it since the decision
+        state = self.miner_states.get(hotkey)
+        if state is None or state.current_phase != BucketPhase(MinerBucket.SUBACCOUNT_FUNDED) or state.auto_promotion:
+            return False
+        path, multiple = qualified
+        try:
+            info = self._entity_client.get_subaccount_info_for_synthetic(hotkey) or {}
+            if info.get("account_type") == AccountType.PRO.value and info.get("pro_account_size"):
+                pro_account_size, requested_size = info["pro_account_size"], None
+            elif self._is_mothership():
+                pro_account_size = requested_size = multiple * account.account_size
+            else:
+                return False  # waiting for the mothership's pro size
+        except Exception as e:
+            self._log_move_failure(hotkey, current_time_ms, f"subaccount lookup failed: {e}")
+            return False
+
+        record = AutoPromotion(path=path, multiplier=pro_account_size / account.account_size,
+                               pro_account_size=pro_account_size, promoted_ms=current_time_ms,
+                               equity_return=state.drawdown.current_equity - 1.0,
+                               balance_return=state.drawdown.current_balance - 1.0, calmar=stats.calmar,
+                               daily_consistency=stats.daily_consistency, trading_days=stats.trading_days)
+        # Recorded before the move so it is saved to disk with it
+        with self._buckets_lock:
+            state.auto_promotion = record
+        try:
+            moved, message = self.promote_subaccount(hotkey, current_time_ms, requested_size,
+                                                     from_phase=BucketPhase(MinerBucket.SUBACCOUNT_FUNDED))
+        except Exception as e:
+            # It can raise after its own bucket entry has landed (see promote_subaccount); an entry made
+            # by anyone else (the entity's own request) carries another time
+            moved = state.in_transition and state.current_bucket_start_ms == current_time_ms
+            message = f"{type(e).__name__}: {e}"
+        if not moved:
+            with self._buckets_lock:
+                state.auto_promotion = None
+            self._log_move_failure(hotkey, current_time_ms, message)
+            return False
+
+        # A nightly sync that replaced the state during the move has put the mothership's view in place,
+        # with its own record or none: that one stands
+        self._save_to_disk()
+        logger.info(f"[CHALLENGE] AUTO-PROMOTED {hotkey} on the {path} at {record.multiplier:g}x "
+                    f"(pro size ${pro_account_size:,.0f}): {record}")
+        return True
+
+    def _promotion_lock(self, hotkey: str) -> threading.RLock:
+        with self._promotion_locks_guard:
+            return self._promotion_locks.setdefault(hotkey, threading.RLock())
+
+    def _is_mothership(self) -> bool:
+        """Whether this validator is the mothership, read once from the entity server."""
+        if self._mothership is None:
+            self._mothership = bool(self._entity_client.is_mothership())
+        return self._mothership
+
+    def _log_move_failure(self, hotkey: str, current_time_ms: int, message: str) -> None:
+        """A failed move is retried every refresh but logged once a payout week."""
+        week_start_ms = TimeUtil.ms_at_start_of_week(current_time_ms)
+        if self._move_failure_logged.get(hotkey) != week_start_ms:
+            self._move_failure_logged[hotkey] = week_start_ms
+            logger.error(f"[CHALLENGE] auto-promotion of {hotkey} failed, retrying on later refreshes: {message}")
+
+    @staticmethod
+    def _auto_promotion_path(stats: AutoPromotionStats, fast_track_held: bool,
+                             current_return: float) -> tuple[str, int] | None:
+        """The path a candidate qualifies on and its multiple, the larger when it qualifies on both, or
+        None. fast_track_held is whether its equity has held the fast track's return for
+        AUTO_PROMOTION_FAST_TRACK_HOLD_MS; current_return is DrawdownStats.current_return."""
+        qualified = []
+        if fast_track_held:
+            qualified.append((AutoPromotion.FAST_TRACK, ValiConfig.AUTO_PROMOTION_FAST_TRACK_MULTIPLIER))
+        if (stats.trading_days >= ValiConfig.AUTO_PROMOTION_STEADY_TRACK_MINIMUM_DAYS
+                and current_return > ValiConfig.AUTO_PROMOTION_STEADY_TRACK_MINIMUM_RETURN
+                and stats.daily_consistency <= ValiConfig.AUTO_PROMOTION_STEADY_TRACK_MAX_DAILY_CONSISTENCY):
+            tiers = [m for calmar, m in ValiConfig.AUTO_PROMOTION_STEADY_TRACK_CALMAR_MULTIPLIERS if stats.calmar >= calmar]
+            if tiers:
+                qualified.append((AutoPromotion.STEADY_TRACK, max(tiers)))
+        return max(qualified, key=lambda q: q[1], default=None)
 
     def _latch_soft_breaches(self, hotkeys: list[str], current_time_ms: int) -> None:
         """Record today as breached for every miner currently breaking a pro rule.
@@ -1352,6 +1734,40 @@ class ChallengePeriodManager(CacheController):
         except Exception as e:
             logger.error(f"[BUCKET_HISTORY] could not record the wound-down account of {hotkey}: {e}", exc_info=True)
 
+    def _record_segment_payout(self, hotkey: str, current_time_ms: int) -> None:
+        """Pin what the earning segment being left is owed, once its positions are closed. The
+        payout paths read the record from now on instead of recomputing the segment. Never raises:
+        a failure must not block the bucket move."""
+        if not (self._bucket_history.enabled and is_synthetic_hotkey(hotkey)
+                and self.miner_states[hotkey].current_phase.is_subaccount_earning):
+            return
+        try:
+            segment = self._bucket_history.get_live_segment(hotkey)
+            if segment is None:
+                self._reconcile_bucket_history([hotkey], current_time_ms)
+                segment = self._bucket_history.get_live_segment(hotkey)
+            if segment is None:
+                return
+            live = self._position_client.get_positions_for_one_hotkey(hotkey)
+            if self._bucket_history.write_positions(segment, live):
+                positions = self._bucket_history.read_positions(segment)
+            else:
+                positions = [p.to_dict() for p in live]
+            self._store_payout_record(segment, positions, current_time_ms)
+        except Exception as e:
+            logger.error(f"[BUCKET_HISTORY] could not record the payout of {hotkey}: {e}", exc_info=True)
+
+    def _store_payout_record(self, segment: BucketSegment, positions: list[dict], end_ms: int) -> bool:
+        record = self._entity_client.calculate_segment_payout_record(
+            segment.hotkey, segment.to_dict(), positions, end_ms)
+        if record is None:
+            logger.error(f"[BUCKET_HISTORY] no payout record could be calculated for {segment.hotkey} {segment.dir_name}")
+            return False
+        segment.payout_record = record
+        self._bucket_history.save_segment(segment)
+        logger.info(f"[BUCKET_HISTORY] payout record for {segment.hotkey} {segment.dir_name}: ${record['payout_usd']:.2f}")
+        return True
+
     def _record_bucket_stats(self, hotkeys: list[str], current_time_ms: int) -> None:
         """Append the day's drawdown and ProStats row to each hotkey's live segment, once per UTC day."""
         if not self._bucket_history.enabled:
@@ -1362,6 +1778,14 @@ class ChallengePeriodManager(CacheController):
             segment = self._bucket_history.get_live_segment(hotkey)
             if state is None or segment is None:
                 continue
+            if segment.payout_scale is None and is_synthetic_hotkey(hotkey):
+                # Captured here rather than when the segment opens: a segment can open inside an
+                # entity server call (subaccount creation), which must not be called back into
+                try:
+                    segment.payout_scale = self._entity_client.get_payout_scale(hotkey)
+                    self._bucket_history.save_segment(segment)
+                except Exception as e:
+                    logger.warning(f"[BUCKET_HISTORY] could not read the payout scale of {hotkey}: {e}")
             pro_stats = state.pro_stats
             try:
                 self._bucket_history.append_stats_row(segment, {
@@ -1424,6 +1848,43 @@ class ChallengePeriodManager(CacheController):
     def get_bucket_history_checkpoint_dict(self) -> dict:
         return self._bucket_history.to_checkpoint_dict()
 
+    def get_bucket_segments(self, hotkey: str) -> list[dict]:
+        """A miner's segment summaries, oldest first, without reverted ones."""
+        return [s.to_dict() for s in self._bucket_history.get_segments(hotkey) if s.reverted_ms is None]
+
+    def get_payout_records(self, hotkey: str) -> list[dict]:
+        return [{"bucket": s.bucket, "start_ms": s.start_ms, "end_ms": s.end_ms, "payout_record": s.payout_record}
+                for s in self._bucket_history.get_segments(hotkey)
+                if s.reverted_ms is None and s.payout_record is not None]
+
+    def admin_update_payout_record(self, hotkey: str, segment_start_ms: int, payout_usd: float | None = None,
+                                   remove: bool = False, recompute: bool = False) -> Tuple[bool, str, dict | None]:
+        """Correct a segment's payout record: amend its amount, drop it, or rebuild it from the
+        positions in the segment directory."""
+        segment = self._bucket_history.get_segment(hotkey, segment_start_ms)
+        if segment is None or segment.reverted_ms is not None:
+            return False, f"{hotkey} has no segment starting at {segment_start_ms}", None
+        if remove:
+            segment.payout_record = None
+        elif recompute:
+            if segment.end_ms is None or not BucketPhase.from_status(segment.bucket).is_subaccount_earning:
+                return False, f"{segment.dir_name} is not a closed earning segment", None
+            if not self._store_payout_record(segment, self._bucket_history.read_positions(segment), segment.end_ms):
+                return False, f"payout record for {segment.dir_name} could not be calculated", None
+        else:
+            record = segment.payout_record
+            if record is None:
+                return False, f"{segment.dir_name} has no payout record to amend", None
+            delta = payout_usd - record['payout_usd']
+            if record['settlements']:
+                record['settlements'][-1]['payout'] += delta
+            record['payout_usd'] = payout_usd
+            record['amended_ms'] = TimeUtil.now_in_millis()
+        logger.warning(f"[BUCKET_HISTORY] {hotkey} {segment.dir_name} payout record manually "
+                       f"{'removed' if remove else 'recomputed' if recompute else 'amended'}: {segment.payout_record}")
+        self._bucket_history.save_segment(segment)
+        return True, f"payout record for {segment.dir_name} updated", segment.payout_record
+
     def sync_bucket_history(self, checkpoint_dict: dict) -> dict:
         return self._bucket_history.sync_from_checkpoint(checkpoint_dict)
 
@@ -1450,9 +1911,11 @@ class ChallengePeriodManager(CacheController):
             logger.error('challenge_period_data appears invalid')
 
         logger.info("syncing challenge period data")
+        # Parsed before the swap, so data that fails to parse leaves the current states in place
+        parsed = self.parse_checkpoint_dict(miner_states_data)
         with self._buckets_lock:
             self.miner_states.clear()
-            self.miner_states.update(self.parse_checkpoint_dict(miner_states_data))
+            self.miner_states.update(parsed)
             self._save_to_disk()
         # Follow the synced bucket entries with the segments they describe
         self._reconcile_bucket_history(list(self.miner_states))
@@ -1623,7 +2086,8 @@ class ChallengePeriodManager(CacheController):
         """Overwrite drawdown fields on a miner's live stats and persist to disk.
 
         force is required for a change that deepens a drawdown
-        past its threshold, or that deepens a pro account's ratcheted max_drawdown.
+        past its threshold, or that deepens the ratcheted max_drawdown of a pro account or of an
+        auto-promotion candidate.
         """
         today_ms = TimeUtil.get_start_of_day_ms(now_ms if now_ms is not None else TimeUtil.now_in_millis())
         with self._buckets_lock:
@@ -1637,9 +2101,11 @@ class ChallengePeriodManager(CacheController):
             if 'last_eod_checked_ms' in updates and (
                     TimeUtil.get_start_of_day_ms(checked_ms) != checked_ms or checked_ms > today_ms):
                 return False, f"last_eod_checked_ms must be a UTC day boundary no later than today ({today_ms})", None
-            if {'daily_open_equity', 'last_eod_equity'} & updates.keys() and checked_ms != today_ms:
-                return False, ("daily_open_equity and last_eod_equity only hold for today: wait for today's "
-                               f"EOD snapshot or set last_eod_checked_ms to {today_ms}"), None
+            if {'daily_open_equity', 'daily_open_balance', 'last_eod_equity'} & updates.keys() and checked_ms != today_ms:
+                return False, ("daily_open_equity, daily_open_balance and last_eod_equity only hold for today: "
+                               f"wait for today's EOD snapshot or set last_eod_checked_ms to {today_ms}"), None
+            if 'daily_open_balance' in updates and old.daily_open_balance is None:
+                return False, f"{hotkey} measures its daily loss limit from daily_open_equity, not daily_open_balance", None
 
             eod_hwm_floor = max(1.0, new.last_eod_equity, new.daily_open_equity or 0.0)
             if new.eod_hwm < eod_hwm_floor:
@@ -1655,9 +2121,15 @@ class ChallengePeriodManager(CacheController):
                     if after > threshold and after > before:
                         return False, (f"{rule} drawdown would go from {before:.2f}% to {after:.2f}%, past the "
                                        f"{threshold:.2f}% threshold; pass force to apply"), None
-                if state.current_phase.is_pro_track and new.current_equity / new.eod_hwm < state.pro_stats.max_drawdown:
-                    return False, ("eod_hwm would permanently deepen pro max_drawdown "
-                                   f"({state.pro_stats.max_drawdown:.4f} -> {new.current_equity / new.eod_hwm:.4f}); pass force to apply"), None
+                if state.current_phase.is_pro_track:
+                    ratchet, name = state.pro_stats.max_drawdown, "pro max_drawdown"
+                elif hotkey in self._auto_promotion_candidates:
+                    ratchet, name = old.max_drawdown, "the auto-promotion max_drawdown"
+                else:
+                    ratchet = None
+                if ratchet is not None and new.current_equity / new.eod_hwm < ratchet:
+                    return False, (f"eod_hwm would permanently deepen {name} "
+                                   f"({ratchet:.4f} -> {new.current_equity / new.eod_hwm:.4f}); pass force to apply"), None
 
             changes = ", ".join(f"{name} {getattr(old, name)} -> {value}" for name, value in updates.items())
             for name, value in updates.items():

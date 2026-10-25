@@ -358,7 +358,45 @@ def test_the_transition_is_on_the_track_but_trades_the_standard_account():
     assert TRANSITION.switches_account is False
     assert FROM_STANDARD.switches_account is True
     # It leaves on the week boundary, not a time limit of its own
-    assert transition.max_time_ms is None
+    assert TRANSITION.bucket.max_time_ms is None
+
+
+def test_the_transition_keeps_the_funded_drawdown_limits():
+    for time_ms in (None, ValiConfig.FUNDED_V0_CUTOFF_MS - 1, ValiConfig.FUNDED_V1_CUTOFF_MS - 1):
+        assert (TRANSITION.intraday_drawdown_threshold(time_ms)
+                == MinerBucket.SUBACCOUNT_FUNDED.intraday_drawdown_threshold(time_ms))
+        assert (TRANSITION.eod_drawdown_threshold(time_ms)
+                == MinerBucket.SUBACCOUNT_FUNDED.eod_drawdown_threshold(time_ms))
+    assert FROM_STANDARD.intraday_drawdown_threshold() == ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
+
+
+def test_the_flag_is_dropped_outside_subaccount_funded():
+    """Only SUBACCOUNT_FUNDED has a transition, so the flag cannot leak onto another bucket."""
+    for bucket in MinerBucket:
+        if bucket != MinerBucket.SUBACCOUNT_FUNDED:
+            assert BucketPhase(bucket, in_transition=True).in_transition is False
+            assert BucketEntry(bucket, NOW_MS, in_transition=True).in_transition is False
+
+
+@pytest.mark.parametrize("legacy,bucket,in_transition", [
+    ("PRO_CHALLENGE_TRANSITION", MinerBucket.SUBACCOUNT_FUNDED, True),
+    ("PRO_CHALLENGE_FROM_STANDARD", MinerBucket.PRO_CHALLENGE_FUNDED, False),
+])
+def test_the_replaced_bucket_names_still_parse(legacy, bucket, in_transition):
+    """Checkpoints, disk state and ledger statuses written before the merge name the old buckets."""
+    assert MinerBucket(legacy) is bucket
+    entry = BucketEntry.from_dict({"bucket": legacy, "start_time_ms": NOW_MS})
+    assert entry.phase == BucketPhase(bucket, in_transition)
+    assert BucketPhase.from_status(legacy) == entry.phase
+    assert legacy in BucketPhase.statuses_of(bucket)
+
+
+def test_a_phase_round_trips_through_its_status():
+    for phase in (TRANSITION, FROM_STANDARD, MinerBucket.PRO_FUNDED.phase()):
+        assert BucketPhase.from_status(phase.status) == phase
+    assert TRANSITION.status != FROM_STANDARD.status
+    assert BucketPhase.from_status(None).bucket is MinerBucket.UNKNOWN
+    assert BucketPhase.from_status("NOT_A_BUCKET").bucket is MinerBucket.UNKNOWN
 
 
 def test_promotion_gate_thresholds():
@@ -394,6 +432,55 @@ def test_account_type_validation():
     assert AccountType.is_valid("standard") is True
     assert AccountType.is_valid("pro") is True
     assert AccountType.is_valid("nonsense") is False
+
+
+def test_the_miner_account_carries_the_transition_flag():
+    """The order path reads pro-ness off the MinerAccount, so the flag has to reach it, survive its
+    disk format, and be recovered from accounts saved under the old bucket names."""
+    from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
+
+    account = MinerAccount(miner_hotkey=HOTKEY, miner_bucket=MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
+    assert account.bucket_phase == TRANSITION
+    assert account.is_pro_bucket is False
+    assert MinerAccount(miner_hotkey=HOTKEY, miner_bucket=MinerBucket.PRO_CHALLENGE_FUNDED).is_pro_bucket is True
+
+    restored = MinerAccountManager._parse_accounts_dict({HOTKEY: [account.to_dict()]})[HOTKEY]
+    assert restored.bucket_phase == TRANSITION
+
+    for legacy, phase in (("PRO_CHALLENGE_TRANSITION", TRANSITION), ("PRO_CHALLENGE_FROM_STANDARD", FROM_STANDARD)):
+        record = {**account.to_dict(), "miner_bucket": legacy}
+        record.pop("in_transition")
+        assert MinerAccountManager._parse_accounts_dict({HOTKEY: [record]})[HOTKEY].bucket_phase == phase
+
+
+def test_instant_funded_records_and_requests_under_the_old_name_still_resolve():
+    from entity_management.entity_manager import SubaccountInfo
+    from entity_management.entity_utils import is_instant_funded, subaccount_creation_error
+
+    info = SubaccountInfo(subaccount_id=0, subaccount_uuid="u", synthetic_hotkey=f"{HOTKEY}_0",
+                          created_at_ms=NOW_MS, account_size=100_000.0, asset_class="forex",
+                          initial_bucket="PRO_CHALLENGE_FROM_STANDARD")
+    assert info.initial_bucket == MinerBucket.PRO_CHALLENGE_FUNDED.value
+    assert info.instant_funded is True
+    assert is_instant_funded("PRO_CHALLENGE_FROM_STANDARD") is True
+    assert subaccount_creation_error("PRO_CHALLENGE_FROM_STANDARD", 100_000, 500_000) is None
+    assert subaccount_creation_error(MinerBucket.PRO_CHALLENGE_FUNDED.value, 100_000, 500_000) is None
+
+
+def test_the_transition_is_listed_as_funded_and_the_pro_phase_as_a_challenge(manager):
+    manager.set_miner_bucket("in_transition", MinerBucket.SUBACCOUNT_FUNDED, NOW_MS, in_transition=True)
+    manager.set_miner_bucket("pro_phase", MinerBucket.PRO_CHALLENGE_FUNDED, NOW_MS)
+
+    assert set(manager.get_success_miners()) == {"in_transition"}
+    assert set(manager.get_testing_miners()) == {"pro_phase"}
+
+
+def test_the_account_sync_pushes_the_phase(manager):
+    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS, in_transition=True)
+
+    manager._sync_buckets_to_accounts([HOTKEY])
+
+    manager._miner_account_client.set_miner_buckets.assert_called_once_with({HOTKEY: TRANSITION})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -504,7 +591,7 @@ def test_only_midnight_checkpoints_set_the_high_water_mark():
     for cp in midday_cps:
         cp.equity_ret = 1.40  # a spike that never survives to a midnight latch
 
-    _, _, eod_hwm, _ = ChallengePeriodManager._parse_eod_checkpoints(
+    _, _, eod_hwm, _, _ = ChallengePeriodManager._parse_eod_checkpoints(
         ledger, LEDGER_START_MS + 3 * DAILY_MS)
 
     assert eod_hwm == pytest.approx(1.0)
@@ -1364,7 +1451,7 @@ def test_each_hop_moves_to_its_own_target(hop_manager, source, target):
     assert success, message
     assert hop_manager.miner_states[HOTKEY].current_phase == target
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, target.bucket, GRANTED_SIZE, in_transition=target.in_transition)
+        HOTKEY, target.bucket, GRANTED_SIZE, in_transition=target.in_transition, waive_promotion_fee=False)
 
 
 def test_an_omitted_size_is_passed_through_as_none(hop_manager):
@@ -1374,7 +1461,7 @@ def test_an_omitted_size_is_passed_through_as_none(hop_manager):
     assert hop_manager.promote_subaccount(HOTKEY, NOW_MS)[0]
 
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, None, in_transition=False
+        HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, None, in_transition=False, waive_promotion_fee=False
     )
 
 
@@ -1427,7 +1514,7 @@ def test_pro_funded_keeps_the_account_it_passed_on(hop_manager, challenge_bucket
     """
     _in_bucket(hop_manager, challenge_bucket)
 
-    assert hop_manager.promote_hotkeys([HOTKEY], NOW_MS)
+    assert hop_manager.promote_hotkeys({HOTKEY: challenge_bucket}, NOW_MS)
 
     assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_FUNDED
     hop_manager._position_client.close_all_positions.assert_called_once_with(
@@ -1576,11 +1663,11 @@ def test_organic_promotion_keeps_the_recorded_size(hop_manager):
     entity_manager, hotkey = _with_real_entity_manager(hop_manager)
     assert hop_manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
 
-    assert hop_manager.promote_hotkeys([hotkey], NOW_MS)
+    assert hop_manager.promote_hotkeys({hotkey: TRANSITION}, NOW_MS)
     assert hop_manager.miner_states[hotkey].current_phase == FROM_STANDARD
     assert entity_manager.get_subaccount_info_for_synthetic(hotkey).account_size == GRANTED_SIZE
 
-    assert hop_manager.promote_hotkeys([hotkey], NOW_MS + 1000)
+    assert hop_manager.promote_hotkeys({hotkey: FROM_STANDARD}, NOW_MS + 1000)
     assert hop_manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_FUNDED
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.pro_account_size == GRANTED_SIZE
