@@ -76,6 +76,11 @@ class BucketSegment:
     end_equity: Optional[float] = None
     final_drawdown: Optional[dict] = None
     final_pro_stats: Optional[dict] = None
+    # Subaccount payout scale when the segment opened, so a later resize cannot reprice it
+    payout_scale: Optional[float] = None
+    # What the segment was owed when it left an earning bucket (EntityManager.calculate_segment_payout_record).
+    # Pinned: the payout paths read it instead of recomputing the segment.
+    payout_record: Optional[dict] = None
 
     @property
     def key(self) -> tuple:
@@ -345,7 +350,8 @@ class BucketHistoryStore:
                     if was_live and run.end_ms is not None:
                         on_close(segment)
                     elif run.end_ms is None:
-                        # Reopened: the entry that ended it was undone
+                        # Reopened: the entry that ended it was undone, and so was its payout
+                        segment.payout_record = None
                         on_open(segment)
 
             segments.sort(key=lambda s: s.start_ms)

@@ -255,11 +255,11 @@ class EntityClient(RPCClientBase):
         """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
         return self._server.get_payout_scale_rpc(synthetic_hotkey)
 
-    def settle_wound_down_segment(
-        self, synthetic_hotkey: str, from_bucket: str, promotion_ms: int
-    ) -> bool:
-        """Settle this payout week's earnings before an account switch wipes the account."""
-        return self._server.settle_wound_down_segment_rpc(synthetic_hotkey, from_bucket, promotion_ms)
+    def calculate_segment_payout_record(
+        self, synthetic_hotkey: str, segment: dict, positions: list[dict], end_ms: int
+    ) -> Optional[dict]:
+        """What a bucket segment leaving an earning bucket is owed, from its own positions."""
+        return self._server.calculate_segment_payout_record_rpc(synthetic_hotkey, segment, positions, end_ms)
 
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
         """

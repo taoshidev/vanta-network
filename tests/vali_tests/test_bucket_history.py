@@ -9,8 +9,10 @@ GET /bucket-statistics/<minerid>.
     PRO_CHALLENGE_FUNDED) wipes the account: the closed positions are copied into the segment
     before the archive, and the next account starts with no positions.
   * Entering the transition keeps the account and stays in SUBACCOUNT_FUNDED; a hop that keeps the
-    account (-> PRO_FUNDED) carries the open positions over, and the next segment inherits the
-    account start.
+    account (-> PRO_FUNDED) closes the positions but keeps them on the account, and the next
+    segment inherits the account start.
+  * Leaving an earning bucket for any bucket but ELIMINATED pins a payout record on the segment,
+    computed from the positions copied into its directory.
   * The live state the statistics are computed from is unchanged: positions/ still only holds the
     current account, and archived_positions/ is still written.
 
@@ -223,7 +225,7 @@ def test_the_pro_track_carries_positions_except_across_the_transition_exit(manag
     pcf = _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T3)
     assert pcf.is_live and pcf.account_start_ms == T3
 
-    # The pro account trades, then passes: PRO_FUNDED keeps its positions
+    # The pro account trades, then passes: PRO_FUNDED closes the positions but keeps the account
     manager._position_client.add(_position("pro_open", T4))
     archived_before = len(manager._position_client.archived[HOTKEY])
     assert manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_FUNDED, T5)[0]
@@ -365,6 +367,151 @@ def test_a_synced_challenge_period_builds_its_segments(manager):
         ("SUBACCOUNT_CHALLENGE", T1, True),
         ("SUBACCOUNT_FUNDED", None, False),
     ]
+
+
+# ── Payout records ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def subaccount(manager):
+    """The manager with HOTKEY treated as a subaccount and the entity's record calculation stubbed:
+    the record pays 10 per position it was handed."""
+    calls = []
+
+    def _record(hotkey, segment, positions, end_ms):
+        calls.append((segment["bucket"], sorted(p["position_uuid"] for p in positions), end_ms))
+        payout = 10.0 * len(positions)
+        return {"computed_ms": end_ms, "end_ms": end_ms, "payout_usd": payout, "gross_payout_usd": payout,
+                "settlements": [{"start_ms": segment["start_ms"], "end_ms": end_ms, "payout": payout}],
+                "amended_ms": None}
+
+    manager._entity_client.calculate_segment_payout_record.side_effect = _record
+    manager._entity_client.apply_bucket_account_size.return_value = (True, "")
+    with patch("vali_objects.challenge_period.challengeperiod_manager.is_synthetic_hotkey", return_value=True):
+        yield manager, calls
+
+
+def test_leaving_an_earning_bucket_pins_a_payout_record(subaccount):
+    manager, calls = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, T1)
+    manager._position_client.add(_position("standard_open", T1 + 1))
+    assert manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, T2, in_transition=True)[0]
+    assert calls == []  # the transition stays in the segment
+
+    assert manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T3)[0]
+    manager._position_client.add(_position("pro_open", T4))
+    assert manager.promote_hotkeys([HOTKEY], T5)
+
+    # Each record is computed from the positions copied into its own segment directory
+    assert calls == [("SUBACCOUNT_FUNDED", ["standard_open"], T3), ("PRO_CHALLENGE_FUNDED", ["pro_open"], T5)]
+    assert _segment(manager, MinerBucket.SUBACCOUNT_FUNDED, T1).payout_record["payout_usd"] == 10.0
+    assert _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T3).payout_record["end_ms"] == T5
+    assert _segment(manager, MinerBucket.PRO_FUNDED, T5).payout_record is None
+
+
+def test_elimination_writes_no_payout_record(subaccount):
+    manager, calls = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_FUNDED, T1)
+    manager._position_client.add(_position("open", T1 + 1))
+
+    assert manager.admin_set_bucket(HOTKEY, MinerBucket.ELIMINATED, T2)[0]
+
+    assert calls == []
+    assert _segment(manager, MinerBucket.PRO_FUNDED, T1).payout_record is None
+
+
+def test_a_failed_record_does_not_block_the_move(subaccount):
+    manager, _ = subaccount
+    manager._entity_client.calculate_segment_payout_record.side_effect = None
+    manager._entity_client.calculate_segment_payout_record.return_value = None
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
+
+    assert manager.promote_hotkeys([HOTKEY], T2)
+
+    assert manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_FUNDED
+    assert _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T1).payout_record is None
+
+
+def test_a_reopened_segment_drops_its_record(subaccount):
+    manager, _ = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, T1)
+    assert manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_ALPHA, T2)[0]
+    assert _segment(manager, MinerBucket.SUBACCOUNT_FUNDED, T1).payout_record is not None
+
+    manager.miner_states[HOTKEY].pop_bucket_entry(MinerBucket.SUBACCOUNT_ALPHA)
+    manager._reconcile_bucket_history([HOTKEY], T3)
+
+    funded = _segment(manager, MinerBucket.SUBACCOUNT_FUNDED, T1)
+    assert funded.is_live and funded.payout_record is None
+
+
+def test_the_record_rides_the_checkpoint(subaccount):
+    manager, _ = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
+    assert manager.promote_hotkeys([HOTKEY], T2)
+    checkpoint = json.loads(json.dumps(manager.get_bucket_history_checkpoint_dict()))
+
+    manager._bucket_history.clear_for_test()
+    manager._bucket_history.sync_from_checkpoint(checkpoint)
+
+    assert _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T1).payout_record["end_ms"] == T2
+    assert [r["start_ms"] for r in manager.get_payout_records(HOTKEY)] == [T1]
+
+
+def test_admin_amends_removes_and_recomputes_a_record(subaccount):
+    manager, calls = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
+    manager._position_client.add(_position("pro_open", T1 + 1))
+    assert manager.promote_hotkeys([HOTKEY], T2)
+    segment = _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
+
+    ok, _, record = manager.admin_update_payout_record(HOTKEY, T1, payout_usd=25.0)
+    assert ok and record["payout_usd"] == 25.0 and record["amended_ms"] is not None
+    assert sum(row["payout"] for row in record["settlements"]) == 25.0
+
+    assert manager.admin_update_payout_record(HOTKEY, T1, remove=True)[0]
+    assert segment.payout_record is None
+    assert manager.admin_update_payout_record(HOTKEY, T1, payout_usd=1.0)[0] is False
+
+    ok, _, record = manager.admin_update_payout_record(HOTKEY, T1, recompute=True)
+    assert ok and record["payout_usd"] == 10.0
+    assert calls[-1] == ("PRO_CHALLENGE_FUNDED", ["pro_open"], T2)
+
+    # The live segment cannot be recomputed, and an unknown one is not found
+    assert manager.admin_update_payout_record(HOTKEY, T2, recompute=True)[0] is False
+    assert manager.admin_update_payout_record(HOTKEY, T0, remove=True)[0] is False
+
+
+@pytest.fixture
+def payout_rest():
+    server = object.__new__(ValidatorRestServer)
+    server._get_api_key_safe = MagicMock(return_value="key")
+    server.is_valid_api_key = MagicMock(return_value=True)
+    server.can_access_tier = MagicMock(return_value=True)
+    server._challenge_period_client = MagicMock()
+    server._challenge_period_client.get_payout_records.return_value = [{"start_ms": T1}]
+    server._challenge_period_client.admin_update_payout_record.return_value = (True, "updated", {})
+    app = Flask(__name__)
+    app.route("/admin/payout-record/<hotkey>", methods=["GET"])(server.get_payout_records)
+    app.route("/admin/payout-record/<hotkey>", methods=["POST"])(server.update_payout_record)
+    return server, app.test_client()
+
+
+def test_rest_payout_record_actions(payout_rest):
+    server, client = payout_rest
+    assert client.get(f"/admin/payout-record/{HOTKEY}").get_json()["payout_records"] == [{"start_ms": T1}]
+    update = server._challenge_period_client.admin_update_payout_record
+    for query, args in ((f"payout_usd=12.5", (12.5, False, False)), ("remove=true", (None, True, False)),
+                        ("recompute=true", (None, False, True))):
+        assert client.post(f"/admin/payout-record/{HOTKEY}?segment_start_ms={T1}&{query}").status_code == 200
+        update.assert_called_with(HOTKEY, T1, *args)
+
+
+@pytest.mark.parametrize("query", ["payout_usd=1", f"segment_start_ms={T1}", f"segment_start_ms={T1}&payout_usd=-1",
+                                   f"segment_start_ms={T1}&payout_usd=1&remove=true"])
+def test_rest_payout_record_rejects_bad_params(payout_rest, query):
+    server, client = payout_rest
+    assert client.post(f"/admin/payout-record/{HOTKEY}?{query}").status_code == 400
+    server._challenge_period_client.admin_update_payout_record.assert_not_called()
 
 
 # ── REST ──────────────────────────────────────────────────────────────────────

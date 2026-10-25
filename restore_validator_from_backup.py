@@ -3,7 +3,7 @@ Restore validator state from a validator checkpoint (validator_checkpoint.json[.
 
 The restore overwrites everything the checkpoint covers: positions, archived positions, limit
 orders, eliminations, perf ledgers, debt/emissions/penalty ledgers, challenge period, miner
-accounts, asset selections, entities and weekly seals. Each service's manager is created in-process
+accounts, asset selections, entities and bucket history. Each service's manager is created in-process
 in LOCAL mode with no RPC servers, so a running validator's ports are never touched. Never run this against the mothership.
 
 Always writes to validation/. Stop the validator before running.
@@ -26,7 +26,6 @@ from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_manager import PerfLedgerManager
-from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import WeeklySealLedger
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
 from entity_management.entity_manager import EntityManager
 import logging
@@ -78,7 +77,7 @@ def clear_restore_targets():
     """
     Delete the state the checkpoint replaces, so each manager starts empty and the result matches
     the checkpoint exactly. Several syncs merge into existing state (challenge period, entities,
-    weekly seals), so clearing first is what makes the restore an overwrite.
+    bucket history), so clearing first is what makes the restore an overwrite.
     """
     miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=RUNNING_UNIT_TESTS)
     if os.path.exists(miner_dir):
@@ -97,7 +96,6 @@ def clear_restore_targets():
         ValiBkpUtils.get_miner_account_sizes_file_location(rut),
         ValiBkpUtils.get_asset_selections_file_location(rut),
         ValiBkpUtils.get_entity_file_location(rut),
-        ValiBkpUtils.get_weekly_seal_ledger_file_location(rut),
     ):
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -203,10 +201,6 @@ def regenerate_miner_positions():
     entities = data.get('entities', {})
     logger.info(f"syncing {len(entities)} entity records")
     EntityManager(**kwargs).sync_entity_data(entities)
-
-    weekly_seals = data.get('weekly_seals', {})
-    logger.info("syncing weekly seal records")
-    WeeklySealLedger(running_unit_tests=RUNNING_UNIT_TESTS).sync_from_checkpoint(weekly_seals)
 
     # Penalty and emissions ledgers are owned by the debt ledger manager
     debt_ledger_manager = DebtLedgerManager(**kwargs)

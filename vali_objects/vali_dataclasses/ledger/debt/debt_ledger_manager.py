@@ -9,7 +9,7 @@ from typing import Dict, Optional
 
 from time_util.time_util import TimeUtil
 from vali_objects.utils.vali_bkp_utils import CustomEncoder, ValiBkpUtils
-from vali_objects.vali_config import RPCConnectionMode
+from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import (
     DebtLedger,
     DebtCheckpoint,
@@ -114,11 +114,6 @@ class DebtLedgerManager():
             validator_hotkey=validator_hotkey
         )
 
-        # Survives every ledger rebuild and every ledger deletion; it is what makes a closed payout
-        # week reproduce the same paid/withheld decision no matter what else is recomputed.
-        # Built lazily by the property below so a partially constructed manager still works.
-        self._weekly_seal_ledger = None
-
         self.slack_notifier = SlackNotifier(webhook_url=slack_webhook_url, hotkey=validator_hotkey)
         self.running_unit_tests = running_unit_tests
         self.is_mainnet = is_mainnet
@@ -129,6 +124,7 @@ class DebtLedgerManager():
 
         # Load from disk on startup
         self.load_data_from_disk()
+        self._remove_retired_weekly_seal_ledger()
 
     @property
     def contract_manager(self):
@@ -175,7 +171,6 @@ class DebtLedgerManager():
         if not entity_utils.is_synthetic_hotkey(hotkey):
             logger.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only subaccount (synthetic) hotkeys can have their ledgers deleted")
             return False
-        # NOTE: weekly_seal_ledger is deliberately untouched.
         self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
         if hotkey in self.debt_ledgers:
             del self.debt_ledgers[hotkey]
@@ -184,109 +179,29 @@ class DebtLedgerManager():
             return True
         return False
 
-    @property
-    def weekly_seal_ledger(self):
-        """The settled-week record, built on first use.
+    def _remove_retired_weekly_seal_ledger(self) -> None:
+        """The weekly seal ledger was replaced by the soft-breach weeks on ProStats and the payout
+        records on bucket segments. Its file is dropped, not migrated."""
+        path = (ValiConfig.BASE_DIR + ValiBkpUtils.get_test_dir_suffix(self.running_unit_tests)
+                + "/validation/weekly_seal_ledger.json.gz")
+        if os.path.exists(path):
+            os.remove(path)
+            logger.info(f"[DEBT_LEDGER] Removed the retired weekly seal ledger {path}")
 
-        Lazy so a manager assembled without __init__ (unit tests, one-off tooling) still reaches a
-        working seal ledger rather than an AttributeError in the middle of aggregation.
-        """
-        existing = getattr(self, '_weekly_seal_ledger', None)
-        if existing is None:
-            from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import WeeklySealLedger
-            existing = WeeklySealLedger(running_unit_tests=getattr(self, 'running_unit_tests', False))
-            self._weekly_seal_ledger = existing
-        return existing
-
-    def _seal_closed_weeks(self, subaccount_ledgers: list, subaccount_payout_scale: dict) -> None:
-        """Pin the classification of every payout week that has closed.
-
-        The context is computed fresh here on purpose: `seal` refuses to overwrite a week that is
-        already settled and logs when the fresh values disagree, which is how a rebuild that would
-        have rewritten history announces itself instead of doing it silently.
-        """
-        current_week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
-        newly_sealed = 0
-        for synthetic_hotkey, ledger in subaccount_ledgers:
-            context = ledger.weekly_payout_context(subaccount_payout_scale.get(synthetic_hotkey, 1.0))
-            for week_start_ms, week in context.items():
-                if week_start_ms >= current_week_start_ms:
-                    continue
-                if self.weekly_seal_ledger.seal(
-                    synthetic_hotkey,
-                    week_start_ms,
-                    weekly_penalty=week.weekly_penalty,
-                    payout_scale=week.payout_scale,
-                    track=week.track.name,
-                    first_earning_ms=week.first_earning_ms,
-                ):
-                    newly_sealed += 1
-
-        if newly_sealed:
-            self.weekly_seal_ledger.save_to_disk()
-            logger.info(f"[DEBT_LEDGER] Sealed {newly_sealed} newly closed payout weeks")
-
-    def get_sealed_weeks(self, hotkey: str) -> dict:
-        """Sealed payout weeks for one hotkey, keyed by Monday 00:00 UTC."""
-        return self.weekly_seal_ledger.get_sealed(hotkey)
-
-    def unseal_week(self, hotkey: str, week_start_ms: int) -> bool:
-        """Drop one sealed week so the next build reseals it. Deliberate corrections only."""
-        return self.weekly_seal_ledger.unseal(hotkey, week_start_ms)
-
-    def record_settled_segment(
-        self,
-        hotkey: str,
-        week_start_ms: int,
-        segment_start_ms: int,
-        segment_end_ms: int,
-        bucket: str,
-        payout_usd: float,
-        gross_payout_usd: float,
-        weekly_penalty: float,
-        payout_scale: float,
-    ) -> bool:
-        """Pin a payout settled early by an account switch.
-
-        Write-once on (hotkey, week_start_ms, bucket) so a retried switch cannot settle the same
-        week twice.
-        """
-        return self.weekly_seal_ledger.record_settled(
-            hotkey,
-            week_start_ms=week_start_ms,
-            segment_start_ms=segment_start_ms,
-            segment_end_ms=segment_end_ms,
-            bucket=bucket,
-            payout_usd=payout_usd,
-            gross_payout_usd=gross_payout_usd,
-            weekly_penalty=weekly_penalty,
-            payout_scale=payout_scale,
-        )
-
-    def get_settled_segments(self, hotkey: str) -> list:
-        """Segments settled early for one hotkey, oldest first."""
-        return self.weekly_seal_ledger.get_settled(hotkey)
-
-    def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
-        """Correct a settled segment's amount. Deliberate corrections only."""
-        return self.weekly_seal_ledger.amend_settled(hotkey, segment_end_ms, payout_usd)
-
-    def remove_settled_segment(self, hotkey: str, segment_end_ms: int) -> bool:
-        """Drop a settled segment entirely. Deliberate corrections only."""
-        return self.weekly_seal_ledger.remove_settled(hotkey, segment_end_ms)
-
-    def get_weekly_seals_checkpoint_dict(self) -> dict:
-        """Every sealed week and settled segment, JSON-ready, for the validator checkpoint."""
-        return self.weekly_seal_ledger.to_checkpoint_dict()
-
-    def sync_weekly_seals(self, weekly_seals_dict: dict) -> dict:
-        """Merge the checkpoint's seal records so validators agree on what was sealed."""
-        return self.weekly_seal_ledger.sync_from_checkpoint(weekly_seals_dict)
-
-    def clear_weekly_seals_for_test(self) -> bool:
-        """Drop every seal record, in memory and on disk. Unit tests only."""
-        self.weekly_seal_ledger.clear_for_test()
-        return True
+    @staticmethod
+    def _checkpoint_segment(segments: list, timestamp_ms: int, cp_duration_ms: int) -> tuple:
+        """(index of the segment a checkpoint pays into, covered). covered is True when the
+        checkpoint's window touches a segment already paid by its payout record."""
+        index, covered = None, False
+        window_start_ms = timestamp_ms - cp_duration_ms
+        for i, segment in enumerate(segments):
+            if segment['start_ms'] >= timestamp_ms:
+                break
+            index = i
+            record = segment.get('payout_record')
+            if record and window_start_ms < (segment.get('end_ms') or record['end_ms']):
+                covered = True
+        return index, covered
 
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
         dashboard: dict | None = None
@@ -935,6 +850,12 @@ class DebtLedgerManager():
 
             _earning_statuses = {status for b in MinerBucket if b.is_subaccount_earning
                                  for status in BucketPhase.statuses_of(b)}
+            # Every subaccount's bucket segments: where each starts, and the payout records of those
+            # that left an earning bucket
+            all_segments = {
+                hotkey: [s for s in segments if s.get('reverted_ms') is None]
+                for hotkey, segments in (self._challengeperiod_client.get_bucket_history_checkpoint_dict() or {}).items()
+            }
 
             # Get frozen perf ledgers and convert to debt ledgers grouped by entity
             # Manually conver them to debt ledger checkpoints to reuse realized hwm gated emissions
@@ -1009,8 +930,7 @@ class DebtLedgerManager():
                     continue
 
                 # Built over every subaccount rather than only the active ones. An eliminated
-                # subaccount still reaches this aggregation through its frozen ledger, and its
-                # closed weeks get sealed below;
+                # subaccount still reaches this aggregation through its frozen ledger
                 subaccount_payout_scale = {}
                 for subaccount in entity_data.get('subaccounts', {}).values():
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
@@ -1078,41 +998,40 @@ class DebtLedgerManager():
                 subaccount_cum_realized = {hk: 0.0 for hk, _ in subaccount_ledgers}
                 subaccount_hwm = {hk: 0.0 for hk, _ in subaccount_ledgers}
                 subaccount_escrow = {hk: 0.0 for hk, _ in subaccount_ledgers}
-                # cumulative_fees_usd runs from ledger inception, but cum_realized only starts
-                # accumulating at the first earning checkpoint. Without a baseline, a subaccount
-                # that ran a pro challenge on this account would have the challenge's fees
-                # subtracted from its funded earnings.
-                subaccount_fee_baseline = {
-                    hk: ledger.fee_baseline_at_first_earning() for hk, ledger in subaccount_ledgers
-                }
+                # Each checkpoint pays into the bucket segment it falls in. The realized PnL, the high
+                # water mark, the escrow and the fee baseline (cumulative_fees_usd runs from ledger
+                # inception) all restart at a new segment, so nothing earned in an earlier bucket is
+                # paid again. A segment with a payout record is paid from the record instead.
+                subaccount_segments = {hk: all_segments.get(hk, []) for hk, _ in subaccount_ledgers}
+                subaccount_segment_index = {hk: -1 for hk, _ in subaccount_ledgers}
+                subaccount_prev_fees = {hk: 0.0 for hk, _ in subaccount_ledgers}
+                subaccount_fee_baseline = {hk: 0.0 for hk, _ in subaccount_ledgers}
+                for hk, segments in subaccount_segments.items():
+                    live = next((seg for seg in reversed(segments) if seg.get('end_ms') is None), None)
+                    if live and live.get('payout_scale') is not None:
+                        # The scale the live segment opened with, so a resize cannot reprice it
+                        subaccount_payout_scale[hk] = live['payout_scale']
 
-                # Payouts settled early because an account switch was about to wipe the account
-                # they were traded on.
-                pending_settled = {}
+                # Payout record rows, (end_ms, payout) oldest first, drained into their own week
+                pending_records = {}
                 for subaccount in entity_data.get('subaccounts', {}).values():
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
-                    if not synthetic_hotkey:
-                        continue
-                    segments = self.weekly_seal_ledger.get_settled(synthetic_hotkey)
-                    if segments:
-                        pending_settled[synthetic_hotkey] = segments
-
-                # Pin every week that has already closed before reading the context back, so the
-                # decision this build would make becomes the settled one exactly once.
-                self._seal_closed_weeks(subaccount_ledgers, subaccount_payout_scale)
+                    rows = sorted(
+                        (row['end_ms'], row['payout'])
+                        for seg in all_segments.get(synthetic_hotkey, []) if seg.get('payout_record')
+                        for row in seg['payout_record']['settlements']
+                    )
+                    if rows:
+                        pending_records[synthetic_hotkey] = rows
 
                 # Widen each subaccount's weekly penalty across its whole payout week: a breach is
                 # only stamped on the breaching checkpoint, so the worst value in a week governs it.
-                # Sealed weeks come back verbatim rather than recomputed.
                 subaccount_week_context = {
-                    synthetic_hotkey: ledger.weekly_payout_context(
-                        subaccount_payout_scale.get(synthetic_hotkey, 1.0),
-                        sealed=self.weekly_seal_ledger.get_sealed(synthetic_hotkey),
-                    )
+                    synthetic_hotkey: ledger.weekly_payout_context(subaccount_payout_scale.get(synthetic_hotkey, 1.0))
                     for synthetic_hotkey, ledger in subaccount_ledgers
                 }
-                # A week with no checkpoints of its own has no sealed ratio to honor, so it falls
-                # back to the account's current one rather than to an unscaled 1.0.
+                # A week with no checkpoints of its own falls back to the account's current ratio
+                # rather than to an unscaled 1.0.
                 subaccount_default_week = {
                     synthetic_hotkey: WeeklyPayoutContext(
                         payout_scale=subaccount_payout_scale.get(synthetic_hotkey, 1.0)
@@ -1133,7 +1052,20 @@ class DebtLedgerManager():
                             checkpoint = ledger.get_checkpoint_at_time(timestamp_ms, target_cp_duration_ms)
                         except ValueError as e:
                             raise ValueError(f"[hotkey={synthetic_hotkey}] {e}") from e
+                        prev_fees = subaccount_prev_fees[synthetic_hotkey]
+                        if checkpoint:
+                            subaccount_prev_fees[synthetic_hotkey] = checkpoint.cumulative_fees_usd
                         if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
+                            segment_index, covered = self._checkpoint_segment(
+                                subaccount_segments[synthetic_hotkey], timestamp_ms, target_cp_duration_ms)
+                            if covered:
+                                continue
+                            if segment_index != subaccount_segment_index[synthetic_hotkey]:
+                                subaccount_segment_index[synthetic_hotkey] = segment_index
+                                subaccount_cum_realized[synthetic_hotkey] = 0.0
+                                subaccount_hwm[synthetic_hotkey] = 0.0
+                                subaccount_escrow[synthetic_hotkey] = 0.0
+                                subaccount_fee_baseline[synthetic_hotkey] = prev_fees
                             checkpoints_at_time.append(checkpoint)
                             week = subaccount_week_context[synthetic_hotkey].get(
                                 week_start_ms, subaccount_default_week[synthetic_hotkey]
@@ -1169,11 +1101,8 @@ class DebtLedgerManager():
 
                                 # Price the delta at the scale in force at *this* checkpoint, not
                                 # the week's: a subaccount promoting mid-week trades part of it on
-                                # the standard payout basis and the rest on the pro one. The ratio
-                                # comes from the week rather than the live map so that a sealed
-                                # week keeps paying at the ratio it settled at even after the
-                                # account is resized; the per-checkpoint bucket gate still decides
-                                # whether it applies at all.
+                                # the standard payout basis and the rest on the pro one. The
+                                # per-checkpoint bucket gate decides whether the ratio applies.
                                 scale = DebtLedger.checkpoint_payout_scale(
                                     checkpoint, week.payout_scale
                                 )
@@ -1192,15 +1121,17 @@ class DebtLedgerManager():
                                 if week.track is WeekTrack.ON_TRACK:
                                     subaccount_escrow[synthetic_hotkey] += owed - earned
 
-                    # Drain every segment settled at or before this checkpoint. These are already
+                    # Drain every payout record row ending at or before this checkpoint. These are
                     # settled dollars - scaled, penalized and past their high water mark - so they
-                    # are added to the aggregate as-is rather than run back through the HWM above.
-                    for segments in pending_settled.values():
-                        while segments and segments[0].segment_end_ms <= timestamp_ms:
-                            settled_pending_usd += segments.pop(0).payout_usd
+                    # are added as-is. A row from an earlier week was already paid in that week.
+                    for rows in pending_records.values():
+                        while rows and rows[0][0] <= timestamp_ms:
+                            row_end_ms, payout = rows.pop(0)
+                            if TimeUtil.ms_at_start_of_week(row_end_ms - 1) == week_start_ms:
+                                settled_pending_usd += payout
 
                     # An aggregated checkpoint is built out of the subaccount checkpoints at this
-                    # timestamp and cannot be synthesized without them. A settled segment drained
+                    # timestamp and cannot be synthesized without them. A record row drained
                     # into a skipped slot therefore stays pending and lands on the next checkpoint
                     # that is emitted, which keeps it inside the payout week it was earned in.
                     if not checkpoints_at_time:
@@ -1281,15 +1212,15 @@ class DebtLedgerManager():
 
                     aggregated_checkpoints.append(aggregated_checkpoint)
 
-                # A segment settled after the last checkpoint has nowhere to land yet. It is not
-                # lost: this aggregation is rebuilt from the seal ledger on every build, so the
-                # next one places it once a checkpoint exists past the switch.
+                # A record row ending after the last checkpoint has nowhere to land yet. It is not
+                # lost: this aggregation is rebuilt from the bucket segments on every build, so the
+                # next one places it once a checkpoint exists past the row.
                 leftover = settled_pending_usd + sum(
-                    segment.payout_usd for segments in pending_settled.values() for segment in segments
+                    payout for rows in pending_records.values() for _, payout in rows
                 )
                 if leftover:
                     logger.info(
-                        f"Entity {entity_hotkey} has ${leftover:.2f} of settled segments past its "
+                        f"Entity {entity_hotkey} has ${leftover:.2f} of payout records past its "
                         f"last checkpoint; they will be aggregated once checkpoints catch up"
                     )
 
