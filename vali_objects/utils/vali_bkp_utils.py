@@ -328,11 +328,6 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entities.json"
 
     @staticmethod
-    def get_weekly_seal_ledger_file_location(running_unit_tests=False) -> str:
-        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/weekly_seal_ledger.json.gz"
-
-    @staticmethod
     def get_entity_collateral_cache_file_location(running_unit_tests=False) -> str:
         suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entity_collateral_cache.json"

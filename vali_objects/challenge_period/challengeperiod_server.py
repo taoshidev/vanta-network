@@ -220,6 +220,16 @@ class ChallengePeriodServer(RPCServerBase):
     def sync_bucket_history_rpc(self, checkpoint_dict: dict) -> dict:
         return self._manager.sync_bucket_history(checkpoint_dict)
 
+    def get_bucket_segments_rpc(self, hotkey: str) -> list[dict]:
+        return self._manager.get_bucket_segments(hotkey)
+
+    def get_payout_records_rpc(self, hotkey: str) -> list[dict]:
+        return self._manager.get_payout_records(hotkey)
+
+    def admin_update_payout_record_rpc(self, hotkey: str, segment_start_ms: int, payout_usd: float | None = None,
+                                       remove: bool = False, recompute: bool = False) -> Tuple[bool, str, dict | None]:
+        return self._manager.admin_update_payout_record(hotkey, segment_start_ms, payout_usd, remove, recompute)
+
     def get_drawdown_snapshot_fields_rpc(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
         return self._manager.get_drawdown_snapshot_fields(hotkeys)
 

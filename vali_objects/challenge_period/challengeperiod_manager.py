@@ -109,14 +109,15 @@ class ProStats:
     daily_consistency: float = 1.0
     max_drawdown: float = 1.0  # Monotonic all-time worst drawdown, in mdd ratio form
     trading_days: int = 0  # Full days of tracked returns on this account
-    # UTC day starts (ms) on which calmar was broken at any point. Calmar is evaluated every
-    # refresh but only persisted onto 12h checkpoints, so a breach that heals inside a checkpoint
-    # would never withhold the week. Latching the day makes the weekly defer decision read
-    # "breached at any point when checked".
-    soft_breach_days: list[int] = field(default_factory=list)
+    # Payout week start (Monday 00:00 UTC) -> UTC day starts on which calmar was broken at any
+    # refresh. Every week checked in a soft-breach bucket has a key, so an empty list is a clean
+    # week. Never pruned: this is the record that decides whether a closed week was withheld.
+    soft_breach_weeks: dict[int, list[int]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d['soft_breach_weeks'] = {str(week): days for week, days in self.soft_breach_weeks.items()}
+        return d
 
     @classmethod
     def from_dict(cls, d: dict | None) -> 'ProStats':
@@ -124,9 +125,12 @@ class ProStats:
             return cls()
         valid_keys = {f.name for f in fields(cls)}
         parsed = {k: v for k, v in d.items() if k in valid_keys and v is not None}
-        if 'soft_breach_days' in parsed:
-            parsed['soft_breach_days'] = sorted({int(day) for day in parsed['soft_breach_days']})
+        parsed['soft_breach_weeks'] = {int(week): sorted({int(day) for day in days})
+                                       for week, days in (parsed.get('soft_breach_weeks') or {}).items()}
         return cls(**parsed)
+
+    def breach_days(self, week_start_ms: int) -> list[int]:
+        return self.soft_breach_weeks.get(week_start_ms, [])
 
 
 @dataclass
@@ -324,33 +328,30 @@ class MinerBucketState:
         return self.pro_stats.calmar < bucket.calmar_threshold
 
     def latch_soft_breach(self, current_time_ms: int) -> bool:
-        """Record today as breached when a pro rule is currently broken.
+        """Record the current week as checked, and today as breached when a pro rule is broken.
 
         Calmar moves every refresh but is only persisted onto 12h checkpoints, so a breach that
         opens and heals between two checkpoints would never reach the payout. Latching the UTC day
         makes the weekly decision read "breached at any point when checked".
 
-        Returns True when a new day was latched (the caller must persist the state).
+        Returns True when anything was recorded (the caller must persist the state).
         """
-        if not self.soft_breach:
+        if not self.current_bucket.soft_breach_applies:
             return False
-
-        latched = self.pro_stats.soft_breach_days
+        weeks = self.pro_stats.soft_breach_weeks
+        week_ms = TimeUtil.ms_at_start_of_week(current_time_ms)
+        changed = week_ms not in weeks
+        days = weeks.setdefault(week_ms, [])
         day_ms = TimeUtil.get_start_of_day_ms(current_time_ms)
-        if latched and latched[-1] == day_ms:
-            return False
-        if day_ms in latched:
-            return False
-
-        latched.append(day_ms)
-        latched.sort()
-        cutoff_ms = day_ms - ValiConfig.PRO_SOFT_BREACH_LATCH_RETENTION_DAYS * ValiConfig.DAILY_MS
-        self.pro_stats.soft_breach_days = [d for d in latched if d >= cutoff_ms]
-        return True
+        if self.soft_breach and day_ms not in days:
+            days.append(day_ms)
+            days.sort()
+            changed = True
+        return changed
 
     def is_soft_breach_latched(self, day_ms: int) -> bool:
         """True when the UTC day starting at day_ms was latched as breached."""
-        return day_ms in self.pro_stats.soft_breach_days
+        return day_ms in self.pro_stats.breach_days(TimeUtil.ms_at_start_of_week(day_ms))
 
 
 
@@ -798,8 +799,6 @@ class ChallengePeriodManager(CacheController):
         self._miner_account_client.reset_account(hotkey, target.bucket, in_transition=target.in_transition)
         # Archive all positions (disk move + memory removal)
         self._position_client.archive_positions_for_hotkey(hotkey, archive_all=True)
-        # Cancel all pending limit orders
-        self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
         # Wipe perf ledgers so the new account's performance is tracked from scratch
         self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey])
         # Delete debt ledger to match new perf ledger checkpoints
@@ -812,6 +811,26 @@ class ChallengePeriodManager(CacheController):
         self.miner_states[hotkey].pro_stats = ProStats()
         return True
 
+    def _close_out_account(self, hotkey: str, current_time_ms: int) -> None:
+        """Close every position and cancel every limit order, leaving the account and its history."""
+        self._position_client.close_all_positions(
+            hotkey=hotkey,
+            close_time_ms=current_time_ms,
+            order_source=OrderSource.SUBACCOUNT_PROMOTION
+        )
+        self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
+
+    def _leave_phase(self, hotkey: str, target: BucketPhase, current_time_ms: int) -> bool:
+        """Wind down what the miner is leaving for target: a full account switch, or just closing
+        the positions on a move into or out of an earning bucket that keeps the account. False when
+        the switch failed."""
+        if target.switches_account:
+            return self._switch_account(hotkey, target, current_time_ms)
+        if target.closes_positions_from(self.miner_states[hotkey].current_phase):
+            self._close_out_account(hotkey, current_time_ms)
+            self._record_segment_payout(hotkey, current_time_ms)
+        return True
+
     def demote_hotkeys(self, demotions: dict[str, MinerBucket], current_time_ms) -> bool:
         """Demote miners to the given target bucket."""
         if demotions:
@@ -822,7 +841,7 @@ class ChallengePeriodManager(CacheController):
             logger.info(f"[CHALLENGE] demoting to {target_bucket.value}: {self.miner_states[hotkey]}")
 
             # Leave the miner where they are when the account switch fails; the next refresh retries
-            if target_bucket.switches_account and not self._switch_account(hotkey, target_bucket.phase(), current_time_ms):
+            if not self._leave_phase(hotkey, target_bucket.phase(), current_time_ms):
                 continue
 
             with self._buckets_lock:
@@ -846,7 +865,7 @@ class ChallengePeriodManager(CacheController):
             logger.info(f"[CHALLENGE] promoting to {target}: {state}")
 
             # Leave the miner where they are when the account switch fails; the next refresh retries
-            if target.switches_account and not self._switch_account(hotkey, target, current_time_ms):
+            if not self._leave_phase(hotkey, target, current_time_ms):
                 continue
 
             with self._buckets_lock:
@@ -973,6 +992,10 @@ class ChallengePeriodManager(CacheController):
                     f"account size not updated: {message}"
                 )
                 return False, f"{hotkey} account size update failed, bucket unchanged: {message}"
+
+        if not target.switches_account and target.closes_positions_from(state.current_phase):
+            self._close_out_account(hotkey, current_time_ms)
+            self._record_segment_payout(hotkey, current_time_ms)
 
         with self._buckets_lock:
             state.add_bucket_entry(bucket, current_time_ms, in_transition=target.in_transition)
@@ -1142,9 +1165,8 @@ class ChallengePeriodManager(CacheController):
                 daily_consistency=Metrics.return_consistency(log_returns),
                 max_drawdown=max_drawdown,
                 trading_days=len(log_returns),
-                # Recomputed metrics, but the latch is a history: carry it, or every refresh would
-                # erase the days that withhold this week's payout
-                soft_breach_days=state.pro_stats.soft_breach_days,
+                # Recomputed metrics, but the latch is a history: carry it
+                soft_breach_weeks=state.pro_stats.soft_breach_weeks,
             )
 
     def _latch_soft_breaches(self, hotkeys: list[str], current_time_ms: int) -> None:
@@ -1158,7 +1180,7 @@ class ChallengePeriodManager(CacheController):
             state = self.miner_states.get(hotkey)
             if state is None or not state.current_bucket.soft_breach_applies:
                 continue
-            if state.latch_soft_breach(current_time_ms):
+            if state.latch_soft_breach(current_time_ms) and state.soft_breach:
                 logger.warning(
                     f"[CHALLENGE] SOFT BREACH latched for {TimeUtil.millis_to_formatted_date_str(current_time_ms)}: "
                     f"{state}"
@@ -1644,6 +1666,39 @@ class ChallengePeriodManager(CacheController):
             self._save_to_disk()
             result = old.to_dict()
         return True, f"drawdown stats updated for {hotkey}", result
+
+    def get_soft_breach_weeks(self, hotkey: str) -> dict[int, list[int]] | None:
+        """Week start -> latched calmar breach days. None when the miner is unknown."""
+        with self._buckets_lock:
+            state = self.miner_states.get(hotkey)
+            if state is None:
+                return None
+            return {week: list(days) for week, days in state.pro_stats.soft_breach_weeks.items()}
+
+    def admin_set_soft_breach_week(self, hotkey: str, week_start_ms: int,
+                                   days: list[int] | None) -> Tuple[bool, str]:
+        """Set the breached days of one payout week, or drop the week when days is None. An empty
+        list marks the week checked and clean. Takes effect on the next full penalty ledger rebuild."""
+        if week_start_ms != TimeUtil.ms_at_start_of_week(week_start_ms):
+            return False, f"week_start_ms must be Monday 00:00 UTC; got {week_start_ms}"
+        week_end_ms = week_start_ms + 7 * ValiConfig.DAILY_MS
+        for day in days or []:
+            if day != TimeUtil.get_start_of_day_ms(day) or not week_start_ms <= day < week_end_ms:
+                return False, f"{day} is not a UTC day start inside the week of {week_start_ms}"
+        with self._buckets_lock:
+            state = self.miner_states.get(hotkey)
+            if state is None:
+                return False, f"{hotkey} not found in challenge period manager"
+            weeks = state.pro_stats.soft_breach_weeks
+            before = weeks.get(week_start_ms)
+            if days is None:
+                weeks.pop(week_start_ms, None)
+            else:
+                weeks[week_start_ms] = sorted(set(days))
+            logger.warning(f"[CHALLENGE] {hotkey} soft breach week {week_start_ms} manually set: "
+                           f"{before} -> {weeks.get(week_start_ms)}")
+            self._save_to_disk()
+        return True, f"soft breach week {week_start_ms} updated for {hotkey}"
 
     def remove_miners(self, hotkeys: str | list[str]) -> bool:
         """Remove hotkeys from memory - CALL OUTSIDE OF LOCK"""
