@@ -1558,7 +1558,7 @@ def test_instant_funded_cannot_be_admin_moved_into_the_transition(hop_manager):
     success, _ = hop_manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS, in_transition=True)
 
     assert not success
-    assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
+    assert hop_manager.miner_states[HOTKEY].current_phase == MinerBucket.SUBACCOUNT_FUNDED.phase()
 
 
 @pytest.mark.parametrize("bucket", NO_PROMOTION)
@@ -1647,7 +1647,7 @@ def test_entering_the_track_without_a_size_is_rejected(hop_manager):
 
     assert not success
     assert REQUIRED in message
-    assert hop_manager.miner_states[hotkey].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
+    assert hop_manager.miner_states[hotkey].current_phase == MinerBucket.SUBACCOUNT_FUNDED.phase()
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.pro_account_size is None
     assert info.account_size == STANDARD_SIZE
