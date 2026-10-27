@@ -471,3 +471,57 @@ class TestSlashBurnProportion(TestBase):
         self.assertFalse(m.slash_miner_collateral("5HK", -1.0))
         self.assertFalse(m.slash_miner_collateral_proportion("5HK", 1.5))
         m.collateral_manager.slash.assert_not_called()
+
+
+class TestCollateralEndpoints(TestBase):
+    """A custom --subtensor.chain_endpoint routes collateral traffic (substrate and EVM)
+    through that node; public entrypoints keep the collateral SDK's defaults."""
+
+    def _collateral_manager_call(self, network, chain_endpoint):
+        from unittest.mock import patch
+        from shared_objects.rpc.test_mock_factory import TestMockFactory
+        from vali_objects.vali_config import RPCConnectionMode
+        import vali_objects.contract.validator_contract_manager as vcm
+
+        config = TestMockFactory.create_mock_config(netuid=8, network=network)
+        if chain_endpoint is not None:
+            config.subtensor.chain_endpoint = chain_endpoint
+        with patch.object(vcm, "CollateralManager") as collateral_manager_cls:
+            vcm.ValidatorContractManager(
+                config=config, running_unit_tests=True, connection_mode=RPCConnectionMode.LOCAL
+            )
+        return collateral_manager_cls.call_args
+
+    def test_local_node_routes_both_endpoints(self):
+        from collateral_sdk import Network
+
+        call = self._collateral_manager_call("finney", "ws://127.0.0.1:9944")
+        self.assertEqual(call.args, (Network.MAINNET,))
+        self.assertEqual(call.kwargs, {"evm_endpoint": "http://127.0.0.1:9944", "subtensor_endpoint": "ws://127.0.0.1:9944"})
+
+    def test_wss_endpoint_maps_to_https(self):
+        call = self._collateral_manager_call("finney", "wss://node.example.com:443")
+        self.assertEqual(call.kwargs["evm_endpoint"], "https://node.example.com:443")
+        self.assertEqual(call.kwargs["subtensor_endpoint"], "wss://node.example.com:443")
+
+    def test_testnet_custom_endpoint_keeps_testnet(self):
+        from collateral_sdk import Network
+
+        call = self._collateral_manager_call("test", "ws://127.0.0.1:9945")
+        self.assertEqual(call.args, (Network.TESTNET,))
+        self.assertEqual(call.kwargs["evm_endpoint"], "http://127.0.0.1:9945")
+
+    def test_public_or_missing_endpoint_uses_sdk_defaults(self):
+        # bittensor fills in the finney entrypoint even when --subtensor.network test is passed.
+        for network, chain_endpoint in (
+            ("finney", "wss://entrypoint-finney.opentensor.ai:443"),
+            ("test", "wss://entrypoint-finney.opentensor.ai:443"),
+            ("test", "wss://test.finney.opentensor.ai:443"),
+            ("finney", None),
+        ):
+            call = self._collateral_manager_call(network, chain_endpoint)
+            self.assertEqual(call.kwargs, {"evm_endpoint": None, "subtensor_endpoint": None}, chain_endpoint)
+
+    def test_non_websocket_endpoint_uses_sdk_defaults(self):
+        call = self._collateral_manager_call("finney", "http://127.0.0.1:9944")
+        self.assertEqual(call.kwargs, {"evm_endpoint": None, "subtensor_endpoint": None})
