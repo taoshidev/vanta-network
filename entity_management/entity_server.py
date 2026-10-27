@@ -309,6 +309,10 @@ class EntityServer(RPCServerBase):
         """What a bucket segment leaving an earning bucket is owed, from its own positions."""
         return self._manager.calculate_segment_payout_record(synthetic_hotkey, segment, positions, end_ms)
 
+    def calculate_segment_closed_weeks_rpc(self, synthetic_hotkey: str, segment: dict, now_ms: int) -> Optional[list]:
+        """Settlement rows of the live segment's payout weeks that closed since its last frozen one."""
+        return self._manager.calculate_segment_closed_weeks(synthetic_hotkey, segment, now_ms)
+
     def get_hl_subaccount_limits_data_rpc(self, hl_address: str) -> Optional[dict]:
         """
         Get lightweight limits data for an HL subaccount.

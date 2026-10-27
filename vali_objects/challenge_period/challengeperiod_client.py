@@ -131,6 +131,10 @@ class ChallengePeriodClient(RPCClientBase):
         """Amend, remove or recompute a segment's payout record. Returns (success, message, record)."""
         return self._server.admin_update_payout_record_rpc(hotkey, segment_start_ms, payout_usd, remove, recompute)
 
+    def admin_drop_closed_weeks(self, hotkey: str, week_starts_ms: list[int] | None = None) -> Tuple[bool, str, list[int]]:
+        """Unfreeze closed payout weeks (None: all of them). Returns (success, message, dropped week starts)."""
+        return self._server.admin_drop_closed_weeks_rpc(hotkey, week_starts_ms)
+
     def get_drawdown_snapshot_fields(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
         """Per-hotkey drawdown fields stamped onto account snapshots."""
         return self._server.get_drawdown_snapshot_fields_rpc(hotkeys)

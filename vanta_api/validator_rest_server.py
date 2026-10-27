@@ -1945,6 +1945,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Optional JSON body:
           account_size: float -- USD account size (subaccounts only)
           move_to_funded: bool -- move a SUBACCOUNT_CHALLENGE miner to SUBACCOUNT_FUNDED (default false)
+          recompute_weeks: list[int] | "all" -- closed payout weeks (Monday 00:00 UTC ms) to unfreeze
+                           so they are computed again, each with every later frozen week of its
+                           segment. Without it the frozen weeks are kept as they were paid.
 
         Example:
         curl -X POST http://localhost:48888/admin/reset/<hotkey> \\
@@ -1965,6 +1968,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             move_to_funded = False
         elif not isinstance(move_to_funded, bool):
             return jsonify({'error': f'move_to_funded must be a boolean, got "{move_to_funded}"'}), 400
+        recompute_weeks = data.get('recompute_weeks')
+        if recompute_weeks == 'all':
+            recompute_weeks = None
+            drop_closed_weeks = True
+        elif recompute_weeks is None:
+            drop_closed_weeks = False
+        elif (isinstance(recompute_weeks, list) and recompute_weeks
+              and all(isinstance(week, int) and not isinstance(week, bool) for week in recompute_weeks)):
+            drop_closed_weeks = True
+        else:
+            return jsonify({'error': 'recompute_weeks must be "all" or a non-empty list of integer week starts'}), 400
         is_subaccount = is_synthetic_hotkey(hotkey)
         if account_size is not None:
             try:
@@ -2025,6 +2039,12 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if not success:
                     return jsonify({'error': f'Reset succeeded but failed to update account size for {hotkey}: {message}'}), 500
                 result['account_size'] = account_size
+
+            if drop_closed_weeks:
+                success, message, dropped = self._challenge_period_client.admin_drop_closed_weeks(hotkey, recompute_weeks)
+                if not success:
+                    return jsonify({'error': f'Reset succeeded but no closed weeks were unfrozen: {message}'}), 400
+                result['recomputed_weeks'] = dropped
 
             return jsonify({'status': 'success', **result})
         except Exception as e:

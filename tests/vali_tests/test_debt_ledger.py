@@ -752,14 +752,38 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         return per_week
 
     @staticmethod
-    def _segment(bucket, start_ms, end_ms=None, record_rows=()):
+    def _segment(bucket, start_ms, end_ms=None, record_rows=(), closed_weeks=None):
         """A bucket segment summary; record_rows are (end_ms, payout) of its payout record."""
         record = None
         if record_rows:
             record = {'end_ms': end_ms, 'payout_usd': sum(p for _, p in record_rows),
                       'settlements': [{'end_ms': e, 'payout': p} for e, p in record_rows]}
         return {'bucket': bucket.value, 'start_ms': start_ms, 'end_ms': end_ms, 'reverted_ms': None,
-                'payout_scale': None, 'payout_record': record}
+                'payout_scale': None, 'payout_record': record, 'closed_weeks': closed_weeks}
+
+    def _frozen_week_0(self, payout, deferred_balance=0.0):
+        """A PRO_FUNDED segment from week 0 whose week 0 is frozen, closing on 140 realized."""
+        return lambda w0: [self._segment(MinerBucket.PRO_FUNDED, w0, closed_weeks=[{
+            'start_ms': w0, 'end_ms': w0 + MS_IN_WEEK, 'payout': payout, 'eow_balance': 140.0,
+            'payout_hwm': 140.0, 'deferred_balance': deferred_balance,
+        }])]
+
+    def test_a_frozen_week_is_paid_from_its_row_not_its_checkpoints(self):
+        week_0, week_1 = self._aggregate(segments=self._frozen_week_0(payout=500.0))
+        self.assertAlmostEqual(week_0, 500.0)
+        self.assertAlmostEqual(week_1, 140.0)
+
+    def test_a_restated_breach_cannot_reach_a_frozen_week(self):
+        """The ledger now shows week 0 breached, but it froze clean: nothing is withheld again."""
+        week_0, week_1 = self._aggregate(blocked_checkpoint_indices=(8,), segments=self._frozen_week_0(payout=140.0))
+        self.assertAlmostEqual(week_0, 140.0)
+        self.assertAlmostEqual(week_1, 140.0)
+
+    def test_the_next_clean_week_releases_a_frozen_escrow(self):
+        """Week 0 froze breached; the ledger no longer shows it, and week 1 still releases the escrow."""
+        week_0, week_1 = self._aggregate(segments=self._frozen_week_0(payout=0.0, deferred_balance=140.0))
+        self.assertAlmostEqual(week_0, 0.0)
+        self.assertAlmostEqual(week_1, 280.0)
 
     def test_unblocked_weeks_aggregate_fully(self):
         week_0, week_1 = self._aggregate()

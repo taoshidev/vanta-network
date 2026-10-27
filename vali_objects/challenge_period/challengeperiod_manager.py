@@ -423,6 +423,8 @@ class ChallengePeriodManager(CacheController):
     DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-10-01 00:00:00")   # TODO: remove
     # The fast track's equity must hold on every refresh for this long, so a bad price tick cannot promote
     AUTO_PROMOTION_FAST_TRACK_HOLD_MS = 3 * 60 * 1000
+    # How often a payout week that has ended but is not final yet is retried for freezing
+    CLOSED_WEEKS_RETRY_MS = 60 * 60 * 1000
 
     def __init__(
         self,
@@ -483,6 +485,9 @@ class ChallengePeriodManager(CacheController):
         # One lock per miner, held across a promotion of it (an auto-promotion's from its decision on)
         self._promotion_locks: dict[str, threading.RLock] = {}
         self._promotion_locks_guard = threading.Lock()
+        # Closed payout weeks: the week each live segment is frozen through, and the last attempt per miner
+        self._closed_weeks_checked: dict[str, int] = {}
+        self._closed_weeks_attempt_ms: dict[str, int] = {}
 
         logger.info(f"[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
 
@@ -546,6 +551,8 @@ class ChallengePeriodManager(CacheController):
         timer.lap("latch_soft_breaches")
         self._record_bucket_stats(evaluation_hotkeys, current_time_ms)
         timer.lap("bucket_stats")
+        self._freeze_closed_weeks(evaluation_hotkeys, current_time_ms)
+        timer.lap("closed_weeks")
         self._refresh_rank_cache(rank_hotkeys, ledgers, rank_positions, accounts, asset_selections, current_time_ms)
         timer.lap("rank_cache")
         try:
@@ -1768,6 +1775,36 @@ class ChallengePeriodManager(CacheController):
         logger.info(f"[BUCKET_HISTORY] payout record for {segment.hotkey} {segment.dir_name}: ${record['payout_usd']:.2f}")
         return True
 
+    def _freeze_closed_weeks(self, hotkeys: list[str], current_time_ms: int) -> None:
+        """Freeze the settlement of each payout week a live earning segment has closed, once the
+        week is final. A week not final yet is retried every CLOSED_WEEKS_RETRY_MS."""
+        if not self._bucket_history.enabled:
+            return
+        week_start_ms = TimeUtil.ms_at_start_of_week(current_time_ms)
+        for hotkey in hotkeys:
+            state = self.miner_states.get(hotkey)
+            if (state is None or not is_synthetic_hotkey(hotkey) or not state.current_phase.is_subaccount_earning
+                    or self._closed_weeks_checked.get(hotkey, 0) >= week_start_ms
+                    or current_time_ms - self._closed_weeks_attempt_ms.get(hotkey, 0) < self.CLOSED_WEEKS_RETRY_MS):
+                continue
+            segment = self._bucket_history.get_live_segment(hotkey)
+            if segment is None:
+                continue
+            self._closed_weeks_attempt_ms[hotkey] = current_time_ms
+            try:
+                rows = self._entity_client.calculate_segment_closed_weeks(hotkey, segment.to_dict(), current_time_ms)
+            except Exception as e:
+                logger.error(f"[BUCKET_HISTORY] could not calculate the closed weeks of {hotkey}: {e}")
+                continue
+            if rows is None:
+                continue
+            self._closed_weeks_checked[hotkey] = week_start_ms
+            if rows:
+                segment.closed_weeks = (segment.closed_weeks or []) + rows
+                self._bucket_history.save_segment(segment)
+                logger.info(f"[BUCKET_HISTORY] froze {len(rows)} closed payout week rows of {hotkey} "
+                            f"{segment.dir_name} through {rows[-1]['end_ms']}")
+
     def _record_bucket_stats(self, hotkeys: list[str], current_time_ms: int) -> None:
         """Append the day's drawdown and ProStats row to each hotkey's live segment, once per UTC day."""
         if not self._bucket_history.enabled:
@@ -1884,6 +1921,33 @@ class ChallengePeriodManager(CacheController):
                        f"{'removed' if remove else 'recomputed' if recompute else 'amended'}: {segment.payout_record}")
         self._bucket_history.save_segment(segment)
         return True, f"payout record for {segment.dir_name} updated", segment.payout_record
+
+    def admin_drop_closed_weeks(self, hotkey: str, week_starts_ms: list[int] | None = None) -> Tuple[bool, str, list[int]]:
+        """Unfreeze closed payout weeks, given by their Monday 00:00 UTC (None: every one), so they
+        are computed again. Each frozen week resumes from the one before it, so every later frozen
+        week of the same segment goes too. The live segment's are frozen again on the next refresh;
+        a payout record already pinned keeps its rows until it is recomputed.
+        Returns (success, message, the week starts dropped)."""
+        segments = [s for s in self._bucket_history.get_segments(hotkey) if s.reverted_ms is None]
+        if not segments:
+            return False, f"{hotkey} has no bucket segments", []
+        wanted = None if week_starts_ms is None else set(week_starts_ms)
+        dropped = []
+        for segment in segments:
+            rows = segment.closed_weeks or []
+            cut = next((i for i, row in enumerate(rows)
+                        if wanted is None or TimeUtil.ms_at_start_of_week(row['start_ms']) in wanted), None)
+            if cut is None:
+                continue
+            dropped += [row['start_ms'] for row in rows[cut:]]
+            segment.closed_weeks = rows[:cut] or None
+        if not dropped:
+            return False, f"{hotkey} has no frozen weeks matching {week_starts_ms}", []
+        self._closed_weeks_checked.pop(hotkey, None)
+        self._closed_weeks_attempt_ms.pop(hotkey, None)
+        self._bucket_history.save_to_disk([hotkey])
+        logger.warning(f"[BUCKET_HISTORY] {hotkey} closed payout weeks manually unfrozen: {dropped}")
+        return True, f"unfroze {len(dropped)} closed payout week rows of {hotkey}", dropped
 
     def sync_bucket_history(self, checkpoint_dict: dict) -> dict:
         return self._bucket_history.sync_from_checkpoint(checkpoint_dict)

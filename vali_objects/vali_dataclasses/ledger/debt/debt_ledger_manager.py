@@ -190,8 +190,9 @@ class DebtLedgerManager():
 
     @staticmethod
     def _checkpoint_segment(segments: list, timestamp_ms: int, cp_duration_ms: int) -> tuple:
-        """(index of the segment a checkpoint pays into, covered). covered is True when the
-        checkpoint's window touches a segment already paid by its payout record."""
+        """(index of the segment a checkpoint pays into, covered, frozen). covered is True when the
+        checkpoint's window touches a segment already paid by its payout record; frozen when it
+        falls in one of its segment's closed weeks, which are paid from the frozen rows."""
         index, covered = None, False
         window_start_ms = timestamp_ms - cp_duration_ms
         for i, segment in enumerate(segments):
@@ -201,7 +202,9 @@ class DebtLedgerManager():
             record = segment.get('payout_record')
             if record and window_start_ms < (segment.get('end_ms') or record['end_ms']):
                 covered = True
-        return index, covered
+        closed_weeks = segments[index].get('closed_weeks') if index is not None else None
+        frozen = bool(closed_weeks) and timestamp_ms <= closed_weeks[-1]['end_ms']
+        return index, covered, frozen
 
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
         dashboard: dict | None = None
@@ -1016,10 +1019,12 @@ class DebtLedgerManager():
                 pending_records = {}
                 for subaccount in entity_data.get('subaccounts', {}).values():
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
+                    # A record holds its segment's closed weeks too; a segment without one pays them here
                     rows = sorted(
                         (row['end_ms'], row['payout'])
-                        for seg in all_segments.get(synthetic_hotkey, []) if seg.get('payout_record')
-                        for row in seg['payout_record']['settlements']
+                        for seg in all_segments.get(synthetic_hotkey, [])
+                        for row in (seg['payout_record']['settlements'] if seg.get('payout_record')
+                                    else seg.get('closed_weeks') or [])
                     )
                     if rows:
                         pending_records[synthetic_hotkey] = rows
@@ -1056,17 +1061,25 @@ class DebtLedgerManager():
                         if checkpoint:
                             subaccount_prev_fees[synthetic_hotkey] = checkpoint.cumulative_fees_usd
                         if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
-                            segment_index, covered = self._checkpoint_segment(
-                                subaccount_segments[synthetic_hotkey], timestamp_ms, target_cp_duration_ms)
+                            segments = subaccount_segments[synthetic_hotkey]
+                            segment_index, covered, frozen = self._checkpoint_segment(
+                                segments, timestamp_ms, target_cp_duration_ms)
                             if covered:
                                 continue
                             if segment_index != subaccount_segment_index[synthetic_hotkey]:
                                 subaccount_segment_index[synthetic_hotkey] = segment_index
-                                subaccount_cum_realized[synthetic_hotkey] = 0.0
-                                subaccount_hwm[synthetic_hotkey] = 0.0
-                                subaccount_escrow[synthetic_hotkey] = 0.0
+                                # After its closed weeks a segment resumes from what the last one closed on
+                                closed_weeks = segments[segment_index].get('closed_weeks') if segment_index is not None else None
+                                last_week = closed_weeks[-1] if closed_weeks else {}
+                                subaccount_cum_realized[synthetic_hotkey] = last_week.get('eow_balance', 0.0)
+                                subaccount_hwm[synthetic_hotkey] = last_week.get('payout_hwm', 0.0)
+                                subaccount_escrow[synthetic_hotkey] = last_week.get('deferred_balance', 0.0)
                                 subaccount_fee_baseline[synthetic_hotkey] = prev_fees
                             checkpoints_at_time.append(checkpoint)
+                            if frozen:
+                                # Paid from the frozen rows; its fees are inside the frozen balance
+                                subaccount_fee_baseline[synthetic_hotkey] = checkpoint.cumulative_fees_usd
+                                continue
                             week = subaccount_week_context[synthetic_hotkey].get(
                                 week_start_ms, subaccount_default_week[synthetic_hotkey]
                             )
