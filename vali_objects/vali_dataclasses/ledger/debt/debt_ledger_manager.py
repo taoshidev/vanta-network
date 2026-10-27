@@ -18,7 +18,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import (
     apply_deferral,
 )
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from entity_management import entity_utils
 from shared_objects.log import logger
 
@@ -852,7 +852,7 @@ class DebtLedgerManager():
             logger.info(f"Aggregating debt ledgers for {len(all_entities)} entities")
 
             _earning_statuses = {status for b in MinerBucket if b.is_subaccount_earning
-                                 for status in BucketPhase.statuses_of(b)}
+                                 for status in b.statuses}
             # Every subaccount's bucket segments: where each starts, and the payout records of those
             # that left an earning bucket
             all_segments = {

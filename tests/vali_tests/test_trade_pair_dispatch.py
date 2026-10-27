@@ -18,7 +18,7 @@ Covers:
 
 import unittest
 
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.leverage_utils import (
     get_legacy_leverage_tier,
     get_legacy_portfolio_caps,
@@ -211,9 +211,6 @@ class TestGetLegacyLeverageTier(unittest.TestCase):
             (MinerBucket.PRO_FUNDED, 50_000.0, 2),
             (MinerBucket.PRO_FUNDED, 200_000.0, 3),
             (MinerBucket.PRO_FUNDED, 1_000_000.0, 4),
-            # The SUBACCOUNT_FUNDED transition is still the funded account, so it is tiered by size
-            (BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True), 50_000.0, 2),
-            (BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True), 1_000_000.0, 4),
         )
         for bucket, size, expected in cases:
             with self.subTest(bucket=bucket, size=size):

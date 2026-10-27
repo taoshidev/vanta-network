@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 from time_util.time_util import TimeUtil
@@ -1001,7 +1001,7 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         self.manager._miner_account_client = MagicMock()
         self.manager._miner_account_client.get_miner_account_size.return_value = 100_000
         self.manager._challenge_period_client = MagicMock()
-        self.manager._challenge_period_client.get_miner_phase.return_value = MinerBucket.PRO_FUNDED.phase()
+        self.manager._challenge_period_client.get_miner_bucket.return_value = MinerBucket.PRO_FUNDED
         self.manager._position_client = MagicMock()
         self.manager._position_client.get_positions_for_one_hotkey.return_value = []
         self.manager._entity_client = MagicMock()
@@ -1019,7 +1019,7 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
             max_slash = self.manager.get_max_slash("entity_0", MinerBucket.SUBACCOUNT_FUNDED)
 
         self.assertAlmostEqual(max_slash, 100_000 * ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD)
-        self.manager._challenge_period_client.get_miner_phase.assert_not_called()
+        self.manager._challenge_period_client.get_miner_bucket.assert_not_called()
 
     def test_max_slash_falls_back_for_a_bucket_with_no_drawdown_rule(self):
         """The entity hotkey itself never trades, so it has no threshold to read."""
@@ -1150,8 +1150,7 @@ class TestMarginCpt(unittest.TestCase):
                 "standard_account_size": self.STANDARD_SIZE, "payout_scale": payout_scale}
         self.manager._entity_client.get_entity_data.return_value = {"subaccounts": {"0": info}}
         self.manager._entity_client.get_subaccount_info_for_synthetic.return_value = info
-        self.manager._challenge_period_client.get_miner_phase.return_value = (
-            bucket if isinstance(bucket, BucketPhase) else bucket.phase())
+        self.manager._challenge_period_client.get_miner_bucket.return_value = bucket
         self.manager._miner_account_client.get_miner_account_size.return_value = account_size
         self.manager._position_client.get_positions_for_one_hotkey.return_value = (
             [SimpleNamespace(net_value=position_value)] if position_value else [])
@@ -1164,9 +1163,6 @@ class TestMarginCpt(unittest.TestCase):
             ("instant funded, eligible", MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE,
              ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER, 5_000 / 35),
             ("pro challenge", MinerBucket.PRO_CHALLENGE_DIRECT, self.PRO_SIZE, None, 0.0),
-            # Still on the standard account, margined like the funded account it is winding down
-            ("transition", BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True),
-             self.STANDARD_SIZE, None, 5_000 / 35),
         )
         for name, bucket, account_size, payout_scale, expected_theta in cases:
             with self.subTest(name):
@@ -1198,7 +1194,7 @@ class TestMarginCpt(unittest.TestCase):
         info = self.manager._entity_client.get_subaccount_info_for_synthetic.return_value
         info["reg_fee_slashed_ms"] = 1
         self.manager._entity_client.get_all_entities.return_value = {self.ENTITY: {"subaccounts": {"0": info}}}
-        self.manager._challenge_period_client.get_miner_phases.return_value = {self.HOTKEY: bucket.phase()}
+        self.manager._challenge_period_client.get_miner_buckets.return_value = {self.HOTKEY: bucket}
         self.manager._slash_tracking = {self.HOTKEY: {"cumulative_realized_loss": realized_loss,
                                                       "cumulative_slashed": 0.0}}
         self.manager._contract_client = MagicMock()
@@ -1284,7 +1280,7 @@ class TestProPromotionFeeSlashing(unittest.TestCase):
             }
         }
         manager._challenge_period_client = MagicMock()
-        manager._challenge_period_client.get_miner_phases.return_value = {}
+        manager._challenge_period_client.get_miner_buckets.return_value = {}
         manager._contract_client = MagicMock()
         manager._contract_client.slash_miner_collateral.return_value = slash_succeeds
         return manager

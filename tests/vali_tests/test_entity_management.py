@@ -20,24 +20,18 @@ from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger
 from time_util.time_util import MS_IN_WEEK, TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
 
-# PRO_CHALLENGE_FUNDED in its transition week, and the ledger status its checkpoints carry
-TRANSITION = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
-TRANSITION_STATUS = TRANSITION.status
+# SUBACCOUNT_FUNDED in its transition week, which its bucket segment records
+TRANSITION = "TRANSITION"
 
 
-def _phase(bucket):
-    if bucket is None or isinstance(bucket, BucketPhase):
-        return bucket
-    return bucket.phase()
+def _bucket(bucket):
+    """TRANSITION is SUBACCOUNT_FUNDED; any other value is its own bucket."""
+    return MinerBucket.SUBACCOUNT_FUNDED if bucket == TRANSITION else bucket
 
-
-def _status(bucket):
-    """The challenge_period_status a checkpoint stamped in this bucket (or phase) carries."""
-    return _phase(bucket).status
 
 class TestEntityManagement(TestBase):
     """
@@ -301,7 +295,7 @@ class TestEntityManagement(TestBase):
         hotkey = subaccount_info['synthetic_hotkey']
 
         # Instant Funded starts on the pro account, never in the transition
-        self.assertEqual(self.challenge_period_client.get_miner_phase(hotkey), MinerBucket.PRO_CHALLENGE_FUNDED.phase())
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(hotkey), MinerBucket.PRO_CHALLENGE_FUNDED)
         self.assertEqual(subaccount_info['account_type'], 'pro')
         self.assertEqual(subaccount_info['account_size'], 500_000)
         self.assertEqual(subaccount_info['standard_account_size'], 100_000)
@@ -1242,8 +1236,9 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         n_cps = 2 * cps_per_week
         week_buckets = week_buckets or {}
         checkpoint_buckets = checkpoint_buckets or {}
-        phases = [_phase(checkpoint_buckets.get(i, week_buckets.get(i // cps_per_week, MinerBucket.PRO_FUNDED)))
-                  for i in range(n_cps)]
+        stamped = [checkpoint_buckets.get(i, week_buckets.get(i // cps_per_week, MinerBucket.PRO_FUNDED))
+                   for i in range(n_cps)]
+        buckets = [_bucket(b) for b in stamped]
         orders = orders if orders is not None else [
             SimpleNamespace(processed_ms=week_0_start + i * self.CP_DURATION_MS + 1, realized_pnl=10.0,
                             to_python_dict=lambda: {})
@@ -1253,22 +1248,22 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             DebtCheckpoint(
                 timestamp_ms=week_0_start + (i + 1) * self.CP_DURATION_MS,
                 weekly_penalty=0.0 if i in blocked_checkpoint_indices else 1.0,
-                challenge_period_status=phases[i].status,
+                challenge_period_status=buckets[i].value,
             )
             for i in range(n_cps)
         ]
 
         # One segment per run of a bucket; the transition is a range inside SUBACCOUNT_FUNDED
         segments = []
-        for i, phase in enumerate(phases):
+        for i, bucket in enumerate(buckets):
             boundary_ms = week_0_start + i * self.CP_DURATION_MS
-            if not segments or segments[-1]['bucket'] != phase.bucket.value:
+            if not segments or segments[-1]['bucket'] != bucket.value:
                 if segments:
                     segments[-1]['end_ms'] = boundary_ms
-                segments.append({'bucket': phase.bucket.value, 'start_ms': boundary_ms, 'end_ms': None,
+                segments.append({'bucket': bucket.value, 'start_ms': boundary_ms, 'end_ms': None,
                                  'transition_start_ms': None, 'transition_end_ms': None,
                                  'payout_scale': segment_payout_scale, 'payout_record': None})
-            if phase.in_transition and segments[-1]['transition_start_ms'] is None:
+            if stamped[i] == TRANSITION and segments[-1]['transition_start_ms'] is None:
                 segments[-1]['transition_start_ms'] = boundary_ms
         positions = [
             SimpleNamespace(
@@ -1297,10 +1292,9 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             } if has_perf_ledger else {},
             get_frozen_ledgers=lambda: {},
         )
-        current = _phase(current_bucket) if current_bucket is not None else phases[-1]
+        current = _bucket(current_bucket) if current_bucket is not None else buckets[-1]
         manager._challenge_period_client = SimpleNamespace(
-            get_miner_phase=lambda *_a: current,
-            get_miner_bucket=lambda *_a: current.bucket,
+            get_miner_bucket=lambda *_a: current,
             get_bucket_segments=lambda _hk: segments if has_bucket_history else [],
         )
         manager._position_client = SimpleNamespace(
@@ -1308,7 +1302,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         )
 
         for segment, position in zip(segments, positions):
-            if segment['end_ms'] is not None and BucketPhase.from_status(segment['bucket']).is_subaccount_earning:
+            if segment['end_ms'] is not None and MinerBucket.from_status(segment['bucket']).is_subaccount_earning:
                 segment['payout_record'] = manager.calculate_segment_payout_record(
                     self.SUBACCOUNT_HOTKEY, segment, [position], segment['end_ms'])
         manager.segments = segments
@@ -1487,7 +1481,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertAlmostEqual(funded_row['payout'], 1_000.0)
         self.assertAlmostEqual(funded_row['eow_balance'], 1_000.0)
 
-    def test_the_transition_week_is_paid_unscaled_before_the_pro_phase_is_scaled(self):
+    def test_the_transition_week_is_paid_unscaled_before_the_pro_bucket_is_scaled(self):
         result = self._payout_result(
             week_buckets={0: TRANSITION, 1: MinerBucket.PRO_CHALLENGE_FUNDED},
             payout_scale=0.2,
@@ -1654,8 +1648,8 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
                                              payout_scale=0.5)
                 self.assertAlmostEqual(result['payout'], expected)
                 for week in result['weekly_settlements']:
-                    self.assertEqual(week['bucket'], _phase(bucket).value)
-                    self.assertEqual(week['in_transition'], _phase(bucket).in_transition)
+                    self.assertEqual(week['bucket'], _bucket(bucket).value)
+                    self.assertEqual(week['in_transition'], bucket == TRANSITION)
 
     def test_no_perf_ledger_and_no_snapshot_is_not_found(self):
         self.assertIsNone(self._payout_result(has_perf_ledger=False))
@@ -1821,7 +1815,7 @@ class TestSubaccountPayout(unittest.TestCase):
         from tests.vali_tests.test_pro_account_size import _add_standard, _bare_manager
 
         entity_manager = _bare_manager()
-        entity_manager._challenge_period_client.get_miner_phase.return_value = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED)
+        entity_manager._challenge_period_client.get_miner_bucket.return_value = MinerBucket.SUBACCOUNT_FUNDED
         entity_manager._challenge_period_client.get_bucket_segments.return_value = []
         entity_manager._perf_ledger_client = MagicMock()
         order = SimpleNamespace(processed_ms=MONDAY_MS - 2 * MS_IN_WEEK + 3_600_000, realized_pnl=12_000.0,

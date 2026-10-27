@@ -14,9 +14,9 @@ class MinerBucket(Enum):
     # Entity system buckets
     ENTITY = "ENTITY"
     SUBACCOUNT_CHALLENGE = "SUBACCOUNT_CHALLENGE"
-    # A funded standard subaccount. Moving onto the pro track sets in_transition on it (see
-    # BucketPhase): a wind-down week still trading the standard account, which ends in
-    # PRO_CHALLENGE_FUNDED.
+    # A funded standard subaccount. Moving onto the pro track starts its transition week
+    # (MinerAccount.transition_start_ms): a wind-down still trading the standard account, which
+    # ends in PRO_CHALLENGE_FUNDED.
     SUBACCOUNT_FUNDED = "SUBACCOUNT_FUNDED"
     SUBACCOUNT_ALPHA = "SUBACCOUNT_ALPHA"
     # Pro account buckets
@@ -28,11 +28,23 @@ class MinerBucket(Enum):
 
     @classmethod
     def _missing_(cls, value):
-        """Parse the retired bucket names. Drops the transition flag the old name carried; read it
-        with BucketPhase.from_status where it matters."""
-        if value in LEGACY_BUCKET_PHASES:
-            return cls(LEGACY_BUCKET_PHASES[value][0])
+        """Parse the retired bucket names."""
+        if value in LEGACY_BUCKET_NAMES:
+            return cls(LEGACY_BUCKET_NAMES[value])
         return None
+
+    @classmethod
+    def from_status(cls, status: str | None) -> "MinerBucket":
+        """Parse a stored status string, tolerating unknown values."""
+        try:
+            return cls(status)
+        except ValueError:
+            return cls.UNKNOWN
+
+    @property
+    def statuses(self) -> set[str]:
+        """Every status string this bucket may have been stored as, retired names included."""
+        return {self.value, *(name for name, value in LEGACY_BUCKET_NAMES.items() if value == self.value)}
 
     def intraday_drawdown_threshold(self, time_ms: int | None = None) -> float:
         """
@@ -108,7 +120,7 @@ class MinerBucket(Enum):
     @property
     def is_pro_track(self) -> bool:
         """True for every bucket on the pro account. The SUBACCOUNT_FUNDED transition week is on the
-        pro journey too; read it through BucketPhase.is_pro_track."""
+        pro journey too; check MinerAccount.in_transition for it."""
         return self.is_pro
 
     @property
@@ -193,8 +205,8 @@ class MinerBucket(Enum):
 
         These hops onto the pro track are the only self-service bucket moves on the network; every
         other bucket returns None and cannot be promoted this way. SUBACCOUNT_FUNDED first enters its
-        transition week, which stays in SUBACCOUNT_FUNDED; that hop and leaving the transition for
-        PRO_CHALLENGE_FUNDED are BucketPhase.promotion_target.
+        transition week, which stays in SUBACCOUNT_FUNDED, and leaves it for PRO_CHALLENGE_FUNDED
+        (ChallengePeriodManager.promote_subaccount).
         """
         if self == MinerBucket.SUBACCOUNT_CHALLENGE:
             return MinerBucket.PRO_CHALLENGE_DIRECT
@@ -209,12 +221,11 @@ class MinerBucket(Enum):
 
         PRO_FUNDED is deliberately absent: passing the pro challenge keeps the same account, so
         balance, equity and the ledgers carry over and all-time calmar keeps the ratio it passed
-        with. Its positions are still closed (BucketPhase.closes_positions_from). Nothing earned before the promotion is paid at pro scale - the payout paths
+        with. Its positions are still closed (closes_positions_from). Nothing earned before the promotion is paid at pro scale - the payout paths
         exclude it by reading each checkpoint's own bucket instead of wiping the history.
 
-        Entering the SUBACCOUNT_FUNDED transition week keeps the standard account; this describes
-        entering SUBACCOUNT_FUNDED from its challenge. Use BucketPhase.switches_account for the
-        phase being entered.
+        Entering the SUBACCOUNT_FUNDED transition week is not a bucket move and keeps the
+        standard account.
         """
         return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
                         MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT)
@@ -254,178 +265,24 @@ class MinerBucket(Enum):
                 MinerBucket.PRO_FUNDED
                 )
 
-    def phase(self, in_transition: bool = False) -> "BucketPhase":
-        return BucketPhase(self, in_transition)
-
-
-# Retired bucket names, mapped to the (bucket value, in_transition) each one meant. Still read from
-# checkpoints, disk state, ledger checkpoint statuses and request bodies written before the merge:
-# the transition week became a flag on SUBACCOUNT_FUNDED, and the pro phase PRO_CHALLENGE_FUNDED.
-LEGACY_BUCKET_PHASES = {
-    "PRO_CHALLENGE_TRANSITION": ("SUBACCOUNT_FUNDED", True),
-    "PRO_CHALLENGE_FROM_STANDARD": ("PRO_CHALLENGE_FUNDED", False),
-}
-
-# Appended to the bucket value when a ledger checkpoint status is stamped during the transition
-TRANSITION_STATUS_SUFFIX = ":in_transition"
-
-
-@dataclass(frozen=True)
-class BucketPhase:
-    """A bucket together with the SUBACCOUNT_FUNDED in_transition flag.
-
-    In transition, a SUBACCOUNT_FUNDED subaccount has asked to move onto the pro track and is
-    winding down its standard funded account: it still trades and is paid under SUBACCOUNT_FUNDED
-    rules, may not add exposure, and must leave the transition by the first Monday 00:00 UTC after
-    entering it (an auto-promoted one once it is flat, or AUTO_PROMOTION_TRANSITION_DAYS after its
-    promotion). Leaving it is the hop to PRO_CHALLENGE_FUNDED, which switches onto the pro account.
-    Every rule but the pro-track ones reads straight off the bucket.
-
-    The flag is meaningless for any other bucket and is normalized to False.
-    """
-    bucket: MinerBucket
-    in_transition: bool = False
-
-    def __post_init__(self):
-        if self.in_transition and self.bucket != MinerBucket.SUBACCOUNT_FUNDED:
-            object.__setattr__(self, "in_transition", False)
-
-    @property
-    def value(self) -> str:
-        return self.bucket.value
-
-    @property
-    def status(self) -> str:
-        """Ledger checkpoint status: the bucket value, suffixed while in transition."""
-        return self.bucket.value + (TRANSITION_STATUS_SUFFIX if self.in_transition else "")
-
-    @classmethod
-    def from_status(cls, status: str | None) -> "BucketPhase":
-        """Parse a status written by `status`, a plain bucket value, or a legacy bucket name."""
-        if not status:
-            return cls(MinerBucket.UNKNOWN)
-        in_transition = status.endswith(TRANSITION_STATUS_SUFFIX)
-        if in_transition:
-            status = status[:-len(TRANSITION_STATUS_SUFFIX)]
-        status, in_transition = LEGACY_BUCKET_PHASES.get(status, (status, in_transition))
-        try:
-            bucket = MinerBucket(status)
-        except ValueError:
-            bucket = MinerBucket.UNKNOWN
-        return cls(bucket, in_transition)
-
-    @staticmethod
-    def statuses_of(bucket: MinerBucket) -> set[str]:
-        """Every ledger checkpoint status a bucket may have been stamped with, legacy names included."""
-        statuses = {bucket.value}
-        if bucket == MinerBucket.SUBACCOUNT_FUNDED:
-            statuses.add(BucketPhase(bucket, True).status)
-        statuses.update(name for name, (value, _) in LEGACY_BUCKET_PHASES.items() if value == bucket.value)
-        return statuses
-
-    def __str__(self) -> str:
-        return self.status
-
-    # Properties that differ between the transition week and the rest of SUBACCOUNT_FUNDED
-
-    @property
-    def is_pro_track(self) -> bool:
-        """True on the pro journey: the pro buckets, and the transition week leading to them."""
-        return self.in_transition or self.bucket.is_pro_track
-
-    @property
-    def switches_account(self) -> bool:
-        """True when entering this phase closes positions and restarts the ledgers. Entering the
-        transition keeps the standard account; the hop out of it to PRO_CHALLENGE_FUNDED switches."""
-        return not self.in_transition and self.bucket.switches_account
-
-    def closes_positions_from(self, from_phase: "BucketPhase") -> bool:
-        """True when entering this phase from from_phase closes the open positions: every move into
+    def closes_positions_from(self, from_bucket: "MinerBucket") -> bool:
+        """True when entering this bucket from from_bucket closes the open positions: every move into
         or out of an earning bucket, so each earning bucket is only paid on what it trades itself.
-        Entering the transition week stays in the bucket, and an elimination forfeits instead."""
-        return ((from_phase.is_subaccount_earning or self.is_subaccount_earning)
-                and self.bucket != from_phase.bucket
-                and self.bucket != MinerBucket.ELIMINATED)
+        An elimination forfeits instead."""
+        return ((from_bucket.is_subaccount_earning or self.is_subaccount_earning)
+                and self != from_bucket
+                and self != MinerBucket.ELIMINATED)
 
-    @property
-    def next_phase(self) -> "BucketPhase | None":
-        """Where the refresh loop promotes this phase to. The transition's exit is its Monday
-        deadline (or a self-service promotion), never its returns."""
-        if self.in_transition:
-            return BucketPhase(MinerBucket.PRO_CHALLENGE_FUNDED)
-        nxt = self.bucket.next_bucket
-        return BucketPhase(nxt) if nxt is not None else None
 
-    @property
-    def promotion_target(self) -> "BucketPhase | None":
-        """Self-service promotion target (POST /entity/subaccount/promote). SUBACCOUNT_FUNDED enters
-        its transition week; a subaccount in transition may leave it early for PRO_CHALLENGE_FUNDED."""
-        if self.in_transition:
-            return BucketPhase(MinerBucket.PRO_CHALLENGE_FUNDED)
-        if self.bucket == MinerBucket.SUBACCOUNT_FUNDED:
-            return BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
-        target = self.bucket.promotion_target
-        return BucketPhase(target) if target is not None else None
+# Retired bucket names, mapped to the bucket each one became. Still read from checkpoints, disk
+# state, ledger checkpoint statuses and request bodies written before the merge: the transition week
+# became MinerAccount.transition_start_ms on SUBACCOUNT_FUNDED, and PRO_CHALLENGE_FROM_STANDARD became PRO_CHALLENGE_FUNDED.
+LEGACY_BUCKET_NAMES = {
+    "PRO_CHALLENGE_TRANSITION": "SUBACCOUNT_FUNDED",
+    "PRO_CHALLENGE_FROM_STANDARD": "PRO_CHALLENGE_FUNDED",
+}
+LEGACY_TRANSITION_BUCKET = "PRO_CHALLENGE_TRANSITION"
 
-    # Properties shared by both phases
-
-    @property
-    def is_pro(self) -> bool:
-        return self.bucket.is_pro
-
-    @property
-    def is_subaccount_challenge(self) -> bool:
-        return self.bucket.is_subaccount_challenge
-
-    @property
-    def is_subaccount_funded(self) -> bool:
-        return self.bucket.is_subaccount_funded
-
-    @property
-    def payout_scale_applies(self) -> bool:
-        return self.bucket.payout_scale_applies
-
-    @property
-    def soft_breach_applies(self) -> bool:
-        return self.bucket.soft_breach_applies
-
-    @property
-    def calmar_threshold(self) -> float | None:
-        return self.bucket.calmar_threshold
-
-    @property
-    def daily_consistency_threshold(self) -> float | None:
-        return self.bucket.daily_consistency_threshold
-
-    @property
-    def minimum_trading_days(self) -> int | None:
-        return self.bucket.minimum_trading_days
-
-    def returns_threshold(self, asset_class) -> float:
-        return self.bucket.returns_threshold(asset_class)
-
-    def intraday_drawdown_threshold(self, time_ms: int | None = None) -> float:
-        return self.bucket.intraday_drawdown_threshold(time_ms)
-
-    def eod_drawdown_threshold(self, time_ms: int | None = None) -> float:
-        return self.bucket.eod_drawdown_threshold(time_ms)
-
-    @property
-    def uses_versioned_funded_thresholds(self) -> bool:
-        """True when drawdown limits are versioned by the SUBACCOUNT_CHALLENGE registration time."""
-        return self.bucket == MinerBucket.SUBACCOUNT_FUNDED
-
-    @property
-    def is_subaccount(self) -> bool:
-        return self.bucket.is_subaccount
-
-    @property
-    def is_subaccount_earning(self) -> bool:
-        return self.bucket.is_subaccount_earning
-
-    @property
-    def is_active(self) -> bool:
-        return self.bucket.is_active
 
 @dataclass
 class BucketEntry:
@@ -436,20 +293,10 @@ class BucketEntry:
     # stamp historical checkpoints, so leaving a reverted span visible would permanently reclassify
     # every checkpoint inside it and change payout weeks that were already settled.
     reverted_ms: int | None = None
-    # SUBACCOUNT_FUNDED only: this span is the transition week (see BucketPhase). Entering it
-    # appends a new SUBACCOUNT_FUNDED entry with the flag set; leaving it is the PRO_CHALLENGE_FUNDED entry.
-    in_transition: bool = False
-
-    def __post_init__(self):
-        self.in_transition = BucketPhase(self.bucket, self.in_transition).in_transition
 
     @property
     def is_reverted(self) -> bool:
         return self.reverted_ms is not None
-
-    @property
-    def phase(self) -> BucketPhase:
-        return BucketPhase(self.bucket, self.in_transition)
 
     def to_dict(self) -> dict:
         """Convert to dict for serialization."""
@@ -458,22 +305,14 @@ class BucketEntry:
             'start_time_ms': self.start_time_ms,
             'bucket_start_time': self.start_time_ms,  # for backwards compatibility TODO remove
             'reverted_ms': self.reverted_ms,
-            'in_transition': self.in_transition,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> 'BucketEntry':
-        """Create from dict for deserialization. Entries written before the merge carry
-        PRO_CHALLENGE_TRANSITION (SUBACCOUNT_FUNDED in transition) or PRO_CHALLENGE_FROM_STANDARD
-        (PRO_CHALLENGE_FUNDED)."""
+        """Create from dict for deserialization. Retired bucket names map to their new bucket."""
         bucket = d.get('bucket', MinerBucket.UNKNOWN)
-        in_transition = bool(d.get('in_transition', False))
-        if isinstance(bucket, str):
-            bucket, in_transition = LEGACY_BUCKET_PHASES.get(bucket, (bucket, in_transition))
-            bucket = MinerBucket(bucket)
         return cls(
-            bucket=bucket,
+            bucket=MinerBucket(bucket) if isinstance(bucket, str) else bucket,
             start_time_ms=d.get('start_time_ms') or d.get('bucket_start_time', 0),
             reverted_ms=d.get('reverted_ms'),
-            in_transition=in_transition,
         )

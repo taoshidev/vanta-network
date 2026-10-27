@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import MS_IN_WEEK, TimeUtil
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import TradePair, ValiConfig
@@ -34,10 +34,6 @@ import os
 from shared_objects.log import logger
 
 logger.setLevel(logging.INFO)
-
-
-# Ledger status of a checkpoint stamped during the SUBACCOUNT_FUNDED transition week
-TRANSITION_STATUS = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True).status
 
 
 class TestDebtLedgers(TestBase):
@@ -1082,20 +1078,21 @@ class TestDebtLedgerBucketHelpers(TestBase):
             for i, status in enumerate(statuses)
         ]), base_ms
 
-    def test_the_transition_is_paid_unscaled_and_the_pro_phase_scaled(self):
+    def test_the_transition_is_paid_unscaled_and_the_pro_bucket_scaled(self):
         ledger, _ = self._status_ledger([
-            TRANSITION_STATUS, TRANSITION_STATUS, MinerBucket.PRO_CHALLENGE_FUNDED.value,
+            MinerBucket.SUBACCOUNT_FUNDED.value, MinerBucket.SUBACCOUNT_FUNDED.value,
+            MinerBucket.PRO_CHALLENGE_FUNDED.value,
         ])
         transition_cp, _, pro_cp = ledger.checkpoints
         self.assertEqual(DebtLedger.checkpoint_payout_scale(transition_cp, 0.4), 1.0)
         self.assertEqual(DebtLedger.checkpoint_payout_scale(pro_cp, 0.4), 0.4)
 
-    def test_checkpoints_stamped_with_the_replaced_names_keep_their_phase(self):
+    def test_checkpoints_stamped_with_the_replaced_names_keep_their_bucket(self):
         """Ledgers built before the merge carry PRO_CHALLENGE_TRANSITION / PRO_CHALLENGE_FROM_STANDARD."""
         ledger, _ = self._status_ledger(["PRO_CHALLENGE_TRANSITION", "PRO_CHALLENGE_FROM_STANDARD"])
         transition_cp, pro_cp = ledger.checkpoints
-        self.assertEqual(ledger.checkpoint_bucket(transition_cp), BucketPhase.from_status(TRANSITION_STATUS))
+        self.assertEqual(ledger.checkpoint_bucket(transition_cp), MinerBucket.SUBACCOUNT_FUNDED)
         self.assertEqual(DebtLedger.checkpoint_payout_scale(transition_cp, 0.4), 1.0)
         self.assertEqual(DebtLedger.checkpoint_payout_scale(pro_cp, 0.4), 0.4)
-        for status in (TRANSITION_STATUS, "PRO_CHALLENGE_TRANSITION", "PRO_CHALLENGE_FROM_STANDARD"):
+        for status in ("PRO_CHALLENGE_TRANSITION", "PRO_CHALLENGE_FROM_STANDARD"):
             self.assertIn(status, DebtBasedScoring.EARNING_MINER_BUCKETS)

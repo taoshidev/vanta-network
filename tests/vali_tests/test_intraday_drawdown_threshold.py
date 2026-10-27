@@ -24,15 +24,12 @@ from tests.vali_tests.test_challengeperiod_pro import (  # noqa: F401 - manager 
 from vali_objects.challenge_period.challengeperiod_manager import DrawdownStats, MinerBucketState
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.enums.elimination_reason_enum import EliminationReason
-from vali_objects.enums.miner_bucket_enum import BucketEntry, BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.vali_config import ValiConfig
 
-# PRO_CHALLENGE_FUNDED in its transition week, still trading the standard account
-TRANSITION = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
 SUBACCOUNT_BUCKETS = (
     MinerBucket.SUBACCOUNT_CHALLENGE,
     MinerBucket.SUBACCOUNT_FUNDED,
-    TRANSITION,
     MinerBucket.PRO_CHALLENGE_DIRECT,
     MinerBucket.PRO_CHALLENGE_FUNDED,
     MinerBucket.PRO_FUNDED,
@@ -43,14 +40,9 @@ DAY_OPEN = 1.10  # up on the starting balance, so the static rule never binds
 HL_ADDRESS = "0x" + "c" * 40
 
 
-def _phase(bucket: MinerBucket | BucketPhase) -> BucketPhase:
-    return bucket if isinstance(bucket, BucketPhase) else bucket.phase()
-
-
-def _threshold_state(bucket: MinerBucket | BucketPhase, intraday_drawdown_threshold: float | None,
+def _threshold_state(bucket: MinerBucket, intraday_drawdown_threshold: float | None,
                      criteria: DrawdownCriteria = DrawdownCriteria.STATIC) -> MinerBucketState:
-    phase = _phase(bucket)
-    entry = BucketEntry(phase.bucket, NOW_MS - DAILY_MS, in_transition=phase.in_transition)
+    entry = BucketEntry(bucket, NOW_MS - DAILY_MS)
     return MinerBucketState(HOTKEY, [entry], drawdown_criteria=criteria,
                             intraday_drawdown_threshold_override=intraday_drawdown_threshold)
 
@@ -118,14 +110,11 @@ def test_the_chosen_threshold_carries_through_every_promotion_until_pro_funded(m
                              drawdown_criteria=DrawdownCriteria.STATIC, intraday_drawdown_threshold=0.03)
     pro_default = ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
     for offset, (bucket, expected) in enumerate(((MinerBucket.SUBACCOUNT_FUNDED, 0.03),
-                                                 (TRANSITION, 0.03),
                                                  (MinerBucket.PRO_CHALLENGE_FUNDED, 0.03),
                                                  (MinerBucket.PRO_FUNDED, pro_default),
                                                  (MinerBucket.ELIMINATED, pro_default))):
-        phase = _phase(bucket)
-        manager.set_miner_bucket(HOTKEY, phase.bucket, NOW_MS - (3 - offset) * DAILY_MS,
-                                 in_transition=phase.in_transition)
-        assert manager.miner_states[HOTKEY].current_phase == phase
+        manager.set_miner_bucket(HOTKEY, bucket, NOW_MS - (3 - offset) * DAILY_MS)
+        assert manager.miner_states[HOTKEY].current_bucket == bucket
         assert manager.miner_states[HOTKEY].intraday_drawdown_threshold == expected
 
 

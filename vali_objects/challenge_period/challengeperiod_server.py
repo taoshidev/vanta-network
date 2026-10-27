@@ -9,7 +9,7 @@ Clients connect using ChallengePeriodClient.
 """
 import threading
 from typing import Tuple
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -176,12 +176,6 @@ class ChallengePeriodServer(RPCServerBase):
 
     def get_miner_buckets_rpc(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, MinerBucket | None]:
         return self._manager.get_miner_buckets(hotkeys, timestamp_ms)
-
-    def get_miner_phase_rpc(self, hotkey: str, timestamp_ms: int | None = None) -> BucketPhase | None:
-        return self._manager.get_miner_phase(hotkey, timestamp_ms)
-
-    def get_miner_phases_rpc(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, BucketPhase | None]:
-        return self._manager.get_miner_phases(hotkeys, timestamp_ms)
 
     def get_miner_start_time_rpc(self, hotkey: str) -> int | None:
         return self._manager.get_miner_start_time(hotkey)

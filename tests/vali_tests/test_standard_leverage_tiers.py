@@ -17,7 +17,7 @@ Covers:
 import unittest
 
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
 from vali_objects.trade_pair import (
@@ -405,21 +405,16 @@ class TestStandardTierOrderPath(unittest.TestCase):
 
     HL_ADDRESS = "0x" + "a" * 40
     SIZE = 100_000.0
-    # PRO_CHALLENGE_FUNDED in its transition week still trades the standard account
-    TRANSITION = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
     STANDARD_BUCKETS = (
         MinerBucket.SUBACCOUNT_CHALLENGE,
         MinerBucket.SUBACCOUNT_FUNDED,
-        TRANSITION,
     )
 
     def _account(self, bucket, asset_class, leverage_tier=None, hl_address=None, capital_used=0.0,
                  capital_used_by_class=None, size=None):
         size = self.SIZE if size is None else size
-        phase = bucket if isinstance(bucket, BucketPhase) or bucket is None else bucket.phase()
         account = MinerAccount(
-            miner_hotkey="ent_0", asset_class=asset_class,
-            miner_bucket=phase.bucket if phase else None, in_transition=bool(phase and phase.in_transition),
+            miner_hotkey="ent_0", asset_class=asset_class, miner_bucket=bucket,
             hl_address=hl_address, leverage_tier=leverage_tier, capital_used=capital_used,
             capital_used_by_class=capital_used_by_class or {},
         )
@@ -479,7 +474,6 @@ class TestStandardTierOrderPath(unittest.TestCase):
     TIER_0_CASES = (
         (MinerBucket.SUBACCOUNT_CHALLENGE, 100_000.0, 1),
         (MinerBucket.SUBACCOUNT_FUNDED, 100_000.0, 2),
-        (TRANSITION, 100_000.0, 2),
         (MinerBucket.SUBACCOUNT_FUNDED, 250_000.0, 3),
         (MinerBucket.SUBACCOUNT_FUNDED, 1_500_000.0, 4),
     )

@@ -34,6 +34,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.vali_tests.mock_utils import fake_account_transitions
 from tests.vali_tests.test_pro_account_size import (
     GRANTED_SIZE,
     REQUIRED,
@@ -54,7 +55,7 @@ from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-from vali_objects.enums.miner_bucket_enum import BucketEntry, BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
@@ -84,9 +85,10 @@ DAILY_CAP = ValiConfig.PRO_DAILY_RETURN_CAP                                  # 0
 INTRADAY_THRESHOLD = ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD    # 0.05
 EOD_THRESHOLD = ValiConfig.PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD              # 0.08
 
-# SUBACCOUNT_FUNDED in its transition week, still trading the standard account, and the pro phase after it
-TRANSITION = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
-FROM_STANDARD = BucketPhase(MinerBucket.PRO_CHALLENGE_FUNDED)
+# SUBACCOUNT_FUNDED in its transition week (MinerAccount.transition_start_ms), still trading the standard
+# account, and the pro bucket after it
+TRANSITION = "TRANSITION"
+FROM_STANDARD = MinerBucket.PRO_CHALLENGE_FUNDED
 
 # The two buckets that promote to PRO_FUNDED. Both eliminate on a breach.
 PRO_CHALLENGE_BUCKETS = (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FUNDED)
@@ -102,8 +104,8 @@ FUNDED_REASON = {
 
 # The only bucket moves an entity can ask for, source -> target.
 HOPS = (
-    (MinerBucket.SUBACCOUNT_CHALLENGE.phase(), MinerBucket.PRO_CHALLENGE_DIRECT.phase()),
-    (MinerBucket.SUBACCOUNT_FUNDED.phase(), TRANSITION),
+    (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.PRO_CHALLENGE_DIRECT),
+    (MinerBucket.SUBACCOUNT_FUNDED, TRANSITION),
     (TRANSITION, FROM_STANDARD),
 )
 # Buckets with nowhere to promote to: the end of the pro track, the standard buckets off it, and
@@ -155,6 +157,7 @@ def manager():
         for path in _CP_CLIENT_PATHS:
             stack.enter_context(patch(path))
         mgr = ChallengePeriodManager(is_backtesting=True)
+        fake_account_transitions(mgr)
         mgr._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
         mgr._entity_client.is_instant_funded.return_value = False
         yield mgr
@@ -199,14 +202,18 @@ def _even_ledger(n_days: int, realized_pnl_usd: float = 0.0, **kwargs) -> PerfLe
     return _ledger([math.log(1.001)] * n_days, realized_pnl_usd=realized_pnl_usd, **kwargs)
 
 
-def _phase(bucket: MinerBucket | BucketPhase) -> BucketPhase:
-    """A bare MinerBucket names its pro phase; only TRANSITION is in the transition."""
-    return bucket if isinstance(bucket, BucketPhase) else bucket.phase()
+def _bucket(bucket) -> MinerBucket:
+    """TRANSITION is SUBACCOUNT_FUNDED; any other value is its own bucket."""
+    return MinerBucket.SUBACCOUNT_FUNDED if bucket == TRANSITION else bucket
 
 
-def _state(bucket: MinerBucket | BucketPhase, start_ms: int = NOW_MS - DAILY_MS) -> MinerBucketState:
-    phase = _phase(bucket)
-    return MinerBucketState(HOTKEY, [BucketEntry(phase.bucket, start_ms, in_transition=phase.in_transition)])
+def _where(manager, hk: str = HOTKEY):
+    """The miner's bucket, or TRANSITION during its transition week."""
+    return TRANSITION if manager._transition_start(hk) is not None else manager.miner_states[hk].current_bucket
+
+
+def _state(bucket, start_ms: int = NOW_MS - DAILY_MS) -> MinerBucketState:
+    return MinerBucketState(HOTKEY, [BucketEntry(_bucket(bucket), start_ms)])
 
 
 def _healthy_drawdown(equity: float = 1.07) -> DrawdownStats:
@@ -238,8 +245,8 @@ def _breach(rule: str) -> DrawdownStats:
     return _intraday_breach() if rule == "INTRADAY" else _eod_breach()
 
 
-def _expected_reason(bucket: MinerBucket | BucketPhase, rule: str) -> EliminationReason:
-    return FUNDED_REASON[rule] if _phase(bucket).bucket == MinerBucket.PRO_FUNDED else CHALLENGE_REASON[rule]
+def _expected_reason(bucket, rule: str) -> EliminationReason:
+    return FUNDED_REASON[rule] if _bucket(bucket) == MinerBucket.PRO_FUNDED else CHALLENGE_REASON[rule]
 
 
 def _passing_pro_stats() -> ProStats:
@@ -253,7 +260,7 @@ def _breaching_pro_stats() -> ProStats:
                     max_drawdown=0.96, trading_days=MIN_DAYS)
 
 
-def _promotable_state(bucket: MinerBucket | BucketPhase) -> MinerBucketState:
+def _promotable_state(bucket) -> MinerBucketState:
     """A state clearing all four gates, so a single tweak isolates the gate under test."""
     state = _state(bucket)
     state.drawdown = _healthy_drawdown(1.0 + RETURNS_THRESHOLD + 0.01)
@@ -261,11 +268,11 @@ def _promotable_state(bucket: MinerBucket | BucketPhase) -> MinerBucketState:
     return state
 
 
-def _seed(manager, hk: str, bucket: MinerBucket | BucketPhase, drawdown: DrawdownStats,
+def _seed(manager, hk: str, bucket, drawdown: DrawdownStats,
           criteria: DrawdownCriteria = DrawdownCriteria.TRAILING) -> MinerBucketState:
-    phase = _phase(bucket)
-    manager.set_miner_bucket(hk, phase.bucket, NOW_MS - DAILY_MS, drawdown_criteria=criteria,
-                             in_transition=phase.in_transition)
+    manager.set_miner_bucket(hk, _bucket(bucket), NOW_MS - DAILY_MS, drawdown_criteria=criteria)
+    if bucket == TRANSITION:
+        manager._miner_account_client.set_transition(hk, NOW_MS - DAILY_MS)
     manager.miner_states[hk].drawdown = drawdown
     return manager.miner_states[hk]
 
@@ -276,7 +283,8 @@ def _accounts(hk: str, account_size: float | None = ACCOUNT_SIZE) -> dict:
 
 def _refresh_pro_stats(manager, hk: str, ledger: PerfLedger | None = None,
                        account_size: float | None = ACCOUNT_SIZE) -> ProStats:
-    manager._refresh_pro_stats([hk], {hk: ledger} if ledger else {}, _accounts(hk, account_size))
+    manager._refresh_pro_stats([hk], {hk: ledger} if ledger else {}, _accounts(hk, account_size),
+                               manager._miner_account_client.get_transition_starts([hk]))
     return manager.miner_states[hk].pro_stats
 
 
@@ -335,7 +343,6 @@ def test_only_the_direct_challenge_earns_nothing():
     assert MinerBucket.PRO_CHALLENGE_DIRECT.is_subaccount_earning is False
     assert MinerBucket.PRO_CHALLENGE_FUNDED.is_subaccount_earning is True
     assert MinerBucket.PRO_CHALLENGE_FUNDED.payout_scale_applies is True
-    assert FROM_STANDARD.payout_scale_applies is True
     assert MinerBucket.PRO_FUNDED.is_subaccount_earning is True
     assert MinerBucket.PRO_FUNDED.payout_scale_applies is False
     # Only PRO_FUNDED withholds a week on a soft breach
@@ -343,60 +350,18 @@ def test_only_the_direct_challenge_earns_nothing():
     assert not any(b.soft_breach_applies for b in PRO_CHALLENGE_BUCKETS)
 
 
-def test_the_transition_is_on_the_track_but_trades_the_standard_account():
-    assert TRANSITION.is_pro_track is True
-    assert TRANSITION.is_pro is False  # so it keeps the standard curve and the standard rules
-    assert TRANSITION.next_phase == FROM_STANDARD
-    # It is paid like the funded account it is winding down: earning, unscaled, never soft-breached
-    assert TRANSITION.is_subaccount_earning is True
-    assert TRANSITION.is_subaccount_funded is True
-    assert TRANSITION.is_subaccount_challenge is False
-    assert TRANSITION.payout_scale_applies is False
-    assert TRANSITION.soft_breach_applies is False
-    assert TRANSITION.calmar_threshold is None
-    # Entering it keeps the account; leaving it is the switch onto the pro account
-    assert TRANSITION.switches_account is False
-    assert FROM_STANDARD.switches_account is True
-    # It leaves on the week boundary, not a time limit of its own
-    assert TRANSITION.bucket.max_time_ms is None
-
-
-def test_the_transition_keeps_the_funded_drawdown_limits():
-    for time_ms in (None, ValiConfig.FUNDED_V0_CUTOFF_MS - 1, ValiConfig.FUNDED_V1_CUTOFF_MS - 1):
-        assert (TRANSITION.intraday_drawdown_threshold(time_ms)
-                == MinerBucket.SUBACCOUNT_FUNDED.intraday_drawdown_threshold(time_ms))
-        assert (TRANSITION.eod_drawdown_threshold(time_ms)
-                == MinerBucket.SUBACCOUNT_FUNDED.eod_drawdown_threshold(time_ms))
-    assert FROM_STANDARD.intraday_drawdown_threshold() == ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
-
-
-def test_the_flag_is_dropped_outside_subaccount_funded():
-    """Only SUBACCOUNT_FUNDED has a transition, so the flag cannot leak onto another bucket."""
-    for bucket in MinerBucket:
-        if bucket != MinerBucket.SUBACCOUNT_FUNDED:
-            assert BucketPhase(bucket, in_transition=True).in_transition is False
-            assert BucketEntry(bucket, NOW_MS, in_transition=True).in_transition is False
-
-
-@pytest.mark.parametrize("legacy,bucket,in_transition", [
-    ("PRO_CHALLENGE_TRANSITION", MinerBucket.SUBACCOUNT_FUNDED, True),
-    ("PRO_CHALLENGE_FROM_STANDARD", MinerBucket.PRO_CHALLENGE_FUNDED, False),
+@pytest.mark.parametrize("legacy,bucket", [
+    ("PRO_CHALLENGE_TRANSITION", MinerBucket.SUBACCOUNT_FUNDED),
+    ("PRO_CHALLENGE_FROM_STANDARD", MinerBucket.PRO_CHALLENGE_FUNDED),
 ])
-def test_the_replaced_bucket_names_still_parse(legacy, bucket, in_transition):
+def test_the_replaced_bucket_names_still_parse(legacy, bucket):
     """Checkpoints, disk state and ledger statuses written before the merge name the old buckets."""
     assert MinerBucket(legacy) is bucket
-    entry = BucketEntry.from_dict({"bucket": legacy, "start_time_ms": NOW_MS})
-    assert entry.phase == BucketPhase(bucket, in_transition)
-    assert BucketPhase.from_status(legacy) == entry.phase
-    assert legacy in BucketPhase.statuses_of(bucket)
-
-
-def test_a_phase_round_trips_through_its_status():
-    for phase in (TRANSITION, FROM_STANDARD, MinerBucket.PRO_FUNDED.phase()):
-        assert BucketPhase.from_status(phase.status) == phase
-    assert TRANSITION.status != FROM_STANDARD.status
-    assert BucketPhase.from_status(None).bucket is MinerBucket.UNKNOWN
-    assert BucketPhase.from_status("NOT_A_BUCKET").bucket is MinerBucket.UNKNOWN
+    assert BucketEntry.from_dict({"bucket": legacy, "start_time_ms": NOW_MS}).bucket is bucket
+    assert MinerBucket.from_status(legacy) is bucket
+    assert legacy in bucket.statuses
+    assert MinerBucket.from_status(None) is MinerBucket.UNKNOWN
+    assert MinerBucket.from_status("NOT_A_BUCKET") is MinerBucket.UNKNOWN
 
 
 def test_promotion_gate_thresholds():
@@ -434,23 +399,29 @@ def test_account_type_validation():
     assert AccountType.is_valid("nonsense") is False
 
 
-def test_the_miner_account_carries_the_transition_flag():
-    """The order path reads pro-ness off the MinerAccount, so the flag has to reach it, survive its
-    disk format, and be recovered from accounts saved under the old bucket names."""
+def test_the_miner_account_holds_the_transition():
+    """The order path reads the transition off the MinerAccount: only in SUBACCOUNT_FUNDED, kept
+    through an elimination for a revert, and through its disk format."""
     from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
 
-    account = MinerAccount(miner_hotkey=HOTKEY, miner_bucket=MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
-    assert account.bucket_phase == TRANSITION
+    account = MinerAccount(miner_hotkey=HOTKEY, miner_bucket=MinerBucket.SUBACCOUNT_FUNDED,
+                           transition_start_ms=MONDAY_MS)
+    assert account.in_transition is True
     assert account.is_pro_bucket is False
     assert MinerAccount(miner_hotkey=HOTKEY, miner_bucket=MinerBucket.PRO_CHALLENGE_FUNDED).is_pro_bucket is True
 
     restored = MinerAccountManager._parse_accounts_dict({HOTKEY: [account.to_dict()]})[HOTKEY]
-    assert restored.bucket_phase == TRANSITION
+    assert restored.transition_start_ms == MONDAY_MS and restored.in_transition is True
 
-    for legacy, phase in (("PRO_CHALLENGE_TRANSITION", TRANSITION), ("PRO_CHALLENGE_FROM_STANDARD", FROM_STANDARD)):
+    MinerAccountManager._apply_bucket(account, MinerBucket.ELIMINATED)
+    assert account.in_transition is False and account.transition_start_ms == MONDAY_MS
+    MinerAccountManager._apply_bucket(account, MinerBucket.PRO_FUNDED)
+    assert account.transition_start_ms is None
+
+    for legacy, bucket in (("PRO_CHALLENGE_TRANSITION", MinerBucket.SUBACCOUNT_FUNDED),
+                           ("PRO_CHALLENGE_FROM_STANDARD", MinerBucket.PRO_CHALLENGE_FUNDED)):
         record = {**account.to_dict(), "miner_bucket": legacy}
-        record.pop("in_transition")
-        assert MinerAccountManager._parse_accounts_dict({HOTKEY: [record]})[HOTKEY].bucket_phase == phase
+        assert MinerAccountManager._parse_accounts_dict({HOTKEY: [record]})[HOTKEY].miner_bucket is bucket
 
 
 def test_instant_funded_records_and_requests_under_the_old_name_still_resolve():
@@ -465,22 +436,6 @@ def test_instant_funded_records_and_requests_under_the_old_name_still_resolve():
     assert is_instant_funded("PRO_CHALLENGE_FROM_STANDARD") is True
     assert subaccount_creation_error("PRO_CHALLENGE_FROM_STANDARD", 100_000, 500_000) is None
     assert subaccount_creation_error(MinerBucket.PRO_CHALLENGE_FUNDED.value, 100_000, 500_000) is None
-
-
-def test_the_transition_is_listed_as_funded_and_the_pro_phase_as_a_challenge(manager):
-    manager.set_miner_bucket("in_transition", MinerBucket.SUBACCOUNT_FUNDED, NOW_MS, in_transition=True)
-    manager.set_miner_bucket("pro_phase", MinerBucket.PRO_CHALLENGE_FUNDED, NOW_MS)
-
-    assert set(manager.get_success_miners()) == {"in_transition"}
-    assert set(manager.get_testing_miners()) == {"pro_phase"}
-
-
-def test_the_account_sync_pushes_the_phase(manager):
-    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS, in_transition=True)
-
-    manager._sync_buckets_to_accounts([HOTKEY])
-
-    manager._miner_account_client.set_miner_buckets.assert_called_once_with({HOTKEY: TRANSITION})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -741,19 +696,20 @@ def test_the_transition_bucket_never_promotes_on_returns():
     Blocking the returns path leaves that boundary as the only automatic way out."""
     state = _promotable_state(TRANSITION)
     state.drawdown = DrawdownStats(current_equity=2.0, current_balance=2.0)
-    assert ChallengePeriodManager._check_promotion(state, RETURNS_THRESHOLD, NOW_MS) is False
+    assert ChallengePeriodManager._check_promotion(state, RETURNS_THRESHOLD, NOW_MS, in_transition=True) is False
 
 
 def test_the_transition_ends_at_the_next_monday_however_short_that_is():
     """Entering mid-week does not buy a full week: the wind-down closes at the first Monday 00:00
     UTC after the miner entered, so a Saturday entry has two days of it."""
-    state = _state(TRANSITION, MONDAY_MS - 2 * DAILY_MS)  # the Saturday before
+    start_ms = MONDAY_MS - 2 * DAILY_MS  # the Saturday before
+    state = _state(TRANSITION, start_ms)
 
-    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS - DAILY_MS) is False
-    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS - 1) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, start_ms, MONDAY_MS - DAILY_MS) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, start_ms, MONDAY_MS - 1) is False
     # The boundary itself, and every refresh after it: whichever run comes first promotes them
-    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS) is True
-    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS) is True
+    assert ChallengePeriodManager._check_transition_expiry(state, start_ms, MONDAY_MS) is True
+    assert ChallengePeriodManager._check_transition_expiry(state, start_ms, NOW_MS) is True
 
 
 def test_a_transition_entered_on_the_boundary_keeps_the_whole_week():
@@ -761,9 +717,9 @@ def test_a_transition_entered_on_the_boundary_keeps_the_whole_week():
     out on the same refresh."""
     state = _state(TRANSITION, MONDAY_MS)
 
-    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS) is False
-    assert ChallengePeriodManager._check_transition_expiry(state, NEXT_MONDAY_MS - 1) is False
-    assert ChallengePeriodManager._check_transition_expiry(state, NEXT_MONDAY_MS) is True
+    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS, MONDAY_MS) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS, NEXT_MONDAY_MS - 1) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS, NEXT_MONDAY_MS) is True
 
 
 @pytest.mark.parametrize("bucket", list(MinerBucket))
@@ -771,7 +727,7 @@ def test_no_other_bucket_leaves_on_the_week_boundary(bucket):
     """Only the transition is advanced by the calendar; every other bucket, SUBACCOUNT_FUNDED
     out of transition included, promotes on its own gates however many Mondays it has sat through."""
     state = _state(bucket, NOW_MS - 400 * DAILY_MS)
-    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, None, NOW_MS) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -843,47 +799,35 @@ def test_refresh_moves_the_transition_onto_the_pro_account_once_the_week_turns(m
     """End to end: a miner that entered the wind-down on Sunday is still in it on Sunday night and
     is moved on by the first refresh past Monday 00:00 UTC, with nothing but the calendar changing.
     Leaving the transition is the PRO_CHALLENGE_FUNDED entry, and switches the account."""
-    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, MONDAY_MS - DAILY_MS, in_transition=True)
+    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, MONDAY_MS - DAILY_MS)
+    manager._miner_account_client.set_transition(HOTKEY, MONDAY_MS - DAILY_MS)
     manager.miner_states[HOTKEY].drawdown = _healthy_drawdown(1.0)
 
     _run_refresh(manager, HOTKEY, now_ms=MONDAY_MS - 1)
-    assert manager.get_miner_phase(HOTKEY) == TRANSITION
+    assert _where(manager) == TRANSITION
     manager._position_client.close_all_positions.assert_not_called()
 
     _run_refresh(manager, HOTKEY, now_ms=MONDAY_MS)
-    assert manager.get_miner_phase(HOTKEY) == FROM_STANDARD
+    assert _where(manager) == FROM_STANDARD
     entries = manager.miner_states[HOTKEY].entries
-    assert [(e.bucket, e.in_transition, e.start_time_ms) for e in entries[-2:]] == [
-        (MinerBucket.SUBACCOUNT_FUNDED, True, MONDAY_MS - DAILY_MS),
-        (MinerBucket.PRO_CHALLENGE_FUNDED, False, MONDAY_MS),
+    assert [(e.bucket, e.start_time_ms) for e in entries[-2:]] == [
+        (MinerBucket.SUBACCOUNT_FUNDED, MONDAY_MS - DAILY_MS),
+        (MinerBucket.PRO_CHALLENGE_FUNDED, MONDAY_MS),
     ]
-    # The flip is a full account switch
+    # The flip is a full account switch, which ends the transition
     manager._position_client.close_all_positions.assert_called_once()
-    manager._miner_account_client.reset_account.assert_called_once_with(
-        HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, in_transition=False)
+    manager._miner_account_client.reset_account.assert_called_once_with(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED)
 
 
-def test_the_phase_at_a_point_in_time_follows_the_flip():
-    """Ledger replay reads the phase each checkpoint was in, so the transition week stays unscaled
-    after the flip."""
+def test_the_bucket_at_a_point_in_time_follows_the_flip():
+    """Ledger replay reads the bucket each checkpoint was in."""
     state = _state(MinerBucket.SUBACCOUNT_FUNDED, MONDAY_MS - 14 * DAILY_MS)
-    state.add_bucket_entry(MinerBucket.SUBACCOUNT_FUNDED, MONDAY_MS - 3 * DAILY_MS, in_transition=True)
     state.add_bucket_entry(MinerBucket.PRO_CHALLENGE_FUNDED, MONDAY_MS)
 
-    assert state.phase(MONDAY_MS - 7 * DAILY_MS) == MinerBucket.SUBACCOUNT_FUNDED.phase()
-    assert state.phase(MONDAY_MS - 1) == TRANSITION
-    assert state.phase(MONDAY_MS) == FROM_STANDARD
     assert state.bucket(MONDAY_MS - 1) is MinerBucket.SUBACCOUNT_FUNDED
     assert state.bucket(MONDAY_MS) is MinerBucket.PRO_CHALLENGE_FUNDED
-    # Re-adding the phase already in force is a no-op
+    # Re-adding the bucket already in force is a no-op
     assert state.add_bucket_entry(MinerBucket.PRO_CHALLENGE_FUNDED, NOW_MS) is False
-
-
-def test_the_flag_survives_a_checkpoint_round_trip():
-    state = _state(TRANSITION, MONDAY_MS)
-    restored = MinerBucketState.from_checkpoint_dict(HOTKEY, state.to_checkpoint_dict())
-    assert restored.in_transition is True
-    assert restored.current_phase == TRANSITION
 
 
 def test_a_checkpoint_written_before_the_merge_migrates():
@@ -895,10 +839,23 @@ def test_a_checkpoint_written_before_the_merge_migrates():
     ]}
     state = MinerBucketState.from_checkpoint_dict(HOTKEY, legacy)
 
-    assert [e.phase for e in state.entries] == [MinerBucket.SUBACCOUNT_FUNDED.phase(), TRANSITION, FROM_STANDARD]
     rewritten = state.to_checkpoint_dict()["entries"]
     assert [e["bucket"] for e in rewritten] == ["SUBACCOUNT_FUNDED", "SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FUNDED"]
-    assert [e["in_transition"] for e in rewritten] == [False, True, False]
+    # Only a state still in PRO_CHALLENGE_TRANSITION has a transition to move onto its account
+    assert ChallengePeriodManager._read_legacy_transitions({HOTKEY: legacy}) == {}
+    in_transition = {"entries": legacy["entries"][:2]}
+    assert ChallengePeriodManager._read_legacy_transitions({HOTKEY: in_transition}) == {
+        HOTKEY: MONDAY_MS - 3 * DAILY_MS}
+
+
+def test_a_legacy_transition_moves_onto_the_account(manager):
+    manager._legacy_transition_starts = {HOTKEY: MONDAY_MS - 3 * DAILY_MS, "gone": MONDAY_MS}
+    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, MONDAY_MS - 14 * DAILY_MS)
+
+    manager._apply_legacy_transitions()
+
+    assert manager._transition_start(HOTKEY) == MONDAY_MS - 3 * DAILY_MS
+    assert manager._legacy_transition_starts == {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1230,8 +1187,9 @@ def test_admin_rejects_a_malformed_soft_breach_week(manager, week_start_ms, days
 
 def _eliminated_state(manager, hk: str, bucket=MinerBucket.PRO_FUNDED) -> MinerBucketState:
     """An account carrying pro history that was then eliminated out of `bucket`."""
-    phase = _phase(bucket)
-    state = MinerBucketState(hk, [BucketEntry(phase.bucket, NOW_MS - 10 * DAILY_MS, in_transition=phase.in_transition)])
+    state = MinerBucketState(hk, [BucketEntry(_bucket(bucket), NOW_MS - 10 * DAILY_MS)])
+    if bucket == TRANSITION:
+        manager._miner_account_client.set_transition(hk, NOW_MS - 10 * DAILY_MS)
     state.drawdown = _healthy_drawdown(1.07)
     state.pro_stats = _passing_pro_stats()
     state.pro_stats.soft_breach_weeks = {WEEK_START_MS: [MIDNIGHT_MS - DAILY_MS]}
@@ -1283,25 +1241,23 @@ def test_the_penalty_ledger_skips_a_reverted_span_when_stamping_checkpoints(mana
     assert status == MinerBucket.PRO_FUNDED.value
 
 
-def test_the_penalty_ledger_stamps_the_transition_phase():
-    """Checkpoints inside the transition week carry the phase in their status, which is what keeps
-    them unscaled in the payout once the account has flipped onto the pro phase."""
+def test_the_penalty_ledger_stamps_the_transition_as_subaccount_funded():
+    """The transition is paid like the funded account it winds down, so its checkpoints carry the bucket."""
     from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import PenaltyLedgerManager
 
     state = _state(MinerBucket.SUBACCOUNT_FUNDED, MONDAY_MS - 14 * DAILY_MS)
-    state.add_bucket_entry(MinerBucket.SUBACCOUNT_FUNDED, MONDAY_MS - 3 * DAILY_MS, in_transition=True)
     state.add_bucket_entry(MinerBucket.PRO_CHALLENGE_FUNDED, MONDAY_MS)
     history = state.to_checkpoint_dict()
 
     def status_at(ms):
         return PenaltyLedgerManager._get_status_for_checkpoint(PenaltyLedgerManager, ms, history)
 
-    assert status_at(MONDAY_MS - 1) == TRANSITION.status
+    assert status_at(MONDAY_MS - 1) == MinerBucket.SUBACCOUNT_FUNDED.value
     assert status_at(MONDAY_MS) == MinerBucket.PRO_CHALLENGE_FUNDED.value
     # A history written before the merge stamps the same way
     legacy = {"entries": [{"bucket": "PRO_CHALLENGE_TRANSITION", "start_time_ms": MONDAY_MS - 3 * DAILY_MS}]}
     assert PenaltyLedgerManager._get_status_for_checkpoint(PenaltyLedgerManager, MONDAY_MS - 1, legacy) \
-        == TRANSITION.status
+        == MinerBucket.SUBACCOUNT_FUNDED.value
 
 
 def test_a_pro_revert_keeps_the_stats_the_latch_and_the_trailing_loss_limit(manager):
@@ -1344,8 +1300,8 @@ def test_a_pro_challenge_revert_does_not_pay_for_the_eliminated_span(manager, bu
     with _quiet(manager):
         assert manager.revert_elimination(HOTKEY)
 
-    # The transition flag comes back with the bucket
-    assert state.current_phase == _phase(bucket)
+    # The transition comes back with the bucket
+    assert _where(manager) == bucket
     assert not state.entries[1].is_reverted
     assert state.bucket(eliminated_at_ms) == MinerBucket.ELIMINATED
     assert state.drawdown == DrawdownStats()
@@ -1388,16 +1344,16 @@ def test_switching_account_clears_the_pro_stats_and_the_latch(manager):
     assert manager.miner_states[HOTKEY].pro_stats == ProStats()
 
 
-@pytest.mark.parametrize("from_phase, target, closes", [
-    (_phase(MinerBucket.PRO_CHALLENGE_FUNDED), _phase(MinerBucket.PRO_FUNDED), True),
-    (_phase(MinerBucket.PRO_CHALLENGE_DIRECT), _phase(MinerBucket.PRO_FUNDED), True),
-    (_phase(MinerBucket.PRO_FUNDED), _phase(MinerBucket.SUBACCOUNT_CHALLENGE), True),
-    (_phase(MinerBucket.SUBACCOUNT_FUNDED), TRANSITION, False),
-    (_phase(MinerBucket.PRO_FUNDED), _phase(MinerBucket.ELIMINATED), False),
-    (_phase(MinerBucket.MAINCOMP), _phase(MinerBucket.PROBATION), False),
+@pytest.mark.parametrize("from_bucket, target, closes", [
+    (MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_FUNDED, True),
+    (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED, True),
+    (MinerBucket.PRO_FUNDED, MinerBucket.SUBACCOUNT_CHALLENGE, True),
+    (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_FUNDED, False),
+    (MinerBucket.PRO_FUNDED, MinerBucket.ELIMINATED, False),
+    (MinerBucket.MAINCOMP, MinerBucket.PROBATION, False),
 ])
-def test_closes_positions_from(from_phase, target, closes):
-    assert target.closes_positions_from(from_phase) is closes
+def test_closes_positions_from(from_bucket, target, closes):
+    assert target.closes_positions_from(from_bucket) is closes
 
 
 def test_admin_move_to_pro_funded_sizes_the_account(manager):
@@ -1437,8 +1393,9 @@ def test_admin_move_to_pro_funded_aborts_when_sizing_fails(manager):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _in_bucket(manager, bucket, hotkey=HOTKEY):
-    phase = _phase(bucket)
-    manager.set_miner_bucket(hotkey, phase.bucket, NOW_MS, in_transition=phase.in_transition)
+    manager.set_miner_bucket(hotkey, _bucket(bucket), NOW_MS)
+    if bucket == TRANSITION:
+        manager._miner_account_client.set_transition(hotkey, NOW_MS)
     return manager
 
 
@@ -1449,9 +1406,9 @@ def test_each_hop_moves_to_its_own_target(hop_manager, source, target):
     success, message = hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
 
     assert success, message
-    assert hop_manager.miner_states[HOTKEY].current_phase == target
+    assert _where(hop_manager) == target
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, target.bucket, GRANTED_SIZE, in_transition=target.in_transition, waive_promotion_fee=False)
+        HOTKEY, _bucket(target), GRANTED_SIZE, in_transition=target == TRANSITION, waive_promotion_fee=False)
 
 
 def test_an_omitted_size_is_passed_through_as_none(hop_manager):
@@ -1471,7 +1428,7 @@ def test_only_the_hops_onto_a_pro_account_wind_the_standard_account_down(hop_man
 
     assert hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)[0]
 
-    assert target.switches_account
+    assert _bucket(target).switches_account
     hop_manager._position_client.close_all_positions.assert_called_once_with(
         hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION
     )
@@ -1479,8 +1436,7 @@ def test_only_the_hops_onto_a_pro_account_wind_the_standard_account_down(hop_man
     hop_manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
     hop_manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_called_once_with([HOTKEY])
     hop_manager._debt_ledger_client.delete_debt_ledger.assert_called_once_with(HOTKEY)
-    hop_manager._miner_account_client.reset_account.assert_called_once_with(
-        HOTKEY, target.bucket, in_transition=target.in_transition)
+    hop_manager._miner_account_client.reset_account.assert_called_once_with(HOTKEY, _bucket(target))
     hop_manager._limit_order_client.cancel_entry_orders.assert_not_called()
 
 
@@ -1492,8 +1448,7 @@ def test_entering_the_transition_wipes_nothing_and_only_sweeps_entry_orders(hop_
 
     assert hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)[0]
 
-    assert hop_manager.miner_states[HOTKEY].current_phase == TRANSITION
-    assert hop_manager.miner_states[HOTKEY].in_transition is True
+    assert _where(hop_manager) == TRANSITION
     hop_manager._position_client.close_all_positions.assert_not_called()
     hop_manager._position_client.archive_positions_for_hotkey.assert_not_called()
     hop_manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
@@ -1535,7 +1490,7 @@ def test_entity_rejection_blocks_the_promotion(hop_manager):
 
     assert not success
     assert REQUIRED in message
-    assert hop_manager.miner_states[HOTKEY].current_phase == TRANSITION
+    assert _where(hop_manager) == TRANSITION
     hop_manager._position_client.close_all_positions.assert_not_called()
 
 
@@ -1547,8 +1502,8 @@ def test_instant_funded_cannot_enter_the_transition(hop_manager, instant_funded,
     success, _ = hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
 
     assert success == allowed
-    expected = TRANSITION if allowed else MinerBucket.SUBACCOUNT_FUNDED.phase()
-    assert hop_manager.miner_states[HOTKEY].current_phase == expected
+    expected = TRANSITION if allowed else MinerBucket.SUBACCOUNT_FUNDED
+    assert _where(hop_manager) == expected
 
 
 def test_instant_funded_cannot_be_admin_moved_into_the_transition(hop_manager):
@@ -1558,7 +1513,7 @@ def test_instant_funded_cannot_be_admin_moved_into_the_transition(hop_manager):
     success, _ = hop_manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS, in_transition=True)
 
     assert not success
-    assert hop_manager.miner_states[HOTKEY].current_phase == MinerBucket.SUBACCOUNT_FUNDED.phase()
+    assert _where(hop_manager) == MinerBucket.SUBACCOUNT_FUNDED
 
 
 @pytest.mark.parametrize("bucket", NO_PROMOTION)
@@ -1613,7 +1568,7 @@ def test_the_transition_records_the_size_then_the_next_hop_trades_it(hop_manager
     success, message = hop_manager.promote_subaccount(hotkey, NOW_MS + 1000)
 
     assert success, message
-    assert hop_manager.miner_states[hotkey].current_phase == FROM_STANDARD
+    assert _where(hop_manager, hotkey) == FROM_STANDARD
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.pro_account_size == 250_000
     assert info.account_size == 250_000
@@ -1647,7 +1602,7 @@ def test_entering_the_track_without_a_size_is_rejected(hop_manager):
 
     assert not success
     assert REQUIRED in message
-    assert hop_manager.miner_states[hotkey].current_phase == MinerBucket.SUBACCOUNT_FUNDED.phase()
+    assert _where(hop_manager, hotkey) == MinerBucket.SUBACCOUNT_FUNDED
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.pro_account_size is None
     assert info.account_size == STANDARD_SIZE
@@ -1663,8 +1618,8 @@ def test_organic_promotion_keeps_the_recorded_size(hop_manager):
     entity_manager, hotkey = _with_real_entity_manager(hop_manager)
     assert hop_manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
 
-    assert hop_manager.promote_hotkeys({hotkey: TRANSITION}, NOW_MS)
-    assert hop_manager.miner_states[hotkey].current_phase == FROM_STANDARD
+    assert hop_manager.promote_hotkeys({hotkey: MinerBucket.SUBACCOUNT_FUNDED}, NOW_MS)
+    assert _where(hop_manager, hotkey) == FROM_STANDARD
     assert entity_manager.get_subaccount_info_for_synthetic(hotkey).account_size == GRANTED_SIZE
 
     assert hop_manager.promote_hotkeys({hotkey: FROM_STANDARD}, NOW_MS + 1000)
@@ -1725,7 +1680,7 @@ def test_a_failed_hop_onto_the_pro_account_rolls_the_sizing_back(hop_manager, fa
             with pytest.raises(RuntimeError):
                 hop_manager.promote_subaccount(hotkey, NOW_MS + 1000)
 
-    assert hop_manager.miner_states[hotkey].current_phase == TRANSITION
+    assert _where(hop_manager, hotkey) == TRANSITION
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.account_size == STANDARD_SIZE
     assert info.standard_account_size == before.standard_account_size
@@ -1746,7 +1701,7 @@ def test_a_crash_after_the_bucket_moves_keeps_the_sizing(hop_manager):
         with pytest.raises(RuntimeError):
             hop_manager.promote_subaccount(hotkey, NOW_MS + 1000)
 
-    assert hop_manager.miner_states[hotkey].current_phase == FROM_STANDARD
+    assert _where(hop_manager, hotkey) == FROM_STANDARD
     info = entity_manager.get_subaccount_info_for_synthetic(hotkey)
     assert info.account_type == "pro"
     assert info.account_size == GRANTED_SIZE
@@ -1844,9 +1799,8 @@ class ProTransitionRestingOrdersTest(unittest.TestCase):
     # ---- fixtures -------------------------------------------------------------------
 
     def _set_bucket(self, bucket):
-        phase = _phase(bucket)
         self.manager._miner_account_client.get_account.return_value = MagicMock(
-            miner_bucket=phase.bucket, in_transition=phase.in_transition)
+            miner_bucket=_bucket(bucket), in_transition=bucket == TRANSITION)
 
     def _set_open_positions(self, positions):
         by_trade_pair = {p.trade_pair.trade_pair_id: p for p in positions}
@@ -2007,6 +1961,7 @@ class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
         for path in _CP_CLIENT_PATHS:
             stack.enter_context(patch(path))
         self.manager = ChallengePeriodManager(is_backtesting=True)
+        fake_account_transitions(self.manager)
         self.manager._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
         self.manager._entity_client.is_instant_funded.return_value = False
         stack.enter_context(patch.object(self.manager, "_sync_buckets_to_accounts"))
@@ -2026,8 +1981,7 @@ class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
         self.manager._position_client.close_all_positions.assert_not_called()
 
     def test_an_account_switch_still_cancels_everything(self):
-        self.manager.set_miner_bucket(ORDER_HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, ORDER_NOW_MS,
-                                      in_transition=True)
+        self.manager._miner_account_client.set_transition(ORDER_HOTKEY, ORDER_NOW_MS)
 
         success, message = self.manager.admin_set_bucket(
             ORDER_HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, ORDER_NOW_MS)

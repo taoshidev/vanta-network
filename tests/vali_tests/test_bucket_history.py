@@ -3,8 +3,8 @@ Per-bucket history: every bucket stint keeps its positions, snapshots and daily 
 rows in validation/miners/<hk>/buckets/<BUCKET>_<start_ms>/, readable through
 GET /bucket-statistics/<minerid>.
 
-  * Segment derivation from bucket entries: the SUBACCOUNT_FUNDED transition flag is not a bucket,
-    so setting it stays in one segment, which records the transition week as one range.
+  * Segment derivation from bucket entries: the SUBACCOUNT_FUNDED transition week lives on the account,
+    not in a bucket, so it stays in one segment, which records the week as one range.
   * A hop that runs _switch_account (SUBACCOUNT_CHALLENGE -> SUBACCOUNT_FUNDED, the transition ->
     PRO_CHALLENGE_FUNDED) wipes the account: the closed positions are copied into the segment
     before the archive, and the next account starts with no positions.
@@ -29,6 +29,7 @@ import pytest
 from flask import Flask
 
 from time_util.time_util import TimeUtil
+from tests.vali_tests.mock_utils import fake_account_transitions
 from vali_objects.challenge_period.bucket_history import BucketHistoryStore, BucketSegment, segment_runs
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager, ProStats
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
@@ -108,6 +109,7 @@ def manager():
             stack.enter_context(patch(path))
         mgr = ChallengePeriodManager(is_backtesting=True, running_unit_tests=True)
         mgr._bucket_history.clear_for_test()
+        fake_account_transitions(mgr)
         # The miner directory its positions/ would live in; bucket history never creates it
         os.makedirs(_miner_dir(), exist_ok=True)
         mgr._position_client = FakePositions()
@@ -143,10 +145,9 @@ def test_the_transition_is_one_range_inside_the_funded_segment():
     runs = segment_runs([
         BucketEntry(MinerBucket.SUBACCOUNT_CHALLENGE, T0),
         BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, T1),
-        BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, T2, in_transition=True),
         BucketEntry(MinerBucket.PRO_CHALLENGE_FUNDED, T3),
         BucketEntry(MinerBucket.PRO_FUNDED, T5),
-    ])
+    ], transition_start_ms=T2)
     assert [(r.bucket, r.start_ms, r.end_ms) for r in runs] == [
         ("SUBACCOUNT_CHALLENGE", T0, T1),
         ("SUBACCOUNT_FUNDED", T1, T3),
@@ -154,7 +155,7 @@ def test_the_transition_is_one_range_inside_the_funded_segment():
         ("PRO_FUNDED", T5, None),
     ]
     funded, pro_challenge, pro_funded = runs[1], runs[2], runs[3]
-    assert (funded.transition_start_ms, funded.transition_end_ms) == (T2, T3)
+    assert funded.transition_start_ms == T2
     assert funded.account_start_ms == T1                   # entered through an account switch
     assert pro_challenge.account_start_ms == T3            # leaving the transition switched account
     assert pro_funded.account_start_ms == T3               # PRO_FUNDED keeps that account
@@ -162,11 +163,27 @@ def test_the_transition_is_one_range_inside_the_funded_segment():
 
 
 def test_a_running_transition_has_no_end():
-    funded = segment_runs([
+    funded = segment_runs([BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, T1)], transition_start_ms=T2)[0]
+    assert (funded.end_ms, funded.transition_start_ms) == (None, T2)
+
+
+def test_a_transition_reopened_by_a_revert_starts_with_the_reopened_segment():
+    runs = segment_runs([
         BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, T1),
-        BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, T2, in_transition=True),
-    ])[0]
-    assert (funded.end_ms, funded.transition_start_ms, funded.transition_end_ms) == (None, T2, None)
+        BucketEntry(MinerBucket.ELIMINATED, T3),
+        BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, T4),
+    ], transition_start_ms=T2)
+    assert [r.transition_start_ms for r in runs] == [T2, None, T4]
+
+
+def test_a_segment_keeps_its_transition_once_the_account_moves_on(manager):
+    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, T1)
+    assert manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, T2, in_transition=True)[0]
+    assert manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T3)[0]
+    manager._reconcile_bucket_history([HOTKEY], T4)
+
+    funded = _segment(manager, MinerBucket.SUBACCOUNT_FUNDED, T1)
+    assert (funded.transition_start_ms, funded.transition_end_ms) == (T2, T3)
 
 
 def test_reverted_entries_are_skipped():

@@ -22,7 +22,7 @@ Usage:
 """
 from typing import Tuple
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 
@@ -77,15 +77,6 @@ class ChallengePeriodClient(RPCClientBase):
     def get_miner_buckets(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, MinerBucket | None]:
         """Get buckets for multiple miners in one call."""
         return self._server.get_miner_buckets_rpc(hotkeys, timestamp_ms)
-
-    def get_miner_phase(self, hotkey: str, timestamp_ms: int | None = None) -> BucketPhase | None:
-        """Get the bucket and SUBACCOUNT_FUNDED transition flag of a miner, optionally at a
-        specific timestamp."""
-        return self._server.get_miner_phase_rpc(hotkey, timestamp_ms)
-
-    def get_miner_phases(self, hotkeys: list[str], timestamp_ms: int | None = None) -> dict[str, BucketPhase | None]:
-        """Get bucket phases for multiple miners in one call."""
-        return self._server.get_miner_phases_rpc(hotkeys, timestamp_ms)
 
     def get_miner_start_time(self, hotkey: str) -> int | None:
         """Get the start time of a miner's current bucket."""

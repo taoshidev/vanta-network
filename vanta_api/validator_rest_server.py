@@ -29,7 +29,7 @@ from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
@@ -748,7 +748,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             return jsonify({'error': 'Challenge period data not available'}), 503
 
         bucket = request.args.get('bucket')
-        if bucket and BucketPhase.from_status(bucket).bucket == MinerBucket.UNKNOWN:
+        if bucket and MinerBucket.from_status(bucket) == MinerBucket.UNKNOWN:
             return jsonify({'error': f'Unknown bucket {bucket}'}), 400
 
         start_ms = request.args.get('start_ms')
@@ -2412,12 +2412,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not before:
                 return jsonify({'error': f'Subaccount {hotkey} not found'}), 404
 
-            bucket = self._challenge_period_client.get_miner_phase(hotkey)
-            if bucket is not None and bucket.is_pro_track:
+            bucket = self._challenge_period_client.get_miner_bucket(hotkey)
+            in_transition = hotkey in self._miner_account_client.get_transition_starts([hotkey])
+            if bucket is not None and (bucket.is_pro_track or in_transition):
                 # Re-applying the current bucket resizes in place; the fee charged is the new size's
                 # fee minus pro_fee_theta already assessed
                 success, message = self._entity_client.apply_bucket_account_size(
-                    hotkey, bucket.bucket, account_size, in_transition=bucket.in_transition)
+                    hotkey, bucket, account_size, in_transition=in_transition)
             else:
                 success, message = self._entity_client.update_subaccount_account_size(hotkey, account_size)
             if not success:
@@ -2431,7 +2432,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'message': message,
                 'hotkey': hotkey,
                 'bucket': bucket.value if bucket else None,
-                'in_transition': bool(bucket and bucket.in_transition),
+                'in_transition': in_transition,
                 'before': {f: before.get(f) for f in fields},
                 'after': {f: after.get(f) for f in fields},
             }), 200
@@ -3232,7 +3233,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Promote a subaccount one step up the pro track on the entity's own signed request.
 
-        The only moves allowed are the three hops in BucketPhase.promotion_target:
+        The only moves allowed are three hops:
           SUBACCOUNT_CHALLENGE                     -> PRO_CHALLENGE_DIRECT
           SUBACCOUNT_FUNDED                        -> SUBACCOUNT_FUNDED (in_transition)
           SUBACCOUNT_FUNDED (in_transition)        -> PRO_CHALLENGE_FUNDED
@@ -3378,14 +3379,15 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': message}), 400
 
             subaccount = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}
-            bucket = self._challenge_period_client.get_miner_phase(synthetic_hotkey)
+            bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
+            in_transition = synthetic_hotkey in self._miner_account_client.get_transition_starts([synthetic_hotkey])
             logger.info(f"Promotion for {synthetic_hotkey}: {message}")
             return jsonify({
                 'status': 'success',
                 'message': message,
                 'synthetic_hotkey': synthetic_hotkey,
                 'bucket': bucket.value if bucket else None,
-                'in_transition': bool(bucket and bucket.in_transition),
+                'in_transition': in_transition,
                 'pro_account_size': subaccount.get('pro_account_size'),
                 'account_size': subaccount.get('account_size'),
                 'pro_fee_theta': subaccount.get('pro_fee_theta'),
@@ -3942,7 +3944,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         balance = account.balance
         leverage = account.leverage_limits()
-        bucket = account.bucket_phase
+        bucket = account.miner_bucket
         asset_class = account.asset_class
 
         # Per-class and per-pair caps resolved by the same functions the order path applies, so
@@ -3958,7 +3960,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'synthetic_hotkey': synthetic_hotkey,
             'account_type': subaccount_info.get('account_type'),
             'bucket': bucket.value if bucket else None,
-            'in_transition': bool(bucket and bucket.in_transition),
+            'in_transition': account.in_transition,
             'asset_class': asset_class.value if asset_class else None,
             'account_size': account.account_size,
             'balance': balance,
@@ -3986,7 +3988,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             collateral['headroom_theta'] = headroom_theta
             # The margin this subaccount could still open against the headroom: theta * CPT / multiplier,
             # at this subaccount's margin CPT and payout multiplier (see compute_entity_required_collateral).
-            pro_funded = bucket is not None and bucket.bucket == MinerBucket.PRO_FUNDED
+            pro_funded = bucket == MinerBucket.PRO_FUNDED
             margin_cpt = ValiConfig.PRO_MARGIN_CPT if pro_funded else ValiConfig.MARGIN_CPT
             multiplier = 1.0
             if bucket is not None and bucket.payout_scale_applies:
