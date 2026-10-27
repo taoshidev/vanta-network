@@ -339,10 +339,19 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self.accounts: Dict[str, MinerAccount] = {}
 
         # Locking strategy - EAGER initialization (not lazy!)
+        # Lock order: _accounts_lock, then _disk_lock. Never take _accounts_lock while holding
+        # _disk_lock: the hourly snapshot once did (via accounts_dict) while process_fees held
+        # _accounts_lock and waited for _disk_lock, and the deadlock froze every account RPC.
         # RLock allows same thread to acquire lock multiple times (needed for nested calls)
         self._accounts_lock = threading.RLock()
-        # Lock for disk I/O serialization to prevent concurrent file writes
+        # Serializes access to MINER_ACCOUNTS_FILE: the write in _save_accounts_to_disk and the
+        # read-and-swap in _load_accounts_from_disk. Not re-entrant, and nothing run while holding
+        # it may take _accounts_lock or save.
         self._disk_lock = threading.Lock()
+        # _snapshot_seq numbers each snapshot cut for disk (guarded by _accounts_lock);
+        # _persisted_seq is the number of the one on disk (guarded by _disk_lock)
+        self._snapshot_seq = 0
+        self._persisted_seq = 0
 
         # Asset selection client for determining miner's trading category
         self._asset_selection_client = AssetSelectionClient(
@@ -364,17 +373,22 @@ class MinerAccountManager(ValidatorBroadcastBase):
     # ==================== Disk Persistence ====================
 
     def _load_accounts_from_disk(self):
-        """Load miner accounts from disk during initialization - protected by locks"""
+        """Load miner accounts from disk (at init and on re_init_account_sizes).
+
+        Takes _accounts_lock then _disk_lock, the one lock order, and holds both from the read to
+        the swap so no save can land in between.
+        """
         try:
-            with self._disk_lock:
+            with self._accounts_lock, self._disk_lock:
                 accounts_data = ValiUtils.get_vali_json_file_dict(self.MINER_ACCOUNTS_FILE)
                 accounts_data.pop("_cost_per_theta", None)  # ignore legacy field
                 asset_selection_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
                 parsed_accounts = self._parse_accounts_dict(accounts_data, asset_selection_data)
-
-            with self._accounts_lock:
                 self.accounts.clear()
                 self.accounts.update(parsed_accounts)
+                # Memory matches the file again. A snapshot cut before this reload is older than
+                # both and must not be written over them.
+                self._persisted_seq = self._snapshot_seq
 
             logger.info(f"Loaded {len(self.accounts)} miner accounts from disk")
         except Exception as e:
@@ -385,13 +399,30 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self._load_accounts_from_disk()
 
     def _save_accounts_to_disk(self):
-        """Save miner accounts to disk - protected by _disk_lock to prevent concurrent writes"""
-        with self._disk_lock:
-            try:
+        """Write a snapshot of all accounts to MINER_ACCOUNTS_FILE.
+
+        The snapshot is cut under _accounts_lock (in memory, no I/O) and written under _disk_lock
+        alone, so nothing ever waits for _accounts_lock while holding _disk_lock. Most callers save
+        from inside their own `with self._accounts_lock` block, which is the allowed order and only
+        means the write runs with _accounts_lock still held; take_account_snapshot saves after
+        leaving its block, so the hourly snapshot holds _accounts_lock for the cut alone.
+
+        Savers can reach _disk_lock in the opposite order to the one they cut their snapshots in,
+        so each snapshot is numbered and one older than the snapshot already on disk is dropped:
+        the newer one was cut later and already holds its changes.
+        """
+        try:
+            with self._accounts_lock:
+                self._snapshot_seq += 1
+                seq = self._snapshot_seq
                 data_dict = self.accounts_dict()
+            with self._disk_lock:
+                if seq <= self._persisted_seq:
+                    return
                 ValiBkpUtils.write_file(self.MINER_ACCOUNTS_FILE, data_dict)
-            except Exception as e:
-                logger.error(f"Failed to save miner accounts to disk: {e}")
+                self._persisted_seq = seq
+        except Exception as e:
+            logger.error(f"Failed to save miner accounts to disk: {e}")
 
     def accounts_dict(self, most_recent_only: bool = False) -> Dict[str, Any]:
         """Convert miner accounts to checkpoint format for backup/sync
