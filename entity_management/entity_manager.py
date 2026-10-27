@@ -1933,11 +1933,19 @@ class EntityManager(ValidatorBroadcastBase):
             off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
 
             segments = self._payout_segments(synthetic_hotkey, miner_bucket)
+            current = next((s for s in reversed(segments) if s['start_ms'] < end_time_ms), None)
             record_rows = [
                 {**row, 'payout_record': True}
                 for segment in segments if segment.get('payout_record')
                 for row in segment['payout_record']['settlements']
                 if row['start_ms'] < end_time_ms
+            ]
+            # A segment that closed without a record (e.g. eliminated) still keeps the weeks it froze
+            record_rows += [
+                row for segment in segments
+                if segment is not current and not segment.get('payout_record')
+                for row in segment.get('closed_weeks') or []
+                if row['end_ms'] <= end_time_ms
             ]
             checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
 
@@ -1955,7 +1963,6 @@ class EntityManager(ValidatorBroadcastBase):
                     'off_track': off_track,
                 }
 
-            current = next((s for s in reversed(segments) if s['start_ms'] < end_time_ms), None)
             if (current is None or current.get('payout_record')
                     or miner_bucket is None or not miner_bucket.is_subaccount_earning):
                 # Nothing is being earned at end_time_ms, only what earlier segments were pinned at
@@ -2002,8 +2009,10 @@ class EntityManager(ValidatorBroadcastBase):
 
         The balance and the payout high water mark start at zero at the segment start, so nothing
         earned before it is paid here. Rows split at each Monday and where the transition week
-        starts. Returns (rows, deferred_balance), or None when the unrealized PnL at a row end
-        cannot be determined.
+        starts. The segment's closed weeks ending by end_ms are returned as frozen, and the rows
+        after them resume from the balance, high water mark and escrow the last one closed on.
+        Returns (rows, deferred_balance), or None when the unrealized PnL at a row end cannot be
+        determined.
         """
         bucket = MinerBucket(segment['bucket'])
         transition_start = segment.get('transition_start_ms')
@@ -2017,21 +2026,27 @@ class EntityManager(ValidatorBroadcastBase):
         week_context = debt_ledger.weekly_payout_context(scale) if debt_ledger else {}
         default_week = WeeklyPayoutContext(payout_scale=scale)
 
-        orders = sorted((o for p in positions for o in p.orders if o.processed_ms < end_ms),
+        frozen = [dict(row) for row in segment.get('closed_weeks') or [] if row['end_ms'] <= end_ms]
+        resume_ms = frozen[-1]['end_ms'] if frozen else segment['start_ms']
+        orders = sorted((o for p in positions for o in p.orders if resume_ms <= o.processed_ms < end_ms),
                         key=lambda o: o.processed_ms)
-        fees = sorted((f for p in positions for f in p.fee_history if f.time_ms < end_ms),
+        fees = sorted((f for p in positions for f in p.fee_history if resume_ms <= f.time_ms < end_ms),
                       key=lambda f: f.time_ms)
-        if not orders:
+        if not orders and not frozen:
             return [], 0.0
         realtime_unrealized = sum(p.unrealized_pnl for p in positions)
         snapshots = read_all_snapshots(synthetic_hotkey, running_unit_tests=self.running_unit_tests)
 
-        rows = []
-        deferred_balance = 0.0
-        payout_hwm = 0.0
-        running_balance = 0.0
+        rows = frozen
+        if frozen:
+            running_balance = frozen[-1]['eow_balance']
+            payout_hwm = frozen[-1]['payout_hwm']
+            deferred_balance = frozen[-1]['deferred_balance']
+            row_start = resume_ms
+        else:
+            running_balance = payout_hwm = deferred_balance = 0.0
+            row_start = max(segment['start_ms'], TimeUtil.ms_at_start_of_week(orders[0].processed_ms))
         idx_order, idx_fee, idx_snap = 0, 0, 0
-        row_start = max(segment['start_ms'], TimeUtil.ms_at_start_of_week(orders[0].processed_ms))
         while row_start < end_ms:
             row_end = min(TimeUtil.ms_at_start_of_week(row_start) + MS_IN_24_HOURS * 7, end_ms)
             if transition_start is not None and row_start < transition_start < row_end:
@@ -2106,6 +2121,8 @@ class EntityManager(ValidatorBroadcastBase):
                 'payout_record': False,
                 'eow_balance': running_balance,
                 'eow_unrealized': unrealized_pnl,
+                'payout_hwm': payout_hwm,
+                'frozen_ms': None,
                 'gross_payout': gross_payout,
                 'payout': earned + released,
                 'deferred': owed - earned,
@@ -2152,6 +2169,38 @@ class EntityManager(ValidatorBroadcastBase):
             }
         except Exception as e:
             logger.error(f"[ENTITY_MANAGER] Error calculating the payout record for {synthetic_hotkey}: {e}")
+            return None
+
+    def calculate_segment_closed_weeks(self, synthetic_hotkey: str, segment: dict, now_ms: int) -> Optional[List[dict]]:
+        """Settlement rows of the live segment's payout weeks that closed since its last frozen one.
+
+        A week is closed once the debt ledger holds the checkpoint ending it, so its weekly penalty
+        is final. Returns [] when every closed week is already frozen (or has nothing to settle),
+        and None when the week that just ended is not final yet or cannot be settled, to be retried.
+        """
+        try:
+            week_start_ms = TimeUtil.ms_at_start_of_week(now_ms)
+            debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            if not debt_ledger or not debt_ledger.checkpoints \
+                    or debt_ledger.checkpoints[-1].timestamp_ms < week_start_ms:
+                return None
+            frozen = segment.get('closed_weeks') or []
+            frozen_through_ms = frozen[-1]['end_ms'] if frozen else segment['start_ms']
+            if week_start_ms <= frozen_through_ms:
+                return []
+            positions = [
+                p for p in self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
+                if p.open_ms >= segment['start_ms']
+            ]
+            settled = self._settle_segment(synthetic_hotkey, segment, positions, week_start_ms, False,
+                                           debt_ledger, self._payout_perf_ledger(synthetic_hotkey))
+            if settled is None:
+                return None
+            frozen_ms = TimeUtil.now_in_millis()
+            return [{**row, 'orders': [], 'frozen_ms': frozen_ms}
+                    for row in settled[0] if row['start_ms'] >= frozen_through_ms]
+        except Exception as e:
+            logger.error(f"[ENTITY_MANAGER] Error calculating the closed weeks of {synthetic_hotkey}: {e}")
             return None
 
     def validate_hotkey_for_orders(self, hotkey: str) -> dict:

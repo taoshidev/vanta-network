@@ -230,6 +230,9 @@ class ChallengePeriodServer(RPCServerBase):
                                        remove: bool = False, recompute: bool = False) -> Tuple[bool, str, dict | None]:
         return self._manager.admin_update_payout_record(hotkey, segment_start_ms, payout_usd, remove, recompute)
 
+    def admin_drop_closed_weeks_rpc(self, hotkey: str, week_starts_ms: list[int] | None = None) -> Tuple[bool, str, list[int]]:
+        return self._manager.admin_drop_closed_weeks(hotkey, week_starts_ms)
+
     def get_drawdown_snapshot_fields_rpc(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
         return self._manager.get_drawdown_snapshot_fields(hotkeys)
 

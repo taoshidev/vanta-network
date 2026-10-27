@@ -13,6 +13,8 @@ state has moved on.
   * `segment_runs` - derives the segments a miner's bucket entries describe. The bucket entries
     are the source of truth, so a validator that only follows another validator's record
     (sync_challenge_period_data) derives the same segments.
+  * Closed payout weeks - an earning segment's settlement rows are frozen onto it as each payout
+    week closes, so the history paid out is never recomputed.
   * `BucketHistoryStore` - holds the summaries, persists them, and reads and writes the files of
     each segment directory (ValiBkpUtils.get_bucket_segment_dir):
 
@@ -81,6 +83,10 @@ class BucketSegment:
     # What the segment was owed when it left an earning bucket (EntityManager.calculate_segment_payout_record).
     # Pinned: the payout paths read it instead of recomputing the segment.
     payout_record: Optional[dict] = None
+    # Settlement rows of the payout weeks that closed while the segment was live, oldest first
+    # (EntityManager.calculate_segment_closed_weeks). Frozen: the payout paths resume after the
+    # last one instead of recomputing them, so a later ledger rebuild cannot restate a closed week.
+    closed_weeks: Optional[List[dict]] = None
 
     @property
     def key(self) -> tuple:

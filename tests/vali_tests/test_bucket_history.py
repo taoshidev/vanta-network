@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from flask import Flask
 
+from time_util.time_util import TimeUtil
 from vali_objects.challenge_period.bucket_history import BucketHistoryStore, BucketSegment, segment_runs
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager, ProStats
 from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
@@ -444,6 +445,59 @@ def test_a_reopened_segment_drops_its_record(subaccount):
     assert funded.is_live and funded.payout_record is None
 
 
+def test_closed_weeks_freeze_once_final_and_once_per_week(subaccount):
+    manager, _ = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_FUNDED, T1)
+    calculate = manager._entity_client.calculate_segment_closed_weeks
+    calculate.return_value = None  # the week that just ended is not final yet
+
+    manager._freeze_closed_weeks([HOTKEY], T3)
+    manager._freeze_closed_weeks([HOTKEY], T3 + 60_000)  # inside the retry interval
+    assert calculate.call_count == 1
+
+    row = {"start_ms": T1, "end_ms": T3, "payout": 5.0}
+    calculate.return_value = [row]
+    later = T3 + manager.CLOSED_WEEKS_RETRY_MS
+    manager._freeze_closed_weeks([HOTKEY], later)
+    manager._freeze_closed_weeks([HOTKEY], later + manager.CLOSED_WEEKS_RETRY_MS)  # this week is done
+    assert calculate.call_count == 2
+    assert _segment(manager, MinerBucket.PRO_FUNDED, T1).closed_weeks == [row]
+    assert BucketHistoryStore(running_unit_tests=True).get_segment(HOTKEY, T1).closed_weeks == [row]
+
+    calculate.return_value = []
+    manager._freeze_closed_weeks([HOTKEY], later + 7 * DAILY_MS)  # the next week is checked again
+    assert calculate.call_count == 3
+    assert calculate.call_args.args[1]["closed_weeks"] == [row]
+
+
+def test_admin_unfreezes_a_week_and_every_later_one_of_its_segment(subaccount):
+    manager, _ = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_FUNDED, T1)
+    week = TimeUtil.ms_at_start_of_week(T1) + 7 * DAILY_MS
+    weeks = [week + i * 7 * DAILY_MS for i in range(3)]
+    segment = _segment(manager, MinerBucket.PRO_FUNDED, T1)
+    segment.closed_weeks = [{"start_ms": w, "end_ms": w + 7 * DAILY_MS, "payout": 1.0} for w in weeks]
+    manager._closed_weeks_checked[HOTKEY] = weeks[-1]
+
+    ok, _, dropped = manager.admin_drop_closed_weeks(HOTKEY, [weeks[1]])
+    assert ok and dropped == weeks[1:]
+    assert [row["start_ms"] for row in segment.closed_weeks] == weeks[:1]
+    assert HOTKEY not in manager._closed_weeks_checked  # frozen again on the next refresh
+    assert BucketHistoryStore(running_unit_tests=True).get_segment(HOTKEY, T1).closed_weeks == segment.closed_weeks
+
+    assert manager.admin_drop_closed_weeks(HOTKEY, [weeks[2]])[0] is False
+    assert manager.admin_drop_closed_weeks(HOTKEY)[2] == weeks[:1]
+    assert segment.closed_weeks is None
+    assert manager.admin_drop_closed_weeks("unknown_hk")[0] is False
+
+
+def test_closed_weeks_are_only_frozen_for_earning_buckets(subaccount):
+    manager, _ = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE, T1)
+    manager._freeze_closed_weeks([HOTKEY], T3)
+    manager._entity_client.calculate_segment_closed_weeks.assert_not_called()
+
+
 def test_the_record_rides_the_checkpoint(subaccount):
     manager, _ = subaccount
     manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T1)
@@ -512,6 +566,43 @@ def test_rest_payout_record_rejects_bad_params(payout_rest, query):
     server, client = payout_rest
     assert client.post(f"/admin/payout-record/{HOTKEY}?{query}").status_code == 400
     server._challenge_period_client.admin_update_payout_record.assert_not_called()
+
+
+@pytest.fixture
+def reset_rest():
+    server = object.__new__(ValidatorRestServer)
+    server._get_api_key_safe = MagicMock(return_value="key")
+    server.is_valid_api_key = MagicMock(return_value=True)
+    server.can_access_tier = MagicMock(return_value=True)
+    for client in ("_position_client", "_perf_ledger_client", "_debt_ledger_client", "_elimination_client",
+                   "_challenge_period_client", "_miner_account_client", "_entity_client"):
+        setattr(server, client, MagicMock())
+    server._position_client.wipe_hotkey.return_value = {}
+    server._challenge_period_client.admin_drop_closed_weeks.return_value = (True, "unfroze", [T1])
+    app = Flask(__name__)
+    app.route("/admin/reset/<hotkey>", methods=["POST"])(server.reset_hotkey)
+    return server, app.test_client()
+
+
+@pytest.mark.parametrize("body, weeks", [({"recompute_weeks": [T1, T2]}, [T1, T2]), ({"recompute_weeks": "all"}, None)])
+def test_reset_unfreezes_the_closed_weeks_asked_for(reset_rest, body, weeks):
+    server, client = reset_rest
+    response = client.post(f"/admin/reset/{HOTKEY}", json=body)
+    assert response.status_code == 200 and response.get_json()["recomputed_weeks"] == [T1]
+    server._challenge_period_client.admin_drop_closed_weeks.assert_called_once_with(HOTKEY, weeks)
+
+
+def test_reset_keeps_closed_weeks_by_default(reset_rest):
+    server, client = reset_rest
+    assert client.post(f"/admin/reset/{HOTKEY}", json={}).status_code == 200
+    server._challenge_period_client.admin_drop_closed_weeks.assert_not_called()
+
+
+@pytest.mark.parametrize("weeks", [[], "some", ["1"], [True], 5])
+def test_reset_rejects_bad_recompute_weeks_before_wiping(reset_rest, weeks):
+    server, client = reset_rest
+    assert client.post(f"/admin/reset/{HOTKEY}", json={"recompute_weeks": weeks}).status_code == 400
+    server._position_client.wipe_hotkey.assert_not_called()
 
 
 # ── REST ──────────────────────────────────────────────────────────────────────

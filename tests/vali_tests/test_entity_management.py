@@ -1376,6 +1376,57 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
         self.assertTrue(result['off_track'])
 
+    def _freeze(self, manager, now_ms=None):
+        return manager.calculate_segment_closed_weeks(
+            self.SUBACCOUNT_HOTKEY, manager.segments[-1], now_ms or TimeUtil.now_in_millis())
+
+    def test_closed_weeks_are_frozen_once_final(self):
+        week_0_start = self._week_0_start()
+        manager = self._manager(blocked_checkpoint_indices=(8,))
+        rows = self._freeze(manager)
+        self.assertEqual([(r['start_ms'], r['end_ms']) for r in rows],
+                         [(week_0_start, week_0_start + MS_IN_WEEK),
+                          (week_0_start + MS_IN_WEEK, week_0_start + 2 * MS_IN_WEEK)])
+        self.assertEqual([r['payout'] for r in rows], [0.0, 280.0])
+        self.assertTrue(all(r['frozen_ms'] and r['orders'] == [] for r in rows))
+
+        manager.segments[-1]['closed_weeks'] = rows
+        self.assertEqual(self._freeze(manager), [])
+
+    def test_a_week_is_not_frozen_before_its_last_checkpoint_is_built(self):
+        self.assertIsNone(self._freeze(self._manager(), now_ms=TimeUtil.now_in_millis() + MS_IN_WEEK))
+        self.assertIsNone(self._freeze(self._manager(has_debt_ledger=False)))
+
+    def test_frozen_weeks_are_not_recomputed(self):
+        """Frozen clean, then the ledger is restated to a breach in week 0: the frozen rows stand."""
+        rows = self._freeze(self._manager())
+        manager = self._manager(blocked_checkpoint_indices=(8,))
+        manager.segments[-1]['closed_weeks'] = rows
+        result = self._payout_result(manager=manager)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
+
+    def test_a_frozen_breach_is_released_by_the_next_clean_week(self):
+        """Week 0 frozen breached and week 1 computed: week 1 resumes from the frozen escrow and
+        releases it, even though the restated ledger no longer shows the breach."""
+        week_0 = self._freeze(self._manager(blocked_checkpoint_indices=(8,)))[:1]
+        manager = self._manager()
+        manager.segments[-1]['closed_weeks'] = week_0
+        result = self._payout_result(manager=manager)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [0.0, 280.0])
+        self.assertEqual([w['frozen_ms'] is not None for w in result['weekly_settlements']], [True, False])
+        self.assertAlmostEqual(result['weekly_settlements'][1]['deferred_released'], 140.0)
+
+    def test_a_segment_closed_without_a_record_keeps_its_frozen_weeks(self):
+        week_0_start = self._week_0_start()
+        manager = self._manager(current_bucket=MinerBucket.ELIMINATED)
+        rows = self._freeze(manager)
+        manager.segments[-1].update(closed_weeks=rows, end_ms=week_0_start + 2 * MS_IN_WEEK - 1)
+        manager.segments.append({'bucket': MinerBucket.ELIMINATED.value, 'start_ms': week_0_start + 2 * MS_IN_WEEK - 1,
+                                 'end_ms': None, 'transition_start_ms': None, 'transition_end_ms': None,
+                                 'payout_scale': None, 'payout_record': None})
+        result = self._payout_result(manager=manager)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
+
     def test_non_earning_bucket_returns_empty_settlement_with_deferral_fields(self):
         result = self._payout_result(week_buckets={0: MinerBucket.SUBACCOUNT_CHALLENGE,
                                                    1: MinerBucket.SUBACCOUNT_CHALLENGE})
