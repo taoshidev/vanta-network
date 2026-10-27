@@ -59,7 +59,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from shared_objects.log import logger
@@ -1100,7 +1100,9 @@ class EntityManager(ValidatorBroadcastBase):
             return False, f"{synthetic_hotkey} is not a known subaccount"
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
-        target = BucketPhase(target_bucket, in_transition)
+        # The pro track: the pro buckets, and the SUBACCOUNT_FUNDED transition leading to them
+        in_transition = in_transition and target_bucket == MinerBucket.SUBACCOUNT_FUNDED
+        is_pro_track = in_transition or target_bucket.is_pro_track
 
         # Work out the new sizes and the fee they cost without touching the stored subaccount
         standard_account_size = subaccount.standard_account_size
@@ -1116,7 +1118,7 @@ class EntityManager(ValidatorBroadcastBase):
         promotion_fee_theta = 0.0
         # Where the pro size came from ("explicit" or "recorded"), for the log; None for standard buckets
         pro_size_source = None
-        if target.is_pro_track:
+        if is_pro_track:
             if pro_account_size is not None:
                 pro_size_source = "explicit"
             elif subaccount.account_type == AccountType.PRO.value and subaccount.pro_account_size is not None:
@@ -1139,7 +1141,7 @@ class EntityManager(ValidatorBroadcastBase):
             account_type = AccountType.PRO.value
 
             # The transition winds down the standard account, so it keeps the standard size
-            target_size = pro_account_size if target.is_pro else standard_account_size
+            target_size = pro_account_size if target_bucket.is_pro else standard_account_size
 
             # The grant is charged when a pro size goes live, i.e. when the account size actually changes
             # (never in the transition). Re-applying the size an account already trades, as an admin move within
@@ -1147,7 +1149,7 @@ class EntityManager(ValidatorBroadcastBase):
             # the increase over the fee already assessed is billed, and the charge floors at zero: a size
             # already paid for is free rather than crediting theta back. Collateral-exempt subaccounts
             # (reg_fee_theta == 0) stay exempt on the pro track.
-            if (target.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size
+            if (target_bucket.is_pro and subaccount.reg_fee_theta > 0 and target_size != subaccount.account_size
                     and not waive_promotion_fee):
                 target_fee_theta = ValiConfig.promotion_fee_theta(pro_account_size, standard_account_size,
                                                                   subaccount.intraday_drawdown_threshold)
@@ -1194,7 +1196,7 @@ class EntityManager(ValidatorBroadcastBase):
 
         # A live pro account trades the whole pro universe, so it moves to all_markets whatever it
         # was registered under.
-        if target.is_pro:
+        if target_bucket.is_pro:
             self._apply_pro_asset_class(synthetic_hotkey, target_bucket)
 
         # Hand the sizing to the other validators.
@@ -1205,7 +1207,7 @@ class EntityManager(ValidatorBroadcastBase):
         fee_note = (f", promotion_fee={promotion_fee_theta:.4f} theta "
                     f"(assessed {subaccount.pro_fee_theta:.4f} theta total)") if promotion_fee_theta else ""
         logger.info(
-            f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target}: account_size=${subaccount.account_size}, "
+            f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}{' (in transition)' if in_transition else ''}: account_size=${subaccount.account_size}, "
             f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}{fee_note}"
         )
         return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
@@ -1928,7 +1930,7 @@ class EntityManager(ValidatorBroadcastBase):
             if debt_ledger is None:
                 logger.warning(f"[ENTITY_MANAGER] No debt ledger for {synthetic_hotkey}; weeks are paid unpenalized")
 
-            miner_bucket = self._challenge_period_client.get_miner_phase(synthetic_hotkey, end_time_ms)
+            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
             # Escrow is only held while the bucket withholds on a soft breach; anywhere else it is forfeited
             off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
 
@@ -1982,22 +1984,22 @@ class EntityManager(ValidatorBroadcastBase):
             logger.error(f"[ENTITY_MANAGER] Error calculating payout for {synthetic_hotkey}: {e}")
             return None
 
-    def _payout_segments(self, synthetic_hotkey: str, miner_bucket: Optional[BucketPhase]) -> List[dict]:
+    def _payout_segments(self, synthetic_hotkey: str, miner_bucket: Optional[MinerBucket]) -> List[dict]:
         """The subaccount's bucket segments, oldest first. Without any bucket history (backtesting)
         the whole account is one segment in the current bucket."""
         segments = self._challenge_period_client.get_bucket_segments(synthetic_hotkey) or []
         if not segments and miner_bucket is not None:
             segments = [{
                 'bucket': miner_bucket.value, 'start_ms': 0, 'end_ms': None,
-                'transition_start_ms': 0 if miner_bucket.in_transition else None, 'transition_end_ms': None,
+                'transition_start_ms': None, 'transition_end_ms': None,
                 'payout_scale': None, 'payout_record': None,
             }]
         return segments
 
-    def _payout_perf_ledger(self, synthetic_hotkey: str, miner_bucket: Optional[BucketPhase] = None):
+    def _payout_perf_ledger(self, synthetic_hotkey: str, miner_bucket: Optional[MinerBucket] = None):
         _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
         perf_ledger = _perf_ledger.get(synthetic_hotkey) if _perf_ledger else None
-        if not perf_ledger and miner_bucket is not None and miner_bucket.bucket == MinerBucket.ELIMINATED:
+        if not perf_ledger and miner_bucket is not None and miner_bucket == MinerBucket.ELIMINATED:
             # Perf ledgers for eliminated funded/alpha subaccounts get moved to frozen storage.
             frozen_ledgers = self._perf_ledger_client.get_frozen_ledgers()
             perf_ledger = frozen_ledgers.get(synthetic_hotkey) if frozen_ledgers else None
@@ -2051,8 +2053,8 @@ class EntityManager(ValidatorBroadcastBase):
             row_end = min(TimeUtil.ms_at_start_of_week(row_start) + MS_IN_24_HOURS * 7, end_ms)
             if transition_start is not None and row_start < transition_start < row_end:
                 row_end = transition_start
-            phase = BucketPhase(bucket, transition_start is not None and transition_start <= row_start
-                                and (transition_end is None or row_start < transition_end))
+            in_transition = (transition_start is not None and transition_start <= row_start
+                             and (transition_end is None or row_start < transition_end))
 
             row_orders = []
             while idx_order < len(orders) and orders[idx_order].processed_ms < row_end:
@@ -2103,8 +2105,8 @@ class EntityManager(ValidatorBroadcastBase):
             payable = min(running_balance, running_balance + unrealized_pnl)
             gross_payout = max(0.0, payable - payout_hwm)
             payout_hwm = max(payout_hwm, payable)
-            row_scale = scale if phase.payout_scale_applies else 1.0
-            penalty = week.weekly_penalty if phase.soft_breach_applies else 1.0
+            row_scale = scale if bucket.payout_scale_applies else 1.0
+            penalty = week.weekly_penalty if bucket.soft_breach_applies else 1.0
             owed = gross_payout * row_scale
             earned = owed * penalty
             released, deferred_balance, forfeited = apply_deferral(
@@ -2116,8 +2118,8 @@ class EntityManager(ValidatorBroadcastBase):
             rows.append({
                 'start_ms': row_start,
                 'end_ms': row_end,
-                'bucket': phase.value,
-                'in_transition': phase.in_transition,
+                'bucket': bucket.value,
+                'in_transition': in_transition,
                 'payout_record': False,
                 'eow_balance': running_balance,
                 'eow_unrealized': unrealized_pnl,

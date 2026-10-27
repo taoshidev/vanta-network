@@ -20,7 +20,7 @@ from time_util.time_util import TimeUtil
 
 from shared_objects.cache_controller import CacheController
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -284,7 +284,7 @@ class EntityCollateralManager(CacheController):
                 continue
 
             # Only funded subaccounts require margin; skip challenge, unknown, or other buckets
-            bucket = self._challenge_period_client.get_miner_phase(synthetic_hotkey)
+            bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
             if bucket is None or not bucket.is_subaccount_earning:
                 continue
 
@@ -293,14 +293,14 @@ class EntityCollateralManager(CacheController):
             if bucket.payout_scale_applies:
                 payout_scale = sa_info.get("payout_scale")
                 multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
-            total_required_theta += ValiConfig.margin_theta(margin_usd, bucket.bucket == MinerBucket.PRO_FUNDED, multiplier)
+            total_required_theta += ValiConfig.margin_theta(margin_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
 
         return total_required_theta
 
     def compute_subaccount_margin_requirement(
         self,
         synthetic_hotkey: str,
-        bucket: BucketPhase | MinerBucket | None = None,
+        bucket: MinerBucket | None = None,
         subaccount_info: dict | None = None,
     ) -> float:
         """
@@ -330,7 +330,6 @@ class EntityCollateralManager(CacheController):
         if not open_positions:
             return 0.0
 
-        bucket = self._as_phase(bucket)
         total_position_value = sum(abs(p.net_value) for p in open_positions)
 
         max_slash = self.get_max_slash(synthetic_hotkey, bucket, subaccount_info)
@@ -368,7 +367,7 @@ class EntityCollateralManager(CacheController):
             otherwise describes why the order was rejected.
         """
         # Only funded subaccounts are subject to margin requirements
-        bucket = self._challenge_period_client.get_miner_phase(synthetic_hotkey)
+        bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
         if bucket is None or not bucket.is_subaccount_earning:
             return True, ""
 
@@ -407,7 +406,7 @@ class EntityCollateralManager(CacheController):
         if bucket.payout_scale_applies:
             payout_scale = subaccount_info.get("payout_scale")
             multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
-        margin_delta_theta = ValiConfig.margin_theta(margin_delta_usd, bucket.bucket == MinerBucket.PRO_FUNDED, multiplier)
+        margin_delta_theta = ValiConfig.margin_theta(margin_delta_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
 
         projected_required_theta = current_required_theta + margin_delta_theta
 
@@ -461,7 +460,7 @@ class EntityCollateralManager(CacheController):
             return 0.0
 
         # Only funded subaccounts are subject to slashing
-        bucket = self._challenge_period_client.get_miner_phase(synthetic_hotkey)
+        bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
         if bucket is None or not bucket.is_subaccount_earning:
             return 0.0
 
@@ -481,7 +480,7 @@ class EntityCollateralManager(CacheController):
         multiplier = 1.0
         if bucket.payout_scale_applies:
             multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
-        pro_funded = bucket.bucket == MinerBucket.PRO_FUNDED
+        pro_funded = bucket == MinerBucket.PRO_FUNDED
 
         max_slash = self.get_max_slash(synthetic_hotkey, bucket, subaccount_info)
         if max_slash <= 0:
@@ -540,7 +539,7 @@ class EntityCollateralManager(CacheController):
             return 0.0
 
         # Only slash funded subaccounts
-        bucket = self._challenge_period_client.get_miner_phase(hotkey)
+        bucket = self._challenge_period_client.get_miner_bucket(hotkey)
         if bucket is not None and not bucket.is_subaccount_earning:
             return 0.0
 
@@ -614,7 +613,7 @@ class EntityCollateralManager(CacheController):
                 pending_loss_theta: Dict[str, float] = {}  # synthetic hotkey -> theta
                 records = {s.get("synthetic_hotkey"): s for s in subaccounts.values() if isinstance(s, dict)}
                 eligible_hotkeys = {hk for hk in synthetic_hotkeys if hk and hk not in exempt_hotkeys}
-                buckets = self._challenge_period_client.get_miner_phases(list(eligible_hotkeys))
+                buckets = self._challenge_period_client.get_miner_buckets(list(eligible_hotkeys))
                 with self._slash_lock:
                     for synthetic_hotkey in eligible_hotkeys:
                         bucket = buckets.get(synthetic_hotkey)
@@ -642,7 +641,7 @@ class EntityCollateralManager(CacheController):
                                 multiplier = (ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
                                               if payout_scale is None else payout_scale)
                             pending_loss_theta[synthetic_hotkey] = ValiConfig.margin_theta(
-                                slash_usd, bucket.bucket == MinerBucket.PRO_FUNDED, multiplier)
+                                slash_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
                 total_pending_loss_theta = sum(pending_loss_theta.values())
 
                 pending_reg_theta: Dict[int, float] = {} # subaccount id -> theta
@@ -789,7 +788,7 @@ class EntityCollateralManager(CacheController):
             raise RuntimeError("get_test_slash_file_path can only be used in unit test mode")
         return self._slash_file
 
-    def get_max_slash(self, synthetic_hotkey: str, bucket: BucketPhase | MinerBucket | None = None,
+    def get_max_slash(self, synthetic_hotkey: str, bucket: MinerBucket | None = None,
                       subaccount_info: dict | None = None) -> float:
         """
         Get the maximum slashable amount for a subaccount (exposed account size * MDD%).
@@ -805,22 +804,14 @@ class EntityCollateralManager(CacheController):
         Returns:
             Maximum slash amount in USD.
         """
-        bucket = self._as_phase(bucket)
         if bucket is None:
-            bucket = self._challenge_period_client.get_miner_phase(synthetic_hotkey)
+            bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
         account_size = self._exposed_account_size(synthetic_hotkey, bucket, subaccount_info)
         if account_size <= 0:
             return 0.0
         return account_size * self._mdd_percent(bucket)
 
-    @staticmethod
-    def _as_phase(bucket: BucketPhase | MinerBucket | None) -> BucketPhase | None:
-        """Callers may pass a bare MinerBucket; read it as its pro phase (never the transition)."""
-        if isinstance(bucket, MinerBucket):
-            return bucket.phase()
-        return bucket
-
-    def _exposed_account_size(self, synthetic_hotkey: str, bucket: BucketPhase | MinerBucket | None,
+    def _exposed_account_size(self, synthetic_hotkey: str, bucket: MinerBucket | None,
                               subaccount_info: dict | None = None) -> float:
         """
         Account size the entity's collateral is exposed to, normally the account the
@@ -852,7 +843,7 @@ class EntityCollateralManager(CacheController):
         # keeps a stale record from charging more than the account actually being traded.
         return min(standard_size, account_size)
 
-    def _mdd_percent(self, bucket: BucketPhase | MinerBucket | None) -> float:
+    def _mdd_percent(self, bucket: MinerBucket | None) -> float:
         """
         Share of account size that can ever be slashed from a subaccount.
 

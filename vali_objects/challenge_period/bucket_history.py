@@ -2,14 +2,14 @@
 Bucket history - one record per bucket stint, kept after the account it traded is wound down.
 
 A miner's statistics are tracked on its live state: positions/, the perf and debt ledgers,
-DrawdownStats and ProStats. A bucket change that switches account (BucketPhase.switches_account)
+DrawdownStats and ProStats. A bucket change that switches account (MinerBucket.switches_account)
 archives the positions and restarts all of that, so the previous stint can no longer be looked
 at. This module keeps a copy of each stint, so its statistics stay available after the live
 state has moved on.
 
   * `BucketSegment` - one stint in one MinerBucket, identified by (hotkey, bucket, start_ms). The
-    SUBACCOUNT_FUNDED in_transition flag is not a bucket: setting it stays in the same segment,
-    which records when the transition week ran.
+    SUBACCOUNT_FUNDED transition week is not a bucket: it stays in the same segment, which records
+    when it ran (MinerAccount.transition_start_ms).
   * `segment_runs` - derives the segments a miner's bucket entries describe. The bucket entries
     are the source of truth, so a validator that only follows another validator's record
     (sync_challenge_period_data) derives the same segments.
@@ -46,7 +46,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 
 from shared_objects.log import logger
 from time_util.time_util import TimeUtil
-from vali_objects.enums.miner_bucket_enum import BucketEntry
+from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 POSITIONS_DIR = "positions"
@@ -127,38 +127,40 @@ class SegmentRun:
     end_ms: Optional[int]
     account_start_ms: int
     transition_start_ms: Optional[int] = None
-    transition_end_ms: Optional[int] = None
 
     @property
     def key(self) -> tuple:
         return self.bucket, self.start_ms
 
 
-def segment_runs(entries: Iterable[BucketEntry]) -> List[SegmentRun]:
+def segment_runs(entries: Iterable[BucketEntry], transition_start_ms: Optional[int] = None) -> List[SegmentRun]:
     """Group bucket entries into segments: consecutive entries of the same bucket are one segment.
-    Reverted entries are skipped, as MinerBucketState.phase skips them.
+    Reverted entries are skipped, as MinerBucketState.bucket skips them.
 
-    The transition range runs from the entry that set the flag to the next entry, which is the
-    hop out of the bucket (None while the transition is still the current entry).
+    transition_start_ms is the miner's live transition week, which lands on the SUBACCOUNT_FUNDED
+    run holding it, or on the live one when an elimination revert reopened the bucket after it.
     """
     runs: List[SegmentRun] = []
     account_start_ms = None
-    in_transition = False
     for entry in sorted(entries, key=lambda e: e.start_time_ms):
         if entry.is_reverted:
             continue
-        if in_transition:
-            runs[-1].transition_end_ms = entry.start_time_ms
-        in_transition = entry.in_transition
-        if not (runs and runs[-1].bucket == entry.bucket.value):
-            if entry.phase.switches_account or account_start_ms is None:
-                account_start_ms = entry.start_time_ms
-            if runs:
-                runs[-1].end_ms = entry.start_time_ms
-            runs.append(SegmentRun(bucket=entry.bucket.value, start_ms=entry.start_time_ms,
-                                   end_ms=None, account_start_ms=account_start_ms))
-        if in_transition and runs[-1].transition_start_ms is None:
-            runs[-1].transition_start_ms = entry.start_time_ms
+        if runs and runs[-1].bucket == entry.bucket.value:
+            continue
+        if entry.bucket.switches_account or account_start_ms is None:
+            account_start_ms = entry.start_time_ms
+        if runs:
+            runs[-1].end_ms = entry.start_time_ms
+        runs.append(SegmentRun(bucket=entry.bucket.value, start_ms=entry.start_time_ms,
+                               end_ms=None, account_start_ms=account_start_ms))
+    if transition_start_ms is not None:
+        for run in runs:
+            if run.bucket != MinerBucket.SUBACCOUNT_FUNDED.value:
+                continue
+            if run.start_ms <= transition_start_ms and (run.end_ms is None or transition_start_ms < run.end_ms):
+                run.transition_start_ms = transition_start_ms
+            elif run.end_ms is None and transition_start_ms < run.start_ms:
+                run.transition_start_ms = run.start_ms
     return runs
 
 
@@ -303,15 +305,17 @@ class BucketHistoryStore:
         on_open: Callable[[BucketSegment], None],
         on_close: Callable[[BucketSegment], None],
         save: bool = True,
+        transition_start_ms: Optional[int] = None,
     ) -> bool:
-        """Bring the hotkey's segments in line with its bucket entries.
+        """Bring the hotkey's segments in line with its bucket entries. transition_start_ms is the
+        live transition week, if any; a segment keeps the one it recorded once the account moves on.
 
         on_open runs for a segment that has just become the live one, on_close for one that has
         just ended (not for a backfilled segment, which never was live here). Both run under the
         store lock with the segment already updated, and may fill in its fields. Returns True
         when anything changed. save=False leaves saving to the caller, for a batch of hotkeys.
         """
-        runs = segment_runs(entries)
+        runs = segment_runs(entries, transition_start_ms)
         wanted = {run.key for run in runs}
         changed = False
         with self._lock:
@@ -331,7 +335,7 @@ class BucketHistoryStore:
                         hotkey=hotkey, bucket=run.bucket, start_ms=run.start_ms, end_ms=run.end_ms,
                         account_start_ms=run.account_start_ms,
                         transition_start_ms=run.transition_start_ms,
-                        transition_end_ms=run.transition_end_ms,
+                        transition_end_ms=run.end_ms if run.transition_start_ms is not None else None,
                         backfilled=run.end_ms is not None,
                     )
                     segments.append(segment)
@@ -345,7 +349,9 @@ class BucketHistoryStore:
                     # Its entries came back (e.g. a plagiarism flag set, cleared, then set again)
                     segment.reverted_ms = None
                     changed = True
-                derived = (run.account_start_ms, run.transition_start_ms, run.transition_end_ms)
+                transition_start = (run.transition_start_ms if run.transition_start_ms is not None
+                                    else segment.transition_start_ms)
+                derived = (run.account_start_ms, transition_start, run.end_ms if transition_start is not None else None)
                 if (segment.account_start_ms, segment.transition_start_ms, segment.transition_end_ms) != derived:
                     segment.account_start_ms, segment.transition_start_ms, segment.transition_end_ms = derived
                     changed = True

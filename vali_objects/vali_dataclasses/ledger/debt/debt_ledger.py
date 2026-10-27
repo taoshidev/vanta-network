@@ -43,7 +43,7 @@ from enum import Enum, auto
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 from time_util.time_util import TimeUtil
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 
 class WeekTrack(Enum):
@@ -336,13 +336,12 @@ class DebtLedger:
         return self.checkpoints[-1] if self.checkpoints else None
 
     @staticmethod
-    def _bucket_from_status(challenge_period_status: str) -> BucketPhase:
-        """Convert a stored status string to a BucketPhase, tolerating unknown/legacy values. The
-        phase keeps the SUBACCOUNT_FUNDED transition apart: it is paid unscaled."""
-        return BucketPhase.from_status(challenge_period_status)
+    def _bucket_from_status(challenge_period_status: str) -> MinerBucket:
+        """Convert a stored status string to a MinerBucket, tolerating unknown/legacy values."""
+        return MinerBucket.from_status(challenge_period_status)
 
-    def checkpoint_bucket(self, cp: DebtCheckpoint) -> BucketPhase:
-        """The bucket phase this checkpoint was stamped with."""
+    def checkpoint_bucket(self, cp: DebtCheckpoint) -> MinerBucket:
+        """The bucket this checkpoint was stamped with."""
         return self._bucket_from_status(cp.challenge_period_status)
 
     @staticmethod

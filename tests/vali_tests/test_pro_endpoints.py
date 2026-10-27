@@ -40,7 +40,7 @@ from tests.vali_tests.test_pro_account_size import (
 )
 from time_util.time_util import TimeUtil
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
 from vali_objects.utils.leverage_utils import (
     get_all_correlation_group_limits,
@@ -78,14 +78,6 @@ def _no_section_clients():
 # Section 1 — POST /entity/subaccount/promote (validator)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# PRO_CHALLENGE_FUNDED in its transition week, still trading the standard account
-TRANSITION = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
-
-
-def _phase(bucket):
-    return bucket if isinstance(bucket, BucketPhase) else bucket.phase()
-
-
 def _validator_promote_client():
     """Flask test client for the validator endpoint with mocked clients and ownership check."""
     from vanta_api.nonce_manager import NonceManager
@@ -100,7 +92,10 @@ def _validator_promote_client():
     }
     server._challenge_period_client = MagicMock()
     server._challenge_period_client.promote_subaccount.return_value = (True, "promoted")
-    server._challenge_period_client.get_miner_phase.return_value = TRANSITION
+    # Promoted into its transition week
+    server._challenge_period_client.get_miner_bucket.return_value = MinerBucket.SUBACCOUNT_FUNDED
+    server._miner_account_client = MagicMock()
+    server._miner_account_client.get_transition_starts.side_effect = lambda hotkeys: {hk: 1 for hk in hotkeys}
     server._verify_coldkey_owns_hotkey = MagicMock(return_value=True)
     server.nonce_manager = NonceManager()
     app = Flask(__name__)
@@ -465,12 +460,10 @@ LIMITS_HOTKEY = "5GhDr3xy" + "a" * 40 + "_0"  # {entity_hotkey}_{subaccount_id}
 
 
 def _pro_account(exposures=None, bucket=MinerBucket.PRO_FUNDED):
-    phase = _phase(bucket)
     account = MinerAccount(
         miner_hotkey=LIMITS_HOTKEY,
         asset_class=MinerAssetClass.ALL_MARKETS,
-        miner_bucket=phase.bucket,
-        in_transition=phase.in_transition,
+        miner_bucket=bucket,
     )
     account.collateral_records = [CollateralRecord(PRO_ACCOUNT_SIZE, PRO_ACCOUNT_SIZE / 5000, 0, True)]
     account.correlated_exposure_by_group = exposures or {}
@@ -624,8 +617,6 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
              100.0 * ValiConfig.MARGIN_CPT / ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER),
             (MinerBucket.PRO_CHALLENGE_FUNDED, ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER,
              100.0 * ValiConfig.MARGIN_CPT),
-            # The transition is still the standard funded account, margined at the funded rate
-            (TRANSITION, None, 100.0 * ValiConfig.MARGIN_CPT),
         )
         for bucket, payout_scale, expected in cases:
             with self.subTest(bucket=bucket, payout_scale=payout_scale):
@@ -773,12 +764,10 @@ class TestProLeverageCurveReporting(unittest.TestCase):
 
     @staticmethod
     def _account(bucket, account_size):
-        phase = _phase(bucket)
         account = MinerAccount(
             miner_hotkey="entity_alpha_0",
             asset_class=MinerAssetClass.ALL_MARKETS,
-            miner_bucket=phase.bucket,
-            in_transition=phase.in_transition,
+            miner_bucket=bucket,
             leverage_tier=1,
         )
         account.collateral_records = [CollateralRecord(account_size, account_size / 5000, 0, True)]
@@ -791,8 +780,6 @@ class TestProLeverageCurveReporting(unittest.TestCase):
             (MinerBucket.PRO_CHALLENGE_DIRECT, 400_000, "pro", None),
             (MinerBucket.PRO_FUNDED, 400_000, "pro", None),
             (MinerBucket.PRO_FUNDED, 1_000_000, "pro", None),
-            # Transition still trades the standard account, so it keeps the standard curve.
-            (TRANSITION, 100_000, "standard", 1),
             (MinerBucket.SUBACCOUNT_CHALLENGE, 100_000, "standard", 1),
         ]
         for bucket, account_size, curve, tier in cases:

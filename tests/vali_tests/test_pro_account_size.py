@@ -32,7 +32,7 @@ import vali_objects.vali_config as vali_config_module
 from entity_management.entity_manager import EntityData, EntityManager, SubaccountInfo
 from entity_management.entity_utils import pro_account_size_error, pro_payout_scale
 from vali_objects.enums.account_type_enum import AccountType
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 
 NOW_MS = 1_748_000_000_000
@@ -42,8 +42,8 @@ GRANTED_SIZE = 500_000.0
 PAYOUT_MULTIPLIER = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
 REQUIRED = "pro_account_size is required to enter the pro track"
 
-# PRO_CHALLENGE_FUNDED in its transition week (still on the standard account), and out of it
-TRANSITION = BucketPhase(MinerBucket.SUBACCOUNT_FUNDED, in_transition=True)
+# SUBACCOUNT_FUNDED in its transition week (still on the standard account), and PRO_CHALLENGE_FUNDED after it
+TRANSITION = "TRANSITION"
 FROM_STANDARD = MinerBucket.PRO_CHALLENGE_FUNDED
 
 PRO_BUCKETS = (TRANSITION, FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
@@ -51,10 +51,11 @@ STANDARD_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUN
 
 
 def _apply(manager, hotkey, bucket, pro_account_size=None):
-    """apply_bucket_account_size for a MinerBucket or a BucketPhase (the transition)."""
-    phase = bucket if isinstance(bucket, BucketPhase) else bucket.phase()
-    return manager.apply_bucket_account_size(hotkey, phase.bucket, pro_account_size,
-                                             in_transition=phase.in_transition)
+    """apply_bucket_account_size for a MinerBucket or TRANSITION."""
+    if bucket == TRANSITION:
+        return manager.apply_bucket_account_size(hotkey, MinerBucket.SUBACCOUNT_FUNDED, pro_account_size,
+                                                 in_transition=True)
+    return manager.apply_bucket_account_size(hotkey, bucket, pro_account_size)
 
 # Over the cap or non-positive, NaN / Infinity (which json.loads, so Flask's get_json, accepts), and wrong
 # types. Each is (size, fragment of the rejection message). These are refused on shape alone, so every entry

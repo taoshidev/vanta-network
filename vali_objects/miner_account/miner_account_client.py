@@ -21,7 +21,7 @@ from typing import Optional, Dict, List, Any
 
 import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.enums.miner_bucket_enum import BucketPhase, MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig, TradePairCategory
@@ -112,9 +112,9 @@ class MinerAccountClient(RPCClientBase):
         """
         return self._server.delete_miner_account_size(hotkey)
 
-    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None, in_transition: bool = False) -> bool:
+    def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         """Reset all position-derived computed state for a miner."""
-        return self._server.reset_account(hotkey, miner_bucket, in_transition)
+        return self._server.reset_account(hotkey, miner_bucket)
 
     def get_miner_account_size(
         self,
@@ -219,14 +219,22 @@ class MinerAccountClient(RPCClientBase):
         """Batch update unrealized PNL for multiple hotkeys."""
         self._server.update_unrealized_pnl(hotkey_to_unrealized_pnl)
 
-    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket], in_transition: bool = False) -> None:
-        """Set the miner bucket on an account. Sent as a BucketPhase status string for RPC."""
-        bucket_value = BucketPhase(bucket, in_transition).status if bucket else None
+    def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
+        """Set the miner bucket on an account. Converts MinerBucket to string for RPC."""
+        bucket_value = bucket.value if bucket else None
         self._server.set_miner_bucket(hotkey, bucket_value)
 
-    def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket | BucketPhase]) -> None:
+    def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket]) -> None:
         """Bulk set miner buckets across multiple accounts."""
         self._server.set_miner_buckets(hotkey_to_bucket)
+
+    def set_transition(self, hotkey: str, start_ms: Optional[int]) -> bool:
+        """Start (or with None, clear) the SUBACCOUNT_FUNDED transition week."""
+        return self._server.set_transition(hotkey, start_ms)
+
+    def get_transition_starts(self, hotkeys: Optional[List[str]] = None) -> Dict[str, int]:
+        """hotkey -> transition start for every account in its transition week."""
+        return self._server.get_transition_starts(hotkeys)
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
