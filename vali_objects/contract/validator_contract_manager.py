@@ -13,6 +13,7 @@ This is pure business logic that can be tested independently.
 """
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from bittensor.core import settings as bt_settings
 from collateral_sdk import CollateralManager, Network
 from typing import Dict, Any, Optional
 import time
@@ -123,13 +124,33 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         self.OWNERSHIP_QUERY_TIMEOUT_S = 10.0
         self.OWNERSHIP_FAILURE_COOLDOWN_S = 30.0
 
+        # A custom --subtensor.chain_endpoint (e.g. a self-hosted node at ws://127.0.0.1:9944)
+        # also carries collateral traffic: the node serves substrate and EVM RPC on the same
+        # port, so the EVM endpoint is that URL over http(s). Public entrypoints keep the
+        # collateral SDK's own defaults, since they don't serve EVM RPC.
+        chain_endpoint = getattr(config.subtensor, 'chain_endpoint', None)
+        public_endpoints = {url for name, url in bt_settings.NETWORK_MAP.items() if name != 'local'}
+        evm_endpoint = None
+        subtensor_endpoint = None
+        if isinstance(chain_endpoint, str) and chain_endpoint and chain_endpoint not in public_endpoints:
+            if chain_endpoint.startswith(('ws://', 'wss://')):
+                subtensor_endpoint = chain_endpoint
+                evm_endpoint = 'http' + chain_endpoint[len('ws'):]
+            else:
+                logger.warning(
+                    f"Custom chain_endpoint {chain_endpoint} is not a ws:// or wss:// URL; "
+                    f"collateral operations will use the public endpoints"
+                )
+
         # Initialize collateral manager based on network type
-        if self.is_testnet:
-            logger.info("Using testnet collateral manager")
-            self.collateral_manager = CollateralManager(Network.TESTNET)
-        else:
-            logger.info("Using mainnet collateral manager")
-            self.collateral_manager = CollateralManager(Network.MAINNET)
+        network = Network.TESTNET if self.is_testnet else Network.MAINNET
+        self.collateral_manager = CollateralManager(
+            network, evm_endpoint=evm_endpoint, subtensor_endpoint=subtensor_endpoint
+        )
+        logger.info(
+            f"Using {network.name.lower()} collateral manager "
+            f"(evm: {self.collateral_manager.evm_endpoint}, subtensor: {self.collateral_manager.subtensor_endpoint})"
+        )
 
         # GCP secret manager
         self._gcp_secret_manager_client = None
