@@ -1635,6 +1635,46 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             self.SUBACCOUNT_HOTKEY, segment, [position.model_dump()], segment['end_ms'])
         self.assertEqual(record['payout_usd'], 50.0)
 
+    def test_the_record_keeps_the_net_pnl_of_its_last_checkpoint_window(self):
+        manager = self._manager(week_buckets={0: MinerBucket.SUBACCOUNT_FUNDED, 1: MinerBucket.SUBACCOUNT_FUNDED})
+        tail_start_ms = self._week_0_start() + 3 * self.CP_DURATION_MS
+        segment = {**manager.segments[0], 'end_ms': tail_start_ms + self.CP_DURATION_MS // 2}
+        order = lambda ms, pnl: SimpleNamespace(processed_ms=ms, realized_pnl=pnl, to_python_dict=lambda: {})
+        position = SimpleNamespace(
+            open_ms=segment['start_ms'], unrealized_pnl=0.0,
+            orders=[order(tail_start_ms - 1, 30.0), order(tail_start_ms + 1, 50.0)],
+            fee_history=[SimpleNamespace(time_ms=tail_start_ms - 5, amount=7.0),
+                         SimpleNamespace(time_ms=tail_start_ms + 2, amount=5.0)],
+        )
+        record = manager.calculate_segment_payout_record(self.SUBACCOUNT_HOTKEY, segment, [position], segment['end_ms'])
+        self.assertAlmostEqual(record['tail_net_usd'], 45.0)
+
+    def _frozen_week_0_payouts(self, weekly_penalty, blocked_checkpoint_indices=()):
+        """Payout rows of a live PRO_FUNDED segment whose week 0 froze at weekly_penalty, its row
+        holding dollars the positions do not support."""
+        week_0_start = self._week_0_start()
+        manager = self._manager(blocked_checkpoint_indices=blocked_checkpoint_indices)
+        manager.segments[0]['closed_weeks'] = [{
+            'start_ms': week_0_start, 'end_ms': week_0_start + MS_IN_WEEK, 'bucket': MinerBucket.PRO_FUNDED.value,
+            'weekly_penalty': weekly_penalty, 'payout': 500.0, 'eow_balance': 500.0, 'payout_hwm': 500.0,
+            'deferred_balance': 0.0, 'frozen_ms': 123,
+        }]
+        return self._payout_result(manager=manager)['weekly_settlements']
+
+    def test_a_frozen_week_is_still_paid_from_its_positions(self):
+        """As with a sealed week, only the penalty is pinned: the frozen row's dollars are not reused."""
+        rows = self._frozen_week_0_payouts(weekly_penalty=1.0)
+        self.assertEqual([r['payout'] for r in rows], [140.0, 140.0])
+        self.assertEqual([r['frozen_ms'] for r in rows], [123, None])
+
+    def test_a_restated_breach_cannot_withhold_a_week_that_froze_clean(self):
+        rows = self._frozen_week_0_payouts(weekly_penalty=1.0, blocked_checkpoint_indices=(8,))
+        self.assertEqual([r['payout'] for r in rows], [140.0, 140.0])
+
+    def test_a_week_that_froze_breached_stays_withheld_when_the_ledger_heals(self):
+        rows = self._frozen_week_0_payouts(weekly_penalty=0.0)
+        self.assertEqual([r['payout'] for r in rows], [0.0, 280.0])
+
     def test_no_debt_ledger_pays_the_segment_unpenalized(self):
         """Without a debt ledger the weeks carry no penalty, and the scale still only applies in
         PRO_CHALLENGE_FUNDED."""
