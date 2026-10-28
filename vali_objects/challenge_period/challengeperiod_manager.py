@@ -36,7 +36,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
-from vali_objects.enums.miner_bucket_enum import BucketEntry, LEGACY_TRANSITION_BUCKET, MinerBucket
+from vali_objects.enums.miner_bucket_enum import BucketEntry, LEGACY_TRANSITION_BUCKET, MinerBucket, api_bucket_name
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.miner_account_manager import MinerAccount
@@ -537,7 +537,7 @@ class ChallengePeriodManager(CacheController):
         # Latch before any bucket move below: soft_breach reads the bucket the miner traded today
         self._latch_soft_breaches(evaluation_hotkeys, current_time_ms)
         timer.lap("latch_soft_breaches")
-        self._record_bucket_stats(evaluation_hotkeys, current_time_ms)
+        self._record_bucket_stats(evaluation_hotkeys, current_time_ms, transitions)
         timer.lap("bucket_stats")
         self._freeze_closed_weeks(evaluation_hotkeys, current_time_ms)
         timer.lap("closed_weeks")
@@ -1853,10 +1853,13 @@ class ChallengePeriodManager(CacheController):
                 logger.info(f"[BUCKET_HISTORY] froze {len(rows)} closed payout week rows of {hotkey} "
                             f"{segment.dir_name} through {rows[-1]['end_ms']}")
 
-    def _record_bucket_stats(self, hotkeys: list[str], current_time_ms: int) -> None:
-        """Append the day's drawdown and ProStats row to each hotkey's live segment, once per UTC day."""
+    def _record_bucket_stats(self, hotkeys: list[str], current_time_ms: int,
+                             transitions: dict[str, int] | None = None) -> None:
+        """Append the day's drawdown and ProStats row to each hotkey's live segment, once per UTC day.
+        transitions holds the hotkeys in their transition week."""
         if not self._bucket_history.enabled:
             return
+        transitions = transitions or {}
         day_ms = TimeUtil.get_start_of_day_ms(current_time_ms)
         for hotkey in hotkeys:
             state = self.miner_states.get(hotkey)
@@ -1876,6 +1879,7 @@ class ChallengePeriodManager(CacheController):
                 self._bucket_history.append_stats_row(segment, {
                     "time_ms": current_time_ms,
                     "bucket": state.current_bucket.value,
+                    "in_transition": hotkey in transitions,
                     **state.drawdown.to_dict(),
                     "calmar": pro_stats.calmar,
                     "max_drawdown": pro_stats.max_drawdown,
@@ -2360,25 +2364,62 @@ class ChallengePeriodManager(CacheController):
 
     def get_dashboard(self, hotkey) -> dict | None:
         """
-        returns {
-            "bucket": bucket.value, (str)
-            "start_time_ms": start_time_ms, (int)
-        }
+        The last entry of get_bucket_history: {"bucket": str, "start_time_ms": int, "in_transition": bool, ...}
         """
-        state = self.miner_states.get(hotkey)
-        if not state:
-            return None
-        return state.current_bucket_entry.to_dict()
+        history = self.get_bucket_history(hotkey)
+        return history[-1] if history else None
 
     def get_bucket_history(self, hotkey) -> list[dict] | None:
         """
         Full ordered history of bucket transitions for a miner, e.g.
         [{"bucket": "CHALLENGE", "start_time_ms": ...}, {"bucket": "MAINCOMP", "start_time_ms": ...}, ...]
+        Each transition week is its own step, named by api_bucket_name and flagged in_transition.
         """
         state = self.miner_states.get(hotkey)
         if not state:
             return None
-        return [entry.to_dict() for entry in state.entries]
+        history = [{**entry.to_dict(), "in_transition": False} for entry in state.entries]
+        windows = (self._transition_windows(hotkey, state, self._transition_start(hotkey))
+                   if self._has_funded_entry(state) else [])
+        for start_ms, _ in windows:
+            step = next((e for e in history if e["start_time_ms"] == start_ms
+                         and e["bucket"] == MinerBucket.SUBACCOUNT_FUNDED.value), None)
+            if step is None:
+                step = BucketEntry(MinerBucket.SUBACCOUNT_FUNDED, start_ms).to_dict()
+                history.append(step)
+            step.update(bucket=api_bucket_name(MinerBucket.SUBACCOUNT_FUNDED, True), in_transition=True)
+        return sorted(history, key=lambda e: e["start_time_ms"])
+
+    @staticmethod
+    def _has_funded_entry(state: MinerBucketState) -> bool:
+        return any(e.bucket == MinerBucket.SUBACCOUNT_FUNDED for e in state.entries)
+
+    def _transition_windows(self, hotkey: str, state: MinerBucketState,
+                            live_start_ms: int | None) -> list[tuple[int, int | None]]:
+        """(start, end) of each SUBACCOUNT_FUNDED transition week, oldest first; end is None for the
+        one running now. live_start_ms is the account's transition start."""
+        entries = [e for e in state.entries if not e.is_reverted]
+        windows = {}
+        # A transition from before the merge was its own bucket entry, now read as a second SUBACCOUNT_FUNDED
+        for prev, entry, nxt in zip(entries, entries[1:], entries[2:] + [None]):
+            if prev.bucket == entry.bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                windows[entry.start_time_ms] = nxt.start_time_ms if nxt else None
+        if self._bucket_history.enabled:
+            for segment in self._bucket_history.get_segments(hotkey):
+                if segment.transition_start_ms is not None and segment.reverted_ms is None:
+                    windows.setdefault(segment.transition_start_ms, segment.transition_end_ms)
+        if live_start_ms is not None:
+            windows[live_start_ms] = None
+        # An open window that is not the live one was cancelled at a time not recorded
+        return sorted((s, e) for s, e in windows.items() if e is not None or s == live_start_ms)
+
+    def get_transition_windows(self) -> dict[str, list[tuple[int, int | None]]]:
+        """hotkey -> its transition windows (see _transition_windows), for miners that have any."""
+        states = dict(self.miner_states)
+        hotkeys = [hk for hk, state in states.items() if self._has_funded_entry(state)]
+        live = self._miner_account_client.get_transition_starts(hotkeys) if hotkeys else {}
+        windows = {hk: self._transition_windows(hk, states[hk], live.get(hk)) for hk in hotkeys}
+        return {hk: w for hk, w in windows.items() if w}
 
     def get_drawdown_stats(self, synthetic_hotkey: str) -> dict | None:
         """

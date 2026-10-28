@@ -29,7 +29,7 @@ from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import MinerBucket, api_bucket_name
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
@@ -2431,7 +2431,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'status': 'success',
                 'message': message,
                 'hotkey': hotkey,
-                'bucket': bucket.value if bucket else None,
+                'bucket': api_bucket_name(bucket, in_transition),
                 'in_transition': in_transition,
                 'before': {f: before.get(f) for f in fields},
                 'after': {f: after.get(f) for f in fields},
@@ -3386,7 +3386,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 'status': 'success',
                 'message': message,
                 'synthetic_hotkey': synthetic_hotkey,
-                'bucket': bucket.value if bucket else None,
+                'bucket': api_bucket_name(bucket, in_transition),
                 'in_transition': in_transition,
                 'pro_account_size': subaccount.get('pro_account_size'),
                 'account_size': subaccount.get('account_size'),
@@ -3959,7 +3959,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'status': 'success',
             'synthetic_hotkey': synthetic_hotkey,
             'account_type': subaccount_info.get('account_type'),
-            'bucket': bucket.value if bucket else None,
+            'bucket': api_bucket_name(bucket, account.in_transition),
             'in_transition': account.in_transition,
             'asset_class': asset_class.value if asset_class else None,
             'account_size': account.account_size,
@@ -4122,6 +4122,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             )
 
             if payout_data:
+                for row in payout_data.get('weekly_settlements') or []:
+                    row['bucket'] = api_bucket_name(row.get('bucket'), row.get('in_transition', False))
                 return jsonify({
                     'status': 'success',
                     'data': payout_data,

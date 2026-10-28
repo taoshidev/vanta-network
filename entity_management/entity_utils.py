@@ -147,7 +147,7 @@ def pro_payout_scale(standard_account_size, pro_account_size, payout_scale=None)
 def is_instant_funded(initial_bucket: Optional[str]) -> bool:
     """True for a subaccount created straight into a funded bucket (SUBACCOUNT_FUNDED or
     PRO_CHALLENGE_FUNDED) rather than earning it through SUBACCOUNT_CHALLENGE.
-    PRO_CHALLENGE_FROM_STANDARD is the name stored before the merge."""
+    Both spellings of PRO_CHALLENGE_FUNDED are recognised."""
     return initial_bucket in ("SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FUNDED", "PRO_CHALLENGE_FROM_STANDARD")
 
 
@@ -184,8 +184,8 @@ def subaccount_creation_error(bucket=None, account_size=None, pro_account_size=N
 
     if bucket is None:
         bucket = MinerBucket.SUBACCOUNT_CHALLENGE.value
-    # A request may still name PRO_CHALLENGE_FROM_STANDARD, which PRO_CHALLENGE_FUNDED replaced
-    if bucket == "PRO_CHALLENGE_FROM_STANDARD":
+    # PRO_CHALLENGE_FUNDED is accepted as a spelling of its wire value PRO_CHALLENGE_FROM_STANDARD
+    if bucket == "PRO_CHALLENGE_FUNDED":
         bucket = MinerBucket.PRO_CHALLENGE_FUNDED.value
     if (not isinstance(bucket, str) or bucket not in {b.value for b in MinerBucket}
             or bucket not in ValiConfig.SUBACCOUNT_CREATION_BUCKETS):

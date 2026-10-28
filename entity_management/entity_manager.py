@@ -99,8 +99,7 @@ class SubaccountInfo(BaseModel):
     @field_validator("initial_bucket")
     @classmethod
     def _normalize_initial_bucket(cls, value: Optional[str]) -> Optional[str]:
-        """Subaccounts created before PRO_CHALLENGE_FUNDED replaced PRO_CHALLENGE_FROM_STANDARD
-        stored the old name."""
+        """Stores the wire value for either spelling of PRO_CHALLENGE_FUNDED."""
         return MinerBucket(value).value if value else value
 
     @property
@@ -2317,12 +2316,7 @@ class EntityManager(ValidatorBroadcastBase):
         challenge_data = None
         try:
             if self._challenge_period_client.has_miner(synthetic_hotkey):
-                bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-                start_time = self._challenge_period_client.get_miner_start_time(synthetic_hotkey)
-                challenge_data = {
-                    'bucket': bucket.value if bucket else None,
-                    'start_time_ms': start_time
-                }
+                challenge_data = self._challenge_period_client.get_dashboard(synthetic_hotkey)
         except Exception as e:
             logger.debug(f"[ENTITY_MANAGER] Challenge period data unavailable for {synthetic_hotkey}: {e}")
 

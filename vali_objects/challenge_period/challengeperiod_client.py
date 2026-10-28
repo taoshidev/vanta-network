@@ -96,6 +96,10 @@ class ChallengePeriodClient(RPCClientBase):
     def get_bucket_history(self, hotkey) -> list[dict] | None:
         return self._server.get_bucket_history_rpc(hotkey)
 
+    def get_transition_windows(self) -> dict[str, list[tuple[int, int | None]]]:
+        """hotkey -> (start, end) of each SUBACCOUNT_FUNDED transition week; end is None while it runs."""
+        return self._server.get_transition_windows_rpc()
+
     def get_bucket_statistics(self, hotkey: str, bucket: str | None = None, start_ms: int | None = None,
                               include: list[str] | None = None, limit: int | None = None) -> dict | None:
         """A miner's bucket segments with the sections asked for (summary, positions, snapshots, stats)."""

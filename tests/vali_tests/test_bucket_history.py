@@ -151,7 +151,7 @@ def test_the_transition_is_one_range_inside_the_funded_segment():
     assert [(r.bucket, r.start_ms, r.end_ms) for r in runs] == [
         ("SUBACCOUNT_CHALLENGE", T0, T1),
         ("SUBACCOUNT_FUNDED", T1, T3),
-        ("PRO_CHALLENGE_FUNDED", T3, T5),
+        ("PRO_CHALLENGE_FROM_STANDARD", T3, T5),
         ("PRO_FUNDED", T5, None),
     ]
     funded, pro_challenge, pro_funded = runs[1], runs[2], runs[3]
@@ -282,10 +282,11 @@ def test_stats_rows_are_written_at_most_once_per_utc_day(manager):
 
     manager._record_bucket_stats([HOTKEY], T1 + 1000)
     manager._record_bucket_stats([HOTKEY], T1 + 5000)
-    manager._record_bucket_stats([HOTKEY], T1 + DAILY_MS)
+    manager._record_bucket_stats([HOTKEY], T1 + DAILY_MS, {HOTKEY: T1})
 
     rows = manager._bucket_history.read_stats(_segment(manager, MinerBucket.PRO_CHALLENGE_DIRECT, T0))
     assert [r["day_ms"] for r in rows] == [T1, T1 + DAILY_MS]
+    assert [r["in_transition"] for r in rows] == [False, True]
     assert rows[0]["calmar"] == 2.5 and rows[0]["trading_days"] == 12
     assert {"intraday_drawdown_pct", "eod_drawdown_pct", "eod_hwm", "current_equity"} <= set(rows[0])
 
@@ -420,7 +421,7 @@ def test_leaving_an_earning_bucket_pins_a_payout_record(subaccount):
     assert manager.promote_hotkeys({HOTKEY: MinerBucket.PRO_CHALLENGE_FUNDED}, T5)
 
     # Each record is computed from the positions copied into its own segment directory
-    assert calls == [("SUBACCOUNT_FUNDED", ["standard_open"], T3), ("PRO_CHALLENGE_FUNDED", ["pro_open"], T5)]
+    assert calls == [("SUBACCOUNT_FUNDED", ["standard_open"], T3), ("PRO_CHALLENGE_FROM_STANDARD", ["pro_open"], T5)]
     assert _segment(manager, MinerBucket.SUBACCOUNT_FUNDED, T1).payout_record["payout_usd"] == 10.0
     assert _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T3).payout_record["end_ms"] == T5
     assert _segment(manager, MinerBucket.PRO_FUNDED, T5).payout_record is None
@@ -545,7 +546,7 @@ def test_admin_amends_removes_and_recomputes_a_record(subaccount):
 
     ok, _, record = manager.admin_update_payout_record(HOTKEY, T1, recompute=True)
     assert ok and record["payout_usd"] == 10.0
-    assert calls[-1] == ("PRO_CHALLENGE_FUNDED", ["pro_open"], T2)
+    assert calls[-1] == ("PRO_CHALLENGE_FROM_STANDARD", ["pro_open"], T2)
 
     # The live segment cannot be recomputed, and an unknown one is not found
     assert manager.admin_update_payout_record(HOTKEY, T2, recompute=True)[0] is False
@@ -631,7 +632,7 @@ def rest():
     server.is_valid_api_key = MagicMock(return_value=True)
     server._challenge_period_client = MagicMock()
     server._challenge_period_client.get_bucket_statistics.return_value = {
-        "hotkey": HOTKEY, "segments": [{"bucket": "PRO_CHALLENGE_FUNDED", "start_ms": T2}]}
+        "hotkey": HOTKEY, "segments": [{"bucket": "PRO_CHALLENGE_FROM_STANDARD", "start_ms": T2}]}
     app = Flask(__name__)
     app.route("/bucket-statistics/<minerid>", methods=["GET"])(server.get_bucket_statistics)
     return server, app.test_client()
