@@ -1430,7 +1430,7 @@ def test_only_the_hops_onto_a_pro_account_wind_the_standard_account_down(hop_man
 
     assert _bucket(target).switches_account
     hop_manager._position_client.close_all_positions.assert_called_once_with(
-        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION
+        hotkey=HOTKEY, close_time_ms=NOW_MS - 1, order_source=OrderSource.SUBACCOUNT_PROMOTION
     )
     hop_manager._position_client.archive_positions_for_hotkey.assert_called_once_with(HOTKEY, archive_all=True)
     hop_manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
@@ -1473,7 +1473,7 @@ def test_pro_funded_keeps_the_account_it_passed_on(hop_manager, challenge_bucket
 
     assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_FUNDED
     hop_manager._position_client.close_all_positions.assert_called_once_with(
-        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION)
+        hotkey=HOTKEY, close_time_ms=NOW_MS - 1, order_source=OrderSource.SUBACCOUNT_PROMOTION)
     hop_manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
     hop_manager._position_client.archive_positions_for_hotkey.assert_not_called()
     hop_manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()

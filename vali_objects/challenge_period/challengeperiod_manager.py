@@ -922,7 +922,8 @@ class ChallengePeriodManager(CacheController):
         """Close every position and cancel every limit order, leaving the account and its history."""
         self._position_client.close_all_positions(
             hotkey=hotkey,
-            close_time_ms=current_time_ms,
+            # 1ms before the bucket move, so the close falls inside the segment being left and is paid by its record
+            close_time_ms=current_time_ms - 1,
             order_source=OrderSource.SUBACCOUNT_PROMOTION
         )
         self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
