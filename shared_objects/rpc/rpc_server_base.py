@@ -62,6 +62,7 @@ Usage in validator.py:
     # Shutdown coordination via singleton
     ShutdownCoordinator.signal_shutdown("Validator shutting down")
 """
+import os
 import time
 import signal
 import socket
@@ -309,7 +310,8 @@ class RPCServerBase(ABC):
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
         initial_backoff_s: float = None,
         max_backoff_s: float = None,
-        daemon_stagger_s: float = 0.0
+        daemon_stagger_s: float = 0.0,
+        daemon_priority: int = 10,
     ):
         """
         Initialize the RPC server base.
@@ -339,6 +341,7 @@ class RPCServerBase(ABC):
                 - Medium daemons (60s-3600s): 600s (10 min) max backoff
                 - Slow daemons (>=3600s): 3600s (1 hour) max backoff
             daemon_stagger_s: Initial delay in seconds before first daemon iteration to stagger startup (default: 0.0)
+            daemon_priority: Priority is a value in the range -20 to 19, lower is more favorable (default: 10)
 
         Note: Shutdown coordination is now handled via ShutdownCoordinator singleton.
               No need to pass shutdown_dict parameter anymore.
@@ -352,6 +355,7 @@ class RPCServerBase(ABC):
         self.process_health_check_interval_s = process_health_check_interval_s
         self.enable_process_auto_restart = enable_process_auto_restart
         self.daemon_stagger_s = daemon_stagger_s
+        self.daemon_priority = daemon_priority
 
         # Local shutdown flag - checked by _is_shutdown() to avoid RPC calls during shutdown
         # This prevents zombie threads when servers are shutting down
@@ -800,6 +804,12 @@ class RPCServerBase(ABC):
         """Main daemon loop - calls run_daemon_iteration() repeatedly."""
         setproctitle(self.get_daemon_name())
         logger.info(f"{self.service_name} daemon running")
+
+        try:
+            native_thread_id = threading.get_native_id()
+            os.setpriority(os.PRIO_PROCESS, native_thread_id, self.daemon_priority)
+        except (OSError, AttributeError) as e:
+            logger.warning(f"{self.service_name} could not set daemon priority to {self.daemon_priority}: {e}")
 
         while not self._is_shutdown():
             try:
