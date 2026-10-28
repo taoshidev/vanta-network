@@ -107,6 +107,18 @@ def apply_deferral(
     return 0.0, balance + withheld, 0.0
 
 
+def frozen_week_penalties(closed_weeks: Optional[List[dict]]) -> Dict[int, float]:
+    """week start -> the weekly penalty each closed payout week froze with, for the weeks of
+    buckets the penalty governs. The payout paths pin only this, as a sealed week did; the
+    week's dollars are still computed."""
+    penalties = {}
+    for row in closed_weeks or []:
+        if MinerBucket.from_status(row.get('bucket')).soft_breach_applies:
+            week_start_ms = TimeUtil.ms_at_start_of_week(row['start_ms'])
+            penalties[week_start_ms] = min(penalties.get(week_start_ms, 1.0), row['weekly_penalty'])
+    return penalties
+
+
 @dataclass
 class DebtCheckpoint:
     """

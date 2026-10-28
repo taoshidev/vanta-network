@@ -16,6 +16,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import (
     WeekTrack,
     WeeklyPayoutContext,
     apply_deferral,
+    frozen_week_penalties,
 )
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -190,21 +191,29 @@ class DebtLedgerManager():
 
     @staticmethod
     def _checkpoint_segment(segments: list, timestamp_ms: int, cp_duration_ms: int) -> tuple:
-        """(index of the segment a checkpoint pays into, covered, frozen). covered is True when the
-        checkpoint's window touches a segment already paid by its payout record; frozen when it
-        falls in one of its segment's closed weeks, which are paid from the frozen rows."""
-        index, covered = None, False
+        """(index of the segment a checkpoint pays into, covered, tail). covered is True when the
+        checkpoint's window touches a segment already paid by its payout record. A window that runs
+        past that segment's end into the next one has a tail: the net PnL of the window the record
+        already paid, so the rest of the checkpoint is paid to the next segment. None when the
+        window lies inside the recorded segment."""
+        index, covered, tail = None, False, None
         window_start_ms = timestamp_ms - cp_duration_ms
         for i, segment in enumerate(segments):
             if segment['start_ms'] >= timestamp_ms:
                 break
             index = i
             record = segment.get('payout_record')
-            if record and window_start_ms < (segment.get('end_ms') or record['end_ms']):
+            end_ms = segment.get('end_ms') or (record['end_ms'] if record else None)
+            if record and window_start_ms < end_ms:
                 covered = True
-        closed_weeks = segments[index].get('closed_weeks') if index is not None else None
-        frozen = bool(closed_weeks) and timestamp_ms <= closed_weeks[-1]['end_ms']
-        return index, covered, frozen
+                tail = record.get('tail_net_usd') if end_ms < timestamp_ms else None
+        if index is not None and segments[index].get('payout_record'):
+            # The window ends inside the recorded segment itself
+            tail = None
+        elif covered and index is not None and segments[index].get('account_start_ms') == segments[index]['start_ms']:
+            # A new account restarted the ledger, so its first checkpoint holds nothing the record paid
+            tail = 0.0
+        return index, covered, tail
 
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
         dashboard: dict | None = None
@@ -1015,26 +1024,37 @@ class DebtLedgerManager():
                         # The scale the live segment opened with, so a resize cannot reprice it
                         subaccount_payout_scale[hk] = live['payout_scale']
 
-                # Payout record rows, (end_ms, payout) oldest first, drained into their own week
+                # Payout record rows, (end_ms, payout, carries) oldest first. A row of the record's
+                # last week lands on the next emitted checkpoint even past that week, like the settled
+                # segment it replaces; an earlier week's row only lands inside its own week.
                 pending_records = {}
                 for subaccount in entity_data.get('subaccounts', {}).values():
                     synthetic_hotkey = subaccount.get('synthetic_hotkey')
-                    # A record holds its segment's closed weeks too; a segment without one pays them here
-                    rows = sorted(
-                        (row['end_ms'], row['payout'])
-                        for seg in all_segments.get(synthetic_hotkey, [])
-                        for row in (seg['payout_record']['settlements'] if seg.get('payout_record')
-                                    else seg.get('closed_weeks') or [])
-                    )
+                    rows = []
+                    for seg in all_segments.get(synthetic_hotkey, []):
+                        record = seg.get('payout_record')
+                        if not record:
+                            continue
+                        last_week_ms = TimeUtil.ms_at_start_of_week(record['end_ms'] - 1)
+                        rows += [(row['end_ms'], row['payout'],
+                                  TimeUtil.ms_at_start_of_week(row['end_ms'] - 1) == last_week_ms)
+                                 for row in record['settlements']]
                     if rows:
-                        pending_records[synthetic_hotkey] = rows
+                        pending_records[synthetic_hotkey] = sorted(rows)
 
                 # Widen each subaccount's weekly penalty across its whole payout week: a breach is
                 # only stamped on the breaching checkpoint, so the worst value in a week governs it.
-                subaccount_week_context = {
-                    synthetic_hotkey: ledger.weekly_payout_context(subaccount_payout_scale.get(synthetic_hotkey, 1.0))
-                    for synthetic_hotkey, ledger in subaccount_ledgers
-                }
+                # A closed week keeps the penalty it froze with, so a rebuild cannot move it between
+                # paid and withheld.
+                subaccount_week_context = {}
+                for synthetic_hotkey, ledger in subaccount_ledgers:
+                    context = ledger.weekly_payout_context(subaccount_payout_scale.get(synthetic_hotkey, 1.0))
+                    closed_weeks = [row for seg in subaccount_segments[synthetic_hotkey]
+                                    for row in seg.get('closed_weeks') or []]
+                    for week_start_ms, penalty in frozen_week_penalties(closed_weeks).items():
+                        if week_start_ms in context:
+                            context[week_start_ms].weekly_penalty = penalty
+                    subaccount_week_context[synthetic_hotkey] = context
                 # A week with no checkpoints of its own falls back to the account's current ratio
                 # rather than to an unscaled 1.0.
                 subaccount_default_week = {
@@ -1062,25 +1082,20 @@ class DebtLedgerManager():
                             subaccount_prev_fees[synthetic_hotkey] = checkpoint.cumulative_fees_usd
                         if checkpoint and checkpoint.challenge_period_status in _earning_statuses:
                             segments = subaccount_segments[synthetic_hotkey]
-                            segment_index, covered, frozen = self._checkpoint_segment(
+                            segment_index, covered, tail = self._checkpoint_segment(
                                 segments, timestamp_ms, target_cp_duration_ms)
-                            if covered:
+                            if covered and tail is None:
                                 continue
                             if segment_index != subaccount_segment_index[synthetic_hotkey]:
                                 subaccount_segment_index[synthetic_hotkey] = segment_index
-                                # After its closed weeks a segment resumes from what the last one closed on
-                                closed_weeks = segments[segment_index].get('closed_weeks') if segment_index is not None else None
-                                last_week = closed_weeks[-1] if closed_weeks else {}
-                                subaccount_cum_realized[synthetic_hotkey] = last_week.get('eow_balance', 0.0)
-                                subaccount_hwm[synthetic_hotkey] = last_week.get('payout_hwm', 0.0)
-                                subaccount_escrow[synthetic_hotkey] = last_week.get('deferred_balance', 0.0)
+                                # A window shared with the recorded segment before starts net of what
+                                # the record already paid of it
+                                subaccount_cum_realized[synthetic_hotkey] = -(tail or 0.0)
+                                subaccount_hwm[synthetic_hotkey] = 0.0
+                                subaccount_escrow[synthetic_hotkey] = 0.0
                                 subaccount_fee_baseline[synthetic_hotkey] = prev_fees
                             checkpoints_at_time.append(checkpoint)
-                            if frozen:
-                                # Paid from the frozen rows; its fees are inside the frozen balance
-                                subaccount_fee_baseline[synthetic_hotkey] = checkpoint.cumulative_fees_usd
-                                continue
-                            week = subaccount_week_context[synthetic_hotkey].get(
+                            week =subaccount_week_context[synthetic_hotkey].get(
                                 week_start_ms, subaccount_default_week[synthetic_hotkey]
                             )
 
@@ -1136,11 +1151,12 @@ class DebtLedgerManager():
 
                     # Drain every payout record row ending at or before this checkpoint. These are
                     # settled dollars - scaled, penalized and past their high water mark - so they
-                    # are added as-is. A row from an earlier week was already paid in that week.
+                    # are added as-is. A row of an earlier week that missed it is history the
+                    # wiped ledger no longer covers, and is not paid into a later week.
                     for rows in pending_records.values():
                         while rows and rows[0][0] <= timestamp_ms:
-                            row_end_ms, payout = rows.pop(0)
-                            if TimeUtil.ms_at_start_of_week(row_end_ms - 1) == week_start_ms:
+                            row_end_ms, payout, carries = rows.pop(0)
+                            if carries or TimeUtil.ms_at_start_of_week(row_end_ms - 1) == week_start_ms:
                                 settled_pending_usd += payout
 
                     # An aggregated checkpoint is built out of the subaccount checkpoints at this
@@ -1229,7 +1245,7 @@ class DebtLedgerManager():
                 # lost: this aggregation is rebuilt from the bucket segments on every build, so the
                 # next one places it once a checkpoint exists past the row.
                 leftover = settled_pending_usd + sum(
-                    payout for rows in pending_records.values() for _, payout in rows
+                    payout for rows in pending_records.values() for _, payout, carries in rows if carries
                 )
                 if leftover:
                     logger.info(

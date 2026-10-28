@@ -748,25 +748,29 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         return per_week
 
     @staticmethod
-    def _segment(bucket, start_ms, end_ms=None, record_rows=(), closed_weeks=None):
+    def _segment(bucket, start_ms, end_ms=None, record_rows=(), closed_weeks=None, tail_net_usd=None,
+                 account_start_ms=None):
         """A bucket segment summary; record_rows are (end_ms, payout) of its payout record."""
         record = None
         if record_rows:
-            record = {'end_ms': end_ms, 'payout_usd': sum(p for _, p in record_rows),
+            record = {'end_ms': end_ms, 'payout_usd': sum(p for _, p in record_rows), 'tail_net_usd': tail_net_usd,
                       'settlements': [{'end_ms': e, 'payout': p} for e, p in record_rows]}
         return {'bucket': bucket.value, 'start_ms': start_ms, 'end_ms': end_ms, 'reverted_ms': None,
-                'payout_scale': None, 'payout_record': record, 'closed_weeks': closed_weeks}
+                'account_start_ms': account_start_ms, 'payout_scale': None, 'payout_record': record,
+                'closed_weeks': closed_weeks}
 
-    def _frozen_week_0(self, payout, deferred_balance=0.0):
-        """A PRO_FUNDED segment from week 0 whose week 0 is frozen, closing on 140 realized."""
+    def _frozen_week_0(self, payout, weekly_penalty=1.0):
+        """A PRO_FUNDED segment from week 0 whose week 0 froze at weekly_penalty."""
         return lambda w0: [self._segment(MinerBucket.PRO_FUNDED, w0, closed_weeks=[{
-            'start_ms': w0, 'end_ms': w0 + MS_IN_WEEK, 'payout': payout, 'eow_balance': 140.0,
-            'payout_hwm': 140.0, 'deferred_balance': deferred_balance,
+            'start_ms': w0, 'end_ms': w0 + MS_IN_WEEK, 'bucket': MinerBucket.PRO_FUNDED.value,
+            'weekly_penalty': weekly_penalty, 'payout': payout, 'eow_balance': 140.0, 'payout_hwm': 140.0,
+            'deferred_balance': 0.0,
         }])]
 
-    def test_a_frozen_week_is_paid_from_its_row_not_its_checkpoints(self):
+    def test_a_frozen_week_is_still_paid_from_its_checkpoints(self):
+        """As with a sealed week, only the penalty is pinned: the row's dollars never reach the weights."""
         week_0, week_1 = self._aggregate(segments=self._frozen_week_0(payout=500.0))
-        self.assertAlmostEqual(week_0, 500.0)
+        self.assertAlmostEqual(week_0, 140.0)
         self.assertAlmostEqual(week_1, 140.0)
 
     def test_a_restated_breach_cannot_reach_a_frozen_week(self):
@@ -777,9 +781,21 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
 
     def test_the_next_clean_week_releases_a_frozen_escrow(self):
         """Week 0 froze breached; the ledger no longer shows it, and week 1 still releases the escrow."""
-        week_0, week_1 = self._aggregate(segments=self._frozen_week_0(payout=0.0, deferred_balance=140.0))
+        week_0, week_1 = self._aggregate(segments=self._frozen_week_0(payout=0.0, weekly_penalty=0.0))
         self.assertAlmostEqual(week_0, 0.0)
         self.assertAlmostEqual(week_1, 280.0)
+
+    def test_a_frozen_week_with_unrealized_losses_is_not_paid_again(self):
+        """The payout row's high water mark nets unrealized losses; the weights keep their own
+        realized one, so week 1 pays only what it realizes."""
+        segments = lambda w0: [self._segment(MinerBucket.PRO_FUNDED, w0, closed_weeks=[{
+            'start_ms': w0, 'end_ms': w0 + MS_IN_WEEK, 'bucket': MinerBucket.PRO_FUNDED.value,
+            'weekly_penalty': 1.0, 'payout': 40.0, 'eow_balance': 140.0, 'payout_hwm': 40.0,
+            'deferred_balance': 0.0,
+        }])]
+        week_0, week_1 = self._aggregate(segments=segments)
+        self.assertAlmostEqual(week_0, 140.0)
+        self.assertAlmostEqual(week_1, 140.0)
 
     def test_unblocked_weeks_aggregate_fully(self):
         week_0, week_1 = self._aggregate()
@@ -873,6 +889,61 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         )
         self.assertAlmostEqual(week_0, 1000.0 + 70.0)
         self.assertAlmostEqual(week_1, 140.0)
+
+    def test_a_checkpoint_straddling_the_promotion_pays_its_pro_funded_part(self):
+        """PRO_FUNDED keeps the ledger, so the checkpoint the promotion falls inside holds both
+        segments' PnL: the record already paid 4 of its 10, and PRO_FUNDED is paid the other 6."""
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        promoted_at = cps_per_week // 2
+        week_0, week_1 = self._aggregate(
+            bucket_by_index={i: MinerBucket.PRO_CHALLENGE_FUNDED for i in range(promoted_at)},
+            segments=lambda w0: [
+                self._segment(MinerBucket.PRO_CHALLENGE_FUNDED, w0 - MS_IN_WEEK,
+                              w0 + promoted_at * self.CP_DURATION_MS + self.CP_DURATION_MS // 2,
+                              record_rows=[(w0 + promoted_at * self.CP_DURATION_MS + self.CP_DURATION_MS // 2, 999.0)],
+                              tail_net_usd=4.0),
+                self._segment(MinerBucket.PRO_FUNDED, w0 + promoted_at * self.CP_DURATION_MS + self.CP_DURATION_MS // 2),
+            ],
+        )
+        self.assertAlmostEqual(week_0, 999.0 + 6.0 + 60.0)
+        self.assertAlmostEqual(week_1, 140.0)
+
+    def test_the_first_checkpoint_of_a_new_account_is_paid_in_full(self):
+        """After an account switch the ledger restarts, so its first checkpoint, whose window began
+        before the switch, holds nothing the record paid."""
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        switch_at = cps_per_week // 2
+        switch_ms = lambda w0: w0 + switch_at * self.CP_DURATION_MS + self.CP_DURATION_MS // 2
+        week_0, week_1 = self._aggregate(
+            bucket_by_index={i: MinerBucket.PRO_CHALLENGE_FUNDED for i in range(2 * cps_per_week)},
+            ledger_from_index=switch_at,
+            segments=lambda w0: [
+                self._segment(MinerBucket.SUBACCOUNT_FUNDED, w0 - MS_IN_WEEK, switch_ms(w0),
+                              record_rows=[(switch_ms(w0), 1000.0)], tail_net_usd=4.0),
+                self._segment(MinerBucket.PRO_CHALLENGE_FUNDED, switch_ms(w0), account_start_ms=switch_ms(w0)),
+            ],
+        )
+        self.assertAlmostEqual(week_0, 1000.0 + 70.0)
+        self.assertAlmostEqual(week_1, 140.0)
+
+    def test_a_record_lands_on_the_next_checkpoint_when_its_week_has_none_left(self):
+        """The promoted account first trades the week after the switch: the record's last week is
+        paid on that first checkpoint, as a settled segment was. Its earlier weeks are history the
+        wiped ledger no longer covers and are not moved into a later week."""
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        switch_at = cps_per_week // 2
+        first_trade_at = cps_per_week + 2
+        week_0, week_1 = self._aggregate(
+            bucket_by_index={i: MinerBucket.PRO_CHALLENGE_FUNDED for i in range(2 * cps_per_week)},
+            ledger_from_index=first_trade_at,
+            segments=lambda w0: [
+                self._segment(MinerBucket.SUBACCOUNT_FUNDED, w0 - MS_IN_WEEK, w0 + switch_at * self.CP_DURATION_MS,
+                              record_rows=[(w0, 300.0), (w0 + switch_at * self.CP_DURATION_MS, 1000.0)]),
+                self._segment(MinerBucket.PRO_CHALLENGE_FUNDED, w0 + switch_at * self.CP_DURATION_MS),
+            ],
+        )
+        self.assertAlmostEqual(week_0, 0.0)
+        self.assertAlmostEqual(week_1, 1000.0 + (2 * cps_per_week - first_trade_at) * 10.0)
 
     def test_a_new_segment_is_not_charged_the_fees_of_the_one_before(self):
         """cumulative_fees_usd runs from ledger inception; PRO_FUNDED starts from its own baseline."""
