@@ -40,6 +40,7 @@ class MarketOrderClient(RPCClientBase):
         is_hl_taker: bool | None = None,
         now_ms: int | None = None,
         enforce_cooldown: bool = True,
+        limit_price: float | None = None,
     ):
         return self._server.execute_order_rpc(
             hotkey=hotkey,
@@ -57,6 +58,7 @@ class MarketOrderClient(RPCClientBase):
             is_hl_taker=is_hl_taker,
             now_ms=now_ms,
             enforce_cooldown=enforce_cooldown,
+            limit_price=limit_price,
         )
 
     def close_positions(self, hotkey: str, position_uuids: list[str] | None = None, close_all: bool = False, now_ms: int | None = None):

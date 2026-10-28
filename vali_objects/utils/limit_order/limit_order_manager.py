@@ -13,6 +13,7 @@ from vali_objects.exceptions.bracket_order_exception import BracketOrderExceptio
 from shared_objects.locks.position_lock import PositionLocks
 from vali_objects.utils.limit_order.order_trigger import (
     build_limit_price_sources,
+    evaluate_limit_trigger_price,
     evaluate_order_trigger,
 )
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -95,6 +96,19 @@ class LimitOrderManager(CacheController):
 
         self._needs_initial_bracket_sync = True
         self._last_trailing_attach_ms = {}  # {order_uuid: last_write_ms}
+
+        # Equities pre-market/after-hours: a LIMIT order that is marketable when it arrives fills at the first
+        # qualifying trade (limit or better); otherwise it rests and fills at its limit price. In memory only.
+        # Session changes are observed by the daemon; each change starts a new session sequence number.
+        self._equity_session = None
+        self._equity_session_seq = 0
+        self._equity_session_started_ms = 0
+        # Orders submitted before this server started may have rested through trades it never saw, so they are
+        # always treated as resting (conservative after restarts)
+        self._watch_start_ms = TimeUtil.now_in_millis()
+        self._extended_hours_activation = {}  # {order_uuid: (session_seq, activation_ms)} first session it could fill in
+        self._extended_hours_rested_uuids = set()  # arriving orders whose first trade after activation did not cross
+        self._extended_hours_marketable = {}  # {order_uuid: first trade after activation, which crossed the limit}
 
         # Create dedicated locks for protecting self._limit_orders dictionary
         # Convert limit orders structure to format expected by PositionLocks
@@ -417,6 +431,11 @@ class LimitOrderManager(CacheController):
                     raise SignalException(f"Cannot edit order {order_uuid}: order not found (race condition)")
                 if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                     raise SignalException(f"Cannot edit order {order_uuid}: order is no longer unfilled (race condition)")
+                # An edit replaces the order (new price, back of the queue), so in pre-market/after-hours it
+                # arrives again from the edit time
+                self._extended_hours_activation.pop(order_uuid, None)
+                self._extended_hours_rested_uuids.discard(order_uuid)
+                self._extended_hours_marketable.pop(order_uuid, None)
             else:
                 # NEW ORDER PATH: idempotent replay guard — a retried process_limit_order (RPC
                 # self-heal or placer resend after a lost ack) with an already-registered uuid
@@ -928,12 +947,27 @@ class LimitOrderManager(CacheController):
 
             # Check if market is open. Equities also check limit orders in pre-market/after-hours, where only
             # LIMIT orders fill (against Nasdaq Basic trades) and other order types wait for the regular session.
-            extended_hours = self.live_price_fetcher.get_equity_session(trade_pair, now_ms) in ('pre', 'post')
+            equity_session = self.live_price_fetcher.get_equity_session(trade_pair, now_ms)
+            if equity_session is not None and equity_session != self._equity_session:
+                self._equity_session = equity_session
+                self._equity_session_seq += 1
+                self._equity_session_started_ms = now_ms
+                self._extended_hours_rested_uuids.clear()
+            extended_hours = equity_session in ('pre', 'post')
             if not extended_hours and not self.live_price_fetcher.is_market_open(trade_pair, now_ms):
                 if self.running_unit_tests:
                     print(f"[CHECK_ORDERS DEBUG] Market closed for {trade_pair.trade_pair_id}")
                 logger.debug(f"Market closed for {trade_pair.trade_pair_id}, skipping")
                 continue
+
+            # Record the first session each equity LIMIT order could fill in (its activation): the submission time,
+            # or the session start for orders submitted while the market was closed
+            if equity_session is not None:
+                for hotkey_orders in hotkey_dict.values():
+                    for o in hotkey_orders:
+                        if o.src == OrderSource.LIMIT_UNFILLED and o.order_uuid not in self._extended_hours_activation:
+                            self._extended_hours_activation[o.order_uuid] = (
+                                self._equity_session_seq, max(o.processed_ms, self._equity_session_started_ms))
 
             # Get price sources for this trade pair
             # price_sources = self.live_price_fetcher.get_sorted_price_sources_for_trade_pair(trade_pair, now_ms)
@@ -985,6 +1019,10 @@ class LimitOrderManager(CacheController):
                                 self._attach_order_to_position(miner_hotkey, order)
                                 self._last_trailing_attach_ms[order.order_uuid] = now_ms
 
+                    # Runs before the fill interval check so an order's first trade after arrival is never missed
+                    marketable_trade = self._extended_hours_marketable_trade(order, price_sources) if extended_hours else None
+                    activation_ms = self._extended_hours_activation.get(order.order_uuid, (None, None))[1] if extended_hours else None
+
                     if not fill_allowed:
                         continue
 
@@ -997,14 +1035,21 @@ class LimitOrderManager(CacheController):
                             # call could have closed this order since the outer filter ran.
                             if order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
                                 continue
-                            cutoff_ms = max(order.processed_ms, last_fill_time)
-                            trigger_ps, trigger_price, is_taker = evaluate_order_trigger(miner_hotkey, order, position, price_sources, cutoff_ms)
+                            if marketable_trade is not None:
+                                # Marketable on arrival: takes the first trade after arrival, limit or better
+                                trigger_ps, trigger_price, is_taker = marketable_trade, order.limit_price, True
+                            else:
+                                cutoff_ms = max(order.processed_ms, last_fill_time)
+                                trigger_ps, trigger_price, is_taker = evaluate_order_trigger(miner_hotkey, order, position, price_sources, cutoff_ms)
 
                         if trigger_price is not None:
                             if order.execution_type == ExecutionType.STOP_LIMIT:
                                 self._convert_stop_limit_to_limit_order(miner_hotkey, order, TimeUtil.now_in_millis())
                             else:
-                                self._fill_limit_order_with_price_source(miner_hotkey, order, trigger_ps, trigger_price, is_taker=is_taker)
+                                self._fill_limit_order_with_price_source(
+                                    miner_hotkey, order, trigger_ps, trigger_price, is_taker=is_taker,
+                                    fill_price=marketable_trade.open if marketable_trade is not None else None,
+                                    activation_ms=activation_ms)
                             total_filled += 1
                             # DESIGN: Break after first fill to enforce LIMIT_ORDER_FILL_INTERVAL_MS
                             # Only one order per trade pair per hotkey can fill within the interval.
@@ -1128,6 +1173,36 @@ class LimitOrderManager(CacheController):
                     orders_to_cancel.append(order)
         return orders_to_cancel
 
+    def _extended_hours_marketable_trade(self, order, price_sources):
+        """
+        For an equities LIMIT order in pre-market/after-hours, the first qualifying trade after the order arrived if
+        that trade was at or through the limit (the order was marketable on arrival), else None.
+
+        An order arrives at its activation (submission, or the session start if submitted while closed) and only in
+        its activation session. Its first trade after activation decides it once: through the limit -> marketable,
+        otherwise it rests and later fills at the limit price. Orders submitted before this server started, or
+        carried over from an earlier session, are resting.
+        """
+        if order.execution_type != ExecutionType.LIMIT:
+            return None
+        order_uuid = order.order_uuid
+        if order_uuid in self._extended_hours_marketable:
+            return self._extended_hours_marketable[order_uuid]
+        activation = self._extended_hours_activation.get(order_uuid)
+        if (activation is None or activation[0] != self._equity_session_seq
+                or order.processed_ms < self._watch_start_ms or order_uuid in self._extended_hours_rested_uuids):
+            return None
+
+        trades_after_activation = [ps for ps in price_sources if ps.start_ms >= activation[1]]
+        if not trades_after_activation:
+            return None
+        first_trade = min(trades_after_activation, key=lambda ps: ps.start_ms)
+        if evaluate_limit_trigger_price(order, first_trade) is None:
+            self._extended_hours_rested_uuids.add(order_uuid)
+            return None
+        self._extended_hours_marketable[order_uuid] = first_trade
+        return first_trade
+
     def _get_price_sources(self, trade_pair, now_ms):
         """
         Return raw WebSocket price sources for a trade pair within the look-back window.
@@ -1226,7 +1301,8 @@ class LimitOrderManager(CacheController):
                 order.src = OrderSource.STOP_LIMIT_CANCELLED
                 self._write_to_disk(miner_hotkey, order)
 
-    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, trigger_price, is_market_order=False, is_taker=None):
+    def _fill_limit_order_with_price_source(self, miner_hotkey, order, price_source, trigger_price, is_market_order=False, is_taker=None,
+                                            fill_price=None, activation_ms=None):
         """Fill a limit order and update position. Returns error message on failure, None on success."""
         from vali_objects.utils.limit_order.order_utils import OrderSize
         trade_pair = order.trade_pair
@@ -1265,8 +1341,10 @@ class LimitOrderManager(CacheController):
             result = self.market_order_client.execute_order(
                 miner_hotkey, order.order_uuid, trade_pair,
                 order.execution_type, order_type, order_size,
-                # A trade (pre-market/after-hours) at or through the limit fills at the miner's limit price
-                fill_price=trigger_price if price_source.source == NASDAQ_BASIC_TRADE_SOURCE else None,
+                # Pre-market/after-hours trades: a marketable-on-arrival order fills at the given trade price,
+                # a resting order at the miner's limit price
+                fill_price=fill_price if fill_price is not None else (
+                    trigger_price if price_source.source == NASDAQ_BASIC_TRADE_SOURCE else None),
                 trigger_price=trigger_price,
                 price_sources=[price_source],
                 order_src=new_src,
@@ -1274,6 +1352,7 @@ class LimitOrderManager(CacheController):
                 slippage=slippage,
                 is_hl_taker=is_taker,
                 enforce_cooldown=is_market_order,
+                limit_price=order.limit_price if order.execution_type == ExecutionType.LIMIT else None,
             )
 
             if not result:
@@ -1293,6 +1372,15 @@ class LimitOrderManager(CacheController):
 
             # Issue 3: Log success only after successful update
             logger.info(f"Filled limit order {order.order_uuid} at {order.price}")
+            if price_source.source == NASDAQ_BASIC_TRADE_SOURCE:
+                fill_rule = 'marketable_on_arrival' if fill_price is not None else 'resting'
+                activation_str = TimeUtil.millis_to_formatted_date_str(activation_ms) if activation_ms else None
+                logger.info(
+                    f"[EXTENDED_HOURS_FILL] fill_rule={fill_rule} activation={activation_str} {miner_hotkey} "
+                    f"{order.order_uuid} {trade_pair.trade_pair_id} {order.order_type.name} limit={order.limit_price} "
+                    f"filled={order.price} trade_price={price_source.open} "
+                    f"trade_time={TimeUtil.millis_to_formatted_date_str(price_source.start_ms)}"
+                )
 
             if trade_pair not in self._last_fill_time:
                 self._last_fill_time[trade_pair] = {}
@@ -1349,6 +1437,10 @@ class LimitOrderManager(CacheController):
             order.processed_ms = time_ms
             if OrderSource.is_cancelled(src):
                 self._write_to_disk(miner_hotkey, order)
+
+            self._extended_hours_activation.pop(order_uuid, None)
+            self._extended_hours_rested_uuids.discard(order_uuid)
+            self._extended_hours_marketable.pop(order_uuid, None)
 
             # Remove closed orders from memory to prevent memory leak
             # Closed orders are persisted to disk and don't need to stay in memory
@@ -1676,6 +1768,10 @@ class LimitOrderManager(CacheController):
         """
         self._limit_orders.clear()
         self._last_fill_time.clear()
+        self._equity_session = None
+        self._extended_hours_activation.clear()
+        self._extended_hours_rested_uuids.clear()
+        self._extended_hours_marketable.clear()
         # Also clear market order manager's cooldown cache
         self.market_order_client.clear_order_cooldown_cache()
         logger.info("Cleared all limit orders from memory")

@@ -287,6 +287,12 @@ class TestLimitOrders(TestBase):
         # (or updates existing depending on logic)
         self.assertGreaterEqual(len(positions), 1, "At least one position should exist after fill")
 
+    def test_filled_order_limit_price_survives_serialization(self):
+        filled = Order(trade_pair=TradePair.BTCUSD, order_uuid="filled_limit", processed_ms=TimeUtil.now_in_millis(),
+                       price=48500.0, order_type=OrderType.LONG, leverage=0.1, execution_type=ExecutionType.LIMIT,
+                       limit_price=49000.0, src=OrderSource.LIMIT_FILLED)
+        self.assertEqual(Order.from_dict(filled.to_python_dict()).limit_price, 49000.0)
+
     def test_process_limit_order_multiple_trade_pairs(self):
         """Test storing limit orders across multiple trade pairs"""
         btc_order = self.create_test_limit_order(
