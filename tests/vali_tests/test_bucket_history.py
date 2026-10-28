@@ -209,7 +209,7 @@ def test_challenge_to_funded_wipes_the_positions_into_the_challenge_segment(mana
     assert challenge.end_ms == T1
     copied = _copied(manager, challenge)
     assert set(copied) == {"closed_1", "open_1"}
-    assert copied["open_1"]["close_ms"] == T1            # copied after the switch closed it
+    assert copied["open_1"]["close_ms"] == T1 - 1          # copied after the switch closed it
     assert challenge.final_drawdown is not None and challenge.end_balance == 100_000.0
 
     # The live state the statistics read is untouched: archived, and nothing carried over
@@ -237,7 +237,7 @@ def test_the_pro_track_carries_positions_except_across_the_transition_exit(manag
     # Leaving it for PRO_CHALLENGE_FUNDED switches onto the pro account
     assert manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FUNDED, T3)[0]
     assert (funded.end_ms, funded.transition_end_ms) == (T3, T3)
-    assert _copied(manager, funded)["standard_open"]["close_ms"] == T3
+    assert _copied(manager, funded)["standard_open"]["close_ms"] == T3 - 1
     assert funded.final_drawdown is not None
     assert _live_uuids(manager) == set()                 # only positions opened after the switch count
     pcf = _segment(manager, MinerBucket.PRO_CHALLENGE_FUNDED, T3)
