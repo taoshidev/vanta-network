@@ -285,8 +285,8 @@ def test_pro_funded_keeps_the_challenge_positions_but_pays_full_scale_only_after
 
     result = s.payout(W(3))
     assert spans(result) == [
-        ("PRO_CHALLENGE_FUNDED", (0, 0), (1, 0), 200.0),   # 1000 at 0.2
-        ("PRO_CHALLENGE_FUNDED", (1, 0), (1, 2), 100.0),   # 500 at 0.2, cut at the promotion
+        ("PRO_CHALLENGE_FROM_STANDARD", (0, 0), (1, 0), 200.0),   # 1000 at 0.2
+        ("PRO_CHALLENGE_FROM_STANDARD", (1, 0), (1, 2), 100.0),   # 500 at 0.2, cut at the promotion
         ("PRO_FUNDED", (1, 2), (2, 0), 300.0),             # full scale from the promotion on
         ("PRO_FUNDED", (2, 0), (3, 0), 200.0),
     ]
@@ -305,7 +305,7 @@ def test_pro_funded_starts_its_high_water_mark_at_zero_on_the_promotion(scenario
 
     result = s.payout(W(3))
     assert spans(result) == [
-        ("PRO_CHALLENGE_FUNDED", (0, 0), (1, 0), 6_000.0),
+        ("PRO_CHALLENGE_FROM_STANDARD", (0, 0), (1, 0), 6_000.0),
         ("PRO_FUNDED", (1, 0), (2, 0), 0.0),
         ("PRO_FUNDED", (2, 0), (3, 0), 2_000.0),
     ]
@@ -322,7 +322,7 @@ def test_a_position_force_closed_by_the_promotion_is_paid_once_at_the_standard_s
 
     result = s.payout(W(1))
     assert spans(result) == [
-        ("PRO_CHALLENGE_FUNDED", (0, 0), (0, 3), 80.0),
+        ("PRO_CHALLENGE_FROM_STANDARD", (0, 0), (0, 3), 80.0),
         ("PRO_FUNDED", (0, 3), (1, 0), 100.0),
     ]
     record = s.segment(MinerBucket.PRO_CHALLENGE_FUNDED, MON).payout_record
@@ -346,7 +346,7 @@ def test_a_position_force_closed_by_an_account_switch_is_paid_by_the_segment_it_
     assert spans(result) == [
         ("SUBACCOUNT_FUNDED", (0, 0), (0, 2), 0.0),
         ("SUBACCOUNT_FUNDED", (0, 2), (0, 4), 400.0),
-        ("PRO_CHALLENGE_FUNDED", (0, 4), (1, 0), 20.0),
+        ("PRO_CHALLENGE_FROM_STANDARD", (0, 4), (1, 0), 20.0),
     ]
     assert [r['in_transition'] for r in result['weekly_settlements']] == [False, True, False]
 
@@ -469,7 +469,7 @@ def test_nothing_accrues_while_eliminated(scenario):
     eliminated_then = s.payout(W(3))
     s.run_until(W(6, 0.5))
     assert spans(s.payout(W(6))) == spans(eliminated_then) == [
-        ("PRO_CHALLENGE_FUNDED", (0, 0), (1, 0), 200.0),
+        ("PRO_CHALLENGE_FROM_STANDARD", (0, 0), (1, 0), 200.0),
         ("PRO_FUNDED", (1, 0), (2, 0), 500.0),
     ]
     assert s.segment(MinerBucket.PRO_FUNDED, W(1)).closed_weeks == frozen
@@ -494,7 +494,7 @@ def test_a_reverted_pro_funded_elimination_resumes_as_if_it_had_not_traded(scena
 
     result = s.payout(W(5))
     assert spans(result) == [
-        ("PRO_CHALLENGE_FUNDED", (0, 0), (1, 0), 200.0),
+        ("PRO_CHALLENGE_FROM_STANDARD", (0, 0), (1, 0), 200.0),
         ("PRO_FUNDED", (1, 0), (2, 0), 500.0),
         ("PRO_FUNDED", (2, 0), (3, 0), 300.0),   # the elimination flattened the open position at +100
         ("PRO_FUNDED", (3, 0), (4, 0), 0.0),     # eliminated the whole week: nothing traded

@@ -46,7 +46,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 
 from shared_objects.log import logger
 from time_util.time_util import TimeUtil
-from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
+from vali_objects.enums.miner_bucket_enum import LEGACY_BUCKET_NAMES, BucketEntry, MinerBucket
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 
 POSITIONS_DIR = "positions"
@@ -116,7 +116,10 @@ class BucketSegment:
     @classmethod
     def from_dict(cls, d: dict) -> 'BucketSegment':
         valid_keys = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in d.items() if k in valid_keys})
+        segment = cls(**{k: v for k, v in d.items() if k in valid_keys})
+        if segment.bucket in LEGACY_BUCKET_NAMES:
+            segment.bucket = MinerBucket(segment.bucket).value
+        return segment
 
 
 @dataclass

@@ -353,6 +353,7 @@ def test_only_the_direct_challenge_earns_nothing():
 @pytest.mark.parametrize("legacy,bucket", [
     ("PRO_CHALLENGE_TRANSITION", MinerBucket.SUBACCOUNT_FUNDED),
     ("PRO_CHALLENGE_FROM_STANDARD", MinerBucket.PRO_CHALLENGE_FUNDED),
+    ("PRO_CHALLENGE_FUNDED", MinerBucket.PRO_CHALLENGE_FUNDED),
 ])
 def test_the_replaced_bucket_names_still_parse(legacy, bucket):
     """Checkpoints, disk state and ledger statuses written before the merge name the old buckets."""
@@ -362,6 +363,44 @@ def test_the_replaced_bucket_names_still_parse(legacy, bucket):
     assert legacy in bucket.statuses
     assert MinerBucket.from_status(None) is MinerBucket.UNKNOWN
     assert MinerBucket.from_status("NOT_A_BUCKET") is MinerBucket.UNKNOWN
+
+
+def test_the_renamed_bucket_keeps_its_pre_merge_name_on_the_wire():
+    """Consumers and validators still on the old code only know PRO_CHALLENGE_FROM_STANDARD."""
+    from entity_management.entity_manager import SubaccountInfo
+    from entity_management.entity_utils import subaccount_creation_error
+    from vali_objects.challenge_period.bucket_history import BucketSegment
+
+    assert MinerBucket.PRO_CHALLENGE_FUNDED.value == "PRO_CHALLENGE_FROM_STANDARD"
+    pre_merge_values = {"MAINCOMP", "CHALLENGE", "PROBATION", "PLAGIARISM", "ELIMINATED", "unknown", "ENTITY",
+                        "SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED", "SUBACCOUNT_ALPHA", "PRO_CHALLENGE_TRANSITION",
+                        "PRO_CHALLENGE_FROM_STANDARD", "PRO_CHALLENGE_DIRECT", "PRO_FUNDED"}
+    assert {b.value for b in MinerBucket} <= pre_merge_values
+    assert MinerBucket.PRO_CHALLENGE_FROM_STANDARD is MinerBucket.PRO_CHALLENGE_FUNDED
+    assert BucketEntry(MinerBucket.PRO_CHALLENGE_FUNDED, NOW_MS).to_dict()["bucket"] == "PRO_CHALLENGE_FROM_STANDARD"
+    assert "PRO_CHALLENGE_FROM_STANDARD" in ValiConfig.SUBACCOUNT_CREATION_BUCKETS
+    for spelling in ("PRO_CHALLENGE_FROM_STANDARD", "PRO_CHALLENGE_FUNDED"):
+        assert subaccount_creation_error(spelling, 100_000, 500_000) is None
+        info = SubaccountInfo(subaccount_id=0, subaccount_uuid="u", synthetic_hotkey=f"{HOTKEY}_0",
+                              created_at_ms=NOW_MS, account_size=100_000.0, asset_class="forex",
+                              initial_bucket=spelling)
+        assert info.initial_bucket == "PRO_CHALLENGE_FROM_STANDARD"
+        segment = BucketSegment.from_dict({"hotkey": HOTKEY, "bucket": spelling, "start_ms": NOW_MS})
+        assert segment.bucket == "PRO_CHALLENGE_FROM_STANDARD"
+    # The transition was never a creation bucket
+    assert subaccount_creation_error("PRO_CHALLENGE_TRANSITION", 100_000, None) is not None
+
+
+def test_api_bucket_name_reports_the_transition_by_its_old_name(monkeypatch):
+    from vali_objects.enums.miner_bucket_enum import api_bucket_name
+
+    assert api_bucket_name(MinerBucket.SUBACCOUNT_FUNDED, True) == "PRO_CHALLENGE_TRANSITION"
+    assert api_bucket_name("SUBACCOUNT_FUNDED", True) == "PRO_CHALLENGE_TRANSITION"
+    assert api_bucket_name(MinerBucket.SUBACCOUNT_FUNDED, False) == "SUBACCOUNT_FUNDED"
+    assert api_bucket_name(MinerBucket.PRO_CHALLENGE_FUNDED, True) == "PRO_CHALLENGE_FROM_STANDARD"
+    assert api_bucket_name(None, True) is None
+    monkeypatch.setattr(ValiConfig, "API_LEGACY_BUCKET_NAMES", False)
+    assert api_bucket_name(MinerBucket.SUBACCOUNT_FUNDED, True) == "SUBACCOUNT_FUNDED"
 
 
 def test_promotion_gate_thresholds():
@@ -840,7 +879,7 @@ def test_a_checkpoint_written_before_the_merge_migrates():
     state = MinerBucketState.from_checkpoint_dict(HOTKEY, legacy)
 
     rewritten = state.to_checkpoint_dict()["entries"]
-    assert [e["bucket"] for e in rewritten] == ["SUBACCOUNT_FUNDED", "SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FUNDED"]
+    assert [e["bucket"] for e in rewritten] == ["SUBACCOUNT_FUNDED", "SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FROM_STANDARD"]
     # Only a state still in PRO_CHALLENGE_TRANSITION has a transition to move onto its account
     assert ChallengePeriodManager._read_legacy_transitions({HOTKEY: legacy}) == {}
     in_transition = {"entries": legacy["entries"][:2]}
@@ -1258,6 +1297,96 @@ def test_the_penalty_ledger_stamps_the_transition_as_subaccount_funded():
     legacy = {"entries": [{"bucket": "PRO_CHALLENGE_TRANSITION", "start_time_ms": MONDAY_MS - 3 * DAILY_MS}]}
     assert PenaltyLedgerManager._get_status_for_checkpoint(PenaltyLedgerManager, MONDAY_MS - 1, legacy) \
         == MinerBucket.SUBACCOUNT_FUNDED.value
+
+
+T_FUNDED_MS = MONDAY_MS - 14 * DAILY_MS
+T_TRANSITION_MS = MONDAY_MS - 3 * DAILY_MS
+
+
+def _history(manager):
+    return [(e["bucket"], e["start_time_ms"], e["in_transition"]) for e in manager.get_bucket_history(HOTKEY)]
+
+
+def test_the_history_and_dashboard_report_a_live_transition_by_its_old_name(manager, monkeypatch):
+    manager.miner_states[HOTKEY] = _state(MinerBucket.SUBACCOUNT_FUNDED, T_FUNDED_MS)
+    manager._miner_account_client.set_transition(HOTKEY, T_TRANSITION_MS)
+
+    assert _history(manager) == [("SUBACCOUNT_FUNDED", T_FUNDED_MS, False),
+                                 ("PRO_CHALLENGE_TRANSITION", T_TRANSITION_MS, True)]
+    dashboard = manager.get_dashboard(HOTKEY)
+    assert (dashboard["bucket"], dashboard["start_time_ms"], dashboard["in_transition"]) \
+        == ("PRO_CHALLENGE_TRANSITION", T_TRANSITION_MS, True)
+    assert manager.get_transition_windows() == {HOTKEY: [(T_TRANSITION_MS, None)]}
+
+    monkeypatch.setattr(ValiConfig, "API_LEGACY_BUCKET_NAMES", False)
+    assert manager.get_dashboard(HOTKEY)["bucket"] == "SUBACCOUNT_FUNDED"
+    assert manager.get_dashboard(HOTKEY)["in_transition"] is True
+
+
+def test_the_history_reports_a_finished_transition_from_its_segment(manager):
+    from vali_objects.challenge_period.bucket_history import BucketHistoryStore, BucketSegment
+
+    state = _state(MinerBucket.SUBACCOUNT_FUNDED, T_FUNDED_MS)
+    state.add_bucket_entry(MinerBucket.PRO_CHALLENGE_FUNDED, MONDAY_MS)
+    manager.miner_states[HOTKEY] = state
+    manager._bucket_history = BucketHistoryStore(running_unit_tests=True)
+    manager._bucket_history.segments[HOTKEY] = [BucketSegment(
+        hotkey=HOTKEY, bucket="SUBACCOUNT_FUNDED", start_ms=T_FUNDED_MS, end_ms=MONDAY_MS,
+        transition_start_ms=T_TRANSITION_MS, transition_end_ms=MONDAY_MS)]
+
+    assert _history(manager) == [("SUBACCOUNT_FUNDED", T_FUNDED_MS, False),
+                                 ("PRO_CHALLENGE_TRANSITION", T_TRANSITION_MS, True),
+                                 ("PRO_CHALLENGE_FROM_STANDARD", MONDAY_MS, False)]
+    assert manager.get_dashboard(HOTKEY)["bucket"] == "PRO_CHALLENGE_FROM_STANDARD"
+    assert manager.get_transition_windows() == {HOTKEY: [(T_TRANSITION_MS, MONDAY_MS)]}
+
+
+def test_the_history_reports_a_transition_written_before_the_merge(manager):
+    manager.miner_states.update(ChallengePeriodManager.parse_checkpoint_dict({HOTKEY: {"entries": [
+        {"bucket": "SUBACCOUNT_FUNDED", "start_time_ms": T_FUNDED_MS},
+        {"bucket": "PRO_CHALLENGE_TRANSITION", "start_time_ms": T_TRANSITION_MS},
+        {"bucket": "PRO_CHALLENGE_FROM_STANDARD", "start_time_ms": MONDAY_MS},
+    ]}}))
+
+    assert _history(manager) == [("SUBACCOUNT_FUNDED", T_FUNDED_MS, False),
+                                 ("PRO_CHALLENGE_TRANSITION", T_TRANSITION_MS, True),
+                                 ("PRO_CHALLENGE_FROM_STANDARD", MONDAY_MS, False)]
+    assert manager.get_transition_windows() == {HOTKEY: [(T_TRANSITION_MS, MONDAY_MS)]}
+
+
+def test_a_cancelled_transition_is_not_reported_as_running(manager):
+    from vali_objects.challenge_period.bucket_history import BucketHistoryStore, BucketSegment
+
+    manager.miner_states[HOTKEY] = _state(MinerBucket.SUBACCOUNT_FUNDED, T_FUNDED_MS)
+    manager._bucket_history = BucketHistoryStore(running_unit_tests=True)
+    manager._bucket_history.segments[HOTKEY] = [BucketSegment(
+        hotkey=HOTKEY, bucket="SUBACCOUNT_FUNDED", start_ms=T_FUNDED_MS, transition_start_ms=T_TRANSITION_MS)]
+
+    assert _history(manager) == [("SUBACCOUNT_FUNDED", T_FUNDED_MS, False)]
+    assert manager.get_transition_windows() == {}
+
+
+def test_the_penalty_ledger_stamps_the_transition_by_its_old_name(monkeypatch):
+    """Ledger statuses read as before the merge, and still parse and score as SUBACCOUNT_FUNDED."""
+    from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
+    from vali_objects.vali_dataclasses.ledger.penalty.penalty_ledger import PenaltyLedgerManager
+
+    state = _state(MinerBucket.SUBACCOUNT_FUNDED, T_FUNDED_MS)
+    state.add_bucket_entry(MinerBucket.PRO_CHALLENGE_FUNDED, MONDAY_MS)
+    history = state.to_checkpoint_dict()
+    windows = [(T_TRANSITION_MS, MONDAY_MS)]
+
+    def status_at(ms):
+        return PenaltyLedgerManager._get_status_for_checkpoint(PenaltyLedgerManager, ms, history, windows)
+
+    assert status_at(T_TRANSITION_MS - 1) == "SUBACCOUNT_FUNDED"
+    assert status_at(T_TRANSITION_MS) == "PRO_CHALLENGE_TRANSITION"
+    assert status_at(MONDAY_MS) == "PRO_CHALLENGE_FROM_STANDARD"
+    assert MinerBucket.from_status("PRO_CHALLENGE_TRANSITION") is MinerBucket.SUBACCOUNT_FUNDED
+    assert "PRO_CHALLENGE_TRANSITION" in DebtBasedScoring.EARNING_MINER_BUCKETS
+
+    monkeypatch.setattr(ValiConfig, "API_LEGACY_BUCKET_NAMES", False)
+    assert status_at(T_TRANSITION_MS) == "SUBACCOUNT_FUNDED"
 
 
 def test_a_pro_revert_keeps_the_stats_the_latch_and_the_trailing_loss_limit(manager):

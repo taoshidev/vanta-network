@@ -204,6 +204,9 @@ class ChallengePeriodServer(RPCServerBase):
     def get_bucket_history_rpc(self, hotkey: str) -> list[dict] | None:
         return self._manager.get_bucket_history(hotkey)
 
+    def get_transition_windows_rpc(self) -> dict:
+        return self._manager.get_transition_windows()
+
     def get_bucket_statistics_rpc(self, hotkey: str, bucket: str | None = None, start_ms: int | None = None,
                                   include: list[str] | None = None, limit: int | None = None) -> dict | None:
         return self._manager.get_bucket_statistics(hotkey, bucket, start_ms, include, limit)

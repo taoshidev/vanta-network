@@ -563,7 +563,10 @@ class ValiConfig:
     SUBACCOUNT_EOD_DRAWDOWN_VALUES = [0.05, 0.08]
     # Buckets a subaccount may be created directly into (MinerBucket values)
     SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED",
-                                   "PRO_CHALLENGE_FUNDED", "PRO_CHALLENGE_DIRECT"]
+                                   "PRO_CHALLENGE_FROM_STANDARD", "PRO_CHALLENGE_DIRECT"]
+    # API responses and ledger checkpoint statuses report the SUBACCOUNT_FUNDED transition week as the
+    # retired PRO_CHALLENGE_TRANSITION bucket (MinerBucket api_bucket_name). Off once consumers read in_transition
+    API_LEGACY_BUCKET_NAMES = True
     # Hyperliquid subaccounts have no pro track
     HL_SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED"]
     # The only intraday drawdown threshold for an Instant Funded subaccount

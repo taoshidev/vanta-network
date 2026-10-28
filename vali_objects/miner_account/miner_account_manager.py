@@ -295,6 +295,7 @@ class MinerAccount:
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'leverage_tier': self.leverage_tier,
+            'in_transition': self.in_transition,
             **self.leverage_limits(),
         }
 

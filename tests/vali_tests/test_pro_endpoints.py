@@ -145,7 +145,7 @@ class TestValidatorPromoteEndpoint(unittest.TestCase):
     def test_valid_request_forwards_the_requested_size(self):
         status, data = self._post(self._body(signed={"pro_account_size": GRANTED_SIZE}))
         self.assertEqual(status, 200, data)
-        self.assertEqual(data['bucket'], MinerBucket.SUBACCOUNT_FUNDED.value)
+        self.assertEqual(data['bucket'], "PRO_CHALLENGE_TRANSITION")
         self.assertIs(data['in_transition'], True)
         self.assertEqual(data['pro_account_size'], GRANTED_SIZE)
         self._promote().assert_called_once()
@@ -470,6 +470,32 @@ def _pro_account(exposures=None, bucket=MinerBucket.PRO_FUNDED):
     return account
 
 
+class TestPayoutEndpointBucketNames(unittest.TestCase):
+    """POST /entity/subaccount/payout names each settlement row's bucket as before the merge."""
+
+    def test_rows_report_the_transition_and_the_renamed_bucket_by_their_old_names(self):
+        server = object.__new__(ValidatorRestServer)
+        server._get_api_key_safe = MagicMock(return_value="key")
+        server.is_valid_api_key = MagicMock(return_value=True)
+        server.can_access_tier = MagicMock(return_value=True)
+        server._entity_client = MagicMock()
+        server._entity_client.calculate_subaccount_payout.return_value = {'weekly_settlements': [
+            {'bucket': MinerBucket.SUBACCOUNT_FUNDED.value, 'in_transition': False},
+            {'bucket': MinerBucket.SUBACCOUNT_FUNDED.value, 'in_transition': True},
+            {'bucket': MinerBucket.PRO_CHALLENGE_FUNDED.value, 'in_transition': False},
+        ]}
+        app = Flask(__name__)
+        app.route("/entity/subaccount/payout", methods=["POST"])(server.calculate_subaccount_payout)
+
+        resp = app.test_client().post("/entity/subaccount/payout", json={
+            "subaccount_uuid": "u", "start_time_ms": TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())})
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        rows = json.loads(resp.data)["data"]["weekly_settlements"]
+        self.assertEqual([(r["bucket"], r["in_transition"]) for r in rows], [
+            ("SUBACCOUNT_FUNDED", False), ("PRO_CHALLENGE_TRANSITION", True), ("PRO_CHALLENGE_FROM_STANDARD", False)])
+
+
 class TestProSubaccountLimitsEndpoint(unittest.TestCase):
 
     def setUp(self):
@@ -525,6 +551,18 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
         self.assertEqual(group["limit_multiplier"], limit)
         self.assertAlmostEqual(group["long_room_usd"], PRO_ACCOUNT_SIZE * (limit - 20))
         self.assertAlmostEqual(group["short_room_usd"], PRO_ACCOUNT_SIZE * limit)
+
+    def test_a_transition_reports_its_old_bucket_name(self):
+        account = _pro_account(bucket=MinerBucket.SUBACCOUNT_FUNDED)
+        account.transition_start_ms = 1
+        self.server._miner_account_client.get_account.return_value = account
+
+        _, data = self._get()
+
+        self.assertEqual((data["bucket"], data["in_transition"]), ("PRO_CHALLENGE_TRANSITION", True))
+        account.transition_start_ms = None
+        _, data = self._get()
+        self.assertEqual((data["bucket"], data["in_transition"]), ("SUBACCOUNT_FUNDED", False))
 
     def test_non_pro_account_gets_no_correlation_block(self):
         self.server._miner_account_client.get_account.return_value = _pro_account(

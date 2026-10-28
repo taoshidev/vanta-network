@@ -21,8 +21,9 @@ class MinerBucket(Enum):
     SUBACCOUNT_ALPHA = "SUBACCOUNT_ALPHA"
     # Pro account buckets
     # A funded standard subaccount that has left its transition week: trading the pro account, paid
-    # on the standard size while passing the pro challenge.
-    PRO_CHALLENGE_FUNDED = "PRO_CHALLENGE_FUNDED"
+    # on the standard size while passing the pro challenge. Keeps its pre-merge value on the wire.
+    PRO_CHALLENGE_FUNDED = "PRO_CHALLENGE_FROM_STANDARD"
+    PRO_CHALLENGE_FROM_STANDARD = "PRO_CHALLENGE_FROM_STANDARD"  # alias of PRO_CHALLENGE_FUNDED
     PRO_CHALLENGE_DIRECT = "PRO_CHALLENGE_DIRECT"
     PRO_FUNDED = "PRO_FUNDED"
 
@@ -274,14 +275,25 @@ class MinerBucket(Enum):
                 and self != MinerBucket.ELIMINATED)
 
 
-# Retired bucket names, mapped to the bucket each one became. Still read from checkpoints, disk
-# state, ledger checkpoint statuses and request bodies written before the merge: the transition week
-# became MinerAccount.transition_start_ms on SUBACCOUNT_FUNDED, and PRO_CHALLENGE_FROM_STANDARD became PRO_CHALLENGE_FUNDED.
+# Bucket names that are not a bucket value, mapped to the value they parse as. The transition week
+# became MinerAccount.transition_start_ms on SUBACCOUNT_FUNDED (still reported by name through
+# api_bucket_name), and PRO_CHALLENGE_FUNDED is accepted as a spelling of its wire value.
 LEGACY_BUCKET_NAMES = {
     "PRO_CHALLENGE_TRANSITION": "SUBACCOUNT_FUNDED",
-    "PRO_CHALLENGE_FROM_STANDARD": "PRO_CHALLENGE_FUNDED",
+    "PRO_CHALLENGE_FUNDED": "PRO_CHALLENGE_FROM_STANDARD",
 }
 LEGACY_TRANSITION_BUCKET = "PRO_CHALLENGE_TRANSITION"
+
+
+def api_bucket_name(bucket: "MinerBucket | str | None", in_transition: bool = False) -> str | None:
+    """Bucket name for API output and ledger checkpoint statuses: the SUBACCOUNT_FUNDED transition
+    week reads as the retired PRO_CHALLENGE_TRANSITION while ValiConfig.API_LEGACY_BUCKET_NAMES is on."""
+    if bucket is None:
+        return None
+    value = bucket.value if isinstance(bucket, MinerBucket) else bucket
+    if in_transition and value == MinerBucket.SUBACCOUNT_FUNDED.value and ValiConfig.API_LEGACY_BUCKET_NAMES:
+        return LEGACY_TRANSITION_BUCKET
+    return value
 
 
 @dataclass

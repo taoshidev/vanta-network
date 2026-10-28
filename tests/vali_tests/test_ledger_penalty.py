@@ -386,7 +386,7 @@ class TestPenaltyLedgerWeeklyScope(TestBase):
                     "soft_breach_weeks": {str(w): d for w, d in (soft_breach_weeks or {}).items()},
                 },
             }
-        })
+        }, get_transition_windows=lambda: {})
         manager.save_to_disk = lambda *_a, **_k: None
         return manager
 
