@@ -4,15 +4,17 @@
 
 ## Overview
 
-**Vanta CLI** is a command-line tool that extends bittensor-cli for Vanta Network operations. It provides asset class selection, collateral management and entity management, and extends all standard bittensor-cli operations. Help information can be invoked for every command and option with `--help` option.
+**Vanta CLI** is a command-line tool for Vanta Network operations. It provides asset class selection, collateral management and entity management. Help information can be invoked for every command and option with `--help` option.
+
+Vanta CLI is independent of bittensor-cli. Wallet, staking and registration operations are done with `btcli`, which is installed separately (see [Bittensor](https://github.com/opentensor/bittensor#install)).
 
 The CLI source lives in this repository under [`vanta_cli/`](../vanta_cli).
 
 ### Process Flow
 From a high level, here is what happens to register with collateral on Vanta Network.
 
-1. Register your hotkey with Vanta Network: `vanta subnets register`
-2. Stake TAO into theta using your own hotkey: `vanta stake add`
+1. Register your hotkey with Vanta Network: `btcli subnets register`
+2. Stake TAO into theta using your own hotkey: `btcli stake add`
 3. Collateral deposit, which signs an extrinsic and sends the command off to the super validator. The super validator will then transfer the amount specified into the smart contract: `vanta collateral deposit`
 4. (Optional) View collateral amount tracked in the contract: `vanta collateral list`
 
@@ -26,7 +28,7 @@ Check the install:
 vanta --version
 ```
 
-This prints the Vanta CLI version, the Vanta Network version and the bittensor-cli version.
+This prints the Vanta CLI version and the Vanta Network version.
 
 ## Upgrading from the standalone vanta-cli
 
@@ -46,7 +48,7 @@ vanta --version
 
 ## Commands
 
-All commands are prefixed with `vanta`. For example: `vanta wallet list`
+All commands are prefixed with `vanta`. For example: `vanta collateral list`. Run `vanta --commands` to list every command.
 
 ### Collateral Operations
 
@@ -59,10 +61,9 @@ Deposit collateral to the Vanta Network.
 **Options:**
 - `--wallet-name, --name` - Name of the wallet to use for collateral (required)
 - `--wallet-path` - Path to the wallet directory (default: `~/.bittensor/wallets`)
-- `--hotkey, --wallet_hotkey` - Hotkey name or SS58 address of the hotkey
+- `--hotkey, --wallet_hotkey` - Hotkey name
 - `--network` - Network to connect to (default: `finney`)
-- `--amount` - Amount of TAO to use for collateral (default: None)
-- `--prompt/--no-prompt` - Whether to prompt for confirmation
+- `--amount` - Amount of Theta to deposit (prompted if omitted)
 
 #### List Collateral Balance
 ```bash
@@ -73,7 +74,7 @@ Check collateral balance for a miner address.
 **Options:**
 - `--wallet-name, --name` - Name of the wallet to use for collateral (required)
 - `--wallet-path` - Path to the wallet directory (default: `~/.bittensor/wallets`)
-- `--hotkey, --wallet_hotkey` - Hotkey name or SS58 address of the hotkey
+- `--hotkey, --wallet_hotkey` - Hotkey name
 - `--network` - Network to connect to (default: `finney`)
 
 #### Withdraw Collateral
@@ -85,9 +86,8 @@ Withdraw collateral from the Vanta Network.
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (for display purposes)
 - `--wallet-path` - Path to wallet directory (default: `~/.bittensor/wallets`)
-- `--hotkey, --wallet_hotkey` - Hotkey name or SS58 address of the hotkey
-- `--amount` - Amount to withdraw from collateral (required)
-- `--prompt/--no-prompt` - Whether to prompt for confirmation
+- `--hotkey, --wallet_hotkey` - Hotkey name
+- `--amount` - Amount of Theta to withdraw (prompted if omitted)
 
 ### Asset Class Selection
 
@@ -100,7 +100,7 @@ Select the asset class your miner trades. Once selected, it cannot be changed. S
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (required)
 - `--wallet-path` - Path to the wallet directory (default: `~/.bittensor/wallets`)
-- `--hotkey, --wallet_hotkey` - Hotkey name or SS58 address of the hotkey
+- `--hotkey, --wallet_hotkey` - Hotkey name
 - `--network` - Network to connect to (default: `finney`)
 - `--prompt/--no-prompt` - Whether to prompt for confirmation
 
