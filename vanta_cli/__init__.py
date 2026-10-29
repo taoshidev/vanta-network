@@ -1,3 +1,3 @@
-from .main import VantaCLIManager
+from .main import app, main
 
-__all__ = ["VantaCLIManager"]
+__all__ = ["app", "main"]
