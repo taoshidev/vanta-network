@@ -1,23 +1,47 @@
+"""`vanta profile`: Profile management commands."""
 import getpass
 import json
+
 import typer
-
 from rich.panel import Panel
-from rich.text import Text
-
-from bittensor_wallet import Wallet
-from bittensor_cli.src.bittensor.utils import console
+from rich.prompt import IntPrompt, Prompt
 
 from vanta_cli.src.config import VANTA_API_BASE_URL_MAINNET, VANTA_API_BASE_URL_TESTNET
+from vanta_cli.src.options import EPILOG, Network, PromptFlag, WalletHotkey, WalletName, WalletPath, wallet_ask
 from vanta_cli.src.utils.api import make_api_request
+from vanta_cli.src.utils.console import console
 
-async def set(
-    wallet: Wallet,
-    network: str,
-    profile_key: str,
-    value: str,
-    prompt: bool,
+app = typer.Typer(no_args_is_help=True, help="Vanta Network - Profile management commands", epilog=EPILOG)
+
+
+@app.command("set", rich_help_panel="Profile Management")
+def set_profile(
+    wallet_name: WalletName = None,
+    wallet_path: WalletPath = None,
+    wallet_hotkey: WalletHotkey = None,
+    network: Network = "finney",
+    prompt: PromptFlag = True,
 ):
+    """
+    Sets or updates profile configuration value on Vanta Network
+    """
+    wallet = wallet_ask(wallet_name, wallet_path, wallet_hotkey)
+
+    console.print("\nWhich config setting would you like to update?\n")
+    profile_keys = ["display_name"]
+    for idx, key in enumerate(profile_keys, start=1):
+        console.print(f"{idx}. {key}")
+
+    choice = IntPrompt.ask(
+        "\nEnter the [bold]number[/bold] of the profile setting you want to update",
+        choices=[str(i) for i in range(1, len(profile_keys) + 1)],
+        show_choices=False,
+    )
+    profile_key = profile_keys[choice - 1]
+    value = Prompt.ask(
+        f"What value would you like to assign to [red]{profile_key}[/red]?"
+    )
+
     console.print("[blue]Updating profile on Vanta Network[/blue]")
 
     hotkey = wallet.hotkey
@@ -88,6 +112,3 @@ async def set(
             return False
     except Exception as e:
         console.print(f"[red]Error during profile update: {e}[/red]")
-
-
-
