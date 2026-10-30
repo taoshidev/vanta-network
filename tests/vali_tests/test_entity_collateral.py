@@ -626,12 +626,12 @@ class TestEntityCollateral(TestBase):
         )
 
     def test_the_transition_bucket_is_not_charged(self):
-        """PRO_CHALLENGE_TRANSITION still trades the standard account, so nothing is billed yet."""
+        """The SUBACCOUNT_FUNDED transition still trades the standard account, so nothing is billed yet."""
         entity_hotkey, synthetic_hotkey, _ = self._register_entity_with_subaccount(account_size=100_000)
         self._set_collateral_cache(entity_hotkey, 1_000.0)
 
         success, message = self.entity_client.apply_bucket_account_size(
-            synthetic_hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 1_000_000
+            synthetic_hotkey, MinerBucket.SUBACCOUNT_FUNDED, 1_000_000, in_transition=True
         )
 
         self.assertTrue(success, message)
@@ -1066,7 +1066,7 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         standard one, so the entity stays exposed to the standard account it collateralized."""
         self._promoted_from_standard()
 
-        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FUNDED)
 
         self.assertAlmostEqual(max_slash, 100_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
 
@@ -1087,7 +1087,7 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         ]
 
         in_challenge = self.manager.compute_subaccount_margin_requirement(
-            "entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+            "entity_0", MinerBucket.PRO_CHALLENGE_FUNDED
         )
         funded = self.manager.compute_subaccount_margin_requirement("entity_0", MinerBucket.PRO_FUNDED)
 
@@ -1099,7 +1099,7 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         """A record carrying no standard size leaves the exposure unknown, so nothing is charged."""
         self._promoted_from_standard(standard_account_size=None)
 
-        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FUNDED)
 
         self.assertAlmostEqual(max_slash, 0.0)
 
@@ -1108,7 +1108,7 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         self._promoted_from_standard()
         self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = RuntimeError("rpc down")
 
-        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FUNDED)
 
         self.assertAlmostEqual(max_slash, 0.0)
 
@@ -1116,14 +1116,14 @@ class TestEntityCollateralBucketThresholds(unittest.TestCase):
         """A stale standard size above the pro account cannot inflate the exposure."""
         self._promoted_from_standard(standard_account_size=5_000_000)
 
-        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        max_slash = self.manager.get_max_slash("entity_0", MinerBucket.PRO_CHALLENGE_FUNDED)
 
         self.assertAlmostEqual(max_slash, 1_000_000 * ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD)
 
 
 class TestMarginCpt(unittest.TestCase):
     """Theta held per USD of margin: PRO_MARGIN_CPT in PRO_FUNDED, MARGIN_CPT elsewhere, and twice the margin for
-    a standard account growing into pro (PRO_CHALLENGE_FROM_STANDARD paid at the 2x payout multiplier)."""
+    a standard account growing into pro (PRO_CHALLENGE_FUNDED, paid at the 2x payout multiplier)."""
 
     ENTITY = "entity"
     HOTKEY = "entity_0"
@@ -1159,8 +1159,8 @@ class TestMarginCpt(unittest.TestCase):
         cases = (
             ("standard funded", MinerBucket.SUBACCOUNT_FUNDED, self.STANDARD_SIZE, None, 5_000 / 35),
             ("pro funded", MinerBucket.PRO_FUNDED, self.PRO_SIZE, None, 25_000 / 70),
-            ("grow", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, None, 2 * 5_000 / 35),
-            ("instant funded, eligible", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE,
+            ("grow", MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE, None, 2 * 5_000 / 35),
+            ("instant funded, eligible", MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE,
              ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER, 5_000 / 35),
             ("pro challenge", MinerBucket.PRO_CHALLENGE_DIRECT, self.PRO_SIZE, None, 0.0),
         )
@@ -1174,7 +1174,7 @@ class TestMarginCpt(unittest.TestCase):
         cases = (
             (MinerBucket.SUBACCOUNT_FUNDED, self.STANDARD_SIZE, 5_000 / 35),
             (MinerBucket.PRO_FUNDED, self.PRO_SIZE, 25_000 / 70),
-            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, 2 * 5_000 / 35),
+            (MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE, 2 * 5_000 / 35),
         )
         for bucket, account_size, needed_theta in cases:
             with self.subTest(bucket=bucket):
@@ -1207,8 +1207,8 @@ class TestMarginCpt(unittest.TestCase):
         cases = (
             ("standard funded", MinerBucket.SUBACCOUNT_FUNDED, self.STANDARD_SIZE, None),
             ("pro funded", MinerBucket.PRO_FUNDED, self.PRO_SIZE, None),
-            ("grow", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, None),
-            ("instant funded, eligible", MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE,
+            ("grow", MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE, None),
+            ("instant funded, eligible", MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE,
              ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER),
         )
         for name, bucket, account_size, payout_scale in cases:
@@ -1223,7 +1223,7 @@ class TestMarginCpt(unittest.TestCase):
     def test_a_realized_loss_reserves_theta_at_the_margin_rate(self):
         for bucket, account_size, expected_theta in ((MinerBucket.SUBACCOUNT_FUNDED, self.STANDARD_SIZE, 7_000 / 35),
                                                      (MinerBucket.PRO_FUNDED, self.PRO_SIZE, 7_000 / 70),
-                                                     (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE,
+                                                     (MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE,
                                                       2 * 7_000 / 35)):
             with self.subTest(bucket=bucket):
                 self._subaccount(bucket, account_size, position_value=0.0)
@@ -1234,19 +1234,19 @@ class TestMarginCpt(unittest.TestCase):
 
     def test_an_order_looks_the_subaccount_up_once(self):
         """The standard size it is exposed at and the payout multiplier come from one record."""
-        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, position_value=0.0)
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE, position_value=0.0)
         self.manager._collateral_cache = {self.ENTITY: 1_000.0}
         self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)
         self.manager._entity_client.get_subaccount_info_for_synthetic.assert_called_once_with(self.HOTKEY)
 
     def test_required_collateral_reuses_the_entity_record(self):
-        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE)
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE)
         self.manager.compute_entity_required_collateral(self.ENTITY)
         self.manager._entity_client.get_subaccount_info_for_synthetic.assert_not_called()
 
     def test_an_unreadable_record_withholds_the_charge(self):
         """As for the exposure itself: without the record the standard size is unknown, so nothing is charged."""
-        self._subaccount(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, self.PRO_SIZE, position_value=0.0)
+        self._subaccount(MinerBucket.PRO_CHALLENGE_FUNDED, self.PRO_SIZE, position_value=0.0)
         self.manager._entity_client.get_subaccount_info_for_synthetic.side_effect = RuntimeError("entity server down")
         self.manager._collateral_cache = {self.ENTITY: 0.0}
         allowed, reason = self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)

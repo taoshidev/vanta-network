@@ -1,5 +1,5 @@
 """
-Standard subaccounts in SUBACCOUNT_CHALLENGE, SUBACCOUNT_FUNDED and PRO_CHALLENGE_TRANSITION measure the
+Standard subaccounts in SUBACCOUNT_CHALLENGE and SUBACCOUNT_FUNDED (its transition included) measure the
 daily loss limit (intraday drawdown) from the day-open balance instead of the day-open equity, under both
 drawdown criteria. HL-linked and Instant Funded subaccounts, pro buckets and regular miners keep the
 day-open equity.
@@ -28,15 +28,13 @@ from vali_objects.miner_account.miner_account_manager import CollateralRecord, M
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint, PerfLedger
 
-BALANCE_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                   MinerBucket.PRO_CHALLENGE_TRANSITION)
-EQUITY_BUCKETS = (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+BALANCE_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED)
+EQUITY_BUCKETS = (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FUNDED,
                   MinerBucket.PRO_FUNDED, MinerBucket.CHALLENGE, MinerBucket.MAINCOMP)
 CRITERIA = (DrawdownCriteria.TRAILING, DrawdownCriteria.STATIC)
 INTRADAY_REASON = {
     MinerBucket.SUBACCOUNT_CHALLENGE: EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN,
     MinerBucket.SUBACCOUNT_FUNDED: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
-    MinerBucket.PRO_CHALLENGE_TRANSITION: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
 }
 LIMIT = 0.05
 HL_ADDRESS = "0x" + "c" * 40
@@ -119,7 +117,7 @@ def test_hl_linked_subaccounts_keep_the_day_open_equity(manager, bucket, account
 @pytest.mark.parametrize("record,from_balance", [
     ({"initial_bucket": MinerBucket.SUBACCOUNT_CHALLENGE.value}, True),
     ({"initial_bucket": MinerBucket.SUBACCOUNT_FUNDED.value}, False),               # Instant Funded
-    ({"initial_bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value}, False),     # Instant Funded
+    ({"initial_bucket": MinerBucket.PRO_CHALLENGE_FUNDED.value}, False),            # Instant Funded
     (None, False),                                                                  # no entity record
 ])
 def test_only_subaccounts_created_through_the_challenge_track_the_balance(manager, record, from_balance):

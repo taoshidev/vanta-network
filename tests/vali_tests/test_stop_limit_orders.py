@@ -164,8 +164,8 @@ class TestStopLimitOrders(TestBase):
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
         self.assertEqual(orders[0].stop_condition, StopCondition.LTE)
 
-    def test_submit_stop_limit_does_not_fill_immediately(self):
-        """Test that stop-limit orders are never filled immediately, even if price already past stop"""
+    def test_submit_stop_limit_already_crossed_is_rejected(self):
+        """Test that a stop-limit whose stop is already crossed on submission is rejected, not stored or filled"""
         # Set price that would trigger the stop (price >= stop_price for GTE)
         trigger_price_source = self.create_test_price_source(60000.0, bid=60000.0, ask=60000.0)
         self.live_price_fetcher_client.set_test_price_source(self.DEFAULT_TRADE_PAIR, trigger_price_source)
@@ -176,16 +176,12 @@ class TestStopLimitOrders(TestBase):
             limit_price=56000.0
         )
 
-        result = self.limit_order_client.process_limit_order(
-            self.DEFAULT_MINER_HOTKEY, order
-        )
+        with self.assertRaises(SignalException) as context:
+            self.limit_order_client.process_limit_order(self.DEFAULT_MINER_HOTKEY, order)
+        self.assertIn("already crossed", str(context.exception))
 
-        self.assertEqual(result["status"], "success")
-
-        # Order should remain unfilled - stop-limit orders skip immediate fill
         orders = self.get_orders_from_server(self.DEFAULT_MINER_HOTKEY, self.DEFAULT_TRADE_PAIR)
-        self.assertEqual(len(orders), 1)
-        self.assertEqual(orders[0].src, OrderSource.STOP_LIMIT_UNFILLED)
+        self.assertEqual(len(orders), 0)
 
     # ============================================================================
     # Test: Validation

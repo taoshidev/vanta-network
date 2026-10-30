@@ -228,6 +228,14 @@ class MinerAccountClient(RPCClientBase):
         """Bulk set miner buckets across multiple accounts."""
         self._server.set_miner_buckets(hotkey_to_bucket)
 
+    def set_transition(self, hotkey: str, start_ms: Optional[int]) -> bool:
+        """Start (or with None, clear) the SUBACCOUNT_FUNDED transition week."""
+        return self._server.set_transition(hotkey, start_ms)
+
+    def get_transition_starts(self, hotkeys: Optional[List[str]] = None) -> Dict[str, int]:
+        """hotkey -> transition start for every account in its transition week."""
+        return self._server.get_transition_starts(hotkeys)
+
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
         return self._server.get_hl_address(hotkey)

@@ -159,10 +159,10 @@ def get_pro_class_leverage(trade_pair_category: TradePairCategory) -> float:
 def is_pro_leveraged(account: MinerAccount) -> bool:
     """True when the account's limits come from the flat pro tables.
 
-    PRO_CHALLENGE_TRANSITION is excluded (it is not is_pro): it still trades the standard
-    account, so it keeps the standard curve.
+    The SUBACCOUNT_FUNDED transition is excluded (it is not is_pro): it still trades the
+    standard account, so it keeps the standard curve.
     """
-    return bool(account.miner_bucket and account.miner_bucket.is_pro)
+    return account.is_pro_bucket
 
 
 def is_standard_tiered(account: MinerAccount) -> bool:
@@ -172,7 +172,7 @@ def is_standard_tiered(account: MinerAccount) -> bool:
     A subaccount whose leverage_tier is still None trades tier 0 (see get_grandfathered_*)."""
     if account.is_hl_linked:
         return False
-    if account.miner_bucket and account.miner_bucket.is_pro:
+    if account.is_pro_bucket:
         return False
     if account.leverage_tier is not None:
         return True

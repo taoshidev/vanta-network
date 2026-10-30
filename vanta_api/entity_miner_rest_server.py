@@ -1048,7 +1048,7 @@ class EntityMinerRestServer(MinerRestServer):
             "intraday_drawdown_threshold": 0.03 | 0.05,     // Optional, SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES; omitted keeps bucket defaults; only 0.03 for Instant Funded
             "bucket": str,                                   // Optional, SUBACCOUNT_CREATION_BUCKETS; default SUBACCOUNT_CHALLENGE
             "pro_account_size": float,                       // Required for pro buckets only
-            "eod_hwm_threshold": 0.05 | 0.08,                // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; Instant Funded (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FROM_STANDARD) only
+            "eod_hwm_threshold": 0.05 | 0.08,                // Optional, SUBACCOUNT_EOD_DRAWDOWN_VALUES; Instant Funded (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FUNDED) only
             "collateral_exempt": bool                        // Optional, default false
         }
 
@@ -1451,14 +1451,13 @@ class EntityMinerRestServer(MinerRestServer):
         POST /entity/subaccount/promote, which verifies the signature, that the coldkey owns the
         entity hotkey on chain, and that the subaccount belongs to that hotkey. The validator picks
         the target bucket from the subaccount's current one and allows only these hops:
-          SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT
-          SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
-          PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
-        Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FROM_STANDARD)
-        are refused the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_TRANSITION hop. A subaccount the network
-        promoted automatically may take the PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
-        hop early, on the pro size the network granted and free of the promotion fee: a request that
-        sends a pro_account_size for it is refused.
+          SUBACCOUNT_CHALLENGE                 -> PRO_CHALLENGE_DIRECT
+          SUBACCOUNT_FUNDED                    -> SUBACCOUNT_FUNDED (in_transition)
+          SUBACCOUNT_FUNDED (in_transition)    -> PRO_CHALLENGE_FUNDED
+        Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FUNDED)
+        are refused the hop into the transition. A subaccount the network promoted automatically may
+        leave the transition early for PRO_CHALLENGE_FUNDED, on the pro size the network granted and
+        free of the promotion fee: a request that sends a pro_account_size for it is refused.
 
         pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is at
         least twice the subaccount's own standard account size. Send one the first time a subaccount
@@ -1468,8 +1467,8 @@ class EntityMinerRestServer(MinerRestServer):
         limit, so a pro size of exactly twice the standard size is charged nothing.
 
         Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
-        PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
-        restarts the ledgers, so neither can be undone. Promoting into PRO_CHALLENGE_TRANSITION keeps
+        out of the SUBACCOUNT_FUNDED transition closes every open position, cancels every pending
+        limit order and restarts the ledgers, so neither can be undone. Promoting into the transition keeps
         trading the standard account and wipes nothing: positions, limit orders and ledgers all carry
         on, and only the resting orders that could open or increase a position are cancelled.
         """

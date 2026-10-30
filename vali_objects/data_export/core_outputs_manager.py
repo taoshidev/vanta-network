@@ -283,12 +283,12 @@ class CoreOutputsManager:
         except Exception as e:
             logger.warning(f"Could not fetch frozen perf ledgers: {e}")
 
-        # Settled payout weeks, so every validator agrees on what was sealed
-        weekly_seals = {}
+        # Bucket segment summaries; each validator keeps the segment files themselves locally
+        bucket_history = {}
         try:
-            weekly_seals = self._debt_ledger_client.get_weekly_seals_checkpoint_dict()
+            bucket_history = self._challengeperiod_client.get_bucket_history_checkpoint_dict()
         except Exception as e:
-            logger.warning(f"Could not fetch weekly seal records: {e}")
+            logger.warning(f"Could not fetch bucket history: {e}")
 
         debt_ledgers = {}
         try:
@@ -326,7 +326,7 @@ class CoreOutputsManager:
             'penalty_ledgers': penalty_ledgers,
             'asset_selections': asset_selections,
             'limit_orders': limit_orders_dict,
-            'weekly_seals': weekly_seals,
+            'bucket_history': bucket_history,
             'archived_positions': archived_positions or {}
         }
 

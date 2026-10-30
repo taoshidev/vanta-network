@@ -30,9 +30,8 @@ from vali_objects.vali_config import ValiConfig
 SUBACCOUNT_BUCKETS = (
     MinerBucket.SUBACCOUNT_CHALLENGE,
     MinerBucket.SUBACCOUNT_FUNDED,
-    MinerBucket.PRO_CHALLENGE_TRANSITION,
     MinerBucket.PRO_CHALLENGE_DIRECT,
-    MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+    MinerBucket.PRO_CHALLENGE_FUNDED,
     MinerBucket.PRO_FUNDED,
 )
 OVERRIDE_BUCKETS = tuple(b for b in SUBACCOUNT_BUCKETS if b != MinerBucket.PRO_FUNDED)
@@ -43,7 +42,8 @@ HL_ADDRESS = "0x" + "c" * 40
 
 def _threshold_state(bucket: MinerBucket, intraday_drawdown_threshold: float | None,
                      criteria: DrawdownCriteria = DrawdownCriteria.STATIC) -> MinerBucketState:
-    return MinerBucketState(HOTKEY, [BucketEntry(bucket, NOW_MS - DAILY_MS)], drawdown_criteria=criteria,
+    entry = BucketEntry(bucket, NOW_MS - DAILY_MS)
+    return MinerBucketState(HOTKEY, [entry], drawdown_criteria=criteria,
                             intraday_drawdown_threshold_override=intraday_drawdown_threshold)
 
 
@@ -110,8 +110,7 @@ def test_the_chosen_threshold_carries_through_every_promotion_until_pro_funded(m
                              drawdown_criteria=DrawdownCriteria.STATIC, intraday_drawdown_threshold=0.03)
     pro_default = ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
     for offset, (bucket, expected) in enumerate(((MinerBucket.SUBACCOUNT_FUNDED, 0.03),
-                                                 (MinerBucket.PRO_CHALLENGE_TRANSITION, 0.03),
-                                                 (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 0.03),
+                                                 (MinerBucket.PRO_CHALLENGE_FUNDED, 0.03),
                                                  (MinerBucket.PRO_FUNDED, pro_default),
                                                  (MinerBucket.ELIMINATED, pro_default))):
         manager.set_miner_bucket(HOTKEY, bucket, NOW_MS - (3 - offset) * DAILY_MS)
@@ -134,7 +133,7 @@ def test_the_dashboard_reports_the_chosen_threshold_as_the_intraday_threshold(ma
 # ── Checkpoint ────────────────────────────────────────────────────────────────
 
 def test_the_chosen_threshold_round_trips_through_the_checkpoint():
-    state = _threshold_state(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 0.03)
+    state = _threshold_state(MinerBucket.PRO_CHALLENGE_FUNDED, 0.03)
     restored = MinerBucketState.from_checkpoint_dict(HOTKEY, state.to_checkpoint_dict())
     assert restored.intraday_drawdown_threshold_override == 0.03
     assert restored.intraday_drawdown_threshold == 0.03
@@ -229,7 +228,7 @@ def _signed_create_body(keys, hl: bool = False, unsigned: dict | None = None, **
             **(unsigned or {})}
 
 
-INSTANT_FUNDED = {"bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, "pro_account_size": 500_000,
+INSTANT_FUNDED = {"bucket": MinerBucket.PRO_CHALLENGE_FUNDED.value, "pro_account_size": 500_000,
                   "eod_hwm_threshold": 0.08, "intraday_drawdown_threshold": 0.03}
 
 
@@ -393,7 +392,7 @@ def test_validator_forwards_hl_instant_funded_options(validator, keys):
 
 @pytest.mark.parametrize("options,fragment", [
     ({"bucket": MinerBucket.SUBACCOUNT_FUNDED.value, "pro_account_size": 500_000}, "Hyperliquid"),
-    ({"bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, "pro_account_size": 500_000}, "Hyperliquid"),
+    ({"bucket": MinerBucket.PRO_CHALLENGE_FUNDED.value, "pro_account_size": 500_000}, "Hyperliquid"),
     ({"eod_hwm_threshold": 0.05}, "eod_hwm_threshold"),
 ])
 def test_validator_rejects_hl_options_outside_instant_funded(validator, keys, options, fragment):

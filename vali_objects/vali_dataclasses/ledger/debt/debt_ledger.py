@@ -107,6 +107,18 @@ def apply_deferral(
     return 0.0, balance + withheld, 0.0
 
 
+def frozen_week_penalties(closed_weeks: Optional[List[dict]]) -> Dict[int, float]:
+    """week start -> the weekly penalty each closed payout week froze with, for the weeks of
+    buckets the penalty governs. The payout paths pin only this, as a sealed week did; the
+    week's dollars are still computed."""
+    penalties = {}
+    for row in closed_weeks or []:
+        if MinerBucket.from_status(row.get('bucket')).soft_breach_applies:
+            week_start_ms = TimeUtil.ms_at_start_of_week(row['start_ms'])
+            penalties[week_start_ms] = min(penalties.get(week_start_ms, 1.0), row['weekly_penalty'])
+    return penalties
+
+
 @dataclass
 class DebtCheckpoint:
     """
@@ -338,10 +350,7 @@ class DebtLedger:
     @staticmethod
     def _bucket_from_status(challenge_period_status: str) -> MinerBucket:
         """Convert a stored status string to a MinerBucket, tolerating unknown/legacy values."""
-        try:
-            return MinerBucket(challenge_period_status)
-        except ValueError:
-            return MinerBucket.UNKNOWN
+        return MinerBucket.from_status(challenge_period_status)
 
     def checkpoint_bucket(self, cp: DebtCheckpoint) -> MinerBucket:
         """The bucket this checkpoint was stamped with."""
@@ -364,70 +373,7 @@ class DebtLedger:
         bucket = DebtLedger._bucket_from_status(cp.challenge_period_status)
         return weekly_penalty if bucket.soft_breach_applies else 1.0
 
-    def first_earning_checkpoint_ms(self) -> Optional[int]:
-        """Timestamp of the first checkpoint stamped with a bucket that earns payouts.
-
-        This is where the payout basis starts. Everything before it - a standard challenge, or a
-        pro challenge run directly on the pro account - moved the balance but is never paid.
-        """
-        for cp in self.checkpoints:
-            if self._bucket_from_status(cp.challenge_period_status).is_subaccount_earning:
-                return cp.timestamp_ms
-        return None
-
-    def bucket_at(self, timestamp_ms: int) -> MinerBucket:
-        """The bucket governing an event at `timestamp_ms`.
-
-        A checkpoint stamped at T covers the window *ending* at T, so an order is governed by the
-        checkpoint its timestamp snaps forward to - the same lookup the payout paths use to find an
-        order's penalty. Events past the last checkpoint inherit the last known bucket.
-        """
-        if not self.checkpoints:
-            return MinerBucket.UNKNOWN
-        aligned_ms = TimeUtil.align_to_12hour_checkpoint_boundary(timestamp_ms)
-        if aligned_ms >= self.checkpoints[-1].timestamp_ms:
-            return self._bucket_from_status(self.checkpoints[-1].challenge_period_status)
-        for cp in self.checkpoints:
-            if cp.timestamp_ms >= aligned_ms:
-                return self._bucket_from_status(cp.challenge_period_status)
-        return MinerBucket.UNKNOWN
-
-    def bucket_change_times(self) -> List[int]:
-        """Timestamps at which the governing bucket changes, oldest first.
-
-        A checkpoint stamped at T covers the window ending at T, so when checkpoint i carries a
-        different bucket from checkpoint i-1 the switch happened at checkpoint i-1's timestamp -
-        the boundary between the two windows. Payout settlements are split here so a segment is
-        never a mix of two buckets trading at two different payout scales.
-        """
-        boundaries: List[int] = []
-        previous_bucket = None
-        for index, cp in enumerate(self.checkpoints):
-            bucket = self._bucket_from_status(cp.challenge_period_status)
-            if previous_bucket is not None and bucket != previous_bucket:
-                boundaries.append(self.checkpoints[index - 1].timestamp_ms)
-            previous_bucket = bucket
-        return boundaries
-
-    def fee_baseline_at_first_earning(self) -> float:
-        """`cumulative_fees_usd` as of the checkpoint *before* the first earning one.
-
-        `cumulative_fees_usd` runs from ledger inception while realized PnL is only accumulated
-        from the first earning checkpoint onward. Subtracting the raw cumulative figure would
-        charge a pro challenge's fees against the funded account's first earnings. Fees inside the
-        first earning checkpoint's own window do count, so the baseline is the *previous*
-        checkpoint's total.
-        """
-        baseline = 0.0
-        for cp in self.checkpoints:
-            if self._bucket_from_status(cp.challenge_period_status).is_subaccount_earning:
-                return baseline
-            baseline = cp.cumulative_fees_usd
-        return baseline
-
-    def weekly_payout_context(
-        self, payout_scale: float = 1.0, sealed: Optional[dict] = None
-    ) -> Dict[int, WeeklyPayoutContext]:
+    def weekly_payout_context(self, payout_scale: float = 1.0) -> Dict[int, WeeklyPayoutContext]:
         """Summarize this ledger one payout week at a time, keyed by Monday 00:00 UTC.
 
         A checkpoint stamped exactly at Monday 00:00 covers the 12 hours *ending* then, so it
@@ -436,9 +382,6 @@ class DebtLedger:
         Args:
             payout_scale: PRO_TRANSITION_PAYOUT_MULTIPLIER * standard_account_size /
                 pro_account_size for this subaccount, ungated
-            sealed: week_start_ms -> SealedWeek from WeeklySealLedger. A sealed week is settled
-                money and is returned verbatim instead of being recomputed, so rebuilding the
-                ledgers cannot move a week between paid and withheld, or reprice it.
 
         Returns:
             week_start_ms -> WeeklyPayoutContext, for every week with at least one checkpoint
@@ -457,16 +400,6 @@ class DebtLedger:
             week.track = WeekTrack.ON_TRACK if bucket.soft_breach_applies else WeekTrack.OFF_TRACK
             if week.first_earning_ms is None and bucket.is_subaccount_earning:
                 week.first_earning_ms = cp.timestamp_ms
-
-        for week_start_ms, seal in (sealed or {}).items():
-            week = context.get(week_start_ms)
-            if week is None:
-                continue
-            week.weekly_penalty = seal.weekly_penalty
-            week.payout_scale = seal.payout_scale
-            week.track = WeekTrack[seal.track]
-            if seal.first_earning_ms is not None:
-                week.first_earning_ms = seal.first_earning_ms
 
         return context
 

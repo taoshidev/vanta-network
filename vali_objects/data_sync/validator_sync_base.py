@@ -163,6 +163,16 @@ class ValidatorSyncBase():
         if limit_orders_data:
             self._limit_order_client.sync_limit_orders(limit_orders_data)
 
+        # Bucket segment summaries before the challenge period, so the segments its bucket entries
+        # describe are already known when it reconciles them. The checkpoint wins on segments both
+        # sides hold; segments only this validator has are kept.
+        bucket_history_data = candidate_data.get('bucket_history', {})
+        if bucket_history_data and not shadow_mode:
+            history_stats = self._challenge_period_client.sync_bucket_history(bucket_history_data)
+            logger.info(f"Synced bucket history from auto sync: {history_stats}")
+            self.global_stats['bucket_segments_added'] = history_stats.get('segments_added', 0)
+            self.global_stats['bucket_segments_replaced'] = history_stats.get('segments_replaced', 0)
+
         challengeperiod_data = candidate_data.get('challengeperiod', {})
         if challengeperiod_data and not shadow_mode:  # Only in autosync as of now.
             self._challenge_period_client.sync_challenge_period_data(challengeperiod_data)
@@ -246,17 +256,6 @@ class ValidatorSyncBase():
             if not shadow_mode:
                 logger.info(f"Syncing {len(asset_selections_data)} miner asset selection records from auto sync")
                 self._asset_selection_client.sync_miner_asset_selection_data(asset_selections_data)
-
-        # Sync weekly seal records so every validator agrees on what was sealed. The checkpoint
-        # wins on records both sides hold; records only this validator has are kept.
-        weekly_seals_data = candidate_data.get('weekly_seals', {})
-        if weekly_seals_data and not shadow_mode:
-            seal_stats = self._debt_ledger_client.sync_weekly_seals(weekly_seals_data)
-            logger.info(f"Synced weekly seal records from auto sync: {seal_stats}")
-            self.global_stats['weekly_seals_added'] = seal_stats.get('sealed_added', 0)
-            self.global_stats['weekly_seals_replaced'] = seal_stats.get('sealed_replaced', 0)
-            self.global_stats['settled_segments_added'] = seal_stats.get('settled_added', 0)
-            self.global_stats['settled_segments_replaced'] = seal_stats.get('settled_replaced', 0)
 
         # Sync penalty, emissions and debt ledgers
         if not shadow_mode and not self.is_mothership:

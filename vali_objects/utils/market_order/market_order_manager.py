@@ -11,7 +11,6 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.enums.miner_bucket_enum import MinerBucket
 
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -163,7 +162,7 @@ class MarketOrderManager():
                     position_type=order_type,
                     account_size=miner_account.account_size,
                     is_hl=is_hl,
-                    is_pro=bool(miner_account.miner_bucket and miner_account.miner_bucket.is_pro),
+                    is_pro=miner_account.is_pro_bucket,
                 )
 
             order, binding_cap = self._apply_order(
@@ -267,7 +266,7 @@ class MarketOrderManager():
         # side the position was actually on.
         prev_position_type = position.position_type
 
-        if is_buy and miner_account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
+        if is_buy and miner_account.in_transition:
             raise SignalException(
                 "Your account is transitioning to a Pro Account. You cannot open new positions or increase "
                 "existing ones - close your open positions to begin trading your Pro Account."

@@ -18,10 +18,19 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger
-from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SettledSegment
 from time_util.time_util import MS_IN_WEEK, TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+
+
+
+# SUBACCOUNT_FUNDED in its transition week, which its bucket segment records
+TRANSITION = "TRANSITION"
+
+
+def _bucket(bucket):
+    """TRANSITION is SUBACCOUNT_FUNDED; any other value is its own bucket."""
+    return MinerBucket.SUBACCOUNT_FUNDED if bucket == TRANSITION else bucket
 
 
 class TestEntityManagement(TestBase):
@@ -273,10 +282,10 @@ class TestEntityManagement(TestBase):
         self.assertEqual(subaccount_info['account_type'], 'standard')
         self.assertEqual(subaccount_info['account_size'], 100_000)
 
-    def test_create_subaccount_directly_into_pro_challenge_from_standard(self):
+    def test_create_subaccount_directly_into_pro_challenge_funded(self):
         """Starts on the pro account, with the fixed intraday limit, the chosen EOD limit, and a 1x payout scale."""
         success, subaccount_info, message = self._create(
-            bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000,
+            bucket=MinerBucket.PRO_CHALLENGE_FUNDED.value, pro_account_size=500_000,
             eod_hwm_threshold=0.05)
         self.assertTrue(success, message)
         # The promotion fee of a 3% daily loss limit account: 500K / 5,000 - 100K / 2,500
@@ -285,7 +294,8 @@ class TestEntityManagement(TestBase):
         self.assertIn("pro fee", message)
         hotkey = subaccount_info['synthetic_hotkey']
 
-        self.assertEqual(self.challenge_period_client.get_miner_bucket(hotkey), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        # Instant Funded starts on the pro account, never in the transition
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(hotkey), MinerBucket.PRO_CHALLENGE_FUNDED)
         self.assertEqual(subaccount_info['account_type'], 'pro')
         self.assertEqual(subaccount_info['account_size'], 500_000)
         self.assertEqual(subaccount_info['standard_account_size'], 100_000)
@@ -315,7 +325,7 @@ class TestEntityManagement(TestBase):
 
     def test_promotion_to_pro_funded_restores_the_pro_drawdown_defaults(self):
         success, subaccount_info, message = self._create(
-            bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000, eod_hwm_threshold=0.05)
+            bucket=MinerBucket.PRO_CHALLENGE_FUNDED.value, pro_account_size=500_000, eod_hwm_threshold=0.05)
         self.assertTrue(success, message)
         hotkey = subaccount_info['synthetic_hotkey']
 
@@ -336,7 +346,7 @@ class TestEntityManagement(TestBase):
     def test_registration_fee_by_creation_bucket(self):
         """Standard buckets pay the standard CPT for their daily loss limit; Instant Funded buckets pay the
         Instant Funded CPT for their EOD threshold (omitted is 8%)."""
-        from_standard = MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value
+        from_standard = MinerBucket.PRO_CHALLENGE_FUNDED.value
         cases = (
             ({}, 100_000 / 1500),
             ({"intraday_drawdown_threshold": 0.03}, 100_000 / 2500),
@@ -402,7 +412,7 @@ class TestEntityManagement(TestBase):
 
     def test_create_hl_subaccount_rejects_pro_buckets(self):
         self.entity_client.register_entity(entity_hotkey=self.ENTITY_HOTKEY_1)
-        for bucket in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
+        for bucket in (MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT):
             with self.subTest(bucket=bucket):
                 success, subaccount_info, message = self.entity_client.create_hl_subaccount(
                     entity_hotkey=self.ENTITY_HOTKEY_1, account_size=100_000, hl_address="0x" + "d" * 40,
@@ -413,7 +423,7 @@ class TestEntityManagement(TestBase):
 
     def test_create_subaccount_rejects_invalid_bucket_options(self):
         """Every invalid combination is rejected before anything is created."""
-        from_standard = MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value
+        from_standard = MinerBucket.PRO_CHALLENGE_FUNDED.value
         cases = (
             ({"bucket": "PRO_FUNDED"}, "bucket"),
             ({"bucket": "ELIMINATED"}, "bucket"),
@@ -1197,54 +1207,71 @@ class TestEntityManagement(TestBase):
 class TestSubaccountPayoutWeeklyPenalty(TestBase):
     """A blocked payout week defers the subaccount's USDC payout for that week only, and the
     escrow is either released on the next clean pro week or forfeited when the account leaves
-    the pro track."""
+    the pro track. Every bucket segment is paid on its own: closed earning segments from the payout
+    record pinned when they closed, the live one from its own positions."""
 
     ENTITY_HOTKEY = "entity"
     SUBACCOUNT_HOTKEY = "entity_1"
     SUBACCOUNT_UUID = "uuid-1"
     CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 
-    def _payout_result(self, blocked_checkpoint_indices=(), week_buckets=None,
-                       current_bucket=MinerBucket.PRO_FUNDED, payout_scale=1.0,
-                       sealed_weeks=None, settled_segments=(), orders=None,
-                       checkpoint_buckets=None, has_perf_ledger=True, subaccount=None,
-                       has_debt_ledger=True):
+    def _week_0_start(self):
+        return TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+
+    def _manager(self, blocked_checkpoint_indices=(), week_buckets=None, payout_scale=1.0,
+                 orders=None, checkpoint_buckets=None, has_perf_ledger=True, subaccount=None,
+                 has_debt_ledger=True, segment_payout_scale=None, has_bucket_history=True,
+                 current_bucket=None):
         """Two payout weeks of 12h checkpoints. `week_buckets` maps a payout-week index (0 or 1) to
-        the bucket stamped on that week's checkpoints (default PRO_FUNDED); `checkpoint_buckets`
-        overrides individual checkpoints, which is how a bucket change lands mid-week;
-        `current_bucket` is the bucket at end_time_ms; `payout_scale` is standard_account_size /
-        pro_account_size; `settled_segments` are stretches settled early by an account switch;
-        `orders` overrides the default one-order-per-cell history (pass [] for an account that has
-        not traded since); `has_perf_ledger=False` is the state a switch leaves behind, where the
-        perf ledger bundle is dropped along with the positions; `has_debt_ledger=False` is a subaccount
-        no debt ledger has been built for yet. `subaccount`, when given, replaces
-        the `payout_scale` stub with the real get_payout_scale read off that record."""
+        the bucket of that week (default PRO_FUNDED); `checkpoint_buckets` overrides individual
+        checkpoints, which is how a bucket change lands mid-week. The bucket segments follow the
+        checkpoints, each closed earning segment carrying the payout record its hop would have
+        written, and each segment trading one position holding its own orders. `payout_scale` is the
+        live standard/pro ratio; `segment_payout_scale` the one captured when each segment opened.
+        `orders` overrides the default one order realizing 10 USD per 12h cell."""
         from entity_management.entity_manager import EntityManager
 
-        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
-        end_time_ms = week_0_start + 2 * MS_IN_WEEK
+        week_0_start = self._week_0_start()
         cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        n_cps = 2 * cps_per_week
         week_buckets = week_buckets or {}
         checkpoint_buckets = checkpoint_buckets or {}
-
-        # One order realizing 10 USD per 12h cell across two weeks
+        stamped = [checkpoint_buckets.get(i, week_buckets.get(i // cps_per_week, MinerBucket.PRO_FUNDED))
+                   for i in range(n_cps)]
+        buckets = [_bucket(b) for b in stamped]
         orders = orders if orders is not None else [
-            SimpleNamespace(
-                processed_ms=week_0_start + i * self.CP_DURATION_MS + 1,
-                realized_pnl=10.0,
-                to_python_dict=lambda: {},
-            )
-            for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS)
+            SimpleNamespace(processed_ms=week_0_start + i * self.CP_DURATION_MS + 1, realized_pnl=10.0,
+                            to_python_dict=lambda: {})
+            for i in range(n_cps)
         ]
         debt_checkpoints = [
             DebtCheckpoint(
                 timestamp_ms=week_0_start + (i + 1) * self.CP_DURATION_MS,
                 weekly_penalty=0.0 if i in blocked_checkpoint_indices else 1.0,
-                challenge_period_status=checkpoint_buckets.get(
-                    i, week_buckets.get(i // cps_per_week, MinerBucket.PRO_FUNDED)
-                ).value,
+                challenge_period_status=buckets[i].value,
             )
-            for i in range(2 * MS_IN_WEEK // self.CP_DURATION_MS)
+            for i in range(n_cps)
+        ]
+
+        # One segment per run of a bucket; the transition is a range inside SUBACCOUNT_FUNDED
+        segments = []
+        for i, bucket in enumerate(buckets):
+            boundary_ms = week_0_start + i * self.CP_DURATION_MS
+            if not segments or segments[-1]['bucket'] != bucket.value:
+                if segments:
+                    segments[-1]['end_ms'] = boundary_ms
+                segments.append({'bucket': bucket.value, 'start_ms': boundary_ms, 'end_ms': None,
+                                 'transition_start_ms': None, 'transition_end_ms': None,
+                                 'payout_scale': segment_payout_scale, 'payout_record': None})
+            if stamped[i] == TRANSITION and segments[-1]['transition_start_ms'] is None:
+                segments[-1]['transition_start_ms'] = boundary_ms
+        positions = [
+            SimpleNamespace(
+                open_ms=seg['start_ms'], fee_history=[], unrealized_pnl=0.0,
+                orders=[o for o in orders if seg['start_ms'] <= o.processed_ms
+                        and (seg['end_ms'] is None or o.processed_ms < seg['end_ms'])],
+            )
+            for seg in segments
         ]
 
         manager = object.__new__(EntityManager)
@@ -1258,10 +1285,6 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         manager._debt_ledger_client = SimpleNamespace(
             get_ledger=lambda _hk: (DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=debt_checkpoints)
                                    if has_debt_ledger else None),
-            # Nothing sealed by default: every week is recomputed, which is what most cases exercise
-            get_sealed_weeks=lambda _hk: sealed_weeks or {},
-            # Nothing settled early by default: no account switch has wound this subaccount down
-            get_settled_segments=lambda _hk: list(settled_segments),
         )
         manager._perf_ledger_client = SimpleNamespace(
             get_perf_ledger_for_hotkey=lambda hk: {
@@ -1269,19 +1292,29 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             } if has_perf_ledger else {},
             get_frozen_ledgers=lambda: {},
         )
+        current = _bucket(current_bucket) if current_bucket is not None else buckets[-1]
         manager._challenge_period_client = SimpleNamespace(
-            get_miner_bucket=lambda *_a: current_bucket
+            get_miner_bucket=lambda *_a: current,
+            get_bucket_segments=lambda _hk: segments if has_bucket_history else [],
         )
         manager._position_client = SimpleNamespace(
-            get_positions_for_one_hotkey=lambda *_a, **_k: [
-                SimpleNamespace(orders=orders, fee_history=[], unrealized_pnl=0.0)
-            ]
+            get_positions_for_one_hotkey=lambda *_a, **_k: positions
         )
 
-        return manager.calculate_subaccount_payout(self.SUBACCOUNT_UUID, week_0_start, end_time_ms)
+        for segment, position in zip(segments, positions):
+            if segment['end_ms'] is not None and MinerBucket.from_status(segment['bucket']).is_subaccount_earning:
+                segment['payout_record'] = manager.calculate_segment_payout_record(
+                    self.SUBACCOUNT_HOTKEY, segment, [position], segment['end_ms'])
+        manager.segments = segments
+        return manager
+
+    def _payout_result(self, **kwargs):
+        manager = kwargs.pop('manager', None) or self._manager(**kwargs)
+        week_0_start = self._week_0_start()
+        return manager.calculate_subaccount_payout(self.SUBACCOUNT_UUID, week_0_start, week_0_start + 2 * MS_IN_WEEK)
 
     def _payouts_by_week(self, blocked_checkpoint_indices=()):
-        result = self._payout_result(blocked_checkpoint_indices)
+        result = self._payout_result(blocked_checkpoint_indices=blocked_checkpoint_indices)
         return [w['payout'] for w in result['weekly_settlements']], result['payout']
 
     def test_unblocked_weeks_pay_out(self):
@@ -1297,7 +1330,6 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertAlmostEqual(total, 280.0)
 
     def test_clean_pro_week_releases_escrow_and_forfeits_nothing(self):
-        # Week 0 withheld; week 1 clean and still PRO_FUNDED: the escrow settles, nothing is forfeited
         result = self._payout_result(blocked_checkpoint_indices=(8,))
         week_0, week_1 = result['weekly_settlements']
         self.assertAlmostEqual(week_0['deferred'], 140.0)
@@ -1312,19 +1344,18 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertFalse(result['off_track'])
 
     def test_leaving_pro_track_with_balance_forfeits_it(self):
-        # Week 0 withheld in PRO_FUNDED; week 1 the account is off the track: the escrow is dropped
-        # in that week and reported as forfeited, while the week's own earnings still pay
+        """Week 0 withheld in PRO_FUNDED, then the account moves to SUBACCOUNT_FUNDED. The record
+        PRO_FUNDED closes with forfeits the escrow, and the new segment pays its own week."""
         result = self._payout_result(
             blocked_checkpoint_indices=(8,),
             week_buckets={1: MinerBucket.SUBACCOUNT_FUNDED},
-            current_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
         week_0, week_1 = result['weekly_settlements']
-        self.assertAlmostEqual(week_0['deferred_balance'], 140.0)
-        self.assertEqual(week_0['deferred_forfeited'], 0.0)
-        self.assertEqual(week_1['deferred_released'], 0.0)
-        self.assertAlmostEqual(week_1['deferred_forfeited'], 140.0)
-        self.assertEqual(week_1['deferred_balance'], 0.0)
+        self.assertTrue(week_0['payout_record'])
+        self.assertEqual(week_0['payout'], 0.0)
+        self.assertAlmostEqual(week_0['deferred_forfeited'], 140.0)
+        self.assertEqual(week_0['deferred_balance'], 0.0)
+        self.assertFalse(week_1['payout_record'])
         self.assertAlmostEqual(week_1['payout'], 140.0)
         self.assertAlmostEqual(result['deferred_forfeited'], 140.0)
         self.assertEqual(result['deferred_balance'], 0.0)
@@ -1332,63 +1363,151 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertTrue(result['off_track'])
 
     def test_leaving_pro_track_with_zero_balance_forfeits_nothing(self):
-        # Nothing was ever withheld, so leaving the track reports no phantom forfeiture
-        result = self._payout_result(
-            week_buckets={1: MinerBucket.SUBACCOUNT_FUNDED},
-            current_bucket=MinerBucket.SUBACCOUNT_FUNDED,
-        )
+        result = self._payout_result(week_buckets={1: MinerBucket.SUBACCOUNT_FUNDED})
         for week in result['weekly_settlements']:
             self.assertEqual(week['deferred_forfeited'], 0.0)
             self.assertEqual(week['deferred_balance'], 0.0)
         self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
-        self.assertEqual(result['deferred_forfeited'], 0.0)
-        self.assertEqual(result['deferred_balance'], 0.0)
         self.assertTrue(result['off_track'])
 
+    def _freeze(self, manager, now_ms=None):
+        return manager.calculate_segment_closed_weeks(
+            self.SUBACCOUNT_HOTKEY, manager.segments[-1], now_ms or TimeUtil.now_in_millis())
+
+    def test_closed_weeks_are_frozen_once_final(self):
+        week_0_start = self._week_0_start()
+        manager = self._manager(blocked_checkpoint_indices=(8,))
+        rows = self._freeze(manager)
+        self.assertEqual([(r['start_ms'], r['end_ms']) for r in rows],
+                         [(week_0_start, week_0_start + MS_IN_WEEK),
+                          (week_0_start + MS_IN_WEEK, week_0_start + 2 * MS_IN_WEEK)])
+        self.assertEqual([r['payout'] for r in rows], [0.0, 280.0])
+        self.assertTrue(all(r['frozen_ms'] and r['orders'] == [] for r in rows))
+
+        manager.segments[-1]['closed_weeks'] = rows
+        self.assertEqual(self._freeze(manager), [])
+
+    def test_a_week_is_not_frozen_before_its_last_checkpoint_is_built(self):
+        self.assertIsNone(self._freeze(self._manager(), now_ms=TimeUtil.now_in_millis() + MS_IN_WEEK))
+        self.assertIsNone(self._freeze(self._manager(has_debt_ledger=False)))
+
+    def test_frozen_weeks_are_not_recomputed(self):
+        """Frozen clean, then the ledger is restated to a breach in week 0: the frozen rows stand."""
+        rows = self._freeze(self._manager())
+        manager = self._manager(blocked_checkpoint_indices=(8,))
+        manager.segments[-1]['closed_weeks'] = rows
+        result = self._payout_result(manager=manager)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
+
+    def test_a_frozen_breach_is_released_by_the_next_clean_week(self):
+        """Week 0 frozen breached and week 1 computed: week 1 resumes from the frozen escrow and
+        releases it, even though the restated ledger no longer shows the breach."""
+        week_0 = self._freeze(self._manager(blocked_checkpoint_indices=(8,)))[:1]
+        manager = self._manager()
+        manager.segments[-1]['closed_weeks'] = week_0
+        result = self._payout_result(manager=manager)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [0.0, 280.0])
+        self.assertEqual([w['frozen_ms'] is not None for w in result['weekly_settlements']], [True, False])
+        self.assertAlmostEqual(result['weekly_settlements'][1]['deferred_released'], 140.0)
+
+    def test_a_segment_closed_without_a_record_keeps_its_frozen_weeks(self):
+        week_0_start = self._week_0_start()
+        manager = self._manager(current_bucket=MinerBucket.ELIMINATED)
+        rows = self._freeze(manager)
+        manager.segments[-1].update(closed_weeks=rows, end_ms=week_0_start + 2 * MS_IN_WEEK - 1)
+        manager.segments.append({'bucket': MinerBucket.ELIMINATED.value, 'start_ms': week_0_start + 2 * MS_IN_WEEK - 1,
+                                 'end_ms': None, 'transition_start_ms': None, 'transition_end_ms': None,
+                                 'payout_scale': None, 'payout_record': None})
+        result = self._payout_result(manager=manager)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
+
     def test_non_earning_bucket_returns_empty_settlement_with_deferral_fields(self):
-        result = self._payout_result(current_bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+        result = self._payout_result(week_buckets={0: MinerBucket.SUBACCOUNT_CHALLENGE,
+                                                   1: MinerBucket.SUBACCOUNT_CHALLENGE})
         self.assertEqual(result['weekly_settlements'], [])
         self.assertEqual(result['deferred_balance'], 0.0)
         self.assertEqual(result['deferred_forfeited'], 0.0)
         self.assertTrue(result['off_track'])
 
-    def test_pro_challenge_direct_gains_are_never_paid_after_promotion(self):
-        """A pro challenge run directly on the pro account earns nothing.
+    def test_elimination_forfeits_the_live_segment_but_keeps_earlier_records(self):
+        """No record is written when an earning segment is eliminated, so nothing it earned is paid.
+        The record of the segment before it still is."""
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FUNDED, 1: MinerBucket.PRO_FUNDED},
+            current_bucket=MinerBucket.ELIMINATED,
+            payout_scale=0.2,
+        )
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [28.0])
+        self.assertTrue(result['weekly_settlements'][0]['payout_record'])
 
-        Passing it keeps the account - balance, positions and ledgers all carry over - so the
-        payout basis has to rebase at the promotion instead. Week 0 is PRO_CHALLENGE_DIRECT and
-        realizes 140 USD; only week 1's 140 is payable.
-        """
+    def test_pro_challenge_direct_gains_are_never_paid_after_promotion(self):
+        """A pro challenge run directly on the pro account earns nothing, and PRO_FUNDED is only
+        paid on what it trades itself."""
         result = self._payout_result(
             week_buckets={0: MinerBucket.PRO_CHALLENGE_DIRECT, 1: MinerBucket.PRO_FUNDED}
         )
-        per_week = [w['payout'] for w in result['weekly_settlements']]
-        self.assertEqual(per_week, [0.0, 140.0])
+        self.assertEqual([w['bucket'] for w in result['weekly_settlements']], [MinerBucket.PRO_FUNDED.value])
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0])
         self.assertAlmostEqual(result['payout'], 140.0)
 
-    def test_pro_challenge_from_standard_is_paid_on_the_standard_account_size(self):
-        """PRO_CHALLENGE_FROM_STANDARD trades the pro account but is paid on the standard one.
-
-        With a 100k standard account inside a 500k pro account the scale is 0.2, so week 0's
-        140 USD of gross PnL pays 28. On promotion the scale goes to 1.0 and the gross high water
-        mark carries, so week 1's next 140 of gross gain pays 140 - the trader is never paid twice
-        for the same dollars, and never at pro scale for pre-promotion gains.
-        """
+    def test_pro_challenge_funded_is_paid_on_the_standard_account_size(self):
+        """PRO_CHALLENGE_FUNDED trades the pro account but is paid on the standard one: with a 100k
+        standard account inside a 500k pro account its 140 pays 28, pinned in its payout record.
+        PRO_FUNDED starts from zero and pays its own 140 unscaled."""
         result = self._payout_result(
-            week_buckets={0: MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 1: MinerBucket.PRO_FUNDED},
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FUNDED, 1: MinerBucket.PRO_FUNDED},
             payout_scale=0.2,
         )
-        per_week = [w['payout'] for w in result['weekly_settlements']]
-        self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [0.2, 1.0])
-        self.assertEqual(per_week, [28.0, 140.0])
+        rows = result['weekly_settlements']
+        self.assertEqual([w['payout_record'] for w in rows], [True, False])
+        self.assertEqual([w['payout_scale'] for w in rows], [0.2, 1.0])
+        self.assertEqual([w['payout'] for w in rows], [28.0, 140.0])
         self.assertAlmostEqual(result['payout'], 168.0)
 
+    def test_pro_funded_is_paid_only_on_what_it_makes_after_promotion(self):
+        """Promoted at +30K on a 500K pro account, then up 1K: PRO_FUNDED pays 1K, not 31K. The
+        30K is paid once, at standard scale, from the PRO_CHALLENGE_FUNDED record."""
+        week_0_start = self._week_0_start()
+        orders = [
+            SimpleNamespace(processed_ms=week_0_start + 1, realized_pnl=30_000.0, to_python_dict=lambda: {}),
+            SimpleNamespace(processed_ms=week_0_start + MS_IN_WEEK + 1, realized_pnl=1_000.0, to_python_dict=lambda: {}),
+        ]
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FUNDED, 1: MinerBucket.PRO_FUNDED},
+            orders=orders, payout_scale=0.2,
+        )
+        record_row, funded_row = result['weekly_settlements']
+        self.assertAlmostEqual(record_row['payout'], 6_000.0)
+        self.assertAlmostEqual(funded_row['payout'], 1_000.0)
+        self.assertAlmostEqual(funded_row['eow_balance'], 1_000.0)
+
+    def test_the_transition_week_is_paid_unscaled_before_the_pro_bucket_is_scaled(self):
+        result = self._payout_result(
+            week_buckets={0: TRANSITION, 1: MinerBucket.PRO_CHALLENGE_FUNDED},
+            payout_scale=0.2,
+        )
+        rows = result['weekly_settlements']
+        self.assertEqual([r['bucket'] for r in rows],
+                         [MinerBucket.SUBACCOUNT_FUNDED.value, MinerBucket.PRO_CHALLENGE_FUNDED.value])
+        self.assertEqual([r['in_transition'] for r in rows], [True, False])
+        self.assertEqual([r['payout_scale'] for r in rows], [1.0, 0.2])
+        self.assertEqual([r['payout'] for r in rows], [140.0, 28.0])
+
+    def test_the_transition_splits_the_funded_segment_where_it_starts(self):
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        result = self._payout_result(
+            checkpoint_buckets={i: TRANSITION for i in range(cps_per_week // 2, cps_per_week)},
+            week_buckets={0: MinerBucket.SUBACCOUNT_FUNDED, 1: MinerBucket.PRO_CHALLENGE_FUNDED},
+            payout_scale=0.2,
+        )
+        rows = result['weekly_settlements']
+        self.assertEqual([r['in_transition'] for r in rows], [False, True, False])
+        self.assertEqual([r['payout'] for r in rows], [70.0, 70.0, 28.0])
+
     def test_the_chosen_payout_scale_prices_the_subaccount_payout(self):
-        """A payout_scale set at creation replaces PRO_TRANSITION_PAYOUT_MULTIPLIER in the USDC payout,
-        and only while the account is in PRO_CHALLENGE_FROM_STANDARD."""
         subaccount = SimpleNamespace(standard_account_size=100_000.0, pro_account_size=500_000.0, payout_scale=1.0)
         result = self._payout_result(
-            week_buckets={0: MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 1: MinerBucket.PRO_FUNDED},
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FUNDED, 1: MinerBucket.PRO_FUNDED},
             subaccount=subaccount,
         )
         self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [0.2, 1.0])
@@ -1397,74 +1516,66 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
     def test_no_chosen_payout_scale_keeps_the_network_multiplier_in_the_payout(self):
         subaccount = SimpleNamespace(standard_account_size=100_000.0, pro_account_size=500_000.0, payout_scale=None)
         result = self._payout_result(
-            week_buckets={0: MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 1: MinerBucket.PRO_CHALLENGE_FROM_STANDARD},
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FUNDED, 1: MinerBucket.PRO_CHALLENGE_FUNDED},
             subaccount=subaccount,
         )
         scale = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER * 0.2
         self.assertAlmostEqual(result['payout'], 280.0 * scale)
 
-    def test_a_breach_after_a_mid_week_promotion_still_pays_the_pre_promotion_stretch(self):
-        """A soft breach is a pro rule, so it cannot reach back past the promotion that imposed it.
+    def test_a_resize_after_the_segment_opened_does_not_reprice_it(self):
+        """The scale is the one captured when the segment opened, not the live one."""
+        result = self._payout_result(
+            week_buckets={0: MinerBucket.PRO_CHALLENGE_FUNDED, 1: MinerBucket.PRO_CHALLENGE_FUNDED},
+            segment_payout_scale=0.2, payout_scale=0.5,
+        )
+        self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [0.2, 0.2])
+        self.assertAlmostEqual(result['payout'], 56.0)
 
-        The account promotes halfway through week 0 and breaches after. The week's penalty is
-        widened across the whole week, but the gate is the segment's own bucket: the
-        PRO_CHALLENGE_FROM_STANDARD half is paid on Monday at its standard scale (70 gross at 0.2),
-        and only the PRO_FUNDED half is withheld. Week 1 is clean, so the 70 it deferred settles
-        on top of its own 140.
-        """
+    def test_a_breach_after_a_mid_week_promotion_still_pays_the_pre_promotion_stretch(self):
+        """The PRO_CHALLENGE_FUNDED half of week 0 is paid from its record at its standard scale
+        (70 gross at 0.2); only the PRO_FUNDED half is withheld, and week 1 releases it."""
         cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
         promoted_at = cps_per_week // 2
         result = self._payout_result(
             checkpoint_buckets={
-                i: (MinerBucket.PRO_CHALLENGE_FROM_STANDARD if i < promoted_at
-                    else MinerBucket.PRO_FUNDED)
+                i: (MinerBucket.PRO_CHALLENGE_FUNDED if i < promoted_at else MinerBucket.PRO_FUNDED)
                 for i in range(2 * cps_per_week)
             },
-            # Breached after the promotion, so the pro rules did govern the account at the time
             blocked_checkpoint_indices=(promoted_at + 3,),
             payout_scale=0.2,
         )
         rows = result['weekly_settlements']
         self.assertEqual([r['bucket'] for r in rows], [
-            MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value,
+            MinerBucket.PRO_CHALLENGE_FUNDED.value,
             MinerBucket.PRO_FUNDED.value,
             MinerBucket.PRO_FUNDED.value,
         ])
         self.assertEqual([r['weekly_penalty'] for r in rows], [1.0, 0.0, 1.0])
         self.assertEqual([r['payout_scale'] for r in rows], [0.2, 1.0, 1.0])
         self.assertEqual([r['payout'] for r in rows], [14.0, 0.0, 210.0])
-        # Only the post-promotion half was ever withheld
         self.assertEqual([r['deferred'] for r in rows], [0.0, 70.0, 0.0])
         self.assertEqual(rows[2]['deferred_released'], 70.0)
         self.assertAlmostEqual(result['payout'], 224.0)
         self.assertEqual(result['deferred_forfeited'], 0.0)
 
-    def test_a_breach_before_the_promotion_cannot_withhold_anything(self):
-        """The breach latch never fires outside PRO_FUNDED, but the week-level min would carry a
-        stale one anyway. Gating on the segment's bucket means a penalty stamped on the challenge
-        half withholds nothing - there and in the funded half, which the pro rules did not govern
-        at the time it was stamped."""
+    def test_a_breach_before_the_promotion_cannot_withhold_the_challenge_half(self):
         cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
         promoted_at = cps_per_week // 2
         result = self._payout_result(
             checkpoint_buckets={
-                i: (MinerBucket.PRO_CHALLENGE_FROM_STANDARD if i < promoted_at
-                    else MinerBucket.PRO_FUNDED)
+                i: (MinerBucket.PRO_CHALLENGE_FUNDED if i < promoted_at else MinerBucket.PRO_FUNDED)
                 for i in range(2 * cps_per_week)
             },
             blocked_checkpoint_indices=(promoted_at - 3,),
             payout_scale=0.2,
         )
         rows = result['weekly_settlements']
-        # The challenge half is ungated; the funded half still answers to the week's penalty
         self.assertEqual([r['weekly_penalty'] for r in rows], [1.0, 0.0, 1.0])
         self.assertEqual([r['payout'] for r in rows], [14.0, 0.0, 210.0])
 
     def test_standard_subaccount_payouts_are_unchanged(self):
-        """A standard funded subaccount is untouched by any of the pro machinery."""
         result = self._payout_result(
             week_buckets={0: MinerBucket.SUBACCOUNT_FUNDED, 1: MinerBucket.SUBACCOUNT_FUNDED},
-            current_bucket=MinerBucket.SUBACCOUNT_FUNDED,
         )
         self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
         self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [1.0, 1.0])
@@ -1473,234 +1584,138 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         self.assertEqual(result['deferred_balance'], 0.0)
         self.assertEqual(result['deferred_forfeited'], 0.0)
 
-    def test_sealed_week_survives_a_rebuild_that_would_have_changed_it(self):
-        """A settled week replays as settled even when the ledgers now say otherwise.
+    def test_a_pinned_record_is_paid_as_recorded_not_recomputed(self):
+        """An amended record pays its amended figure; the segment's positions are not read again."""
+        manager = self._manager(week_buckets={0: MinerBucket.PRO_CHALLENGE_FUNDED, 1: MinerBucket.PRO_FUNDED},
+                                payout_scale=0.2)
+        manager.segments[0]['payout_record']['settlements'][0]['payout'] = 999.0
+        result = self._payout_result(manager=manager)
+        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [999.0, 140.0])
 
-        Week 0 is breached in the ledger, but it was sealed clean. The sealed record wins, so the
-        rebuild cannot retroactively withhold a week that was already paid.
-        """
-        from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek
-
-        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
-        sealed = {week_0_start: SealedWeek(
-            week_start_ms=week_0_start,
-            weekly_penalty=1.0,
-            payout_scale=1.0,
-            track='ON_TRACK',
-            first_earning_ms=None,
-            sealed_ms=0,
-        )}
-        result = self._payout_result(blocked_checkpoint_indices=(0,), sealed_weeks=sealed)
-        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [140.0, 140.0])
-        self.assertEqual(result['deferred_balance'], 0.0)
-
-    def test_a_sealed_week_keeps_its_payout_scale_after_the_account_is_resized(self):
-        """Account sizes are read live, so only the seal stops a resize repricing a paid week.
-
-        Week 0 settled at a 0.2 ratio. The pro account has since been resized to put the live
-        ratio at 0.5, but the sealed week is still paid at 0.2.
-        """
-        from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek
-
-        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
-        sealed = {week_0_start: SealedWeek(
-            week_start_ms=week_0_start,
-            weekly_penalty=1.0,
-            payout_scale=0.2,
-            track='OFF_TRACK',
-            first_earning_ms=None,
-            sealed_ms=0,
-        )}
+    def test_a_record_pays_when_the_promoted_account_has_not_traded(self):
+        """The transition record is all there is to pay; the new account has no orders yet."""
+        week_0_start = self._week_0_start()
+        orders = [SimpleNamespace(processed_ms=week_0_start + i * self.CP_DURATION_MS + 1, realized_pnl=10.0,
+                                  to_python_dict=lambda: {}) for i in range(MS_IN_WEEK // self.CP_DURATION_MS)]
         result = self._payout_result(
-            week_buckets={0: MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 1: MinerBucket.PRO_FUNDED},
-            payout_scale=0.5,
-            sealed_weeks=sealed,
-        )
-        self.assertEqual([w['payout_scale'] for w in result['weekly_settlements']], [0.2, 1.0])
-        self.assertEqual([w['payout'] for w in result['weekly_settlements']], [28.0, 140.0])
-
-    def test_a_settled_segment_pays_when_the_promoted_account_has_not_traded(self):
-        """The promotion archives every position, so the payout path has nothing left to compute
-        from. The dollars settled at the switch are the only thing that pays that stretch."""
-        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
-        segment = SettledSegment(
-            week_start_ms=week_0_start,
-            segment_start_ms=week_0_start,
-            segment_end_ms=week_0_start + MS_IN_WEEK // 2,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
-            payout_usd=1843.20,
-            gross_payout_usd=1843.20,
-            weekly_penalty=1.0,
-            payout_scale=1.0,
-            recorded_ms=0,
-        )
-        result = self._payout_result(
-            current_bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-            settled_segments=[segment],
-            orders=[],
-        )
-        self.assertEqual(result['payout'], 1843.20)
+            week_buckets={0: TRANSITION, 1: MinerBucket.PRO_CHALLENGE_FUNDED}, orders=orders)
         rows = result['weekly_settlements']
         self.assertEqual(len(rows), 1)
-        self.assertTrue(rows[0]['settled_segment'])
-        self.assertEqual(rows[0]['bucket'], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertTrue(rows[0]['payout_record'])
+        self.assertIs(rows[0]['in_transition'], True)
+        self.assertEqual(result['payout'], 140.0)
 
-    def test_a_settled_segment_pays_when_the_promotion_left_no_perf_ledger(self):
-        """The switch archives the positions, and the perf ledger goes with them. The settled
-        money still has to be reported rather than reading as a subaccount that does not exist."""
-        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
-        segment = SettledSegment(
-            week_start_ms=week_0_start,
-            segment_start_ms=week_0_start,
-            segment_end_ms=week_0_start + MS_IN_WEEK // 2,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
-            payout_usd=1843.20,
-            gross_payout_usd=1843.20,
-            weekly_penalty=1.0,
-            payout_scale=1.0,
-            recorded_ms=0,
-        )
-        result = self._payout_result(
-            current_bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-            settled_segments=[segment],
-            orders=[],
-            has_perf_ledger=False,
-        )
-        self.assertEqual(result['payout'], 1843.20)
-        self.assertEqual(len(result['weekly_settlements']), 1)
-        self.assertTrue(result['weekly_settlements'][0]['settled_segment'])
+    def test_the_record_forfeits_held_escrow_and_drops_the_orders(self):
+        manager = self._manager(blocked_checkpoint_indices=(8,), week_buckets={1: MinerBucket.SUBACCOUNT_FUNDED})
+        record = manager.segments[0]['payout_record']
+        self.assertEqual(record['payout_usd'], 0.0)
+        self.assertEqual(record['gross_payout_usd'], 140.0)
+        self.assertEqual(record['settlements'][-1]['deferred_forfeited'], 140.0)
+        self.assertEqual(record['settlements'][-1]['orders'], [])
 
-    def test_no_debt_ledger_prices_weeks_at_the_current_bucket(self):
-        """Without a debt ledger every segment takes the current bucket, so the payout scale applies
-        only in PRO_CHALLENGE_FROM_STANDARD. The live scale is below 1.0 in every pro bucket, so
-        applying it regardless of bucket would underpay PRO_CHALLENGE_TRANSITION and PRO_FUNDED."""
-        unscaled = self._payout_result(has_debt_ledger=False, current_bucket=MinerBucket.PRO_FUNDED,
-                                       payout_scale=1.0)['payout']
-        self.assertGreater(unscaled, 0)
+    def test_the_record_reads_positions_passed_as_dicts(self):
+        """The challenge period manager passes the positions read back from the segment directory."""
+        from vali_objects.enums.order_type_enum import OrderType
+        from vali_objects.vali_config import TradePair
+        from vali_objects.vali_dataclasses.order import Order
+        from vali_objects.vali_dataclasses.position import Position
+
+        manager = self._manager(week_buckets={0: MinerBucket.SUBACCOUNT_FUNDED, 1: MinerBucket.SUBACCOUNT_FUNDED})
+        week_0_start = self._week_0_start()
+        position = Position(miner_hotkey=self.SUBACCOUNT_HOTKEY, position_uuid="p1", open_ms=week_0_start + 1,
+                            trade_pair=TradePair.EURUSD, position_type=OrderType.FLAT, is_closed_position=True,
+                            close_ms=week_0_start + 2, orders=[
+                                Order(order_type=OrderType.LONG, leverage=1.0, price=1.0, processed_ms=week_0_start + 1,
+                                      order_uuid="o1", trade_pair=TradePair.EURUSD),
+                                Order(order_type=OrderType.FLAT, leverage=0.0, price=1.0, processed_ms=week_0_start + 2,
+                                      order_uuid="o2", trade_pair=TradePair.EURUSD, realized_pnl=50.0),
+                            ])
+        segment = {**manager.segments[0], 'end_ms': week_0_start + MS_IN_WEEK}
+        record = manager.calculate_segment_payout_record(
+            self.SUBACCOUNT_HOTKEY, segment, [position.model_dump()], segment['end_ms'])
+        self.assertEqual(record['payout_usd'], 50.0)
+
+    def test_the_record_keeps_the_net_pnl_of_its_last_checkpoint_window(self):
+        manager = self._manager(week_buckets={0: MinerBucket.SUBACCOUNT_FUNDED, 1: MinerBucket.SUBACCOUNT_FUNDED})
+        tail_start_ms = self._week_0_start() + 3 * self.CP_DURATION_MS
+        segment = {**manager.segments[0], 'end_ms': tail_start_ms + self.CP_DURATION_MS // 2}
+        order = lambda ms, pnl: SimpleNamespace(processed_ms=ms, realized_pnl=pnl, to_python_dict=lambda: {})
+        position = SimpleNamespace(
+            open_ms=segment['start_ms'], unrealized_pnl=0.0,
+            orders=[order(tail_start_ms - 1, 30.0), order(tail_start_ms + 1, 50.0)],
+            fee_history=[SimpleNamespace(time_ms=tail_start_ms - 5, amount=7.0),
+                         SimpleNamespace(time_ms=tail_start_ms + 2, amount=5.0)],
+        )
+        record = manager.calculate_segment_payout_record(self.SUBACCOUNT_HOTKEY, segment, [position], segment['end_ms'])
+        self.assertAlmostEqual(record['tail_net_usd'], 45.0)
+
+    def _frozen_week_0_payouts(self, weekly_penalty, blocked_checkpoint_indices=()):
+        """Payout rows of a live PRO_FUNDED segment whose week 0 froze at weekly_penalty, its row
+        holding dollars the positions do not support."""
+        week_0_start = self._week_0_start()
+        manager = self._manager(blocked_checkpoint_indices=blocked_checkpoint_indices)
+        manager.segments[0]['closed_weeks'] = [{
+            'start_ms': week_0_start, 'end_ms': week_0_start + MS_IN_WEEK, 'bucket': MinerBucket.PRO_FUNDED.value,
+            'weekly_penalty': weekly_penalty, 'payout': 500.0, 'eow_balance': 500.0, 'payout_hwm': 500.0,
+            'deferred_balance': 0.0, 'frozen_ms': 123,
+        }]
+        return self._payout_result(manager=manager)['weekly_settlements']
+
+    def test_a_frozen_week_is_still_paid_from_its_positions(self):
+        """As with a sealed week, only the penalty is pinned: the frozen row's dollars are not reused."""
+        rows = self._frozen_week_0_payouts(weekly_penalty=1.0)
+        self.assertEqual([r['payout'] for r in rows], [140.0, 140.0])
+        self.assertEqual([r['frozen_ms'] for r in rows], [123, None])
+
+    def test_a_restated_breach_cannot_withhold_a_week_that_froze_clean(self):
+        rows = self._frozen_week_0_payouts(weekly_penalty=1.0, blocked_checkpoint_indices=(8,))
+        self.assertEqual([r['payout'] for r in rows], [140.0, 140.0])
+
+    def test_a_week_that_froze_breached_stays_withheld_when_the_ledger_heals(self):
+        rows = self._frozen_week_0_payouts(weekly_penalty=0.0)
+        self.assertEqual([r['payout'] for r in rows], [0.0, 280.0])
+
+    def test_no_debt_ledger_pays_the_segment_unpenalized(self):
+        """Without a debt ledger the weeks carry no penalty, and the scale still only applies in
+        PRO_CHALLENGE_FUNDED."""
         for bucket, expected in (
-            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 0.5 * unscaled),
-            (MinerBucket.PRO_CHALLENGE_TRANSITION, unscaled),
-            (MinerBucket.PRO_FUNDED, unscaled),
+            (MinerBucket.PRO_CHALLENGE_FUNDED, 140.0),
+            (TRANSITION, 280.0),
+            (MinerBucket.PRO_FUNDED, 280.0),
         ):
             with self.subTest(bucket=bucket):
-                result = self._payout_result(has_debt_ledger=False, current_bucket=bucket, payout_scale=0.5)
+                result = self._payout_result(has_debt_ledger=False, week_buckets={0: bucket, 1: bucket},
+                                             payout_scale=0.5)
                 self.assertAlmostEqual(result['payout'], expected)
-                self.assertTrue(result['weekly_settlements'])
                 for week in result['weekly_settlements']:
-                    self.assertEqual(week['bucket'], bucket.value)
+                    self.assertEqual(week['bucket'], _bucket(bucket).value)
+                    self.assertEqual(week['in_transition'], bucket == TRANSITION)
 
-    def test_no_perf_ledger_and_nothing_settled_is_still_not_found(self):
-        """Nothing settled means there is nothing to report without a ledger."""
+    def test_no_perf_ledger_and_no_snapshot_is_not_found(self):
         self.assertIsNone(self._payout_result(has_perf_ledger=False))
 
-    def test_a_settled_segment_is_added_to_the_weeks_computed_around_it(self):
-        """The settled stretch and the weeks the account went on to trade are both paid, once."""
-        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
-        segment = SettledSegment(
-            week_start_ms=week_0_start,
-            segment_start_ms=week_0_start,
-            segment_end_ms=week_0_start + MS_IN_WEEK // 2,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
-            payout_usd=1843.20,
-            gross_payout_usd=1843.20,
-            weekly_penalty=1.0,
-            payout_scale=1.0,
-            recorded_ms=0,
-        )
-        baseline = self._payout_result()
-        result = self._payout_result(settled_segments=[segment])
-        self.assertEqual(result['payout'], baseline['payout'] + 1843.20)
-        self.assertEqual(
-            sum(1 for w in result['weekly_settlements'] if w['settled_segment']), 1
-        )
-        # The computed weeks pay exactly what they pay with nothing settled at all
-        computed = [w for w in result['weekly_settlements'] if not w['settled_segment']]
-        self.assertEqual([w['payout'] for w in computed],
-                         [w['payout'] for w in baseline['weekly_settlements']])
-        # ... and no two rows report overlapping windows
-        rows = result['weekly_settlements']
-        for earlier, later in zip(rows, rows[1:]):
-            self.assertLessEqual(earlier['end_ms'], later['start_ms'])
-
-    def test_the_wound_down_segment_is_settled_at_the_standard_size(self):
-        """_switch_account resizes the account to pro *before* settling, so get_payout_scale is
-        already the pro ratio by the time the segment is captured. Only the bucket gate keeps the
-        pre-promotion money whole - a regression here is a silent underpayment, not a crash."""
-        from entity_management.entity_manager import EntityManager
-
-        now = TimeUtil.now_in_millis()
-        monday = TimeUtil.ms_at_start_of_week(now)
-        cells = max(1, (now - monday) // self.CP_DURATION_MS)
-        orders = [SimpleNamespace(processed_ms=monday + i * self.CP_DURATION_MS + 1,
-                                  realized_pnl=100.0, to_python_dict=lambda: {})
-                  for i in range(cells)]
-        checkpoints = [DebtCheckpoint(
-            timestamp_ms=monday + (i + 1) * self.CP_DURATION_MS,
-            challenge_period_status=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
-        ) for i in range(cells)]
-
-        recorded = {}
-        manager = object.__new__(EntityManager)
-        manager.running_unit_tests = True
-        manager.get_entity_data = lambda _hk: SimpleNamespace(subaccounts={1: {'id': 1}})
-        # The live scale the account already carries after apply_bucket_account_size
-        manager.get_payout_scale = lambda _hk: 2.0 * 100_000 / 500_000
-        manager._debt_ledger_client = SimpleNamespace(
-            get_ledger=lambda _hk: DebtLedger(self.SUBACCOUNT_HOTKEY, checkpoints=checkpoints),
-            get_sealed_weeks=lambda _hk: {},
-            get_settled_segments=lambda _hk: [],
-            record_settled_segment=lambda *a: recorded.update(
-                payout_usd=a[5], gross=a[6], scale=a[8], bucket=a[4]) or True,
-        )
-        manager._perf_ledger_client = SimpleNamespace(
-            get_perf_ledger_for_hotkey=lambda hk: {
-                hk: SimpleNamespace(get_checkpoint_at_time=lambda *_a: None)})
-        manager._position_client = SimpleNamespace(
-            get_positions_for_one_hotkey=lambda *_a, **_k: [
-                SimpleNamespace(orders=orders, fee_history=[], unrealized_pnl=0.0)])
-
-        self.assertTrue(manager.settle_wound_down_segment(
-            self.SUBACCOUNT_HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION.value, now))
-        self.assertEqual(recorded['payout_usd'], 100.0 * cells)   # NOT scaled by 0.4
-        self.assertEqual(recorded['scale'], 1.0)
-        self.assertEqual(recorded['bucket'], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
-
-    def test_no_settled_segment_leaves_the_weekly_windows_untouched(self):
-        """The promotion handling must be inert for every account that never promoted."""
-        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
-        result = self._payout_result()
+    def test_no_bucket_history_is_one_segment_in_the_current_bucket(self):
+        week_0_start = self._week_0_start()
+        result = self._payout_result(has_bucket_history=False)
         self.assertEqual(
             [(w['start_ms'], w['end_ms']) for w in result['weekly_settlements']],
-            [(week_0_start, week_0_start + MS_IN_WEEK),
-             (week_0_start + MS_IN_WEEK, week_0_start + 2 * MS_IN_WEEK)],
+            [(week_0_start, week_0_start + MS_IN_WEEK), (week_0_start + MS_IN_WEEK, week_0_start + 2 * MS_IN_WEEK)],
         )
-        self.assertFalse(any(w['settled_segment'] for w in result['weekly_settlements']))
+        self.assertAlmostEqual(result['payout'], 280.0)
 
-    def test_a_settled_segment_opens_its_week_at_the_switch(self):
-        """The settled stretch and the week the account went on to trade must not overlap."""
-        week_0_start = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - 2 * MS_IN_WEEK
+    def test_rows_split_at_mondays_and_at_the_segment_boundary(self):
+        week_0_start = self._week_0_start()
         switch_ms = week_0_start + MS_IN_WEEK // 2
-        segment = SettledSegment(
-            week_start_ms=week_0_start,
-            segment_start_ms=week_0_start,
-            segment_end_ms=switch_ms,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
-            payout_usd=1843.20,
-            gross_payout_usd=1843.20,
-            weekly_penalty=1.0,
-            payout_scale=1.0,
-            recorded_ms=0,
-        )
-        result = self._payout_result(settled_segments=[segment])
+        cps_per_week = MS_IN_WEEK // self.CP_DURATION_MS
+        result = self._payout_result(checkpoint_buckets={
+            i: TRANSITION if i < cps_per_week // 2 else MinerBucket.PRO_CHALLENGE_FUNDED
+            for i in range(2 * cps_per_week)
+        })
         self.assertEqual(
             [(w['start_ms'], w['end_ms']) for w in result['weekly_settlements']],
-            [(week_0_start, switch_ms),
-             (switch_ms, week_0_start + MS_IN_WEEK),
+            [(week_0_start, switch_ms), (switch_ms, week_0_start + MS_IN_WEEK),
              (week_0_start + MS_IN_WEEK, week_0_start + 2 * MS_IN_WEEK)],
         )
-        # Only the promotion week's window moved; the week after it is untouched
-        self.assertEqual(result['weekly_settlements'][2]['payout'],
-                         self._payout_result()['weekly_settlements'][1]['payout'])
 
 
 class TestEntityRegistrationMothershipOnly(TestBase):
@@ -1755,7 +1770,7 @@ class TestSubaccountCreationRollback(unittest.TestCase):
         cases = (
             {},
             {"bucket": MinerBucket.SUBACCOUNT_FUNDED.value},
-            {"bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, "pro_account_size": 500_000},
+            {"bucket": MinerBucket.PRO_CHALLENGE_FUNDED.value, "pro_account_size": 500_000},
         )
         for options in cases:
             with self.subTest(**options):
@@ -1794,7 +1809,7 @@ class TestSubaccountCreationRollback(unittest.TestCase):
 
         success, info, message, _ = self.manager.create_subaccount_ex(
             self.ENTITY, 100_000, "crypto",
-            bucket=MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value, pro_account_size=500_000)
+            bucket=MinerBucket.PRO_CHALLENGE_FUNDED.value, pro_account_size=500_000)
 
         self.assertTrue(success, message)
         self.assertEqual(order, ["registered", "broadcast"])
@@ -1840,13 +1855,13 @@ class TestSubaccountPayout(unittest.TestCase):
         from tests.vali_tests.test_pro_account_size import _add_standard, _bare_manager
 
         entity_manager = _bare_manager()
-        entity_manager._debt_ledger_client.get_settled_segments.return_value = []
-        entity_manager._debt_ledger_client.get_sealed_weeks.return_value = {}
+        entity_manager._challenge_period_client.get_miner_bucket.return_value = MinerBucket.SUBACCOUNT_FUNDED
+        entity_manager._challenge_period_client.get_bucket_segments.return_value = []
         entity_manager._perf_ledger_client = MagicMock()
         order = SimpleNamespace(processed_ms=MONDAY_MS - 2 * MS_IN_WEEK + 3_600_000, realized_pnl=12_000.0,
                                 to_python_dict=lambda: {})
         entity_manager._position_client.get_positions_for_one_hotkey.return_value = [
-            SimpleNamespace(orders=[order], fee_history=[], unrealized_pnl=0.0)]
+            SimpleNamespace(orders=[order], fee_history=[], unrealized_pnl=0.0, open_ms=order.processed_ms)]
         checkpoint = SimpleNamespace(unrealized_pnl=0.0)
 
         payouts = {}
@@ -1856,7 +1871,7 @@ class TestSubaccountPayout(unittest.TestCase):
                 hotkey: SimpleNamespace(get_checkpoint_at_time=lambda *_: checkpoint)}
             with patch("entity_management.entity_manager.read_all_snapshots", return_value=[]):
                 result = entity_manager._calculate_payout_for_hotkey(
-                    hotkey, 0, MONDAY_MS, bucket_override=MinerBucket.SUBACCOUNT_FUNDED)
+                    hotkey, 0, MONDAY_MS)
             payouts[subaccount_id] = [(row['start_ms'], row['payout']) for row in result['weekly_settlements']]
 
         self.assertEqual(payouts[0], payouts[1])

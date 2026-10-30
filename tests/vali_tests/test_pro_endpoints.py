@@ -92,7 +92,10 @@ def _validator_promote_client():
     }
     server._challenge_period_client = MagicMock()
     server._challenge_period_client.promote_subaccount.return_value = (True, "promoted")
-    server._challenge_period_client.get_miner_bucket.return_value = MinerBucket.PRO_CHALLENGE_TRANSITION
+    # Promoted into its transition week
+    server._challenge_period_client.get_miner_bucket.return_value = MinerBucket.SUBACCOUNT_FUNDED
+    server._miner_account_client = MagicMock()
+    server._miner_account_client.get_transition_starts.side_effect = lambda hotkeys: {hk: 1 for hk in hotkeys}
     server._verify_coldkey_owns_hotkey = MagicMock(return_value=True)
     server.nonce_manager = NonceManager()
     app = Flask(__name__)
@@ -142,7 +145,8 @@ class TestValidatorPromoteEndpoint(unittest.TestCase):
     def test_valid_request_forwards_the_requested_size(self):
         status, data = self._post(self._body(signed={"pro_account_size": GRANTED_SIZE}))
         self.assertEqual(status, 200, data)
-        self.assertEqual(data['bucket'], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertEqual(data['bucket'], "PRO_CHALLENGE_TRANSITION")
+        self.assertIs(data['in_transition'], True)
         self.assertEqual(data['pro_account_size'], GRANTED_SIZE)
         self._promote().assert_called_once()
         hotkey, timestamp, size = self._promote().call_args.args
@@ -466,6 +470,32 @@ def _pro_account(exposures=None, bucket=MinerBucket.PRO_FUNDED):
     return account
 
 
+class TestPayoutEndpointBucketNames(unittest.TestCase):
+    """POST /entity/subaccount/payout names each settlement row's bucket as before the merge."""
+
+    def test_rows_report_the_transition_and_the_renamed_bucket_by_their_old_names(self):
+        server = object.__new__(ValidatorRestServer)
+        server._get_api_key_safe = MagicMock(return_value="key")
+        server.is_valid_api_key = MagicMock(return_value=True)
+        server.can_access_tier = MagicMock(return_value=True)
+        server._entity_client = MagicMock()
+        server._entity_client.calculate_subaccount_payout.return_value = {'weekly_settlements': [
+            {'bucket': MinerBucket.SUBACCOUNT_FUNDED.value, 'in_transition': False},
+            {'bucket': MinerBucket.SUBACCOUNT_FUNDED.value, 'in_transition': True},
+            {'bucket': MinerBucket.PRO_CHALLENGE_FUNDED.value, 'in_transition': False},
+        ]}
+        app = Flask(__name__)
+        app.route("/entity/subaccount/payout", methods=["POST"])(server.calculate_subaccount_payout)
+
+        resp = app.test_client().post("/entity/subaccount/payout", json={
+            "subaccount_uuid": "u", "start_time_ms": TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())})
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        rows = json.loads(resp.data)["data"]["weekly_settlements"]
+        self.assertEqual([(r["bucket"], r["in_transition"]) for r in rows], [
+            ("SUBACCOUNT_FUNDED", False), ("PRO_CHALLENGE_TRANSITION", True), ("PRO_CHALLENGE_FROM_STANDARD", False)])
+
+
 class TestProSubaccountLimitsEndpoint(unittest.TestCase):
 
     def setUp(self):
@@ -521,6 +551,18 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
         self.assertEqual(group["limit_multiplier"], limit)
         self.assertAlmostEqual(group["long_room_usd"], PRO_ACCOUNT_SIZE * (limit - 20))
         self.assertAlmostEqual(group["short_room_usd"], PRO_ACCOUNT_SIZE * limit)
+
+    def test_a_transition_reports_its_old_bucket_name(self):
+        account = _pro_account(bucket=MinerBucket.SUBACCOUNT_FUNDED)
+        account.transition_start_ms = 1
+        self.server._miner_account_client.get_account.return_value = account
+
+        _, data = self._get()
+
+        self.assertEqual((data["bucket"], data["in_transition"]), ("PRO_CHALLENGE_TRANSITION", True))
+        account.transition_start_ms = None
+        _, data = self._get()
+        self.assertEqual((data["bucket"], data["in_transition"]), ("SUBACCOUNT_FUNDED", False))
 
     def test_non_pro_account_gets_no_correlation_block(self):
         self.server._miner_account_client.get_account.return_value = _pro_account(
@@ -609,9 +651,9 @@ class TestProSubaccountLimitsEndpoint(unittest.TestCase):
         cases = (
             (MinerBucket.PRO_FUNDED, None, 100.0 * ValiConfig.PRO_MARGIN_CPT),
             (MinerBucket.SUBACCOUNT_FUNDED, None, 100.0 * ValiConfig.MARGIN_CPT),
-            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, None,
+            (MinerBucket.PRO_CHALLENGE_FUNDED, None,
              100.0 * ValiConfig.MARGIN_CPT / ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER),
-            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER,
+            (MinerBucket.PRO_CHALLENGE_FUNDED, ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER,
              100.0 * ValiConfig.MARGIN_CPT),
         )
         for bucket, payout_scale, expected in cases:
@@ -772,12 +814,10 @@ class TestProLeverageCurveReporting(unittest.TestCase):
     def test_curve_and_tier_by_bucket(self):
         cases = [
             # Every pro bucket gets the flat pro curve, regardless of account size.
-            (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 400_000, "pro", None),
+            (MinerBucket.PRO_CHALLENGE_FUNDED, 400_000, "pro", None),
             (MinerBucket.PRO_CHALLENGE_DIRECT, 400_000, "pro", None),
             (MinerBucket.PRO_FUNDED, 400_000, "pro", None),
             (MinerBucket.PRO_FUNDED, 1_000_000, "pro", None),
-            # Transition still trades the standard account, so it keeps the standard curve.
-            (MinerBucket.PRO_CHALLENGE_TRANSITION, 100_000, "standard", 1),
             (MinerBucket.SUBACCOUNT_CHALLENGE, 100_000, "standard", 1),
         ]
         for bucket, account_size, curve, tier in cases:
@@ -918,6 +958,54 @@ class TestDashboardEndpointsProAccountSize(unittest.TestCase):
                     info = json.loads(serialized)["data"]["dashboard"]["subaccount_info"]
                     self.assertNotIn(REMOVED_FIELD, info)
                     self.assertEqual(info["pro_account_size"], granted)
+
+
+class TestSoftBreachEndpoint(unittest.TestCase):
+    """GET/POST /admin/soft-breach/<hotkey>, with a mocked challenge period client."""
+
+    WEEK_MS = 1700438400000  # Monday 00:00 UTC
+
+    def setUp(self):
+        self.server = object.__new__(ValidatorRestServer)
+        self.server._get_api_key_safe = MagicMock(return_value="key")
+        self.server.is_valid_api_key = MagicMock(return_value=True)
+        self.server.can_access_tier = MagicMock(return_value=True)
+        self.server._challenge_period_client = MagicMock()
+        self.server._challenge_period_client.get_soft_breach_weeks.return_value = {self.WEEK_MS: []}
+        self.server._challenge_period_client.admin_set_soft_breach_week.return_value = (True, "updated")
+        app = Flask(__name__)
+        app.config['TESTING'] = True
+        app.route("/admin/soft-breach/<hotkey>", methods=["GET"])(self.server.get_soft_breach_weeks)
+        app.route("/admin/soft-breach/<hotkey>", methods=["POST"])(self.server.set_soft_breach_week)
+        self.client = app.test_client()
+
+    def _set(self):
+        return self.server._challenge_period_client.admin_set_soft_breach_week
+
+    def test_get_returns_the_weeks(self):
+        resp = self.client.get("/admin/soft-breach/hk")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.data)["soft_breach_weeks"], {str(self.WEEK_MS): []})
+
+    def test_post_forwards_days_an_empty_week_and_a_removal(self):
+        day = self.WEEK_MS + ValiConfig.DAILY_MS
+        for query, days in ((f"days={day}", [day]), ("days=", []), ("remove=true", None)):
+            resp = self.client.post(f"/admin/soft-breach/hk?week_start_ms={self.WEEK_MS}&{query}")
+            self.assertEqual(resp.status_code, 200)
+            self._set().assert_called_with("hk", self.WEEK_MS, days)
+
+    def test_malformed_requests_are_400(self):
+        for query in ("days=", f"week_start_ms={self.WEEK_MS}", f"week_start_ms={self.WEEK_MS}&days=x"):
+            self.assertEqual(self.client.post(f"/admin/soft-breach/hk?{query}").status_code, 400)
+        self._set().assert_not_called()
+
+        self._set().return_value = (False, "not a Monday")
+        self.assertEqual(self.client.post(f"/admin/soft-breach/hk?week_start_ms=1&days=").status_code, 400)
+
+    def test_below_tier_500_is_403(self):
+        self.server.can_access_tier.return_value = False
+        self.assertEqual(self.client.get("/admin/soft-breach/hk").status_code, 403)
+        self.server.can_access_tier.assert_called_with("key", 500)
 
 
 if __name__ == "__main__":

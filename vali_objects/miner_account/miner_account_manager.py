@@ -80,6 +80,9 @@ class MinerAccount:
     asset_class: Optional[MinerAssetClass] = None  # CRYPTO, FOREX, EQUITIES, COMMODITIES, HL_ALL
     collateral_records: List[CollateralRecord] = None  # Historical CollateralRecords (List[CollateralRecord])
     miner_bucket: Optional[MinerBucket] = None  # Pushed by ChallengePeriodManager
+    # Start of the SUBACCOUNT_FUNDED transition week, set by ChallengePeriodManager. Kept through an
+    # elimination so a revert restores it; cleared by the account switch out of it.
+    transition_start_ms: Optional[int] = None
     hl_address: Optional[str] = None            # Set for HS subaccounts; None for VT
     leverage_tier: Optional[int] = None         # Standard subaccount tier 1 to 3; None = tier 0 (pre-tier floor) for standard subaccounts, unused by HL and pro
     max_return: float = 1.0  # High water mark for portfolio return
@@ -95,6 +98,17 @@ class MinerAccount:
         """Initialize collateral_records to empty list if None."""
         if self.collateral_records is None:
             self.collateral_records = []
+
+    @property
+    def in_transition(self) -> bool:
+        """True during the SUBACCOUNT_FUNDED transition week: no new or increased exposure."""
+        return self.transition_start_ms is not None and self.miner_bucket == MinerBucket.SUBACCOUNT_FUNDED
+
+    @property
+    def is_pro_bucket(self) -> bool:
+        """True when the account trades the pro account. The SUBACCOUNT_FUNDED transition is
+        still on the standard account."""
+        return bool(self.miner_bucket and self.miner_bucket.is_pro)
 
     @property
     def balance(self) -> float:
@@ -248,6 +262,8 @@ class MinerAccount:
             'total_fees_paid': self.total_fees_paid,
             'total_dividend_income': self.total_dividend_income,
             'miner_bucket': self.miner_bucket.value if self.miner_bucket else None,
+            'in_transition': self.in_transition,
+            'transition_start_ms': self.transition_start_ms,
             'hl_address': self.hl_address,
             'leverage_tier': self.leverage_tier,
             'max_return': self.max_return,
@@ -279,6 +295,7 @@ class MinerAccount:
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'leverage_tier': self.leverage_tier,
+            'in_transition': self.in_transition,
             **self.leverage_limits(),
         }
 
@@ -450,6 +467,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_fees_paid = last_record.get("total_fees_paid", 0.0)
                     total_dividend_income = last_record.get("total_dividend_income", 0.0)
                     miner_bucket_str = last_record.get("miner_bucket")
+                    transition_start_ms = last_record.get("transition_start_ms")
                     hl_address = last_record.get("hl_address")
                     leverage_tier = last_record.get("leverage_tier")
                     max_return = last_record.get("max_return", 1.0)
@@ -464,6 +482,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     total_fees_paid = 0.0
                     total_dividend_income = 0.0
                     miner_bucket_str = None
+                    transition_start_ms = None
                     hl_address = None
                     leverage_tier = None
                     max_return = 1.0
@@ -542,6 +561,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     asset_class=asset_class,
                     collateral_records=collateral_records,
                     miner_bucket=miner_bucket,
+                    transition_start_ms=transition_start_ms,
                     hl_address=hl_address,
                     leverage_tier=leverage_tier,
                     max_return=max_return,
@@ -647,7 +667,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             account.reset_account_fields()
             if miner_bucket:
+                # An account switch onto a new bucket always ends the transition
                 account.miner_bucket = miner_bucket
+                account.transition_start_ms = None
 
             self.take_account_snapshot(hotkey=hotkey, reset_snapshot=True)
             account.max_return = 1.0
@@ -815,11 +837,17 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             self._save_accounts_to_disk()
 
+    @staticmethod
+    def _apply_bucket(account: MinerAccount, bucket: Optional[MinerBucket]) -> None:
+        account.miner_bucket = bucket
+        # Only SUBACCOUNT_FUNDED has a transition; an elimination keeps it for a revert
+        if bucket not in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.ELIMINATED):
+            account.transition_start_ms = None
+
     def set_miner_bucket(self, hotkey: str, bucket: Optional[MinerBucket]) -> None:
         """Set the miner bucket on an account. Called by ChallengePeriodManager via RPC."""
         with self._accounts_lock:
-            account = self.get_or_create(hotkey)
-            account.miner_bucket = bucket
+            self._apply_bucket(self.get_or_create(hotkey), bucket)
             self._save_accounts_to_disk()
 
     def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket]) -> None:
@@ -828,9 +856,25 @@ class MinerAccountManager(ValidatorBroadcastBase):
             return
         with self._accounts_lock:
             for hotkey, bucket in hotkey_to_bucket.items():
-                account = self.get_or_create(hotkey)
-                account.miner_bucket = bucket
+                self._apply_bucket(self.get_or_create(hotkey), bucket)
             self._save_accounts_to_disk()
+
+    def set_transition(self, hotkey: str, start_ms: Optional[int]) -> bool:
+        """Start (or with None, clear) the SUBACCOUNT_FUNDED transition week. False without an account."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if not account:
+                return False
+            account.transition_start_ms = start_ms
+            self._save_accounts_to_disk()
+        return True
+
+    def get_transition_starts(self, hotkeys: Optional[List[str]] = None) -> Dict[str, int]:
+        """hotkey -> transition start for every account in its transition week."""
+        with self._accounts_lock:
+            accounts = self.accounts.values() if hotkeys is None else (
+                self.accounts[hk] for hk in hotkeys if hk in self.accounts)
+            return {a.miner_hotkey: a.transition_start_ms for a in accounts if a.in_transition}
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
@@ -1015,6 +1059,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         timestamp_ms: Optional[int] = None,
         reset_snapshot: bool = False,
         update_daily_open: bool = False,
+        drawdown_by_hotkey: Optional[Dict[str, dict]] = None,
     ) -> int:
         """Snapshot account state at the current (or given) UTC day open.
 
@@ -1027,6 +1072,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             update_daily_open: If True, update daily_open_snapshot when a new day is detected.
                                Should only be passed True when firing at the top of the UTC day
                                (hour == 0) to avoid recording a mid-day value as the day open.
+            drawdown_by_hotkey: Optional {hotkey: {intraday_drawdown_pct, eod_drawdown_pct, eod_hwm}}
+                                (ChallengePeriodClient.get_drawdown_snapshot_fields) stamped onto the
+                                snapshot. Hotkeys missing from it keep those fields None.
 
         Returns the number of snapshots recorded.
         """
@@ -1046,11 +1094,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
             else:
                 targets = [a for a in self.accounts.values() if a.miner_bucket != MinerBucket.ELIMINATED]
             for account in targets:
+                drawdown = (drawdown_by_hotkey or {}).get(account.miner_hotkey) or {}
                 snapshot = AccountSnapshot(
                     snapshot_ms=timestamp_ms,
                     account_size=account.get_account_size(),
                     balance=account.balance,
                     equity=account.equity,
+                    intraday_drawdown_pct=drawdown.get('intraday_drawdown_pct'),
+                    eod_drawdown_pct=drawdown.get('eod_drawdown_pct'),
+                    eod_hwm=drawdown.get('eod_hwm'),
                 )
                 stored = account.daily_open_snapshot
                 stored_day_open_ms = TimeUtil.get_start_of_day_ms(stored.snapshot_ms) if stored else None

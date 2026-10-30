@@ -23,7 +23,7 @@ import uuid
 import time
 import threading
 from typing import Dict, Optional, Tuple, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import template.protocol
 from entity_management.entity_utils import (
@@ -53,8 +53,9 @@ from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import WeeklyPayoutContext, apply_deferral
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import WeeklyPayoutContext, apply_deferral, frozen_week_penalties
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
+from vali_objects.vali_dataclasses.position import Position
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
@@ -86,14 +87,20 @@ class SubaccountInfo(BaseModel):
     asset_class: str = Field(description="Asset class selection (immutable once set)")
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     intraday_drawdown_threshold: Optional[float] = Field(default=None, description="Chosen intraday drawdown threshold (daily loss limit) as a fraction, applied in every bucket (immutable once set). None keeps each bucket's default")
-    eod_hwm_threshold: Optional[float] = Field(default=None, description="Chosen EOD high-water-mark drawdown threshold as a fraction (PRO_CHALLENGE_FROM_STANDARD creation only, immutable once set). None keeps each bucket's default")
-    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FROM_STANDARD, set to ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER on Instant Funded creation (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
+    eod_hwm_threshold: Optional[float] = Field(default=None, description="Chosen EOD high-water-mark drawdown threshold as a fraction (Instant Funded creation only, immutable once set). None keeps each bucket's default")
+    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FUNDED, set to ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER on Instant Funded creation (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
     initial_bucket: Optional[str] = Field(default=None, description="MinerBucket the subaccount was created into. None means SUBACCOUNT_CHALLENGE")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
     leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades tier 0 (each limit is max of its legacy value and Base)")
     hl_address: Optional[str] = Field(default=None, description="Hyperliquid address for HL tracking subaccounts")
     payout_address: Optional[str] = Field(default=None, description="EVM address (0x + 40 hex) for USDC payouts")
     client_ref: Optional[str] = Field(default=None, description="Caller-supplied idempotency key, unique per (entity_hotkey, client_ref). Normalized lowercase, <=64 chars.")
+
+    @field_validator("initial_bucket")
+    @classmethod
+    def _normalize_initial_bucket(cls, value: Optional[str]) -> Optional[str]:
+        """Stores the wire value for either spelling of PRO_CHALLENGE_FUNDED."""
+        return MinerBucket(value).value if value else value
 
     @property
     def instant_funded(self) -> bool:
@@ -527,13 +534,13 @@ class EntityManager(ValidatorBroadcastBase):
             leverage_tier: Standard leverage tier 1 to 3. Defaults to
                    ValiConfig.STANDARD_LEVERAGE_TIER_DEFAULT; not accepted for HL subaccounts.
             intraday_drawdown_threshold: One of ValiConfig.SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES (e.g. 0.03).
-                   None keeps each bucket's default. Instant Funded (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FROM_STANDARD)
+                   None keeps each bucket's default. Instant Funded (SUBACCOUNT_FUNDED, PRO_CHALLENGE_FUNDED)
                    only accepts (and defaults to) ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD.
             bucket: MinerBucket value from ValiConfig.SUBACCOUNT_CREATION_BUCKETS. None means SUBACCOUNT_CHALLENGE.
             pro_account_size: Required for pro buckets, rejected otherwise.
             eod_hwm_threshold: One of ValiConfig.SUBACCOUNT_EOD_DRAWDOWN_VALUES, Instant Funded only. None keeps the
-                   bucket's default. A subaccount created into PRO_CHALLENGE_FROM_STANDARD is paid at
-                   ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER.
+                   bucket's default. A subaccount created into PRO_CHALLENGE_FUNDED
+                   is paid at ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER.
 
         The registration fee is account_size / registration_cpt: the Instant Funded CPT for its EOD
         threshold when created into a funded bucket, else the standard CPT for its daily loss limit.
@@ -572,7 +579,7 @@ class EntityManager(ValidatorBroadcastBase):
             # Only one value is accepted for now (see subaccount_creation_error); omitted means that value
             intraday_drawdown_threshold = ValiConfig.INSTANT_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
         payout_scale = (ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER
-                        if initial_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD else None)
+                        if initial_bucket == MinerBucket.PRO_CHALLENGE_FUNDED else None)
 
         # Validate account size (must be <= MAX_SUBACCOUNT_ACCOUNT_SIZE)
         if account_size > ValiConfig.MAX_SUBACCOUNT_ACCOUNT_SIZE:
@@ -1047,14 +1054,15 @@ class EntityManager(ValidatorBroadcastBase):
         target_bucket: MinerBucket,
         pro_account_size: Optional[float] = None,
         broadcast: bool = True,
+        in_transition: bool = False,
         waive_promotion_fee: bool = False,
     ) -> Tuple[bool, str]:
         """
         Point a subaccount at the account size its target bucket trades.
 
         Entering the pro track snapshots the standard size and records the granted pro size.
-        PRO_CHALLENGE_TRANSITION keeps trading the standard account, so only the sizes are
-        recorded; every other pro bucket switches the live account size to the pro size and, when that
+        The SUBACCOUNT_FUNDED transition (in_transition) keeps trading the standard account, so
+        only the sizes are recorded; every other pro bucket switches the live account size to the pro size and, when that
         changes the account size, charges the promotion fee (ValiConfig.promotion_fee_theta at the
         subaccount's daily loss limit). Re-applying the size an account already trades charges nothing.
         Returning to a standard bucket restores the standard size.
@@ -1075,7 +1083,7 @@ class EntityManager(ValidatorBroadcastBase):
             explicit size. A size recorded on an earlier pro journey, which a move back to a standard
             bucket keeps, is never reused: a re-offer needs a size again.
           * A move within the pro track uses the explicit size when one is sent (the entity re-setting
-            it, e.g. promoting out of PRO_CHALLENGE_TRANSITION), else the size recorded when the
+            it, e.g. leaving the SUBACCOUNT_FUNDED transition early), else the size recorded when the
             subaccount entered the track (the organic promotions send none). With neither, it is rejected.
           * A standard bucket never records a pro size; an explicit one is ignored.
 
@@ -1091,6 +1099,9 @@ class EntityManager(ValidatorBroadcastBase):
             return False, f"{synthetic_hotkey} is not a known subaccount"
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
+        # The pro track: the pro buckets, and the SUBACCOUNT_FUNDED transition leading to them
+        in_transition = in_transition and target_bucket == MinerBucket.SUBACCOUNT_FUNDED
+        is_pro_track = in_transition or target_bucket.is_pro_track
 
         # Work out the new sizes and the fee they cost without touching the stored subaccount
         standard_account_size = subaccount.standard_account_size
@@ -1106,7 +1117,7 @@ class EntityManager(ValidatorBroadcastBase):
         promotion_fee_theta = 0.0
         # Where the pro size came from ("explicit" or "recorded"), for the log; None for standard buckets
         pro_size_source = None
-        if target_bucket.is_pro_track:
+        if is_pro_track:
             if pro_account_size is not None:
                 pro_size_source = "explicit"
             elif subaccount.account_type == AccountType.PRO.value and subaccount.pro_account_size is not None:
@@ -1128,11 +1139,11 @@ class EntityManager(ValidatorBroadcastBase):
             standard_account_size = standard_size_floor
             account_type = AccountType.PRO.value
 
-            # TRANSITION winds down the standard account, so it keeps the standard size
+            # The transition winds down the standard account, so it keeps the standard size
             target_size = pro_account_size if target_bucket.is_pro else standard_account_size
 
             # The grant is charged when a pro size goes live, i.e. when the account size actually changes
-            # (never in TRANSITION). Re-applying the size an account already trades, as an admin move within
+            # (never in the transition). Re-applying the size an account already trades, as an admin move within
             # the pro track does, charges nothing even if the fee formula has changed since it paid. Only
             # the increase over the fee already assessed is billed, and the charge floors at zero: a size
             # already paid for is free rather than crediting theta back. Collateral-exempt subaccounts
@@ -1195,7 +1206,7 @@ class EntityManager(ValidatorBroadcastBase):
         fee_note = (f", promotion_fee={promotion_fee_theta:.4f} theta "
                     f"(assessed {subaccount.pro_fee_theta:.4f} theta total)") if promotion_fee_theta else ""
         logger.info(
-            f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}: account_size=${subaccount.account_size}, "
+            f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}{' (in transition)' if in_transition else ''}: account_size=${subaccount.account_size}, "
             f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}{fee_note}"
         )
         return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
@@ -1329,8 +1340,8 @@ class EntityManager(ValidatorBroadcastBase):
         marked "pro" with a pro size on record, and the size-less branch of the next offer is gated on
         exactly that marking — so a re-offer with the size field blank would silently reuse the stale
         size instead of demanding one. Worse, an entry that trades the pro size (PRO_CHALLENGE_DIRECT,
-        PRO_CHALLENGE_FROM_STANDARD) would leave the account live at that size in a bucket that never
-        moved.
+        PRO_CHALLENGE_FUNDED) would leave the account live at that size in a bucket
+        that never moved.
 
         `snapshot` is what snapshot_bucket_account_size returned before the apply. The live account size
         is put back first and the record is left untouched if that fails: a record restored behind a
@@ -1870,8 +1881,8 @@ class EntityManager(ValidatorBroadcastBase):
                 'checkpoints': List[dict],
                 'weekly_settlements': List[dict],  # each carries deferred / deferred_released /
                                                    # deferred_forfeited / deferred_balance, and
-                                                   # settled_segment for one settled at an
-                                                   # account switch rather than computed here
+                                                   # payout_record for one pinned when its bucket
+                                                   # segment closed rather than computed here
                 'payout': float,
                 'deferred_balance': float,    # escrow still held at end_time_ms
                 'deferred_forfeited': float,  # cumulative escrow dropped by leaving the pro track
@@ -1890,14 +1901,16 @@ class EntityManager(ValidatorBroadcastBase):
         synthetic_hotkey: str,
         start_time_ms: int,
         end_time_ms: Optional[int],
-        bucket_override: Optional[MinerBucket] = None,
     ) -> Optional[dict]:
         """Payout for one subaccount, keyed by synthetic hotkey. See calculate_subaccount_payout.
+
+        Every bucket segment is paid on its own. Segments that left an earning bucket are paid from
+        the payout record pinned when they closed; the segment in force at end_time_ms is computed
+        from its own positions.
         """
-        realtime = False
-        if end_time_ms is None:
+        realtime = end_time_ms is None
+        if realtime:
             end_time_ms = TimeUtil.now_in_millis()
-            realtime = True
 
         entity_hotkey, subaccount_id = parse_synthetic_hotkey(synthetic_hotkey)
         if not entity_hotkey or subaccount_id is None:
@@ -1910,54 +1923,39 @@ class EntityManager(ValidatorBroadcastBase):
             return None
 
         try:
-            # The debt ledger supplies the display fields (checkpoints/total_checkpoints)
-            # and is needed to fetch segmented boundaries for promotions
+            # The debt ledger supplies the display fields (checkpoints/total_checkpoints) and the
+            # weekly penalties
             debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
             if debt_ledger is None:
-                logger.warning(
-                    f"[ENTITY_MANAGER] No debt ledger for {synthetic_hotkey}; payout falls back to "
-                    f"unsegmented weeks priced at the current bucket"
-                )
+                logger.warning(f"[ENTITY_MANAGER] No debt ledger for {synthetic_hotkey}; weeks are paid unpenalized")
 
-            miner_bucket = (
-                bucket_override if bucket_override is not None
-                else self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
-            )
+            miner_bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey, end_time_ms)
             # Escrow is only held while the bucket withholds on a soft breach; anywhere else it is forfeited
             off_track = miner_bucket is None or not miner_bucket.soft_breach_applies
 
-            # Stretches settled early because an account switch was about to wipe the account they
-            # were traded on. This is settled pnl
-            settled_segments = [
-                segment for segment in self._debt_ledger_client.get_settled_segments(synthetic_hotkey)
-                if segment.segment_end_ms <= end_time_ms
+            segments = self._payout_segments(synthetic_hotkey, miner_bucket)
+            current = next((s for s in reversed(segments) if s['start_ms'] < end_time_ms), None)
+            record_rows = [
+                {**row, 'payout_record': True}
+                for segment in segments if segment.get('payout_record')
+                for row in segment['payout_record']['settlements']
+                if row['start_ms'] < end_time_ms
             ]
-            settled_settlements = [{
-                'start_ms': segment.segment_start_ms,
-                'end_ms': segment.segment_end_ms,
-                'bucket': segment.bucket,
-                'settled_segment': True,
-                'eow_balance': 0.0,
-                'eow_unrealized': 0.0,
-                'gross_payout': segment.gross_payout_usd,
-                'payout': segment.payout_usd,
-                'deferred': 0.0,
-                'deferred_released': 0.0,
-                'deferred_forfeited': 0.0,
-                'deferred_balance': 0.0,
-                'weekly_penalty': segment.weekly_penalty,
-                'payout_scale': segment.payout_scale,
-                'orders': [],
-            } for segment in settled_segments]
+            # A segment that closed without a record (e.g. eliminated) still keeps the weeks it froze
+            record_rows += [
+                row for segment in segments
+                if segment is not current and not segment.get('payout_record')
+                for row in segment.get('closed_weeks') or []
+                if row['end_ms'] <= end_time_ms
+            ]
+            checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
 
-            def _finalize(computed_settlements, checkpoints, deferred_balance):
-                """Assemble the response from the computed settlements plus any settled segments."""
-                rows = sorted(computed_settlements + settled_settlements,
-                              key=lambda w: (w['start_ms'], w['end_ms']))
+            def _finalize(computed_rows, deferred_balance):
+                rows = sorted(computed_rows + record_rows, key=lambda w: (w['start_ms'], w['end_ms']))
                 return {
                     'hotkey': synthetic_hotkey,
-                    'total_checkpoints': len(checkpoints),
-                    'checkpoints': checkpoints,
+                    'total_checkpoints': len(checkpoints_dict),
+                    'checkpoints': checkpoints_dict,
                     'weekly_settlements': rows,
                     # Only sum settlements that fall within the requested period.
                     'payout': sum(w['payout'] for w in rows if w['start_ms'] >= start_time_ms),
@@ -1966,294 +1964,251 @@ class EntityManager(ValidatorBroadcastBase):
                     'off_track': off_track,
                 }
 
-            checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
+            if (current is None or current.get('payout_record')
+                    or miner_bucket is None or not miner_bucket.is_subaccount_earning):
+                # Nothing is being earned at end_time_ms, only what earlier segments were pinned at
+                return _finalize([], 0.0)
 
-            _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
-            perf_ledger = _perf_ledger.get(synthetic_hotkey) if _perf_ledger else None
-            if not perf_ledger:
-                is_currently_eliminated = (
-                    bucket_override == MinerBucket.ELIMINATED if bucket_override is not None
-                    else self._challenge_period_client.get_miner_bucket(synthetic_hotkey) == MinerBucket.ELIMINATED
-                )
-                if is_currently_eliminated:
-                    # Perf ledgers for eliminated funded/alpha subaccounts get moved to frozen storage.
-                    frozen_ledgers = self._perf_ledger_client.get_frozen_ledgers()
-                    perf_ledger = frozen_ledgers.get(synthetic_hotkey) if frozen_ledgers else None
-
-            EMPTY_RESPONSE = {
-                'hotkey': synthetic_hotkey,
-                'total_checkpoints': 0,
-                'checkpoints': {},
-                'weekly_settlements': [],
-                'payout': 0,
-                'deferred_balance': 0.0,
-                'deferred_forfeited': 0.0,
-                'off_track': off_track,
-            }
-            if miner_bucket is None or not miner_bucket.is_subaccount_earning:
-                # A subaccount that promoted into a non-earning bucket still reports the money
-                # settled at the switch.
-                if settled_settlements:
-                    return _finalize([], checkpoints_dict, 0.0)
-                return EMPTY_RESPONSE
-
-            positions = self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
-            orders = []
-            fees = []
-            realtime_unrealized = 0
-            for position in positions:
-                for order in position.orders:
-                    if order.processed_ms < end_time_ms:
-                        orders.append(order)
-                for fee in position.fee_history:
-                    if fee.time_ms < end_time_ms:
-                        fees.append(fee)
-
-                realtime_unrealized += position.unrealized_pnl
-
-            orders.sort(key=lambda x: x.processed_ms)
-            fees.sort(key=lambda x: x.time_ms)
-            if not orders:
-                return _finalize([], checkpoints_dict, 0.0)
-
-            # Weekly-scope penalties, and the account-size scale that applied in each week. Weeks
-            # that have already been settled come back exactly as they were settled, so rebuilding
-            # the ledgers cannot move one between paid and withheld.
-            sealed_weeks = self._debt_ledger_client.get_sealed_weeks(synthetic_hotkey)
-            live_payout_scale = self.get_payout_scale(synthetic_hotkey)
-            week_context = (
-                debt_ledger.weekly_payout_context(live_payout_scale, sealed=sealed_weeks)
-                if debt_ledger else {}
-            )
-            # A week the ledger says nothing about was never sealed, so it is priced at the
-            # account's current ratio rather than at an unscaled 1.0.
-            default_week = WeeklyPayoutContext(payout_scale=live_payout_scale)
-
-            weekly_settlements = []
-            deferred_balance = 0.0
-            # The balance level above which payouts start. Rebased whenever the account moves from
-            # a non-earning bucket into an earning one, so a standard challenge or a pro challenge
-            # run directly on this account moves the balance but is never paid out.
-            payout_hwm = 0.0
-
-            def _record_segment(start_ms, end_ms, balance, eow_unrealized, segment_orders, bucket):
-                nonlocal deferred_balance, payout_hwm
-                week = week_context.get(TimeUtil.ms_at_start_of_week(start_ms), default_week)
-                # Unrealized losses count against the payable balance, unrealized gains do not
-                payable = min(balance, balance + eow_unrealized)
-
-                if bucket is not None and not bucket.is_subaccount_earning:
-                    # Nothing earned in a non-earning bucket is ever paid.
-                    gross_payout = 0.0
-                    scale = 1.0
-                    if bucket != MinerBucket.ELIMINATED:
-                        # A challenge phase: what was earned there must not become payable later
-                        # either, so the basis restarts from wherever this segment ends.
-                        payout_hwm = payable
-                    # An eliminated span is a stop, not a phase before funding. It only appears
-                    # here at all when the elimination was reverted, so the basis is held and the
-                    # account resumes exactly where it left off rather than being re-based on the
-                    # force-close.
-                else:
-                    # The high water mark advances on gross terms
-                    gross_payout = max(0.0, payable - payout_hwm)
-                    payout_hwm = max(payout_hwm, payable)
-                    # Segments never straddle a bucket change, so one scale governs the whole of
-                    # it. The ratio comes from the week, not from a live read of the account's
-                    # sizes, so resizing the account cannot reprice a week that already settled.
-                    scale = (week.payout_scale
-                             if bucket is not None and bucket.payout_scale_applies else 1.0)
-
-                penalty = (week.weekly_penalty
-                           if bucket is not None and bucket.soft_breach_applies else 1.0)
-                owed = gross_payout * scale
-                earned = owed * penalty
-                released, deferred_balance, forfeited = apply_deferral(
-                    deferred_balance,
-                    owed - earned,
-                    track=week.track,
-                    week_penalty=week.weekly_penalty,
-                )
-                weekly_settlements.append({
-                    'start_ms': start_ms,
-                    'end_ms': end_ms,
-                    'bucket': bucket.value if bucket is not None else None,
-                    'settled_segment': False,
-                    'eow_balance': balance,
-                    'eow_unrealized': eow_unrealized,
-                    'gross_payout': gross_payout,
-                    'payout': earned + released,
-                    'deferred': owed - earned,
-                    'deferred_released': released,
-                    'deferred_forfeited': forfeited,
-                    'deferred_balance': deferred_balance,
-                    'weekly_penalty': penalty,
-                    'payout_scale': scale,
-                    'orders': [o.to_python_dict() for o in segment_orders],
-                })
-
-            running_balance = 0
-            MS_IN_WEEK = MS_IN_24_HOURS * 7
-            CP_DURATION = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
-
-            # Always start week_start at the Monday 00:00 UTC of the first order.
-            first_day_index = orders[0].processed_ms // MS_IN_24_HOURS
-            days_since_monday = (first_day_index + 3) % 7
-            week_start = (first_day_index - days_since_monday) * MS_IN_24_HOURS
-            week_end = week_start + MS_IN_WEEK
-
-            # A settlement also closes wherever the bucket changes, so one never mixes a stretch of
-            # challenge trading with funded trading or two different payout scales. A subaccount
-            # that never changes bucket produces exactly the Monday-to-Monday weeks it did before.
-            bucket_boundaries = debt_ledger.bucket_change_times() if debt_ledger else []
-
-            # Read the snapshot history once; per-week lookups below scan this in-memory
-            # list instead of re-reading the file on every iteration.
-            snapshots = read_all_snapshots(synthetic_hotkey, running_unit_tests=self.running_unit_tests)
-
-            idx_order, idx_fee, idx_snap = 0, 0, 0
-            # Ensure no overlap for calculating segments
-            segment_start = max(
-                [week_start]
-                + [s.segment_end_ms for s in settled_segments if week_start < s.segment_end_ms < week_end]
-            )
-            while segment_start < end_time_ms:
-                next_boundary = next(
-                    (b for b in bucket_boundaries if segment_start < b < week_end), None
-                )
-                segment_end = week_end if next_boundary is None else next_boundary
-                end_time = min(segment_end, end_time_ms)
-                # +1 because a checkpoint stamped at T closes the window *ending* at T: the segment
-                # starting at T is governed by the next checkpoint, not the one that just closed.
-                segment_bucket = debt_ledger.bucket_at(segment_start + 1) if debt_ledger else miner_bucket
-                week_orders = []
-                while idx_order < len(orders) and orders[idx_order].processed_ms < end_time:
-                    running_balance += orders[idx_order].realized_pnl
-                    if orders[idx_order].realized_pnl != 0:
-                        week_orders.append(orders[idx_order])
-                    idx_order += 1
-                while idx_fee < len(fees) and fees[idx_fee].time_ms < end_time:
-                    running_balance -= fees[idx_fee].amount
-                    idx_fee += 1
-
-                if realtime and end_time == end_time_ms:
-                    unrealized_pnl = realtime_unrealized
-                else:
-                    # Prefer the end-of-week account snapshot (equity - balance) when available;
-                    # fall back to the perf ledger checkpoint if no snapshot exists near end_time.
-                    # end_time only increases week-over-week and the tolerance window (1 minute)
-                    # is far smaller than a week, so idx_snap never needs to rewind.
-                    snap_lo, snap_hi = end_time - DEFAULT_TOLERANCE_MS, end_time + DEFAULT_TOLERANCE_MS
-                    while idx_snap < len(snapshots) and snapshots[idx_snap].snapshot_ms < snap_lo:
-                        idx_snap += 1
-                    snapshot = None
-                    best_delta = DEFAULT_TOLERANCE_MS + 1
-                    j = idx_snap
-                    while j < len(snapshots) and snapshots[j].snapshot_ms <= snap_hi:
-                        delta = abs(snapshots[j].snapshot_ms - end_time)
-                        if delta < best_delta:
-                            snapshot = snapshots[j]
-                            best_delta = delta
-                        j += 1
-                    if snapshot is not None:
-                        unrealized_pnl = snapshot.equity - snapshot.balance
-                    else:
-                        if not perf_ledger:
-                            logger.warning(
-                                f"[ENTITY_MANAGER] No account snapshot or perf ledger near "
-                                f"end_time={end_time} for {synthetic_hotkey}; cannot determine unrealized PnL"
-                            )
-                            return None
-                        cp = perf_ledger.get_checkpoint_at_time(end_time, CP_DURATION)
-                        unrealized_pnl = cp.unrealized_pnl if cp else 0.0
-                        logger.warning(
-                            f"[ENTITY_MANAGER] No account snapshot found near end_time={end_time} for "
-                            f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
-                        )
-                _record_segment(
-                    segment_start, end_time, running_balance, unrealized_pnl, week_orders, segment_bucket
-                )
-                segment_start = segment_end
-                if segment_start >= week_end:
-                    week_start, week_end = week_end, week_end + MS_IN_WEEK
-
-            return _finalize(weekly_settlements, checkpoints_dict, deferred_balance)
+            positions = [
+                p for p in self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
+                if p.open_ms >= current['start_ms']
+            ]
+            settled = self._settle_segment(synthetic_hotkey, current, positions, end_time_ms, realtime,
+                                           debt_ledger, self._payout_perf_ledger(synthetic_hotkey, miner_bucket))
+            if settled is None:
+                return None
+            return _finalize(*settled)
 
         except Exception as e:
             logger.error(f"[ENTITY_MANAGER] Error calculating payout for {synthetic_hotkey}: {e}")
             return None
 
-    def settle_wound_down_segment(
-        self, synthetic_hotkey: str, from_bucket: str, promotion_ms: int
-    ) -> bool:
-        """Settle and pin what a subaccount earned this payout week, before its account is wiped.
+    def _payout_segments(self, synthetic_hotkey: str, miner_bucket: Optional[MinerBucket]) -> List[dict]:
+        """The subaccount's bucket segments, oldest first. Without any bucket history (backtesting)
+        the whole account is one segment in the current bucket."""
+        segments = self._challenge_period_client.get_bucket_segments(synthetic_hotkey) or []
+        if not segments and miner_bucket is not None:
+            segments = [{
+                'bucket': miner_bucket.value, 'start_ms': 0, 'end_ms': None,
+                'transition_start_ms': None, 'transition_end_ms': None,
+                'payout_scale': None, 'payout_record': None,
+            }]
+        return segments
 
-        Called after the switch has force-closed the positions, so gains that were unrealized at
-        the promotion are realized and paid.
+    def _payout_perf_ledger(self, synthetic_hotkey: str, miner_bucket: Optional[MinerBucket] = None):
+        _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
+        perf_ledger = _perf_ledger.get(synthetic_hotkey) if _perf_ledger else None
+        if not perf_ledger and miner_bucket is not None and miner_bucket == MinerBucket.ELIMINATED:
+            # Perf ledgers for eliminated funded/alpha subaccounts get moved to frozen storage.
+            frozen_ledgers = self._perf_ledger_client.get_frozen_ledgers()
+            perf_ledger = frozen_ledgers.get(synthetic_hotkey) if frozen_ledgers else None
+        return perf_ledger
 
-        Never raises. A failure must not strand a miner mid-promotion, so it is logged and reported
-        through the return value instead.
+    def _settle_segment(self, synthetic_hotkey: str, segment: dict, positions: list, end_ms: int,
+                        realtime: bool, debt_ledger, perf_ledger) -> Optional[Tuple[List[dict], float]]:
+        """Weekly settlement rows for one earning segment, from its own positions, up to end_ms.
 
-        Args:
-            synthetic_hotkey: The subaccount being wound down
-            from_bucket: MinerBucket value of the bucket it is leaving
-            promotion_ms: The moment of the switch; identifies the record with the hotkey
+        The balance and the payout high water mark start at zero at the segment start, so nothing
+        earned before it is paid here. Rows split at each Monday and where the transition week
+        starts. Every row is computed; a closed week only keeps the weekly penalty it froze with
+        (frozen_week_penalties), as a sealed week did, so a rebuild cannot move it between paid and
+        withheld. Returns (rows, deferred_balance), or None when the unrealized PnL at a row end
+        cannot be determined.
+        """
+        bucket = MinerBucket(segment['bucket'])
+        transition_start = segment.get('transition_start_ms')
+        transition_end = segment.get('transition_end_ms')
+        if segment.get('end_ms') is not None:
+            end_ms = min(end_ms, segment['end_ms'])
+        # The scale the segment opened with, so a resize cannot reprice it
+        scale = segment.get('payout_scale')
+        if scale is None:
+            scale = self.get_payout_scale(synthetic_hotkey)
+        week_context = debt_ledger.weekly_payout_context(scale) if debt_ledger else {}
+        default_week = WeeklyPayoutContext(payout_scale=scale)
+        closed_weeks = segment.get('closed_weeks') or []
+        for week_start_ms, penalty in frozen_week_penalties(closed_weeks).items():
+            if week_start_ms in week_context:
+                week_context[week_start_ms].weekly_penalty = penalty
+        frozen_ms_by_start = {row['start_ms']: row.get('frozen_ms') for row in closed_weeks}
 
-        Returns:
-            True if a new settled segment was recorded
+        segment_start = segment['start_ms']
+        orders = sorted((o for p in positions for o in p.orders if segment_start <= o.processed_ms < end_ms),
+                        key=lambda o: o.processed_ms)
+        fees = sorted((f for p in positions for f in p.fee_history if segment_start <= f.time_ms < end_ms),
+                      key=lambda f: f.time_ms)
+        if not orders:
+            return [], 0.0
+        realtime_unrealized = sum(p.unrealized_pnl for p in positions)
+        snapshots = read_all_snapshots(synthetic_hotkey, running_unit_tests=self.running_unit_tests)
+
+        rows = []
+        running_balance = payout_hwm = deferred_balance = 0.0
+        row_start = max(segment_start, TimeUtil.ms_at_start_of_week(orders[0].processed_ms))
+        idx_order, idx_fee, idx_snap = 0, 0, 0
+        while row_start < end_ms:
+            row_end = min(TimeUtil.ms_at_start_of_week(row_start) + MS_IN_24_HOURS * 7, end_ms)
+            if transition_start is not None and row_start < transition_start < row_end:
+                row_end = transition_start
+            in_transition = (transition_start is not None and transition_start <= row_start
+                             and (transition_end is None or row_start < transition_end))
+
+            row_orders = []
+            while idx_order < len(orders) and orders[idx_order].processed_ms < row_end:
+                running_balance += orders[idx_order].realized_pnl
+                if orders[idx_order].realized_pnl != 0:
+                    row_orders.append(orders[idx_order])
+                idx_order += 1
+            while idx_fee < len(fees) and fees[idx_fee].time_ms < row_end:
+                running_balance -= fees[idx_fee].amount
+                idx_fee += 1
+
+            if realtime and row_end == end_ms:
+                unrealized_pnl = realtime_unrealized
+            else:
+                # Prefer the account snapshot (equity - balance) nearest the row end; fall back to
+                # the perf ledger checkpoint. row_end only increases, so idx_snap never rewinds.
+                snap_lo, snap_hi = row_end - DEFAULT_TOLERANCE_MS, row_end + DEFAULT_TOLERANCE_MS
+                while idx_snap < len(snapshots) and snapshots[idx_snap].snapshot_ms < snap_lo:
+                    idx_snap += 1
+                snapshot = None
+                best_delta = DEFAULT_TOLERANCE_MS + 1
+                j = idx_snap
+                while j < len(snapshots) and snapshots[j].snapshot_ms <= snap_hi:
+                    delta = abs(snapshots[j].snapshot_ms - row_end)
+                    if delta < best_delta:
+                        snapshot = snapshots[j]
+                        best_delta = delta
+                    j += 1
+                if snapshot is not None:
+                    unrealized_pnl = snapshot.equity - snapshot.balance
+                elif perf_ledger:
+                    cp = perf_ledger.get_checkpoint_at_time(row_end, ValiConfig.TARGET_CHECKPOINT_DURATION_MS)
+                    unrealized_pnl = cp.unrealized_pnl if cp else 0.0
+                    logger.warning(
+                        f"[ENTITY_MANAGER] No account snapshot found near end_time={row_end} for "
+                        f"{synthetic_hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
+                    )
+                else:
+                    logger.warning(
+                        f"[ENTITY_MANAGER] No account snapshot or perf ledger near "
+                        f"end_time={row_end} for {synthetic_hotkey}; cannot determine unrealized PnL"
+                    )
+                    return None
+
+            week = week_context.get(TimeUtil.ms_at_start_of_week(row_start), default_week)
+            # Unrealized losses count against the payable balance, unrealized gains do not.
+            # The high water mark advances on gross terms.
+            payable = min(running_balance, running_balance + unrealized_pnl)
+            gross_payout = max(0.0, payable - payout_hwm)
+            payout_hwm = max(payout_hwm, payable)
+            row_scale = scale if bucket.payout_scale_applies else 1.0
+            penalty = week.weekly_penalty if bucket.soft_breach_applies else 1.0
+            owed = gross_payout * row_scale
+            earned = owed * penalty
+            released, deferred_balance, forfeited = apply_deferral(
+                deferred_balance,
+                owed - earned,
+                track=week.track,
+                week_penalty=week.weekly_penalty,
+            )
+            rows.append({
+                'start_ms': row_start,
+                'end_ms': row_end,
+                'bucket': bucket.value,
+                'in_transition': in_transition,
+                'payout_record': False,
+                'eow_balance': running_balance,
+                'eow_unrealized': unrealized_pnl,
+                'payout_hwm': payout_hwm,
+                'frozen_ms': frozen_ms_by_start.get(row_start),
+                'gross_payout': gross_payout,
+                'payout': earned + released,
+                'deferred': owed - earned,
+                'deferred_released': released,
+                'deferred_forfeited': forfeited,
+                'deferred_balance': deferred_balance,
+                'weekly_penalty': penalty,
+                'payout_scale': row_scale,
+                'orders': [o.to_python_dict() for o in row_orders],
+            })
+            row_start = row_end
+
+        return rows, deferred_balance
+
+    def calculate_segment_payout_record(
+        self, synthetic_hotkey: str, segment: dict, positions: list, end_ms: int
+    ) -> Optional[dict]:
+        """What a segment leaving an earning bucket is owed, from its own positions (closed by now).
+
+        Escrow still held is forfeited: the bucket it moves to does not hold it. Never raises, so a
+        failure cannot strand a miner mid-promotion; returns None instead.
         """
         try:
-            bucket = MinerBucket(from_bucket)
-            week_start_ms = TimeUtil.ms_at_start_of_week(promotion_ms)
-            # end_time_ms=None takes the realtime branch, which reads unrealized PnL straight off
-            # the (now closed) positions rather than hunting for an account snapshot at a timestamp
-            # no snapshot was taken at.
-            result = self._calculate_payout_for_hotkey(
-                synthetic_hotkey, week_start_ms, None, bucket_override=bucket
+            positions = [p for p in (Position(**p) if isinstance(p, dict) else p for p in positions)
+                         if p.open_ms >= segment['start_ms']]
+            settled = self._settle_segment(
+                synthetic_hotkey, {**segment, 'end_ms': end_ms}, positions, end_ms, True,
+                self._debt_ledger_client.get_ledger(synthetic_hotkey), self._payout_perf_ledger(synthetic_hotkey))
+            if settled is None:
+                return None
+            rows, deferred_balance = settled
+            if rows and deferred_balance:
+                rows[-1]['deferred_forfeited'] += deferred_balance
+                rows[-1]['deferred_balance'] = 0.0
+            for row in rows:
+                row['orders'] = []
+            # Net PnL of the partial checkpoint window the record ends in. The debt checkpoint closing
+            # that window also holds what the next segment makes in it, which the aggregation pays net of this
+            tail_start_ms = end_ms - end_ms % ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+            tail_net_usd = (
+                sum(o.realized_pnl for p in positions for o in p.orders if tail_start_ms <= o.processed_ms < end_ms)
+                - sum(f.amount for p in positions for f in p.fee_history if tail_start_ms <= f.time_ms < end_ms)
             )
-            if not result:
-                logger.warning(
-                    f"[ENTITY_MANAGER] Could not settle the wound-down segment for "
-                    f"{synthetic_hotkey}: no payout could be calculated"
-                )
-                return False
-
-            # Exclude segments settled at an earlier switch; re-settling one would pay it twice.
-            segments = [
-                w for w in result['weekly_settlements']
-                if w['start_ms'] >= week_start_ms and not w.get('settled_segment')
-            ]
-            payout_usd = sum(w['payout'] for w in segments)
-            if payout_usd <= 0:
-                logger.info(
-                    f"[ENTITY_MANAGER] Nothing to settle for {synthetic_hotkey} leaving "
-                    f"{from_bucket}: this payout week earned {payout_usd}"
-                )
-                return False
-
-            last = segments[-1]
-            recorded = self._debt_ledger_client.record_settled_segment(
-                synthetic_hotkey,
-                week_start_ms,
-                week_start_ms,
-                promotion_ms,
-                from_bucket,
-                payout_usd,
-                sum(w['gross_payout'] for w in segments),
-                last['weekly_penalty'],
-                last['payout_scale'],
-            )
-            if not recorded:
-                logger.warning(
-                    f"[ENTITY_MANAGER] Settled segment for {synthetic_hotkey} at {promotion_ms} "
-                    f"was not written; a record for that switch already exists or the write failed"
-                )
-            return recorded
+            return {
+                'computed_ms': TimeUtil.now_in_millis(),
+                'end_ms': end_ms,
+                'payout_usd': sum(row['payout'] for row in rows),
+                'gross_payout_usd': sum(row['gross_payout'] for row in rows),
+                'tail_net_usd': tail_net_usd,
+                'settlements': rows,
+                'amended_ms': None,
+            }
         except Exception as e:
-            logger.error(
-                f"[ENTITY_MANAGER] Error settling the wound-down segment for {synthetic_hotkey}: {e}"
-            )
-            return False
+            logger.error(f"[ENTITY_MANAGER] Error calculating the payout record for {synthetic_hotkey}: {e}")
+            return None
+
+    def calculate_segment_closed_weeks(self, synthetic_hotkey: str, segment: dict, now_ms: int) -> Optional[List[dict]]:
+        """Settlement rows of the live segment's payout weeks that closed since its last frozen one.
+
+        A week is closed once the debt ledger holds the checkpoint ending it, so its weekly penalty
+        is final. Returns [] when every closed week is already frozen (or has nothing to settle),
+        and None when the week that just ended is not final yet or cannot be settled, to be retried.
+        """
+        try:
+            week_start_ms = TimeUtil.ms_at_start_of_week(now_ms)
+            debt_ledger = self._debt_ledger_client.get_ledger(synthetic_hotkey)
+            if not debt_ledger or not debt_ledger.checkpoints \
+                    or debt_ledger.checkpoints[-1].timestamp_ms < week_start_ms:
+                return None
+            frozen = segment.get('closed_weeks') or []
+            frozen_through_ms = frozen[-1]['end_ms'] if frozen else segment['start_ms']
+            if week_start_ms <= frozen_through_ms:
+                return []
+            positions = [
+                p for p in self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
+                if p.open_ms >= segment['start_ms']
+            ]
+            settled = self._settle_segment(synthetic_hotkey, segment, positions, week_start_ms, False,
+                                           debt_ledger, self._payout_perf_ledger(synthetic_hotkey))
+            if settled is None:
+                return None
+            frozen_ms = TimeUtil.now_in_millis()
+            return [{**row, 'orders': [], 'frozen_ms': frozen_ms}
+                    for row in settled[0] if row['start_ms'] >= frozen_through_ms]
+        except Exception as e:
+            logger.error(f"[ENTITY_MANAGER] Error calculating the closed weeks of {synthetic_hotkey}: {e}")
+            return None
 
     def validate_hotkey_for_orders(self, hotkey: str) -> dict:
         """
@@ -2367,12 +2322,7 @@ class EntityManager(ValidatorBroadcastBase):
         challenge_data = None
         try:
             if self._challenge_period_client.has_miner(synthetic_hotkey):
-                bucket = self._challenge_period_client.get_miner_bucket(synthetic_hotkey)
-                start_time = self._challenge_period_client.get_miner_start_time(synthetic_hotkey)
-                challenge_data = {
-                    'bucket': bucket.value if bucket else None,
-                    'start_time_ms': start_time
-                }
+                challenge_data = self._challenge_period_client.get_dashboard(synthetic_hotkey)
         except Exception as e:
             logger.debug(f"[ENTITY_MANAGER] Challenge period data unavailable for {synthetic_hotkey}: {e}")
 
