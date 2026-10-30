@@ -86,14 +86,14 @@ class MarketOrderManager():
         now_ms = now_ms or _start
 
         if not self._live_price_client.is_market_open(trade_pair):
-            # Equities pre-market/after-hours: only limit orders fill (from Nasdaq Basic trades). The session is
+            # Equities pre-market/after-hours: only trigger orders fill (from Nasdaq Basic trades). The session is
             # taken at the fill time so a trade just before the session ends still fills rather than failing,
-            # which would cancel the limit order.
+            # which would cancel the order.
             if self._live_price_client.get_equity_session(trade_pair, now_ms) not in ('pre', 'post'):
                 raise SignalException(f"The market for {trade_pair.trade_pair_id} is currently closed.")
-            if execution_type != ExecutionType.LIMIT:
-                raise SignalException(f"Only limit orders are accepted for {trade_pair.trade_pair_id} during "
-                                      f"pre-market and after-hours.")
+            if execution_type not in (ExecutionType.LIMIT, ExecutionType.BRACKET, ExecutionType.STOP_LIMIT):
+                raise SignalException(f"Only limit, stop-limit and bracket orders are accepted for "
+                                      f"{trade_pair.trade_pair_id} during pre-market and after-hours.")
 
         logger.info(
             f"[ORDER_EXECUTION] {hotkey} {order_uuid} {trade_pair.trade_pair_id} "
