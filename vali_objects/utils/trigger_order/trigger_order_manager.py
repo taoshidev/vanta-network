@@ -62,45 +62,49 @@ class TriggerOrderManager:
         self._last_fill_ms: dict[tuple[str, str], int] = {}  # (hotkey, trade_pair_id) -> last fill
         self._last_copy_ms: dict[str, int] = {}              # order_uuid -> last position copy
         self._needs_position_copy = True                     # re-copy bound orders on the first tick
+        self._closed: dict[str, dict[str, None]] = {}        # hotkey -> uuids closed since get_dashboard read them (ordered set)
 
     # ==================== Placement ====================
 
-    def place(self, hotkey: str, order: TriggerOrder) -> dict:
-        """Validate and open an order. Placing a uuid that is already open is a no-op (a retry)."""
-        if order.miner_hotkey != hotkey:
-            raise SignalException(f"Trigger order [{order.order_uuid}] belongs to another hotkey")
-
-        with self.store.lock(hotkey, order.trade_pair):
+    def place(self, *orders: TriggerOrder) -> None:
+        """Open orders together, all or none. Re-placing orders that are all open is a no-op (a retry)."""
+        hotkey, trade_pair = _shared_key(orders)
+        with self.store.lock(hotkey, trade_pair):
             # Before validation, so a retry isn't rejected for a price move or its own slot
-            if self.store.get(hotkey, order.order_uuid):
-                return {"status": "success", "order_uuid": order.order_uuid}
-
-            open_orders = len(self.store.select(hotkey=hotkey))
-            if open_orders >= ValiConfig.MAX_UNFILLED_LIMIT_ORDERS:
+            if all(self.store.get(hotkey, o.order_uuid) for o in orders):
+                return
+            open_count = len(self.store.select(hotkey=hotkey))
+            if open_count >= ValiConfig.MAX_UNFILLED_LIMIT_ORDERS:
                 raise SignalException(
-                    f"Too many open trigger orders [{open_orders}] >= [{ValiConfig.MAX_UNFILLED_LIMIT_ORDERS}]"
+                    f"miner has too many unfilled limit orders [{open_count}] >= [{ValiConfig.MAX_UNFILLED_LIMIT_ORDERS}]"
                 )
+            self._commit(orders)
 
-            self._validate(order, self._open_position(hotkey, order.trade_pair))
+    def replace(self, uuid: str, *orders: TriggerOrder) -> None:
+        """Swap the open order or oco_group named uuid for orders, all or none."""
+        hotkey, trade_pair = _shared_key(orders)
+        with self.store.lock(hotkey, trade_pair):
+            old = [o for o in self.store.select(hotkey=hotkey) if o.order_uuid == uuid or o.oco_group == uuid]
+            if not old:
+                raise SignalException(f"Cannot modify [{uuid}]: no open trigger order")
+            if any(o.trade_pair != trade_pair for o in old):
+                raise SignalException(f"Cannot modify [{uuid}]: trade pair does not match")
+            self._commit(orders, old)
+
+    def _commit(self, orders, old=()) -> None:
+        """Validate every new order, then swap old (dropped without a cancel record) for orders."""
+        hotkey, trade_pair = orders[0].miner_hotkey, orders[0].trade_pair
+        position = self._open_position(hotkey, trade_pair)
+        for order in orders:
+            self._validate(order, position)
+        for order in old:
+            self.store.discard(hotkey, order.order_uuid)
+        for order in orders:
             self.store.add(order)
-
-        logger.info(f"[TRIGGER] Placed {order.execution_type.name} [{order.order_uuid}] {order.trade_pair.trade_pair_id} for [{hotkey}]")
-        return {"status": "success", "order_uuid": order.order_uuid}
-
-    def modify(self, hotkey: str, order: TriggerOrder) -> dict:
-        """Replace an open order with the same uuid. Runs the same checks as place."""
-        with self.store.lock(hotkey, order.trade_pair):
-            existing = self.store.get(hotkey, order.order_uuid)
-            if existing is None:
-                raise SignalException(f"Cannot modify [{order.order_uuid}]: no open trigger order")
-            if existing.trade_pair != order.trade_pair:
-                raise SignalException(f"Cannot modify [{order.order_uuid}]: trade pair does not match")
-
-            self._validate(order, self._open_position(hotkey, order.trade_pair))
-            self.store.replace(order)
-
-        logger.info(f"[TRIGGER] Modified [{order.order_uuid}] for [{hotkey}]")
-        return {"status": "success", "order_uuid": order.order_uuid}
+        logger.info(
+            f"[TRIGGER] {'Replaced' if old else 'Placed'} {orders[0].execution_type.name} "
+            f"{[o.order_uuid for o in orders]} {trade_pair.trade_pair_id} for [{hotkey}]"
+        )
 
     def _validate(self, order: TriggerOrder, position) -> None:
         if self._is_entry(order, position) and self._is_transitioning_to_pro(order.miner_hotkey):
@@ -184,6 +188,7 @@ class TriggerOrderManager:
         for order in orders:
             if self.store.remove(hotkey, order.order_uuid, now_ms, reason or CANCEL_REASON[order.execution_type]):
                 self._last_copy_ms.pop(order.order_uuid, None)
+                self._closed.setdefault(hotkey, {})[order.oco_group or order.order_uuid] = None
                 cancelled.append(order.order_uuid)
         return cancelled
 
@@ -244,6 +249,13 @@ class TriggerOrderManager:
             position = self._open_position(hotkey, trade_pair)
             for order in self.store.select(hotkey=hotkey, trade_pair=trade_pair):
                 checked += 1
+                if order.bind_to_position and order.position_uuid is None:
+                    # Synced or migrated orders bind to the position open when they were placed
+                    if position is None or position.open_ms > order.processed_ms:
+                        self.cancel(hotkey, now_ms, order_uuid=order.order_uuid)
+                        continue
+                    order.position_uuid = position.position_uuid
+                    self.store.replace(order)
                 if order.position_uuid and not self._still_bound(order, position):
                     self.cancel(hotkey, now_ms, order_uuid=order.order_uuid)
                     continue
@@ -305,6 +317,7 @@ class TriggerOrderManager:
             logger.info(f"[TRIGGER] [{order.order_uuid}] left no open position, dropping bound children {dropped}")
         self.store.fire(order, [c for c in children if c.order_uuid not in dropped], fire_ms)
         self._last_copy_ms.pop(order.order_uuid, None)
+        self._closed.setdefault(hotkey, {})[order.oco_group or order.order_uuid] = None
 
         logger.info(
             f"[TRIGGER] Fired {order.execution_type.name} [{order.order_uuid}] {order.trade_pair.trade_pair_id} "
@@ -345,6 +358,16 @@ class TriggerOrderManager:
     def _is_transitioning_to_pro(self, hotkey: str) -> bool:
         account = self._miner_account_client.get_account(hotkey)
         return account is not None and account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+
+
+def _shared_key(orders) -> tuple[str, TradePair]:
+    """The hotkey and trade pair every order shares; orders change together under one lock."""
+    if not orders:
+        raise SignalException("No trigger orders given")
+    hotkey, trade_pair = orders[0].miner_hotkey, orders[0].trade_pair
+    if any(o.miner_hotkey != hotkey or o.trade_pair != trade_pair for o in orders):
+        raise SignalException("Trigger orders placed together must share a hotkey and trade pair")
+    return hotkey, trade_pair
 
 
 def _signed_size(order_type: OrderType, size: OrderSize) -> OrderSize:

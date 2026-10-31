@@ -94,6 +94,17 @@ class TriggerOrderStore:
         logger.info(f"[TRIGGER] Cancelled [{order_uuid}] {order.trade_pair.trade_pair_id} for [{hotkey}]: {reason.name}")
         return order
 
+    def discard(self, hotkey: str, order_uuid: str) -> TriggerOrder | None:
+        """Remove an open order without a closed record: replaced by an edit, or deleted."""
+        order = self.get(hotkey, order_uuid)
+        if order is None:
+            return None
+        with self.lock(hotkey, order.trade_pair):
+            if self._pop(order) is None:
+                return None
+            self._sync_position(order)
+        return order
+
     def fire(self, order: TriggerOrder, children: list[TriggerOrder], fired_ms: int) -> None:
         """Close a fired order, drop the rest of its oco_group, and open its children in one step."""
         with self.lock(order.miner_hotkey, order.trade_pair):
@@ -125,8 +136,14 @@ class TriggerOrderStore:
         return reopened
 
     def load(self, orders: list[TriggerOrder]) -> None:
-        """Write orders as open, overwriting any with the same uuid. Used by sync and tests."""
+        """
+        Write orders as they are, overwriting any with the same uuid: cancelled ones (close_reason
+        set) to closed/, the rest as open. Used by sync, migration and tests.
+        """
         for order in orders:
+            if order.close_reason is not None:
+                self._write(order, "closed")
+                continue
             with self.lock(order.miner_hotkey, order.trade_pair):
                 self._put(order)
 
