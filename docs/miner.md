@@ -53,7 +53,7 @@ A long position is a bet that the trade pair will increase, while a short positi
 12. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
 13. Each asset class has its own trading hours, and which order types are accepted and filled depends on the session. See [Market Hours and Order Types](#market-hours-and-order-types). Market orders sent while their market is closed are rejected.
 14. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
-15. There is a 5-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
+15. There is a 15-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
 16. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
 
 ## Market Hours and Order Types
