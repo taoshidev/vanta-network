@@ -3,8 +3,8 @@ Open trigger orders: in memory, on disk, and copied onto their bound position.
 
 Every change to the set of open orders goes through this class, so memory, disk and the position
 copy can't drift apart. Only open orders are held in memory. Fired orders are dropped (the fill
-lives on the Position), along with the rest of their oco_group; cancelled orders are written to
-closed/. A bound oco_group is copied onto its position as one legacy bracket, keyed by the group.
+lives on the Position), along with the rest of their oco_group if they have one; cancelled orders
+are written to closed/. Each bound order is copied onto its position as a legacy bracket.
 
 Disk layout: {miner_dir}{hotkey}/trigger_orders/{trade_pair_id}/{open|closed}/{order_uuid}
 """
@@ -14,7 +14,7 @@ import threading
 
 from shared_objects.log import logger
 from vali_objects.enums.order_source_enum import OrderSource
-from vali_objects.utils.trigger_order.legacy_converter import legacy_uuid, to_bracket_dict
+from vali_objects.utils.trigger_order.legacy_converter import to_bracket_dict
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.trigger_order import TriggerOrder
@@ -108,13 +108,17 @@ class TriggerOrderStore:
     def fire(self, order: TriggerOrder, children: list[TriggerOrder], fired_ms: int) -> None:
         """Close a fired order, drop the rest of its oco_group, and open its children in one step."""
         with self.lock(order.miner_hotkey, order.trade_pair):
-            siblings = [o for o in self._group(order) if o.order_uuid != order.order_uuid]
+            siblings = [
+                o for o in self.select(hotkey=order.miner_hotkey, trade_pair=order.trade_pair)
+                if order.oco_group and o.oco_group == order.oco_group and o.order_uuid != order.order_uuid
+            ]
             if self._pop(order) is None:
                 raise KeyError(f"Trigger order [{order.order_uuid}] is no longer open")
             order.closed_ms = fired_ms
+            self._sync_position(order)
             for sibling in siblings:
                 self._pop(sibling)
-            self._sync_position(order)
+                self._sync_position(sibling)
             if siblings:
                 logger.info(f"[TRIGGER] [{order.order_uuid}] fired, dropped oco_group {order.oco_group} {[o.order_uuid for o in siblings]}")
             for child in children:
@@ -154,14 +158,7 @@ class TriggerOrderStore:
 
     def copy_all_to_positions(self) -> int:
         """Re-copy every bound order onto its position, e.g. once the position server is up."""
-        copied = 0
-        seen = set()
-        for order in self.select():
-            key = (order.miner_hotkey, legacy_uuid(order))
-            if order.position_uuid and key not in seen:
-                seen.add(key)
-                copied += self._sync_position(order)
-        return copied
+        return sum(self._sync_position(order) for order in self.select() if order.position_uuid)
 
     # ==================== Internals ====================
 
@@ -181,27 +178,17 @@ class TriggerOrderStore:
         self._delete(order, "open")
         return popped
 
-    def _group(self, order: TriggerOrder) -> list[TriggerOrder]:
-        """The open orders sharing order's oco_group, or order alone (if open) when it has none."""
-        if order.oco_group is None:
-            return [o for o in [self.get(order.miner_hotkey, order.order_uuid)] if o]
-        return [
-            o for o in self.select(hotkey=order.miner_hotkey, trade_pair=order.trade_pair)
-            if o.oco_group == order.oco_group
-        ]
-
     def _sync_position(self, order: TriggerOrder) -> bool:
-        """Make the position copy for order's group match its open bound legs."""
+        """Attach order's copy to its bound position while it is open, remove it once it isn't."""
         if not order.position_uuid or not self._position_client:
             return False
         hotkey, trade_pair_id = order.miner_hotkey, order.trade_pair.trade_pair_id
-        legs = [o for o in self._group(order) if o.position_uuid]
         try:
-            if legs:
-                return self._position_client.attach_bracket_order_to_position(hotkey, trade_pair_id, to_bracket_dict(legs))
-            self._position_client.remove_bracket_order_from_position(hotkey, trade_pair_id, legacy_uuid(order))
+            if self.get(hotkey, order.order_uuid):
+                return self._position_client.attach_bracket_order_to_position(hotkey, trade_pair_id, to_bracket_dict(order))
+            self._position_client.remove_bracket_order_from_position(hotkey, trade_pair_id, order.order_uuid)
         except Exception as e:
-            logger.error(f"[TRIGGER] Error syncing [{legacy_uuid(order)}] to position: {e}")
+            logger.error(f"[TRIGGER] Error syncing [{order.order_uuid}] to position: {e}")
         return False
 
     def _dir(self, hotkey: str, trade_pair_id: str, status: str) -> str:

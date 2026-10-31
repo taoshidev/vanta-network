@@ -213,7 +213,7 @@ class OrderProcessor:
 
             if created_order and (updated_position and not updated_position.is_closed_position) and signal.bracket_orders:
                 created_order.bracket_orders = signal.bracket_orders
-                self.limit_order_client.create_sltp_order(hotkey, created_order)
+                self.limit_order_client.process_limit_order(hotkey, created_order)
         except Exception as e:
             logger.error(
                 f"[ORDER_PROCESSOR] {hotkey} {order_uuid} order COMMITTED but post-commit "

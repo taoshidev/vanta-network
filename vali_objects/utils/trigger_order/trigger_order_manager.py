@@ -13,8 +13,10 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.limit_order.order_utils import OrderSize
 from vali_objects.utils.trigger_order import trigger_engine
+from vali_objects.utils.trigger_order.legacy_converter import signal_to_trigger_orders
 from vali_objects.utils.trigger_order.trigger_order_store import TriggerOrderStore
 from vali_objects.vali_config import RPCConnectionMode, TradePair, ValiConfig
+from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import NASDAQ_BASIC_TRADE_SOURCE
 from vali_objects.vali_dataclasses.trigger_order import (
     FixedTrigger,
@@ -44,8 +46,7 @@ POSITION_COPY_INTERVAL_MS = 60 * 1000  # how often a moving trailing stop is re-
 
 
 class TriggerOrderManager:
-    def __init__(self, store: TriggerOrderStore | None = None, running_unit_tests=False,
-                 connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
+    def __init__(self, running_unit_tests=False, connection_mode: RPCConnectionMode = RPCConnectionMode.RPC):
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         from vali_objects.position_management.position_manager_client import PositionManagerClient
         from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
@@ -53,18 +54,40 @@ class TriggerOrderManager:
 
         self._market_order_client = MarketOrderClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
         self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
-        self._position_client = PositionManagerClient(
-            port=ValiConfig.RPC_POSITIONMANAGER_PORT, connect_immediately=False, connection_mode=connection_mode
-        )
+        self._position_client = PositionManagerClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
         self._miner_account_client = MinerAccountClient(running_unit_tests=running_unit_tests, connection_mode=connection_mode)
 
-        self.store = store or TriggerOrderStore(running_unit_tests, position_client=self._position_client)
+        self.store = TriggerOrderStore(running_unit_tests, position_client=self._position_client)
         self._last_fill_ms: dict[tuple[str, str], int] = {}  # (hotkey, trade_pair_id) -> last fill
         self._last_copy_ms: dict[str, int] = {}              # order_uuid -> last position copy
         self._needs_position_copy = True                     # re-copy bound orders on the first tick
         self._closed: dict[str, dict[str, None]] = {}        # hotkey -> uuids closed since get_dashboard read them (ordered set)
 
     # ==================== Placement ====================
+
+    def place_legacy(self, hotkey: str, order: Order, is_edit: bool = False) -> dict:
+        """
+        Place (or, with is_edit, replace) a legacy LIMIT, STOP_LIMIT or BRACKET order, or the
+        bracket_orders of a filled MARKET order on the position it opened.
+        """
+        position_type = None
+        if order.execution_type in (ExecutionType.BRACKET, ExecutionType.MARKET):
+            position = self._open_position(hotkey, order.trade_pair)
+            if position is None:
+                raise SignalException(f"{order.execution_type.name} order brackets need an open position")
+            position_type = position.position_type
+        try:
+            orders = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms, position_type)
+        except ValueError as e:
+            raise SignalException(str(e))
+        if is_edit and len(orders) > 1:
+            raise SignalException(
+                f"Cannot edit [{order.order_uuid}]: an edit changes one bracket leg, set only one of "
+                f"stop_loss, take_profit or trailing_stop"
+            )
+
+        (self.replace if is_edit else self.place)(*orders)
+        return {"status": "success", "order_uuid": order.order_uuid}
 
     def place(self, *orders: TriggerOrder) -> None:
         """Open orders together, all or none. Re-placing orders that are all open is a no-op (a retry)."""
@@ -78,35 +101,47 @@ class TriggerOrderManager:
                 raise SignalException(
                     f"miner has too many unfilled limit orders [{open_count}] >= [{ValiConfig.MAX_UNFILLED_LIMIT_ORDERS}]"
                 )
-            self._commit(orders)
 
-    def replace(self, uuid: str, *orders: TriggerOrder) -> None:
-        """Swap the open order or oco_group named uuid for orders, all or none."""
+            position = self._open_position(hotkey, trade_pair)
+            for order in orders:
+                self._validate(order, position)
+            for order in orders:
+                self.store.add(order)
+
+        logger.info(
+            f"[TRIGGER] Placed {orders[0].execution_type.name} {[o.order_uuid for o in orders]} "
+            f"{trade_pair.trade_pair_id} for [{hotkey}]"
+        )
+
+    def replace(self, *orders: TriggerOrder) -> None:
+        """
+        Swap the open orders with these orders' uuids for them, all or none. The old orders are
+        dropped without a cancel record (an edit, not a cancel).
+        """
         hotkey, trade_pair = _shared_key(orders)
         with self.store.lock(hotkey, trade_pair):
-            old = [o for o in self.store.select(hotkey=hotkey) if o.order_uuid == uuid or o.oco_group == uuid]
-            if not old:
-                raise SignalException(f"Cannot modify [{uuid}]: no open trigger order")
+            old = [self.store.get(hotkey, o.order_uuid) for o in orders]
+            missing = [o.order_uuid for o, existing in zip(orders, old) if existing is None]
+            if missing:
+                raise SignalException(f"Cannot modify {missing}: no open trigger order")
             if any(o.trade_pair != trade_pair for o in old):
-                raise SignalException(f"Cannot modify [{uuid}]: trade pair does not match")
-            self._commit(orders, old)
+                raise SignalException(f"Cannot modify {[o.order_uuid for o in orders]}: trade pair does not match")
 
-    def _commit(self, orders, old=()) -> None:
-        """Validate every new order, then swap old (dropped without a cancel record) for orders."""
-        hotkey, trade_pair = orders[0].miner_hotkey, orders[0].trade_pair
-        position = self._open_position(hotkey, trade_pair)
-        for order in orders:
-            self._validate(order, position)
-        for order in old:
-            self.store.discard(hotkey, order.order_uuid)
-        for order in orders:
-            self.store.add(order)
+            position = self._open_position(hotkey, trade_pair)
+            for order in orders:
+                self._validate(order, position)
+            for order in old:
+                self.store.discard(hotkey, order.order_uuid)
+            for order in orders:
+                self.store.add(order)
+
         logger.info(
-            f"[TRIGGER] {'Replaced' if old else 'Placed'} {orders[0].execution_type.name} "
+            f"[TRIGGER] Replaced {[o.order_uuid for o in old]} with {orders[0].execution_type.name} "
             f"{[o.order_uuid for o in orders]} {trade_pair.trade_pair_id} for [{hotkey}]"
         )
 
     def _validate(self, order: TriggerOrder, position) -> None:
+        """Bind to the position if needed, seed an unset trailing trigger, and reject if already crossed."""
         if self._is_entry(order, position) and self._is_transitioning_to_pro(order.miner_hotkey):
             raise SignalException(PRO_TRANSITION_REJECTION)
 
@@ -120,12 +155,6 @@ class TriggerOrderManager:
                 )
             order.position_uuid = position.position_uuid
 
-        self._reject_if_crossed(order)
-        parent_price = order.trigger.price if isinstance(order.trigger, FixedTrigger) else None
-        self._validate_children(order, parent_price)
-
-    def _reject_if_crossed(self, order: TriggerOrder) -> None:
-        """Seed an unset trailing trigger, then reject if the trigger is already crossed."""
         trade_pair = order.trade_pair
         price_sources = None
         if self._is_trading(trade_pair, order.processed_ms):
@@ -145,6 +174,8 @@ class TriggerOrderManager:
                 f"{order.execution_type.name} order for {trade_pair.trade_pair_id} rejected: trigger price "
                 f"{trigger.price} is already crossed. Submit a MARKET order to fill now, or adjust the trigger."
             )
+
+        self._validate_children(order, trigger.price if isinstance(trigger, FixedTrigger) else None)
 
     def _validate_children(self, action: TriggerAction, parent_price: float | None) -> None:
         """reduce_only children (SL/TP) must not already be crossed at the parent's trigger price."""
@@ -188,7 +219,7 @@ class TriggerOrderManager:
         for order in orders:
             if self.store.remove(hotkey, order.order_uuid, now_ms, reason or CANCEL_REASON[order.execution_type]):
                 self._last_copy_ms.pop(order.order_uuid, None)
-                self._closed.setdefault(hotkey, {})[order.oco_group or order.order_uuid] = None
+                self._closed.setdefault(hotkey, {})[order.order_uuid] = None
                 cancelled.append(order.order_uuid)
         return cancelled
 
@@ -231,49 +262,42 @@ class TriggerOrderManager:
                 continue
 
             for hotkey in self.store.hotkeys(trade_pair):
-                c, f = self._tick_hotkey(hotkey, trade_pair, price_sources, now_ms)
-                checked += c
-                fired += f
+                last_fill_ms = self._last_fill_ms.get((hotkey, trade_pair.trade_pair_id), 0)
+                fill_allowed = now_ms - last_fill_ms >= ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS
+
+                with self.store.lock(hotkey, trade_pair):
+                    position = self._open_position(hotkey, trade_pair)
+                    for order in self.store.select(hotkey=hotkey, trade_pair=trade_pair):
+                        checked += 1
+                        if order.bind_to_position and order.position_uuid is None:
+                            # Synced or migrated orders bind to the position open when they were placed
+                            if position is None or position.open_ms > order.processed_ms:
+                                self.cancel(hotkey, now_ms, order_uuid=order.order_uuid)
+                                continue
+                            order.position_uuid = position.position_uuid
+                            self.store.replace(order)
+                        if order.position_uuid and not self._still_bound(order, position):
+                            self.cancel(hotkey, now_ms, order_uuid=order.order_uuid)
+                            continue
+
+                        # Trailing stops track the window even when no fill is allowed this tick
+                        if trigger_engine.update_trailing(order.trigger, price_sources, order.processed_ms):
+                            copy = now_ms - self._last_copy_ms.get(order.order_uuid, 0) >= POSITION_COPY_INTERVAL_MS
+                            self.store.replace(order, copy_to_position=copy)
+                            if copy:
+                                self._last_copy_ms[order.order_uuid] = now_ms
+
+                        if not fill_allowed:
+                            continue
+
+                        fire = trigger_engine.evaluate(order.trigger, price_sources, max(order.processed_ms, last_fill_ms))
+                        if fire and self._fire(order, fire, position):
+                            fired += 1
+                            break  # one fill per hotkey per trade pair per tick
 
         if fired:
             logger.info(f"[TRIGGER] Tick checked={checked} fired={fired}")
         return {"checked": checked, "fired": fired, "timestamp_ms": now_ms}
-
-    def _tick_hotkey(self, hotkey, trade_pair, price_sources, now_ms) -> tuple[int, int]:
-        key = (hotkey, trade_pair.trade_pair_id)
-        last_fill_ms = self._last_fill_ms.get(key, 0)
-        fill_allowed = now_ms - last_fill_ms >= ValiConfig.LIMIT_ORDER_FILL_INTERVAL_MS
-        checked = 0
-
-        with self.store.lock(hotkey, trade_pair):
-            position = self._open_position(hotkey, trade_pair)
-            for order in self.store.select(hotkey=hotkey, trade_pair=trade_pair):
-                checked += 1
-                if order.bind_to_position and order.position_uuid is None:
-                    # Synced or migrated orders bind to the position open when they were placed
-                    if position is None or position.open_ms > order.processed_ms:
-                        self.cancel(hotkey, now_ms, order_uuid=order.order_uuid)
-                        continue
-                    order.position_uuid = position.position_uuid
-                    self.store.replace(order)
-                if order.position_uuid and not self._still_bound(order, position):
-                    self.cancel(hotkey, now_ms, order_uuid=order.order_uuid)
-                    continue
-
-                # Trailing stops track the window even when no fill is allowed this tick
-                if trigger_engine.update_trailing(order.trigger, price_sources, order.processed_ms):
-                    copy = now_ms - self._last_copy_ms.get(order.order_uuid, 0) >= POSITION_COPY_INTERVAL_MS
-                    self.store.replace(order, copy_to_position=copy)
-                    if copy:
-                        self._last_copy_ms[order.order_uuid] = now_ms
-
-                if not fill_allowed:
-                    continue
-
-                fire = trigger_engine.evaluate(order.trigger, price_sources, max(order.processed_ms, last_fill_ms))
-                if fire and self._fire(order, fire, position):
-                    return checked, 1
-        return checked, 0
 
     def _fire(self, order: TriggerOrder, fire: trigger_engine.Fire, position) -> bool:
         """Fill the order (if it has a fill), then close it and open its children."""
@@ -317,7 +341,7 @@ class TriggerOrderManager:
             logger.info(f"[TRIGGER] [{order.order_uuid}] left no open position, dropping bound children {dropped}")
         self.store.fire(order, [c for c in children if c.order_uuid not in dropped], fire_ms)
         self._last_copy_ms.pop(order.order_uuid, None)
-        self._closed.setdefault(hotkey, {})[order.oco_group or order.order_uuid] = None
+        self._closed.setdefault(hotkey, {})[order.order_uuid] = None
 
         logger.info(
             f"[TRIGGER] Fired {order.execution_type.name} [{order.order_uuid}] {order.trade_pair.trade_pair_id} "

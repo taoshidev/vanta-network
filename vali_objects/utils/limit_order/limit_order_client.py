@@ -1,6 +1,7 @@
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_dataclasses.trigger_order import TriggerOrder
 
 
 class LimitOrderClient(RPCClientBase):
@@ -85,7 +86,7 @@ class LimitOrderClient(RPCClientBase):
             SignalException: Order not found (pickled from server)
             Exception: RPC or server errors
         """
-        return self._server.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
+        return self._server.cancel_limit_order_rpc(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
 
     def cancel_entry_orders(self, miner_hotkey: str, now_ms: int, order_src=None) -> dict:
         """
@@ -100,7 +101,7 @@ class LimitOrderClient(RPCClientBase):
         Returns:
             dict with cancellation details
         """
-        return self._server.cancel_entry_orders(miner_hotkey, now_ms, order_src)
+        return self._server.cancel_entry_orders_rpc(miner_hotkey, now_ms, order_src)
 
     # ==================== Query Methods ====================
 
@@ -225,14 +226,6 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.check_and_fill_limit_orders_rpc(call_id)
 
-    def get_limit_orders_dict(self) -> dict:
-        """
-        Get internal _limit_orders dict for test verification via RPC.
-
-        Returns: Dict[str, Dict[str, List[dict]]] - trade_pair_id -> hotkey -> [order_dicts]
-        """
-        return self._server.get_limit_orders_dict_rpc()
-
     def set_limit_orders_dict(self, orders_dict: dict) -> None:
         """
         Set internal _limit_orders dict for testing via RPC.
@@ -286,20 +279,12 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.get_position_for_rpc(hotkey, order)
 
-    def create_sltp_order(self, miner_hotkey: str, parent_order):
+    def place(self, *orders: TriggerOrder) -> None:
         """
-        Create SL/TP bracket order from a filled market order via RPC.
+        Open trigger orders together, all or none, via RPC.
 
-        Called by OrderProcessor after a market order with stop_loss/take_profit
-        fields is successfully filled. Creates a bracket order that will trigger
-        when price hits SL or TP levels.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-            parent_order: Parent order object - the filled market order with SL/TP fields
-
-        Returns:
-            None
+        Raises:
+            SignalException: Validation errors (pickled from server)
         """
-        return self._server.create_sltp_order_rpc(miner_hotkey, parent_order)
+        return self._server.place_rpc(orders)
 
