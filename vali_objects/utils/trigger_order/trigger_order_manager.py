@@ -109,7 +109,7 @@ class TriggerOrderManager:
                 self.store.add(order)
 
         logger.info(
-            f"[TRIGGER] Placed {orders[0].execution_type.name} {[o.order_uuid for o in orders]} "
+            f"[TRIGGER] Placed {orders[0].execution_type.name} {[_describe(o) for o in orders]} "
             f"{trade_pair.trade_pair_id} for [{hotkey}]"
         )
 
@@ -136,8 +136,8 @@ class TriggerOrderManager:
                 self.store.add(order)
 
         logger.info(
-            f"[TRIGGER] Replaced {[o.order_uuid for o in old]} with {orders[0].execution_type.name} "
-            f"{[o.order_uuid for o in orders]} {trade_pair.trade_pair_id} for [{hotkey}]"
+            f"[TRIGGER] Replaced {[_describe(o) for o in old]} with {orders[0].execution_type.name} "
+            f"{[_describe(o) for o in orders]} {trade_pair.trade_pair_id} for [{hotkey}]"
         )
 
     def _validate(self, order: TriggerOrder, position) -> None:
@@ -276,6 +276,7 @@ class TriggerOrderManager:
                                 continue
                             order.position_uuid = position.position_uuid
                             self.store.replace(order)
+                            logger.info(f"[TRIGGER] Bound [{order.order_uuid}] to position [{position.position_uuid}] for [{hotkey}]")
                         if order.position_uuid and not self._still_bound(order, position):
                             self.cancel(hotkey, now_ms, order_uuid=order.order_uuid)
                             continue
@@ -343,9 +344,12 @@ class TriggerOrderManager:
         self._last_copy_ms.pop(order.order_uuid, None)
         self._closed.setdefault(hotkey, {})[order.order_uuid] = None
 
+        placed = [_describe(c) for c in children if c.order_uuid not in dropped]
         logger.info(
-            f"[TRIGGER] Fired {order.execution_type.name} [{order.order_uuid}] {order.trade_pair.trade_pair_id} "
+            f"[TRIGGER] Fired {order.execution_type.name} {_describe(order)} {order.trade_pair.trade_pair_id} "
             f"for [{hotkey}] at trigger {fire.trigger_price}"
+            + (f", filled {action.order_type.name} at {fill_price}" if action else "")
+            + (f", placed children {placed}" if placed else "")
         )
         return True
 
@@ -382,6 +386,13 @@ class TriggerOrderManager:
     def _is_transitioning_to_pro(self, hotkey: str) -> bool:
         account = self._miner_account_client.get_account(hotkey)
         return account is not None and account.miner_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+
+
+def _describe(order: TriggerOrder) -> str:
+    """[uuid] direction trigger price, for logs."""
+    trigger = order.trigger
+    price = trigger.price if isinstance(trigger, FixedTrigger) or trigger.best_price is not None else None
+    return f"[{order.order_uuid}] {trigger.price_field.name} {trigger.direction.name} {price}"
 
 
 def _shared_key(orders) -> tuple[str, TradePair]:

@@ -7,6 +7,7 @@ Runs in its own process; clients connect with LimitOrderClient. Orders are held 
 (vali_objects/utils/trigger_order); this server converts the legacy Order shapes the API and
 callers use in both directions, so the RPC surface is unchanged.
 """
+from shared_objects.log import logger
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.enums.order_source_enum import OrderSource
@@ -119,6 +120,8 @@ class LimitOrderServer(RPCServerBase):
         orders = self._manager.select(hotkey=miner_hotkey)
         for o in orders:
             self._manager.store.discard(miner_hotkey, o.order_uuid)
+        if orders:
+            logger.info(f"[TRIGGER] Deleted {[o.order_uuid for o in orders]} for [{miner_hotkey}]")
         return len(orders)
 
     def restore_cancelled_limit_orders_rpc(self, miner_hotkey: str) -> int:
@@ -189,7 +192,8 @@ class LimitOrderServer(RPCServerBase):
 
     def sync_limit_orders_rpc(self, sync_data):
         """Load a checkpoint's legacy orders: {trade_pair_id: {hotkey: [order dicts]}}."""
-        sync_legacy_orders(self._manager.store, sync_data)
+        synced = sync_legacy_orders(self._manager.store, sync_data)
+        logger.info(f"[TRIGGER] Synced {synced} orders from checkpoint")
 
     # ==================== Helpers ====================
 

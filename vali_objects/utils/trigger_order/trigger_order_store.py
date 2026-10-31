@@ -137,6 +137,8 @@ class TriggerOrderStore:
                 order.close_reason = None
                 if self.add(order):
                     reopened += 1
+        if reopened:
+            logger.info(f"[TRIGGER] Reopened {reopened} orders cancelled by {reason.name} for [{hotkey}]")
         return reopened
 
     def load(self, orders: list[TriggerOrder]) -> None:

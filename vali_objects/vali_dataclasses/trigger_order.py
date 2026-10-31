@@ -67,7 +67,10 @@ class TrailingTrigger(BaseModel):
         sign = 1 if self.direction == StopCondition.GTE else -1
         if self.trailing_pct is not None:
             return self.best_price * (1 + sign * self.trailing_pct)
-        return self.best_price + sign * self.trailing_val
+        if self.trailing_val is not None:
+            return self.best_price + sign * self.trailing_val
+
+        raise ValueError("TrailingTrigger requires exactly one of trailing_pct or trailing_val")
 
     def update_best_price(self, observed: float) -> None:
         if self.best_price is None:
