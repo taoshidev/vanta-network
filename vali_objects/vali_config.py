@@ -338,7 +338,7 @@ class ValiConfig:
     MAX_TOTAL_DRAWDOWN = 0.9  # Portfolio should never fall below .90 x of initial value when measured at any instant
     MAX_TOTAL_DRAWDOWN_V2 = 0.95
     MAX_ORDERS_PER_POSITION = 1000 # High value that realistically should never be reached
-    ORDER_COOLDOWN_MS = 15000  # 15 seconds
+    ORDER_COOLDOWN_MS = 60000  # 60 seconds
     # Cross-process order/sync coordination (spec R2.4): an in-flight order registration on
     # CommonDataServer older than this is treated as abandoned (the producer — e.g. vanta-orders —
     # crashed mid-order) and reaped, so it can't block position sync forever. Must comfortably
@@ -370,7 +370,7 @@ class ValiConfig:
     # longer than this is presumed abandoned (holder crashed between acquire and release) and
     # force-reclaimed on the next acquire. Must sit FAR above the worst LEGITIMATE hold — which is
     # minutes, not seconds: mdd_checker._refresh_position_prices holds this exact lock while making
-    # one historical Polygon REST call per recent order (5-min window, ~15s order cadence => dozens
+    # one historical Polygon REST call per recent order (5-min window, orders every 10-60s => up to dozens
     # of calls at 1-3s+ each under normal latency, worse when rate-limited). Reclaiming a live
     # holder puts two writers on one position. Releases are owner-token-checked (see
     # PositionLockServer), so a reclaimed holder's late release can no longer free the reclaimer's
