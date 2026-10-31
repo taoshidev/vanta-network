@@ -2,14 +2,16 @@
 Converts between the legacy API shapes (Signal / Order with LIMIT, STOP_LIMIT, BRACKET) and
 TriggerOrders, so the API keeps its request and response format.
 
-  to trigger: signal_to_trigger_orders, bracket_to_trigger_orders, legacy_order_to_trigger_orders
+  to trigger: signal_to_trigger_orders, bracket_to_trigger_orders
   to legacy:  to_legacy_orders (Orders for to_python_dict / to_dashboard), to_bracket_dict
   stored:     sync_legacy_orders (checkpoints), migrate_legacy_disk (limit_orders/ on disk)
 
 Raises ValueError for requests the legacy manager rejected.
 
-uuids match today's: a LIMIT's brackets are groups "{uuid}-bracket-{i}", a STOP_LIMIT's limit is
-"{uuid}-limit", and each bracket leg is "{group}-sl" / "-tp" / "-trail" in oco_group=group.
+uuids: a LIMIT's brackets are "{uuid}-bracket-{i}", a STOP_LIMIT's limit is "{uuid}-limit". Each
+bracket leg (SL, trailing SL, TP) is its own order bound to the position: a bracket with one leg
+keeps its uuid, one with several names them "{uuid}-sl" / "-trail" / "-tp". Each leg is a separate
+BRACKET in the legacy API.
 """
 import os
 
@@ -43,12 +45,23 @@ UNFILLED_SOURCE = {
 def signal_to_trigger_orders(hotkey: str, signal: Signal, order_uuid: str, now_ms: int,
                              position_type: OrderType | None = None) -> list[TriggerOrder]:
     """
-    A LIMIT, STOP_LIMIT or BRACKET signal as the trigger orders to place. LIMIT and STOP_LIMIT
-    give one order (brackets become children); a BRACKET gives its legs, which need the open
-    position's side as position_type.
+    A LIMIT, STOP_LIMIT or BRACKET signal, or a filled MARKET order's bracket_orders, as the trigger
+    orders to place. LIMIT and STOP_LIMIT give one order (brackets become children); a BRACKET or
+    MARKET gives bracket legs, which need the open position's side as position_type.
     """
     execution_type = signal.execution_type
-    if execution_type == ExecutionType.LIMIT:
+    best_price = None
+    if execution_type == ExecutionType.MARKET:
+        # Brackets attached to a filled MARKET order; trailing stops start at the fill price
+        if position_type not in (OrderType.LONG, OrderType.SHORT):
+            raise ValueError("MARKET order brackets need the open position's side")
+        actions = [
+            leg
+            for i, bracket in enumerate(signal.bracket_orders or [])
+            for leg in _bracket_legs(bracket, position_type, f"{order_uuid}-bracket-{i}")
+        ]
+        best_price = signal.price
+    elif execution_type == ExecutionType.LIMIT:
         actions = [_limit_action(signal, order_uuid)]
     elif execution_type == ExecutionType.STOP_LIMIT:
         if signal.order_type == OrderType.LONG and signal.limit_price < signal.stop_price:
@@ -73,30 +86,10 @@ def signal_to_trigger_orders(hotkey: str, signal: Signal, order_uuid: str, now_m
         actions = _bracket_legs(bracket, position_type, order_uuid)
     else:
         raise ValueError(f"{execution_type} is not a trigger order")
-    return [_to_order(action, hotkey, signal.trade_pair, now_ms) for action in actions]
+    return [_to_order(action, hotkey, signal.trade_pair, now_ms, best_price) for action in actions]
 
 
-def legacy_order_to_trigger_orders(hotkey: str, order: Order) -> list[TriggerOrder]:
-    """
-    A stored legacy Order (disk or checkpoint) as trigger orders. A BRACKET's order_type is its
-    position's side; its legs bind to that position on the next tick. Cancelled orders keep src
-    as their close reason.
-    """
-    if order.execution_type == ExecutionType.BRACKET:
-        orders = bracket_to_trigger_orders(
-            hotkey, order.trade_pair, _bracket_fields(order), order.order_uuid, order.order_type,
-            order.processed_ms, best_price=order.price or None,
-        )
-    else:
-        orders = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms)
-    if OrderSource.is_cancelled(order.src):
-        for o in orders:
-            o.close_reason = OrderSource(order.src)
-            o.closed_ms = order.processed_ms
-    return orders
-
-
-def bracket_to_trigger_orders(hotkey: str, trade_pair: TradePair, bracket: dict, group: str,
+def bracket_to_trigger_orders(hotkey: str, trade_pair: TradePair, bracket: dict, order_uuid: str,
                               position_type: OrderType, now_ms: int,
                               best_price: float | None = None) -> list[TriggerOrder]:
     """
@@ -105,7 +98,7 @@ def bracket_to_trigger_orders(hotkey: str, trade_pair: TradePair, bracket: dict,
     """
     return [
         _to_order(leg, hotkey, trade_pair, now_ms, best_price)
-        for leg in _bracket_legs(bracket, position_type, group)
+        for leg in _bracket_legs(bracket, position_type, order_uuid)
     ]
 
 
@@ -150,7 +143,7 @@ def _bracket_fields(signal: Signal) -> dict:
     return {k: v for k, v in fields.items() if v is not None}
 
 
-def _bracket_legs(bracket: dict, position_type: OrderType, group: str) -> list[TriggerAction]:
+def _bracket_legs(bracket: dict, position_type: OrderType, order_uuid: str) -> list[TriggerAction]:
     """SL, trailing SL and TP legs of one bracket, protecting a position_type position."""
     long = position_type == OrderType.LONG
     side = PriceField.BID if long else PriceField.ASK
@@ -166,10 +159,26 @@ def _bracket_legs(bracket: dict, position_type: OrderType, group: str) -> list[T
     if size == OrderSize():
         size = OrderSize(bracket_pct=1.0)  # no size closes the whole position, as today
 
-    def leg(suffix, trigger, is_maker=False):
-        return TriggerAction(
+    specs = []  # (suffix, trigger, is_maker)
+    if bracket.get('stop_loss') is not None:
+        specs.append(("sl", FixedTrigger(price=float(bracket['stop_loss']), direction=stop, price_field=side), False))
+    if bracket.get('trailing_percent') is not None or bracket.get('trailing_value') is not None:
+        specs.append(("trail", TrailingTrigger(
+            direction=stop, price_field=side,
+            trailing_pct=_float(bracket.get('trailing_percent')),
+            trailing_val=_float(bracket.get('trailing_value')),
+        ), False))
+    if bracket.get('take_profit') is not None:
+        specs.append(("tp", FixedTrigger(price=float(bracket['take_profit']), direction=take, price_field=side), True))
+    if not specs:
+        raise ValueError("BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set")
+
+    # Each leg is independent and bound to the position; closing the position cancels the rest.
+    # A single leg keeps the bracket's uuid, several are named {uuid}-sl / -trail / -tp.
+    return [
+        TriggerAction(
             execution_type=ExecutionType.BRACKET,
-            order_uuid=f"{group}-{suffix}",
+            order_uuid=order_uuid if len(specs) == 1 else f"{order_uuid}-{suffix}",
             trigger=trigger,
             market_action=MarketAction(
                 order_type=OrderType.SHORT if long else OrderType.LONG,
@@ -178,23 +187,9 @@ def _bracket_legs(bracket: dict, position_type: OrderType, group: str) -> list[T
                 reduce_only=True,
             ),
             bind_to_position=True,
-            oco_group=group,
         )
-
-    legs = []
-    if bracket.get('stop_loss') is not None:
-        legs.append(leg("sl", FixedTrigger(price=float(bracket['stop_loss']), direction=stop, price_field=side)))
-    if bracket.get('trailing_percent') is not None or bracket.get('trailing_value') is not None:
-        legs.append(leg("trail", TrailingTrigger(
-            direction=stop, price_field=side,
-            trailing_pct=_float(bracket.get('trailing_percent')),
-            trailing_val=_float(bracket.get('trailing_value')),
-        )))
-    if bracket.get('take_profit') is not None:
-        legs.append(leg("tp", FixedTrigger(price=float(bracket['take_profit']), direction=take, price_field=side), is_maker=True))
-    if not legs:
-        raise ValueError("BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set")
-    return legs
+        for suffix, trigger, is_maker in specs
+    ]
 
 
 def _to_order(action: TriggerAction, hotkey: str, trade_pair: TradePair, now_ms: int,
@@ -250,12 +245,30 @@ def migrate_legacy_disk(store, running_unit_tests=False) -> int:
 
 
 def _convert_dicts(hotkey: str, order_dicts: list[dict]) -> list[TriggerOrder]:
+    """
+    Stored legacy order dicts (disk or checkpoint) as trigger orders, skipping filled ones. A
+    BRACKET's order_type is its position's side; its legs bind to that position on the next tick.
+    Cancelled orders keep src as their close reason.
+    """
     orders = []
     for order_dict in order_dicts:
         try:
             order = Order.from_dict(order_dict)
-            if OrderSource.is_open(order.src) or OrderSource.is_cancelled(order.src):
-                orders.extend(legacy_order_to_trigger_orders(hotkey, order))
+            cancelled = OrderSource.is_cancelled(order.src)
+            if not (cancelled or OrderSource.is_open(order.src)):
+                continue
+            if order.execution_type == ExecutionType.BRACKET:
+                converted = bracket_to_trigger_orders(
+                    hotkey, order.trade_pair, _bracket_fields(order), order.order_uuid, order.order_type,
+                    order.processed_ms, best_price=order.price or None,
+                )
+            else:
+                converted = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms)
+            if cancelled:
+                for o in converted:
+                    o.close_reason = OrderSource(order.src)
+                    o.closed_ms = order.processed_ms
+            orders.extend(converted)
         except Exception as e:
             logger.error(f"[TRIGGER] Could not convert legacy order for {hotkey}: {e} | {order_dict}")
     return orders
@@ -265,19 +278,13 @@ def _convert_dicts(hotkey: str, order_dicts: list[dict]) -> list[TriggerOrder]:
 
 def to_legacy_orders(orders: list[TriggerOrder]) -> list[Order]:
     """
-    Legacy Orders for the API, oldest first: one per LIMIT / STOP_LIMIT, and one BRACKET per
-    oco_group. Cancelled orders keep their close reason as src and close time as processed_ms.
+    Legacy Orders for the API, oldest first: one per trigger order, each bracket leg as its own
+    BRACKET. Cancelled orders keep their close reason as src and close time as processed_ms.
     """
     legacy = []
-    seen_groups = set()
     for order in sorted(orders, key=lambda o: o.processed_ms):
         if order.execution_type == ExecutionType.BRACKET:
-            key = (order.close_reason, legacy_uuid(order))
-            if key in seen_groups:
-                continue
-            seen_groups.add(key)
-            legs = [o for o in orders if o.close_reason == order.close_reason and legacy_uuid(o) == legacy_uuid(order)]
-            legacy_order = Order.from_dict(to_bracket_dict(legs))
+            legacy_order = Order.from_dict(to_bracket_dict(order))
         else:
             legacy_order = _entry_to_order(order)
 
@@ -313,15 +320,12 @@ def _entry_to_order(order: TriggerOrder) -> Order:
 
 
 def _bracket_orders(legs: list[TriggerAction]) -> list[dict]:
-    """bracket_orders entries rebuilt from a LIMIT's leg templates, one per oco_group."""
-    groups: dict[str, list[TriggerAction]] = {}
-    for leg in legs:
-        groups.setdefault(leg.oco_group or leg.order_uuid, []).append(leg)
+    """bracket_orders entries rebuilt from a LIMIT's leg templates, one per leg."""
     entries = []
-    for group, group_legs in groups.items():
-        bracket = to_bracket_dict(group_legs)
+    for leg in legs:
+        bracket = to_bracket_dict(leg)
         entries.append({
-            'order_uuid': group,
+            'order_uuid': leg.order_uuid,
             'stop_loss': bracket['stop_loss'],
             'take_profit': bracket['take_profit'],
             **(bracket['trailing_stop'] or {}),
@@ -331,11 +335,6 @@ def _bracket_orders(legs: list[TriggerAction]) -> list[dict]:
             'bracket_pct': bracket['bracket_pct'],
         })
     return entries
-
-
-def legacy_uuid(order: TriggerAction) -> str:
-    """uuid of the legacy bracket an order belongs to: its oco_group, or itself."""
-    return order.oco_group or order.order_uuid
 
 
 def _leg(order: TriggerAction) -> tuple[OrderType, str]:
@@ -358,40 +357,31 @@ def _leg(order: TriggerAction) -> tuple[OrderType, str]:
     return (OrderType.LONG if trigger.direction == losing else OrderType.SHORT), kind
 
 
-def to_bracket_dict(legs: list[TriggerAction]) -> dict:
-    """
-    One legacy BRACKET Order dict merging the legs of an oco_group (SL, TP, trailing SL). Also
-    the copy kept on Position.unfilled_orders.
-    """
-    first = legs[0]
-    fields = {'stop': None, 'take': None, 'trail': None}
-    position_type = None
-    for leg in legs:
-        position_type, kind = _leg(leg)
-        fields[kind] = leg.trigger
-
-    trailing = fields['trail']
+def to_bracket_dict(leg: TriggerAction) -> dict:
+    """A bracket leg as a legacy BRACKET Order dict. Also the copy kept on Position.unfilled_orders."""
+    position_type, kind = _leg(leg)
+    trigger = leg.trigger
     trailing_stop = None
-    if trailing is not None:
+    if kind == 'trail':
         trailing_stop = (
-            {'trailing_percent': trailing.trailing_pct} if trailing.trailing_pct is not None
-            else {'trailing_value': trailing.trailing_val}
+            {'trailing_percent': trigger.trailing_pct} if trigger.trailing_pct is not None
+            else {'trailing_value': trigger.trailing_val}
         )
 
-    size = first.market_action.size
+    size = leg.market_action.size
     return {
-        'trade_pair_id': first.trade_pair.trade_pair_id if isinstance(first, TriggerOrder) else None,
-        'order_uuid': legacy_uuid(first),
-        'processed_ms': min(getattr(leg, 'processed_ms', 0) for leg in legs),
-        'price': (trailing.best_price or 0.0) if trailing is not None else 0.0,
+        'trade_pair_id': leg.trade_pair.trade_pair_id if isinstance(leg, TriggerOrder) else None,
+        'order_uuid': leg.order_uuid,
+        'processed_ms': getattr(leg, 'processed_ms', 0),
+        'price': (trigger.best_price or 0.0) if kind == 'trail' else 0.0,
         'order_type': position_type.value,
         'leverage': abs(size.leverage) if size.leverage is not None else None,
         'value': abs(size.value) if size.value is not None else None,
         'quantity': abs(size.quantity) if size.quantity is not None else None,
         'bracket_pct': size.bracket_pct,
         'execution_type': ExecutionType.BRACKET.value,
-        'stop_loss': fields['stop'].price if fields['stop'] is not None else None,
-        'take_profit': fields['take'].price if fields['take'] is not None else None,
+        'stop_loss': trigger.price if kind == 'stop' else None,
+        'take_profit': trigger.price if kind == 'take' else None,
         'trailing_stop': trailing_stop,
         'src': OrderSource.BRACKET_UNFILLED,
     }

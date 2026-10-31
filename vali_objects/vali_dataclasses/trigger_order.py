@@ -9,9 +9,10 @@ Replaces LIMIT / STOP_LIMIT / BRACKET internally (long side shown):
   BRACKET TP         -> trigger=BID GTE TP, fill=MARKET SHORT reduce_only bracket_pct is_maker
   LIMIT @ P + SL/TP  -> LIMIT @ P, children=[SL, TP] bound to the filled position
 
-The legs of one bracket (SL, TP, trailing SL) share an oco_group: when one fires the others are
-dropped. Bound orders are cancelled when their position closes or flips. execution_type keeps
-the API-facing type for backwards-compatible responses.
+The legs of one bracket (SL, TP, trailing SL) are independent orders bound to the position; they
+are cancelled when it closes or flips, so a full-size SL or TP firing cancels the rest. oco_group
+is set by the user: firing one order in the group drops the rest. execution_type keeps the
+API-facing type for backwards-compatible responses.
 """
 from enum import Enum
 from typing import Annotated, Literal
