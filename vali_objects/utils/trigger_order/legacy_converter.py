@@ -2,16 +2,23 @@
 Converts between the legacy API shapes (Signal / Order with LIMIT, STOP_LIMIT, BRACKET) and
 TriggerOrders, so the API keeps its request and response format.
 
-  to trigger: signal_to_trigger_orders, bracket_to_trigger_orders
+  to trigger: signal_to_trigger_orders, bracket_to_trigger_orders, legacy_order_to_trigger_orders
   to legacy:  to_legacy_orders (Orders for to_python_dict / to_dashboard), to_bracket_dict
+  stored:     sync_legacy_orders (checkpoints), migrate_legacy_disk (limit_orders/ on disk)
+
+Raises ValueError for requests the legacy manager rejected.
 
 uuids match today's: a LIMIT's brackets are groups "{uuid}-bracket-{i}", a STOP_LIMIT's limit is
 "{uuid}-limit", and each bracket leg is "{group}-sl" / "-tp" / "-trail" in oco_group=group.
 """
+import os
+
+from shared_objects.log import logger
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.enums.order_type_enum import OrderType, StopCondition
 from vali_objects.utils.limit_order.order_utils import OrderSize
+from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.order_signal import Signal
@@ -44,6 +51,14 @@ def signal_to_trigger_orders(hotkey: str, signal: Signal, order_uuid: str, now_m
     if execution_type == ExecutionType.LIMIT:
         actions = [_limit_action(signal, order_uuid)]
     elif execution_type == ExecutionType.STOP_LIMIT:
+        if signal.order_type == OrderType.LONG and signal.limit_price < signal.stop_price:
+            raise ValueError(
+                f"STOP_LIMIT LONG orders require limit_price ({signal.limit_price}) >= stop_price ({signal.stop_price})"
+            )
+        if signal.order_type == OrderType.SHORT and signal.limit_price > signal.stop_price:
+            raise ValueError(
+                f"STOP_LIMIT SHORT orders require limit_price ({signal.limit_price}) <= stop_price ({signal.stop_price})"
+            )
         actions = [TriggerAction(
             execution_type=ExecutionType.STOP_LIMIT,
             order_uuid=order_uuid,
@@ -61,6 +76,26 @@ def signal_to_trigger_orders(hotkey: str, signal: Signal, order_uuid: str, now_m
     return [_to_order(action, hotkey, signal.trade_pair, now_ms) for action in actions]
 
 
+def legacy_order_to_trigger_orders(hotkey: str, order: Order) -> list[TriggerOrder]:
+    """
+    A stored legacy Order (disk or checkpoint) as trigger orders. A BRACKET's order_type is its
+    position's side; its legs bind to that position on the next tick. Cancelled orders keep src
+    as their close reason.
+    """
+    if order.execution_type == ExecutionType.BRACKET:
+        orders = bracket_to_trigger_orders(
+            hotkey, order.trade_pair, _bracket_fields(order), order.order_uuid, order.order_type,
+            order.processed_ms, best_price=order.price or None,
+        )
+    else:
+        orders = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms)
+    if OrderSource.is_cancelled(order.src):
+        for o in orders:
+            o.close_reason = OrderSource(order.src)
+            o.closed_ms = order.processed_ms
+    return orders
+
+
 def bracket_to_trigger_orders(hotkey: str, trade_pair: TradePair, bracket: dict, group: str,
                               position_type: OrderType, now_ms: int,
                               best_price: float | None = None) -> list[TriggerOrder]:
@@ -75,6 +110,8 @@ def bracket_to_trigger_orders(hotkey: str, trade_pair: TradePair, bracket: dict,
 
 
 def _limit_action(signal: Signal, order_uuid: str) -> TriggerAction:
+    if signal.order_type not in (OrderType.LONG, OrderType.SHORT):
+        raise ValueError(f"{signal.order_type} order is not supported for LIMIT orders")
     long = signal.order_type == OrderType.LONG
     return TriggerAction(
         execution_type=ExecutionType.LIMIT,
@@ -155,6 +192,8 @@ def _bracket_legs(bracket: dict, position_type: OrderType, group: str) -> list[T
         )))
     if bracket.get('take_profit') is not None:
         legs.append(leg("tp", FixedTrigger(price=float(bracket['take_profit']), direction=take, price_field=side), is_maker=True))
+    if not legs:
+        raise ValueError("BRACKET orders must have at least one of stop_loss, take_profit, or trailing_stop set")
     return legs
 
 
@@ -172,6 +211,54 @@ def _to_order(action: TriggerAction, hotkey: str, trade_pair: TradePair, now_ms:
         trade_pair=trade_pair,
         processed_ms=now_ms,
     )
+
+
+# ==================== Stored legacy orders ====================
+
+def sync_legacy_orders(store, sync_data: dict) -> int:
+    """Load a checkpoint's {trade_pair_id: {hotkey: [legacy order dicts]}} into the store."""
+    orders = []
+    for hotkey_dict in (sync_data or {}).values():
+        for hotkey, order_dicts in (hotkey_dict or {}).items():
+            orders.extend(_convert_dicts(hotkey, order_dicts))
+    store.load(orders)
+    return len(orders)
+
+
+def migrate_legacy_disk(store, running_unit_tests=False) -> int:
+    """
+    Move orders saved by the legacy limit order manager ({hotkey}/limit_orders/) into the store.
+    Each migrated folder is renamed to limit_orders_migrated/ so it isn't read twice.
+    """
+    miner_dir = ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)
+    if not os.path.exists(miner_dir):
+        return 0
+    migrated = 0
+    for hotkey in ValiBkpUtils.get_directories_in_dir(miner_dir):
+        legacy_dir = f"{miner_dir}{hotkey}/limit_orders"
+        if not os.path.exists(legacy_dir):
+            continue
+        orders = []
+        for status in ("unfilled", "cancelled"):
+            orders.extend(_convert_dicts(hotkey, ValiBkpUtils.get_limit_orders(hotkey, status, running_unit_tests=running_unit_tests)))
+        store.load(orders)
+        os.rename(legacy_dir, f"{legacy_dir}_migrated")
+        migrated += len(orders)
+    if migrated:
+        logger.info(f"[TRIGGER] Migrated {migrated} legacy limit orders to trigger orders")
+    return migrated
+
+
+def _convert_dicts(hotkey: str, order_dicts: list[dict]) -> list[TriggerOrder]:
+    orders = []
+    for order_dict in order_dicts:
+        try:
+            order = Order.from_dict(order_dict)
+            if OrderSource.is_open(order.src) or OrderSource.is_cancelled(order.src):
+                orders.extend(legacy_order_to_trigger_orders(hotkey, order))
+        except Exception as e:
+            logger.error(f"[TRIGGER] Could not convert legacy order for {hotkey}: {e} | {order_dict}")
+    return orders
 
 
 # ==================== Trigger -> legacy ====================

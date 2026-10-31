@@ -21,7 +21,8 @@ from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.utils.elimination.elimination_manager import EliminationManager
-from vali_objects.utils.limit_order.limit_order_manager import LimitOrderManager
+from vali_objects.utils.trigger_order.legacy_converter import sync_legacy_orders
+from vali_objects.utils.trigger_order.trigger_order_store import TriggerOrderStore
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
@@ -192,7 +193,7 @@ def regenerate_miner_positions():
 
     limit_orders = data.get('limit_orders', {})
     logger.info(f"syncing limit orders for {len(limit_orders)} trade pairs")
-    LimitOrderManager(serve=False, **kwargs).sync_limit_orders(limit_orders)
+    sync_legacy_orders(TriggerOrderStore(running_unit_tests=RUNNING_UNIT_TESTS), limit_orders)
 
     entities = data.get('entities', {})
     logger.info(f"syncing {len(entities)} entity records")

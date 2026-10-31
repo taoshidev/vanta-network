@@ -261,26 +261,6 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.set_last_fill_time_rpc(trade_pair_id, hotkey, fill_time)
 
-    def fill_limit_order_with_price_source(self, miner_hotkey: str, order,
-                                          price_source, fill_price: float,
-                                          enforce_market_cooldown: bool = False):
-        """
-        Test filling a limit order with a specific price source via RPC.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-            order: Order object
-            price_source: PriceSource object
-            fill_price: Price to fill at
-            enforce_market_cooldown: Whether to enforce market cooldown
-
-        Returns:
-            Error message on failure, None on success
-        """
-        return self._server.fill_limit_order_with_price_source_rpc(
-            miner_hotkey, order, price_source, fill_price, enforce_market_cooldown
-        )
-
     def count_unfilled_orders_for_hotkey(self, miner_hotkey: str) -> int:
         """
         Count unfilled orders for a hotkey via RPC.
