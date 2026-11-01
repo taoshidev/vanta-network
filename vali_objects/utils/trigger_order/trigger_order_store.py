@@ -153,6 +153,19 @@ class TriggerOrderStore:
             with self.lock(order.miner_hotkey, order.trade_pair):
                 self._put(order)
 
+    def to_checkpoint(self) -> dict:
+        """Open orders as {hotkey: [TriggerOrder dicts]}, for the validator checkpoint."""
+        result = {}
+        for order in self.select():
+            result.setdefault(order.miner_hotkey, []).append(order.model_dump(mode="json"))
+        return result
+
+    def load_checkpoint(self, data: dict) -> int:
+        """Load a checkpoint's {hotkey: [TriggerOrder dicts]}. Returns the number loaded."""
+        orders = [TriggerOrder(**d) for order_dicts in (data or {}).values() for d in order_dicts]
+        self.load(orders)
+        return len(orders)
+
     def clear(self) -> None:
         """Drop everything from memory. Disk is untouched."""
         self._orders.clear()

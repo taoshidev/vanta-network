@@ -159,9 +159,9 @@ class ValidatorSyncBase():
             for hk in newly_eliminated:
                 self._perf_ledger_client.set_hotkey_to_invalidate(hk, 0)
 
-        limit_orders_data = candidate_data.get('limit_orders', {})
-        if limit_orders_data:
-            self._limit_order_client.sync_limit_orders(limit_orders_data)
+        trigger_orders_data = candidate_data.get('trigger_orders', {})
+        if trigger_orders_data:
+            self._limit_order_client.sync_checkpoint(trigger_orders_data)
 
         challengeperiod_data = candidate_data.get('challengeperiod', {})
         if challengeperiod_data and not shadow_mode:  # Only in autosync as of now.

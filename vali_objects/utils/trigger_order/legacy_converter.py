@@ -2,9 +2,9 @@
 Converts between the legacy API shapes (Signal / Order with LIMIT, STOP_LIMIT, BRACKET) and
 TriggerOrders, so the API keeps its request and response format.
 
-  to trigger: signal_to_trigger_orders, bracket_to_trigger_orders
-  to legacy:  to_legacy_orders (Orders for to_python_dict / to_dashboard), to_bracket_dict
-  stored:     sync_legacy_orders (checkpoints), migrate_legacy_disk (limit_orders/ on disk)
+  to trigger: signal_to_trigger_orders (order_processor, at the API entry point)
+  to legacy:  to_legacy_orders (Orders for API responses), to_bracket_dict (position copies)
+  stored:     migrate_legacy_disk (the legacy manager's limit_orders/ on disk)
 
 Raises ValueError for requests the legacy manager rejected.
 
@@ -87,19 +87,6 @@ def signal_to_trigger_orders(hotkey: str, signal: Signal, order_uuid: str, now_m
     else:
         raise ValueError(f"{execution_type} is not a trigger order")
     return [_to_order(action, hotkey, signal.trade_pair, now_ms, best_price) for action in actions]
-
-
-def bracket_to_trigger_orders(hotkey: str, trade_pair: TradePair, bracket: dict, order_uuid: str,
-                              position_type: OrderType, now_ms: int,
-                              best_price: float | None = None) -> list[TriggerOrder]:
-    """
-    One bracket dict (stop_loss / take_profit / trailing_* / size) as its legs on an open position.
-    Used for brackets attached to a MARKET order (best_price = fill price) and bulk bracket edits.
-    """
-    return [
-        _to_order(leg, hotkey, trade_pair, now_ms, best_price)
-        for leg in _bracket_legs(bracket, position_type, order_uuid)
-    ]
 
 
 def _limit_action(signal: Signal, order_uuid: str) -> TriggerAction:
@@ -210,16 +197,6 @@ def _to_order(action: TriggerAction, hotkey: str, trade_pair: TradePair, now_ms:
 
 # ==================== Stored legacy orders ====================
 
-def sync_legacy_orders(store, sync_data: dict) -> int:
-    """Load a checkpoint's {trade_pair_id: {hotkey: [legacy order dicts]}} into the store."""
-    orders = []
-    for hotkey_dict in (sync_data or {}).values():
-        for hotkey, order_dicts in (hotkey_dict or {}).items():
-            orders.extend(_convert_dicts(hotkey, order_dicts))
-    store.load(orders)
-    return len(orders)
-
-
 def migrate_legacy_disk(store, running_unit_tests=False) -> int:
     """
     Move orders saved by the legacy limit order manager ({hotkey}/limit_orders/) into the store.
@@ -246,7 +223,7 @@ def migrate_legacy_disk(store, running_unit_tests=False) -> int:
 
 def _convert_dicts(hotkey: str, order_dicts: list[dict]) -> list[TriggerOrder]:
     """
-    Stored legacy order dicts (disk or checkpoint) as trigger orders, skipping filled ones. A
+    Legacy order dicts saved on disk as trigger orders, skipping filled ones. A
     BRACKET's order_type is its position's side; its legs bind to that position on the next tick.
     Cancelled orders keep src as their close reason.
     """
@@ -258,10 +235,10 @@ def _convert_dicts(hotkey: str, order_dicts: list[dict]) -> list[TriggerOrder]:
             if not (cancelled or OrderSource.is_open(order.src)):
                 continue
             if order.execution_type == ExecutionType.BRACKET:
-                converted = bracket_to_trigger_orders(
-                    hotkey, order.trade_pair, _bracket_fields(order), order.order_uuid, order.order_type,
-                    order.processed_ms, best_price=order.price or None,
-                )
+                converted = [
+                    _to_order(leg, hotkey, order.trade_pair, order.processed_ms, order.price or None)
+                    for leg in _bracket_legs(_bracket_fields(order), order.order_type, order.order_uuid)
+                ]
             else:
                 converted = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms)
             if cancelled:
