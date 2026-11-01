@@ -3,20 +3,16 @@
 """
 LimitOrderServer - RPC server for limit, stop-limit and bracket orders.
 
-Runs in its own process; clients connect with LimitOrderClient. Orders are held as TriggerOrders
-(vali_objects/utils/trigger_order); this server converts the legacy Order shapes the API and
-callers use in both directions, so the RPC surface is unchanged.
+Runs in its own process; clients connect with LimitOrderClient. Orders are held, placed and
+synced as TriggerOrders (vali_objects/utils/trigger_order); order_processor converts the legacy
+API signals before placing. Reads for API responses are still returned as legacy Order dicts.
 """
 from shared_objects.log import logger
 from shared_objects.rpc.common_data_client import CommonDataClient
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.enums.order_source_enum import OrderSource
 from vali_objects.exceptions.signal_exception import SignalException
-from vali_objects.utils.trigger_order.legacy_converter import (
-    migrate_legacy_disk,
-    sync_legacy_orders,
-    to_legacy_orders,
-)
+from vali_objects.utils.trigger_order.legacy_converter import migrate_legacy_disk, to_legacy_orders
 from vali_objects.vali_config import RPCConnectionMode, TradePair, ValiConfig
 
 
@@ -68,11 +64,14 @@ class LimitOrderServer(RPCServerBase):
 
     # ==================== Placement ====================
 
-    def process_limit_order_rpc(self, miner_hotkey, order, is_edit=False):
-        return self._manager.place_legacy(miner_hotkey, order, is_edit)
-
     def place_rpc(self, orders):
         return self._manager.place(*orders)
+
+    def replace_rpc(self, orders):
+        return self._manager.replace(*orders)
+
+    def process_bracket_orders_rpc(self, miner_hotkey, order, position_type=None, is_edit=False):
+        return self._manager.process_bracket_orders(miner_hotkey, order, position_type, is_edit)
 
     # ==================== Cancellation ====================
 
@@ -128,24 +127,14 @@ class LimitOrderServer(RPCServerBase):
         """Reopen orders cancelled by elimination."""
         return self._manager.reopen(miner_hotkey, OrderSource.ELIMINATION_CANCELLED)
 
-    # ==================== Reads (legacy Order shapes) ====================
+    # ==================== Reads ====================
 
-    def get_limit_order_by_uuid_rpc(self, miner_hotkey, order_uuid):
-        order = self._manager.get(miner_hotkey, order_uuid)
-        return to_legacy_orders([order])[0].to_python_dict() if order else None
+    def get_rpc(self, miner_hotkey, order_uuid):
+        return self._manager.get(miner_hotkey, order_uuid)
 
-    def get_limit_orders_for_hotkey_rpc(self, miner_hotkey):
-        return [o.to_python_dict() for o in to_legacy_orders(self._manager.select(hotkey=miner_hotkey))]
-
-    def get_limit_orders_for_trade_pair_rpc(self, trade_pair_id):
-        trade_pair = TradePair.from_trade_pair_id(trade_pair_id)
-        return self._by_hotkey(self._manager.select(trade_pair=trade_pair))
-
-    def get_all_limit_orders_rpc(self):
-        result = {}
-        for order in self._manager.select():
-            result.setdefault(order.trade_pair.trade_pair_id, []).append(order)
-        return {trade_pair_id: self._by_hotkey(orders) for trade_pair_id, orders in result.items()}
+    def select_rpc(self, miner_hotkey=None, trade_pair_id=None):
+        trade_pair = TradePair.from_trade_pair_id(trade_pair_id) if trade_pair_id else None
+        return self._manager.select(hotkey=miner_hotkey, trade_pair=trade_pair)
 
     def to_dashboard_dict_rpc(self, miner_hotkey, status_filter=None):
         """
@@ -188,21 +177,14 @@ class LimitOrderServer(RPCServerBase):
         dashboard["limit_orders_time_ms"] = snapshot_time_ms
         return dashboard
 
-    # ==================== Sync ====================
+    # ==================== Checkpoint ====================
 
-    def sync_limit_orders_rpc(self, sync_data):
-        """Load a checkpoint's legacy orders: {trade_pair_id: {hotkey: [order dicts]}}."""
-        synced = sync_legacy_orders(self._manager.store, sync_data)
+    def get_checkpoint_rpc(self):
+        return self._manager.store.to_checkpoint()
+
+    def sync_checkpoint_rpc(self, sync_data):
+        synced = self._manager.store.load_checkpoint(sync_data)
         logger.info(f"[TRIGGER] Synced {synced} orders from checkpoint")
-
-    # ==================== Helpers ====================
-
-    @staticmethod
-    def _by_hotkey(orders) -> dict:
-        grouped = {}
-        for order in orders:
-            grouped.setdefault(order.miner_hotkey, []).append(order)
-        return {hotkey: [o.to_python_dict() for o in to_legacy_orders(group)] for hotkey, group in grouped.items()}
 
     # ==================== Test-only RPC methods ====================
 
@@ -224,12 +206,6 @@ class LimitOrderServer(RPCServerBase):
         result = self._manager.tick()
         return {'checked': result['checked'], 'filled': result['fired'], 'timestamp_ms': result['timestamp_ms']}
 
-    def set_limit_orders_dict_rpc(self, orders_dict):
-        """Replace the open orders with {trade_pair_id: {hotkey: [legacy order dicts]}}."""
-        self._require_tests('set_limit_orders_dict_rpc')
-        self._manager.store.clear()
-        sync_legacy_orders(self._manager.store, orders_dict)
-
     def get_last_fill_time_rpc(self):
         self._require_tests('get_last_fill_time_rpc')
         result = {}
@@ -241,11 +217,12 @@ class LimitOrderServer(RPCServerBase):
         self._require_tests('set_last_fill_time_rpc')
         self._manager._last_fill_ms[(hotkey, trade_pair_id)] = fill_time
 
+    def get_position_for_rpc(self, hotkey, order):
+        self._require_tests('get_position_for_rpc')
+        return self._manager._open_position(hotkey, order.trade_pair)
+
     def count_unfilled_orders_for_hotkey_rpc(self, miner_hotkey):
         self._require_tests('count_unfilled_orders_for_hotkey_rpc')
         return len(self._manager.select(hotkey=miner_hotkey))
 
-    def get_position_for_rpc(self, hotkey, order):
-        self._require_tests('get_position_for_rpc')
-        return self._manager._open_position(hotkey, order.trade_pair)
 

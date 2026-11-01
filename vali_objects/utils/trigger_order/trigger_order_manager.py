@@ -65,29 +65,33 @@ class TriggerOrderManager:
 
     # ==================== Placement ====================
 
-    def place_legacy(self, hotkey: str, order: Order, is_edit: bool = False) -> dict:
+    def process_bracket_orders(self, hotkey: str, order: Order, position_type: OrderType | None = None,
+                               is_edit: bool = False) -> list[TriggerOrder]:
         """
-        Place (or, with is_edit, replace) a legacy LIMIT, STOP_LIMIT or BRACKET order, or the
-        bracket_orders of a filled MARKET order on the position it opened.
+        Place (or, with is_edit, replace) a legacy BRACKET order's legs, or a filled MARKET order's
+        bracket_orders, bound to the open position. position_type defaults to the open position's
+        side; a MARKET fill passes it. Trailing stops start at the fill price. Returns the legs.
         """
-        position_type = None
-        if order.execution_type in (ExecutionType.BRACKET, ExecutionType.MARKET):
+        if position_type is None:
             position = self._open_position(hotkey, order.trade_pair)
             if position is None:
-                raise SignalException(f"{order.execution_type.name} order brackets need an open position")
+                raise SignalException(f"BRACKET orders need an open position on {order.trade_pair.trade_pair_id}")
             position_type = position.position_type
         try:
-            orders = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms, position_type)
+            legs = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms, position_type)
         except ValueError as e:
             raise SignalException(str(e))
-        if is_edit and len(orders) > 1:
+
+        if not is_edit:
+            self.place(*legs)
+        elif len(legs) > 1:
             raise SignalException(
                 f"Cannot edit [{order.order_uuid}]: an edit changes one bracket leg, set only one of "
                 f"stop_loss, take_profit or trailing_stop"
             )
-
-        (self.replace if is_edit else self.place)(*orders)
-        return {"status": "success", "order_uuid": order.order_uuid}
+        else:
+            self.replace(*legs)
+        return legs
 
     def place(self, *orders: TriggerOrder) -> None:
         """Open orders together, all or none. Re-placing orders that are all open is a no-op (a retry)."""
