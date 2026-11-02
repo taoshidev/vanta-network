@@ -1,7 +1,6 @@
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.enums.order_type_enum import OrderType
-from vali_objects.vali_config import RPCConnectionMode, ValiConfig
-from vali_objects.vali_dataclasses.order import Order
+from vali_objects.vali_config import RPCConnectionMode, TradePair, ValiConfig
 from vali_objects.vali_dataclasses.trigger_order import TriggerOrder
 
 
@@ -67,17 +66,21 @@ class LimitOrderClient(RPCClientBase):
         """
         return self._server.replace_rpc(orders)
 
-    def process_bracket_orders(self, miner_hotkey: str, order: Order, position_type: OrderType | None = None,
+    def process_bracket_orders(self, miner_hotkey: str, trade_pair: TradePair, brackets: list[dict], now_ms: int,
+                               position_type: OrderType | None = None, best_price: float | None = None,
                                is_edit: bool = False) -> list[TriggerOrder]:
         """
-        Place (or, with is_edit, replace) a legacy BRACKET order's legs, or a filled MARKET order's
-        bracket_orders, bound to the open position. position_type defaults to the open position's
-        side; a MARKET fill passes it. Trailing stops start at the fill price. Returns the legs.
+        Place (or, with is_edit, replace) legacy bracket dicts as legs bound to the open position.
+        Each dict carries its order_uuid, stop_loss / take_profit / trailing_*, and optional size.
+        position_type defaults to the open position's side; a MARKET fill passes it, with its fill
+        price as best_price for trailing stops. Returns the legs.
 
         Raises:
             SignalException: No open position, invalid brackets, or validation errors (pickled from server)
         """
-        return self._server.process_bracket_orders_rpc(miner_hotkey, order, position_type, is_edit)
+        return self._server.process_bracket_orders_rpc(
+            miner_hotkey, trade_pair, brackets, now_ms, position_type, best_price, is_edit
+        )
 
     # ==================== Cancellation ====================
 

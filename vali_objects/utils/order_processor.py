@@ -11,7 +11,7 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
-from vali_objects.utils.trigger_order.legacy_converter import signal_to_trigger_orders
+from vali_objects.utils.trigger_order.legacy_converter import signal_to_bracket, signal_to_trigger_order
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_dataclasses.order import Order
@@ -35,10 +35,10 @@ def _validate_single_size(quantity: float | None, value: float | None, leverage:
             "Exactly one of quantity, value, or leverage must be provided."
         )
 
-def _to_trigger_orders(hotkey: str, order: Order) -> list[TriggerOrder]:
+def _to_trigger_order(hotkey: str, order: Order) -> TriggerOrder:
     """A legacy LIMIT or STOP_LIMIT order as its trigger order (brackets become children)."""
     try:
-        return signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms)
+        return signal_to_trigger_order(hotkey, order, order.order_uuid, order.processed_ms)
     except ValueError as e:
         raise SignalException(str(e))
 
@@ -222,8 +222,11 @@ class OrderProcessor:
                 self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
 
             if created_order and (updated_position and not updated_position.is_closed_position) and signal.bracket_orders:
-                created_order.bracket_orders = signal.bracket_orders
-                self.limit_order_client.process_bracket_orders(hotkey, created_order, updated_position.position_type)
+                brackets = [b if b.get('order_uuid') else {**b, 'order_uuid': str(uuid.uuid4())} for b in signal.bracket_orders]
+                self.limit_order_client.process_bracket_orders(
+                    hotkey, trade_pair, brackets, created_order.processed_ms,
+                    position_type=updated_position.position_type, best_price=created_order.price,
+                )
         except Exception as e:
             logger.error(
                 f"[ORDER_PROCESSOR] {hotkey} {order_uuid} order COMMITTED but post-commit "
@@ -347,10 +350,12 @@ class OrderProcessor:
         if execution_type == ExecutionType.BRACKET:
             # BRACKET orders never carry a limit_price.
             order.limit_price = None
-            self.limit_order_client.process_bracket_orders(hotkey, order, is_edit=is_edit)
+            self.limit_order_client.process_bracket_orders(
+                hotkey, trade_pair, [signal_to_bracket(signal, order_uuid)], now_ms, is_edit=is_edit
+            )
         else:
-            trigger_orders = _to_trigger_orders(hotkey, order)
-            (self.limit_order_client.replace if is_edit else self.limit_order_client.place)(*trigger_orders)
+            trigger_order = _to_trigger_order(hotkey, order)
+            (self.limit_order_client.replace if is_edit else self.limit_order_client.place)(trigger_order)
         logger.info(
             f"[ORDER_PROCESSOR] Processed {execution_type.name} order{'(EDIT)' if is_edit else ''}: "
             f"{order.order_uuid} for {hotkey}"
