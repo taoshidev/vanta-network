@@ -2,18 +2,19 @@
 Converts between the legacy API shapes (Signal / Order with LIMIT, STOP_LIMIT, BRACKET) and
 TriggerOrders, so the API keeps its request and response format.
 
-  to trigger: signal_to_trigger_orders (order_processor, at the API entry point)
+  to trigger: signal_to_trigger_order, brackets_to_trigger_orders, signal_to_bracket
   to legacy:  to_legacy_orders (Orders for API responses), to_bracket_dict (position copies)
   stored:     migrate_legacy_disk (the legacy manager's limit_orders/ on disk)
 
 Raises ValueError for requests the legacy manager rejected.
 
-uuids: a LIMIT's brackets are "{uuid}-bracket-{i}", a STOP_LIMIT's limit is "{uuid}-limit". Each
-bracket leg (SL, trailing SL, TP) is its own order bound to the position: a bracket with one leg
-keeps its uuid, one with several names them "{uuid}-sl" / "-trail" / "-tp". Each leg is a separate
-BRACKET in the legacy API.
+uuids: a bracket keeps the order_uuid it was given (one is generated if it has none), a
+STOP_LIMIT's limit is "{uuid}-limit". Each bracket leg (SL, trailing SL, TP) is its own order bound
+to the position: a bracket with one leg keeps its uuid, one with several names them "{uuid}-sl" /
+"-trail" / "-tp". Each leg is a separate BRACKET in the legacy API.
 """
 import os
+import uuid
 
 from shared_objects.log import logger
 from vali_objects.enums.execution_type_enum import ExecutionType
@@ -42,27 +43,11 @@ UNFILLED_SOURCE = {
 
 # ==================== Legacy -> trigger ====================
 
-def signal_to_trigger_orders(hotkey: str, signal: Signal, order_uuid: str, now_ms: int,
-                             position_type: OrderType | None = None) -> list[TriggerOrder]:
-    """
-    A LIMIT, STOP_LIMIT or BRACKET signal, or a filled MARKET order's bracket_orders, as the trigger
-    orders to place. LIMIT and STOP_LIMIT give one order (brackets become children); a BRACKET or
-    MARKET gives bracket legs, which need the open position's side as position_type.
-    """
+def signal_to_trigger_order(hotkey: str, signal: Signal, order_uuid: str, now_ms: int) -> TriggerOrder:
+    """A LIMIT or STOP_LIMIT signal as its trigger order; its bracket_orders become children."""
     execution_type = signal.execution_type
-    best_price = None
-    if execution_type == ExecutionType.MARKET:
-        # Brackets attached to a filled MARKET order; trailing stops start at the fill price
-        if position_type not in (OrderType.LONG, OrderType.SHORT):
-            raise ValueError("MARKET order brackets need the open position's side")
-        actions = [
-            leg
-            for i, bracket in enumerate(signal.bracket_orders or [])
-            for leg in _bracket_legs(bracket, position_type, f"{order_uuid}-bracket-{i}")
-        ]
-        best_price = signal.price
-    elif execution_type == ExecutionType.LIMIT:
-        actions = [_limit_action(signal, order_uuid)]
+    if execution_type == ExecutionType.LIMIT:
+        action = _limit_action(signal, order_uuid)
     elif execution_type == ExecutionType.STOP_LIMIT:
         if signal.order_type == OrderType.LONG and signal.limit_price < signal.stop_price:
             raise ValueError(
@@ -72,21 +57,37 @@ def signal_to_trigger_orders(hotkey: str, signal: Signal, order_uuid: str, now_m
             raise ValueError(
                 f"STOP_LIMIT SHORT orders require limit_price ({signal.limit_price}) <= stop_price ({signal.stop_price})"
             )
-        actions = [TriggerAction(
+        action = TriggerAction(
             execution_type=ExecutionType.STOP_LIMIT,
             order_uuid=order_uuid,
             trigger=FixedTrigger(price=signal.stop_price, direction=signal.stop_condition, price_field=PriceField.MID),
             market_action=None,
             child_actions=[_limit_action(signal, f"{order_uuid}-limit")],
-        )]
-    elif execution_type == ExecutionType.BRACKET:
-        if position_type not in (OrderType.LONG, OrderType.SHORT):
-            raise ValueError("BRACKET orders need the open position's side")
-        bracket = (signal.bracket_orders or [{}])[0] | _bracket_fields(signal)
-        actions = _bracket_legs(bracket, position_type, order_uuid)
+        )
     else:
-        raise ValueError(f"{execution_type} is not a trigger order")
-    return [_to_order(action, hotkey, signal.trade_pair, now_ms, best_price) for action in actions]
+        raise ValueError(f"{execution_type} is not a LIMIT or STOP_LIMIT order")
+    return _to_order(action, hotkey, signal.trade_pair, now_ms)
+
+
+def brackets_to_trigger_orders(hotkey: str, trade_pair: TradePair, brackets: list[dict], position_type: OrderType,
+                               now_ms: int, best_price: float | None = None) -> list[TriggerOrder]:
+    """
+    Bracket dicts (order_uuid, stop_loss / take_profit / trailing_*, size) as legs protecting a
+    position_type position. Each dict's order_uuid names its legs; best_price (a fill price) starts
+    trailing stops, which otherwise start at the current price on placement.
+    """
+    if position_type not in (OrderType.LONG, OrderType.SHORT):
+        raise ValueError("Bracket orders need the open position's side")
+    return [
+        _to_order(trigger_action, hotkey, trade_pair, now_ms, best_price)
+        for bracket in brackets
+        for trigger_action in _bracket_legs(bracket, position_type, _bracket_uuid(bracket))
+    ]
+
+
+def signal_to_bracket(signal: Signal, order_uuid: str) -> dict:
+    """A BRACKET signal as one bracket dict named order_uuid."""
+    return (signal.bracket_orders or [{}])[0] | _bracket_fields(signal) | {'order_uuid': order_uuid}
 
 
 def _limit_action(signal: Signal, order_uuid: str) -> TriggerAction:
@@ -108,10 +109,15 @@ def _limit_action(signal: Signal, order_uuid: str) -> TriggerAction:
         ),
         child_actions=[
             leg
-            for i, bracket in enumerate(signal.bracket_orders or [])
-            for leg in _bracket_legs(bracket, signal.order_type, f"{order_uuid}-bracket-{i}")
+            for bracket in signal.bracket_orders or []
+            for leg in _bracket_legs(bracket, signal.order_type, _bracket_uuid(bracket))
         ],
     )
+
+
+def _bracket_uuid(bracket: dict) -> str:
+    """The order_uuid a bracket was given, or a new one if it has none."""
+    return bracket.get('order_uuid') or str(uuid.uuid4())
 
 
 def _bracket_fields(signal: Signal) -> dict:
@@ -144,7 +150,7 @@ def _bracket_legs(bracket: dict, position_type: OrderType, order_uuid: str) -> l
         bracket_pct=_float(bracket.get('bracket_pct')),
     )
     if size == OrderSize():
-        size = OrderSize(bracket_pct=1.0)  # no size closes the whole position, as today
+        size = OrderSize(bracket_pct=1.0)  # no size closes the whole position
 
     specs = []  # (suffix, trigger, is_maker)
     if bracket.get('stop_loss') is not None:
@@ -235,12 +241,12 @@ def _convert_dicts(hotkey: str, order_dicts: list[dict]) -> list[TriggerOrder]:
             if not (cancelled or OrderSource.is_open(order.src)):
                 continue
             if order.execution_type == ExecutionType.BRACKET:
-                converted = [
-                    _to_order(leg, hotkey, order.trade_pair, order.processed_ms, order.price or None)
-                    for leg in _bracket_legs(_bracket_fields(order), order.order_type, order.order_uuid)
-                ]
+                converted = brackets_to_trigger_orders(
+                    hotkey, order.trade_pair, [_bracket_fields(order) | {'order_uuid': order.order_uuid}],
+                    order.order_type, order.processed_ms, best_price=order.price or None,
+                )
             else:
-                converted = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms)
+                converted = [signal_to_trigger_order(hotkey, order, order.order_uuid, order.processed_ms)]
             if cancelled:
                 for o in converted:
                     o.close_reason = OrderSource(order.src)

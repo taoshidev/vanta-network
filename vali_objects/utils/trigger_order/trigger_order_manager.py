@@ -13,10 +13,9 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.limit_order.order_utils import OrderSize
 from vali_objects.utils.trigger_order import trigger_engine
-from vali_objects.utils.trigger_order.legacy_converter import signal_to_trigger_orders
+from vali_objects.utils.trigger_order.legacy_converter import brackets_to_trigger_orders
 from vali_objects.utils.trigger_order.trigger_order_store import TriggerOrderStore
 from vali_objects.vali_config import RPCConnectionMode, TradePair, ValiConfig
-from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.price_source import NASDAQ_BASIC_TRADE_SOURCE
 from vali_objects.vali_dataclasses.trigger_order import (
     FixedTrigger,
@@ -65,29 +64,30 @@ class TriggerOrderManager:
 
     # ==================== Placement ====================
 
-    def process_bracket_orders(self, hotkey: str, order: Order, position_type: OrderType | None = None,
+    def process_bracket_orders(self, hotkey: str, trade_pair: TradePair, brackets: list[dict], now_ms: int,
+                               position_type: OrderType | None = None, best_price: float | None = None,
                                is_edit: bool = False) -> list[TriggerOrder]:
         """
-        Place (or, with is_edit, replace) a legacy BRACKET order's legs, or a filled MARKET order's
-        bracket_orders, bound to the open position. position_type defaults to the open position's
-        side; a MARKET fill passes it. Trailing stops start at the fill price. Returns the legs.
+        Place (or, with is_edit, replace) legacy bracket dicts as legs bound to the open position.
+        position_type defaults to the open position's side; a MARKET fill passes it, with its fill
+        price as best_price. Returns the legs.
         """
         if position_type is None:
-            position = self._open_position(hotkey, order.trade_pair)
+            position = self._open_position(hotkey, trade_pair)
             if position is None:
-                raise SignalException(f"BRACKET orders need an open position on {order.trade_pair.trade_pair_id}")
+                raise SignalException(f"Bracket orders need an open position on {trade_pair.trade_pair_id}")
             position_type = position.position_type
         try:
-            legs = signal_to_trigger_orders(hotkey, order, order.order_uuid, order.processed_ms, position_type)
+            legs = brackets_to_trigger_orders(hotkey, trade_pair, brackets, position_type, now_ms, best_price)
         except ValueError as e:
             raise SignalException(str(e))
 
         if not is_edit:
             self.place(*legs)
-        elif len(legs) > 1:
+        elif len(legs) != len(brackets):
             raise SignalException(
-                f"Cannot edit [{order.order_uuid}]: an edit changes one bracket leg, set only one of "
-                f"stop_loss, take_profit or trailing_stop"
+                f"Cannot edit {[b['order_uuid'] for b in brackets]}: an edit changes one bracket leg, set only "
+                f"one of stop_loss, take_profit or trailing_stop"
             )
         else:
             self.replace(*legs)
@@ -199,10 +199,13 @@ class TriggerOrderManager:
 
     def cancel(self, hotkey: str, now_ms: int, *, order_uuid: str | None = None, trade_pair: TradePair | None = None,
                position_uuid: str | None = None, oco_group: str | None = None, entry_only: bool = False,
-               reason: OrderSource | None = None) -> list[str]:
+               reason: OrderSource | None = None, fill_failed: bool = False) -> list[str]:
         """
         Cancel open orders matching every given filter; no filters cancels all of the hotkey's
         orders. entry_only keeps orders that only reduce. Returns the cancelled uuids.
+
+        Only fill failures and eliminations (reopened later) are written to closed/; other cancels
+        are intentional and would only bloat the disk.
         """
         if order_uuid:
             orders = [o for o in [self.store.get(hotkey, order_uuid)] if o]
@@ -219,9 +222,10 @@ class TriggerOrderManager:
             }
             orders = [o for o in orders if self._is_entry(o, positions.get(o.trade_pair.trade_pair_id))]
 
+        persist = fill_failed or reason == OrderSource.ELIMINATION_CANCELLED
         cancelled = []
         for order in orders:
-            if self.store.remove(hotkey, order.order_uuid, now_ms, reason or CANCEL_REASON[order.execution_type]):
+            if self.store.remove(hotkey, order.order_uuid, now_ms, reason or CANCEL_REASON[order.execution_type], persist):
                 self._last_copy_ms.pop(order.order_uuid, None)
                 self._closed.setdefault(hotkey, {})[order.order_uuid] = None
                 cancelled.append(order.order_uuid)
@@ -332,7 +336,7 @@ class TriggerOrderManager:
                 )
             except Exception as e:
                 logger.error(f"[TRIGGER] Fill failed for [{order.order_uuid}], cancelling: {e}")
-                self.cancel(hotkey, fire_ms, order_uuid=order.order_uuid)
+                self.cancel(hotkey, fire_ms, order_uuid=order.order_uuid, fill_failed=True)
                 return False
 
             fill_price = filled_order.price

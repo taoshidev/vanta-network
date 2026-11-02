@@ -4,7 +4,8 @@ Open trigger orders: in memory, on disk, and copied onto their bound position.
 Every change to the set of open orders goes through this class, so memory, disk and the position
 copy can't drift apart. Only open orders are held in memory. Fired orders are dropped (the fill
 lives on the Position), along with the rest of their oco_group if they have one; cancelled orders
-are written to closed/. Each bound order is copied onto its position as a legacy bracket.
+are written to closed/ only when the caller asks (fill failures and eliminations). Each bound order
+is copied onto its position as a legacy bracket.
 
 Disk layout: {miner_dir}{hotkey}/trigger_orders/{trade_pair_id}/{open|closed}/{order_uuid}
 """
@@ -79,8 +80,9 @@ class TriggerOrderStore:
                 raise KeyError(f"No open trigger order [{order.order_uuid}] on {order.trade_pair.trade_pair_id}")
             self._put(order, copy_to_position)
 
-    def remove(self, hotkey: str, order_uuid: str, closed_ms: int, reason: OrderSource) -> TriggerOrder | None:
-        """Cancel an open order and write it to closed/."""
+    def remove(self, hotkey: str, order_uuid: str, closed_ms: int, reason: OrderSource,
+               persist: bool = True) -> TriggerOrder | None:
+        """Cancel an open order, writing it to closed/ if persist."""
         order = self.get(hotkey, order_uuid)
         if order is None:
             return None
@@ -89,7 +91,8 @@ class TriggerOrderStore:
                 return None
             order.closed_ms = closed_ms
             order.close_reason = reason
-            self._write(order, "closed")
+            if persist:
+                self._write(order, "closed")
             self._sync_position(order)
         logger.info(f"[TRIGGER] Cancelled [{order_uuid}] {order.trade_pair.trade_pair_id} for [{hotkey}]: {reason.name}")
         return order

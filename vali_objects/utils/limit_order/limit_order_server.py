@@ -70,8 +70,11 @@ class LimitOrderServer(RPCServerBase):
     def replace_rpc(self, orders):
         return self._manager.replace(*orders)
 
-    def process_bracket_orders_rpc(self, miner_hotkey, order, position_type=None, is_edit=False):
-        return self._manager.process_bracket_orders(miner_hotkey, order, position_type, is_edit)
+    def process_bracket_orders_rpc(self, miner_hotkey, trade_pair, brackets, now_ms, position_type=None,
+                                   best_price=None, is_edit=False):
+        return self._manager.process_bracket_orders(
+            miner_hotkey, trade_pair, brackets, now_ms, position_type, best_price, is_edit
+        )
 
     # ==================== Cancellation ====================
 
