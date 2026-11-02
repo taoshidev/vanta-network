@@ -923,6 +923,7 @@ class ChallengePeriodManager(CacheController):
         """Promote miners to next tier. promotions maps each miner to the bucket it was evaluated in; one
         that has left it since, e.g. through an entity promotion, is not promoted again."""
         state_changed = False
+        promoted_count = 0
         for hotkey, evaluated_bucket in promotions.items():
             # The lock an entity promotion holds, so one cannot land between the check and the move
             with self._promotion_lock(hotkey):
@@ -942,9 +943,14 @@ class ChallengePeriodManager(CacheController):
 
                 from_state = str(state)
                 with self._buckets_lock:
-                    state_changed |= self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
+                    moved = self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
+                state_changed |= moved
+                promoted_count += moved
                 logger.info(f"[CHALLENGE] promoted to {target_bucket.value}: {from_state}")
 
+        if promoted_count:
+            logger.info(f"[CHALLENGE] attempted to promote {len(promotions)}, "
+                        f"successfully promoted {promoted_count} miners")
         return state_changed
 
     def promote_subaccount(
