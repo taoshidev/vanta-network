@@ -48,17 +48,18 @@ class _Candle:
 
 
 class _HyperliquidWebsocketClient:
-    """Websocket client for Hyperliquid L2 orderbook data at a given resolution."""
+    """Websocket client for one Hyperliquid subscription type (l2Book at a given resolution, or bbo)."""
 
-    def __init__(self, service, category, n_sig_figs: int | None = None):
+    def __init__(self, service, category, sub_type: str = "l2Book", n_sig_figs: int | None = None):
         self._svc = service
         self._cat = category
+        self._sub_type = sub_type
         self._n_sig_figs = n_sig_figs
         self._ws = None
         self._should_close = False
 
     async def connect(self, handle_msg):
-        """Connect to Hyperliquid L2 orderbook websocket and process messages."""
+        """Connect to the Hyperliquid websocket, subscribe every coin to this client's feed and process messages."""
         self._ws = await websockets.connect(ValiConfig.hl_ws_url())
 
         try:
@@ -68,14 +69,18 @@ class _HyperliquidWebsocketClient:
             coins = self._svc._get_subscription_coins()
 
             for coin in coins:
-                subscription = {"type": "l2Book", "coin": coin}
+                subscription = {"type": self._sub_type, "coin": coin}
                 if self._n_sig_figs is not None:
                     subscription["nSigFigs"] = self._n_sig_figs
                 subscribe_msg = {"method": "subscribe", "subscription": subscription}
                 await self._ws.send(json.dumps(subscribe_msg))
 
-            precision = f"nSigFigs={self._n_sig_figs}" if self._n_sig_figs is not None else "full precision"
-            logger.info(f"Subscribed to Hyperliquid l2Book ({precision}) for "
+            if self._sub_type == "l2Book":
+                precision = f"nSigFigs={self._n_sig_figs}" if self._n_sig_figs is not None else "full precision"
+                label = f"l2Book ({precision})"
+            else:
+                label = self._sub_type
+            logger.info(f"Subscribed to Hyperliquid {label} for "
                             f"{len(coins)} coins: {sorted(coins)}")
 
             # Receive loop
@@ -115,25 +120,25 @@ class _HyperliquidWebsocketClient:
         self._should_close = True
 
 
-class _MultiResolutionL2BookClient:
-    """Manages one concurrent L2 book WebSocket connection per resolution in the cascade.
+class _HyperliquidMarketDataClient:
+    """Manages the concurrent Hyperliquid WebSocket connections: one bbo feed plus one
+    L2 book connection per resolution in the cascade.
 
-    Full precision (no nSigFigs) provides native tick-size pricing for accurate mid and
-    near-spread slippage, and is the only resolution that feeds the validator price feed.
-    Each successively coarser resolution (ValiConfig.HL_L2_SIG_FIGS_CASCADE[1:]) provides
-    wider depth for large orders that exhaust the finer levels. Messages are routed to the
-    service's resolution-specific handlers.
+    bbo (best bid/offer, pushed on every top-of-book change) is the only stream that feeds
+    the validator price feed. The L2 books are used for slippage only: full precision (no
+    nSigFigs) provides native tick-size levels for near-spread slippage, and each
+    successively coarser resolution (ValiConfig.HL_L2_SIG_FIGS_CASCADE[1:]) provides wider
+    depth for large orders that exhaust the finer levels. Messages are routed to the
+    service's feed-specific handlers.
     """
 
     def __init__(self, service, category):
         self._svc = service
-        cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
-        self._full = _HyperliquidWebsocketClient(service, category, n_sig_figs=cascade[0])
-        self._coarse_sig_figs = cascade[1:]
-        self._coarse_clients = [
-            _HyperliquidWebsocketClient(service, category, n_sig_figs=sig_figs)
-            for sig_figs in self._coarse_sig_figs
-        ]
+        self._bbo = _HyperliquidWebsocketClient(service, category, sub_type="bbo")
+        self._l2_clients = {
+            sig_figs: _HyperliquidWebsocketClient(service, category, n_sig_figs=sig_figs)
+            for sig_figs in ValiConfig.HL_L2_SIG_FIGS_CASCADE
+        }
 
     async def _run_with_reconnect(self, client, handle_msg, label):
         """Run one resolution's websocket client, reconnecting it independently (with
@@ -154,28 +159,28 @@ class _MultiResolutionL2BookClient:
             backoff = min(backoff * 1.5, 30.0)
 
     async def connect(self, handle_msg):
-        """Run one WebSocket connection per cascade resolution concurrently, each
-        reconnecting independently on disconnect."""
-        coros = [self._run_with_reconnect(self._full, self._svc.handle_msg_full, "full precision")]
-        for client, sig_figs in zip(self._coarse_clients, self._coarse_sig_figs):
+        """Run the bbo connection and one WebSocket connection per cascade resolution
+        concurrently, each reconnecting independently on disconnect."""
+        coros = [self._run_with_reconnect(self._bbo, self._svc.handle_msg_bbo, "bbo")]
+        for sig_figs, client in self._l2_clients.items():
             coros.append(self._run_with_reconnect(
                 client,
-                lambda msg, sf=sig_figs: self._svc.handle_msg_coarse(sf, msg),
-                f"nSigFigs={sig_figs}",
+                lambda msg, sf=sig_figs: self._svc.handle_msg_l2(sf, msg),
+                f"nSigFigs={sig_figs}" if sig_figs is not None else "full precision",
             ))
         await asyncio.gather(*coros)
 
     async def close(self):
-        await asyncio.gather(self._full.close(), *[c.close() for c in self._coarse_clients])
+        await asyncio.gather(self._bbo.close(), *[c.close() for c in self._l2_clients.values()])
 
     def unsubscribe_all(self):
-        self._full.unsubscribe_all()
-        for c in self._coarse_clients:
+        self._bbo.unsubscribe_all()
+        for c in self._l2_clients.values():
             c.unsubscribe_all()
 
 
 class HyperliquidDataService(BaseDataService):
-    """Crypto-only live WebSocket feed from Hyperliquid using L2 orderbook data."""
+    """Live WebSocket feed from Hyperliquid: bbo for prices, L2 orderbooks for slippage."""
 
     def __init__(self, disable_ws=False, running_unit_tests=False):
         super().__init__(
@@ -191,14 +196,13 @@ class HyperliquidDataService(BaseDataService):
                 self._coin_to_trade_pair[tp.hl_coin] = tp
 
         # Multi-resolution L2 orderbook cache per coin, per ValiConfig.HL_L2_SIG_FIGS_CASCADE.
-        # Full precision (no nSigFigs): native tick-size pricing for accurate mid and near-spread slippage.
+        # Full precision (sig_figs None): native tick-size levels for near-spread slippage.
         # Each coarser resolution (5, 4, 3, 2 sig figs): wider depth for large orders that exhaust
         # the finer resolutions.
-        # Value shape: {"bids": [...], "asks": [...], "time": timestamp_ms}
-        self._orderbooks_full: dict[str, dict] = {}
         # Keyed by sig_figs, then coin name (e.g. "BTC").
-        self._orderbooks_coarse_by_sigfigs: dict[int, dict[str, dict]] = {
-            sig_figs: {} for sig_figs in ValiConfig.HL_L2_SIG_FIGS_CASCADE[1:]
+        # Value shape: {"bids": [...], "asks": [...], "time": timestamp_ms}
+        self._orderbooks_by_sigfigs: dict[int | None, dict[str, dict]] = {
+            sig_figs: {} for sig_figs in ValiConfig.HL_L2_SIG_FIGS_CASCADE
         }
 
         if disable_ws:
@@ -212,9 +216,9 @@ class HyperliquidDataService(BaseDataService):
     def _create_websocket_client(self, tpc):
         if tpc != TradePairCategory.CRYPTO:
             return
-        client = _MultiResolutionL2BookClient(self, tpc)
+        client = _HyperliquidMarketDataClient(self, tpc)
         self.WEBSOCKET_OBJECTS[tpc] = client
-        logger.info(f"Created {self.provider_name} dual-resolution websocket client for {tpc}")
+        logger.info(f"Created {self.provider_name} bbo + multi-resolution l2Book websocket client for {tpc}")
 
     def _subscribe_websockets(self, tpc):
         # Subscription happens inside connect()
@@ -243,71 +247,96 @@ class HyperliquidDataService(BaseDataService):
         timestamp_ms = round(book_data.get("time", TimeUtil.now_in_millis()), -3)
         return coin, tp, levels[0], levels[1], timestamp_ms
 
-    async def handle_msg_full(self, msg):
-        """Handle nSigFigs=None l2Book messages: update price feed and full orderbook cache."""
+    def _parse_bbo_msg(self, msg):
+        """Parse a bbo WebSocket message.
+
+        Returns (tp, bid, ask, timestamp_ms) or None for non-bbo messages, unknown coins,
+        or a book with an empty side.
+        """
+        data = json.loads(msg)
+        if data.get("channel") != "bbo":
+            return None
+        bbo_data = data.get("data", {})
+        tp = self._coin_to_trade_pair.get(bbo_data.get("coin"))
+        if tp is None:
+            return None
+        bbo = bbo_data.get("bbo") or []
+        if len(bbo) < 2 or not bbo[0] or not bbo[1]:
+            return None
+        timestamp_ms = round(bbo_data.get("time", TimeUtil.now_in_millis()), -3)
+        return tp, float(bbo[0]["px"]), float(bbo[1]["px"]), timestamp_ms
+
+    async def handle_msg_bbo(self, msg):
+        """Handle bbo messages: update the validator price feed."""
         try:
-            parsed = self._parse_l2_book_msg(msg)
+            parsed = self._parse_bbo_msg(msg)
             if parsed is None:
                 return
-            coin, tp, bids, asks, timestamp_ms = parsed
+            tp, best_bid, best_ask, timestamp_ms = parsed
 
-            self._orderbooks_full[coin] = {"bids": bids, "asks": asks, "time": timestamp_ms}
             self.tpc_to_n_events[TradePairCategory.CRYPTO] += 1
             self.tpc_to_last_event_time[TradePairCategory.CRYPTO] = time.time()
 
-            # Only push to the validator price feed for static TradePair enum members.
-            # Dynamic altcoins provide orderbook data for slippage but are not validator price sources.
-            if isinstance(tp, TradePair):
-                best_bid = float(bids[0]["px"])
-                best_ask = float(asks[0]["px"])
-                mid_price = (best_bid + best_ask) / 2.0
-                now_ms = TimeUtil.now_in_millis()
-                ps = PriceSource(
-                    source=f"{HYPERLIQUID_PROVIDER_NAME}_ws",
-                    timespan_ms=0,
-                    open=mid_price,
-                    close=mid_price,
-                    vwap=mid_price,
-                    high=mid_price,
-                    low=mid_price,
-                    start_ms=timestamp_ms,
-                    websocket=True,
-                    lag_ms=now_ms - timestamp_ms,
-                    bid=best_bid,
-                    ask=best_ask,
-                )
-                symbol = tp.trade_pair
-                self.latest_websocket_events[symbol] = ps
-                if symbol not in self.trade_pair_to_recent_events:
-                    self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
-                self.trade_pair_to_recent_events[symbol].add_event(
-                    ps, False, f"{self.provider_name}:{tp.trade_pair}"
-                )
-                self.closed_market_prices[tp] = None
+            mid_price = (best_bid + best_ask) / 2.0
+            now_ms = TimeUtil.now_in_millis()
+            ps = PriceSource(
+                source=f"{HYPERLIQUID_PROVIDER_NAME}_ws",
+                timespan_ms=0,
+                open=mid_price,
+                close=mid_price,
+                vwap=mid_price,
+                high=mid_price,
+                low=mid_price,
+                start_ms=timestamp_ms,
+                websocket=True,
+                lag_ms=now_ms - timestamp_ms,
+                bid=best_bid,
+                ask=best_ask,
+            )
+            symbol = tp.trade_pair
+            self.latest_websocket_events[symbol] = ps
+            if symbol not in self.trade_pair_to_recent_events:
+                self.trade_pair_to_recent_events[symbol] = RecentEventTracker()
+            # bbo pushes several updates per second; timestamps are rounded to the second,
+            # so keep the latest quote in each second rather than the first.
+            self.trade_pair_to_recent_events[symbol].add_or_replace_event(ps)
+            self.closed_market_prices[tp] = None
 
         except Exception as e:
             limited_traceback = traceback.format_exc()[-1000:]
             logger.error(
-                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} full websocket message "
+                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} bbo websocket message "
                 f"with error: {e}, type: {type(e).__name__}, traceback: {limited_traceback}"
             )
 
-    async def handle_msg_coarse(self, sig_figs: int, msg):
-        """Handle a coarse-resolution l2Book message: update that resolution's orderbook cache."""
+    async def handle_msg_l2(self, sig_figs: int | None, msg):
+        """Handle an l2Book message at one cascade resolution: update that resolution's orderbook cache."""
         try:
             parsed = self._parse_l2_book_msg(msg)
             if parsed is None:
                 return
             coin, _tp, bids, asks, timestamp_ms = parsed
-            self._orderbooks_coarse_by_sigfigs.setdefault(sig_figs, {})[coin] = {
+            self._orderbooks_by_sigfigs.setdefault(sig_figs, {})[coin] = {
                 "bids": bids, "asks": asks, "time": timestamp_ms
             }
         except Exception as e:
             limited_traceback = traceback.format_exc()[-1000:]
             logger.error(
-                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} coarse (nSigFigs={sig_figs}) websocket message "
+                f"Failed to handle {HYPERLIQUID_PROVIDER_NAME} l2Book (nSigFigs={sig_figs}) websocket message "
                 f"with error: {e}, type: {type(e).__name__}, traceback: {limited_traceback}"
             )
+
+    def _fresh_l2_books(self, coin: str) -> list[dict]:
+        """Return the coin's orderbook at each resolution in ValiConfig.HL_L2_SIG_FIGS_CASCADE order,
+        with {} for a resolution that is missing or older than L2_BOOK_STALENESS_MS."""
+        now_ms = TimeUtil.now_in_millis()
+        books = []
+        for sig_figs in ValiConfig.HL_L2_SIG_FIGS_CASCADE:
+            book = self._orderbooks_by_sigfigs.get(sig_figs, {}).get(coin, {})
+            if book and now_ms - book.get("time", 0) > L2_BOOK_STALENESS_MS:
+                book = {}
+            books.append(book)
+        return books
 
     def _fetch_all_mids(self) -> dict[str, float]:
         """Fetch mid prices for all coins across all dexes via the REST API.
@@ -604,18 +633,7 @@ class HyperliquidDataService(BaseDataService):
         """
         coin = trade_pair.hl_coin
         cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
-        now_ms = TimeUtil.now_in_millis()
-
-        full_book = self._orderbooks_full.get(coin, {})
-        if full_book and now_ms - full_book.get("time", 0) > L2_BOOK_STALENESS_MS:
-            full_book = {}
-        books = []
-        for sig_figs in cascade[1:]:
-            book = self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
-            if book and now_ms - book.get("time", 0) > L2_BOOK_STALENESS_MS:
-                book = {}
-            books.append(book)
-        books = [full_book] + books
+        books = self._fresh_l2_books(coin)
 
         primary = next((b for b in books if b), {})
         if not primary:
@@ -689,19 +707,7 @@ class HyperliquidDataService(BaseDataService):
             Average fill price in quote currency, or None if no orderbook data is available.
         """
         coin = trade_pair.hl_coin
-        cascade = ValiConfig.HL_L2_SIG_FIGS_CASCADE
-        now_ms = TimeUtil.now_in_millis()
-
-        full_book = self._orderbooks_full.get(coin, {})
-        if full_book and now_ms - full_book.get("time", 0) > L2_BOOK_STALENESS_MS:
-            full_book = {}
-        books = []
-        for sig_figs in cascade[1:]:
-            book = self._orderbooks_coarse_by_sigfigs.get(sig_figs, {}).get(coin, {})
-            if book and now_ms - book.get("time", 0) > L2_BOOK_STALENESS_MS:
-                book = {}
-            books.append(book)
-        books = [full_book] + books
+        books = self._fresh_l2_books(coin)
 
         primary = next((b for b in books if b), {})
         if not primary:

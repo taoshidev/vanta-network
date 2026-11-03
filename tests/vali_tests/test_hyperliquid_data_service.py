@@ -7,7 +7,7 @@ import requests
 
 from data_generator.hyperliquid_data_service import HyperliquidDataService, HYPERLIQUID_PROVIDER_NAME
 from time_util.time_util import TimeUtil
-from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource
+from vali_objects.vali_config import TradePair, TradePairCategory, TradePairSource, ValiConfig
 
 
 class TestHyperliquidDataService(unittest.TestCase):
@@ -30,6 +30,18 @@ class TestHyperliquidDataService(unittest.TestCase):
                     [{"px": bid, "sz": "1.5", "n": 5}, {"px": str(float(bid) - 1), "sz": "2.0", "n": 3}],
                     [{"px": ask, "sz": "0.8", "n": 3}, {"px": str(float(ask) + 1), "sz": "1.2", "n": 2}]
                 ]
+            }
+        })
+
+    def _make_bbo_msg(self, coin="BTC", bid="30000.0", ask="30001.0", time_ms=None):
+        if time_ms is None:
+            time_ms = TimeUtil.now_in_millis()
+        return json.dumps({
+            "channel": "bbo",
+            "data": {
+                "coin": coin,
+                "time": time_ms,
+                "bbo": [{"px": bid, "sz": "1.5", "n": 5}, {"px": ask, "sz": "0.8", "n": 3}]
             }
         })
 
@@ -61,13 +73,13 @@ class TestHyperliquidDataService(unittest.TestCase):
     def test_enabled_categories_crypto_only(self):
         self.assertEqual(self.service.enabled_websocket_categories, {TradePairCategory.CRYPTO})
 
-    # -- handle_msg_full tests (price feed + fine orderbook) --
+    # -- handle_msg_bbo tests (price feed) --
 
-    def test_handle_msg_full_valid_l2book(self):
+    def test_handle_msg_bbo_valid(self):
         now_ms = TimeUtil.now_in_millis()
-        msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0", time_ms=now_ms)
+        msg = self._make_bbo_msg(coin="BTC", bid="30000.0", ask="30002.0", time_ms=now_ms)
 
-        asyncio.run(self.service.handle_msg_full(msg))
+        asyncio.run(self.service.handle_msg_bbo(msg))
 
         symbol = TradePair.BTCUSDC.trade_pair  # "BTC/USDC"
         self.assertIn(symbol, self.service.latest_websocket_events)
@@ -80,25 +92,14 @@ class TestHyperliquidDataService(unittest.TestCase):
         self.assertTrue(ps.websocket)
         self.assertEqual(ps.timespan_ms, 0)
 
-    def test_handle_msg_full_updates_fine_orderbook(self):
-        msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
-        asyncio.run(self.service.handle_msg_full(msg))
-        self.assertIn("BTC", self.service._orderbooks_full)
-        for coarse_book in self.service._orderbooks_coarse_by_sigfigs.values():
-            self.assertNotIn("BTC", coarse_book)
+    def test_handle_msg_bbo_does_not_touch_orderbooks(self):
+        asyncio.run(self.service.handle_msg_bbo(self._make_bbo_msg(coin="BTC")))
+        for book in self.service._orderbooks_by_sigfigs.values():
+            self.assertNotIn("BTC", book)
 
-    def test_handle_msg_coarse_updates_coarse_orderbook_only(self):
-        sig_figs = 5
-        msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
-        asyncio.run(self.service.handle_msg_coarse(sig_figs, msg))
-        self.assertIn("BTC", self.service._orderbooks_coarse_by_sigfigs[sig_figs])
-        self.assertNotIn("BTC", self.service._orderbooks_full)
-        # coarse handler must NOT update the price feed
-        self.assertNotIn(TradePair.BTCUSDC.trade_pair, self.service.latest_websocket_events)
-
-    def test_handle_msg_full_stores_in_recent_events(self):
-        msg = self._make_l2book_msg(coin="ETH", bid="2000.0", ask="2001.0")
-        asyncio.run(self.service.handle_msg_full(msg))
+    def test_handle_msg_bbo_stores_in_recent_events(self):
+        msg = self._make_bbo_msg(coin="ETH", bid="2000.0", ask="2001.0")
+        asyncio.run(self.service.handle_msg_bbo(msg))
 
         symbol = TradePair.ETHUSDC.trade_pair
         self.assertIn(symbol, self.service.trade_pair_to_recent_events)
@@ -106,26 +107,75 @@ class TestHyperliquidDataService(unittest.TestCase):
         tracker = self.service.trade_pair_to_recent_events[symbol]
         self.assertTrue(len(tracker.events) > 0)
 
-    def test_handle_msg_full_ignores_non_l2book(self):
+    def test_handle_msg_bbo_keeps_latest_quote_within_same_second(self):
+        base_ms = (TimeUtil.now_in_millis() // 1000) * 1000
+        asyncio.run(self.service.handle_msg_bbo(
+            self._make_bbo_msg(coin="BTC", bid="30000.0", ask="30002.0", time_ms=base_ms + 100)))
+        asyncio.run(self.service.handle_msg_bbo(
+            self._make_bbo_msg(coin="BTC", bid="30010.0", ask="30012.0", time_ms=base_ms + 300)))
+
+        tracker = self.service.trade_pair_to_recent_events[TradePair.BTCUSDC.trade_pair]
+        self.assertEqual(tracker.count_events(), 1)
+        event, _ = tracker.get_event_by_timestamp(base_ms)
+        self.assertEqual(event.close, 30011.0)
+
+    def test_handle_msg_bbo_ignores_non_bbo(self):
         # Subscription confirmation message
         msg = json.dumps({"channel": "subscriptionResponse", "data": {"method": "subscribe"}})
-        asyncio.run(self.service.handle_msg_full(msg))
+        asyncio.run(self.service.handle_msg_bbo(msg))
         self.assertEqual(len(self.service.latest_websocket_events), 0)
 
-    def test_handle_msg_full_ignores_unknown_coin(self):
-        msg = self._make_l2book_msg(coin="UNKNOWN", bid="100.0", ask="101.0")
-        asyncio.run(self.service.handle_msg_full(msg))
+    def test_handle_msg_bbo_ignores_unknown_coin(self):
+        msg = self._make_bbo_msg(coin="UNKNOWN", bid="100.0", ask="101.0")
+        asyncio.run(self.service.handle_msg_bbo(msg))
         self.assertEqual(len(self.service.latest_websocket_events), 0)
 
-    def test_handle_msg_full_handles_empty_levels(self):
+    def test_handle_msg_bbo_handles_empty_side(self):
         msg = json.dumps({
-            "channel": "l2Book",
-            "data": {"coin": "BTC", "time": TimeUtil.now_in_millis(), "levels": []}
+            "channel": "bbo",
+            "data": {"coin": "BTC", "time": TimeUtil.now_in_millis(),
+                     "bbo": [None, {"px": "30001.0", "sz": "0.8", "n": 3}]}
         })
-        asyncio.run(self.service.handle_msg_full(msg))
+        asyncio.run(self.service.handle_msg_bbo(msg))
         self.assertEqual(len(self.service.latest_websocket_events), 0)
 
-    def test_handle_msg_full_handles_empty_bids(self):
+    def test_handle_msg_bbo_increments_event_counter(self):
+        initial_count = self.service.tpc_to_n_events[TradePairCategory.CRYPTO]
+        asyncio.run(self.service.handle_msg_bbo(self._make_bbo_msg(coin="BTC")))
+        self.assertEqual(self.service.tpc_to_n_events[TradePairCategory.CRYPTO], initial_count + 1)
+
+    # -- handle_msg_l2 tests (orderbook caches only) --
+
+    def test_handle_msg_l2_full_precision_updates_only_full_book(self):
+        msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
+        asyncio.run(self.service.handle_msg_l2(None, msg))
+        self.assertIn("BTC", self.service._orderbooks_by_sigfigs[None])
+        for sig_figs, book in self.service._orderbooks_by_sigfigs.items():
+            if sig_figs is not None:
+                self.assertNotIn("BTC", book)
+
+    def test_handle_msg_l2_coarse_updates_only_its_resolution(self):
+        sig_figs = 5
+        msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
+        asyncio.run(self.service.handle_msg_l2(sig_figs, msg))
+        self.assertIn("BTC", self.service._orderbooks_by_sigfigs[sig_figs])
+        for other, book in self.service._orderbooks_by_sigfigs.items():
+            if other != sig_figs:
+                self.assertNotIn("BTC", book)
+
+    def test_handle_msg_l2_does_not_update_price_feed(self):
+        msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0")
+        for sig_figs in ValiConfig.HL_L2_SIG_FIGS_CASCADE:
+            asyncio.run(self.service.handle_msg_l2(sig_figs, msg))
+        self.assertNotIn(TradePair.BTCUSDC.trade_pair, self.service.latest_websocket_events)
+        self.assertNotIn(TradePair.BTCUSDC.trade_pair, self.service.trade_pair_to_recent_events)
+
+    def test_handle_msg_l2_ignores_non_l2book(self):
+        msg = json.dumps({"channel": "subscriptionResponse", "data": {"method": "subscribe"}})
+        asyncio.run(self.service.handle_msg_l2(None, msg))
+        self.assertEqual(len(self.service._orderbooks_by_sigfigs[None]), 0)
+
+    def test_handle_msg_l2_handles_empty_bids(self):
         msg = json.dumps({
             "channel": "l2Book",
             "data": {
@@ -134,21 +184,15 @@ class TestHyperliquidDataService(unittest.TestCase):
                 "levels": [[], [{"px": "30001.0", "sz": "0.8", "n": 3}]]
             }
         })
-        asyncio.run(self.service.handle_msg_full(msg))
-        self.assertEqual(len(self.service.latest_websocket_events), 0)
-
-    def test_handle_msg_full_increments_event_counter(self):
-        initial_count = self.service.tpc_to_n_events[TradePairCategory.CRYPTO]
-        msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30001.0")
-        asyncio.run(self.service.handle_msg_full(msg))
-        self.assertEqual(self.service.tpc_to_n_events[TradePairCategory.CRYPTO], initial_count + 1)
+        asyncio.run(self.service.handle_msg_l2(None, msg))
+        self.assertNotIn("BTC", self.service._orderbooks_by_sigfigs[None])
 
     # -- get_closes_websocket tests --
 
     def test_get_closes_websocket_returns_injected_data(self):
         now_ms = TimeUtil.now_in_millis()
-        msg = self._make_l2book_msg(coin="BTC", bid="30000.0", ask="30002.0", time_ms=now_ms)
-        asyncio.run(self.service.handle_msg_full(msg))
+        msg = self._make_bbo_msg(coin="BTC", bid="30000.0", ask="30002.0", time_ms=now_ms)
+        asyncio.run(self.service.handle_msg_bbo(msg))
 
         results = self.service.get_closes_websocket([TradePair.BTCUSDC], now_ms)
         self.assertIn(TradePair.BTCUSDC, results)
@@ -161,8 +205,8 @@ class TestHyperliquidDataService(unittest.TestCase):
     def test_multiple_coins(self):
         now_ms = TimeUtil.now_in_millis()
         for coin, bid, ask in [("BTC", "30000", "30002"), ("ETH", "2000", "2001"), ("SOL", "100", "100.5")]:
-            msg = self._make_l2book_msg(coin=coin, bid=bid, ask=ask, time_ms=now_ms)
-            asyncio.run(self.service.handle_msg_full(msg))
+            msg = self._make_bbo_msg(coin=coin, bid=bid, ask=ask, time_ms=now_ms)
+            asyncio.run(self.service.handle_msg_bbo(msg))
 
         results = self.service.get_closes_websocket(
             [TradePair.BTCUSDC, TradePair.ETHUSDC, TradePair.SOLUSDC], now_ms
@@ -179,9 +223,9 @@ class TestHyperliquidDataService(unittest.TestCase):
         """Directly populate both orderbook caches."""
         now_ms = TimeUtil.now_in_millis()
         if fine_bids is not None:
-            self.service._orderbooks_full[coin] = {"bids": fine_bids, "asks": fine_asks, "time": now_ms}
+            self.service._orderbooks_by_sigfigs[None][coin] = {"bids": fine_bids, "asks": fine_asks, "time": now_ms}
         if coarse_bids is not None:
-            self.service._orderbooks_coarse_by_sigfigs[sig_figs][coin] = {
+            self.service._orderbooks_by_sigfigs[sig_figs][coin] = {
                 "bids": coarse_bids, "asks": coarse_asks, "time": now_ms
             }
 
