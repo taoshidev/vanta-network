@@ -263,13 +263,8 @@ class ValidatorBroadcastBase:
                 and (not self._hotkey or n.axon_info.hotkey != self._hotkey)
             ]
         else:
-            # Mainnet: Validators with validator_permit
-            validator_axons = [
-                n.axon_info for n in self._metagraph_client.get_neurons()
-                if n.validator_permit
-                and n.axon_info.ip != ValiConfig.AXON_NO_IP
-                and (not self._hotkey or n.axon_info.hotkey != self._hotkey)
-            ]
+            # Mainnet: validators by chain stake weight (see metagraph_utils.validator_axons)
+            validator_axons = self._metagraph_client.get_validator_axons(exclude_hotkey=self._hotkey or None)
 
         return validator_axons
 

@@ -234,9 +234,14 @@ class TestSubtensorOpsManager(TestBase):
         # Wire metagraph client (normally done by orchestrator)
         updater._metagraph_client = self.metagraph_client
 
-        # Set mock metagraph data
-        updater.set_mock_metagraph_data(hotkeys)
-
+        # Set mock metagraph data; the mock grants stake weight to the neuron with validator trust
+        neurons = [
+            SimpleNeuron(uid=0, hotkey=self.TEST_VALIDATOR_HOTKEY, incentive=0.1, validator_trust=1.0,
+                         axon_info=SimpleAxonInfo(ip="10.0.0.1", port=8092)),
+            SimpleNeuron(uid=1, hotkey=self.TEST_MINER_HOTKEY, incentive=0.1, validator_trust=0.0,
+                         axon_info=SimpleAxonInfo(ip="10.0.0.2", port=8093)),
+        ]
+        updater.set_mock_metagraph_data(hotkeys, neurons=neurons)
 
         # Perform metagraph update
         updater.update_metagraph()
@@ -246,6 +251,21 @@ class TestSubtensorOpsManager(TestBase):
         self.assertEqual(len(updated_hotkeys), 2)
         self.assertIn(self.TEST_VALIDATOR_HOTKEY, updated_hotkeys)
         self.assertIn(self.TEST_MINER_HOTKEY, updated_hotkeys)
+
+        # The chain stake weight is published with the neurons, and only the validator clears it
+        stake_weight = self.metagraph_client.get_stake_weight()
+        self.assertEqual(len(stake_weight), 2)
+        self.assertGreaterEqual(stake_weight[0], ValiConfig.STAKE_MIN)
+        self.assertEqual(stake_weight[1], 0.0)
+        self.assertEqual([a.ip for a in self.metagraph_client.get_validator_axons()], ["10.0.0.1"])
+
+        # A sync whose stake query came back empty keeps the previous weights and validator set
+        stale_metagraph = updater.subtensor.metagraph(updater.config.netuid)
+        stale_metagraph.total_stake = []
+        updater.subtensor.metagraph = Mock(return_value=stale_metagraph)
+        updater.update_metagraph()
+        self.assertEqual(self.metagraph_client.get_stake_weight(), stake_weight)
+        self.assertEqual([a.ip for a in self.metagraph_client.get_validator_axons()], ["10.0.0.1"])
 
     def test_validator_hotkey_cache(self):
         """Test hotkey cache updates correctly in validator mode."""
