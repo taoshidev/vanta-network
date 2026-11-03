@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import List, Dict, Optional
 
-from time_util.time_util import TimeUtil, timeme, MS_IN_1_HOUR
+from time_util.time_util import StageTimer, TimeUtil, timeme, MS_IN_1_HOUR
 from vali_objects.exceptions.corrupt_data_exception import ValiBkpCorruptDataException
 from vali_objects.exceptions.vali_bkp_file_missing_exception import ValiFileMissingException
 from vali_objects.position_management.position_utils import PositionUtils
@@ -1420,6 +1420,8 @@ class PositionManager:
             logger.info("No positions directory found, starting fresh")
             return
 
+        timer = StageTimer()
+
         # Iterate through all miner hotkey directories
         for hotkey_dir in base_dir.iterdir():
             if not hotkey_dir.is_dir():
@@ -1448,6 +1450,7 @@ class PositionManager:
             if positions_dict:
                 self.hotkey_to_positions[hotkey] = positions_dict
                 logger.debug(f"Loaded {len(positions_dict)} positions for {hotkey}")
+        timer.lap("positions")
 
         total_positions = sum(len(positions_dict) for positions_dict in self.hotkey_to_positions.values())
         logger.info(
@@ -1456,6 +1459,7 @@ class PositionManager:
 
         # Rebuild the open positions index after loading
         self._rebuild_open_index()
+        timer.lap("open_index")
 
         # Load archived positions
         for hotkey_dir in base_dir.iterdir():
@@ -1483,11 +1487,13 @@ class PositionManager:
             if archived_dict:
                 self.hotkey_to_archived_positions[hotkey] = archived_dict
                 logger.debug(f"Loaded {len(archived_dict)} archived positions for {hotkey}")
+        timer.lap("archived_positions")
 
         total_archived = sum(len(d) for d in self.hotkey_to_archived_positions.values())
         logger.info(
             f"Loaded {total_archived} archived positions for {len(self.hotkey_to_archived_positions)} hotkeys from disk"
         )
+        logger.info(f"Position disk load timings: {timer.summary()}")
 
 
     @timeme
