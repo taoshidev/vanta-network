@@ -2,9 +2,11 @@
 # Copyright (c) 2024 Taoshi Inc
 import os
 import traceback
+from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 from pickle import UnpicklingError
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from copy import deepcopy
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -34,6 +36,10 @@ from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from shared_objects.log import logger
 
 TARGET_MS = 1782417600000 + (1000 * 60 * 60 * 6)  # + 6 hours
+
+# Disk load: threads reading position files, and how many hotkeys may be read ahead of the parser
+DISK_LOAD_READ_WORKERS = 16
+DISK_LOAD_MAX_PENDING_HOTKEYS = 64
 
 
 def dashboard_fill_key(order_uuid: str, occurrence: int) -> str:
@@ -1420,34 +1426,14 @@ class PositionManager:
             logger.info("No positions directory found, starting fresh")
             return
 
-        # Iterate through all miner hotkey directories
-        for hotkey_dir in base_dir.iterdir():
-            if not hotkey_dir.is_dir():
-                continue
+        hotkeys = [hotkey_dir.name for hotkey_dir in base_dir.iterdir() if hotkey_dir.is_dir()]
 
-            hotkey = hotkey_dir.name
-
-            # Get all position files for this hotkey (both open and closed)
-            all_files = ValiBkpUtils.get_all_files_in_dir(
-                ValiBkpUtils.get_miner_all_positions_dir(hotkey, running_unit_tests=self.running_unit_tests)
-            )
-
-            if not all_files:
-                continue
-
-            positions_dict = {}  # Build dict directly keyed by position_uuid
-
-            for position_file in all_files:
-                try:
-                    file_string = ValiBkpUtils.get_file(position_file)
-                    position = Position.model_validate_json(file_string)
-                    positions_dict[position.position_uuid] = position
-                except Exception as e:
-                    logger.error(f"Error loading position file {position_file} for {hotkey}: {e}")
-
-            if positions_dict:
-                self.hotkey_to_positions[hotkey] = positions_dict
-                logger.debug(f"Loaded {len(positions_dict)} positions for {hotkey}")
+        # Get all position files for each hotkey (both open and closed)
+        self.hotkey_to_positions.update(self._load_position_dirs(
+            hotkeys,
+            lambda hotkey: ValiBkpUtils.get_miner_all_positions_dir(hotkey, running_unit_tests=self.running_unit_tests),
+            "position",
+        ))
 
         total_positions = sum(len(positions_dict) for positions_dict in self.hotkey_to_positions.values())
         logger.info(
@@ -1458,37 +1444,61 @@ class PositionManager:
         self._rebuild_open_index()
 
         # Load archived positions
-        for hotkey_dir in base_dir.iterdir():
-            if not hotkey_dir.is_dir():
-                continue
-
-            hotkey = hotkey_dir.name
-            archive_dir = ValiBkpUtils.get_miner_archived_positions_dir(
-                hotkey, running_unit_tests=self.running_unit_tests
-            )
-            all_files = ValiBkpUtils.get_all_files_in_dir(archive_dir)
-
-            if not all_files:
-                continue
-
-            archived_dict = {}
-            for position_file in all_files:
-                try:
-                    file_string = ValiBkpUtils.get_file(position_file)
-                    position = Position.model_validate_json(file_string)
-                    archived_dict[position.position_uuid] = position
-                except Exception as e:
-                    logger.error(f"Error loading archived position file {position_file} for {hotkey}: {e}")
-
-            if archived_dict:
-                self.hotkey_to_archived_positions[hotkey] = archived_dict
-                logger.debug(f"Loaded {len(archived_dict)} archived positions for {hotkey}")
+        self.hotkey_to_archived_positions.update(self._load_position_dirs(
+            hotkeys,
+            lambda hotkey: ValiBkpUtils.get_miner_archived_positions_dir(hotkey, running_unit_tests=self.running_unit_tests),
+            "archived position",
+        ))
 
         total_archived = sum(len(d) for d in self.hotkey_to_archived_positions.values())
         logger.info(
             f"Loaded {total_archived} archived positions for {len(self.hotkey_to_archived_positions)} hotkeys from disk"
         )
 
+    @staticmethod
+    def _load_position_dirs(hotkeys, dir_for_hotkey, label: str) -> Dict[str, Dict[str, Position]]:
+        """
+        Read each hotkey's position files on a thread pool and parse them on this thread.
+
+        File reads release the GIL so they overlap; parsing is GIL-bound and stays serial. Hotkeys are
+        parsed in submission order, and at most DISK_LOAD_MAX_PENDING_HOTKEYS are read ahead so the
+        unparsed file contents don't pile up in memory while the parser catches up.
+        """
+        def read_hotkey(hotkey):
+            files = []
+            for position_file in ValiBkpUtils.get_all_files_in_dir(dir_for_hotkey(hotkey)):
+                try:
+                    files.append((position_file, ValiBkpUtils.get_file(position_file)))
+                except Exception as e:
+                    logger.error(f"Error reading {label} file {position_file} for {hotkey}: {e}")
+            return files
+
+        loaded: Dict[str, Dict[str, Position]] = {}
+        hotkey_iter = iter(hotkeys)
+        with ThreadPoolExecutor(max_workers=DISK_LOAD_READ_WORKERS) as executor:
+            pending = deque(
+                (hotkey, executor.submit(read_hotkey, hotkey))
+                for hotkey in islice(hotkey_iter, DISK_LOAD_MAX_PENDING_HOTKEYS)
+            )
+            while pending:
+                hotkey, future = pending.popleft()
+                next_hotkey = next(hotkey_iter, None)
+                if next_hotkey is not None:
+                    pending.append((next_hotkey, executor.submit(read_hotkey, next_hotkey)))
+
+                positions_dict = {}  # Build dict directly keyed by position_uuid
+                for position_file, file_string in future.result():
+                    try:
+                        position = Position.model_validate_json(file_string)
+                        positions_dict[position.position_uuid] = position
+                    except Exception as e:
+                        logger.error(f"Error loading {label} file {position_file} for {hotkey}: {e}")
+
+                if positions_dict:
+                    loaded[hotkey] = positions_dict
+                    logger.debug(f"Loaded {len(positions_dict)} {label}s for {hotkey}")
+
+        return loaded
 
     @timeme
     def _apply_position_splitting_on_startup(self):
