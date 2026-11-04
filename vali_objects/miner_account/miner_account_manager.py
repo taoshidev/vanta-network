@@ -21,6 +21,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.miner_account.account_snapshot import AccountSnapshot
+from vali_objects.miner_account.new_regular_miner import NewRegularMinerRecord
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
@@ -90,6 +91,7 @@ class MinerAccount:
     capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
     correlated_exposure_by_group: Dict[str, List[float]] = field(default_factory=dict)
     daily_open_snapshot: Optional[AccountSnapshot] = None
+    new_regular_miner_record: Optional[NewRegularMinerRecord] = None  # The account a new regular miner opened
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -257,6 +259,7 @@ class MinerAccount:
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'daily_open_snapshot': self.daily_open_snapshot.to_dict() if self.daily_open_snapshot else None,
+            'new_regular_miner_record': self.new_regular_miner_record.to_dict() if self.new_regular_miner_record else None,
         }
 
         if include_collateral_records:
@@ -495,6 +498,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
                     correlated_exposure_raw = last_record.get("correlated_exposure_by_group", {})
                     daily_open_snapshot_raw = last_record.get("daily_open_snapshot")
+                    new_regular_miner_raw = last_record.get("new_regular_miner_record")
                 else:
                     total_realized_pnl = None
                     capital_used = None
@@ -509,6 +513,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used_by_class_raw = {}
                     correlated_exposure_raw = {}
                     daily_open_snapshot_raw = None
+                    new_regular_miner_raw = None
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
                 # Missing field (older checkpoint) → empty dict; will be lazy-backfilled by
@@ -570,6 +575,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     except Exception:
                         pass
 
+                new_regular_miner_record = None
+                if new_regular_miner_raw:
+                    try:
+                        new_regular_miner_record = NewRegularMinerRecord.from_dict(new_regular_miner_raw)
+                    except Exception as e:
+                        logger.error(f"Unreadable new regular miner record for {hotkey}, loading the account without it: {e}")
+
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
@@ -587,6 +599,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used_by_class=capital_used_by_class,
                     correlated_exposure_by_group=correlated_exposure_by_group,
                     daily_open_snapshot=daily_open_snapshot,
+                    new_regular_miner_record=new_regular_miner_record,
                 )
 
             except Exception as e:
@@ -904,6 +917,20 @@ class MinerAccountManager(ValidatorBroadcastBase):
         if pushed_cutoff_block != cutoff_block:
             return None
         return registered_after.get(hotkey)
+
+    def set_new_regular_miner_record(self, hotkey: str, record: NewRegularMinerRecord) -> None:
+        """Attach or replace the record of the account a new regular miner opened. Saves to disk."""
+        if not isinstance(record, NewRegularMinerRecord):
+            raise TypeError(f"A NewRegularMinerRecord is required, not {type(record).__name__}")
+        with self._accounts_lock:
+            self.get_or_create(hotkey).new_regular_miner_record = record
+            self._save_accounts_to_disk()
+
+    def get_new_regular_miner_record(self, hotkey: str) -> Optional[NewRegularMinerRecord]:
+        """The record of the account a new regular miner opened; None for every other hotkey."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            return account.new_regular_miner_record if account else None
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""

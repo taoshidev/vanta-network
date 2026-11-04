@@ -26,6 +26,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
+from vali_objects.miner_account.new_regular_miner import NewRegularMinerRecord
 from shared_objects.log import logger
 
 
@@ -293,6 +294,14 @@ class MinerAccountServer(RPCServerBase):
     def is_registered_after_cutoff(self, hotkey: str) -> Optional[bool]:
         """Whether a real hotkey registered after the cutoff block (see MinerAccountManager.is_registered_after_cutoff)."""
         return self._manager.is_registered_after_cutoff(hotkey)
+
+    def set_new_regular_miner_record(self, hotkey: str, record: NewRegularMinerRecord) -> None:
+        """Attach or replace the record of the account a new regular miner opened."""
+        self._manager.set_new_regular_miner_record(hotkey, record)
+
+    def get_new_regular_miner_record(self, hotkey: str) -> Optional[NewRegularMinerRecord]:
+        """The record of the account a new regular miner opened; None for every other hotkey."""
+        return self._manager.get_new_regular_miner_record(hotkey)
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
