@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Any
 
+import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.contract.contract_server import ContractServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
@@ -103,8 +104,17 @@ class ContractClient(RPCClientBase):
 
     def open_standard_miner_account(self, hotkey: str, leverage_tier: int) -> tuple:
         """Open the account a hotkey registered after the standard miner cutoff block trades on:
-        (opened, message for the miner, the record as a dict). Not retried: an opening is not idempotent."""
+        (opened, message for the miner, the record as a dict). Not retried: a transport error goes back to the
+        miner, who sends a fresh request."""
         return self._invoke_rpc("open_standard_miner_account_rpc", args=(hotkey, leverage_tier), retry=False)
+
+    def receive_standard_miner_opening(
+        self, synapse: template.protocol.StandardMinerOpening
+    ) -> template.protocol.StandardMinerOpening:
+        """Receive a StandardMinerOpening synapse (for axon attachment). Applying a record never waits on the chain,
+        so the ordinary call timeout bounds the axon thread, not the chain-call one above."""
+        return self._invoke_rpc("receive_standard_miner_opening_rpc", args=(synapse,),
+                                timeout_s=RPCClientBase.RPC_CALL_TIMEOUT_S)
 
     # ==================== Verification Methods ====================
 

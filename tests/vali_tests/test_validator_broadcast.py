@@ -65,6 +65,11 @@ class TestSynapsePickling(unittest.TestCase):
             "synthetic_hotkey": "entity_hotkey_1_0"
         }
 
+        self.opening = {
+            "hotkey": "test_hotkey",
+            "record": {"opened_at_ms": 1_700_000_000_000, "opening_leverage_tier": 2, "account_size": 50_000.0}
+        }
+
     def test_pickle_send_signal_synapse(self):
         """Test that SendSignal synapse can be pickled."""
         synapse = template.protocol.SendSignal(
@@ -149,6 +154,16 @@ class TestSynapsePickling(unittest.TestCase):
         self.assertIsInstance(unpickled, template.protocol.SubaccountRegistration)
         self.assertEqual(unpickled.subaccount_data, self.subaccount_data)
 
+    def test_pickle_standard_miner_opening_synapse(self):
+        """Test that StandardMinerOpening synapse can be pickled."""
+        synapse = template.protocol.StandardMinerOpening(opening=self.opening)
+
+        pickled = pickle.dumps(synapse)
+        unpickled = pickle.loads(pickled)
+
+        self.assertIsInstance(unpickled, template.protocol.StandardMinerOpening)
+        self.assertEqual(unpickled.opening, self.opening)
+
     def test_pickle_all_synapses_with_full_state(self):
         """Test pickling synapses with all fields populated."""
         # Create synapses with all fields
@@ -183,6 +198,10 @@ class TestSynapsePickling(unittest.TestCase):
             ),
             template.protocol.SubaccountRegistration(
                 subaccount_data=self.subaccount_data,
+                successfully_processed=True
+            ),
+            template.protocol.StandardMinerOpening(
+                opening=self.opening,
                 successfully_processed=True
             )
         ]
@@ -455,7 +474,8 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
             template.protocol.ValidatorCheckpoint(checkpoint="checkpoint"),
             template.protocol.CollateralRecord(collateral_record={"amount": 100}),
             template.protocol.AssetSelection(asset_selection={"asset": "CRYPTO"}),
-            template.protocol.SubaccountRegistration(subaccount_data={"id": 0})
+            template.protocol.SubaccountRegistration(subaccount_data={"id": 0}),
+            template.protocol.StandardMinerOpening(opening={"hotkey": "h", "record": {"account_size": 50_000.0}})
         ]
 
         for original_synapse in synapses:
@@ -481,6 +501,8 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
                 self.assertEqual(transmitted.asset_selection, original_synapse.asset_selection)
             elif isinstance(transmitted, template.protocol.SubaccountRegistration):
                 self.assertEqual(transmitted.subaccount_data, original_synapse.subaccount_data)
+            elif isinstance(transmitted, template.protocol.StandardMinerOpening):
+                self.assertEqual(transmitted.opening, original_synapse.opening)
 
 
 if __name__ == '__main__':

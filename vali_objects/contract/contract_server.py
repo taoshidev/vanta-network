@@ -21,6 +21,7 @@ Usage:
 from typing import Dict, Any, Optional
 import time
 from setproctitle import setproctitle
+import template.protocol
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from shared_objects.log import logger
@@ -153,6 +154,22 @@ class ContractServer(RPCServerBase):
     def open_standard_miner_account_rpc(self, hotkey: str, leverage_tier: int) -> tuple:
         """Open the account a hotkey registered after the standard miner cutoff block trades on."""
         return self._manager.open_standard_miner_account(hotkey, leverage_tier)
+
+    def receive_standard_miner_opening_rpc(
+        self, synapse: template.protocol.StandardMinerOpening
+    ) -> template.protocol.StandardMinerOpening:
+        """Receive a StandardMinerOpening synapse (RPC method for the axon handler)."""
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            logger.info(f"Received account opening from validator hotkey [{sender_hotkey}]")
+            success = self._manager.receive_standard_miner_opening_update(synapse.opening, sender_hotkey)
+            synapse.successfully_processed = success
+            synapse.error_message = "" if success else "Failed to process the account opening"
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing the account opening: {e}"
+            logger.error(f"Exception in receive_standard_miner_opening: {e}")
+        return synapse
 
     def set_test_collateral_balance_rpc(self, miner_hotkey: str, balance_rao: int) -> None:
         """Inject test collateral balance (TEST ONLY - requires running_unit_tests=True)."""

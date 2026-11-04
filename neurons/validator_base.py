@@ -31,6 +31,10 @@ class ValidatorBase:
         from vali_objects.miner_account.miner_account_client import MinerAccountClient
         self._miner_account_client = MinerAccountClient(running_unit_tests=False)
 
+        # Create own ContractClient for receiving account openings
+        from vali_objects.contract.contract_client import ContractClient
+        self._contract_client = ContractClient(running_unit_tests=False)
+
         # Dedicated thread pool for concurrent synchronous requests
         self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 
@@ -82,6 +86,10 @@ class ValidatorBase:
     async def receive_subaccount_registration(self, synapse: template.protocol.SubaccountRegistration) -> template.protocol.SubaccountRegistration:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._thread_pool, self._entity_client.receive_subaccount_registration, synapse)
+
+    async def receive_standard_miner_opening(self, synapse: template.protocol.StandardMinerOpening) -> template.protocol.StandardMinerOpening:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._thread_pool, self._contract_client.receive_standard_miner_opening, synapse)
 
     @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
@@ -236,6 +244,9 @@ class ValidatorBase:
         def eeu_blacklist_fn(synapse: template.protocol.EntityEndpointUpdate) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_client)
 
+        def smo_blacklist_fn(synapse: template.protocol.StandardMinerOpening) -> Tuple[bool, str]:
+            return self.blacklist_fn(synapse, self.metagraph_client)
+
         self.axon.attach(
             forward_fn=self.receive_signal,
             blacklist_fn=rs_blacklist_fn
@@ -259,6 +270,10 @@ class ValidatorBase:
         self.axon.attach(
             forward_fn=self._entity_client.receive_entity_endpoint_synapse,
             blacklist_fn=eeu_blacklist_fn
+        )
+        self.axon.attach(
+            forward_fn=self.receive_standard_miner_opening,
+            blacklist_fn=smo_blacklist_fn
         )
 
         # Serve passes the axon information to the network + netuid we are hosting on.

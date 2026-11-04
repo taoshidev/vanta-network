@@ -406,16 +406,25 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
     def open_standard_miner_account(self, hotkey: str, leverage_tier: int) -> tuple[bool, str, Optional[dict]]:
         """Open the account a hotkey registered after the standard miner cutoff block trades on, sized from its
-        collateral at today's price (standard_miner.open_account). Returns (opened, message for the miner, the record
-        as a dict); a request for an account already opened puts anything missing back and returns that record."""
+        collateral at today's price (standard_miner.open_account), and broadcast the record; only the mothership does.
+        Returns (opened, message for the miner, the record as a dict); an opened account is returned as it is, completed
+        and broadcast again only when a step had been left missing."""
+        if not self.running_unit_tests and not self.is_mothership:
+            return False, "Account openings are only processed by the mothership validator", None
         with self._opening_lock(hotkey):
             try:
                 record, already_opened = self._standard_miner_opening(hotkey, leverage_tier)
             except OpeningRejected as e:
                 logger.info(f"Account opening for {hotkey} rejected: {e}")
                 return False, str(e), None
-            record = self.apply_standard_miner_opening(hotkey, record)
-        if already_opened:
+            repeat = already_opened and self._challenge_period_client.has_miner(hotkey)
+            record = self._miner_account_client.open_standard_account(hotkey, record)
+            if not repeat:
+                # Sent as soon as the record exists: a failure in the state step costs the miner a retry, not the
+                # peers their copy of the record
+                self._broadcast_standard_miner_opening(hotkey, record)
+            self._add_opening_state(hotkey, record)
+        if repeat:
             return True, "This hotkey already opened its account", record.to_dict()
         message = (f"Opened a ${record.account_size:,.2f} account at tier {record.opening_leverage_tier}, locking "
                    f"{record.locked_theta:.4f} theta at ${record.opening_price_usd:,.4f} per theta")
@@ -428,20 +437,15 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
     def _standard_miner_opening(self, hotkey: str, leverage_tier: int) -> tuple[StandardMinerAccount, bool]:
         """The record an opening request earns, with whether it already existed, or OpeningRejected: only a hotkey
-        registered after the cutoff block that is not a validator, an entity, eliminated or trading under the existing
-        rules, with a supported asset class and collateral, can open."""
+        registered after the cutoff block that is not eliminated, a validator, an entity or trading under the existing
+        rules, with a supported asset class and collateral, can open. An account already opened is returned even if
+        the hotkey has since become a validator by stake weight."""
         after_cutoff = self._metagraph_client.is_registered_after_cutoff(hotkey)
         if after_cutoff is None:
             raise OpeningRejected("This hotkey is not in the last metagraph sync; try again shortly")
         if after_cutoff is False:
             raise OpeningRejected("Only a hotkey registered after the cutoff block opens an account this way; this "
                                   "one trades under the existing rules")
-        hotkeys, stake_weights = self._metagraph_client.get_hotkeys(), self._metagraph_client.get_stake_weight()
-        index = hotkeys.index(hotkey) if hotkey in hotkeys else -1
-        if 0 <= index < len(stake_weights) and is_validator_stake_weight(stake_weights[index]):
-            raise OpeningRejected("A validator hotkey cannot open a trading account")
-        if self._entity_client.get_entity_data(hotkey) is not None:
-            raise OpeningRejected("An entity hotkey cannot open a trading account")
         if self._elimination_client.is_hotkey_eliminated(hotkey):
             raise OpeningRejected("An eliminated hotkey cannot open a trading account")
         account = self._miner_account_client.get_account(hotkey)
@@ -450,6 +454,12 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             if existing.is_closed:
                 raise OpeningRejected("This account is closed and cannot reopen")
             return existing, True
+        hotkeys, stake_weights = self._metagraph_client.get_hotkeys(), self._metagraph_client.get_stake_weight()
+        index = hotkeys.index(hotkey) if hotkey in hotkeys else -1
+        if 0 <= index < len(stake_weights) and is_validator_stake_weight(stake_weights[index]):
+            raise OpeningRejected("A validator hotkey cannot open a trading account")
+        if self._entity_client.get_entity_data(hotkey) is not None:
+            raise OpeningRejected("An entity hotkey cannot open a trading account")
         if self._challenge_period_client.has_miner(hotkey):
             raise OpeningRejected("This hotkey already trades under the existing rules and cannot open an account")
         if account is None or account.asset_class is None:
@@ -472,13 +482,36 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
     def apply_standard_miner_opening(self, hotkey: str, record: StandardMinerAccount) -> StandardMinerAccount:
         """Put an opened account in place: the record, the opening tier and the bucket on the account in one step,
-        then the SUBACCOUNT_CHALLENGE state with the standard miner limits unless one exists. Returns the record in
-        force, which may be an earlier one."""
+        then the SUBACCOUNT_CHALLENGE state with the standard miner limits unless one exists or the account in force
+        is closed. Returns the record in force, which may be an earlier one."""
         record = self._miner_account_client.open_standard_account(hotkey, record)
-        if not self._challenge_period_client.has_miner(hotkey):
-            self._challenge_period_client.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, record.opened_at_ms,
-                                                           **opening_bucket_thresholds())
+        self._add_opening_state(hotkey, record)
         return record
+
+    def _add_opening_state(self, hotkey: str, record: StandardMinerAccount) -> None:
+        if record.is_closed or self._challenge_period_client.has_miner(hotkey):
+            return
+        self._challenge_period_client.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, record.opened_at_ms,
+                                                       **opening_bucket_thresholds())
+
+    def _broadcast_standard_miner_opening(self, hotkey: str, record: StandardMinerAccount) -> None:
+        def create_synapse():
+            return template.protocol.StandardMinerOpening(opening={"hotkey": hotkey, "record": record.to_dict()})
+
+        self._broadcast_to_validators(synapse_factory=create_synapse, broadcast_name="StandardMinerOpening",
+                                      context={"hotkey": hotkey})
+
+    def receive_standard_miner_opening_update(self, opening_data: dict, sender_hotkey: str = None) -> bool:
+        """Apply an account opening the mothership broadcast, as it is: nothing is recomputed, a record already held
+        stays and no second challenge period state is made (apply_standard_miner_opening)."""
+        def apply(data: dict):
+            hotkey, record_data = data.get("hotkey"), data.get("record")
+            if not hotkey or not isinstance(record_data, dict):
+                raise ValueError(f"Invalid account opening data: {data}")
+            self.apply_standard_miner_opening(hotkey, StandardMinerAccount.from_dict(record_data))
+
+        return self._handle_incoming_broadcast(synapse_data=opening_data, sender_hotkey=sender_hotkey,
+                                               broadcast_name="StandardMinerOpening", update_callback=apply)
 
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """

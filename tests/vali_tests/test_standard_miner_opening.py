@@ -1,17 +1,24 @@
 """
 Opening a standard miner's account: the size and locked theta from the collateral at today's price, the record,
 the opening tier and SUBACCOUNT_CHALLENGE with the standard miner limits; orders rejected before the opening;
-a size that collateral never changes; and the challenge period's first sight of a real hotkey.
+a size that collateral never changes; the challenge period's first sight of a real hotkey; and the transport of
+an opening from the mothership to its peers.
 """
 import contextlib
 import dataclasses
+import pickle
+from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import Mock, patch
 
+import template.protocol
+from shared_objects.rpc.rpc_client_base import RPCClientBase
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from shared_objects.rpc.server_registry import ServerRegistry
 from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
+from vali_objects.contract.contract_client import ContractClient
+from vali_objects.contract.validator_contract_manager import ValidatorContractManager
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
@@ -40,6 +47,9 @@ PCT = ValiConfig.STANDARD_MINER_COLLATERAL_PCT_BY_TIER[TIER]
 MIN_SIZE = ValiConfig.STANDARD_MINER_MIN_ACCOUNT_SIZE
 MAX_SIZE = ValiConfig.STANDARD_MINER_MAX_ACCOUNT_SIZE
 NOW_MS = 1_700_000_000_000
+MOTHERSHIP = "mothership_hotkey"
+PEER = "peer_validator_hotkey"
+REAL_TESTNET_MOTHERSHIP = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET  # what the test servers, in their own processes, verify against
 CLIENT_PATHS = [
     "vali_objects.challenge_period.challengeperiod_manager." + name for name in (
         "PerfLedgerClient", "PositionManagerClient", "EliminationClient", "PlagiarismClient", "MinerAccountClient",
@@ -169,7 +179,7 @@ class TestOpening(TestBase):
         self.assertEqual(self.account_client.get_account(NEW).leverage_tier, TIER)
 
     def test_a_request_for_an_opened_account_puts_a_missing_state_back(self):
-        # As a peer that only received the record would be
+        # As an opening interrupted before its challenge period state leaves the account
         self.account_client.set_standard_account(NEW, record())
         self.assertIsNone(self.challenge_period_client.get_miner_bucket(NEW))
         opened, message, _ = self._open()
@@ -221,6 +231,23 @@ class TestOpening(TestBase):
         registered, message = self.entity_client.register_entity(entity_hotkey=NEW)
         self.assertFalse(registered)
         self.assertIn("already used as a miner", message)
+
+    def test_an_eliminated_hotkey_cannot_reopen_or_complete_its_account(self):
+        opened, message, _ = self._open()
+        self.assertTrue(opened, message)
+        self.elimination_client.append_elimination_row(NEW, EliminationReason.INACTIVE)
+        self.assertIn("eliminated", self._rejection())
+
+    def test_an_opened_account_is_kept_when_the_hotkey_later_counts_as_a_validator(self):
+        opened, message, record_dict = self._open()
+        self.assertTrue(opened, message)
+        self.metagraph_client.set_hotkeys(HOTKEYS, block_at_registration=BLOCKS, standard_miner_cutoff_block=CUTOFF,
+                                          stake_weight=[ValiConfig.STAKE_MIN, 0.0, ValiConfig.STAKE_MIN, 0.0])
+        opened, message, again = self._open(tier=3)
+        self.assertTrue(opened, message)
+        self.assertIn("already opened", message)
+        self.assertEqual(again, record_dict)
+        self.assertAlmostEqual(self.account_client.get_miner_account_size(NEW), 50_000.0)
 
 
 class TestOrdersBeforeAndAfterTheOpening(TestBase):
@@ -343,3 +370,182 @@ class TestFirstSight(TestBase):
         self.assertFalse(self._first_sight(NEW, True, record(closed_at_ms=NOW_MS)))
         self.assertFalse(self._first_sight(NEW, None))
         self.assertNotIn(NEW, self.manager.miner_states)
+
+
+class TestOpeningTransport(TestBase):
+    """The mothership's broadcast of an opening and a peer's application of it, on in-process contract managers
+    whose clients reach the test servers, and the synapse handler through the test contract server."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.orchestrator = ServerOrchestrator.get_instance()
+        secrets = ValiUtils.get_secrets(running_unit_tests=True)
+        cls.orchestrator.start_all_servers(mode=ServerMode.TESTING, secrets=secrets)
+        cls.contract_client = cls.orchestrator.get_client('contract')
+        cls.account_client = cls.orchestrator.get_client('miner_account')
+        cls.metagraph_client = cls.orchestrator.get_client('metagraph')
+        cls.challenge_period_client = cls.orchestrator.get_client('challenge_period')
+        cls.elimination_client = cls.orchestrator.get_client('elimination')
+
+    def setUp(self):
+        super().setUp()
+        self.orchestrator.clear_all_test_data()
+        self.metagraph_client.set_hotkeys(HOTKEYS, block_at_registration=BLOCKS, stake_weight=STAKE_WEIGHTS,
+                                          standard_miner_cutoff_block=CUTOFF)
+        self.account_client.update_asset_selection(NEW, MinerAssetClass.CRYPTO)
+        mothership_hotkey = patch.object(ValiConfig, "MOTHERSHIP_HOTKEY_TESTNET", MOTHERSHIP)
+        mothership_hotkey.start()
+        self.addCleanup(mothership_hotkey.stop)
+        self.mothership = self._manager(MOTHERSHIP, is_mothership=True)
+        self.mothership.set_test_collateral_balance(NEW, int(5.5 * RAO))
+        self.mothership._broadcast_to_validators = Mock()
+        self.peer = self._manager(PEER, is_mothership=False)
+
+    def tearDown(self):
+        self.orchestrator.clear_all_test_data()
+        super().tearDown()
+
+    @staticmethod
+    def _manager(hotkey, is_mothership):
+        config = SimpleNamespace(netuid=116, wallet=SimpleNamespace(hotkey=hotkey),
+                                 subtensor=SimpleNamespace(network="test"))
+        manager = ValidatorContractManager(config=config, running_unit_tests=True)
+        manager.is_mothership = is_mothership
+        return manager
+
+    def _broadcast(self) -> dict:
+        """What the mothership broadcast: the payload of the synapse its one broadcast builds."""
+        self.mothership._broadcast_to_validators.assert_called_once()
+        kwargs = self.mothership._broadcast_to_validators.call_args.kwargs
+        self.assertEqual(kwargs["broadcast_name"], "StandardMinerOpening")
+        synapse = kwargs["synapse_factory"]()
+        self.assertIsInstance(synapse, template.protocol.StandardMinerOpening)
+        return pickle.loads(pickle.dumps(synapse)).opening
+
+    def _receive(self, opening, sender=MOTHERSHIP) -> bool:
+        return self.peer.receive_standard_miner_opening_update(opening, sender_hotkey=sender)
+
+    def test_a_fresh_opening_is_broadcast_once_with_its_record(self):
+        opened, message, record_dict = self.mothership.open_standard_miner_account(NEW, TIER)
+        self.assertTrue(opened, message)
+        self.assertEqual(self._broadcast(), {"hotkey": NEW, "record": record_dict})
+        self.assertEqual(StandardMinerAccount.from_dict(record_dict), self.account_client.get_standard_account(NEW))
+        # A repeated request is answered from the record, not broadcast again
+        opened, message, again = self.mothership.open_standard_miner_account(NEW, 3)
+        self.assertTrue(opened)
+        self.assertIn("already opened", message)
+        self.assertEqual(again, record_dict)
+        self.mothership._broadcast_to_validators.assert_called_once()
+        # Nor is an eliminated hotkey's
+        self.elimination_client.append_elimination_row(NEW, EliminationReason.INACTIVE)
+        opened, message, _ = self.mothership.open_standard_miner_account(NEW, TIER)
+        self.assertFalse(opened)
+        self.assertIn("eliminated", message)
+        self.mothership._broadcast_to_validators.assert_called_once()
+
+    def test_a_failure_after_the_record_is_written_still_broadcasts_it(self):
+        self.mothership._challenge_period_client = Mock()
+        self.mothership._challenge_period_client.has_miner.return_value = False
+        self.mothership._challenge_period_client.set_miner_bucket.side_effect = RuntimeError("challenge period server unavailable")
+        with self.assertRaises(RuntimeError):
+            self.mothership.open_standard_miner_account(NEW, TIER)
+        self.assertEqual(self._broadcast()["hotkey"], NEW)
+        self.assertIsNotNone(self.account_client.get_standard_account(NEW))
+        self.assertIsNone(self.challenge_period_client.get_miner_bucket(NEW))
+
+    def test_an_opening_interrupted_before_its_state_is_completed_and_broadcast_on_retry(self):
+        self.account_client.set_standard_account(NEW, record())
+        opened, message, record_dict = self.mothership.open_standard_miner_account(NEW, TIER)
+        self.assertTrue(opened, message)
+        self.assertIn("Opened", message)
+        self.assertEqual(self._broadcast(), {"hotkey": NEW, "record": record().to_dict()})
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.SUBACCOUNT_CHALLENGE)
+        opened, message, _ = self.mothership.open_standard_miner_account(NEW, TIER)
+        self.assertIn("already opened", message)
+        self.mothership._broadcast_to_validators.assert_called_once()
+
+    def test_only_the_mothership_opens_accounts(self):
+        # The guard is skipped under unit tests, where no server is the mothership
+        self.peer.running_unit_tests = False
+        try:
+            opened, message, record_dict = self.peer.open_standard_miner_account(NEW, TIER)
+        finally:
+            self.peer.running_unit_tests = True
+        self.assertFalse(opened)
+        self.assertIn("mothership", message)
+        self.assertIsNone(record_dict)
+        self.assertIsNone(self.account_client.get_standard_account(NEW))
+        self.assertIsNone(self.challenge_period_client.get_miner_bucket(NEW))
+
+    def test_a_peer_applies_the_broadcast_record_as_it_is(self):
+        # The peer has no collateral balance for the hotkey and does not need one: nothing is recomputed
+        self.assertTrue(self._receive({"hotkey": NEW, "record": record().to_dict()}))
+        self.assertEqual(self.account_client.get_standard_account(NEW), record())
+        account = self.account_client.get_account(NEW)
+        self.assertEqual((account.leverage_tier, account.miner_bucket), (TIER, MinerBucket.SUBACCOUNT_CHALLENGE))
+        self.assertAlmostEqual(self.account_client.get_miner_account_size(NEW), 50_000.0)
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.SUBACCOUNT_CHALLENGE)
+        self.assertEqual(self.challenge_period_client.get_miner_start_time(NEW), NOW_MS)
+        state = self.challenge_period_client.to_checkpoint_dict()[NEW]
+        self.assertEqual(state["intraday_drawdown_threshold_override"], ValiConfig.STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD)
+        self.assertEqual(state["eod_hwm_threshold_override"], ValiConfig.STANDARD_MINER_EOD_HWM_THRESHOLD)
+        # A repeat, even with other values, changes nothing
+        self.assertTrue(self._receive({"hotkey": NEW, "record": record(opening_leverage_tier=3, opened_at_ms=NOW_MS + 1).to_dict()}))
+        self.assertEqual(self.account_client.get_standard_account(NEW), record())
+        self.assertEqual(self.account_client.get_account(NEW).leverage_tier, TIER)
+        self.assertEqual(self.challenge_period_client.get_miner_start_time(NEW), NOW_MS)
+
+    def test_a_peer_keeps_a_record_further_along(self):
+        self.account_client.set_standard_account(NEW, record(pro_account_size=250_000.0))
+        self.assertTrue(self._receive({"hotkey": NEW, "record": record().to_dict()}))
+        self.assertEqual(self.account_client.get_standard_account(NEW), record(pro_account_size=250_000.0))
+
+    def test_a_closed_account_gets_no_challenge_period_state_on_a_peer(self):
+        self.account_client.set_standard_account(NEW, record(closed_at_ms=NOW_MS))
+        self.assertTrue(self._receive({"hotkey": NEW, "record": record().to_dict()}))
+        self.assertEqual(self.account_client.get_standard_account(NEW), record(closed_at_ms=NOW_MS))
+        self.assertIsNone(self.challenge_period_client.get_miner_bucket(NEW))
+
+    def test_the_axon_handler_keeps_the_ordinary_call_timeout(self):
+        client = ContractClient(running_unit_tests=True)
+        client._invoke_rpc = Mock(return_value="answered")
+        synapse = template.protocol.StandardMinerOpening(opening={"hotkey": NEW})
+        self.assertEqual(client.receive_standard_miner_opening(synapse), "answered")
+        client._invoke_rpc.assert_called_once_with("receive_standard_miner_opening_rpc", args=(synapse,),
+                                                   timeout_s=RPCClientBase.RPC_CALL_TIMEOUT_S)
+        self.assertGreater(ContractClient.RPC_CALL_TIMEOUT_S, RPCClientBase.RPC_CALL_TIMEOUT_S)
+
+    def test_what_a_peer_refuses(self):
+        for opening, sender in (
+            ({"hotkey": NEW, "record": record().to_dict()}, PEER),  # not the mothership
+            ({"hotkey": NEW, "record": record().to_dict()}, None),
+            ({"record": record().to_dict()}, MOTHERSHIP),
+            ({"hotkey": NEW, "record": "not a record"}, MOTHERSHIP),
+            ({"hotkey": NEW, "record": {"opened_at_ms": NOW_MS}}, MOTHERSHIP),  # fields missing
+            ({"hotkey": NEW, "record": {**record().to_dict(), "account_size": -1.0}}, MOTHERSHIP),
+            ({"hotkey": f"{ENTITY}_1", "record": record().to_dict()}, MOTHERSHIP),  # a subaccount
+        ):
+            with self.subTest(opening=opening, sender=sender):
+                self.assertFalse(self._receive(opening, sender))
+        self.assertIsNone(self.account_client.get_standard_account(NEW))
+        self.assertIsNone(self.account_client.get_account(f"{ENTITY}_1"))
+        self.assertIsNone(self.challenge_period_client.get_miner_bucket(NEW))
+        # The mothership ignores its own broadcast
+        self.assertFalse(self.mothership.receive_standard_miner_opening_update(
+            {"hotkey": NEW, "record": record().to_dict()}, sender_hotkey=MOTHERSHIP))
+        self.assertIsNone(self.account_client.get_standard_account(NEW))
+
+    def test_the_synapse_handler_applies_the_opening_and_reports_the_outcome(self):
+        synapse = template.protocol.StandardMinerOpening(opening={"hotkey": NEW, "record": record().to_dict()})
+        synapse.dendrite.hotkey = PEER
+        answered = self.contract_client.receive_standard_miner_opening(synapse)
+        self.assertFalse(answered.successfully_processed)
+        self.assertTrue(answered.error_message)
+        self.assertIsNone(self.account_client.get_standard_account(NEW))
+        # The test contract server verifies the sender in its own process, against the configured testnet mothership
+        synapse.dendrite.hotkey = REAL_TESTNET_MOTHERSHIP
+        answered = self.contract_client.receive_standard_miner_opening(synapse)
+        self.assertTrue(answered.successfully_processed, answered.error_message)
+        self.assertEqual(answered.error_message, "")
+        self.assertEqual(self.account_client.get_standard_account(NEW), record())
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.SUBACCOUNT_CHALLENGE)

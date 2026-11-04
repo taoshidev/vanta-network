@@ -100,12 +100,58 @@ class TestStandardMinerAccount(TestBase):
         # The record outlives the account reset that a bucket change runs
         m.reset_account(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED)
         self.assertEqual(m.get_standard_account(HOTKEY), record())
-        # An unreadable record drops only itself
+        # An unreadable record drops only itself from what is loaded, and a sync then keeps the record held
         broken = m.accounts_dict()
         broken[HOTKEY][-1]["standard_account"] = {"opened_at_ms": "not a record"}
+        parsed = MinerAccountManager._parse_accounts_dict(broken)
+        self.assertIsNone(parsed[HOTKEY].standard_account)
         m.sync_miner_account_sizes_data(broken)
-        self.assertIsNone(m.get_standard_account(HOTKEY))
-        self.assertIsNotNone(m.get_account(HOTKEY))
+        self.assertEqual(m.get_standard_account(HOTKEY), record())
+
+    def test_a_synced_snapshot_only_moves_a_record_forward(self):
+        m = manager()
+        now_ms = TimeUtil.now_in_millis()
+        m.set_miner_account_size(LEGACY, collateral_balance_theta=300.0, timestamp_ms=now_ms)
+        m.set_miner_account_size("other_legacy_hotkey", collateral_balance_theta=100.0, timestamp_ms=now_ms)
+        m.open_standard_account(HOTKEY, record())  # the record, the opening tier and the bucket
+        opened = (record(), 2, MinerBucket.SUBACCOUNT_CHALLENGE)
+
+        def account_state(hotkey=HOTKEY):
+            account = m.get_account(hotkey)
+            return account.standard_account, account.leverage_tier, account.miner_bucket
+
+        # A snapshot cut before the opening has no account for the hotkey, or one without the record, tier and bucket;
+        # accounts without a record are taken from the snapshot as they are
+        snapshot = {LEGACY: m.accounts_dict()[LEGACY]}
+        snapshot[LEGACY][-1]["total_realized_pnl"] = 123.0
+        m.sync_miner_account_sizes_data(snapshot)
+        self.assertEqual(account_state(), opened)
+        self.assertEqual(m.get_account(LEGACY).total_realized_pnl, 123.0)
+        self.assertIsNone(m.get_account("other_legacy_hotkey"))
+        without_record = m.accounts_dict()
+        for field in ("standard_account", "leverage_tier", "miner_bucket"):
+            without_record[HOTKEY][-1][field] = None
+        m.sync_miner_account_sizes_data(without_record)
+        self.assertEqual(account_state(), opened)
+        # A snapshot behind the record held leaves it; one ahead of it or at the same stage replaces it
+        pro = record(pro_account_size=250_000.0)
+        trading_pro = record(pro_account_size=250_000.0, trading_account_size=250_000.0)
+        for held, synced, kept in (
+            (pro, record(), pro),
+            (trading_pro, pro, trading_pro),
+            (trading_pro, record(pro_account_size=250_000.0, trading_account_size=OPENING["account_size"]), trading_pro),
+            (record(closed_at_ms=5), trading_pro, record(closed_at_ms=5)),
+            (record(), pro, pro),
+            (pro, trading_pro, trading_pro),
+            (trading_pro, record(pro_account_size=250_000.0, closed_at_ms=5), record(pro_account_size=250_000.0, closed_at_ms=5)),
+            (record(), record(payout_scale=1.2), record(payout_scale=1.2)),
+        ):
+            with self.subTest(held=held, synced=synced):
+                m.set_standard_account(HOTKEY, held)
+                snapshot = m.accounts_dict()
+                snapshot[HOTKEY][-1]["standard_account"] = synced.to_dict()
+                m.sync_miner_account_sizes_data(snapshot)
+                self.assertEqual(m.get_standard_account(HOTKEY), kept)
 
     def test_only_a_record_can_be_stored(self):
         m = manager()
@@ -121,6 +167,10 @@ class TestStandardMinerAccount(TestBase):
         self.assertEqual(self.account_client.get_standard_account(HOTKEY), record(pro_account_size=250_000.0))
         self.assertEqual(self.account_client.get_account(HOTKEY).standard_account,
                          record(pro_account_size=250_000.0))
+        # A checkpoint cut before the pro sizing does not roll it back
+        checkpoint[HOTKEY][-1]["standard_account"] = record().to_dict()
+        self.account_client.sync_miner_account_sizes_data(checkpoint)
+        self.assertEqual(self.account_client.get_standard_account(HOTKEY), record(pro_account_size=250_000.0))
 
     def test_record_is_set_and_read_over_rpc(self):
         self.account_client.set_standard_account(HOTKEY, record())

@@ -56,6 +56,12 @@ class StandardMinerAccount:
         return self.closed_at_ms is not None
 
     @property
+    def stage(self) -> tuple:
+        """How far the account has come, each step final: closed, trading a size other than the opening one, granted
+        a pro size. Of two records of one account, the later stage wins."""
+        return (self.is_closed, self.size_traded != self.account_size, self.pro_account_size is not None)
+
+    @property
     def size_traded(self) -> float:
         return self.trading_account_size if self.trading_account_size is not None else self.account_size
 

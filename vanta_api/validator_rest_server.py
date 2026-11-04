@@ -362,6 +362,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/trade-pairs", methods=["GET"])(self.get_allowed_trade_pairs)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
         self.app.route("/asset-selection/update/", methods=["POST"])(self.update_asset_selection)
+        self.app.route("/account/open", methods=["POST"])(self.open_account)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
 
@@ -1509,6 +1510,108 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error processing asset selection: {e}")
             return jsonify({'error': 'Internal server error processing asset selection'}), 500
+
+    def open_account(self):
+        """
+        Open the trading account of a miner registered after the standard miner cutoff block: sized once from
+        its collateral at today's theta price and the chosen leverage tier, by the mothership. The miner selects
+        an asset class and deposits collateral first.
+
+        Example:
+        curl -X POST http://localhost:48888/account/open \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "miner_coldkey": "5FxY...",
+            "miner_hotkey": "5GhDr...",
+            "leverage_tier": 2,
+            "nonce": "a-single-use-string",
+            "timestamp": 1700000000000,
+            "signature": "<the coldkey signature, hex without 0x>",
+            "version": "3.2.0"
+          }'
+
+        leverage_tier is one of ValiConfig.STANDARD_LEVERAGE_TIERS and version the vanta-cli version. The signature
+        is the coldkey's over the sorted JSON of leverage_tier, miner_coldkey, miner_hotkey, nonce and timestamp;
+        nonce and timestamp are single use within the NonceManager window, so every request is freshly signed. A
+        rejection is a 400 with the reason; a validator service that did not answer the opening itself is a 503.
+        """
+        if not self.contract_manager:
+            return jsonify({'error': 'Collateral operations not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json(silent=True)
+            if not data or not isinstance(data, dict):
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            required_fields = ['miner_coldkey', 'miner_hotkey', 'leverage_tier', 'nonce', 'timestamp', 'signature']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+            leverage_tier = data['leverage_tier']
+            if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
+
+            try:
+                keypair = Keypair(ss58_address=data['miner_coldkey'])
+                Keypair(ss58_address=data['miner_hotkey'])
+                signature = bytes.fromhex(data['signature'])
+                timestamp = int(data['timestamp'])
+            except Exception:
+                return jsonify({'error': 'miner_coldkey and miner_hotkey must be SS58 addresses, '
+                                         'signature a hex string and timestamp an integer'}), 400
+
+            signed = json.dumps({
+                "leverage_tier": leverage_tier,
+                "miner_coldkey": data['miner_coldkey'],
+                "miner_hotkey": data['miner_hotkey'],
+                "nonce": data['nonce'],
+                "timestamp": data['timestamp']
+            }, sort_keys=True).encode('utf-8')
+            try:
+                is_valid = keypair.verify(signed, signature)
+            except ValueError:  # a signature of the wrong length
+                is_valid = False
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Account opening request unauthorized'}), 401
+
+            owns_hotkey = self._verify_coldkey_owns_hotkey(data['miner_coldkey'], data['miner_hotkey'])
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            nonce_key = f"{data['miner_coldkey']}::{data['miner_hotkey']}"
+            nonce_ok, nonce_error = self.nonce_manager.is_valid_request(
+                address=nonce_key,
+                nonce=str(data['nonce']),
+                timestamp=timestamp
+            )
+            if not nonce_ok:
+                return jsonify({'error': f'{nonce_error}'}), 401
+        except Exception as e:
+            logger.error(f"Error validating account opening request: {e}")
+            return jsonify({'error': 'Internal server error processing account opening'}), 500
+
+        try:
+            opened, message, account = self.contract_manager.open_standard_miner_account(data['miner_hotkey'], leverage_tier)
+        except Exception as e:
+            logger.error(f"Account opening for {data['miner_hotkey']} could not be processed: {e}")
+            return jsonify({'successfully_processed': False,
+                            'error_message': 'A validator service did not answer; try again shortly'}), 503
+        if not opened:
+            return jsonify({'successfully_processed': False, 'error_message': message}), 400
+        return jsonify({'successfully_processed': True, 'success_message': message, 'account': account})
 
     def update_asset_selection(self):
         """

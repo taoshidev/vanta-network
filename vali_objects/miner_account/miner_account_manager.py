@@ -626,6 +626,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
                 asset_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
                 parsed_accounts = self._parse_accounts_dict(account_sizes_data, asset_data)
+                self._keep_standard_accounts_ahead_of(parsed_accounts)
                 self.accounts.clear()
                 self.accounts.update(parsed_accounts)
 
@@ -633,6 +634,24 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 logger.info(f"Synced {len(self.accounts)} miner accounts")
         except Exception as e:
             logger.error(f"Failed to sync miner accounts data: {e}")
+
+    def _keep_standard_accounts_ahead_of(self, incoming: Dict[str, MinerAccount]) -> None:
+        """A synced snapshot can predate an opening, a pro sizing or a close this validator was already told of, so a
+        standard miner's record only moves forward: the snapshot fills a missing or less advanced record, and the tier
+        and bucket the opening set, but never undoes one. Caller holds _accounts_lock."""
+        for hotkey, local in self.accounts.items():
+            record = local.standard_account
+            if record is None:
+                continue
+            account = incoming.get(hotkey)
+            if account is None:
+                incoming[hotkey] = local
+            elif account.standard_account is None or account.standard_account.stage < record.stage:
+                account.standard_account = record
+                if account.leverage_tier is None:
+                    account.leverage_tier = local.leverage_tier
+                if account.miner_bucket is None:
+                    account.miner_bucket = local.miner_bucket
 
     # ==================== Account Size Methods ====================
 
