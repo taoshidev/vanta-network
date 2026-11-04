@@ -90,6 +90,8 @@ class MetagraphServer(RPCServerBase):
         # derived from it at update time so a read never mixes two syncs
         self._stake_weight = []
         self._validator_axons = []
+        # hotkey -> registered after the new regular miner cutoff block, also derived at update time
+        self._registered_after_cutoff = {}
         self._tao_reserve_rao = 0.0
         self._alpha_reserve_rao = 0.0
         self._tao_to_usd_rate = 0.0
@@ -225,6 +227,15 @@ class MetagraphServer(RPCServerBase):
         """Axons of the reachable validators (see metagraph_utils.validator_axons), minus exclude_hotkey"""
         return [a for a in self._validator_axons if exclude_hotkey is None or a.hotkey != exclude_hotkey]
 
+    def is_registered_after_cutoff_rpc(self, hotkey: str) -> bool | None:
+        """Whether a hotkey registered after the new regular miner cutoff block given with the last full sync
+        (metagraph_utils.registered_after_cutoff); None when that sync did not list it or its block is unknown"""
+        return self._registered_after_cutoff.get(hotkey)
+
+    def get_registered_after_cutoff_rpc(self) -> dict:
+        """hotkey -> is_registered_after_cutoff_rpc for every hotkey of the last full sync"""
+        return dict(self._registered_after_cutoff)
+
     def get_tao_reserve_rao_rpc(self) -> float:
         """Get TAO reserve in RAO (lock-free read)"""
         return self._tao_reserve_rao
@@ -241,7 +252,7 @@ class MetagraphServer(RPCServerBase):
                             block_at_registration: list = None, axons: list = None,
                             emission: list = None, tao_reserve_rao: float = None,
                             alpha_reserve_rao: float = None, tao_to_usd_rate: float = None,
-                            stake_weight: list = None) -> None:
+                            stake_weight: list = None, new_regular_miner_cutoff_block: int = None) -> None:
         """
         Atomically update multiple metagraph fields in a single RPC call (lock-free).
         Only updates fields that are provided (not None).
@@ -262,6 +273,9 @@ class MetagraphServer(RPCServerBase):
             alpha_reserve_rao: ALPHA reserve in RAO (optional)
             tao_to_usd_rate: TAO to USD conversion rate (optional)
             stake_weight: Per-UID chain stake weight in tokens (optional; re-derives the validator axons)
+            new_regular_miner_cutoff_block: This network's cutoff block, None while the new regular miner rules
+                are off. A full sync (hotkeys with their block_at_registration) re-derives who registered after
+                it; any other update keeps the previous answers
         """
         # Prepare new values (use current value if not provided)
         new_neurons = list(neurons) if neurons is not None else self._neurons
@@ -273,11 +287,24 @@ class MetagraphServer(RPCServerBase):
         new_tao_reserve = float(tao_reserve_rao) if tao_reserve_rao is not None else self._tao_reserve_rao
         new_alpha_reserve = float(alpha_reserve_rao) if alpha_reserve_rao is not None else self._alpha_reserve_rao
         new_tao_usd_rate = float(tao_to_usd_rate) if tao_to_usd_rate is not None else self._tao_to_usd_rate
-        new_stake_weight = [float(s) for s in stake_weight] if stake_weight is not None else self._stake_weight
-        if neurons is not None or stake_weight is not None:
+        if stake_weight is not None:
+            new_stake_weight = [float(s) for s in stake_weight]
+        elif hotkeys is not None:
+            # A sync without a stake query keeps each hotkey's previous weight, not its UID's
+            previous_stake_weight = dict(zip(self._hotkeys, self._stake_weight))
+            new_stake_weight = [previous_stake_weight.get(hk, 0.0) for hk in new_hotkeys]
+        else:
+            new_stake_weight = self._stake_weight
+        stake_weight_changed = stake_weight is not None or hotkeys is not None
+        if neurons is not None or stake_weight_changed:
             new_validator_axons = metagraph_utils.validator_axons(new_neurons, new_stake_weight)
         else:
             new_validator_axons = self._validator_axons
+        if hotkeys is not None and block_at_registration is not None:
+            new_registered_after = metagraph_utils.registered_after_cutoff(new_hotkeys, new_block_at_reg,
+                                                                           new_regular_miner_cutoff_block)
+        else:
+            new_registered_after = self._registered_after_cutoff
 
         # Update cached hotkeys set (only if hotkeys changed)
         new_hotkeys_set = set(hotkeys) if hotkeys is not None else self._hotkeys_set
@@ -286,10 +313,12 @@ class MetagraphServer(RPCServerBase):
         # This is thread-safe without locks due to Python's GIL and atomic tuple unpacking
         (self._neurons, self._uids, self._hotkeys, self._block_at_registration,
          self._axons, self._emission, self._tao_reserve_rao, self._alpha_reserve_rao,
-         self._tao_to_usd_rate, self._hotkeys_set, self._stake_weight, self._validator_axons) = (
+         self._tao_to_usd_rate, self._hotkeys_set, self._stake_weight, self._validator_axons,
+         self._registered_after_cutoff) = (
             new_neurons, new_uids, new_hotkeys, new_block_at_reg,
             new_axons, new_emission, new_tao_reserve, new_alpha_reserve,
-            new_tao_usd_rate, new_hotkeys_set, new_stake_weight, new_validator_axons
+            new_tao_usd_rate, new_hotkeys_set, new_stake_weight, new_validator_axons,
+            new_registered_after
         )
 
     # ==================== Convenience Methods (direct access, same API as client) ====================
@@ -321,6 +350,14 @@ class MetagraphServer(RPCServerBase):
     def get_validator_axons(self, exclude_hotkey: str = None) -> list:
         """Axons of the reachable validators (direct access, no RPC)."""
         return self.get_validator_axons_rpc(exclude_hotkey)
+
+    def is_registered_after_cutoff(self, hotkey: str) -> bool | None:
+        """Whether a hotkey registered after the new regular miner cutoff block (direct access, no RPC)."""
+        return self.is_registered_after_cutoff_rpc(hotkey)
+
+    def get_registered_after_cutoff(self) -> dict:
+        """hotkey -> registered after the cutoff, for the last full sync (direct access, no RPC)."""
+        return self.get_registered_after_cutoff_rpc()
 
     def get_block_at_registration(self) -> list:
         """Get block at registration list (direct access, no RPC)."""
@@ -379,20 +416,22 @@ class MetagraphServer(RPCServerBase):
 
     # ==================== Test Convenience Methods ====================
 
-    def set_hotkeys(self, hotkeys: List[str]) -> None:
+    def set_hotkeys(self, hotkeys: List[str], block_at_registration: list = None, stake_weight: list = None,
+                    new_regular_miner_cutoff_block: int = None) -> None:
         """
         Convenience method for tests: Set hotkeys with auto-generated default values.
 
         Automatically generates:
         - uids: Sequential integers [0, 1, 2, ...]
         - neurons: Empty list (most tests don't need actual neuron objects)
-        - block_at_registration: All set to 1000
+        - block_at_registration: All set to 1000, unless given
         - axons: Empty list
         - emission: All set to 1.0
-        - stake_weight: All set to 0.0 (no validators)
+        - stake_weight: All set to 0.0 (no validators), unless given
         - tao_reserve_rao: 1_000_000_000_000 (1000 TAO)
         - alpha_reserve_rao: 1_000_000_000_000 (1000 ALPHA)
         - tao_to_usd_rate: 100.0
+        The new regular miner cutoff block is None (rules off) unless given.
 
         Args:
             hotkeys: List of hotkey strings
@@ -405,13 +444,14 @@ class MetagraphServer(RPCServerBase):
             hotkeys=hotkeys,
             uids=list(range(n)),
             neurons=[None] * n,
-            block_at_registration=[1000] * n,
+            block_at_registration=block_at_registration if block_at_registration is not None else [1000] * n,
             axons=[None] * n,
             emission=[1.0] * n,
             tao_reserve_rao=1_000_000_000_000,
             alpha_reserve_rao=1_000_000_000_000,
             tao_to_usd_rate=100.0,
-            stake_weight=[0.0] * n
+            stake_weight=stake_weight if stake_weight is not None else [0.0] * n,
+            new_regular_miner_cutoff_block=new_regular_miner_cutoff_block
         )
 
     def set_block_at_registration(self, hotkey: str, block: int) -> None:

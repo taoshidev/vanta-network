@@ -282,6 +282,18 @@ class MinerAccountServer(RPCServerBase):
         """Bulk set miner buckets across multiple accounts."""
         self._manager.set_miner_buckets(hotkey_to_bucket)
 
+    def set_registered_after_cutoff(self, cutoff_block: Optional[int], registered_after: Dict[str, Optional[bool]]) -> None:
+        """Replace the copy of who registered after the new regular miner cutoff block that core pushes after each sync."""
+        self._manager.set_registered_after_cutoff(cutoff_block, registered_after)
+
+    def get_registered_after_cutoff(self) -> tuple:
+        """The pushed copy, as (cutoff block, hotkey -> registered after it)."""
+        return self._manager.get_registered_after_cutoff()
+
+    def is_registered_after_cutoff(self, hotkey: str) -> Optional[bool]:
+        """Whether a real hotkey registered after the cutoff block (see MinerAccountManager.is_registered_after_cutoff)."""
+        return self._manager.is_registered_after_cutoff(hotkey)
+
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
         return self._manager.get_hl_address(hotkey)

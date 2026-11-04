@@ -27,6 +27,19 @@ def validator_axons(neurons, stake_weights) -> list:
     ]
 
 
+def registered_after_cutoff(hotkeys, blocks_at_registration, cutoff_block) -> dict:
+    """hotkey -> whether it registered after cutoff_block, the start of the new regular miner rules: False for every
+    hotkey while the cutoff is None (rules off), None where the block is unknown. The lists are indexed alike."""
+    flags = {}
+    for i, hotkey in enumerate(hotkeys):
+        block = blocks_at_registration[i] if i < len(blocks_at_registration) else None
+        if cutoff_block is None:
+            flags[hotkey] = False
+        else:
+            flags[hotkey] = bool(block > cutoff_block) if block is not None else None
+    return flags
+
+
 def is_anomalous_hotkey_loss(lost_hotkeys: set, total_hotkeys_before: int) -> tuple[bool, float]:
     """
     Detect anomalous drops in hotkey counts to avoid false positives from network issues.

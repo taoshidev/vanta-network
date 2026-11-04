@@ -337,6 +337,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         # Unified MinerAccount storage - single source of truth
         self.accounts: Dict[str, MinerAccount] = {}
+        # (cutoff block, hotkey -> registered after it), pushed by core after each metagraph sync: the order
+        # path never reads the metagraph itself
+        self._registered_after_cutoff: tuple = (None, {})
 
         # Locking strategy - EAGER initialization (not lazy!)
         # Lock order: _accounts_lock, then _disk_lock. Never take _accounts_lock while holding
@@ -366,9 +369,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self.ASSET_SELECTIONS_FILE = ValiBkpUtils.get_asset_selections_file_location(
             running_unit_tests=running_unit_tests
         )
+        self.REGISTERED_AFTER_CUTOFF_FILE = ValiBkpUtils.get_registered_after_cutoff_file_location(
+            running_unit_tests=running_unit_tests
+        )
 
         # Load from disk
         self._load_accounts_from_disk()
+        self._registered_after_cutoff = self._load_registered_after_cutoff()
 
     # ==================== Disk Persistence ====================
 
@@ -862,6 +869,41 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account = self.get_or_create(hotkey)
                 account.miner_bucket = bucket
             self._save_accounts_to_disk()
+
+    def _load_registered_after_cutoff(self) -> tuple:
+        """The pushed copy as last saved, so a restart keeps answering until core's next push."""
+        try:
+            data = ValiUtils.get_vali_json_file_dict(self.REGISTERED_AFTER_CUTOFF_FILE)
+            return data.get("cutoff_block"), dict(data.get("registered_after") or {})
+        except Exception as e:
+            logger.warning(f"Could not load the registered-after-cutoff copy, starting without one: {e}")
+            return None, {}
+
+    def set_registered_after_cutoff(self, cutoff_block: Optional[int], registered_after: Dict[str, Optional[bool]]) -> None:
+        """Replace the copy of MetagraphServer.get_registered_after_cutoff that core pushes after each sync, on disk too."""
+        registered_after = dict(registered_after)
+        self._registered_after_cutoff = (cutoff_block, registered_after)
+        try:
+            ValiBkpUtils.write_file(self.REGISTERED_AFTER_CUTOFF_FILE,
+                                    {"cutoff_block": cutoff_block, "registered_after": registered_after})
+        except Exception as e:
+            logger.warning(f"Could not save the registered-after-cutoff copy: {e}")
+
+    def get_registered_after_cutoff(self) -> tuple:
+        """The pushed copy, as (cutoff block, hotkey -> registered after it)."""
+        cutoff_block, registered_after = self._registered_after_cutoff
+        return cutoff_block, dict(registered_after)
+
+    def is_registered_after_cutoff(self, hotkey: str) -> Optional[bool]:
+        """Whether a real hotkey registered after this network's cutoff block. False while the cutoff is unset and for
+        development and synthetic hotkeys; None when the pushed copy is missing, from another cutoff or silent on it."""
+        cutoff_block = ValiConfig.new_regular_miner_cutoff_block(self.is_testnet)
+        if cutoff_block is None or hotkey == ValiConfig.DEVELOPMENT_HOTKEY or is_synthetic_hotkey(hotkey):
+            return False
+        pushed_cutoff_block, registered_after = self._registered_after_cutoff
+        if pushed_cutoff_block != cutoff_block:
+            return None
+        return registered_after.get(hotkey)
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""

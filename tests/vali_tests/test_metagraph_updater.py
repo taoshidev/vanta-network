@@ -7,7 +7,7 @@ Tests metagraph syncing, caching, and validator-specific weight setting with
 mocked network connections (handled internally by SubtensorOpsManager when running_unit_tests=True).
 """
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from dataclasses import dataclass
 
 from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
@@ -266,6 +266,53 @@ class TestSubtensorOpsManager(TestBase):
         updater.update_metagraph()
         self.assertEqual(self.metagraph_client.get_stake_weight(), stake_weight)
         self.assertEqual([a.ip for a in self.metagraph_client.get_validator_axons()], ["10.0.0.1"])
+
+    def test_validator_sync_pushes_who_registered_after_the_cutoff_to_the_account_server(self):
+        """The sync hands the metagraph server this network's cutoff block and copies the answers to the
+        account server. The mock registers every hotkey at block 1000 and gives the validator stake weight."""
+        hotkeys = [self.TEST_VALIDATOR_HOTKEY, self.TEST_MINER_HOTKEY]
+        config = self._create_mock_config()
+        updater = SubtensorOpsManager(
+            config=config,
+            hotkey=self.TEST_VALIDATOR_HOTKEY,
+            is_miner=False,
+            running_unit_tests=True
+        )
+        self.assertFalse(updater.is_testnet)
+        updater._metagraph_client = self.metagraph_client
+        account_client = self.orchestrator.get_client('miner_account')
+        neurons = [
+            SimpleNeuron(uid=0, hotkey=self.TEST_VALIDATOR_HOTKEY, incentive=0.1, validator_trust=1.0,
+                         axon_info=SimpleAxonInfo(ip="10.0.0.1", port=8092)),
+            SimpleNeuron(uid=1, hotkey=self.TEST_MINER_HOTKEY, incentive=0.1, validator_trust=0.0,
+                         axon_info=SimpleAxonInfo(ip="10.0.0.2", port=8093)),
+        ]
+        updater.set_mock_metagraph_data(hotkeys, neurons=neurons)
+
+        with patch.object(ValiConfig, "NEW_REGULAR_MINER_CUTOFF_BLOCK", 999):
+            updater.update_metagraph()
+        self.assertEqual(self.metagraph_client.get_registered_after_cutoff(), {hk: True for hk in hotkeys})
+        self.assertEqual(account_client.get_registered_after_cutoff(), (999, {hk: True for hk in hotkeys}))
+
+        # With the cutoff unset nobody is after it
+        updater.update_metagraph()
+        self.assertEqual(self.metagraph_client.get_registered_after_cutoff(), {hk: False for hk in hotkeys})
+        self.assertEqual(account_client.get_registered_after_cutoff(), (None, {hk: False for hk in hotkeys}))
+
+        # A push the account server cannot take is only logged: the sync itself succeeded
+        updater._miner_account_client = Mock()
+        updater._miner_account_client.set_registered_after_cutoff.side_effect = RuntimeError("account server down")
+        updater.consecutive_failures = 3
+        updater.update_metagraph()
+        self.assertEqual(updater.consecutive_failures, 0)
+
+        testnet_updater = SubtensorOpsManager(
+            config=self._create_mock_config(netuid=116, network="test"),
+            hotkey=self.TEST_VALIDATOR_HOTKEY,
+            is_miner=False,
+            running_unit_tests=True
+        )
+        self.assertTrue(testnet_updater.is_testnet)
 
     def test_validator_hotkey_cache(self):
         """Test hotkey cache updates correctly in validator mode."""

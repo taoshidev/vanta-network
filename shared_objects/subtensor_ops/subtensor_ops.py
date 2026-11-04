@@ -156,6 +156,7 @@ class SubtensorOpsManager(CacheController):
         self.is_validator = not is_miner
         self.config = config
         self.running_unit_tests = running_unit_tests
+        self.is_testnet = config.netuid in (116, 171)
 
         self._metagraph_client = None
 
@@ -181,8 +182,12 @@ class SubtensorOpsManager(CacheController):
         if self.is_validator:
             from vali_objects.price_fetcher import LivePriceFetcherClient
             self._live_price_client = LivePriceFetcherClient(running_unit_tests=running_unit_tests)
+            # Gets a copy of who registered after the new regular miner cutoff after each sync (update_metagraph)
+            from vali_objects.miner_account.miner_account_client import MinerAccountClient
+            self._miner_account_client = MinerAccountClient(running_unit_tests=running_unit_tests)
         else:
             self._live_price_client = None
+            self._miner_account_client = None
         # Round-robin on metagraph failure for known public networks.
         # 'subvortex' was removed: it is absent from bittensor's NETWORKS and
         # entrypoint-subvortex.opentensor.ai is NXDOMAIN, so rotating onto it
@@ -1119,6 +1124,10 @@ class SubtensorOpsManager(CacheController):
                                 if is_validator_stake_weight(s)]
             logger.info(f"Validators by stake weight ({len(stake_validators)}): {stake_validators}")
 
+        # Hotkeys registered after this network's cutoff block trade as new regular miners: the metagraph
+        # server derives who did, and the account server gets a copy at the end (its order path never reads core)
+        cutoff_block = ValiConfig.new_regular_miner_cutoff_block(self.is_testnet) if self.is_validator else None
+
         # Single atomic RPC call to update all metagraph fields
         # Much faster than multiple calls - all fields updated together under one lock
         self._metagraph_client.update_metagraph(
@@ -1131,7 +1140,8 @@ class SubtensorOpsManager(CacheController):
             tao_reserve_rao=tao_reserve_rao,
             alpha_reserve_rao=alpha_reserve_rao,
             tao_to_usd_rate=tao_to_usd_rate,
-            stake_weight=stake_weight
+            stake_weight=stake_weight,
+            new_regular_miner_cutoff_block=cutoff_block
         )
 
         # Update local hotkeys cache atomically (no lock needed - set assignment is atomic)
@@ -1152,6 +1162,19 @@ class SubtensorOpsManager(CacheController):
                 f"consecutive failures; resetting failure count."
             )
         self.consecutive_failures = 0
+
+        # Last, so a slow account server never delays the sync itself
+        if self.is_validator:
+            self._push_registered_after_cutoff(cutoff_block)
+
+    def _push_registered_after_cutoff(self, cutoff_block):
+        """Copy the metagraph server's answers on who registered after the cutoff block to the account server."""
+        try:
+            self._miner_account_client.set_registered_after_cutoff(
+                cutoff_block, self._metagraph_client.get_registered_after_cutoff())
+        except Exception as e:
+            logger.warning(f"Could not push who registered after the new regular miner cutoff to the account "
+                           f"server, which keeps its previous copy: {e}")
 
 
 # len([x for x in self.metagraph.axons if '0.0.0.0' not in x.ip]), len([x for x in self.metagraph.neurons if '0.0.0.0' not in x.axon_info.for ip])
