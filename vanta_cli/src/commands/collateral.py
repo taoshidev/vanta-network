@@ -333,6 +333,7 @@ def withdraw(
     slashed_amount = query_response.get("slashed_amount", 0)
     withdrawal_amount = query_response.get("withdrawal_amount", amount)
     new_balance = query_response.get("new_balance", 0)
+    closes_account = query_response.get("closes_account", False)
 
     # Step 2: Show the withdrawal details and confirm
     table_title = "Collateral Withdrawal"
@@ -346,15 +347,26 @@ def withdraw(
     table.add_row("Coldkey", coldkey.ss58_address)
     table.add_row("Hotkey", hotkey.ss58_address)
     table.add_row("Requested", f"{amount} Theta")
-    table.add_row("Current drawdown", f"{(1.0 - drawdown) * 100:.2f}%")
+    table.add_row("Current drawdown", f"{drawdown * 100:.2f}%")
     table.add_row("Slashed (approx.)", f"[yellow]{slashed_amount} Theta[/yellow]")
     table.add_row("Net withdrawal", f"{withdrawal_amount} Theta")
     table.add_row("New balance", f"{new_balance} Theta")
 
     console.print(table)
     console.print("[dim]Values are approximate and may change depending on current drawdown.[/dim]")
+    if closes_account:
+        locked_theta = query_response.get("locked_theta", 0)
+        console.print(
+            f"\n[red]⚠️  This withdrawal goes into the {locked_theta} Theta locked by your account, which "
+            f"CLOSES THE ACCOUNT FOR GOOD: all of the collateral comes out, less {slashed_amount} Theta slashed "
+            f"from the locked amount for the current drawdown. The hotkey cannot trade again.[/red]")
 
-    confirm = typer.confirm(f"Withdraw {amount} Theta from {hotkey.ss58_address}?")
+    if closes_account:
+        confirm = typer.confirm(
+            f"\nClose the account for good and withdraw {withdrawal_amount} Theta "
+            f"({slashed_amount} Theta slashed)?")
+    else:
+        confirm = typer.confirm(f"Withdraw {amount} Theta from {hotkey.ss58_address}?")
     if not confirm:
         console.print("[yellow]Withdrawal cancelled[/yellow]")
         return False
@@ -399,6 +411,8 @@ def withdraw(
         if response.get("successfully_processed"):
             returned_amount = response.get("returned_amount", withdrawal_amount)
             console.print(f"[green]✅ Withdrew {returned_amount} Theta[/green]")
+            if response.get("account_closed"):
+                console.print("[yellow]The account is closed.[/yellow]")
             return True
         else:
             error_message = (

@@ -147,7 +147,7 @@ class TestStandardMinerAccount(TestBase):
             (record(), record(payout_scale=1.2), record(payout_scale=1.2)),
         ):
             with self.subTest(held=held, synced=synced):
-                m.set_standard_account(HOTKEY, held)
+                m.get_account(HOTKEY).standard_account = held  # whatever this validator holds, a close included
                 snapshot = m.accounts_dict()
                 snapshot[HOTKEY][-1]["standard_account"] = synced.to_dict()
                 m.sync_miner_account_sizes_data(snapshot)

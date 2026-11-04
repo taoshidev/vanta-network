@@ -2051,11 +2051,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 }), 400
 
         try:
+            closed_by_miner = self._closed_by_its_miner(hotkey)
+            if closed_by_miner:
+                return jsonify({'error': closed_by_miner}), 400
             result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
             self._elimination_client.remove_elimination(hotkey)
             self._challenge_period_client.revert_elimination(hotkey)
+            if not is_subaccount:
+                self._miner_account_client.reopen_standard_account(hotkey, TimeUtil.now_in_millis())
             self._miner_account_client.reset_account(hotkey)
 
             if is_subaccount and self._entity_client:
@@ -3419,6 +3424,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             logger.error(f"Error eliminating subaccount: {e}")
             return jsonify({'error': 'Internal server error eliminating subaccount'}), 500
 
+    def _closed_by_its_miner(self, hotkey: str) -> str | None:
+        """The refusal for an account its standard miner closed by withdrawing the collateral, which no reversal
+        reopens; None for every other hotkey."""
+        if is_synthetic_hotkey(hotkey):
+            return None
+        elimination = self._elimination_client.get_elimination(hotkey)
+        if elimination and elimination.get('reason') == EliminationReason.ACCOUNT_CLOSED.value:
+            return f'The account of {hotkey} was closed by its miner ({elimination["reason"]}) and cannot be reopened'
+        return None
+
     def revert_elimination(self, hotkey: str):
         """
         Revert an elimination for a hotkey (regular or synthetic). Updates:
@@ -3445,11 +3460,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         reopen_orders = str(request.args.get('reopen_orders', 'false')).strip().lower() == 'true'
 
         try:
+            closed_by_miner = self._closed_by_its_miner(hotkey)
+            if closed_by_miner:
+                return jsonify({'error': closed_by_miner}), 400
             self._elimination_client.remove_elimination(hotkey)
             self._challenge_period_client.revert_elimination(hotkey)
 
             if is_synthetic_hotkey(hotkey):
                 self._entity_client.restore_subaccount(hotkey)
+            else:
+                self._miner_account_client.reopen_standard_account(hotkey, TimeUtil.now_in_millis())
 
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
@@ -3631,6 +3651,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             except ValueError:
                 valid = [r.value for r in EliminationReason]
                 return jsonify({'error': f'Invalid reason. Must be one of: {valid}'}), 400
+            if reason == EliminationReason.ACCOUNT_CLOSED:
+                return jsonify({'error': f'{reason.value} is recorded by the withdrawal that closes an account'}), 400
 
             if is_synthetic_hotkey(hotkey):
                 entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)

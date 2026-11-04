@@ -48,15 +48,18 @@ class ContractClient(RPCClientBase):
     # vault-signed with a fresh nonce = NOT idempotent). _invoke_rpc's self-heal RE-EXECUTES a call on
     # a transient error, so auto-retrying a lost ACK here would double-slash/double-withdraw real
     # funds. retry=False surfaces the failure to the caller instead of silently re-applying it.
+    # Chain timeout: the slash and burn legitimately exceed the 60s default, and a timeout is taken as slashed.
     def slash_miner_collateral_proportion(self, miner_hotkey: str, slash_proportion: float=None) -> bool:
         """Slash miner's collateral by a proportion."""
         return self._invoke_rpc("slash_miner_collateral_proportion_rpc",
-                                args=(miner_hotkey, slash_proportion), retry=False)
+                                args=(miner_hotkey, slash_proportion), retry=False,
+                                timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     def slash_miner_collateral(self, miner_hotkey: str, slash_amount: float = None) -> bool:
         """Slash miner's collateral by a raw theta amount."""
         return self._invoke_rpc("slash_miner_collateral_rpc",
-                                args=(miner_hotkey, slash_amount), retry=False)
+                                args=(miner_hotkey, slash_amount), retry=False,
+                                timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     # ==================== Collateral Balance Methods ====================
 

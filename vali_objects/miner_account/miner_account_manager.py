@@ -287,6 +287,7 @@ class MinerAccount:
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'leverage_tier': self.leverage_tier,
+            'standard_account': self.standard_account.to_dict() if self.standard_account else None,
             **self.leverage_limits(),
         }
 
@@ -637,9 +638,9 @@ class MinerAccountManager(ValidatorBroadcastBase):
             logger.error(f"Failed to sync miner accounts data: {e}")
 
     def _keep_standard_accounts_ahead_of(self, incoming: Dict[str, MinerAccount]) -> None:
-        """A synced snapshot can predate an opening, a pro sizing or a close this validator was already told of, so a
-        standard miner's record only moves forward: the snapshot fills a missing or less advanced record, and the tier
-        and bucket the opening set, but never undoes one. Caller holds _accounts_lock."""
+        """A synced snapshot can predate an opening, a pro sizing or a close this validator was already told of, so the
+        snapshot fills a missing or less advanced record, and the tier and bucket the opening set, but never undoes
+        one unless the account was reopened after it (supersedes). Caller holds _accounts_lock."""
         for hotkey, local in self.accounts.items():
             record = local.standard_account
             if record is None:
@@ -647,7 +648,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account = incoming.get(hotkey)
             if account is None:
                 incoming[hotkey] = local
-            elif account.standard_account is None or account.standard_account.stage < record.stage:
+            elif account.standard_account is None or record.supersedes(account.standard_account):
                 account.standard_account = record
                 if account.leverage_tier is None:
                     account.leverage_tier = local.leverage_tier
@@ -978,12 +979,49 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     def set_standard_account(self, hotkey: str, record: StandardMinerAccount) -> None:
         """Attach or replace the record of the account a standard miner opened, and as the mothership tell the other
-        validators. Saves to disk."""
+        validators; a copy read before a close or a reopening keeps that close or reopening. Saves to disk."""
         self._check_standard_record(hotkey, record)
         with self._accounts_lock:
-            self.get_or_create(hotkey).standard_account = record
+            account = self.get_or_create(hotkey)
+            held = account.standard_account
+            if held is not None:
+                reopened, held_reopened = record.reopened_at_ms or -1, held.reopened_at_ms or -1
+                if reopened < held_reopened or (reopened == held_reopened and held.is_closed and not record.is_closed):
+                    record = replace(record, closed_at_ms=held.closed_at_ms, reopened_at_ms=held.reopened_at_ms)
+            account.standard_account = record
             self._save_accounts_to_disk()
         self._broadcast_standard_miner_record(hotkey, record)
+
+    def close_standard_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Close a standard miner's account, as the mothership alone does (the others take its broadcast). Returns
+        whether the record held is closed."""
+        record = self.get_standard_account(hotkey)
+        if record is None:
+            return False
+        if record.is_closed:
+            return True
+        if not self.is_mothership:
+            logger.info(f"Standard miner account of {hotkey} closes when the mothership says so")
+            return False
+        self.set_standard_account(hotkey, replace(record, closed_at_ms=closed_at_ms))
+        logger.info(f"Closed the standard miner account of {hotkey}")
+        return True
+
+    def reopen_standard_account(self, hotkey: str, reopened_at_ms: int) -> bool:
+        """Undo the close of a standard miner's account, as the mothership alone does when an admin reverts the
+        elimination; the reopening outranks the close on every copy. Returns whether the record held is open."""
+        record = self.get_standard_account(hotkey)
+        if record is None:
+            return False
+        if not record.is_closed:
+            return True
+        if not self.is_mothership:
+            logger.info(f"Standard miner account of {hotkey} reopens when the mothership says so")
+            return False
+        reopened_at_ms = max(reopened_at_ms, (record.reopened_at_ms or 0) + 1)
+        self.set_standard_account(hotkey, replace(record, closed_at_ms=None, reopened_at_ms=reopened_at_ms))
+        logger.info(f"Reopened the standard miner account of {hotkey}")
+        return True
 
     def _broadcast_standard_miner_record(self, hotkey: str, record: StandardMinerAccount) -> None:
         def create_synapse():

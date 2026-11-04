@@ -303,6 +303,14 @@ class MinerAccountServer(RPCServerBase):
         """Attach or replace the record of the account a standard miner opened."""
         self._manager.set_standard_account(hotkey, record)
 
+    def close_standard_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Close a standard miner's account; returns whether the record held is closed."""
+        return self._manager.close_standard_account(hotkey, closed_at_ms)
+
+    def reopen_standard_account(self, hotkey: str, reopened_at_ms: int) -> bool:
+        """Undo the close of a standard miner's account; returns whether the record held is open."""
+        return self._manager.reopen_standard_account(hotkey, reopened_at_ms)
+
     def receive_standard_miner_record_rpc(
         self, synapse: template.protocol.StandardMinerRecord
     ) -> template.protocol.StandardMinerRecord:

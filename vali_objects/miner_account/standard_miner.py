@@ -8,6 +8,7 @@ from typing import Optional
 
 from entity_management.entity_utils import is_created_through_challenge, is_instant_funded, pro_account_size_error
 from vali_objects.enums.account_type_enum import AccountType
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 
@@ -26,10 +27,11 @@ class StandardMinerAccount:
     pro_account_size: Optional[float] = None
     payout_scale: Optional[float] = None  # None pays STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER
     closed_at_ms: Optional[int] = None
+    reopened_at_ms: Optional[int] = None  # when an admin last undid a close; a later reopening outranks a close
 
     def __post_init__(self):
         # Checked here, so a bad record fails where it is made rather than where it is used
-        for name in ("opened_at_ms", "opening_leverage_tier", "closed_at_ms"):
+        for name in ("opened_at_ms", "opening_leverage_tier", "closed_at_ms", "reopened_at_ms"):
             value = getattr(self, name)
             if value is None:
                 continue
@@ -57,10 +59,17 @@ class StandardMinerAccount:
 
     @property
     def stage(self) -> tuple:
-        """How far the account has come, each step final and set by the mothership alone: closed, granted a pro size.
-        Of two records of one account, the later stage wins. The size traded is not a stage: each validator sets it
-        at its own bucket move."""
+        """How far the account has come, each step set by the mothership alone: closed, granted a pro size. Of two
+        records of one account, the later stage wins unless a close was undone (supersedes). The size traded is not a
+        stage: each validator sets it at its own bucket move."""
         return (self.is_closed, self.pro_account_size is not None)
+
+    def supersedes(self, other: "StandardMinerAccount") -> bool:
+        """Whether this copy of the record outranks another: the one reopened later, else the later stage."""
+        reopened, other_reopened = self.reopened_at_ms or -1, other.reopened_at_ms or -1
+        if reopened != other_reopened:
+            return reopened > other_reopened
+        return self.stage > other.stage
 
     @property
     def size_traded(self) -> float:
@@ -154,6 +163,32 @@ def opening_bucket_thresholds() -> dict:
     """The drawdown limits a standard miner trades under before PRO_FUNDED, as set_miner_bucket overrides."""
     return dict(intraday_drawdown_threshold=ValiConfig.STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD,
                 eod_hwm_threshold=ValiConfig.STANDARD_MINER_EOD_HWM_THRESHOLD)
+
+
+def closing_slash_proportion(drawdown: Optional[dict]) -> float:
+    """The share of the locked theta an account forfeits on closing: the worse of today's loss and the live drawdown
+    from the end-of-day high-water mark, each against its limit, at most all of it (the drawdown stats dict)."""
+    if not drawdown:
+        return 0.0
+    shares = []
+    for pct_key, limit_key in (("intraday_drawdown_pct", "intraday_drawdown_threshold"),
+                               ("trailing_drawdown_pct", "eod_drawdown_threshold")):
+        limit = drawdown.get(limit_key)
+        if limit:
+            shares.append(max(0.0, drawdown.get(pct_key) or 0.0) / (limit * 100.0))
+    return min(1.0, max(shares, default=0.0))
+
+
+def elimination_slash_proportion(reason: EliminationReason, elimination_drawdown_pct: Optional[float],
+                                 drawdown: Optional[dict]) -> float:
+    """The share of the locked theta an elimination takes: all of it past a drawdown limit, the closing share when the
+    account closed, went inactive or lost its UID, else the drawdown against the maximum total drawdown."""
+    if reason.is_intraday_drawdown or reason.is_eod_drawdown:
+        return 1.0
+    if reason in (EliminationReason.ACCOUNT_CLOSED, EliminationReason.INACTIVE, EliminationReason.ZOMBIE):
+        return closing_slash_proportion(drawdown)
+    proportion = (elimination_drawdown_pct or 0.0) / ((1 - ValiConfig.MAX_TOTAL_DRAWDOWN) * 100.0)
+    return max(0.0, min(1.0, proportion))
 
 
 class SizingRejected(ValueError):
