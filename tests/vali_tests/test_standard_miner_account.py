@@ -133,15 +133,15 @@ class TestStandardMinerAccount(TestBase):
             without_record[HOTKEY][-1][field] = None
         m.sync_miner_account_sizes_data(without_record)
         self.assertEqual(account_state(), opened)
-        # A snapshot behind the record held leaves it; one ahead of it or at the same stage replaces it
+        # A snapshot behind the record held leaves it; one ahead of it or at the same stage replaces it. The size
+        # traded is not a stage: each validator sets it at its own bucket move, so the snapshot's value stands
         pro = record(pro_account_size=250_000.0)
         trading_pro = record(pro_account_size=250_000.0, trading_account_size=250_000.0)
         for held, synced, kept in (
             (pro, record(), pro),
-            (trading_pro, pro, trading_pro),
-            (trading_pro, record(pro_account_size=250_000.0, trading_account_size=OPENING["account_size"]), trading_pro),
             (record(closed_at_ms=5), trading_pro, record(closed_at_ms=5)),
             (record(), pro, pro),
+            (trading_pro, pro, pro),
             (pro, trading_pro, trading_pro),
             (trading_pro, record(pro_account_size=250_000.0, closed_at_ms=5), record(pro_account_size=250_000.0, closed_at_ms=5)),
             (record(), record(payout_scale=1.2), record(payout_scale=1.2)),

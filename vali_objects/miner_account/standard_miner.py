@@ -3,10 +3,10 @@ A standard miner is a regular miner that trades on the standard account pipeline
 account, and the pipeline account view shared with entity subaccounts.
 """
 import math
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Optional
 
-from entity_management.entity_utils import is_created_through_challenge, is_instant_funded
+from entity_management.entity_utils import is_created_through_challenge, is_instant_funded, pro_account_size_error
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
@@ -57,9 +57,10 @@ class StandardMinerAccount:
 
     @property
     def stage(self) -> tuple:
-        """How far the account has come, each step final: closed, trading a size other than the opening one, granted
-        a pro size. Of two records of one account, the later stage wins."""
-        return (self.is_closed, self.size_traded != self.account_size, self.pro_account_size is not None)
+        """How far the account has come, each step final and set by the mothership alone: closed, granted a pro size.
+        Of two records of one account, the later stage wins. The size traded is not a stage: each validator sets it
+        at its own bucket move."""
+        return (self.is_closed, self.pro_account_size is not None)
 
     @property
     def size_traded(self) -> float:
@@ -94,8 +95,11 @@ class PipelineAccountInfo:
         return is_instant_funded(self.initial_bucket)
 
     @classmethod
-    def from_subaccount(cls, info: dict) -> "PipelineAccountInfo":
-        """From the SubaccountInfo dict the entity client serves (never None: callers check first)."""
+    def from_subaccount(cls, info) -> "PipelineAccountInfo":
+        """From the SubaccountInfo the entity client serves, as the dict it sends over RPC or the model itself
+        (never None: callers check first)."""
+        if hasattr(info, "model_dump"):
+            info = info.model_dump()
         payout_scale = info.get("payout_scale")
         return cls(
             initial_bucket=info.get("initial_bucket"),
@@ -150,3 +154,27 @@ def opening_bucket_thresholds() -> dict:
     """The drawdown limits a standard miner trades under before PRO_FUNDED, as set_miner_bucket overrides."""
     return dict(intraday_drawdown_threshold=ValiConfig.STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD,
                 eod_hwm_threshold=ValiConfig.STANDARD_MINER_EOD_HWM_THRESHOLD)
+
+
+class SizingRejected(ValueError):
+    """A bucket move the record cannot be sized for; the message says why."""
+
+
+def bucket_sizing(record: StandardMinerAccount, target_bucket: MinerBucket,
+                  pro_account_size=None) -> StandardMinerAccount:
+    """The record after a move into target_bucket, sized as EntityManager.apply_bucket_account_size sizes a subaccount
+    but with no fee: entering the pro track records the pro size given (checked against the opening size), else the
+    one already granted; the buckets past PRO_CHALLENGE_TRANSITION trade the pro size; a standard bucket trades the
+    opening size again and keeps the granted size on record, so an admin move back and forth reuses the grant."""
+    if not target_bucket.is_pro_track:
+        return replace(record, trading_account_size=None)
+    if pro_account_size is not None:
+        error = pro_account_size_error(pro_account_size, record.account_size)
+        if error:
+            raise SizingRejected(error)
+    elif record.pro_account_size is not None:
+        pro_account_size = record.pro_account_size
+    else:
+        raise SizingRejected("A pro account size is required to enter the pro track")
+    return replace(record, pro_account_size=pro_account_size,
+                   trading_account_size=pro_account_size if target_bucket.is_pro else None)

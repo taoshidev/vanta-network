@@ -252,6 +252,12 @@ class MinerAccountClient(RPCClientBase):
         """Attach or replace the record of the account a standard miner opened."""
         self._server.set_standard_account(hotkey, record)
 
+    def receive_standard_miner_record(
+        self, synapse: template.protocol.StandardMinerRecord
+    ) -> template.protocol.StandardMinerRecord:
+        """Receive a StandardMinerRecord synapse (for axon attachment)."""
+        return self._server.receive_standard_miner_record_rpc(synapse)
+
     def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
         """The record of the account a standard miner opened; None for every other hotkey."""
         return self._server.get_standard_account(hotkey)

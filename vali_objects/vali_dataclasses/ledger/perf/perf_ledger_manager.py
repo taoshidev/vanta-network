@@ -44,6 +44,8 @@ class PerfLedgerManager(CacheController):
 
         self.connection_mode = connection_mode
         self.perf_ledger_hks_to_invalidate = {}
+        # Read by save_perf_ledgers, which a wipe can run before the first update sets it
+        self.hks_attempting_invalidations = []
 
 
         super().__init__(running_unit_tests=running_unit_tests, is_backtesting=is_backtesting)

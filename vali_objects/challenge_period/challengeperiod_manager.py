@@ -40,7 +40,8 @@ from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.miner_account_manager import MinerAccount
-from vali_objects.miner_account.standard_miner import StandardMinerAccount, opening_bucket_thresholds
+from vali_objects.miner_account.standard_miner import (PipelineAccountInfo, SizingRejected, StandardMinerAccount,
+                                                        bucket_sizing, opening_bucket_thresholds)
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_created_through_challenge, is_synthetic_hotkey
 from entity_management.entity_client import EntityClient
@@ -831,19 +832,31 @@ class ChallengePeriodManager(CacheController):
         wound down in that case: the caller must leave the miner in their current bucket rather
         than strand them on the new one with the old size and no history.
         """
-        # Point the subaccount at the size the target bucket trades before resetting the account. An
-        # auto-promoted subaccount goes onto its pro account free of the promotion fee.
-        if is_synthetic_hotkey(hotkey):
+        # Point the account at the size the target bucket trades before resetting it. An auto-promoted
+        # subaccount goes onto its pro account free of the promotion fee. A standard miner never pays one:
+        # its sizing is only checked here and written once the positions are closed, and it trades the
+        # funded leverage tier from SUBACCOUNT_FUNDED on, whatever tier it opened on.
+        record = self._standard_account(hotkey)
+        sized = None
+        if record is not None:
+            try:
+                sized = bucket_sizing(record, target_bucket)
+                success, message = True, ""
+            except SizingRejected as e:
+                success, message = False, str(e)
+        elif is_synthetic_hotkey(hotkey):
             state = self.miner_states.get(hotkey)
             waive_fee = state is not None and state.auto_promotion is not None
             success, message = self._entity_client.apply_bucket_account_size(
                 hotkey, target_bucket, waive_promotion_fee=waive_fee)
-            if not success:
-                logger.error(
-                    f"[CHALLENGE] {hotkey} bucket change to {target_bucket.value} ABORTED - "
-                    f"account size not updated: {message}"
-                )
-                return False
+        else:
+            success, message = True, ""
+        if not success:
+            logger.error(
+                f"[CHALLENGE] {hotkey} bucket change to {target_bucket.value} ABORTED - "
+                f"account size not updated: {message}"
+            )
+            return False
 
         # Close all existing positions
         self._position_client.close_all_positions(
@@ -855,6 +868,10 @@ class ChallengePeriodManager(CacheController):
         from_bucket = self.miner_states[hotkey].current_bucket
         if is_synthetic_hotkey(hotkey) and from_bucket.is_subaccount_earning:
             self._entity_client.settle_wound_down_segment(hotkey, from_bucket.value, current_time_ms)
+        if sized is not None:
+            self._commit_standard_account_sizing(hotkey, record, sized, target_bucket)
+            if target_bucket == MinerBucket.SUBACCOUNT_FUNDED:
+                self._miner_account_client.set_leverage_tier(hotkey, ValiConfig.STANDARD_MINER_FUNDED_LEVERAGE_TIER)
         # Reset account fields (PnL, capital used, borrowed amount, interest)
         self._miner_account_client.reset_account(hotkey, target_bucket)
         # Archive all positions (disk move + memory removal)
@@ -911,8 +928,8 @@ class ChallengePeriodManager(CacheController):
         self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None,
         from_bucket: MinerBucket | None = None,
     ) -> tuple[bool, str]:
-        """Promote a subaccount one step up the pro track on the entity miner's request, or by
-        auto-promotion (_auto_promote).
+        """Promote a subaccount one step up the pro track on the entity miner's request, or a subaccount or
+        standard miner by auto-promotion (_auto_promote).
 
         The only moves allowed are the three hops in MinerBucket.promotion_target; a subaccount in
         any other bucket is rejected, as is an Instant Funded subaccount in SUBACCOUNT_FUNDED.
@@ -966,10 +983,15 @@ class ChallengePeriodManager(CacheController):
 
         # Record the granted pro size first: the account switch reads it back to size the new account.
         # Every pro bucket past TRANSITION trades the pro size
-        sizing_snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
-        success, message = self._entity_client.apply_bucket_account_size(
-            hotkey, target_bucket, pro_account_size, waive_promotion_fee=auto_promoted
-        )
+        record = self._standard_account(hotkey)
+        if record is not None:
+            sizing_snapshot = {"record": record.to_dict()}
+            success, message = self._size_standard_account(hotkey, record, target_bucket, pro_account_size)
+        else:
+            sizing_snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
+            success, message = self._entity_client.apply_bucket_account_size(
+                hotkey, target_bucket, pro_account_size, waive_promotion_fee=auto_promoted
+            )
         if not success:
             logger.warning(f"[CHALLENGE] promotion rejected for {hotkey}: {message}")
             return False, message
@@ -995,16 +1017,67 @@ class ChallengePeriodManager(CacheController):
         return success, message
 
     def _restore_bucket_account_size(self, hotkey: str, sizing_snapshot: dict | None) -> None:
-        """Put a committed apply_bucket_account_size back when the bucket move it was for did not
-        happen. A no-op without a snapshot, and never allowed to mask the failure it is cleaning up."""
+        """Put a committed sizing back when the bucket move it was for did not happen. A no-op
+        without a snapshot, and never allowed to mask the failure it is cleaning up."""
         if not sizing_snapshot:
             return
         try:
-            restored, message = self._entity_client.restore_bucket_account_size(hotkey, sizing_snapshot)
+            if "record" in sizing_snapshot:
+                self._miner_account_client.set_standard_account(
+                    hotkey, StandardMinerAccount.from_dict(sizing_snapshot["record"]))
+                restored, message = True, ""
+            else:
+                restored, message = self._entity_client.restore_bucket_account_size(hotkey, sizing_snapshot)
             if not restored:
                 logger.error(f"[CHALLENGE] could not roll back the account size for {hotkey}: {message}")
         except Exception as restore_error:
             logger.error(f"[CHALLENGE] could not roll back the account size for {hotkey}: {restore_error}")
+
+    def _standard_account(self, hotkey: str, account: MinerAccount | None = None) -> StandardMinerAccount | None:
+        """A standard miner's record, read off the MinerAccount when the caller has it; None for a subaccount or a
+        regular miner on the existing rules."""
+        if is_synthetic_hotkey(hotkey):
+            return None
+        if account is not None:
+            record = getattr(account, "standard_account", None)
+        else:
+            record = self._miner_account_client.get_standard_account(hotkey)
+        return record if isinstance(record, StandardMinerAccount) else None
+
+    def _pipeline_account_info(self, hotkey: str, account: MinerAccount | None = None) -> PipelineAccountInfo | None:
+        """The pipeline's view of an account: a standard miner's from its own record, otherwise a subaccount's from
+        the entity's."""
+        record = self._standard_account(hotkey, account)
+        if record is not None:
+            return PipelineAccountInfo.from_standard_miner(record)
+        info = self._entity_client.get_subaccount_info_for_synthetic(hotkey)
+        return PipelineAccountInfo.from_subaccount(info) if info else None
+
+    def _size_standard_account(self, hotkey: str, record: StandardMinerAccount, target_bucket: MinerBucket,
+                               pro_account_size: float | None = None) -> tuple[bool, str]:
+        """Point a standard miner's account at the size its target bucket trades, as apply_bucket_account_size does
+        for a subaccount: through its own record, with no fee."""
+        try:
+            sized = bucket_sizing(record, target_bucket, pro_account_size)
+        except SizingRejected as e:
+            return False, str(e)
+        self._commit_standard_account_sizing(hotkey, record, sized, target_bucket)
+        return True, f"{hotkey} trades ${sized.size_traded:,.0f} in {target_bucket.value}"
+
+    def _commit_standard_account_sizing(self, hotkey: str, record: StandardMinerAccount, sized: StandardMinerAccount,
+                                        target_bucket: MinerBucket) -> None:
+        """Write a standard miner's sizing for target_bucket, its asset selection first moved onto all_markets with a
+        pro account as a subaccount's is: the drawdown is measured against the account size, so the record is the
+        last write before the account itself is reset, and its cache is reset when the size traded changes."""
+        if target_bucket.is_pro:
+            self._asset_selection_client.process_asset_selection_request(
+                MinerAssetClass.ALL_MARKETS.value, hotkey, overwrite=True)
+        if sized != record:
+            self._miner_account_client.set_standard_account(hotkey, sized)
+            if sized.size_traded != record.size_traded:
+                # Both the cache and the day-open snapshot it is rebuilt from measure against the old size
+                self._miner_account_client.take_account_snapshot(hotkey, reset_snapshot=True)
+                self._reset_drawdown_stats_cache(hotkey)
 
     def can_admin_set_bucket(self, hotkey: str, bucket: MinerBucket) -> tuple[bool, str]:
         """Report whether admin_set_bucket would reject this move, without changing anything."""
@@ -1014,8 +1087,10 @@ class ChallengePeriodManager(CacheController):
         if state.current_bucket == bucket:
             return False, f"{hotkey} is already in {bucket.value}"
         # Instant Funded accounts never enter the pro track through the transition
-        if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION and self._entity_client.is_instant_funded(hotkey):
-            return False, f"{hotkey} is Instant Funded and cannot move to {bucket.value}"
+        if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
+            info = self._pipeline_account_info(hotkey)
+            if info is not None and info.instant_funded:
+                return False, f"{hotkey} is Instant Funded and cannot move to {bucket.value}"
         return True, ""
 
     def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> tuple[bool, str]:
@@ -1032,10 +1107,16 @@ class ChallengePeriodManager(CacheController):
             return False, f"{hotkey} account size update failed, bucket unchanged"
 
         # PRO_FUNDED keeps the account, so it never runs the switch that sizes one. An organic
-        # promotion arrives there already on the pro size, but an admin can move a subaccount
+        # promotion arrives there already on the pro size, but an admin can move an account
         # straight in from a standard bucket, and a pro bucket has to trade the pro size.
-        if not bucket.switches_account and bucket.is_pro and is_synthetic_hotkey(hotkey):
-            sized, message = self._entity_client.apply_bucket_account_size(hotkey, bucket)
+        if not bucket.switches_account and bucket.is_pro:
+            record = self._standard_account(hotkey)
+            if record is not None:
+                sized, message = self._size_standard_account(hotkey, record, bucket)
+            elif is_synthetic_hotkey(hotkey):
+                sized, message = self._entity_client.apply_bucket_account_size(hotkey, bucket)
+            else:
+                sized, message = True, ""
             if not sized:
                 logger.error(
                     f"[CHALLENGE] {hotkey} bucket change to {bucket.value} ABORTED - "
@@ -1132,13 +1213,13 @@ class ChallengePeriodManager(CacheController):
         return None
 
     def _daily_loss_from_balance(self, hotkey: str, account: MinerAccount) -> bool:
-        """Standard subaccounts, created through SUBACCOUNT_CHALLENGE and not HL-linked, measure the daily
-        loss limit from the day-open balance while in the standard buckets. Every other account keeps the
-        day-open equity."""
+        """Standard accounts created through SUBACCOUNT_CHALLENGE and not HL-linked, subaccounts and standard
+        miners alike, measure the daily loss limit from the day-open balance while in the standard buckets. Every
+        other account keeps the day-open equity."""
         if not self.miner_states[hotkey].current_bucket.daily_loss_from_balance or account.is_hl_linked:
             return False
-        info = self._entity_client.get_subaccount_info_for_synthetic(hotkey)
-        return bool(info) and is_created_through_challenge(info.get("initial_bucket"))
+        info = self._pipeline_account_info(hotkey, account)
+        return info is not None and info.created_through_challenge
 
     def _refresh_drawdown_cache(
         self,
@@ -1320,17 +1401,17 @@ class ChallengePeriodManager(CacheController):
             del self._initial_buckets[hotkey]
 
     def _is_auto_promotion_candidate(self, hotkey: str, account: MinerAccount | None) -> bool:
-        """A standard subaccount that can be auto-promoted out of SUBACCOUNT_FUNDED: created through
-        SUBACCOUNT_CHALLENGE (not Instant Funded) and not HL-linked. A failed lookup reads as not
-        a candidate until the next refresh."""
+        """A standard account that can be auto-promoted out of SUBACCOUNT_FUNDED: created through
+        SUBACCOUNT_CHALLENGE (not Instant Funded) and not HL-linked, a subaccount or a standard miner.
+        A failed lookup reads as not a candidate until the next refresh."""
         try:
             if account is None or account.is_hl_linked:
                 return False
             if hotkey not in self._initial_buckets:
-                info = self._entity_client.get_subaccount_info_for_synthetic(hotkey)
-                if not info:
+                info = self._pipeline_account_info(hotkey, account)
+                if info is None:
                     return False
-                self._initial_buckets[hotkey] = info.get("initial_bucket")
+                self._initial_buckets[hotkey] = info.initial_bucket
             return is_created_through_challenge(self._initial_buckets[hotkey])
         except Exception as e:
             logger.warning(f"[CHALLENGE] {hotkey} auto-promotion candidacy lookup failed, skipping this refresh: {e}")
@@ -1374,15 +1455,15 @@ class ChallengePeriodManager(CacheController):
             return False
         path, multiple = qualified
         try:
-            info = self._entity_client.get_subaccount_info_for_synthetic(hotkey) or {}
-            if info.get("account_type") == AccountType.PRO.value and info.get("pro_account_size"):
-                pro_account_size, requested_size = info["pro_account_size"], None
+            info = self._pipeline_account_info(hotkey, account)
+            if info is not None and info.account_type == AccountType.PRO.value and info.pro_account_size:
+                pro_account_size, requested_size = info.pro_account_size, None
             elif self._is_mothership():
                 pro_account_size = requested_size = multiple * account.account_size
             else:
                 return False  # waiting for the mothership's pro size
         except Exception as e:
-            self._log_move_failure(hotkey, current_time_ms, f"subaccount lookup failed: {e}")
+            self._log_move_failure(hotkey, current_time_ms, f"account lookup failed: {e}")
             return False
 
         record = AutoPromotion(path=path, multiplier=pro_account_size / account.account_size,

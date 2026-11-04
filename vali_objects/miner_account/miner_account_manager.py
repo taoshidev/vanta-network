@@ -12,10 +12,11 @@ This module contains ALL account size functionality, previously split across
 ValidatorContractManager. The contract manager now delegates to this module.
 """
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
 
+import template.protocol
 from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
@@ -976,11 +977,45 @@ class MinerAccountManager(ValidatorBroadcastBase):
             return record
 
     def set_standard_account(self, hotkey: str, record: StandardMinerAccount) -> None:
-        """Attach or replace the record of the account a standard miner opened. Saves to disk."""
+        """Attach or replace the record of the account a standard miner opened, and as the mothership tell the other
+        validators. Saves to disk."""
         self._check_standard_record(hotkey, record)
         with self._accounts_lock:
             self.get_or_create(hotkey).standard_account = record
             self._save_accounts_to_disk()
+        self._broadcast_standard_miner_record(hotkey, record)
+
+    def _broadcast_standard_miner_record(self, hotkey: str, record: StandardMinerAccount) -> None:
+        def create_synapse():
+            return template.protocol.StandardMinerRecord(record={"hotkey": hotkey, "record": record.to_dict()})
+
+        self._broadcast_to_validators(synapse_factory=create_synapse, broadcast_name="StandardMinerRecord",
+                                      context={"hotkey": hotkey})
+
+    def receive_standard_miner_record_update(self, record_data: dict, sender_hotkey: str = None) -> bool:
+        """Take a standard miner's record as the mothership last wrote it: the mothership alone grants a pro size or
+        closes an account, so its record replaces the one held, whatever stage either is at, except for the size
+        traded, which every validator sets at its own bucket move (the drawdown is measured against it, so taking the
+        mothership's early would read as a loss). An account not seen before gets the opening tier and bucket."""
+        def adopt(data: dict):
+            hotkey, fields = data.get("hotkey"), data.get("record")
+            if not hotkey or not isinstance(fields, dict):
+                raise ValueError(f"Invalid standard miner record data: {data}")
+            record = StandardMinerAccount.from_dict(fields)
+            self._check_standard_record(hotkey, record)
+            with self._accounts_lock:
+                account = self.get_or_create(hotkey)
+                held = account.standard_account
+                record = replace(record, trading_account_size=held.trading_account_size if held else None)
+                account.standard_account = record
+                if account.leverage_tier is None:
+                    account.leverage_tier = record.opening_leverage_tier
+                if account.miner_bucket is None:
+                    account.miner_bucket = MinerBucket.SUBACCOUNT_CHALLENGE
+                self._save_accounts_to_disk()
+
+        return self._handle_incoming_broadcast(synapse_data=record_data, sender_hotkey=sender_hotkey,
+                                               broadcast_name="StandardMinerRecord", update_callback=adopt)
 
     def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
         """The record of the account a standard miner opened; None for every other hotkey."""

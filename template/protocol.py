@@ -117,3 +117,10 @@ class StandardMinerOpening(bt.Synapse):
     error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
     computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
 StandardMinerOpening.required_hash_fields = ["opening"]
+
+class StandardMinerRecord(bt.Synapse):
+    record: typing.Dict = Field(default_factory=dict, title="Standard Miner Account Record", frozen=False, max_length=4096)
+    successfully_processed: bool = Field(False, title="Successfully Processed", frozen=False)
+    error_message: str = Field("", title="Error Message", frozen=False, max_length=4096)
+    computed_body_hash: str = Field("", title="Computed Body Hash", frozen=False)
+StandardMinerRecord.required_hash_fields = ["record"]

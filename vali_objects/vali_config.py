@@ -654,6 +654,8 @@ class ValiConfig:
     STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
     # Payout basis in PRO_CHALLENGE_FROM_STANDARD, as PRO_TRANSITION_PAYOUT_MULTIPLIER is for subaccounts
     STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER = 1.5
+    # The leverage tier a standard miner trades from SUBACCOUNT_FUNDED on, whatever tier it opened on
+    STANDARD_MINER_FUNDED_LEVERAGE_TIER = 3
 
     @staticmethod
     def standard_miner_cutoff_block(is_testnet: bool = False) -> int | None:

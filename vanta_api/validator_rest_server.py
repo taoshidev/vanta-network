@@ -34,6 +34,7 @@ from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
 from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
@@ -2031,8 +2032,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': 'account_size update requires the entity client, which is unavailable'}), 500
 
         if move_to_funded:
-            if not is_subaccount:
-                return jsonify({'error': 'move_to_funded can only be set for entity subaccounts'}), 400
+            try:
+                standard_miner = not is_subaccount and isinstance(
+                    self._miner_account_client.get_standard_account(hotkey), StandardMinerAccount)
+            except Exception as e:
+                return jsonify({'error': f'Could not read the account of {hotkey}: {e}'}), 503
+            if not is_subaccount and not standard_miner:
+                return jsonify({'error': 'move_to_funded can only be set for entity subaccounts and standard miners'}), 400
             # The bucket the reset leaves the miner in: an elimination is reverted to the bucket before it
             history = self._challenge_period_client.get_bucket_history(hotkey) or []
             buckets = [entry['bucket'] for entry in history]

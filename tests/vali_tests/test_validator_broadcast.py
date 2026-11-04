@@ -164,6 +164,16 @@ class TestSynapsePickling(unittest.TestCase):
         self.assertIsInstance(unpickled, template.protocol.StandardMinerOpening)
         self.assertEqual(unpickled.opening, self.opening)
 
+    def test_pickle_standard_miner_record_synapse(self):
+        """Test that StandardMinerRecord synapse can be pickled."""
+        synapse = template.protocol.StandardMinerRecord(record=self.opening)
+
+        pickled = pickle.dumps(synapse)
+        unpickled = pickle.loads(pickled)
+
+        self.assertIsInstance(unpickled, template.protocol.StandardMinerRecord)
+        self.assertEqual(unpickled.record, self.opening)
+
     def test_pickle_all_synapses_with_full_state(self):
         """Test pickling synapses with all fields populated."""
         # Create synapses with all fields
@@ -202,6 +212,10 @@ class TestSynapsePickling(unittest.TestCase):
             ),
             template.protocol.StandardMinerOpening(
                 opening=self.opening,
+                successfully_processed=True
+            ),
+            template.protocol.StandardMinerRecord(
+                record=self.opening,
                 successfully_processed=True
             )
         ]
@@ -475,7 +489,8 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
             template.protocol.CollateralRecord(collateral_record={"amount": 100}),
             template.protocol.AssetSelection(asset_selection={"asset": "CRYPTO"}),
             template.protocol.SubaccountRegistration(subaccount_data={"id": 0}),
-            template.protocol.StandardMinerOpening(opening={"hotkey": "h", "record": {"account_size": 50_000.0}})
+            template.protocol.StandardMinerOpening(opening={"hotkey": "h", "record": {"account_size": 50_000.0}}),
+            template.protocol.StandardMinerRecord(record={"hotkey": "h", "record": {"pro_account_size": 250_000.0}})
         ]
 
         for original_synapse in synapses:
@@ -503,6 +518,8 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
                 self.assertEqual(transmitted.subaccount_data, original_synapse.subaccount_data)
             elif isinstance(transmitted, template.protocol.StandardMinerOpening):
                 self.assertEqual(transmitted.opening, original_synapse.opening)
+            elif isinstance(transmitted, template.protocol.StandardMinerRecord):
+                self.assertEqual(transmitted.record, original_synapse.record)
 
 
 if __name__ == '__main__':

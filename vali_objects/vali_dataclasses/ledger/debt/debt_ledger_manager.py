@@ -19,6 +19,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import (
 )
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from entity_management import entity_utils
 from shared_objects.log import logger
 
@@ -75,6 +76,14 @@ class DebtLedgerManager():
         # Create EntityClient for entity miner aggregation
         from entity_management.entity_client import EntityClient
         self._entity_client = EntityClient(
+            connection_mode=connection_mode,
+            running_unit_tests=running_unit_tests,
+            connect_immediately=False
+        )
+
+        # Create MinerAccountClient to tell a standard miner's account from a regular miner's
+        from vali_objects.miner_account.miner_account_client import MinerAccountClient
+        self._miner_account_client = MinerAccountClient(
             connection_mode=connection_mode,
             running_unit_tests=running_unit_tests,
             connect_immediately=False
@@ -164,7 +173,7 @@ class DebtLedgerManager():
         """
         Delete the debt and penalty ledgers for a specific hotkey.
 
-        Called on subaccount promotion so the funded period starts with clean ledgers.
+        Called on a promotion that switches the account, so the new account starts with clean ledgers.
 
         Args:
             hotkey: The miner's hotkey
@@ -172,8 +181,9 @@ class DebtLedgerManager():
         Returns:
             True if the debt ledger was deleted, False if it did not exist
         """
-        if not entity_utils.is_synthetic_hotkey(hotkey):
-            logger.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only subaccount (synthetic) hotkeys can have their ledgers deleted")
+        if not entity_utils.is_synthetic_hotkey(hotkey) and not self._is_standard_miner(hotkey):
+            logger.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only an account on the standard account "
+                         f"pipeline (a subaccount or a standard miner) can have its ledgers deleted")
             return False
         # NOTE: weekly_seal_ledger is deliberately untouched.
         self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
@@ -183,6 +193,14 @@ class DebtLedgerManager():
             self.save_to_disk(create_backup=False)
             return True
         return False
+
+    def _is_standard_miner(self, hotkey: str) -> bool:
+        """Whether a real hotkey trades a standard miner's account."""
+        try:
+            return isinstance(self._miner_account_client.get_standard_account(hotkey), StandardMinerAccount)
+        except Exception as e:
+            logger.warning(f"[DEBT_LEDGER] Could not read the account of {hotkey}: {e}")
+            return False
 
     @property
     def weekly_seal_ledger(self):

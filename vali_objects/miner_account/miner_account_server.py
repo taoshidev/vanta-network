@@ -303,6 +303,22 @@ class MinerAccountServer(RPCServerBase):
         """Attach or replace the record of the account a standard miner opened."""
         self._manager.set_standard_account(hotkey, record)
 
+    def receive_standard_miner_record_rpc(
+        self, synapse: template.protocol.StandardMinerRecord
+    ) -> template.protocol.StandardMinerRecord:
+        """Receive a StandardMinerRecord synapse (RPC method for the axon handler)."""
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            logger.info(f"Received standard miner record from validator hotkey [{sender_hotkey}]")
+            success = self._manager.receive_standard_miner_record_update(synapse.record, sender_hotkey)
+            synapse.successfully_processed = success
+            synapse.error_message = "" if success else "Failed to process the standard miner record"
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing the standard miner record: {e}"
+            logger.error(f"Exception in receive_standard_miner_record: {e}")
+        return synapse
+
     def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
         """The record of the account a standard miner opened; None for every other hotkey."""
         return self._manager.get_standard_account(hotkey)
