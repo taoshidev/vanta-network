@@ -157,6 +157,36 @@ class ValiBkpUtils:
         return True
 
     @staticmethod
+    def get_bucket_history_dir(miner_hotkey: str, running_unit_tests=False) -> str:
+        """Root of a miner's per-bucket history: one directory per bucket segment."""
+        return f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}{miner_hotkey}/buckets/"
+
+    @staticmethod
+    def get_bucket_segment_dir(miner_hotkey: str, bucket: str, start_ms: int, running_unit_tests=False) -> str:
+        """Directory of one bucket segment, named <BUCKET>_<start_ms>."""
+        return f"{ValiBkpUtils.get_bucket_history_dir(miner_hotkey, running_unit_tests)}{bucket}_{int(start_ms)}/"
+
+    @staticmethod
+    def get_bucket_history_index_location(running_unit_tests=False) -> str:
+        """Summaries of every bucket segment. Kept apart from the per-miner directories so the
+        summaries outlive a miner directory being deleted."""
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/bucket_history.json.gz"
+
+    @staticmethod
+    def copy_position_to_dir(position, dst_root: str) -> None:
+        """Write a copy of a position under dst_root, in the same <tp>/{open,closed}/<uuid> layout
+        as positions/. The copy is taken from the in-memory position, so it is the position as it
+        stands now; the live file is left untouched."""
+        tp_dir = os.path.join(dst_root, position.trade_pair.trade_pair_id)
+        order_status_dir, stale_dir = ("open", "closed") if position.is_open_position else ("closed", "open")
+        ValiBkpUtils.write_file(os.path.join(tp_dir, order_status_dir, position.position_uuid), position)
+        # A copy taken while the position was open is superseded by this one
+        stale_file = os.path.join(tp_dir, stale_dir, position.position_uuid)
+        if os.path.exists(stale_file):
+            os.remove(stale_file)
+
+    @staticmethod
     def get_miner_snapshot_path(miner_hotkey: str, running_unit_tests=False) -> str:
         """Get path to miner's transactions.jsonl file."""
         return f"{ValiBkpUtils.get_miner_dir(running_unit_tests=running_unit_tests)}{miner_hotkey}/snapshots.jsonl"
@@ -296,11 +326,6 @@ class ValiBkpUtils:
     def get_entity_file_location(running_unit_tests=False) -> str:
         suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entities.json"
-
-    @staticmethod
-    def get_weekly_seal_ledger_file_location(running_unit_tests=False) -> str:
-        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
-        return ValiConfig.BASE_DIR + f"{suffix}/validation/weekly_seal_ledger.json.gz"
 
     @staticmethod
     def get_entity_collateral_cache_file_location(running_unit_tests=False) -> str:

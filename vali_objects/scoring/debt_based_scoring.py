@@ -122,7 +122,7 @@ class DebtBasedScoring:
         MinerBucket.MAINCOMP.value,
         MinerBucket.PROBATION.value,
         MinerBucket.ENTITY.value,
-        *(b.value for b in MinerBucket if b.is_subaccount_earning),
+        *(status for b in MinerBucket if b.is_subaccount_earning for status in b.statuses),
     }
 
     @staticmethod
@@ -1037,7 +1037,7 @@ class DebtBasedScoring:
             Dict mapping hotkey -> PnL score (floored at 0)
         """
         pnl_scores = {}
-        all_statuses = {b.value for b in MinerBucket}
+        all_statuses = {status for b in MinerBucket for status in b.statuses}
 
         for hotkey, ledger in miners:
             pnl = DebtBasedScoring._calculate_penalty_adjusted_pnl(

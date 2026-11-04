@@ -408,7 +408,6 @@ class TestStandardTierOrderPath(unittest.TestCase):
     STANDARD_BUCKETS = (
         MinerBucket.SUBACCOUNT_CHALLENGE,
         MinerBucket.SUBACCOUNT_FUNDED,
-        MinerBucket.PRO_CHALLENGE_TRANSITION,
     )
 
     def _account(self, bucket, asset_class, leverage_tier=None, hl_address=None, capital_used=0.0,
@@ -443,7 +442,7 @@ class TestStandardTierOrderPath(unittest.TestCase):
             self.assertFalse(is_standard_tiered(
                 self._account(MinerBucket.SUBACCOUNT_FUNDED, MinerAssetClass.HL_ALL, leverage_tier=tier, hl_address=self.HL_ADDRESS)
             ))
-            for bucket in (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED):
+            for bucket in (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_FUNDED):
                 self.assertFalse(is_standard_tiered(self._account(bucket, MinerAssetClass.CRYPTO, leverage_tier=tier)))
         self.assertFalse(is_standard_tiered(self._account(MinerBucket.MAINCOMP, MinerAssetClass.CRYPTO)))
 
@@ -475,7 +474,6 @@ class TestStandardTierOrderPath(unittest.TestCase):
     TIER_0_CASES = (
         (MinerBucket.SUBACCOUNT_CHALLENGE, 100_000.0, 1),
         (MinerBucket.SUBACCOUNT_FUNDED, 100_000.0, 2),
-        (MinerBucket.PRO_CHALLENGE_TRANSITION, 100_000.0, 2),
         (MinerBucket.SUBACCOUNT_FUNDED, 250_000.0, 3),
         (MinerBucket.SUBACCOUNT_FUNDED, 1_500_000.0, 4),
     )

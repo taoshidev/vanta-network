@@ -96,6 +96,44 @@ class ChallengePeriodClient(RPCClientBase):
     def get_bucket_history(self, hotkey) -> list[dict] | None:
         return self._server.get_bucket_history_rpc(hotkey)
 
+    def get_transition_windows(self) -> dict[str, list[tuple[int, int | None]]]:
+        """hotkey -> (start, end) of each SUBACCOUNT_FUNDED transition week; end is None while it runs."""
+        return self._server.get_transition_windows_rpc()
+
+    def get_bucket_statistics(self, hotkey: str, bucket: str | None = None, start_ms: int | None = None,
+                              include: list[str] | None = None, limit: int | None = None) -> dict | None:
+        """A miner's bucket segments with the sections asked for (summary, positions, snapshots, stats)."""
+        return self._server.get_bucket_statistics_rpc(hotkey, bucket, start_ms, include, limit)
+
+    def get_bucket_history_checkpoint_dict(self) -> dict:
+        """Bucket segment summaries for the validator checkpoint."""
+        return self._server.get_bucket_history_checkpoint_dict_rpc()
+
+    def sync_bucket_history(self, checkpoint_dict: dict) -> dict:
+        """Merge bucket segment summaries from a validator checkpoint."""
+        return self._server.sync_bucket_history_rpc(checkpoint_dict)
+
+    def get_bucket_segments(self, hotkey: str) -> list[dict]:
+        """A miner's bucket segment summaries, oldest first, without reverted ones."""
+        return self._server.get_bucket_segments_rpc(hotkey)
+
+    def get_payout_records(self, hotkey: str) -> list[dict]:
+        """The payout records pinned on a miner's bucket segments."""
+        return self._server.get_payout_records_rpc(hotkey)
+
+    def admin_update_payout_record(self, hotkey: str, segment_start_ms: int, payout_usd: float | None = None,
+                                   remove: bool = False, recompute: bool = False) -> Tuple[bool, str, dict | None]:
+        """Amend, remove or recompute a segment's payout record. Returns (success, message, record)."""
+        return self._server.admin_update_payout_record_rpc(hotkey, segment_start_ms, payout_usd, remove, recompute)
+
+    def admin_drop_closed_weeks(self, hotkey: str, week_starts_ms: list[int] | None = None) -> Tuple[bool, str, list[int]]:
+        """Unfreeze closed payout weeks (None: all of them). Returns (success, message, dropped week starts)."""
+        return self._server.admin_drop_closed_weeks_rpc(hotkey, week_starts_ms)
+
+    def get_drawdown_snapshot_fields(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
+        """Per-hotkey drawdown fields stamped onto account snapshots."""
+        return self._server.get_drawdown_snapshot_fields_rpc(hotkeys)
+
     def set_miner_bucket(
         self,
         hotkey: str,
@@ -109,13 +147,15 @@ class ChallengePeriodClient(RPCClientBase):
         return self._server.set_miner_bucket_rpc(hotkey, bucket, start_time_ms, drawdown_criteria, intraday_drawdown_threshold,
                                                  eod_hwm_threshold)
 
-    def can_admin_set_bucket(self, hotkey: str, bucket: MinerBucket) -> Tuple[bool, str]:
+    def can_admin_set_bucket(self, hotkey: str, bucket: MinerBucket, in_transition: bool = False) -> Tuple[bool, str]:
         """Report whether admin_set_bucket would reject this move, without changing anything."""
-        return self._server.can_admin_set_bucket_rpc(hotkey, bucket)
+        return self._server.can_admin_set_bucket_rpc(hotkey, bucket, in_transition)
 
-    def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> Tuple[bool, str]:
-        """Move a miner into an arbitrary bucket, running the account switch when required."""
-        return self._server.admin_set_bucket_rpc(hotkey, bucket, current_time_ms)
+    def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int,
+                         in_transition: bool = False) -> Tuple[bool, str]:
+        """Move a miner into an arbitrary bucket, running the account switch when required.
+        in_transition selects the SUBACCOUNT_FUNDED transition week."""
+        return self._server.admin_set_bucket_rpc(hotkey, bucket, current_time_ms, in_transition)
 
     def promote_subaccount(
         self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None
@@ -140,19 +180,26 @@ class ChallengePeriodClient(RPCClientBase):
         """Remove the ELIMINATED bucket entry, clear the elimination record, and persist to disk."""
         return self._server.revert_elimination_rpc(hotkey)
 
+    def get_soft_breach_weeks(self, hotkey: str) -> dict | None:
+        """Week start -> latched calmar breach days."""
+        return self._server.get_soft_breach_weeks_rpc(hotkey)
+
+    def admin_set_soft_breach_week(self, hotkey: str, week_start_ms: int,
+                                   days: list[int] | None) -> Tuple[bool, str]:
+        """Set one week's breached days (None drops the week). Returns (success, message)."""
+        return self._server.admin_set_soft_breach_week_rpc(hotkey, week_start_ms, days)
+
     def set_miner_drawdown_stats(self, hotkey: str, updates: dict, force: bool = False) -> Tuple[bool, str, dict | None]:
         """Overwrite fields on a miner's drawdown stats. Returns (success, message, resulting stats)."""
         return self._server.set_miner_drawdown_stats_rpc(hotkey, updates, force)
 
     def get_testing_miners(self) -> dict[str, int]:
-        """Get all CHALLENGE bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_miners_rpc([b for b in MinerBucket
-                                            if b == MinerBucket.CHALLENGE or b.is_subaccount_challenge])
+        """Get all CHALLENGE (and subaccount challenge) miners as dict {hotkey: start_time}."""
+        return self._server.get_testing_miners_rpc()
 
     def get_success_miners(self) -> dict[str, int]:
-        """Get all MAINCOMP bucket miners as dict {hotkey: start_time}."""
-        return self._server.get_miners_rpc([b for b in MinerBucket
-                                            if b == MinerBucket.MAINCOMP or b.is_subaccount_funded])
+        """Get all MAINCOMP (and subaccount funded) miners as dict {hotkey: start_time}."""
+        return self._server.get_success_miners_rpc()
 
     def get_probation_miners(self) -> dict[str, int]:
         """Get all PROBATION bucket miners as dict {hotkey: start_time}."""

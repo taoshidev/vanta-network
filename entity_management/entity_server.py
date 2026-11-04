@@ -284,11 +284,12 @@ class EntityServer(RPCServerBase):
         synthetic_hotkey: str,
         target_bucket: MinerBucket,
         pro_account_size: Optional[float] = None,
+        in_transition: bool = False,
         waive_promotion_fee: bool = False,
     ) -> Tuple[bool, str]:
         """Point a subaccount at the account size its target bucket trades."""
         return self._manager.apply_bucket_account_size(synthetic_hotkey, target_bucket, pro_account_size,
-                                                       waive_promotion_fee=waive_promotion_fee)
+                                                       in_transition=in_transition, waive_promotion_fee=waive_promotion_fee)
 
     def snapshot_bucket_account_size_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
         """The sizing fields apply_bucket_account_size writes, read before it runs."""
@@ -302,11 +303,15 @@ class EntityServer(RPCServerBase):
         """Multiplier applied to this subaccount's PnL when folded into the entity payout."""
         return self._manager.get_payout_scale(synthetic_hotkey)
 
-    def settle_wound_down_segment_rpc(
-        self, synthetic_hotkey: str, from_bucket: str, promotion_ms: int
-    ) -> bool:
-        """Settle this payout week's earnings before an account switch wipes the account."""
-        return self._manager.settle_wound_down_segment(synthetic_hotkey, from_bucket, promotion_ms)
+    def calculate_segment_payout_record_rpc(
+        self, synthetic_hotkey: str, segment: dict, positions: list[dict], end_ms: int
+    ) -> Optional[dict]:
+        """What a bucket segment leaving an earning bucket is owed, from its own positions."""
+        return self._manager.calculate_segment_payout_record(synthetic_hotkey, segment, positions, end_ms)
+
+    def calculate_segment_closed_weeks_rpc(self, synthetic_hotkey: str, segment: dict, now_ms: int) -> Optional[list]:
+        """Settlement rows of the live segment's payout weeks that closed since its last frozen one."""
+        return self._manager.calculate_segment_closed_weeks(synthetic_hotkey, segment, now_ms)
 
     def get_hl_subaccount_limits_data_rpc(self, hl_address: str) -> Optional[dict]:
         """

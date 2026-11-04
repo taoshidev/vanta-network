@@ -559,11 +559,14 @@ class ValiConfig:
     # Intraday drawdown thresholds (daily loss limit) a subaccount may choose from at creation
     SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES = [0.03, 0.05]
     # EOD high-water-mark drawdown thresholds an Instant Funded subaccount (created into SUBACCOUNT_FUNDED or
-    # PRO_CHALLENGE_FROM_STANDARD) may choose from
+    # PRO_CHALLENGE_FUNDED) may choose from
     SUBACCOUNT_EOD_DRAWDOWN_VALUES = [0.05, 0.08]
     # Buckets a subaccount may be created directly into (MinerBucket values)
     SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED",
                                    "PRO_CHALLENGE_FROM_STANDARD", "PRO_CHALLENGE_DIRECT"]
+    # API responses and ledger checkpoint statuses report the SUBACCOUNT_FUNDED transition week as the
+    # retired PRO_CHALLENGE_TRANSITION bucket (MinerBucket api_bucket_name). Off once consumers read in_transition
+    API_LEGACY_BUCKET_NAMES = True
     # Hyperliquid subaccounts have no pro track
     HL_SUBACCOUNT_CREATION_BUCKETS = ["SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED"]
     # The only intraday drawdown threshold for an Instant Funded subaccount
@@ -594,13 +597,8 @@ class ValiConfig:
     PRO_DAILY_RETURN_CAP = 0.015  # Each day's profit counts for at most this much toward the total
     CALMAR_DRAWDOWN_MINIMUM = 0.001  # Floor on the calmar denominator, mirrors SHARPE_STDDEV_MINIMUM
 
-    # Days of latched soft-breach history kept per miner. The payout only ever reads the current and
-    # previous payout week; the rest is retained for operator forensics and bounded here so the
-    # challenge period checkpoint cannot grow without limit.
-    PRO_SOFT_BREACH_LATCH_RETENTION_DAYS = 60
-
     # Auto-promotion moves a standard funded subaccount (created through the standard challenge, not
-    # HL-linked) into PRO_CHALLENGE_TRANSITION at a multiple of its account size, on whichever path it
+    # HL-linked) into its SUBACCOUNT_FUNDED transition at a multiple of its account size, on whichever path it
     # qualifies for first; on the same check, the larger multiple. Returns are over the account size the
     # account was reset to when it became funded.
     # Fast track: equity, unrealized PnL included, at least this return, at any time, held for
@@ -613,14 +611,14 @@ class ValiConfig:
     AUTO_PROMOTION_STEADY_TRACK_MINIMUM_RETURN = 0.03
     AUTO_PROMOTION_STEADY_TRACK_MAX_DAILY_CONSISTENCY = 0.5
     AUTO_PROMOTION_STEADY_TRACK_CALMAR_MULTIPLIERS = ((2.0, 10), (1.5, 5))  # (minimum calmar, multiple)
-    AUTO_PROMOTION_TRANSITION_DAYS = 7  # longest time in PRO_CHALLENGE_TRANSITION after an auto-promotion; ends early once flat
+    AUTO_PROMOTION_TRANSITION_DAYS = 7  # longest time in the SUBACCOUNT_FUNDED transition after an auto-promotion; ends early once flat
 
     # Payout basis for a trader running the pro challenge after passing the standard challenge
-    # (PRO_CHALLENGE_FROM_STANDARD). PnL earned on the pro account is paid as though it had been
+    # (PRO_CHALLENGE_FUNDED). PnL earned on the pro account is paid as though it had been
     # earned on this multiple of their standard account size: at 2.0, $5K of eligible PnL on a
     # $500K pro account pays a $100K standard account (5K / 500K) * 2 * 100K = $2K.
     PRO_TRANSITION_PAYOUT_MULTIPLIER = 2.0
-    # Multiplier used instead when a subaccount is created directly into PRO_CHALLENGE_FROM_STANDARD
+    # Multiplier used instead when a subaccount is created directly into PRO_CHALLENGE_FUNDED
     # (Instant Funded). Not caller-selectable: the fee does not price a larger multiplier.
     GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER = 1.0
 
@@ -895,7 +893,7 @@ class ValiConfig:
     #   required_theta = sum(margin_theta(min(position_value, max_slash_usd - cumulative_slashed_usd)))
     #   for each funded subaccount with open positions (or placing this order)
     # max_slash_usd = account_size * the bucket's intraday drawdown threshold. A subaccount in
-    # PRO_CHALLENGE_FROM_STANDARD trades the pro account but is charged against its standard
+    # PRO_CHALLENGE_FUNDED trades the pro account but is charged against its standard
     # account size, so the pro account's margin only lands when it reaches PRO_FUNDED. Realized losses
     # are slashed through margin_theta as well.
 

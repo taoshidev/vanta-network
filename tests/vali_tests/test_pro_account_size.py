@@ -42,9 +42,20 @@ GRANTED_SIZE = 500_000.0
 PAYOUT_MULTIPLIER = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
 REQUIRED = "pro_account_size is required to enter the pro track"
 
-PRO_BUCKETS = (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-               MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
+# SUBACCOUNT_FUNDED in its transition week (still on the standard account), and PRO_CHALLENGE_FUNDED after it
+TRANSITION = "TRANSITION"
+FROM_STANDARD = MinerBucket.PRO_CHALLENGE_FUNDED
+
+PRO_BUCKETS = (TRANSITION, FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
 STANDARD_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA)
+
+
+def _apply(manager, hotkey, bucket, pro_account_size=None):
+    """apply_bucket_account_size for a MinerBucket or TRANSITION."""
+    if bucket == TRANSITION:
+        return manager.apply_bucket_account_size(hotkey, MinerBucket.SUBACCOUNT_FUNDED, pro_account_size,
+                                                 in_transition=True)
+    return manager.apply_bucket_account_size(hotkey, bucket, pro_account_size)
 
 # Over the cap or non-positive, NaN / Infinity (which json.loads, so Flask's get_json, accepts), and wrong
 # types. Each is (size, fragment of the rejection message). These are refused on shape alone, so every entry
@@ -295,7 +306,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         before = self._snapshot(hotkey)
         self.set_size.reset_mock()
         with patch.object(self.manager, "_write_entities_from_memory_to_disk") as write:
-            success, message = self.manager.apply_bucket_account_size(hotkey, bucket, pro_account_size)
+            success, message = _apply(self.manager, hotkey, bucket, pro_account_size)
         self.assertFalse(success, message)
         self.assertIn(reason, message)
         self.assertEqual(self._snapshot(hotkey), before)
@@ -318,8 +329,8 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.assertEqual(self.manager.get_payout_scale(self.standard), 1.0)
 
     def test_transition_with_a_size_records_it_and_keeps_the_standard_account(self):
-        success, message = self.manager.apply_bucket_account_size(
-            self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE
+        success, message = _apply(self.manager, 
+            self.standard, TRANSITION, GRANTED_SIZE
         )
 
         self.assertTrue(success, message)
@@ -341,7 +352,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
                 if reason is not None:
                     self._assert_rejected_unchanged(hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, size, reason)
                     continue
-                success, message = manager.apply_bucket_account_size(hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, size)
+                success, message = _apply(manager, hotkey, MinerBucket.PRO_CHALLENGE_DIRECT, size)
                 self.assertTrue(success, message)
                 info = self._info(hotkey)
                 self.assertEqual(info.pro_account_size, size)
@@ -373,7 +384,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.assertEqual(self._info(pro).pro_account_size, GRANTED_SIZE)
 
     def test_a_pro_size_of_twice_the_standard_account_is_allowed_and_free(self):
-        success, message = self.manager.apply_bucket_account_size(
+        success, message = _apply(self.manager, 
             self.standard, MinerBucket.PRO_CHALLENGE_DIRECT, 2 * STANDARD_SIZE
         )
         self.assertTrue(success, message)
@@ -394,8 +405,8 @@ class TestApplyBucketAccountSize(unittest.TestCase):
                 self._assert_rejected_unchanged(demoted, bucket, None, REQUIRED)
         self.assertEqual(self._info(demoted).pro_account_size, GRANTED_SIZE)
 
-        success, message = self.manager.apply_bucket_account_size(
-            demoted, MinerBucket.PRO_CHALLENGE_TRANSITION, 300_000
+        success, message = _apply(self.manager, 
+            demoted, TRANSITION, 300_000
         )
         self.assertTrue(success, message)
         info = self._info(demoted)
@@ -406,17 +417,17 @@ class TestApplyBucketAccountSize(unittest.TestCase):
     def test_full_journey_offer_demote_reoffer(self):
         """Offer at 500K, start pro, demote, re-offer: the re-offer needs a size and trades the new one."""
         hotkey = self.standard
-        apply = self.manager.apply_bucket_account_size
-        self.assertTrue(apply(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE)[0])
-        self.assertTrue(apply(hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD)[0])
+        apply = lambda *args: _apply(self.manager, *args)  # noqa: E731
+        self.assertTrue(apply(hotkey, TRANSITION, GRANTED_SIZE)[0])
+        self.assertTrue(apply(hotkey, FROM_STANDARD)[0])
         self.assertEqual(self._info(hotkey).account_size, GRANTED_SIZE)
         self.assertTrue(apply(hotkey, MinerBucket.SUBACCOUNT_FUNDED)[0])
         self.assertEqual(self._info(hotkey).account_size, STANDARD_SIZE)
 
-        self._assert_rejected_unchanged(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, None, REQUIRED)
+        self._assert_rejected_unchanged(hotkey, TRANSITION, None, REQUIRED)
 
-        self.assertTrue(apply(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 250_000)[0])
-        self.assertTrue(apply(hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD)[0])
+        self.assertTrue(apply(hotkey, TRANSITION, 250_000)[0])
+        self.assertTrue(apply(hotkey, FROM_STANDARD)[0])
         info = self._info(hotkey)
         self.assertEqual(info.pro_account_size, 250_000)
         self.assertEqual(info.account_size, 250_000)
@@ -428,9 +439,9 @@ class TestApplyBucketAccountSize(unittest.TestCase):
 
     def test_move_within_the_track_uses_the_recorded_size(self):
         pro = _add_pro(self.manager)
-        for bucket in (MinerBucket.PRO_FUNDED, MinerBucket.PRO_CHALLENGE_FROM_STANDARD):
+        for bucket in (MinerBucket.PRO_FUNDED, FROM_STANDARD):
             with self.subTest(bucket=bucket):
-                success, message = self.manager.apply_bucket_account_size(pro, bucket)
+                success, message = _apply(self.manager, pro, bucket)
                 self.assertTrue(success, message)
                 info = self._info(pro)
                 self.assertEqual(info.pro_account_size, GRANTED_SIZE)
@@ -438,11 +449,11 @@ class TestApplyBucketAccountSize(unittest.TestCase):
                 self.assertEqual(info.standard_account_size, STANDARD_SIZE)
 
     def test_start_pro_now_trades_the_size_set_at_transition(self):
-        self.assertTrue(self.manager.apply_bucket_account_size(
-            self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE)[0])
+        self.assertTrue(_apply(self.manager, 
+            self.standard, TRANSITION, GRANTED_SIZE)[0])
 
-        success, message = self.manager.apply_bucket_account_size(
-            self.standard, MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+        success, message = _apply(self.manager, 
+            self.standard, FROM_STANDARD
         )
 
         self.assertTrue(success, message)
@@ -465,7 +476,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, 1_000_001, OUT_OF_RANGE)
         self._assert_rejected_unchanged(pro, MinerBucket.PRO_FUNDED, 2 * STANDARD_SIZE - 1, BELOW_STANDARD)
 
-        success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED, 750_000)
+        success, message = _apply(self.manager, pro, MinerBucket.PRO_FUNDED, 750_000)
         self.assertTrue(success, message)
         info = self._info(pro)
         self.assertEqual(info.pro_account_size, 750_000)
@@ -476,7 +487,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         """A size that was valid when granted keeps working if the cap later moves past it."""
         pro = _add_pro(self.manager)
         with patch.object(ValiConfig, "MAX_PRO_ACCOUNT_SIZE", 400_000):
-            success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED)
+            success, message = _apply(self.manager, pro, MinerBucket.PRO_FUNDED)
         self.assertTrue(success, message)
         self.assertEqual(self._info(pro).account_size, GRANTED_SIZE)
 
@@ -493,7 +504,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         pro = _add_pro(self.manager)
         self._info(pro).pro_account_size = float("nan")
 
-        success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.PRO_FUNDED, 600_000)
+        success, message = _apply(self.manager, pro, MinerBucket.PRO_FUNDED, 600_000)
 
         self.assertTrue(success, message)
         self.assertEqual(self._info(pro).pro_account_size, 600_000)
@@ -504,7 +515,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
     def test_standard_buckets_never_record_a_pro_size(self):
         for bucket in STANDARD_BUCKETS:
             with self.subTest(bucket=bucket):
-                success, message = self.manager.apply_bucket_account_size(self.standard, bucket, GRANTED_SIZE)
+                success, message = _apply(self.manager, self.standard, bucket, GRANTED_SIZE)
                 self.assertTrue(success, message)
                 info = self._info(self.standard)
                 self.assertIsNone(info.pro_account_size)
@@ -517,7 +528,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
     def test_demotion_restores_the_standard_size_and_ignores_a_sent_size(self):
         pro = _add_pro(self.manager)
 
-        success, message = self.manager.apply_bucket_account_size(pro, MinerBucket.SUBACCOUNT_FUNDED, 750_000)
+        success, message = _apply(self.manager, pro, MinerBucket.SUBACCOUNT_FUNDED, 750_000)
 
         self.assertTrue(success, message)
         info = self._info(pro)
@@ -538,7 +549,7 @@ class TestApplyBucketAccountSize(unittest.TestCase):
             with self.subTest(hotkey=hotkey, bucket=bucket):
                 before = self._snapshot(hotkey)
                 with patch.object(self.manager, "_write_entities_from_memory_to_disk") as write:
-                    success, message = self.manager.apply_bucket_account_size(hotkey, bucket, size)
+                    success, message = _apply(self.manager, hotkey, bucket, size)
                 self.assertFalse(success)
                 self.assertIn("Failed to set account size", message)
                 self.assertEqual(self._snapshot(hotkey), before)
@@ -555,7 +566,7 @@ class TestApplyBucketAccountSizeLog(unittest.TestCase):
 
     def _logged(self, hotkey, bucket, pro_account_size=None):
         with patch("entity_management.entity_manager.logger") as logger:
-            success, message = self.manager.apply_bucket_account_size(hotkey, bucket, pro_account_size)
+            success, message = _apply(self.manager, hotkey, bucket, pro_account_size)
         self.assertTrue(success, message)
         # The asset-class switch onto all_markets logs its own lines; only the sizing line is under test
         lines = [call.args[0] for call in logger.info.call_args_list if "account_size=$" in call.args[0]]
@@ -567,7 +578,7 @@ class TestApplyBucketAccountSizeLog(unittest.TestCase):
         a subaccount ends up on the wrong size."""
         pro = _add_pro(self.manager)
         for hotkey, bucket, size, source, logged_size in (
-            (self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE, "explicit", GRANTED_SIZE),
+            (self.standard, TRANSITION, GRANTED_SIZE, "explicit", GRANTED_SIZE),
             (pro, MinerBucket.PRO_FUNDED, None, "recorded", GRANTED_SIZE),
             (pro, MinerBucket.PRO_FUNDED, 750_000, "explicit", 750_000),
         ):
@@ -602,7 +613,7 @@ class TestPromotionFeeCharged(unittest.TestCase):
         return hotkey
 
     def _promote(self, hotkey, bucket, size=None):
-        success, message = self.manager.apply_bucket_account_size(hotkey, bucket, size)
+        success, message = _apply(self.manager, hotkey, bucket, size)
         self.assertTrue(success, message)
         return self.manager.get_subaccount_info_for_synthetic(hotkey)
 
@@ -618,8 +629,8 @@ class TestPromotionFeeCharged(unittest.TestCase):
 
     def test_the_transition_defers_the_fee_until_the_pro_account_goes_live(self):
         hotkey = self._standard()
-        self.assertEqual(self._promote(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE).pro_fee_theta, 0.0)
-        self.assertAlmostEqual(self._promote(hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD).pro_fee_theta, 100.0)
+        self.assertEqual(self._promote(hotkey, TRANSITION, GRANTED_SIZE).pro_fee_theta, 0.0)
+        self.assertAlmostEqual(self._promote(hotkey, FROM_STANDARD).pro_fee_theta, 100.0)
 
     def test_a_larger_size_is_charged_only_the_increase(self):
         hotkey = self._standard()
@@ -642,7 +653,7 @@ class TestPromotionFeeCharged(unittest.TestCase):
         """An admin move within the pro track re-applies the recorded size: nothing goes live, so nothing is
         billed, even though today's formula (1M / 3,000 - 50K / 1,500 = 300) exceeds the 247.14 paid."""
         hotkey = self._legacy_pro()
-        for bucket in (MinerBucket.PRO_FUNDED, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
+        for bucket in (MinerBucket.PRO_FUNDED, FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
             with self.subTest(bucket=bucket):
                 info = self._promote(hotkey, bucket)
                 self.assertAlmostEqual(info.pro_fee_theta, 247.14)
@@ -658,9 +669,9 @@ class TestPromotionFeeCharged(unittest.TestCase):
         """A subaccount granted a size under the old floor (pro >= standard) mid-transition is not stranded:
         the recorded size is not re-checked, and the fee floors at zero."""
         hotkey = self._standard()
-        self._promote(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 2 * STANDARD_SIZE)
+        self._promote(hotkey, TRANSITION, 2 * STANDARD_SIZE)
         self.manager.get_subaccount_info_for_synthetic(hotkey).pro_account_size = 150_000.0
-        info = self._promote(hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        info = self._promote(hotkey, FROM_STANDARD)
         self.assertEqual(info.account_size, 150_000.0)
         self.assertEqual(info.pro_fee_theta, 0.0)
 
