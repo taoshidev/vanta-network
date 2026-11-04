@@ -144,7 +144,7 @@ class TestEliminationIntegration(TestBase):
 
         miners[self.CHALLENGE_FAIL_MINER] = (
             MinerBucket.CHALLENGE,
-            TimeUtil.now_in_millis() - (ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS * 24 * 60 * 60 * 1000) - MS_IN_24_HOURS,
+            TimeUtil.now_in_millis() - 100 * MS_IN_24_HOURS,
             None,
             None
         )

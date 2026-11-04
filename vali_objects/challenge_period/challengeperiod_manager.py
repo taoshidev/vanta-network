@@ -535,7 +535,6 @@ class ChallengePeriodManager(CacheController):
         timer.lap("flat_transitions")
 
         eliminations: dict[str, EliminationReason] = {}
-        demotions: dict[str, MinerBucket] = {}
         promotions: dict[str, MinerBucket] = {}  # the bucket each was evaluated in
         for hotkey, state in self.miner_states.items():
             if hotkey not in evaluation_hotkeys:
@@ -590,15 +589,16 @@ class ChallengePeriodManager(CacheController):
                 promotions[hotkey] = state.current_bucket
                 continue
 
+            # Probation no longer exists: a miner still in it rejoins the main competition
+            if state.current_bucket == MinerBucket.PROBATION:
+                promotions[hotkey] = state.current_bucket
+                continue
+
             _asset = asset_selections.get(hotkey)
             if _asset is None:
                 logger.warning(f"[CHALLENGE] {hotkey} no asset selection, skipping evaluation")
                 continue
             asset_class = MinerAssetClass(_asset)
-
-            if self._check_demotion(state):
-                demotions[hotkey] = MinerBucket.PROBATION
-                continue
 
             returns_threshold = state.current_bucket.returns_threshold(asset_class)
             if hotkey == "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_87": # remove once eliminated or promoted
@@ -610,11 +610,10 @@ class ChallengePeriodManager(CacheController):
         timer.lap("evaluate")
 
         state_changed |= self.eliminate_hotkeys(eliminations, current_time_ms)
-        state_changed |= self.demote_hotkeys(demotions, current_time_ms)
         state_changed |= self.promote_hotkeys(promotions, current_time_ms)
 
         if state_changed:
-            self._sync_buckets_to_accounts(hotkeys=list({*eliminations, *demotions, *promotions}))
+            self._sync_buckets_to_accounts(hotkeys=list({*eliminations, *promotions}))
         timer.lap("apply_changes")
 
         # Last, so a failure here cannot hold up the moves above; each move syncs and saves itself
@@ -643,24 +642,13 @@ class ChallengePeriodManager(CacheController):
 
     @staticmethod
     def _check_time(state: MinerBucketState, current_time_ms: int) -> EliminationReason | None:
+        """Only the plagiarism review period is time-limited: the challenge period has no deadline."""
         bucket = state.current_bucket_entry.bucket
-        if bucket.max_time_ms is None:
+        if bucket != MinerBucket.PLAGIARISM or bucket.max_time_ms is None:
             return None
-        if bucket == MinerBucket.CHALLENGE:
-            first_challenge_entry = next((e for e in state.entries if e.bucket == MinerBucket.CHALLENGE), state.current_bucket_entry)
-            bucket_start_ms = first_challenge_entry.start_time_ms
-        else:
-            bucket_start_ms = state.current_bucket_entry.start_time_ms
-        if current_time_ms - bucket_start_ms > bucket.max_time_ms:
-            reason_map = {
-                MinerBucket.CHALLENGE: EliminationReason.FAILED_CHALLENGE_PERIOD_TIME,
-                MinerBucket.PROBATION: EliminationReason.FAILED_PROBATION_TIME,
-                MinerBucket.PLAGIARISM: EliminationReason.PLAGIARISM,
-            }
-            reason = reason_map.get(bucket)
-            if reason:
-                logger.warning(f"[CHALLENGE] ELIMINATION time limit expired: {state}")
-            return reason
+        if current_time_ms - state.current_bucket_entry.start_time_ms > bucket.max_time_ms:
+            logger.warning(f"[CHALLENGE] ELIMINATION time limit expired: {state}")
+            return EliminationReason.PLAGIARISM
         return None
 
     @staticmethod
@@ -744,24 +732,11 @@ class ChallengePeriodManager(CacheController):
         return expired
 
     @staticmethod
-    def _check_demotion(state: MinerBucketState) -> bool:
-        if state.current_bucket == MinerBucket.MAINCOMP:
-            result = (state.rank > ValiConfig.PROMOTION_THRESHOLD_RANK
-                      if state.rank is not None
-                      else False)
-            if result:
-                logger.info(f"[CHALLENGE] DEMOTION {state}")
-            return result
-        return False
-
-    @staticmethod
     def _check_promotion(state: MinerBucketState, returns_threshold: float, current_time_ms: int) -> bool:
+        """Regular and standard buckets promote on the returns target alone, with no minimum time and no
+        rank; pro buckets also need their trading-day, calmar and consistency gates."""
         if state.current_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
             return False
-
-        if state.current_bucket == MinerBucket.CHALLENGE:
-            if current_time_ms - state.current_bucket_start_ms < ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS:
-                return False
 
         if state.current_bucket.next_bucket is None:
             return False
@@ -779,13 +754,8 @@ class ChallengePeriodManager(CacheController):
             return False
 
         if state.drawdown.current_return > returns_threshold:
-            if state.current_bucket.is_rank_based:
-                result = state.rank <= ValiConfig.PROMOTION_THRESHOLD_RANK if state.rank else False
-            else:
-                result = True
-            if result:
-                logger.info(f"[CHALLENGE] PROMOTION {state}")
-            return result
+            logger.info(f"[CHALLENGE] PROMOTION {state}")
+            return True
         elif state.drawdown.current_return > returns_threshold * 0.75:
             logger.info(f"[CHALLENGE] near promotion: {state}")
 
@@ -901,23 +871,6 @@ class ChallengePeriodManager(CacheController):
         # so keeps both.
         self.miner_states[hotkey].pro_stats = ProStats()
         return True
-
-    def demote_hotkeys(self, demotions: dict[str, MinerBucket], current_time_ms) -> bool:
-        """Demote miners to the given target bucket."""
-        if demotions:
-            logger.info(f"[CHALLENGE] demoting {len(demotions)} miners")
-
-        state_changed = False
-        for hotkey, target_bucket in demotions.items():
-            logger.info(f"[CHALLENGE] demoting to {target_bucket.value}: {self.miner_states[hotkey]}")
-
-            # Leave the miner where they are when the account switch fails; the next refresh retries
-            if target_bucket.switches_account and not self._switch_account(hotkey, target_bucket, current_time_ms):
-                continue
-
-            with self._buckets_lock:
-                state_changed |= self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
-        return state_changed
 
     def promote_hotkeys(self, promotions: dict[str, MinerBucket], current_time_ms: int) -> bool:
         """Promote miners to next tier. promotions maps each miner to the bucket it was evaluated in; one

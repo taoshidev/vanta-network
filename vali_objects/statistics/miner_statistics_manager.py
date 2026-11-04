@@ -812,12 +812,9 @@ class MinerStatisticsManager:
             challengeperiod_info = {}
             if hotkey in sorted_challengeperiod_testing:
                 cp_start = sorted_challengeperiod_testing[hotkey]
-                cp_end = cp_start + ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS
-                remaining = cp_end - time_now
                 challengeperiod_info = {
                     "status": "testing",
-                    "start_time_ms": cp_start,
-                    "remaining_time_ms": max(remaining, 0)
+                    "start_time_ms": cp_start
                 }
             elif hotkey in sorted_challengeperiod_success:
                 cp_start = sorted_challengeperiod_success[hotkey]
@@ -827,12 +824,9 @@ class MinerStatisticsManager:
                 }
             elif hotkey in sorted_challengeperiod_probation:
                 bucket_start = sorted_challengeperiod_probation[hotkey]
-                bucket_end = bucket_start + ValiConfig.PROBATION_MAXIMUM_MS
-                remaining = bucket_end - time_now
                 challengeperiod_info = {
                     "status": "probation",
-                    "start_time_ms": bucket_start,
-                    "remaining_time_ms": max(remaining, 0)
+                    "start_time_ms": bucket_start
                 }
             elif hotkey in sorted_challengeperiod_plagiarism:
                 bucket_start = sorted_challengeperiod_plagiarism[hotkey]

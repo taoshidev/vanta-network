@@ -208,17 +208,14 @@ class MinerBucket(Enum):
 
     @property
     def max_time_ms(self) -> int | None:
-        if self == MinerBucket.CHALLENGE:
-            return ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS
-        elif self == MinerBucket.PROBATION:
-            return ValiConfig.PROBATION_MAXIMUM_MS
-        elif self == MinerBucket.PLAGIARISM:
-            return   ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS
-        else:
-            return None
+        """Longest stay allowed in the bucket. Only the plagiarism review period is time-limited."""
+        if self == MinerBucket.PLAGIARISM:
+            return ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS
+        return None
 
     @property
     def is_rank_based(self):
+        """Buckets ranked against each other within an asset class, for statistics only."""
         return self in (
                 MinerBucket.CHALLENGE,
                 MinerBucket.MAINCOMP,
