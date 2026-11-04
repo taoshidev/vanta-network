@@ -101,6 +101,11 @@ class ContractClient(RPCClientBase):
         """Refresh a miner's cached account size from their current on-chain collateral balance."""
         return self._server.refresh_miner_account_size_rpc(hotkey)
 
+    def open_standard_miner_account(self, hotkey: str, leverage_tier: int) -> tuple:
+        """Open the account a hotkey registered after the standard miner cutoff block trades on:
+        (opened, message for the miner, the record as a dict). Not retried: an opening is not idempotent."""
+        return self._invoke_rpc("open_standard_miner_account_rpc", args=(hotkey, leverage_tier), retry=False)
+
     # ==================== Verification Methods ====================
 
     def verify_coldkey_owns_hotkey(self, coldkey_ss58: str, hotkey_ss58: str) -> bool:

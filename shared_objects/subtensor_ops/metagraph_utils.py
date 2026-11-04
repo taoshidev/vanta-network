@@ -14,7 +14,7 @@ ANOMALY_DETECTION_PERCENT_THRESHOLD = 25  # Percentage threshold for anomaly det
 
 def is_validator_stake_weight(stake_weight: float) -> bool:
     """A validator is any UID whose chain stake weight (bittensor's metagraph.total_stake, in tokens: the
-    quantity permits are granted on) reaches STAKE_MIN. Under Null only the top-stake UID holds a permit."""
+    quantity permits are granted on) reaches STAKE_MIN; the chain may grant the permit itself to one UID only."""
     return stake_weight >= ValiConfig.STAKE_MIN
 
 
@@ -28,7 +28,7 @@ def validator_axons(neurons, stake_weights) -> list:
 
 
 def registered_after_cutoff(hotkeys, blocks_at_registration, cutoff_block) -> dict:
-    """hotkey -> whether it registered after cutoff_block, the start of the new regular miner rules: False for every
+    """hotkey -> whether it registered after cutoff_block, the start of the standard miner rules: False for every
     hotkey while the cutoff is None (rules off), None where the block is unknown. The lists are indexed alike."""
     flags = {}
     for i, hotkey in enumerate(hotkeys):

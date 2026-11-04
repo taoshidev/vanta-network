@@ -289,7 +289,7 @@ class TestSubtensorOpsManager(TestBase):
         ]
         updater.set_mock_metagraph_data(hotkeys, neurons=neurons)
 
-        with patch.object(ValiConfig, "NEW_REGULAR_MINER_CUTOFF_BLOCK", 999):
+        with patch.object(ValiConfig, "STANDARD_MINER_CUTOFF_BLOCK", 999):
             updater.update_metagraph()
         self.assertEqual(self.metagraph_client.get_registered_after_cutoff(), {hk: True for hk in hotkeys})
         self.assertEqual(account_client.get_registered_after_cutoff(), (999, {hk: True for hk in hotkeys}))

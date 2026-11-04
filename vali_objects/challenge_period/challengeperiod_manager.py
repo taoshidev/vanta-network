@@ -40,6 +40,7 @@ from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.miner_account_manager import MinerAccount
+from vali_objects.miner_account.standard_miner import StandardMinerAccount, opening_bucket_thresholds
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_created_through_challenge, is_synthetic_hotkey
 from entity_management.entity_client import EntityClient
@@ -1625,9 +1626,11 @@ class ChallengePeriodManager(CacheController):
             if hotkey in skip_hotkeys:
                 continue
             start_time = hk_to_first_order_time_ms.get(hotkey, default_time)
-            bucket = MinerBucket.SUBACCOUNT_CHALLENGE if is_synthetic_hotkey(hotkey) else MinerBucket.CHALLENGE
-            self.set_miner_bucket(hotkey, bucket, start_time, drawdown_criteria=DrawdownCriteria.TRAILING)
-            logger.info(f"Adding {hotkey} to challenge period with start time {start_time}")
+            if is_synthetic_hotkey(hotkey):
+                self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, start_time, drawdown_criteria=DrawdownCriteria.TRAILING)
+                logger.info(f"Adding {hotkey} to challenge period with start time {start_time}")
+            elif not self._add_regular_hotkey(hotkey, start_time):
+                continue
             state_changed = True
 
         for hotkey in self.get_hotkeys_by_bucket(MinerBucket.CHALLENGE):
@@ -1642,6 +1645,27 @@ class ChallengePeriodManager(CacheController):
                 state_changed = True
 
         return state_changed
+
+    def _add_regular_hotkey(self, hotkey: str, first_order_time_ms: int) -> bool:
+        """A real hotkey seen with positions but no state: an opened standard account enters SUBACCOUNT_CHALLENGE with
+        the standard miner limits, a legacy hotkey enters CHALLENGE, an unopened or unknown post-cutoff hotkey nothing."""
+        record = self._miner_account_client.get_standard_account(hotkey)
+        if isinstance(record, StandardMinerAccount):
+            if record.is_closed:
+                return False
+            self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, record.opened_at_ms,
+                                  drawdown_criteria=DrawdownCriteria.TRAILING, **opening_bucket_thresholds())
+            account = self._miner_account_client.get_account(hotkey)
+            if account is None or account.leverage_tier is None:
+                self._miner_account_client.set_leverage_tier(hotkey, record.opening_leverage_tier)
+            logger.info(f"Adding {hotkey} to the standard challenge from its opened account, opened at {record.opened_at_ms}")
+            return True
+        after_cutoff = self._miner_account_client.is_registered_after_cutoff(hotkey)
+        if after_cutoff is None or after_cutoff is True:
+            return False
+        self.set_miner_bucket(hotkey, MinerBucket.CHALLENGE, first_order_time_ms, drawdown_criteria=DrawdownCriteria.TRAILING)
+        logger.info(f"Adding {hotkey} to challenge period with start time {first_order_time_ms}")
+        return True
 
     def _sync_buckets_to_accounts(self, hotkeys: list[str] | None = None):
         """Push current miner buckets to MinerAccount. If hotkeys is None, sync all (startup); otherwise only the given subset."""

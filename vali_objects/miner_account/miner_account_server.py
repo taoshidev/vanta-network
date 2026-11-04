@@ -26,7 +26,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
-from vali_objects.miner_account.new_regular_miner import NewRegularMinerRecord
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from shared_objects.log import logger
 
 
@@ -284,7 +284,7 @@ class MinerAccountServer(RPCServerBase):
         self._manager.set_miner_buckets(hotkey_to_bucket)
 
     def set_registered_after_cutoff(self, cutoff_block: Optional[int], registered_after: Dict[str, Optional[bool]]) -> None:
-        """Replace the copy of who registered after the new regular miner cutoff block that core pushes after each sync."""
+        """Replace the copy of who registered after the standard miner cutoff block that core pushes after each sync."""
         self._manager.set_registered_after_cutoff(cutoff_block, registered_after)
 
     def get_registered_after_cutoff(self) -> tuple:
@@ -295,13 +295,17 @@ class MinerAccountServer(RPCServerBase):
         """Whether a real hotkey registered after the cutoff block (see MinerAccountManager.is_registered_after_cutoff)."""
         return self._manager.is_registered_after_cutoff(hotkey)
 
-    def set_new_regular_miner_record(self, hotkey: str, record: NewRegularMinerRecord) -> None:
-        """Attach or replace the record of the account a new regular miner opened."""
-        self._manager.set_new_regular_miner_record(hotkey, record)
+    def open_standard_account(self, hotkey: str, record: StandardMinerAccount) -> StandardMinerAccount:
+        """Open a standard miner's account in one step; an account already opened comes back as it is."""
+        return self._manager.open_standard_account(hotkey, record)
 
-    def get_new_regular_miner_record(self, hotkey: str) -> Optional[NewRegularMinerRecord]:
-        """The record of the account a new regular miner opened; None for every other hotkey."""
-        return self._manager.get_new_regular_miner_record(hotkey)
+    def set_standard_account(self, hotkey: str, record: StandardMinerAccount) -> None:
+        """Attach or replace the record of the account a standard miner opened."""
+        self._manager.set_standard_account(hotkey, record)
+
+    def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
+        """The record of the account a standard miner opened; None for every other hotkey."""
+        return self._manager.get_standard_account(hotkey)
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""

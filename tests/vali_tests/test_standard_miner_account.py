@@ -1,5 +1,5 @@
 """
-The record of the account a new regular miner opens: its persistence through the accounts file, the
+The record of the account a standard miner opens: its persistence through the accounts file, the
 checkpoint and auto sync, and the pipeline account view shared with entity subaccounts.
 """
 import dataclasses
@@ -13,18 +13,18 @@ from time_util.time_util import TimeUtil
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager
-from vali_objects.miner_account.new_regular_miner import NewRegularMinerRecord, PipelineAccountInfo
+from vali_objects.miner_account.standard_miner import StandardMinerAccount, PipelineAccountInfo
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 
-HOTKEY = "new_regular_miner_hotkey"
+HOTKEY = "standard_miner_hotkey"
 LEGACY = "legacy_miner_hotkey"
 OPENING = dict(opened_at_ms=1_700_000_000_000, opening_leverage_tier=2, asset_class="crypto", account_size=50_000.0,
                locked_theta=70.0, opening_price_usd=7.857)
 
 
-def record(**overrides) -> NewRegularMinerRecord:
-    return NewRegularMinerRecord(**{**OPENING, **overrides})
+def record(**overrides) -> StandardMinerAccount:
+    return StandardMinerAccount(**{**OPENING, **overrides})
 
 
 def subaccount(**overrides) -> dict:
@@ -38,7 +38,7 @@ def manager() -> MinerAccountManager:
     return MinerAccountManager(running_unit_tests=True, connection_mode=RPCConnectionMode.LOCAL)
 
 
-class TestNewRegularMinerRecord(TestBase):
+class TestStandardMinerAccount(TestBase):
 
     @classmethod
     def setUpClass(cls):
@@ -57,9 +57,9 @@ class TestNewRegularMinerRecord(TestBase):
 
     def test_record_round_trips_and_ignores_unknown_keys(self):
         full = record(pro_account_size=250_000.0, payout_scale=1.2, closed_at_ms=5)
-        self.assertEqual(NewRegularMinerRecord.from_dict(full.to_dict()), full)
+        self.assertEqual(StandardMinerAccount.from_dict(full.to_dict()), full)
         self.assertTrue(full.is_closed)
-        opened = NewRegularMinerRecord.from_dict({**OPENING, "unknown_field": 1})
+        opened = StandardMinerAccount.from_dict({**OPENING, "unknown_field": 1})
         self.assertEqual(opened, record())
         self.assertFalse(opened.is_closed)
         self.assertIsNone(opened.pro_account_size)
@@ -73,7 +73,7 @@ class TestNewRegularMinerRecord(TestBase):
         self.assertEqual(promoted.account_size, opened.account_size)
 
     def test_record_converts_numbers_and_rejects_missing_ones(self):
-        loaded = NewRegularMinerRecord.from_dict({**OPENING, "account_size": "50000", "opened_at_ms": "1700000000000"})
+        loaded = StandardMinerAccount.from_dict({**OPENING, "account_size": "50000", "opened_at_ms": "1700000000000"})
         self.assertEqual(loaded, record())
         self.assertIsInstance(loaded.account_size, float)
         self.assertIsInstance(loaded.opened_at_ms, int)
@@ -84,48 +84,48 @@ class TestNewRegularMinerRecord(TestBase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 record(**bad)
         with self.assertRaises(TypeError):
-            NewRegularMinerRecord.from_dict({"opened_at_ms": 1})
+            StandardMinerAccount.from_dict({"opened_at_ms": 1})
 
     def test_record_lives_on_the_account_and_survives_a_reload_and_an_account_reset(self):
         m = manager()
         m.set_miner_account_size(LEGACY, collateral_balance_theta=300.0, timestamp_ms=TimeUtil.now_in_millis())
-        self.assertIsNone(m.get_new_regular_miner_record(LEGACY))
-        m.set_new_regular_miner_record(HOTKEY, record())
-        self.assertEqual(m.get_new_regular_miner_record(HOTKEY), record())
-        self.assertEqual(m.accounts_dict()[HOTKEY][-1]["new_regular_miner_record"], record().to_dict())
-        self.assertIsNone(m.accounts_dict()[LEGACY][-1]["new_regular_miner_record"])
+        self.assertIsNone(m.get_standard_account(LEGACY))
+        m.set_standard_account(HOTKEY, record())
+        self.assertEqual(m.get_standard_account(HOTKEY), record())
+        self.assertEqual(m.accounts_dict()[HOTKEY][-1]["standard_account"], record().to_dict())
+        self.assertIsNone(m.accounts_dict()[LEGACY][-1]["standard_account"])
         reloaded = manager()
-        self.assertEqual(reloaded.get_new_regular_miner_record(HOTKEY), record())
-        self.assertIsNone(reloaded.get_new_regular_miner_record(LEGACY))
+        self.assertEqual(reloaded.get_standard_account(HOTKEY), record())
+        self.assertIsNone(reloaded.get_standard_account(LEGACY))
         # The record outlives the account reset that a bucket change runs
         m.reset_account(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED)
-        self.assertEqual(m.get_new_regular_miner_record(HOTKEY), record())
+        self.assertEqual(m.get_standard_account(HOTKEY), record())
         # An unreadable record drops only itself
         broken = m.accounts_dict()
-        broken[HOTKEY][-1]["new_regular_miner_record"] = {"opened_at_ms": "not a record"}
+        broken[HOTKEY][-1]["standard_account"] = {"opened_at_ms": "not a record"}
         m.sync_miner_account_sizes_data(broken)
-        self.assertIsNone(m.get_new_regular_miner_record(HOTKEY))
+        self.assertIsNone(m.get_standard_account(HOTKEY))
         self.assertIsNotNone(m.get_account(HOTKEY))
 
     def test_only_a_record_can_be_stored(self):
         m = manager()
         with self.assertRaises(TypeError):
-            m.set_new_regular_miner_record(HOTKEY, record().to_dict())
+            m.set_standard_account(HOTKEY, record().to_dict())
         self.assertIsNone(m.get_account(HOTKEY))
 
     def test_record_rides_the_checkpoint_and_auto_sync(self):
         m = manager()
-        m.set_new_regular_miner_record(HOTKEY, record(pro_account_size=250_000.0))
+        m.set_standard_account(HOTKEY, record(pro_account_size=250_000.0))
         checkpoint = m.accounts_dict()  # what the validator checkpoint carries
         self.account_client.sync_miner_account_sizes_data(checkpoint)  # what auto sync applies
-        self.assertEqual(self.account_client.get_new_regular_miner_record(HOTKEY), record(pro_account_size=250_000.0))
-        self.assertEqual(self.account_client.get_account(HOTKEY).new_regular_miner_record,
+        self.assertEqual(self.account_client.get_standard_account(HOTKEY), record(pro_account_size=250_000.0))
+        self.assertEqual(self.account_client.get_account(HOTKEY).standard_account,
                          record(pro_account_size=250_000.0))
 
     def test_record_is_set_and_read_over_rpc(self):
-        self.account_client.set_new_regular_miner_record(HOTKEY, record())
-        self.assertEqual(self.account_client.get_new_regular_miner_record(HOTKEY), record())
-        self.assertIsNone(self.account_client.get_new_regular_miner_record(LEGACY))
+        self.account_client.set_standard_account(HOTKEY, record())
+        self.assertEqual(self.account_client.get_standard_account(HOTKEY), record())
+        self.assertIsNone(self.account_client.get_standard_account(LEGACY))
 
     def test_pipeline_view_of_a_subaccount_matches_the_reads_it_replaces(self):
         buckets = (None, "SUBACCOUNT_CHALLENGE", "SUBACCOUNT_FUNDED", "PRO_CHALLENGE_FROM_STANDARD")
@@ -144,22 +144,22 @@ class TestNewRegularMinerRecord(TestBase):
                                  pro_payout_scale(info.get("standard_account_size"), info.get("pro_account_size"),
                                                   info.get("payout_scale")))
 
-    def test_pipeline_view_of_a_new_regular_miner(self):
-        opened = PipelineAccountInfo.from_new_regular_miner(record())
+    def test_pipeline_view_of_a_standard_miner(self):
+        opened = PipelineAccountInfo.from_standard_miner(record())
         self.assertTrue(opened.created_through_challenge)
         self.assertFalse(opened.instant_funded)
         self.assertEqual(opened.account_type, AccountType.STANDARD.value)
         self.assertIsNone(opened.standard_account_size)
         self.assertIsNone(opened.pro_account_size)
-        self.assertEqual(opened.payout_scale, ValiConfig.NEW_REGULAR_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER)
+        self.assertEqual(opened.payout_scale, ValiConfig.STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER)
         self.assertEqual(pro_payout_scale(opened.standard_account_size, opened.pro_account_size, opened.payout_scale), 1.0)
 
         # Once auto-promotion grants a pro size the view reads as a subaccount on the pro track does
-        grown = PipelineAccountInfo.from_new_regular_miner(record(pro_account_size=250_000.0))
+        grown = PipelineAccountInfo.from_standard_miner(record(pro_account_size=250_000.0))
         self.assertEqual(grown.account_type, AccountType.PRO.value)
         self.assertEqual(grown.standard_account_size, 50_000.0)
         self.assertTrue(grown.account_type == AccountType.PRO.value and bool(grown.pro_account_size))
         self.assertEqual(pro_payout_scale(grown.standard_account_size, grown.pro_account_size, grown.payout_scale),
-                         ValiConfig.NEW_REGULAR_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER * 50_000.0 / 250_000.0)
-        pinned = PipelineAccountInfo.from_new_regular_miner(record(payout_scale=1.0))
+                         ValiConfig.STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER * 50_000.0 / 250_000.0)
+        pinned = PipelineAccountInfo.from_standard_miner(record(payout_scale=1.0))
         self.assertEqual(pinned.payout_scale, 1.0)

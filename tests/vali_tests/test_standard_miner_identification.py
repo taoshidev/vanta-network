@@ -1,5 +1,5 @@
 """
-Identification of new regular miners: real hotkeys registered after their network's cutoff block,
+Identification of standard miners: real hotkeys registered after their network's cutoff block,
 which trade on the standard account pipeline. The metagraph server derives who registered after the
 cutoff at each full sync, and core pushes a copy to the account server, whose order path never reads
 the metagraph.
@@ -44,7 +44,7 @@ def account_manager():
     return MinerAccountManager(running_unit_tests=True, connection_mode=RPCConnectionMode.LOCAL, is_testnet=False)
 
 
-class TestNewRegularMinerIdentification(TestBase):
+class TestStandardMinerIdentification(TestBase):
 
     @classmethod
     def setUpClass(cls):
@@ -65,17 +65,17 @@ class TestNewRegularMinerIdentification(TestBase):
     def _sync(self, cutoff_block=CUTOFF, hotkeys=HOTKEYS, blocks=BLOCKS):
         """One full metagraph sync as core runs it."""
         self.metagraph_client.set_hotkeys(hotkeys, block_at_registration=blocks, stake_weight=STAKE_WEIGHTS[:len(hotkeys)],
-                                          new_regular_miner_cutoff_block=cutoff_block)
+                                          standard_miner_cutoff_block=cutoff_block)
 
     def test_cutoff_block_is_per_network(self):
-        with mock.patch.object(ValiConfig, "NEW_REGULAR_MINER_CUTOFF_BLOCK", None), \
-                mock.patch.object(ValiConfig, "NEW_REGULAR_MINER_CUTOFF_BLOCK_TESTNET", None):
-            self.assertIsNone(ValiConfig.new_regular_miner_cutoff_block(is_testnet=False))
-            self.assertIsNone(ValiConfig.new_regular_miner_cutoff_block(is_testnet=True))
-        with mock.patch.object(ValiConfig, "NEW_REGULAR_MINER_CUTOFF_BLOCK", CUTOFF), \
-                mock.patch.object(ValiConfig, "NEW_REGULAR_MINER_CUTOFF_BLOCK_TESTNET", CUTOFF + 10):
-            self.assertEqual(ValiConfig.new_regular_miner_cutoff_block(is_testnet=False), CUTOFF)
-            self.assertEqual(ValiConfig.new_regular_miner_cutoff_block(is_testnet=True), CUTOFF + 10)
+        with mock.patch.object(ValiConfig, "STANDARD_MINER_CUTOFF_BLOCK", None), \
+                mock.patch.object(ValiConfig, "STANDARD_MINER_CUTOFF_BLOCK_TESTNET", None):
+            self.assertIsNone(ValiConfig.standard_miner_cutoff_block(is_testnet=False))
+            self.assertIsNone(ValiConfig.standard_miner_cutoff_block(is_testnet=True))
+        with mock.patch.object(ValiConfig, "STANDARD_MINER_CUTOFF_BLOCK", CUTOFF), \
+                mock.patch.object(ValiConfig, "STANDARD_MINER_CUTOFF_BLOCK_TESTNET", CUTOFF + 10):
+            self.assertEqual(ValiConfig.standard_miner_cutoff_block(is_testnet=False), CUTOFF)
+            self.assertEqual(ValiConfig.standard_miner_cutoff_block(is_testnet=True), CUTOFF + 10)
 
     def test_nobody_is_after_the_cutoff_while_it_is_unset(self):
         self._sync(cutoff_block=None)
@@ -107,13 +107,13 @@ class TestNewRegularMinerIdentification(TestBase):
     def test_a_sync_without_stake_weights_carries_them_by_hotkey(self):
         self.metagraph_client.update_metagraph(hotkeys=HOTKEYS, uids=[0, 1, 2], neurons=neurons_for(HOTKEYS),
                                                block_at_registration=BLOCKS, stake_weight=STAKE_WEIGHTS,
-                                               new_regular_miner_cutoff_block=CUTOFF)
+                                               standard_miner_cutoff_block=CUTOFF)
         self.assertEqual([a.hotkey for a in self.metagraph_client.get_validator_axons()], [VALIDATOR])
         replacement = "miner_registered_in_the_validators_old_slot"
         swapped = [AT_CUTOFF, NEW, replacement]
         self.metagraph_client.update_metagraph(hotkeys=swapped, uids=[0, 1, 2], neurons=neurons_for(swapped),
                                                block_at_registration=BLOCKS, stake_weight=None,
-                                               new_regular_miner_cutoff_block=CUTOFF)
+                                               standard_miner_cutoff_block=CUTOFF)
         self.assertEqual(self.metagraph_client.get_stake_weight(), [0.0, 0.0, 0.0])
         self.assertEqual(self.metagraph_client.get_validator_axons(), [])
         self.assertIs(self.metagraph_client.is_registered_after_cutoff(replacement), True)
@@ -122,7 +122,7 @@ class TestNewRegularMinerIdentification(TestBase):
     def test_account_manager_answers_from_the_pushed_copy(self):
         manager = account_manager()
         registered_after = {AT_CUTOFF: False, NEW: True, VALIDATOR: True}
-        with mock.patch.object(ValiConfig, "NEW_REGULAR_MINER_CUTOFF_BLOCK", CUTOFF):
+        with mock.patch.object(ValiConfig, "STANDARD_MINER_CUTOFF_BLOCK", CUTOFF):
             self.assertIsNone(manager.is_registered_after_cutoff(NEW))  # nothing pushed yet
             manager.set_registered_after_cutoff(CUTOFF + 1, registered_after)
             self.assertIsNone(manager.is_registered_after_cutoff(NEW))  # a copy made under another cutoff

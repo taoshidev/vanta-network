@@ -27,6 +27,10 @@ from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 import template.protocol
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.miner_account.standard_miner import (StandardMinerAccount, OpeningRejected, open_account,
+                                                          opening_bucket_thresholds)
+from shared_objects.subtensor_ops.metagraph_utils import is_validator_stake_weight
 from entity_management.entity_client import EntityClient
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from shared_objects.log import logger
@@ -82,6 +86,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         self.config = config
         self.is_backtesting = is_backtesting
         self.connection_mode = connection_mode
+        # One account opening at a time per hotkey
+        self._opening_locks: Dict[str, threading.Lock] = {}
+        self._opening_locks_guard = threading.Lock()
 
         # Create RPC clients (forward compatibility - no parameter passing)
         self._position_client = PositionManagerClient(
@@ -396,6 +403,82 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             bool: True if successful, False otherwise
         """
         return self._set_miner_account_size(hotkey, TimeUtil.now_in_millis())
+
+    def open_standard_miner_account(self, hotkey: str, leverage_tier: int) -> tuple[bool, str, Optional[dict]]:
+        """Open the account a hotkey registered after the standard miner cutoff block trades on, sized from its
+        collateral at today's price (standard_miner.open_account). Returns (opened, message for the miner, the record
+        as a dict); a request for an account already opened puts anything missing back and returns that record."""
+        with self._opening_lock(hotkey):
+            try:
+                record, already_opened = self._standard_miner_opening(hotkey, leverage_tier)
+            except OpeningRejected as e:
+                logger.info(f"Account opening for {hotkey} rejected: {e}")
+                return False, str(e), None
+            record = self.apply_standard_miner_opening(hotkey, record)
+        if already_opened:
+            return True, "This hotkey already opened its account", record.to_dict()
+        message = (f"Opened a ${record.account_size:,.2f} account at tier {record.opening_leverage_tier}, locking "
+                   f"{record.locked_theta:.4f} theta at ${record.opening_price_usd:,.4f} per theta")
+        logger.info(f"{hotkey}: {message}")
+        return True, message, record.to_dict()
+
+    def _opening_lock(self, hotkey: str) -> threading.Lock:
+        with self._opening_locks_guard:
+            return self._opening_locks.setdefault(hotkey, threading.Lock())
+
+    def _standard_miner_opening(self, hotkey: str, leverage_tier: int) -> tuple[StandardMinerAccount, bool]:
+        """The record an opening request earns, with whether it already existed, or OpeningRejected: only a hotkey
+        registered after the cutoff block that is not a validator, an entity, eliminated or trading under the existing
+        rules, with a supported asset class and collateral, can open."""
+        after_cutoff = self._metagraph_client.is_registered_after_cutoff(hotkey)
+        if after_cutoff is None:
+            raise OpeningRejected("This hotkey is not in the last metagraph sync; try again shortly")
+        if after_cutoff is False:
+            raise OpeningRejected("Only a hotkey registered after the cutoff block opens an account this way; this "
+                                  "one trades under the existing rules")
+        hotkeys, stake_weights = self._metagraph_client.get_hotkeys(), self._metagraph_client.get_stake_weight()
+        index = hotkeys.index(hotkey) if hotkey in hotkeys else -1
+        if 0 <= index < len(stake_weights) and is_validator_stake_weight(stake_weights[index]):
+            raise OpeningRejected("A validator hotkey cannot open a trading account")
+        if self._entity_client.get_entity_data(hotkey) is not None:
+            raise OpeningRejected("An entity hotkey cannot open a trading account")
+        if self._elimination_client.is_hotkey_eliminated(hotkey):
+            raise OpeningRejected("An eliminated hotkey cannot open a trading account")
+        account = self._miner_account_client.get_account(hotkey)
+        existing = account.standard_account if account else None
+        if existing is not None:
+            if existing.is_closed:
+                raise OpeningRejected("This account is closed and cannot reopen")
+            return existing, True
+        if self._challenge_period_client.has_miner(hotkey):
+            raise OpeningRejected("This hotkey already trades under the existing rules and cannot open an account")
+        if account is None or account.asset_class is None:
+            raise OpeningRejected("Select an asset class before opening the account")
+        if account.asset_class == MinerAssetClass.HL_ALL:
+            raise OpeningRejected("The hl_all asset class is for Hyperliquid-linked subaccounts; select all_markets "
+                                  "or a single asset class")
+        collateral_theta = self.get_miner_collateral_balance(hotkey)
+        if collateral_theta is None:
+            raise OpeningRejected("The collateral balance could not be read; try again shortly")
+        from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
+        try:
+            price_usd = DebtBasedScoring._convert_alpha_to_usd(1.0, self._metagraph_client)
+        except Exception as e:
+            logger.warning(f"Theta price unavailable for the opening of {hotkey}: {e}")
+            price_usd = 0.0
+        record = open_account(collateral_theta, price_usd, leverage_tier, account.asset_class.value,
+                              TimeUtil.now_in_millis())
+        return record, False
+
+    def apply_standard_miner_opening(self, hotkey: str, record: StandardMinerAccount) -> StandardMinerAccount:
+        """Put an opened account in place: the record, the opening tier and the bucket on the account in one step,
+        then the SUBACCOUNT_CHALLENGE state with the standard miner limits unless one exists. Returns the record in
+        force, which may be an earlier one."""
+        record = self._miner_account_client.open_standard_account(hotkey, record)
+        if not self._challenge_period_client.has_miner(hotkey):
+            self._challenge_period_client.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, record.opened_at_ms,
+                                                           **opening_bucket_thresholds())
+        return record
 
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """

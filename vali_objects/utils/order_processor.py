@@ -12,12 +12,14 @@ from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_dataclasses.price_source import PriceSource
 from vali_objects.utils.limit_order.order_utils import OrderSize
+from entity_management.entity_utils import is_synthetic_hotkey
 from shared_objects.log import logger
 
 def _validate_required(value, field_type: type):
@@ -110,6 +112,28 @@ class OrderProcessor:
             return False, f"Trade pair [{trade_pair.trade_pair_id}] is being discontinued. Please close your position.", trade_pair
 
         miner_account = self.miner_account_client.get_account(hotkey)
+
+        # A hotkey registered after the standard miner cutoff block trades only the account it opened. Orders that
+        # close or cancel always pass, so nobody is held in a position while the registration answer is pending
+        record = getattr(miner_account, "standard_account", None)
+        if not isinstance(record, StandardMinerAccount):
+            record = None  # also for the mocked accounts of tests
+        closing = execution_type in (ExecutionType.FLAT_ALL, ExecutionType.LIMIT_CANCEL) or order_type == OrderType.FLAT
+        if record is None and not closing and not is_synthetic_hotkey(hotkey):
+            after_cutoff = self.miner_account_client.is_registered_after_cutoff(hotkey)
+            if after_cutoff is None:
+                msg = f"The registration of hotkey [{hotkey}] is not known yet. Please try again shortly."
+                logger.warning(msg)
+                return False, msg, trade_pair
+            if after_cutoff is True:
+                msg = f"Hotkey [{hotkey}] must open an account before placing orders."
+                logger.warning(msg)
+                return False, msg, trade_pair
+        elif record is not None and record.is_closed:
+            msg = f"The account of hotkey [{hotkey}] is closed and cannot trade again."
+            logger.warning(msg)
+            return False, msg, None
+
         if not miner_account:
             msg = f"Miner account for hotkey [{hotkey}] is not yet initialized. Please try again shortly."
             logger.warning(msg)

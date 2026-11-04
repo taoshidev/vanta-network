@@ -150,6 +150,10 @@ class ContractServer(RPCServerBase):
         """Refresh a miner's cached account size from their current on-chain collateral balance."""
         return self._manager.refresh_miner_account_size(hotkey)
 
+    def open_standard_miner_account_rpc(self, hotkey: str, leverage_tier: int) -> tuple:
+        """Open the account a hotkey registered after the standard miner cutoff block trades on."""
+        return self._manager.open_standard_miner_account(hotkey, leverage_tier)
+
     def set_test_collateral_balance_rpc(self, miner_hotkey: str, balance_rao: int) -> None:
         """Inject test collateral balance (TEST ONLY - requires running_unit_tests=True)."""
         return self._manager.set_test_collateral_balance(miner_hotkey, balance_rao)

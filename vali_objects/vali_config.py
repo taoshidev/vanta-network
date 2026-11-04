@@ -641,26 +641,26 @@ class ValiConfig:
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
 
-    # New regular miners: a hotkey registered after its network's cutoff block trades on the standard
+    # Standard miners: a regular miner registered after its network's cutoff block trades on the standard
     # account pipeline under its own hotkey. None turns the feature off on that network.
-    NEW_REGULAR_MINER_CUTOFF_BLOCK = None
-    NEW_REGULAR_MINER_CUTOFF_BLOCK_TESTNET = None
+    STANDARD_MINER_CUTOFF_BLOCK = None
+    STANDARD_MINER_CUTOFF_BLOCK_TESTNET = None
     # Account size at opening = collateral USD value / the tier's collateral percentage, within the bounds
-    NEW_REGULAR_MINER_COLLATERAL_PCT_BY_TIER = {1: 0.007, 2: 0.011, 3: 0.015}  # Base, Boost I, Boost II
-    NEW_REGULAR_MINER_MIN_ACCOUNT_SIZE = 5_000
-    NEW_REGULAR_MINER_MAX_ACCOUNT_SIZE = 100_000
+    STANDARD_MINER_COLLATERAL_PCT_BY_TIER = {1: 0.007, 2: 0.011, 3: 0.015}  # Base, Boost I, Boost II
+    STANDARD_MINER_MIN_ACCOUNT_SIZE = 5_000
+    STANDARD_MINER_MAX_ACCOUNT_SIZE = 100_000
     # EOD high-water mark and daily loss limits in every bucket before PRO_FUNDED, which keeps its own
-    NEW_REGULAR_MINER_EOD_HWM_THRESHOLD = 0.05
-    NEW_REGULAR_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
+    STANDARD_MINER_EOD_HWM_THRESHOLD = 0.05
+    STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
     # Payout basis in PRO_CHALLENGE_FROM_STANDARD, as PRO_TRANSITION_PAYOUT_MULTIPLIER is for subaccounts
-    NEW_REGULAR_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER = 1.5
+    STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER = 1.5
 
     @staticmethod
-    def new_regular_miner_cutoff_block(is_testnet: bool = False) -> int | None:
+    def standard_miner_cutoff_block(is_testnet: bool = False) -> int | None:
         """This network's cutoff block; None while the feature is off."""
         if is_testnet:
-            return ValiConfig.NEW_REGULAR_MINER_CUTOFF_BLOCK_TESTNET
-        return ValiConfig.NEW_REGULAR_MINER_CUTOFF_BLOCK
+            return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK_TESTNET
+        return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK
 
     # Legacy leverage tiers 1 to 4 (HL-linked subaccounts, pro subaccounts, regular miners):
     # tier 1 = subaccount challenge, then by account size. Standard subaccounts use the

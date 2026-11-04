@@ -21,7 +21,7 @@ from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.miner_account.account_snapshot import AccountSnapshot
-from vali_objects.miner_account.new_regular_miner import NewRegularMinerRecord
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
@@ -91,7 +91,7 @@ class MinerAccount:
     capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
     correlated_exposure_by_group: Dict[str, List[float]] = field(default_factory=dict)
     daily_open_snapshot: Optional[AccountSnapshot] = None
-    new_regular_miner_record: Optional[NewRegularMinerRecord] = None  # The account a new regular miner opened
+    standard_account: Optional[StandardMinerAccount] = None
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -191,7 +191,11 @@ class MinerAccount:
         self.collateral_records.append(record)
 
     def get_account_size(self, timestamp_ms: Optional[int] = None) -> float:
-        """Get account size at a given timestamp. Returns MIN_CAPITAL if no collateral records."""
+        """The account size: a standard miner's from its record (fixed at opening, the pro size on the pro track),
+        otherwise from the collateral record valid at the timestamp (the latest when None), MIN_CAPITAL without one."""
+        if self.standard_account is not None:
+            return self.standard_account.size_traded
+
         if not self.collateral_records:
             return ValiConfig.MIN_CAPITAL
 
@@ -259,7 +263,7 @@ class MinerAccount:
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'daily_open_snapshot': self.daily_open_snapshot.to_dict() if self.daily_open_snapshot else None,
-            'new_regular_miner_record': self.new_regular_miner_record.to_dict() if self.new_regular_miner_record else None,
+            'standard_account': self.standard_account.to_dict() if self.standard_account else None,
         }
 
         if include_collateral_records:
@@ -340,8 +344,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         # Unified MinerAccount storage - single source of truth
         self.accounts: Dict[str, MinerAccount] = {}
-        # (cutoff block, hotkey -> registered after it), pushed by core after each metagraph sync: the order
-        # path never reads the metagraph itself
+        # (cutoff block, hotkey -> registered after it), pushed by core after each metagraph sync
         self._registered_after_cutoff: tuple = (None, {})
 
         # Locking strategy - EAGER initialization (not lazy!)
@@ -498,7 +501,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
                     correlated_exposure_raw = last_record.get("correlated_exposure_by_group", {})
                     daily_open_snapshot_raw = last_record.get("daily_open_snapshot")
-                    new_regular_miner_raw = last_record.get("new_regular_miner_record")
+                    standard_account_raw = last_record.get("standard_account")
                 else:
                     total_realized_pnl = None
                     capital_used = None
@@ -513,7 +516,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used_by_class_raw = {}
                     correlated_exposure_raw = {}
                     daily_open_snapshot_raw = None
-                    new_regular_miner_raw = None
+                    standard_account_raw = None
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
                 # Missing field (older checkpoint) → empty dict; will be lazy-backfilled by
@@ -575,12 +578,12 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     except Exception:
                         pass
 
-                new_regular_miner_record = None
-                if new_regular_miner_raw:
+                standard_account = None
+                if standard_account_raw:
                     try:
-                        new_regular_miner_record = NewRegularMinerRecord.from_dict(new_regular_miner_raw)
+                        standard_account = StandardMinerAccount.from_dict(standard_account_raw)
                     except Exception as e:
-                        logger.error(f"Unreadable new regular miner record for {hotkey}, loading the account without it: {e}")
+                        logger.error(f"Unreadable standard miner record for {hotkey}, loading the account without it: {e}")
 
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
@@ -599,7 +602,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     capital_used_by_class=capital_used_by_class,
                     correlated_exposure_by_group=correlated_exposure_by_group,
                     daily_open_snapshot=daily_open_snapshot,
-                    new_regular_miner_record=new_regular_miner_record,
+                    standard_account=standard_account,
                 )
 
             except Exception as e:
@@ -668,6 +671,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             # Get or create account
             account = self.get_or_create(hotkey)
+            if account.standard_account is not None:
+                # Collateral never resizes an opened account: the record tracks the balance at the fixed size
+                collateral_record = CollateralRecord(account.get_account_size(), collateral_balance_theta, timestamp_ms,
+                                                     is_first_record)
 
             # Skip if the new record matches the last existing record
             if account.collateral_records:
@@ -686,7 +693,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             self._save_accounts_to_disk()
 
         logger.info(
-            f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
+            f"Updated account size for {hotkey}: ${collateral_record.account_size:,.2f} (valid from {collateral_record.valid_date_str})")
 
         return collateral_record
 
@@ -742,10 +749,15 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         Returns:
             Account size in USD. Returns MIN_CAPITAL for accounts without collateral records.
-            Returns None if account doesn't exist (or MIN_CAPITAL if use_account_floor=True).
+            Returns None if account doesn't exist (or MIN_CAPITAL if use_account_floor=True), and None, floor
+            or not, for a hotkey registered after the standard miner cutoff block that has not opened its account.
         """
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
+            if ((account is None or account.standard_account is None)
+                    and self.is_registered_after_cutoff(hotkey) is True):
+                # Registered after the cutoff block: nothing to trade before the opening, and no $5K floor
+                return None
             if not account:
                 return ValiConfig.MIN_CAPITAL if use_account_floor else None
 
@@ -804,7 +816,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
                 # Check if we already have this record (avoid duplicates)
                 if account.collateral_records:
-                    if account.collateral_records[-1].account_size == account_size:
+                    last_record = account.collateral_records[-1]
+                    if last_record.account_size == account_size and last_record.account_size_theta == account_size_theta:
                         logger.debug(f"Most recent collateral record for {hotkey} already exists")
                         return True
 
@@ -910,7 +923,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
     def is_registered_after_cutoff(self, hotkey: str) -> Optional[bool]:
         """Whether a real hotkey registered after this network's cutoff block. False while the cutoff is unset and for
         development and synthetic hotkeys; None when the pushed copy is missing, from another cutoff or silent on it."""
-        cutoff_block = ValiConfig.new_regular_miner_cutoff_block(self.is_testnet)
+        cutoff_block = ValiConfig.standard_miner_cutoff_block(self.is_testnet)
         if cutoff_block is None or hotkey == ValiConfig.DEVELOPMENT_HOTKEY or is_synthetic_hotkey(hotkey):
             return False
         pushed_cutoff_block, registered_after = self._registered_after_cutoff
@@ -918,19 +931,43 @@ class MinerAccountManager(ValidatorBroadcastBase):
             return None
         return registered_after.get(hotkey)
 
-    def set_new_regular_miner_record(self, hotkey: str, record: NewRegularMinerRecord) -> None:
-        """Attach or replace the record of the account a new regular miner opened. Saves to disk."""
-        if not isinstance(record, NewRegularMinerRecord):
-            raise TypeError(f"A NewRegularMinerRecord is required, not {type(record).__name__}")
+    @staticmethod
+    def _check_standard_record(hotkey: str, record: StandardMinerAccount) -> None:
+        if not isinstance(record, StandardMinerAccount):
+            raise TypeError(f"A StandardMinerAccount is required, not {type(record).__name__}")
+        if is_synthetic_hotkey(hotkey):
+            raise ValueError(f"{hotkey} is a subaccount; a standard miner account needs a real hotkey")
+
+    def open_standard_account(self, hotkey: str, record: StandardMinerAccount) -> StandardMinerAccount:
+        """Open a standard miner's account in one step: the record, the opening tier and the SUBACCOUNT_CHALLENGE
+        bucket, saved together. An account already opened is returned as it is, with a missing tier restored."""
+        self._check_standard_record(hotkey, record)
         with self._accounts_lock:
-            self.get_or_create(hotkey).new_regular_miner_record = record
+            account = self.get_or_create(hotkey)
+            existing = account.standard_account
+            if existing is not None:
+                if account.leverage_tier is None:
+                    account.leverage_tier = existing.opening_leverage_tier
+                    self._save_accounts_to_disk()
+                return existing
+            account.standard_account = record
+            account.leverage_tier = record.opening_leverage_tier
+            account.miner_bucket = MinerBucket.SUBACCOUNT_CHALLENGE
+            self._save_accounts_to_disk()
+            return record
+
+    def set_standard_account(self, hotkey: str, record: StandardMinerAccount) -> None:
+        """Attach or replace the record of the account a standard miner opened. Saves to disk."""
+        self._check_standard_record(hotkey, record)
+        with self._accounts_lock:
+            self.get_or_create(hotkey).standard_account = record
             self._save_accounts_to_disk()
 
-    def get_new_regular_miner_record(self, hotkey: str) -> Optional[NewRegularMinerRecord]:
-        """The record of the account a new regular miner opened; None for every other hotkey."""
+    def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
+        """The record of the account a standard miner opened; None for every other hotkey."""
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
-            return account.new_regular_miner_record if account else None
+            return account.standard_account if account else None
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""

@@ -220,8 +220,8 @@ class TestValidatorBroadcastBase(unittest.TestCase):
         return SimpleNamespace(axon_info=SimpleNamespace(hotkey=hotkey, ip=ip))
 
     def test_mainnet_targets_come_from_the_metagraph_validator_set_minus_self(self):
-        """Under Null consensus only one UID holds a permit, so the targets are the validators the
-        metagraph server derives from stake weight, excluding this validator."""
+        """The chain may grant a single permit, so the targets are the validators the metagraph server
+        derives from stake weight, excluding this validator."""
         base = ValidatorBroadcastBase(running_unit_tests=True, is_testnet=False)
         base._metagraph_client = Mock()
         base._metagraph_client.get_validator_axons.return_value = [self._neuron("other").axon_info]

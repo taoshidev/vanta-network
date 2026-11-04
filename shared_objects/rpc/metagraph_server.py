@@ -90,7 +90,7 @@ class MetagraphServer(RPCServerBase):
         # derived from it at update time so a read never mixes two syncs
         self._stake_weight = []
         self._validator_axons = []
-        # hotkey -> registered after the new regular miner cutoff block, also derived at update time
+        # hotkey -> registered after the standard miner cutoff block, also derived at update time
         self._registered_after_cutoff = {}
         self._tao_reserve_rao = 0.0
         self._alpha_reserve_rao = 0.0
@@ -228,7 +228,7 @@ class MetagraphServer(RPCServerBase):
         return [a for a in self._validator_axons if exclude_hotkey is None or a.hotkey != exclude_hotkey]
 
     def is_registered_after_cutoff_rpc(self, hotkey: str) -> bool | None:
-        """Whether a hotkey registered after the new regular miner cutoff block given with the last full sync
+        """Whether a hotkey registered after the standard miner cutoff block given with the last full sync
         (metagraph_utils.registered_after_cutoff); None when that sync did not list it or its block is unknown"""
         return self._registered_after_cutoff.get(hotkey)
 
@@ -252,7 +252,7 @@ class MetagraphServer(RPCServerBase):
                             block_at_registration: list = None, axons: list = None,
                             emission: list = None, tao_reserve_rao: float = None,
                             alpha_reserve_rao: float = None, tao_to_usd_rate: float = None,
-                            stake_weight: list = None, new_regular_miner_cutoff_block: int = None) -> None:
+                            stake_weight: list = None, standard_miner_cutoff_block: int = None) -> None:
         """
         Atomically update multiple metagraph fields in a single RPC call (lock-free).
         Only updates fields that are provided (not None).
@@ -273,7 +273,7 @@ class MetagraphServer(RPCServerBase):
             alpha_reserve_rao: ALPHA reserve in RAO (optional)
             tao_to_usd_rate: TAO to USD conversion rate (optional)
             stake_weight: Per-UID chain stake weight in tokens (optional; re-derives the validator axons)
-            new_regular_miner_cutoff_block: This network's cutoff block, None while the new regular miner rules
+            standard_miner_cutoff_block: This network's cutoff block, None while the standard miner rules
                 are off. A full sync (hotkeys with their block_at_registration) re-derives who registered after
                 it; any other update keeps the previous answers
         """
@@ -302,7 +302,7 @@ class MetagraphServer(RPCServerBase):
             new_validator_axons = self._validator_axons
         if hotkeys is not None and block_at_registration is not None:
             new_registered_after = metagraph_utils.registered_after_cutoff(new_hotkeys, new_block_at_reg,
-                                                                           new_regular_miner_cutoff_block)
+                                                                           standard_miner_cutoff_block)
         else:
             new_registered_after = self._registered_after_cutoff
 
@@ -352,7 +352,7 @@ class MetagraphServer(RPCServerBase):
         return self.get_validator_axons_rpc(exclude_hotkey)
 
     def is_registered_after_cutoff(self, hotkey: str) -> bool | None:
-        """Whether a hotkey registered after the new regular miner cutoff block (direct access, no RPC)."""
+        """Whether a hotkey registered after the standard miner cutoff block (direct access, no RPC)."""
         return self.is_registered_after_cutoff_rpc(hotkey)
 
     def get_registered_after_cutoff(self) -> dict:
@@ -417,7 +417,7 @@ class MetagraphServer(RPCServerBase):
     # ==================== Test Convenience Methods ====================
 
     def set_hotkeys(self, hotkeys: List[str], block_at_registration: list = None, stake_weight: list = None,
-                    new_regular_miner_cutoff_block: int = None) -> None:
+                    standard_miner_cutoff_block: int = None) -> None:
         """
         Convenience method for tests: Set hotkeys with auto-generated default values.
 
@@ -431,7 +431,7 @@ class MetagraphServer(RPCServerBase):
         - tao_reserve_rao: 1_000_000_000_000 (1000 TAO)
         - alpha_reserve_rao: 1_000_000_000_000 (1000 ALPHA)
         - tao_to_usd_rate: 100.0
-        The new regular miner cutoff block is None (rules off) unless given.
+        The standard miner cutoff block is None (rules off) unless given.
 
         Args:
             hotkeys: List of hotkey strings
@@ -451,7 +451,7 @@ class MetagraphServer(RPCServerBase):
             alpha_reserve_rao=1_000_000_000_000,
             tao_to_usd_rate=100.0,
             stake_weight=stake_weight if stake_weight is not None else [0.0] * n,
-            new_regular_miner_cutoff_block=new_regular_miner_cutoff_block
+            standard_miner_cutoff_block=standard_miner_cutoff_block
         )
 
     def set_block_at_registration(self, hotkey: str, block: int) -> None:
