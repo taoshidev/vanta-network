@@ -239,6 +239,7 @@ class TestWithdrawals(TestBase):
         m.force_deposit = MagicMock()
         m._miner_account_client = MagicMock()
         m._miner_account_client.get_standard_account.return_value = record()
+        m._miner_account_client.get_account.return_value = None
         m._position_client = MagicMock()
         m._position_client.get_positions_for_one_hotkey.return_value = []
         m._challenge_period_client = MagicMock()
@@ -268,11 +269,14 @@ class TestWithdrawals(TestBase):
     def _withdrawn_theta(self):
         return self.m.collateral_manager.withdraw.call_args.kwargs["amount"] / 10 ** 9
 
-    def _error(self, amount=31.0, hotkey=HOTKEY):
-        processed = self.m.process_withdrawal_request(amount, COLDKEY, hotkey)
+    def _error(self, amount=31.0, hotkey=HOTKEY, close_account=True):
+        processed = self.m.process_withdrawal_request(amount, COLDKEY, hotkey, close_account)
         self.assertFalse(processed["successfully_processed"])
         self.assertEqual(processed.get("returned_amount", 0.0), 0.0)
         return processed["error_message"]
+
+    def _close(self, amount=31.0):
+        return self.m.process_withdrawal_request(amount, COLDKEY, HOTKEY, close_account=True)
 
     def test_the_unlocked_part_leaves_without_a_slash_whatever_the_positions(self):
         self.m._position_client.get_positions_for_one_hotkey.return_value = [self._open_position()]
@@ -333,16 +337,43 @@ class TestWithdrawals(TestBase):
         self.assertEqual((result["closes_account"], result["slashed_amount"], result["withdrawal_amount"]),
                          (True, 0.0, BALANCE))
         self.m._challenge_period_client.get_drawdown_stats.assert_not_called()
-        processed = self.m.process_withdrawal_request(1.0, COLDKEY, HOTKEY)
+        processed = self._close(1.0)
         self.assertTrue(processed["successfully_processed"], processed)
         self.assertEqual(self.m._elimination_client.append_elimination_row.call_args.kwargs["slash_theta"], 0.0)
         self.assertEqual(processed["returned_amount"], BALANCE)
+
+    def test_the_closing_slash_reads_the_balance_as_it_is_now(self):
+        # The cached stats say 2% and 4% down, but the positions just closed left the balance 3.5% below both marks
+        self.m._challenge_period_client.get_drawdown_stats.return_value = {
+            **EIGHTY_PERCENT, "daily_open_balance": 1.0, "daily_open_equity": 1.0, "eod_hwm": 1.0}
+        self.m._miner_account_client.get_account.return_value = SimpleNamespace(
+            balance=48_250.0, get_account_size=lambda: 50_000.0)
+        result = self.m.query_withdrawal_request(31.0, HOTKEY)
+        self.assertEqual((result["slash_proportion"], result["slashed_amount"]), (1.0, LOCKED))
+        self.assertAlmostEqual(result["intraday_drawdown_pct"], 3.5)
+        # And a recovery the cache has not seen yet lowers the slash
+        self.m._miner_account_client.get_account.return_value = SimpleNamespace(
+            balance=49_750.0, get_account_size=lambda: 50_000.0)
+        result = self.m.query_withdrawal_request(31.0, HOTKEY)
+        self.assertAlmostEqual(result["slash_proportion"], 0.5 / 3)
+        self.assertAlmostEqual(result["slashed_amount"], LOCKED * 0.5 / 3)
+
+    def test_a_withdrawal_that_closes_the_account_needs_the_consent(self):
+        processed = self.m.process_withdrawal_request(31.0, COLDKEY, HOTKEY)
+        self.assertFalse(processed["successfully_processed"])
+        self.assertIn("close_account", processed["error_message"])
+        self.assertEqual((processed["closes_account"], processed["slashed_amount"], processed["returned_amount"]),
+                         (True, CLOSING_SLASH, 0.0))
+        self.m._elimination_client.append_elimination_row.assert_not_called()
+        self.m.collateral_manager.withdraw.assert_not_called()
+        self.assertTrue(self._close()["successfully_processed"])
+        self.m._elimination_client.append_elimination_row.assert_called_once()
 
     def test_closing_runs_the_elimination_then_pays_out_what_is_left(self):
         calls = Mock()
         calls.attach_mock(self.m._elimination_client, "elimination")
         calls.attach_mock(self.m.collateral_manager, "chain")
-        processed = self.m.process_withdrawal_request(31.0, COLDKEY, HOTKEY)
+        processed = self._close()
         self.assertTrue(processed["successfully_processed"], processed)
         self.assertEqual((processed["returned_amount"], processed["account_closed"]), (BALANCE - CLOSING_SLASH, True))
         # The elimination takes the closing slash on the locked theta; nothing is slashed here
@@ -365,7 +396,7 @@ class TestWithdrawals(TestBase):
     def test_a_close_that_slashed_everything_pays_nothing_out_and_still_succeeds(self):
         self.m._challenge_period_client.get_drawdown_stats.return_value = {**EIGHTY_PERCENT, "intraday_drawdown_pct": 9.0}
         self.m.get_miner_collateral_balance.return_value = LOCKED
-        processed = self.m.process_withdrawal_request(LOCKED, COLDKEY, HOTKEY)
+        processed = self._close(LOCKED)
         self.assertTrue(processed["successfully_processed"], processed)
         self.assertEqual((processed["returned_amount"], processed["account_closed"]), (0.0, True))
         self.assertEqual(self.m._elimination_client.append_elimination_row.call_args.kwargs["slash_theta"], LOCKED)
@@ -485,8 +516,7 @@ class TestWithdrawals(TestBase):
 
     def test_one_account_withdraws_one_request_at_a_time(self):
         second = {}
-        thread = threading.Thread(target=lambda: second.update(
-            result=self.m.process_withdrawal_request(31.0, COLDKEY, HOTKEY)), daemon=True)
+        thread = threading.Thread(target=lambda: second.update(result=self._close()), daemon=True)
 
         def withdraw(amount, **kwargs):
             thread.start()
@@ -496,7 +526,7 @@ class TestWithdrawals(TestBase):
             return SimpleNamespace(rao=amount)
 
         self.m.collateral_manager.withdraw.side_effect = withdraw
-        processed = self.m.process_withdrawal_request(31.0, COLDKEY, HOTKEY)
+        processed = self._close()
         self.assertTrue(processed["successfully_processed"], processed)
         thread.join(10)
         self.assertFalse(thread.is_alive())
@@ -611,6 +641,19 @@ class TestEliminationSlash(TestBase):
         self.assertTrue(row.collateral_slashed)
         self.assertEqual(self._slashed_theta(), [])
         self.assertIsNone(row.intraday_drawdown_pct)
+
+    def test_a_record_closed_by_an_attempt_a_restart_forgot_is_not_slashed_again(self):
+        self.m._miner_account_client.get_standard_account.side_effect = lambda hotkey: record(closed_at_ms=NOW_MS)
+        for reason, kwargs in ((EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN, dict(elimination_drawdown_pct=5.2)),
+                               (EliminationReason.INACTIVE, {}),
+                               (ACCOUNT_CLOSED, dict(elimination_drawdown_pct=4.0, slash_theta=CLOSING_SLASH))):
+            with self.subTest(reason=reason):
+                self.m.eliminations.clear()
+                self.m._contract_client.reset_mock()
+                row = self._eliminate(reason, **kwargs)
+                self.assertTrue(row.collateral_slashed)
+                self.assertEqual(self._slashed_theta(), [])
+                self.m._miner_account_client.close_standard_account.assert_called()
 
     def test_a_closing_slash_that_fails_leaves_the_account_open(self):
         for failure in (False, RuntimeError("chain down")):
@@ -757,6 +800,49 @@ class TestAdminEndpoints(TestBase):
         self.server._elimination_client.append_elimination_row.assert_called_once_with(HOTKEY, EliminationReason.PLAGIARISM)
 
 
+class TestWithdrawEndpoint(TestBase):
+    """POST /collateral/withdraw signs the consent to closing the account with the request."""
+
+    def setUp(self):
+        super().setUp()
+        from bittensor_wallet import Keypair
+        from vanta_api.nonce_manager import NonceManager
+        self.coldkey, self.hotkey = Keypair.create_from_uri("//Alice"), Keypair.create_from_uri("//Bob")
+        server = object.__new__(ValidatorRestServer)
+        server._contract_client = MagicMock()
+        server._contract_client.process_withdrawal_request.return_value = {"successfully_processed": True}
+        server._verify_coldkey_owns_hotkey = MagicMock(return_value=True)
+        server.check_vanta_cli_version = MagicMock(return_value=None)
+        server.nonce_manager = NonceManager()
+        app = Flask(__name__)
+        app.config["TESTING"] = True
+        app.route("/collateral/withdraw", methods=["POST"])(server.withdraw_collateral)
+        self.server, self.client = server, app.test_client()
+
+    def _post(self, signed_close=None, sent_close=None):
+        import json
+        import uuid
+        fields = {"amount": 31.0, "miner_coldkey": self.coldkey.ss58_address, "miner_hotkey": self.hotkey.ss58_address,
+                  "nonce": uuid.uuid4().hex, "timestamp": TimeUtil.now_in_millis()}
+        to_sign = {**fields, "close_account": True} if signed_close else fields
+        signature = self.coldkey.sign(json.dumps(to_sign, sort_keys=True).encode("utf-8")).hex()
+        body = {**fields, "signature": signature, "version": ValiConfig.VANTA_CLI_MINIMUM_VERSION}
+        if sent_close is not None:
+            body["close_account"] = sent_close
+        response = self.client.post("/collateral/withdraw", json=body)
+        return response.status_code, response.get_json()
+
+    def test_the_consent_is_part_of_the_signature(self):
+        self.assertEqual(self._post()[0], 200)
+        self.assertEqual(self.server.contract_manager.process_withdrawal_request.call_args.kwargs["close_account"], False)
+        self.assertEqual(self._post(signed_close=True, sent_close=True)[0], 200)
+        self.assertEqual(self.server.contract_manager.process_withdrawal_request.call_args.kwargs["close_account"], True)
+        # Consent that was not signed, or is not a boolean, is refused
+        self.assertEqual(self._post(signed_close=False, sent_close=True)[0], 401)
+        self.assertEqual(self._post(signed_close=True, sent_close="yes")[0], 400)
+        self.assertEqual(self.server.contract_manager.process_withdrawal_request.call_count, 2)
+
+
 class TestThroughTheServers(TestBase):
     """An opened account on the test servers: the withdrawal queries on the drawdown the challenge period holds, and
     an elimination that marks the account bucket while a validator that is not the mothership leaves the record to the
@@ -811,8 +897,10 @@ class TestThroughTheServers(TestBase):
         # Nothing traded yet: no drawdown, nothing slashed, the whole balance comes out
         self.assertEqual((closing["slashed_amount"], closing["slash_proportion"]), (0.0, 0.0))
         self.assertAlmostEqual(closing["withdrawal_amount"], self.locked + 1.0)
-        # Under the standard limits of 3% a day and 5% from the high-water mark, 2% and 4% down costs 80%
+        # Under the standard limits of 3% a day and 5% from the high-water mark, 2% and 4% down costs 80%: the balance
+        # carries the 2% loss and the high-water mark stands 4% above it
         self._down_two_percent_today_and_four_from_the_high_water_mark()
+        self.account_client.process_order_sell(NEW, entry_value_usd=0, realized_pnl=-0.02 * 50_000.0, loan_repaid=0)
         closing = self.contract_client.query_withdrawal_request(1.5, NEW)
         self.assertTrue(closing["successfully_processed"], closing)
         self.assertAlmostEqual(closing["slash_proportion"], 0.8)

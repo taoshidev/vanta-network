@@ -129,7 +129,7 @@ class OrderProcessor:
                 msg = f"Hotkey [{hotkey}] must open an account before placing orders."
                 logger.warning(msg)
                 return False, msg, trade_pair
-        elif record is not None and record.is_closed:
+        elif record is not None and record.is_closed and not closing:
             msg = f"The account of hotkey [{hotkey}] is closed and cannot trade again."
             logger.warning(msg)
             return False, msg, None

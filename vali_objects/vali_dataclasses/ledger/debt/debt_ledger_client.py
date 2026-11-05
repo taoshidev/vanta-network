@@ -262,6 +262,10 @@ class DebtLedgerClient(RPCClientBase):
             logger.debug(f"DebtLedgerClient: Get settled segments failed: {e}")
             return []
 
+    def get_all_settled_segments(self) -> dict:
+        """Every hotkey's settled segments, oldest first. Raises on error: a weight cycle must not pay without them."""
+        return self._server.get_all_settled_segments_rpc()
+
     def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
         """
         Correct a settled segment's amount. Deliberate corrections only.

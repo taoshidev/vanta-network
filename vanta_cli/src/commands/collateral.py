@@ -375,7 +375,7 @@ def withdraw(
     nonce = secrets.token_urlsafe()
     timestamp = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    # Prepare withdrawal data for signing
+    # Prepare withdrawal data for signing; the consent to closing the account is signed with it
     withdrawal_data = {
         "amount": amount,
         "miner_coldkey": coldkey.ss58_address,
@@ -383,6 +383,8 @@ def withdraw(
         "nonce": nonce,
         "timestamp": timestamp,
     }
+    if closes_account:
+        withdrawal_data["close_account"] = True
 
     # Create message to sign (sorted JSON)
     message = json.dumps(withdrawal_data, sort_keys=True)
@@ -391,14 +393,7 @@ def withdraw(
     signature = coldkey.sign(message.encode('utf-8')).hex()
 
     # Prepare payload for withdrawal (include signature)
-    payload = {
-        "amount": amount,
-        "miner_coldkey": coldkey.ss58_address,
-        "miner_hotkey": hotkey.ss58_address,
-        "nonce": nonce,
-        "timestamp": timestamp,
-        "signature": signature
-    }
+    payload = {**withdrawal_data, "signature": signature}
 
     try:
         response = make_api_request("/collateral/withdraw", payload, base_url=base_url)

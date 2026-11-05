@@ -206,6 +206,11 @@ class WeeklySealLedger:
         with self._lock:
             return list(self.settled.get(hotkey, []))
 
+    def get_all_settled(self) -> Dict[str, List[SettledSegment]]:
+        """Every hotkey's settled segments, oldest first."""
+        with self._lock:
+            return {hotkey: list(segments) for hotkey, segments in self.settled.items() if segments}
+
     # ============================ Writes ============================
 
     def seal(

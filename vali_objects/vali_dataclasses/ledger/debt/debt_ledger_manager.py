@@ -285,6 +285,10 @@ class DebtLedgerManager():
         """Segments settled early for one hotkey, oldest first."""
         return self.weekly_seal_ledger.get_settled(hotkey)
 
+    def get_all_settled_segments(self) -> Dict[str, list]:
+        """Every hotkey's settled segments, oldest first."""
+        return self.weekly_seal_ledger.get_all_settled()
+
     def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
         """Correct a settled segment's amount. Deliberate corrections only."""
         return self.weekly_seal_ledger.amend_settled(hotkey, segment_end_ms, payout_usd)

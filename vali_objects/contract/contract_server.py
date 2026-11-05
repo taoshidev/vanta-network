@@ -111,9 +111,10 @@ class ContractServer(RPCServerBase):
         """Process a collateral deposit request using raw data."""
         return self._manager.process_deposit_request(extrinsic_hex)
 
-    def process_withdrawal_request_rpc(self, amount: float, miner_coldkey: str, miner_hotkey: str) -> Dict[str, Any]:
-        """Process a collateral withdrawal request."""
-        return self._manager.process_withdrawal_request(amount, miner_coldkey, miner_hotkey)
+    def process_withdrawal_request_rpc(self, amount: float, miner_coldkey: str, miner_hotkey: str,
+                                       close_account: bool = False) -> Dict[str, Any]:
+        """Process a collateral withdrawal request; close_account consents to one that closes the account."""
+        return self._manager.process_withdrawal_request(amount, miner_coldkey, miner_hotkey, close_account)
 
     def query_withdrawal_request_rpc(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """Query withdrawal request (preview only - no execution)."""

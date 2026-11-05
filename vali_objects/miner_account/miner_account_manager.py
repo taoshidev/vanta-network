@@ -1061,6 +1061,12 @@ class MinerAccountManager(ValidatorBroadcastBase):
             account = self.accounts.get(hotkey)
             return account.standard_account if account else None
 
+    def get_standard_accounts(self) -> Dict[str, StandardMinerAccount]:
+        """The records of every standard miner, by hotkey."""
+        with self._accounts_lock:
+            return {hotkey: account.standard_account for hotkey, account in self.accounts.items()
+                    if account.standard_account is not None}
+
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
         with self._accounts_lock:

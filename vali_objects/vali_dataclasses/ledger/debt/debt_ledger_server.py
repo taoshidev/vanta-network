@@ -334,6 +334,10 @@ class DebtLedgerServer(RPCServerBase):
         """
         return self._manager.get_settled_segments(hotkey)
 
+    def get_all_settled_segments_rpc(self) -> Dict[str, list]:
+        """Every hotkey's settled segments, oldest first (RPC method)."""
+        return self._manager.get_all_settled_segments()
+
     def amend_settled_segment_rpc(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
         """
         Correct a settled segment's amount (RPC method).

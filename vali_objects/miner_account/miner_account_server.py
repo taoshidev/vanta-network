@@ -331,6 +331,10 @@ class MinerAccountServer(RPCServerBase):
         """The record of the account a standard miner opened; None for every other hotkey."""
         return self._manager.get_standard_account(hotkey)
 
+    def get_standard_accounts(self) -> Dict[str, StandardMinerAccount]:
+        """The records of every standard miner, by hotkey."""
+        return self._manager.get_standard_accounts()
+
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
         return self._manager.get_hl_address(hotkey)

@@ -85,12 +85,13 @@ class ContractClient(RPCClientBase):
         self,
         amount: float,
         miner_coldkey: str,
-        miner_hotkey: str
+        miner_hotkey: str,
+        close_account: bool = False
     ) -> Dict[str, Any]:
-        """Process a collateral withdrawal request."""
+        """Process a collateral withdrawal request; close_account consents to one that closes the account."""
         # fail-fast: irreversible on-chain slash + withdraw (see slashing note) — never auto-retry.
         return self._invoke_rpc("process_withdrawal_request_rpc",
-                                args=(amount, miner_coldkey, miner_hotkey), retry=False)
+                                args=(amount, miner_coldkey, miner_hotkey, close_account), retry=False)
 
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """Query withdrawal request (preview only - no execution)."""

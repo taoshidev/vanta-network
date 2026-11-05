@@ -538,7 +538,11 @@ class EliminationManager(CacheController):
                 logger.warning(f"[ELIM_DEBUG] {hotkey} already slashed by an earlier attempt "
                                f"(collateral_slashed={collateral_slashed}); not slashing again")
             elif standard_record is not None:
-                if reason == EliminationReason.ACCOUNT_CLOSED:
+                if standard_record.is_closed:
+                    # Closed by an attempt cut short after its slash, which a restart forgot: never slashed twice
+                    slash_amount = 0.0
+                    logger.warning(f"[ELIM_DEBUG] {hotkey} was closed by an earlier attempt; not slashing again")
+                elif reason == EliminationReason.ACCOUNT_CLOSED:
                     slash_amount = slash_theta or 0.0
                 else:
                     drawdown = None

@@ -43,7 +43,8 @@ from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.miner_account.standard_miner import (PipelineAccountInfo, SizingRejected, StandardMinerAccount,
                                                         bucket_sizing, opening_bucket_thresholds)
 from shared_objects.rpc.common_data_client import CommonDataClient
-from entity_management.entity_utils import is_created_through_challenge, is_synthetic_hotkey
+from entity_management.entity_utils import is_created_through_challenge, is_synthetic_hotkey, pro_payout_scale
+from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from entity_management.entity_client import EntityClient
 
 
@@ -828,8 +829,9 @@ class ChallengePeriodManager(CacheController):
         """Wind down the account a miner is leaving. Run whenever a bucket change also changes
         the account size, so the new account's performance is tracked from scratch.
 
-        Returns False when the account size could not be pointed at the target bucket. Nothing is
-        wound down in that case: the caller must leave the miner in their current bucket rather
+        Returns False when the account size could not be pointed at the target bucket (nothing is
+        wound down then) or a standard miner's earnings could not be settled (its positions are
+        closed, the ledgers kept): the caller must leave the miner in their current bucket rather
         than strand them on the new one with the old size and no history.
         """
         # Point the account at the size the target bucket trades before resetting it. An auto-promoted
@@ -868,6 +870,11 @@ class ChallengePeriodManager(CacheController):
         from_bucket = self.miner_states[hotkey].current_bucket
         if is_synthetic_hotkey(hotkey) and from_bucket.is_subaccount_earning:
             self._entity_client.settle_wound_down_segment(hotkey, from_bucket.value, current_time_ms)
+        elif record is not None and from_bucket.is_subaccount_earning:
+            if not self._settle_standard_miner_segment(hotkey, record, from_bucket, current_time_ms):
+                logger.error(f"[CHALLENGE] {hotkey} bucket change to {target_bucket.value} ABORTED - its earnings "
+                             f"could not be settled; the positions are closed and the move is retried")
+                return False
         if sized is not None:
             self._commit_standard_account_sizing(hotkey, record, sized, target_bucket)
             if target_bucket == MinerBucket.SUBACCOUNT_FUNDED:
@@ -1063,6 +1070,53 @@ class ChallengePeriodManager(CacheController):
             return False, str(e)
         self._commit_standard_account_sizing(hotkey, record, sized, target_bucket)
         return True, f"{hotkey} trades ${sized.size_traded:,.0f} in {target_bucket.value}"
+
+    def _settle_standard_miner_segment(self, hotkey: str, record: StandardMinerAccount, from_bucket: MinerBucket,
+                                       switch_ms: int) -> bool:
+        """Pin every week the account being wound down is still owed for, on the positions just closed, before the
+        switch wipes them and the ledgers; weeks pinned by an earlier attempt are skipped. False if a write failed."""
+        try:
+            info = PipelineAccountInfo.from_standard_miner(record)
+            scale = pro_payout_scale(info.standard_account_size, info.pro_account_size, info.payout_scale)
+            applied_scale = scale if from_bucket.payout_scale_applies else 1.0
+            positions = self._position_client.get_positions_for_one_hotkey(hotkey)
+            perf_ledgers = self._perf_ledger_client.get_perf_ledger_for_hotkey(hotkey) or {}
+            ledger = self._debt_ledger_client.get_ledger(hotkey)
+            # What an earlier switch settled is settled: eligibility starts after it, as on the payout path
+            pinned = self._debt_ledger_client.get_settled_segments(hotkey)
+            settled_through_ms = max((segment.segment_end_ms for segment in pinned), default=0)
+            if ledger is not None and ledger.checkpoints:
+                settlements = DebtBasedScoring.payout_settlements_for_hotkey(
+                    positions, perf_ledgers.get(hotkey), ledger, settled_through_ms, None, scale,
+                    first_window_payable=True)
+            elif self._traded_for_more_than_a_day(positions, switch_ms):
+                logger.error(f"[CHALLENGE] No debt ledger for {hotkey}, which has traded for over a day; not settling "
+                             f"on a ledger that could not be read")
+                return False
+            else:
+                # Too young for a checkpoint: everything on it was traded in the bucket being left
+                settlements = DebtBasedScoring.generate_weekly_settlements(
+                    positions, perf_ledgers.get(hotkey), None, settled_through_ms, None, applied_scale) if positions else []
+            pinned_weeks = {segment.week_start_ms for segment in pinned if segment.bucket == from_bucket.value}
+            for settlement in settlements:
+                if settlement.payout_penalized <= 0 or settlement.start_ms in pinned_weeks:
+                    continue
+                if not self._debt_ledger_client.record_settled_segment(
+                        hotkey, settlement.start_ms, settlement.start_ms, switch_ms, from_bucket.value,
+                        settlement.payout_penalized, settlement.payout_raw, 1.0, applied_scale):
+                    logger.error(f"[CHALLENGE] The week of {settlement.start_ms} could not be settled for {hotkey} "
+                                 f"leaving {from_bucket.value}")
+                    return False
+            return True
+        except Exception as e:
+            logger.error(f"[CHALLENGE] Error settling the wound-down account of {hotkey}: {e}")
+            return False
+
+    @staticmethod
+    def _traded_for_more_than_a_day(positions, now_ms: int) -> bool:
+        """A ledger follows the first order within a checkpoint or two; none after a day means it could not be read."""
+        first_order_ms = min((order.processed_ms for position in positions for order in position.orders), default=None)
+        return first_order_ms is not None and now_ms - first_order_ms > 3 * ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 
     def _commit_standard_account_sizing(self, hotkey: str, record: StandardMinerAccount, sized: StandardMinerAccount,
                                         target_bucket: MinerBucket) -> None:

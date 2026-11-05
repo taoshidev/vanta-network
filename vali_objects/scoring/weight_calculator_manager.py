@@ -21,6 +21,8 @@ from time_util.time_util import MS_IN_WEEK, TimeUtil
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.miner_account.standard_miner import PipelineAccountInfo
+from entity_management.entity_utils import pro_payout_scale
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from shared_objects.log import logger
 
@@ -263,6 +265,20 @@ class WeightCalculatorManager(CacheController):
 
         return checkpoint_results, transformed_list
 
+    def _standard_miner_payout_inputs(self, hotkeys: List[str]) -> Tuple[dict, dict]:
+        """For the standard miners among hotkeys: the Grow multiplier each is paid at, and what its earlier accounts
+        settled at a switch."""
+        payout_scales, settled_segments = {}, {}
+        paid = set(hotkeys)
+        records = {hotkey: record for hotkey, record in self._miner_account_client.get_standard_accounts().items()
+                   if hotkey in paid}
+        all_settled = self._debt_ledger_client.get_all_settled_segments() if records else {}
+        for hotkey, record in records.items():
+            info = PipelineAccountInfo.from_standard_miner(record)
+            payout_scales[hotkey] = pro_payout_scale(info.standard_account_size, info.pro_account_size, info.payout_scale)
+            settled_segments[hotkey] = all_settled.get(hotkey, [])
+        return payout_scales, settled_segments
+
     @staticmethod
     def _first_full_week_start_ms(first_timestamp_ms: int) -> int:
         """Start of the first week fully covered by data beginning at first_timestamp_ms."""
@@ -353,6 +369,7 @@ class WeightCalculatorManager(CacheController):
         funded_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(
             [MinerBucket.PROBATION, MinerBucket.MAINCOMP]
         )
+        payout_scales, settled_segments = self._standard_miner_payout_inputs(funded_hotkeys)
 
         # Payout settlements are generated starting the first full week of each miner's debt ledger
         miner_required_payout_settlements = DebtBasedScoring.generate_payout_settlements(
@@ -361,7 +378,9 @@ class WeightCalculatorManager(CacheController):
             perf_ledgers=all_perf_ledgers,
             debt_ledgers=filtered_debt_ledgers,
             start_time_ms=payout_activation_start_ms,
-            end_time_ms=prev_target_end_ms
+            end_time_ms=prev_target_end_ms,
+            payout_scales=payout_scales,
+            settled_segments=settled_segments,
         )
         # Lifetime emissions, kept for logging below.
         all_time_emissions = {

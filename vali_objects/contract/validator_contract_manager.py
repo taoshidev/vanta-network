@@ -656,7 +656,17 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         # A record closed without its elimination row has the close recorded again, never slashed again: its slash
         # was taken by the close that was cut short, or is owed through the row
-        drawdown = {} if record.is_closed else self._challenge_period_client.get_drawdown_stats(hotkey) or {}
+        drawdown = {} if record.is_closed else dict(self._challenge_period_client.get_drawdown_stats(hotkey) or {})
+        if drawdown:
+            # The stats are a refresh pass old; with every position closed the balance is the equity right now
+            account = self._miner_account_client.get_account(hotkey)
+            if account is not None and account.get_account_size():
+                current = account.balance / account.get_account_size()
+                day_open = drawdown.get("daily_open_balance") or drawdown.get("daily_open_equity")
+                if day_open:
+                    drawdown["intraday_drawdown_pct"] = (1.0 - current / day_open) * 100.0
+                if drawdown.get("eod_hwm"):
+                    drawdown["trailing_drawdown_pct"] = (1.0 - current / drawdown["eod_hwm"]) * 100.0
         proportion = closing_slash_proportion(drawdown)
         intraday_pct = max(0.0, drawdown.get("intraday_drawdown_pct") or 0.0)
         trailing_pct = max(0.0, drawdown.get("trailing_drawdown_pct") or 0.0)
@@ -731,7 +741,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 f"CRITICAL: failed to roll back {slashed_amount} Theta slash for {miner_hotkey} after a failure "
                 f"({failure}); manual reinstatement required: {rollback_error}")
 
-    def process_withdrawal_request(self, amount: float, miner_coldkey: str, miner_hotkey: str) -> Dict[str, Any]:
+    def process_withdrawal_request(self, amount: float, miner_coldkey: str, miner_hotkey: str,
+                                   close_account: bool = False) -> Dict[str, Any]:
         """
         Process a collateral withdrawal request, and slash proportionally.
 
@@ -739,6 +750,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             amount (float): Amount to withdraw in theta tokens
             miner_coldkey (str): Miner's SS58 wallet coldkey address to return collateral to
             miner_hotkey (str): Miner's SS58 hotkey
+            close_account (bool): The miner's consent to a withdrawal that closes a standard miner's account
 
         Returns:
             Dict[str, Any]: Result of withdrawal operation
@@ -749,7 +761,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 query_result = self.query_withdrawal_request(amount, miner_hotkey)
                 if not query_result["successfully_processed"]:
                     return query_result
-                return self._withdraw(miner_coldkey, miner_hotkey, query_result)
+                return self._withdraw(miner_coldkey, miner_hotkey, query_result, close_account)
         except Exception as e:
             error_msg = f"Withdrawal processing execution failed: {str(e)}"
             logger.error(error_msg)
@@ -764,7 +776,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 "returned_to": ""
             }
 
-    def _withdraw(self, miner_coldkey: str, miner_hotkey: str, query_result: Dict[str, Any]) -> Dict[str, Any]:
+    def _withdraw(self, miner_coldkey: str, miner_hotkey: str, query_result: Dict[str, Any],
+                  close_account: bool = False) -> Dict[str, Any]:
         """Carry out a withdrawal the query allowed: the slash, or the elimination that closes the account, then the
         transfer. Caller holds the account's lock."""
         withdrawal_amount = query_result["withdrawal_amount"]
@@ -775,6 +788,13 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         logger.info(
             f"Processing withdrawal request from {miner_hotkey}. Current drawdown: {drawdown*100}%. {slashed_amount} Theta will be slashed. {withdrawal_amount} Theta will be withdrawn.")
         if closes_account:
+            if not close_account:
+                error_msg = (f"Withdrawing into the {query_result['locked_theta']:.4f} Theta locked by the account closes "
+                             f"it for good, paying out {withdrawal_amount:.4f} Theta after a slash of "
+                             f"{slashed_amount:.4f} Theta; send close_account true to confirm")
+                logger.warning(f"{error_msg}: {miner_hotkey}")
+                return {**query_result, "successfully_processed": False, "error_message": error_msg,
+                        "returned_amount": 0.0, "returned_to": ""}
             if not self.running_unit_tests and not self.is_mothership:
                 error_msg = "A withdrawal that closes the account is only processed by the mothership validator"
                 logger.error(f"{error_msg}: {miner_hotkey}")

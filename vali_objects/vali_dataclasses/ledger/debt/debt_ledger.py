@@ -409,6 +409,17 @@ class DebtLedger:
             previous_bucket = bucket
         return boundaries
 
+    def payout_scale_change_times(self) -> List[int]:
+        """The bucket changes (bucket_change_times) at which the payout scale starts or stops applying."""
+        boundaries: List[int] = []
+        previous_applies = None
+        for index, cp in enumerate(self.checkpoints):
+            applies = self._bucket_from_status(cp.challenge_period_status).payout_scale_applies
+            if previous_applies is not None and applies != previous_applies:
+                boundaries.append(self.checkpoints[index - 1].timestamp_ms)
+            previous_applies = applies
+        return boundaries
+
     def fee_baseline_at_first_earning(self) -> float:
         """`cumulative_fees_usd` as of the checkpoint *before* the first earning one.
 

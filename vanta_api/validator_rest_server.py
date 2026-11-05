@@ -1307,15 +1307,23 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if field not in data:
                     return jsonify({'error': f'Missing required field: {field}'}), 400
 
+            # A withdrawal that closes a standard miner's account is signed with its consent
+            close_account = data.get('close_account', False)
+            if close_account is not True and close_account is not False:
+                return jsonify({'error': 'close_account must be a boolean'}), 400
+
             # Verify the withdrawal signature
             keypair = Keypair(ss58_address=data['miner_coldkey'])
-            message = json.dumps({
+            signed = {
                 "amount": data['amount'],
                 "miner_coldkey": data['miner_coldkey'],
                 "miner_hotkey": data['miner_hotkey'],
                 "nonce": data['nonce'],
                 "timestamp": data['timestamp']
-            }, sort_keys=True).encode('utf-8')
+            }
+            if close_account:
+                signed["close_account"] = True
+            message = json.dumps(signed, sort_keys=True).encode('utf-8')
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
             if not is_valid:
                 return jsonify({'error': 'Invalid signature. Withdrawal request unauthorized'}), 401
@@ -1347,7 +1355,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             result = self.contract_manager.process_withdrawal_request(
                 amount=data['amount'],
                 miner_coldkey=data['miner_coldkey'],
-                miner_hotkey=data['miner_hotkey']
+                miner_hotkey=data['miner_hotkey'],
+                close_account=close_account,
             )
 
             # Return response

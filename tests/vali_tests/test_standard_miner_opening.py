@@ -294,6 +294,11 @@ class TestOrdersBeforeAndAfterTheOpening(TestBase):
         ok, message, _ = self._validate(NEW)
         self.assertFalse(ok)
         self.assertIn("closed", message)
+        # A closed account can still close what it holds
+        for execution_type, order_type in ((ExecutionType.FLAT_ALL, None), (ExecutionType.MARKET, OrderType.FLAT),
+                                           (ExecutionType.LIMIT_CANCEL, None)):
+            ok, message, _ = self._validate(NEW, execution_type, order_type)
+            self.assertNotIn("closed", message)
 
     def test_closing_orders_pass_while_the_answer_is_pending_or_the_account_unopened(self):
         self.manager.update_asset_selection(LEGACY, MinerAssetClass.CRYPTO)
