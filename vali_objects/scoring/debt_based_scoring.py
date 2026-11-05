@@ -57,6 +57,7 @@ from collections import defaultdict
 
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.order import Order
+from shared_objects.subtensor_ops.metagraph_utils import is_validator_stake_weight
 from vali_objects.vali_dataclasses.position import Position
 from shared_objects.log import logger
 
@@ -776,7 +777,10 @@ class DebtBasedScoring:
     def _compute_raw_weights_from_payouts(
         miner_daily_target_payouts_usd: dict[str, float],
         projected_daily_emissions_usd: float,
-        verbose: bool = False
+        verbose: bool = False,
+        capped_hotkeys: set[str] | None = None,
+        capped_targets: dict[str, float] | None = None,
+        emissions_cover_owed: bool | None = None,
     ) -> dict[str, float]:
         """
         Convert daily-target USD payouts to unit-less weight proportions.
@@ -789,6 +793,10 @@ class DebtBasedScoring:
             miner_daily_target_payouts_usd: Dict of {hotkey: daily_target_usd}
             projected_daily_emissions_usd: Projected daily alpha emissions in USD
             verbose: Enable detailed logging
+            capped_hotkeys: Standard miners, paid what they are owed and no share of a surplus
+            capped_targets: What a capped miner is still owed, spread over the days left
+            emissions_cover_owed: Whether the week's emissions cover everything owed; derived from the daily
+                figures when not given
 
         Returns:
             Dict of {hotkey: raw_weight} — contains only miners who have a debt ledger.
@@ -800,8 +808,28 @@ class DebtBasedScoring:
             logger.info(
                 f"Distributing emissions by PnL share: "
                 f"total_daily_target=${total_daily_target_payout:.2f}, "
-                f"projected_daily_emissions=${projected_daily_emissions_usd:.2f} (informational only)"
+                f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}"
             )
+
+        capped = {hotkey for hotkey in (capped_hotkeys or ()) if hotkey in miner_daily_target_payouts_usd}
+        if emissions_cover_owed is None:
+            emissions_cover_owed = bool(projected_daily_emissions_usd) and projected_daily_emissions_usd >= total_daily_target_payout
+        if capped and projected_daily_emissions_usd and emissions_cover_owed and total_daily_target_payout > 0:
+            # Emissions cover everything owed: a standard miner's weight is its share of the day's emissions and the
+            # rest is split among everyone else by owed; what nobody else is owed stays unassigned
+            targets = capped_targets or {}
+            weights = {hotkey: targets.get(hotkey, miner_daily_target_payouts_usd[hotkey]) / projected_daily_emissions_usd
+                       for hotkey in capped}
+            capped_total = sum(weights.values())
+            if capped_total > 1.0:  # a balance caught up on faster than the projection allows for
+                weights = {hotkey: weight / capped_total for hotkey, weight in weights.items()}
+            others = {hotkey: payout_usd for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
+                      if hotkey not in capped}
+            others_total = sum(others.values())
+            remainder = max(0.0, 1.0 - sum(weights.values()))
+            weights.update({hotkey: remainder * payout_usd / others_total if others_total > 0 else 0.0
+                            for hotkey, payout_usd in others.items()})
+            return weights
 
         if total_daily_target_payout > 0:
             return {
@@ -846,7 +874,8 @@ class DebtBasedScoring:
     def _estimate_alpha_emissions_until_target(
         metagraph_client: 'MetagraphClient',
         days_until_target: int,
-        verbose: bool = False
+        verbose: bool = False,
+        burn_uid: int | None = None,
     ) -> float:
         """
         Estimate total ALPHA emissions available from now until target day.
@@ -863,7 +892,14 @@ class DebtBasedScoring:
             Estimated total ALPHA emissions available (float)
         """
         try:
-            total_alpha_per_tempo = sum(metagraph_client.get_emission())
+            # The emission of a validator's UID is its dividend, not part of what miners share; what the burn
+            # address takes is unassigned miner emission and stays in
+            emission = list(metagraph_client.get_emission())
+            stake_weight = list(metagraph_client.get_stake_weight() or [])
+            if len(stake_weight) == len(emission):
+                emission = [e for uid, (e, w) in enumerate(zip(emission, stake_weight))
+                            if uid == burn_uid or not is_validator_stake_weight(w)]
+            total_alpha_per_tempo = sum(emission)
             total_alpha_per_block = total_alpha_per_tempo / 360
             if verbose:
                 logger.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")
@@ -1541,10 +1577,12 @@ class DebtBasedScoring:
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
         current_time_ms: int = None,
-        verbose: bool = False
+        verbose: bool = False,
+        no_dust_hotkeys: set[str] | None = None,
     ) -> dict[str, float]:
         """
-        Enforce minimum dust weights for ALL eligible hotkeys.
+        Enforce minimum dust weights for ALL eligible hotkeys. no_dust_hotkeys (standard miners) get none in any
+        bucket: their weight is what they are owed and nothing else.
 
         Iterates over eligible_hotkeys (the full metagraph-filtered, bucket-assigned set),
         which is a superset of ledger_dict. Miners present in ledger_dict get performance-scaled
@@ -1630,7 +1668,9 @@ class DebtBasedScoring:
             debt_weight = raw_debt_weights.get(hotkey, 0.0)
             current_status = miner_statuses.get(hotkey, MinerBucket.UNKNOWN.value)
 
-            if dynamic_dust_weights is not None and hotkey in dynamic_dust_weights:
+            if no_dust_hotkeys and hotkey in no_dust_hotkeys:
+                minimum_weight = 0.0
+            elif dynamic_dust_weights is not None and hotkey in dynamic_dust_weights:
                 minimum_weight = dynamic_dust_weights[hotkey]
             else:
                 minimum_weight = status_to_minimum_weight.get(current_status, 1 * DUST)
@@ -1648,6 +1688,26 @@ class DebtBasedScoring:
                 )
 
         return miner_weights_with_minimums
+
+    @staticmethod
+    def _hold_capped_weights(weights: dict[str, float], capped_hotkeys: set[str] | None,
+                             raw_debt_weights: dict[str, float] | None = None) -> dict[str, float]:
+        """The dust floors can lift the total past one, and the normalization that follows would shave the capped
+        miners' owed share with everyone else's: the others are scaled to what is left instead, unless that would
+        push the ones sitting on their floor below it, when the normalization's shave of everyone stands."""
+        capped = {hotkey for hotkey in (capped_hotkeys or ()) if hotkey in weights}
+        total = sum(weights.values())
+        if not capped or total <= 1.0:
+            return weights
+        capped_total = sum(weights[hotkey] for hotkey in capped)
+        others_total = total - capped_total
+        room = max(0.0, 1.0 - capped_total)
+        floors = sum(weight for hotkey, weight in weights.items()
+                     if hotkey not in capped and (raw_debt_weights or {}).get(hotkey, 0.0) <= 0.0)
+        if others_total <= 0 or room < floors:
+            return weights
+        factor = room / others_total
+        return {hotkey: weight if hotkey in capped else weight * factor for hotkey, weight in weights.items()}
 
     @staticmethod
     def _get_burn_address_hotkey(

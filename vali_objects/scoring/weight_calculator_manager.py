@@ -22,7 +22,7 @@ from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.standard_miner import PipelineAccountInfo
-from entity_management.entity_utils import pro_payout_scale
+from entity_management.entity_utils import is_synthetic_hotkey, pro_payout_scale
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from shared_objects.log import logger
 
@@ -235,8 +235,7 @@ class WeightCalculatorManager(CacheController):
 
         # Get all miners from all buckets
         # TODO discuss whether to include plagiarism miners in dust emissions
-        buckets = [MinerBucket.CHALLENGE, MinerBucket.PROBATION, MinerBucket.MAINCOMP, MinerBucket.ENTITY]
-        all_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(buckets)
+        all_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(self.WEIGHTED_BUCKETS)
 
         # Filter out zombie miners (miners in buckets but not in metagraph)
         all_hotkeys_before_filter = len(all_hotkeys)
@@ -264,6 +263,21 @@ class WeightCalculatorManager(CacheController):
         logger.info(f"transformed list: {transformed_list}")
 
         return checkpoint_results, transformed_list
+
+    # The buckets whose miners get a weight. A real hotkey in a pipeline bucket is a standard miner; the standard
+    # challenge earns nothing and gets no dust, so it is not listed
+    PIPELINE_PAID_BUCKETS = [b for b in MinerBucket if b.is_subaccount_earning]
+    WEIGHTED_BUCKETS = [MinerBucket.CHALLENGE, MinerBucket.PROBATION, MinerBucket.MAINCOMP, MinerBucket.ENTITY,
+                        *PIPELINE_PAID_BUCKETS]
+    PAID_BUCKETS = [MinerBucket.PROBATION, MinerBucket.MAINCOMP, *PIPELINE_PAID_BUCKETS]
+
+    def _paid_hotkeys(self) -> Tuple[List[str], set]:
+        """The hotkeys paid through the per-hotkey settlements (legacy funded miners, and the real hotkeys of the
+        pipeline's paying buckets), and the latter on their own: the standard miners among them."""
+        legacy = self._challengeperiod_client.get_hotkeys_by_bucket([MinerBucket.PROBATION, MinerBucket.MAINCOMP])
+        standard = [hotkey for hotkey in self._challengeperiod_client.get_hotkeys_by_bucket(self.PIPELINE_PAID_BUCKETS)
+                    if not is_synthetic_hotkey(hotkey)]
+        return legacy + standard, set(standard)
 
     def _standard_miner_payout_inputs(self, hotkeys: List[str]) -> Tuple[dict, dict]:
         """For the standard miners among hotkeys: the Grow multiplier each is paid at, and what its earlier accounts
@@ -366,10 +380,9 @@ class WeightCalculatorManager(CacheController):
         all_perf_ledgers = self._perf_ledger_client.get_perf_ledgers()
 
         # Calculate regular hotkey payouts
-        funded_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(
-            [MinerBucket.PROBATION, MinerBucket.MAINCOMP]
-        )
+        funded_hotkeys, on_pipeline = self._paid_hotkeys()
         payout_scales, settled_segments = self._standard_miner_payout_inputs(funded_hotkeys)
+        standard_miners = set(payout_scales) | on_pipeline
 
         # Payout settlements are generated starting the first full week of each miner's debt ledger
         miner_required_payout_settlements = DebtBasedScoring.generate_payout_settlements(
@@ -523,7 +536,8 @@ class WeightCalculatorManager(CacheController):
         projected_alpha_available = DebtBasedScoring._estimate_alpha_emissions_until_target(
             metagraph_client=self._metagraph_client,
             days_until_target=days_until_target,
-            verbose=verbose
+            verbose=verbose,
+            burn_uid=DebtBasedScoring.get_burn_uid(not self.is_mainnet),
         )
         projected_usd_available = DebtBasedScoring._convert_alpha_to_usd(
             alpha_amount=projected_alpha_available,
@@ -548,11 +562,32 @@ class WeightCalculatorManager(CacheController):
         }
         projected_daily_usd = projected_usd_available / days_until_target
 
+        # A standard miner's weight is a share of the day's emissions, not of the pot, so its target is the balance
+        # still owed to it (every closed week owed less every week's emissions received since) over the days left:
+        # what one day over- or underpays, the next days take back or make up
+        capped_targets = {}
+        for hotkey in standard_miners:
+            payouts = miner_required_payout_settlements.get(hotkey) or []
+            emissions_checkpoints = all_emissions_ledgers[hotkey].checkpoints if hotkey in all_emissions_ledgers else []
+            if not payouts or not emissions_checkpoints:
+                continue  # nothing received on record yet: the day's figure stands
+            owed_since_ms = max(payouts[0].start_ms, self._first_full_week_start_ms(emissions_checkpoints[0].chunk_start_ms))
+            owed_usd = sum(p.payout_penalized for p in payouts if p.start_ms >= owed_since_ms)
+            paid_usd = sum(cp.chunk_emissions_usd for cp in emissions_checkpoints
+                           if cp.chunk_start_ms >= owed_since_ms + MS_IN_WEEK)
+            capped_targets[hotkey] = max(0.0, owed_usd - paid_usd) / days_until_target
+        # Whether the week's emissions cover everything owed decides the cap for the whole week
+        emissions_cover_owed = projected_daily_usd > 0 and projected_daily_usd * 7 >= total_remaining_payout_usd
+        cap_applied = emissions_cover_owed and any(hotkey in miner_daily_target_payouts_usd for hotkey in standard_miners)
+
         # Normalize daily payouts against projected daily emissions to get raw weights
         raw_debt_weights = DebtBasedScoring._compute_raw_weights_from_payouts(
             miner_daily_target_payouts_usd=miner_daily_target_payouts_usd,
             projected_daily_emissions_usd=projected_daily_usd,
-            verbose=verbose
+            verbose=verbose,
+            capped_hotkeys=standard_miners,
+            capped_targets=capped_targets,
+            emissions_cover_owed=emissions_cover_owed,
         )
 
         # Enforce minimum dust weights per bucket for all eligible hotkeys
@@ -563,8 +598,12 @@ class WeightCalculatorManager(CacheController):
             challengeperiod_client=self._challengeperiod_client,
             miner_account_client=self._miner_account_client,
             current_time_ms=current_time_ms,
-            verbose=verbose
+            verbose=verbose,
+            no_dust_hotkeys=standard_miners,
         )
+        if cap_applied:
+            miner_weights_with_minimums = DebtBasedScoring._hold_capped_weights(
+                miner_weights_with_minimums, standard_miners, raw_debt_weights)
 
         if verbose:
             logger.info(
