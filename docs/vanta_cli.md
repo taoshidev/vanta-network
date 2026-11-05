@@ -81,7 +81,7 @@ Check collateral balance for a miner address.
 ```bash
 vanta collateral withdraw [OPTIONS]
 ```
-Withdraw collateral from the Vanta Network. The command confirms the amount, then shows what the withdrawal would slash and asks again. For a miner on the [standard account track](miner.md#standard-account-track), collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good: the command shows the slash, asks you to confirm the close, signs that consent with the request, and refuses to close under `--no-prompt`.
+Withdraw collateral from the Vanta Network. The command confirms the amount, then shows what the withdrawal would slash and asks again. For a miner on the [standard account track](miner.md#standard-account-track), or a miner whose account size is fixed ([miner rule 3](miner.md#basic-rules)), collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good: the command shows the slash, asks you to confirm the close, signs that consent with the request, and refuses to close under `--no-prompt`.
 
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (for display purposes)
@@ -96,7 +96,7 @@ Withdraw collateral from the Vanta Network. The command confirms the amount, the
 ```bash
 vanta asset select [OPTIONS]
 ```
-Select the asset class your miner trades. Once selected, it cannot be changed. See the [miner guide](miner.md) for details.
+Select the asset class your miner trades. Once selected, it cannot be changed. A miner on the [standard account track](miner.md#standard-account-track) selects none (its account trades all markets) and is refused. See the [miner guide](miner.md) for details.
 
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (required)
@@ -111,7 +111,7 @@ Select the asset class your miner trades. Once selected, it cannot be changed. S
 ```bash
 vanta account open [OPTIONS]
 ```
-Open the trading account of a miner on the [standard account track](miner.md#standard-account-track), sized once from its deposited collateral at the chosen leverage tier. Select an asset class and deposit collateral first. The size cannot be changed afterwards and the opening tier is fixed (passing the challenge moves the account to tier 3); a higher tier allows more leverage but opens a smaller account from the same collateral.
+Open the trading account of a miner on the [standard account track](miner.md#standard-account-track), sized once from its deposited collateral at the chosen leverage tier, on all markets. Deposit collateral first; no asset class is selected. The size cannot be changed afterwards and the opening tier is fixed (passing the challenge moves the account to tier 3); a higher tier allows more leverage but opens a smaller account from the same collateral.
 
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (required)

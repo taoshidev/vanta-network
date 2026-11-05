@@ -1110,9 +1110,8 @@ class SubtensorOpsManager(CacheController):
             ]
             logger.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
 
-        # The chain's per-UID stake weight (bittensor's metagraph.total_stake), which identifies
-        # validators without the permit. A failed subnet-state query leaves it empty: keep the
-        # previous weights rather than publish an empty validator set.
+        # The chain's per-UID stake weight (bittensor's metagraph.total_stake) identifies validators without the permit;
+        # a failed subnet-state query leaves it empty, so the previous weights are kept rather than no validator at all
         stake_weight = [float(s) for s in metagraph_clone.total_stake]
         if len(stake_weight) != len(metagraph_clone.hotkeys):
             logger.warning(f"Stake weight has {len(stake_weight)} entries for {len(metagraph_clone.hotkeys)} hotkeys; "

@@ -237,10 +237,9 @@ class WeightCalculatorManager(CacheController):
         # TODO discuss whether to include plagiarism miners in dust emissions
         all_hotkeys = self._challengeperiod_client.get_hotkeys_by_bucket(self.WEIGHTED_BUCKETS)
 
-        # Filter out zombie miners (miners in buckets but not in metagraph)
-        all_hotkeys_before_filter = len(all_hotkeys)
+        # Filter out zombie miners (miners in buckets but not in metagraph); subaccounts are never there, so not counted
+        zombies_filtered = sum(1 for hk in all_hotkeys if hk not in metagraph_hotkeys_set and not is_synthetic_hotkey(hk))
         all_hotkeys = [hk for hk in all_hotkeys if hk in metagraph_hotkeys_set]
-        zombies_filtered = all_hotkeys_before_filter - len(all_hotkeys)
 
         if zombies_filtered > 0:
             logger.info(f"Filtered out {zombies_filtered} zombie miners (not in metagraph)")
@@ -565,9 +564,8 @@ class WeightCalculatorManager(CacheController):
         }
         projected_daily_usd = projected_usd_available / days_until_target
 
-        # A standard miner's weight is a share of the day's emissions, not of the pot, so its target is the balance
-        # still owed to it (every closed week owed less every week's emissions received since) over the days left:
-        # what one day over- or underpays, the next days take back or make up
+        # A standard miner's weight is a share of the day's emissions: its target is what it is still owed (closed weeks
+        # owed less emissions received since) over the days left, so a day's error is made up on the next days
         capped_targets = {}
         for hotkey in standard_miners:
             payouts = miner_required_payout_settlements.get(hotkey) or []

@@ -664,6 +664,18 @@ class ValiConfig:
             return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK_TESTNET
         return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK
 
+    # From this time (ms) a miner on the existing rules keeps the size in force when it is first seen trading, and
+    # withdrawing the collateral behind it closes the account. None = no new locks (locks already written stay).
+    ACCOUNT_SIZE_LOCK_START_MS = None
+    ACCOUNT_SIZE_LOCK_START_MS_TESTNET = None
+
+    @staticmethod
+    def account_size_lock_start_ms(is_testnet: bool = False) -> int | None:
+        """This network's account size lock start; None while the lock is off."""
+        if is_testnet:
+            return ValiConfig.ACCOUNT_SIZE_LOCK_START_MS_TESTNET
+        return ValiConfig.ACCOUNT_SIZE_LOCK_START_MS
+
     # Legacy leverage tiers 1 to 4 (HL-linked subaccounts, pro subaccounts, regular miners):
     # tier 1 = subaccount challenge, then by account size. Standard subaccounts use the
     # STANDARD_* tables below instead (see leverage_utils.is_standard_tiered).

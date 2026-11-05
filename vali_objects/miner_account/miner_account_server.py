@@ -335,6 +335,36 @@ class MinerAccountServer(RPCServerBase):
         """The records of every standard miner, by hotkey."""
         return self._manager.get_standard_accounts()
 
+    def lock_account_sizes(self, hotkeys: List[str]) -> dict:
+        """Fix each given miner's size at the size in force, from the lock start on; returns the locks written."""
+        return self._manager.lock_account_sizes(hotkeys)
+
+    def close_locked_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Mark a locked account closed by its miner's withdrawal."""
+        return self._manager.close_locked_account(hotkey, closed_at_ms)
+
+    def receive_size_locks_rpc(self, synapse: template.protocol.AccountSizeLocks) -> template.protocol.AccountSizeLocks:
+        """Receive an AccountSizeLocks synapse (RPC method for the axon handler)."""
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            logger.info(f"Received account size locks from validator hotkey [{sender_hotkey}]")
+            success = self._manager.receive_size_locks_update(synapse.size_locks, sender_hotkey)
+            synapse.successfully_processed = success
+            synapse.error_message = "" if success else "Failed to process the account size locks"
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing the account size locks: {e}"
+            logger.error(f"Exception in receive_size_locks: {e}")
+        return synapse
+
+    def get_collateral_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[float]:
+        """The size the collateral alone gives, lock or not; None for a hotkey without an account."""
+        return self._manager.get_collateral_account_size(hotkey, timestamp_ms)
+
+    def get_all_collateral_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict:
+        """Every account's collateral-only size."""
+        return self._manager.get_all_collateral_account_sizes(timestamp_ms)
+
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
         return self._manager.get_hl_address(hotkey)

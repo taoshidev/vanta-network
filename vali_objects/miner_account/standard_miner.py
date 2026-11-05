@@ -165,6 +165,11 @@ def opening_bucket_thresholds() -> dict:
                 eod_hwm_threshold=ValiConfig.STANDARD_MINER_EOD_HWM_THRESHOLD)
 
 
+# Eliminations that take the closing share on the drawdown at that moment: the miner left, or its UID did
+LIVE_DRAWDOWN_REASONS = (EliminationReason.ACCOUNT_CLOSED, EliminationReason.INACTIVE, EliminationReason.ZOMBIE,
+                         EliminationReason.DEREGISTERED)
+
+
 def closing_slash_proportion(drawdown: Optional[dict]) -> float:
     """The share of the locked theta an account forfeits on closing: the worse of today's loss and the live drawdown
     from the end-of-day high-water mark, each against its limit, at most all of it (the drawdown stats dict)."""
@@ -182,10 +187,10 @@ def closing_slash_proportion(drawdown: Optional[dict]) -> float:
 def elimination_slash_proportion(reason: EliminationReason, elimination_drawdown_pct: Optional[float],
                                  drawdown: Optional[dict]) -> float:
     """The share of the locked theta an elimination takes: all of it past a drawdown limit, the closing share when the
-    account closed, went inactive or lost its UID, else the drawdown against the maximum total drawdown."""
+    account closed, went inactive or left the metagraph, else the drawdown against the maximum total drawdown."""
     if reason.is_intraday_drawdown or reason.is_eod_drawdown:
         return 1.0
-    if reason in (EliminationReason.ACCOUNT_CLOSED, EliminationReason.INACTIVE, EliminationReason.ZOMBIE):
+    if reason in LIVE_DRAWDOWN_REASONS:
         return closing_slash_proportion(drawdown)
     proportion = (elimination_drawdown_pct or 0.0) / ((1 - ValiConfig.MAX_TOTAL_DRAWDOWN) * 100.0)
     return max(0.0, min(1.0, proportion))

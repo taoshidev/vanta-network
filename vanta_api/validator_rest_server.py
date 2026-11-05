@@ -29,9 +29,10 @@ from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import EXISTING_RULES_BUCKETS, MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
 from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.standard_miner import StandardMinerAccount
@@ -1307,7 +1308,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if field not in data:
                     return jsonify({'error': f'Missing required field: {field}'}), 400
 
-            # A withdrawal that closes a standard miner's account is signed with its consent
+            # A withdrawal that closes an account with locked collateral is signed with its consent
             close_account = data.get('close_account', False)
             if close_account is not True and close_account is not False:
                 return jsonify({'error': 'close_account must be a boolean'}), 400
@@ -1501,6 +1502,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not owns_hotkey:
                 return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
 
+            refusal = self._standard_track_selection_refusal(data['miner_hotkey'])
+            if refusal:
+                return jsonify({'successfully_processed': False, 'error_message': refusal})
+
             # Allow overwriting an existing selection only when switching into commodities
             allow_overwrite = (
                 isinstance(data['asset_selection'], str)
@@ -1521,11 +1526,26 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             logger.error(f"Error processing asset selection: {e}")
             return jsonify({'error': 'Internal server error processing asset selection'}), 500
 
+    def _standard_track_selection_refusal(self, hotkey: str) -> str | None:
+        """A hotkey on the standard account track trades all markets, which its account opening sets, so it selects
+        nothing here (nor switches into commodities later); None for a hotkey on the existing rules."""
+        if isinstance(self._miner_account_client.get_standard_account(hotkey), StandardMinerAccount):
+            return "A standard account trades all markets; its asset class cannot be changed"
+        if getattr(self._miner_account_client.get_account(hotkey), "miner_bucket", None) in EXISTING_RULES_BUCKETS:
+            return None
+        after_cutoff = self._miner_account_client.is_registered_after_cutoff(hotkey)
+        if after_cutoff is None:
+            return "The registration of this hotkey is not known yet; try again shortly"
+        if after_cutoff is True:
+            return ("This hotkey trades on the standard account track, on all markets, and selects no asset class: "
+                    "deposit collateral and open the account with vanta account open")
+        return None
+
     def open_account(self):
         """
         Open the trading account of a miner registered after the standard miner cutoff block: sized once from
-        its collateral at today's theta price and the chosen leverage tier, by the mothership. The miner selects
-        an asset class and deposits collateral first.
+        its collateral at today's theta price and the chosen leverage tier, by the mothership, on all markets. The
+        miner deposits collateral first.
 
         Example:
         curl -X POST http://localhost:48888/account/open \\
@@ -3441,6 +3461,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         elimination = self._elimination_client.get_elimination(hotkey)
         if elimination and elimination.get('reason') == EliminationReason.ACCOUNT_CLOSED.value:
             return f'The account of {hotkey} was closed by its miner ({elimination["reason"]}) and cannot be reopened'
+        # A fixed-size account closes only by its miner's withdrawal, row or not
+        size_lock = getattr(self._miner_account_client.get_account(hotkey), 'size_lock', None)
+        if isinstance(size_lock, AccountSizeLock) and size_lock.is_closed:
+            return f'The account of {hotkey} was closed by its miner and cannot be reopened'
         return None
 
     def revert_elimination(self, hotkey: str):

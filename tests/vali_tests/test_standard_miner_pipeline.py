@@ -111,6 +111,13 @@ class TestPipelineOnARealHotkey(TestBase):
     def _bucket(self, hotkey):
         return self.manager.miner_states[hotkey].current_bucket
 
+    def test_a_flat_standard_miner_flagged_for_plagiarism_keeps_its_stage(self):
+        self._in(HOTKEY, MinerBucket.PLAGIARISM)
+        self._in(LEGACY, MinerBucket.PLAGIARISM)
+        self.manager._prune_hotkeys_no_positions(hotkeys=["someone_with_positions"])
+        self.assertIn(HOTKEY, self.manager.miner_states)
+        self.assertNotIn(LEGACY, self.manager.miner_states)
+
     def test_the_daily_loss_is_measured_from_the_balance_in_the_standard_buckets(self):
         for bucket, expected in ((MinerBucket.SUBACCOUNT_CHALLENGE, True), (MinerBucket.SUBACCOUNT_FUNDED, True),
                                  (MinerBucket.PRO_CHALLENGE_TRANSITION, True),
@@ -338,7 +345,7 @@ class TestPenalties(TestBase):
 
     CP_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 
-    def _checkpoints(self, hotkey, standard_account, bucket):
+    def _checkpoints(self, hotkey, standard_account, bucket, collateral=SIZE):
         manager = object.__new__(PenaltyLedgerManager)
         manager.running_unit_tests = True
         manager.penalty_ledgers = {}
@@ -351,6 +358,7 @@ class TestPenalties(TestBase):
         manager._perf_ledger_client = SimpleNamespace(get_perf_ledgers=lambda: {hotkey: ledger})
         manager._position_client = SimpleNamespace(get_positions_for_all_miners=lambda: {hotkey: []})
         manager._miner_account_client = SimpleNamespace(get_miner_account_size=lambda _hk: SIZE,
+                                                        get_all_collateral_account_sizes=lambda: {hotkey: collateral},
                                                         get_standard_account=lambda _hk: standard_account)
         manager._challengeperiod_client = SimpleNamespace(to_checkpoint_dict=lambda: {hotkey: {
             "entries": [{"bucket": bucket.value, "start_time_ms": start_ms}],
@@ -370,6 +378,9 @@ class TestPenalties(TestBase):
         for cp in self._checkpoints(LEGACY, None, MinerBucket.MAINCOMP):
             self.assertEqual(cp.min_collateral_penalty, expected)
             self.assertLess(cp.total_penalty, 1.0)
+        # The minimum collateral rule reads the collateral, not the size it trades (a locked size below it)
+        for cp in self._checkpoints(LEGACY, None, MinerBucket.MAINCOMP, collateral=ValiConfig.MIN_COLLATERAL_VALUE):
+            self.assertEqual(cp.min_collateral_penalty, 1.0)
         # A subaccount keeps its waiver: the product is 1 whatever the minimum collateral penalty computes
         for cp in self._checkpoints(SUBACCOUNT, None, MinerBucket.SUBACCOUNT_FUNDED):
             self.assertEqual((cp.min_collateral_penalty, cp.total_penalty), (expected, 1))
@@ -438,7 +449,8 @@ class TestPipelineThroughTheServers(TestBase):
         self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.PRO_CHALLENGE_TRANSITION)
         self.assertEqual(self.account_client.get_standard_account(NEW).pro_account_size, 250_000.0)
         self.assertAlmostEqual(self.account_client.get_miner_account_size(NEW), 50_000.0)
-        self.assertEqual(self.asset_selection_client.get_asset_selection(NEW), MinerAssetClass.CRYPTO)
+        # All markets from the opening on, whatever was selected before it
+        self.assertEqual(self.asset_selection_client.get_asset_selection(NEW), MinerAssetClass.ALL_MARKETS)
 
         moved, message = self.challenge_period_client.admin_set_bucket(NEW, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, now_ms)
         self.assertTrue(moved, message)

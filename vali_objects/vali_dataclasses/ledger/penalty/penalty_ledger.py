@@ -855,6 +855,8 @@ class PenaltyLedgerManager:
         total_checkpoints_added = 0
         total_hotkeys = len(all_perf_ledgers)
         current_hotkey_index = 0
+        # The minimum collateral rule measures the collateral itself, not a size locked below it
+        collateral_sizes = self._miner_account_client.get_all_collateral_account_sizes()
 
         for miner_hotkey, portfolio_ledger in all_perf_ledgers.items():
             current_hotkey_index += 1
@@ -887,6 +889,7 @@ class PenaltyLedgerManager:
             miner_account_size = self._miner_account_client.get_miner_account_size(miner_hotkey)
             if miner_account_size is None:
                 miner_account_size = 0
+            collateral_size = collateral_sizes.get(miner_hotkey) or 0
             # A standard miner posts no minimum collateral and, like a subaccount, has no per-checkpoint product
             standard_miner = (not is_synthetic_hotkey(miner_hotkey) and isinstance(
                 self._miner_account_client.get_standard_account(miner_hotkey), StandardMinerAccount))
@@ -996,7 +999,7 @@ class PenaltyLedgerManager:
                             penalty_value = penalty_config.function(miner_positions_at_checkpoint)
 
                         elif penalty_config.input_type == PenaltyInputType.COLLATERAL:
-                            penalty_value = 1.0 if standard_miner else penalty_config.function(miner_account_size)
+                            penalty_value = 1.0 if standard_miner else penalty_config.function(collateral_size)
 
                     except Exception as e:
                         if verbose:

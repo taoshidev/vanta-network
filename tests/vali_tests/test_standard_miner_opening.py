@@ -9,7 +9,7 @@ import dataclasses
 import pickle
 from types import SimpleNamespace
 from unittest import mock
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
@@ -24,6 +24,7 @@ from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.miner_account.miner_account_server import MinerAccountServer
@@ -121,6 +122,7 @@ class TestOpening(TestBase):
         cls.challenge_period_client = cls.orchestrator.get_client('challenge_period')
         cls.entity_client = cls.orchestrator.get_client('entity')
         cls.elimination_client = cls.orchestrator.get_client('elimination')
+        cls.asset_selection_client = cls.orchestrator.get_client('asset_selection')
 
     def setUp(self):
         super().setUp()
@@ -204,12 +206,25 @@ class TestOpening(TestBase):
         self.assertIsNone(self.account_client.get_standard_account(NEW))
         self.assertIsNone(self.challenge_period_client.get_miner_bucket(NEW))
 
-    def test_an_asset_class_the_pipeline_supports_comes_first(self):
-        self.account_client.sync_miner_account_sizes_data({})
-        self.contract_client.set_test_collateral_balance(NEW, int(5.5 * RAO))
-        self.assertIn("asset class", self._rejection())
-        self.account_client.update_asset_selection(NEW, MinerAssetClass.HL_ALL)
-        self.assertIn("hl_all", self._rejection())
+    def test_the_account_trades_all_markets_whatever_was_selected(self):
+        # No selection, the Hyperliquid class or a single class picked before: the opening moves it onto all markets
+        for selected in (None, MinerAssetClass.HL_ALL, MinerAssetClass.CRYPTO):
+            with self.subTest(selected=selected):
+                self.orchestrator.clear_all_test_data()
+                self.metagraph_client.set_hotkeys(HOTKEYS, block_at_registration=BLOCKS, stake_weight=STAKE_WEIGHTS,
+                                                  standard_miner_cutoff_block=CUTOFF)
+                self.contract_client.set_test_collateral_balance(NEW, int(5.5 * RAO))
+                if selected is not None:
+                    self.asset_selection_client.process_asset_selection_request(selected.value, NEW)
+                opened, message, record_dict = self._open()
+                self.assertTrue(opened, message)
+                self.assertEqual(record_dict["asset_class"], MinerAssetClass.ALL_MARKETS.value)
+                self.assertEqual(self.asset_selection_client.get_asset_selection(NEW), MinerAssetClass.ALL_MARKETS)
+                self.assertEqual(self.account_client.get_account(NEW).asset_class, MinerAssetClass.ALL_MARKETS)
+        # A rejected opening leaves the selection alone
+        self.asset_selection_client.process_asset_selection_request(MinerAssetClass.CRYPTO.value, LEGACY)
+        self.assertIn("existing rules", self._rejection(LEGACY))
+        self.assertEqual(self.asset_selection_client.get_asset_selection(LEGACY), MinerAssetClass.CRYPTO)
 
     def test_a_closed_eliminated_or_already_trading_hotkey_cannot_open(self):
         self.account_client.set_standard_account(NEW, record(closed_at_ms=NOW_MS))
@@ -248,6 +263,60 @@ class TestOpening(TestBase):
         self.assertIn("already opened", message)
         self.assertEqual(again, record_dict)
         self.assertAlmostEqual(self.account_client.get_miner_account_size(NEW), 50_000.0)
+
+
+class TestAssetSelectionEndpoint(TestBase):
+    """POST /asset-selection: a hotkey on the standard account track selects nothing, before or after its opening."""
+
+    def setUp(self):
+        super().setUp()
+        from bittensor_wallet import Keypair
+        from flask import Flask
+        from vanta_api.validator_rest_server import ValidatorRestServer
+        self.coldkey, self.hotkey = Keypair.create_from_uri("//Alice"), Keypair.create_from_uri("//Bob")
+        server = object.__new__(ValidatorRestServer)
+        server._asset_selection_client = MagicMock()
+        server._asset_selection_client.process_asset_selection_request.return_value = {"successfully_processed": True}
+        server._miner_account_client = MagicMock()
+        server._miner_account_client.get_standard_account.return_value = None
+        server._miner_account_client.get_account.return_value = None
+        server._miner_account_client.is_registered_after_cutoff.return_value = False
+        server._verify_coldkey_owns_hotkey = MagicMock(return_value=True)
+        server.check_vanta_cli_version = MagicMock(return_value=None)
+        app = Flask(__name__)
+        app.config["TESTING"] = True
+        app.route("/asset-selection", methods=["POST"])(server.asset_selection)
+        self.server, self.client = server, app.test_client()
+
+    def _select(self, asset_class="commodities"):
+        import json
+        fields = {"asset_selection": asset_class, "miner_coldkey": self.coldkey.ss58_address,
+                  "miner_hotkey": self.hotkey.ss58_address}
+        signature = self.coldkey.sign(json.dumps(fields, sort_keys=True).encode("utf-8")).hex()
+        response = self.client.post("/asset-selection", json={**fields, "signature": signature,
+                                                               "version": ValiConfig.VANTA_CLI_MINIMUM_VERSION})
+        self.assertEqual(response.status_code, 200)
+        return response.get_json()
+
+    def test_only_a_hotkey_on_the_existing_rules_selects(self):
+        self.assertTrue(self._select()["successfully_processed"])
+        self.server._asset_selection_client.process_asset_selection_request.assert_called_once()
+        accounts = self.server._miner_account_client
+        for after_cutoff, standard_account, refusal in ((True, None, "standard account track"),
+                                                         (None, None, "not known yet"),
+                                                         (False, record(), "all markets")):
+            with self.subTest(after_cutoff=after_cutoff, opened=standard_account is not None):
+                accounts.is_registered_after_cutoff.return_value = after_cutoff
+                accounts.get_standard_account.return_value = standard_account
+                answer = self._select()
+                self.assertFalse(answer["successfully_processed"])
+                self.assertIn(refusal, answer["error_message"])
+        self.server._asset_selection_client.process_asset_selection_request.assert_called_once()
+        # A post-cutoff hotkey already on the existing rules selects as any other miner there
+        accounts.is_registered_after_cutoff.return_value = True
+        accounts.get_standard_account.return_value = None
+        accounts.get_account.return_value = MinerAccount(miner_hotkey="h", miner_bucket=MinerBucket.CHALLENGE)
+        self.assertTrue(self._select()["successfully_processed"])
 
 
 class TestOrdersBeforeAndAfterTheOpening(TestBase):
@@ -298,6 +367,32 @@ class TestOrdersBeforeAndAfterTheOpening(TestBase):
         for execution_type, order_type in ((ExecutionType.FLAT_ALL, None), (ExecutionType.MARKET, OrderType.FLAT),
                                            (ExecutionType.LIMIT_CANCEL, None)):
             ok, message, _ = self._validate(NEW, execution_type, order_type)
+            self.assertNotIn("closed", message)
+
+    def test_a_hotkey_already_on_the_existing_rules_keeps_trading(self):
+        # A state from before its validator knew the cutoff, or a registration answer lost to a cutoff change
+        self.manager.update_asset_selection(NEW, MinerAssetClass.CRYPTO)
+        self.assertIsNone(self.manager.get_miner_account_size(NEW))
+        self.manager.accounts[NEW].miner_bucket = MinerBucket.CHALLENGE
+        ok, message, _ = self._validate(NEW)
+        self.assertNotIn("open an account", message)
+        self.assertEqual(self.manager.get_miner_account_size(NEW), ValiConfig.MIN_CAPITAL)
+        self.manager.set_registered_after_cutoff(CUTOFF, {})
+        ok, message, _ = self._validate(NEW)
+        self.assertNotIn("not known yet", message)
+
+    def test_a_closed_fixed_size_account_only_closes_what_it_holds(self):
+        self.manager.update_asset_selection(LEGACY, MinerAssetClass.CRYPTO)
+        self.manager.accounts[LEGACY].size_lock = AccountSizeLock(NOW_MS, 150_000.0, 300.0)
+        ok, message, _ = self._validate(LEGACY)
+        self.assertTrue(ok, message)
+        self.manager.accounts[LEGACY].size_lock = AccountSizeLock(NOW_MS, 150_000.0, 300.0, closed_at_ms=NOW_MS)
+        ok, message, _ = self._validate(LEGACY)
+        self.assertFalse(ok)
+        self.assertIn("closed", message)
+        for execution_type, order_type in ((ExecutionType.FLAT_ALL, None), (ExecutionType.MARKET, OrderType.FLAT),
+                                           (ExecutionType.LIMIT_CANCEL, None)):
+            ok, message, _ = self._validate(LEGACY, execution_type, order_type)
             self.assertNotIn("closed", message)
 
     def test_closing_orders_pass_while_the_answer_is_pending_or_the_account_unopened(self):
@@ -488,6 +583,7 @@ class TestOpeningTransport(TestBase):
         self.assertEqual(self.account_client.get_standard_account(NEW), record())
         account = self.account_client.get_account(NEW)
         self.assertEqual((account.leverage_tier, account.miner_bucket), (TIER, MinerBucket.SUBACCOUNT_CHALLENGE))
+        self.assertEqual(account.asset_class, MinerAssetClass.ALL_MARKETS)
         self.assertAlmostEqual(self.account_client.get_miner_account_size(NEW), 50_000.0)
         self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.SUBACCOUNT_CHALLENGE)
         self.assertEqual(self.challenge_period_client.get_miner_start_time(NEW), NOW_MS)

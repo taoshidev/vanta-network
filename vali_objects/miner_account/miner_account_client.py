@@ -276,6 +276,27 @@ class MinerAccountClient(RPCClientBase):
         """The records of every standard miner, by hotkey."""
         return self._server.get_standard_accounts()
 
+    def lock_account_sizes(self, hotkeys: List[str]) -> dict:
+        """From the lock start on, fix each given miner's size at the size in force; returns hotkey -> AccountSizeLock
+        for the locks written. Raises on error."""
+        return self._server.lock_account_sizes(list(hotkeys))
+
+    def close_locked_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Mark a locked account closed by its miner's withdrawal; returns whether the lock held is closed."""
+        return self._server.close_locked_account(hotkey, closed_at_ms)
+
+    def receive_size_locks(self, synapse: template.protocol.AccountSizeLocks) -> template.protocol.AccountSizeLocks:
+        """Receive an AccountSizeLocks synapse (for axon attachment)."""
+        return self._server.receive_size_locks_rpc(synapse)
+
+    def get_collateral_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[float]:
+        """The size the collateral alone gives, lock or not; None for a hotkey without an account."""
+        return self._server.get_collateral_account_size(hotkey, timestamp_ms)
+
+    def get_all_collateral_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict:
+        """Every account's collateral-only size."""
+        return self._server.get_all_collateral_account_sizes(timestamp_ms)
+
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
         return self._server.get_hl_address(hotkey)

@@ -21,13 +21,14 @@ from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
 from vali_objects.miner_account.account_snapshot import AccountSnapshot
 from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import EXISTING_RULES_BUCKETS, MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
@@ -93,6 +94,7 @@ class MinerAccount:
     correlated_exposure_by_group: Dict[str, List[float]] = field(default_factory=dict)
     daily_open_snapshot: Optional[AccountSnapshot] = None
     standard_account: Optional[StandardMinerAccount] = None
+    size_lock: Optional[AccountSizeLock] = None  # a miner on the existing rules, from the lock start on
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -192,11 +194,21 @@ class MinerAccount:
         self.collateral_records.append(record)
 
     def get_account_size(self, timestamp_ms: Optional[int] = None) -> float:
-        """The account size: a standard miner's from its record (fixed at opening, the pro size on the pro track),
-        otherwise from the collateral record valid at the timestamp (the latest when None), MIN_CAPITAL without one."""
+        """The account size: a standard miner's from its record, a locked one's from its lock (from the lock time on),
+        otherwise from the collateral record valid at the timestamp (the latest when None; MIN_CAPITAL without one)."""
         if self.standard_account is not None:
             return self.standard_account.size_traded
+        if self.size_lock is not None and (timestamp_ms is None or timestamp_ms >= self.size_lock.locked_ms):
+            return self.size_lock.account_size
+        return self.collateral_account_size(timestamp_ms)
 
+    def size_lock_now(self, now_ms: int) -> AccountSizeLock:
+        """The lock of the size in force now: the latest collateral record's, as orders are sized."""
+        theta = self.collateral_records[-1].account_size_theta if self.collateral_records else 0.0
+        return AccountSizeLock.from_collateral(theta, now_ms)
+
+    def collateral_account_size(self, timestamp_ms: Optional[int] = None) -> float:
+        """The size the collateral alone gives, lock or not: what the minimum collateral rule measures."""
         if not self.collateral_records:
             return ValiConfig.MIN_CAPITAL
 
@@ -265,6 +277,7 @@ class MinerAccount:
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'daily_open_snapshot': self.daily_open_snapshot.to_dict() if self.daily_open_snapshot else None,
             'standard_account': self.standard_account.to_dict() if self.standard_account else None,
+            'size_lock': self.size_lock.to_dict() if self.size_lock else None,
         }
 
         if include_collateral_records:
@@ -288,6 +301,7 @@ class MinerAccount:
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'leverage_tier': self.leverage_tier,
             'standard_account': self.standard_account.to_dict() if self.standard_account else None,
+            'size_lock': self.size_lock.to_dict() if self.size_lock else None,
             **self.leverage_limits(),
         }
 
@@ -504,6 +518,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     correlated_exposure_raw = last_record.get("correlated_exposure_by_group", {})
                     daily_open_snapshot_raw = last_record.get("daily_open_snapshot")
                     standard_account_raw = last_record.get("standard_account")
+                    size_lock_raw = last_record.get("size_lock")
                 else:
                     total_realized_pnl = None
                     capital_used = None
@@ -519,6 +534,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     correlated_exposure_raw = {}
                     daily_open_snapshot_raw = None
                     standard_account_raw = None
+                    size_lock_raw = None
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
                 # Missing field (older checkpoint) → empty dict; will be lazy-backfilled by
@@ -587,6 +603,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     except Exception as e:
                         logger.error(f"Unreadable standard miner record for {hotkey}, loading the account without it: {e}")
 
+                size_lock = None
+                if size_lock_raw:
+                    try:
+                        size_lock = AccountSizeLock.from_dict(size_lock_raw)
+                    except Exception as e:
+                        logger.error(f"Unreadable account size lock for {hotkey}, loading the account without it: {e}")
+
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
@@ -605,6 +628,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     correlated_exposure_by_group=correlated_exposure_by_group,
                     daily_open_snapshot=daily_open_snapshot,
                     standard_account=standard_account,
+                    size_lock=size_lock,
                 )
 
             except Exception as e:
@@ -629,6 +653,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 asset_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
                 parsed_accounts = self._parse_accounts_dict(account_sizes_data, asset_data)
                 self._keep_standard_accounts_ahead_of(parsed_accounts)
+                self._keep_account_size_locks_of(parsed_accounts)
                 self.accounts.clear()
                 self.accounts.update(parsed_accounts)
 
@@ -654,6 +679,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     account.leverage_tier = local.leverage_tier
                 if account.miner_bucket is None:
                     account.miner_bucket = local.miner_bucket
+
+    def _keep_account_size_locks_of(self, incoming: Dict[str, MinerAccount]) -> None:
+        """A synced snapshot never unlocks a miner's size nor reopens a closed account; otherwise a lock it carries
+        replaces the one held, since it is the mothership's. Caller holds _accounts_lock."""
+        for hotkey, local in self.accounts.items():
+            account = incoming.get(hotkey)
+            if local.size_lock is None or account is None:
+                continue
+            if account.size_lock is None or (local.size_lock.is_closed and not account.size_lock.is_closed):
+                account.size_lock = local.size_lock
 
     # ==================== Account Size Methods ====================
 
@@ -706,6 +741,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     return collateral_record
             # Add the new record and update account size
             account.add_collateral_record(collateral_record)
+            shrunk = self._fit_size_lock(account, collateral_balance_theta, timestamp_ms)
 
             if is_first_record:
                 self.take_account_snapshot(hotkey=hotkey, timestamp_ms=timestamp_ms, reset_snapshot=True)
@@ -713,10 +749,24 @@ class MinerAccountManager(ValidatorBroadcastBase):
             # Save to disk
             self._save_accounts_to_disk()
 
+        if shrunk is not None:
+            self._broadcast_size_locks({hotkey: shrunk})
         logger.info(
             f"Updated account size for {hotkey}: ${collateral_record.account_size:,.2f} (valid from {collateral_record.valid_date_str})")
 
         return collateral_record
+
+    @staticmethod
+    def _fit_size_lock(account: MinerAccount, theta: Optional[float], record_ms: int) -> Optional[AccountSizeLock]:
+        """An open lock never stands on more theta than a record made after it shows (a withdrawal still in flight when
+        it was written, or a slash once a record follows): that balance shrinks it. Caller holds _accounts_lock."""
+        lock = account.size_lock
+        if (lock is None or lock.is_closed or theta is None or record_ms < lock.locked_ms
+                or theta >= lock.locked_theta - 1e-9):
+            return None
+        account.size_lock = AccountSizeLock.from_collateral(theta, record_ms)
+        logger.info(f"The account size lock of {account.miner_hotkey} shrank to the {theta} theta posted: {account.size_lock}")
+        return account.size_lock
 
     def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         with self._accounts_lock:
@@ -757,6 +807,89 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 logger.debug(f"No account size to delete for {hotkey}")
                 return True  # Return True - idempotent behavior
 
+    def lock_account_sizes(self, hotkeys: List[str], now_ms: Optional[int] = None) -> Dict[str, AccountSizeLock]:
+        """From this network's lock start on, fix each given miner's size at the size in force now; the mothership
+        broadcasts the locks it writes. Returns them; an account already locked keeps its lock."""
+        start_ms = ValiConfig.account_size_lock_start_ms(self.is_testnet)
+        now_ms = TimeUtil.now_in_millis() if now_ms is None else now_ms
+        if start_ms is None or now_ms < start_ms:
+            return {}
+        locks = {}
+        with self._accounts_lock:
+            for hotkey in hotkeys:
+                account = self.accounts.get(hotkey)
+                if (is_synthetic_hotkey(hotkey) or account is None or account.standard_account is not None
+                        or account.size_lock is not None):
+                    continue
+                account.size_lock = account.size_lock_now(now_ms)
+                locks[hotkey] = account.size_lock
+            if locks:
+                self._save_accounts_to_disk()
+        if locks:
+            logger.info(f"Locked the account size of {len(locks)} miners: {locks}")
+            self._broadcast_size_locks(locks)
+        return locks
+
+    def close_locked_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Mark a locked account closed by its miner's withdrawal, and broadcast the close; returns whether the lock
+        held is closed."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if account is None or account.size_lock is None:
+                return False
+            if account.size_lock.is_closed:
+                return True
+            account.size_lock = account.size_lock.closed(closed_at_ms)
+            lock = account.size_lock
+            self._save_accounts_to_disk()
+        self._broadcast_size_locks({hotkey: lock})
+        return True
+
+    def _broadcast_size_locks(self, locks: Dict[str, AccountSizeLock]) -> None:
+        def create_synapse():
+            return template.protocol.AccountSizeLocks(size_locks={hotkey: lock.to_dict() for hotkey, lock in locks.items()})
+
+        self._broadcast_to_validators(synapse_factory=create_synapse, broadcast_name="AccountSizeLocks",
+                                      context={"hotkeys": list(locks)})
+
+    def receive_size_locks_update(self, locks_data: dict, sender_hotkey: str = None) -> bool:
+        """Take the locks the mothership wrote or closed as they are, in place of any held (a close is never undone):
+        every validator then trades the mothership's size and refuses a closed account."""
+        def adopt(data: dict):
+            locks = {hotkey: AccountSizeLock.from_dict(fields) for hotkey, fields in data.items()}
+            if not locks:
+                raise ValueError(f"Invalid account size lock data: {data}")
+            with self._accounts_lock:
+                for hotkey, lock in locks.items():
+                    if is_synthetic_hotkey(hotkey):
+                        continue
+                    account = self.get_or_create(hotkey)
+                    held = account.size_lock
+                    if account.standard_account is None and not (held is not None and held.is_closed and not lock.is_closed):
+                        account.size_lock = lock
+                self._save_accounts_to_disk()
+
+        return self._handle_incoming_broadcast(synapse_data=locks_data, sender_hotkey=sender_hotkey,
+                                               broadcast_name="AccountSizeLocks", update_callback=adopt)
+
+    def _collateral_size(self, account: MinerAccount, timestamp_ms: Optional[int]) -> float:
+        # The minimum collateral rule never binds a standard miner, which posts no minimum: it reads as meeting it
+        if account.standard_account is not None:
+            return max(account.get_account_size(timestamp_ms), ValiConfig.MIN_COLLATERAL_VALUE)
+        return account.collateral_account_size(timestamp_ms)
+
+    def get_collateral_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[float]:
+        """The size the collateral alone gives, lock aside: what the minimum collateral rule measures. None without
+        an account."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            return self._collateral_size(account, timestamp_ms) if account is not None else None
+
+    def get_all_collateral_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict[str, float]:
+        """Every account's collateral size (get_collateral_account_size)."""
+        with self._accounts_lock:
+            return {hotkey: self._collateral_size(account, timestamp_ms) for hotkey, account in self.accounts.items()}
+
     def get_miner_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
                                use_account_floor: bool = False) -> float | None:
         """
@@ -776,6 +909,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
             if ((account is None or account.standard_account is None)
+                    and (account is None or account.miner_bucket not in EXISTING_RULES_BUCKETS)
                     and self.is_registered_after_cutoff(hotkey) is True):
                 # Registered after the cutoff block: nothing to trade before the opening, and no $5K floor
                 return None
@@ -840,10 +974,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     last_record = account.collateral_records[-1]
                     if last_record.account_size == account_size and last_record.account_size_theta == account_size_theta:
                         logger.debug(f"Most recent collateral record for {hotkey} already exists")
+                        if self._fit_size_lock(account, account_size_theta, update_time_ms) is not None:
+                            self._save_accounts_to_disk()
                         return True
 
                 # Add the new record and update account size
                 account.add_collateral_record(collateral_record)
+                self._fit_size_lock(account, account_size_theta, update_time_ms)
 
                 # Save to disk
                 self._save_accounts_to_disk()

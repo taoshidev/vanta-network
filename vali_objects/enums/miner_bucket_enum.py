@@ -239,6 +239,11 @@ class MinerBucket(Enum):
                 MinerBucket.PRO_FUNDED
                 )
 
+
+# The buckets of a regular miner on the existing rules (a standard miner reaches PLAGIARISM too, known by its record)
+EXISTING_RULES_BUCKETS = (MinerBucket.CHALLENGE, MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.PLAGIARISM)
+
+
 @dataclass
 class BucketEntry:
     bucket: MinerBucket

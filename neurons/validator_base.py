@@ -95,6 +95,10 @@ class ValidatorBase:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._thread_pool, self._miner_account_client.receive_standard_miner_record, synapse)
 
+    async def receive_size_locks(self, synapse: template.protocol.AccountSizeLocks) -> template.protocol.AccountSizeLocks:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._thread_pool, self._miner_account_client.receive_size_locks, synapse)
+
     @timeme
     def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
         miner_hotkey = synapse.dendrite.hotkey
@@ -254,6 +258,9 @@ class ValidatorBase:
         def smr_blacklist_fn(synapse: template.protocol.StandardMinerRecord) -> Tuple[bool, str]:
             return self.blacklist_fn(synapse, self.metagraph_client)
 
+        def asl_blacklist_fn(synapse: template.protocol.AccountSizeLocks) -> Tuple[bool, str]:
+            return self.blacklist_fn(synapse, self.metagraph_client)
+
         self.axon.attach(
             forward_fn=self.receive_signal,
             blacklist_fn=rs_blacklist_fn
@@ -285,6 +292,10 @@ class ValidatorBase:
         self.axon.attach(
             forward_fn=self.receive_standard_miner_record,
             blacklist_fn=smr_blacklist_fn
+        )
+        self.axon.attach(
+            forward_fn=self.receive_size_locks,
+            blacklist_fn=asl_blacklist_fn
         )
 
         # Serve passes the axon information to the network + netuid we are hosting on.

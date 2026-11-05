@@ -19,7 +19,8 @@ from vali_objects.contract.validator_contract_manager import ValidatorContractMa
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.miner_account.miner_account_manager import MinerAccountManager
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
+from vali_objects.miner_account.miner_account_manager import MinerAccount, MinerAccountManager
 from vali_objects.miner_account.standard_miner import (StandardMinerAccount, closing_slash_proportion,
                                                        elimination_slash_proportion)
 from vali_objects.utils.elimination.elimination_manager import EliminationManager
@@ -91,7 +92,8 @@ class TestClosingSlash(TestBase):
             (EliminationReason.ZOMBIE, None, None, 0.0),
             (ACCOUNT_CLOSED, 4.0, EIGHTY_PERCENT, 0.8),
             (EliminationReason.PLAGIARISM, 5.0, EIGHTY_PERCENT, 0.5),
-            (EliminationReason.DEREGISTERED, 12.0, None, 1.0),
+            (EliminationReason.DEREGISTERED, 12.0, EIGHTY_PERCENT, 0.8),
+            (EliminationReason.DEREGISTERED, 12.0, None, 0.0),
             (EliminationReason.MARTINGALE, None, None, 0.0),
         ):
             with self.subTest(reason=reason):
@@ -608,7 +610,7 @@ class TestEliminationSlash(TestBase):
             (EliminationReason.INACTIVE, {}, CLOSING_SLASH),
             (EliminationReason.ZOMBIE, {}, CLOSING_SLASH),
             (EliminationReason.PLAGIARISM, dict(elimination_drawdown_pct=5.0), 0.5 * LOCKED),
-            (EliminationReason.DEREGISTERED, dict(elimination_drawdown_pct=12.0), LOCKED),
+            (EliminationReason.DEREGISTERED, dict(elimination_drawdown_pct=12.0), CLOSING_SLASH),
             (EliminationReason.MARTINGALE, dict(elimination_drawdown_pct=0.0), None),
             (ACCOUNT_CLOSED, dict(elimination_drawdown_pct=4.0, slash_theta=CLOSING_SLASH), CLOSING_SLASH),
             (ACCOUNT_CLOSED, dict(elimination_drawdown_pct=0.0, slash_theta=0.0), None),
@@ -630,7 +632,7 @@ class TestEliminationSlash(TestBase):
                 self.m._contract_client.slash_miner_collateral_proportion.assert_not_called()
                 self.m._miner_account_client.close_standard_account.assert_called_once_with(HOTKEY, row.elimination_initiated_time_ms)
                 self.m._miner_account_client.set_miner_bucket.assert_called_once_with(HOTKEY, MinerBucket.ELIMINATED)
-                if reason in (EliminationReason.INACTIVE, EliminationReason.ZOMBIE):
+                if reason in (EliminationReason.INACTIVE, EliminationReason.ZOMBIE, EliminationReason.DEREGISTERED):
                     # The row keeps the drawdown the closing share was measured on
                     self.assertEqual((row.intraday_drawdown_pct, row.eod_drawdown_pct), (2.0, 4.0))
         # Inactive with no drawdown on record: the whole locked theta stays with the miner
@@ -790,6 +792,17 @@ class TestAdminEndpoints(TestBase):
                 self.server._challenge_period_client.revert_elimination.assert_not_called()
                 self.server._miner_account_client.reopen_standard_account.assert_not_called()
                 self.server._miner_account_client.reset_account.assert_not_called()
+
+    def test_a_fixed_size_account_its_miner_closed_is_not_reopened(self):
+        # Closed by its miner's withdrawal, row or not; an open fixed size is reverted as usual
+        for closed_at_ms, status in ((NOW_MS, 400), (None, 200)):
+            with self.subTest(closed=closed_at_ms is not None):
+                self.server._miner_account_client.get_account.return_value = MinerAccount(
+                    miner_hotkey=LEGACY, size_lock=AccountSizeLock(NOW_MS, 150_000.0, 300.0, closed_at_ms))
+                response = self.client.post("/admin/revert-elimination/" + LEGACY, json={})
+                self.assertEqual(response.status_code, status, response.get_json())
+                if status == 400:
+                    self.assertIn("closed by its miner", response.get_json()["error"])
 
     def test_an_admin_elimination_never_records_a_close(self):
         response = self.client.post("/admin/eliminate/" + HOTKEY, json={"reason": ACCOUNT_CLOSED.value})

@@ -11,9 +11,10 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.standard_miner import StandardMinerAccount
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import EXISTING_RULES_BUCKETS, MinerBucket
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.position import Position
@@ -119,7 +120,9 @@ class OrderProcessor:
         if not isinstance(record, StandardMinerAccount):
             record = None  # also for the mocked accounts of tests
         closing = execution_type in (ExecutionType.FLAT_ALL, ExecutionType.LIMIT_CANCEL) or order_type == OrderType.FLAT
-        if record is None and not closing and not is_synthetic_hotkey(hotkey):
+        # A hotkey already trading on the existing rules (a state from before its validator knew the cutoff) stays there
+        on_existing_rules = getattr(miner_account, "miner_bucket", None) in EXISTING_RULES_BUCKETS
+        if record is None and not closing and not on_existing_rules and not is_synthetic_hotkey(hotkey):
             after_cutoff = self.miner_account_client.is_registered_after_cutoff(hotkey)
             if after_cutoff is None:
                 msg = f"The registration of hotkey [{hotkey}] is not known yet. Please try again shortly."
@@ -130,6 +133,11 @@ class OrderProcessor:
                 logger.warning(msg)
                 return False, msg, trade_pair
         elif record is not None and record.is_closed and not closing:
+            msg = f"The account of hotkey [{hotkey}] is closed and cannot trade again."
+            logger.warning(msg)
+            return False, msg, None
+        size_lock = getattr(miner_account, "size_lock", None)
+        if isinstance(size_lock, AccountSizeLock) and size_lock.is_closed and not closing:
             msg = f"The account of hotkey [{hotkey}] is closed and cannot trade again."
             logger.warning(msg)
             return False, msg, None

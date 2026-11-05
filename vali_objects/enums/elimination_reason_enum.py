@@ -42,7 +42,7 @@ class EliminationReason(Enum):
     # indistinguishable from an administrative removal in the elimination
     # ledger.
     MARTINGALE = "MARTINGALE"
-    # ACCOUNT_CLOSED: a standard miner withdrew into its locked collateral, which closes its account
+    # ACCOUNT_CLOSED: a miner withdrew into the collateral locked behind its account size, which closes the account
     ACCOUNT_CLOSED = "ACCOUNT_CLOSED"
 
     @property

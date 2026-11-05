@@ -253,7 +253,7 @@ Returns all the hotkeys as seen in the metagraph from the validator's perspectiv
 
 Comprehensive dashboard for a regular (non-entity) miner hotkey. Aggregates the same per-section data as the [Subaccount Dashboard](#get-subaccount-dashboard-version-2) endpoint (challenge period, drawdown, elimination, account size, positions, limit orders, ledger, statistics), minus the entity-specific `subaccount_info` section. Uses the same `create_subaccount_dashboard` aggregation logic — see that endpoint's docs for the full section-by-section response schema.
 
-For a miner on the [standard account track](miner.md#standard-account-track), `account_size_data.standard_account` is the account record: `opened_at_ms`, `opening_leverage_tier`, `asset_class`, `account_size` (fixed at opening, the size the pro challenge is paid on), `locked_theta`, `opening_price_usd`, `trading_account_size` (the size traded when it differs: the pro size on the pro track, else `null`), `pro_account_size`, `payout_scale` (`null` = the configured pro challenge multiplier), `closed_at_ms` and `reopened_at_ms`. It is `null` for every other miner.
+For a miner on the [standard account track](miner.md#standard-account-track), `account_size_data.standard_account` is the account record: `opened_at_ms`, `opening_leverage_tier`, `asset_class`, `account_size` (fixed at opening, the size the pro challenge is paid on), `locked_theta`, `opening_price_usd`, `trading_account_size` (the size traded when it differs: the pro size on the pro track, else `null`), `pro_account_size`, `payout_scale` (`null` = the configured pro challenge multiplier), `closed_at_ms` and `reopened_at_ms`. It is `null` for every other miner. For a miner on the existing rules whose size is fixed (see [miner rule 3](miner.md#basic-rules)), `account_size_data.size_lock` is `{locked_ms, account_size, locked_theta, closed_at_ms}`: when the size was fixed, the size, the theta behind it and, once a withdrawal closed the account, when; `null` otherwise. Every validator fixes the size at its first pass after the lock start; the mothership broadcasts its locks and closes, which the other validators adopt.
 
 **Authentication:** Requires **tier 100 API access**.
 
@@ -694,7 +694,7 @@ Process a collateral deposit with encoded extrinsic data.
 
 `POST /collateral/query-withdraw`
 
-What a withdrawal would do, without doing it: the slash, the net amount and, for a miner on the [standard account track](miner.md#standard-account-track), whether it closes the account. No signature is needed.
+What a withdrawal would do, without doing it: the slash, the net amount and, for a miner on the [standard account track](miner.md#standard-account-track) or a miner on the existing rules whose size is fixed (`locked_theta` is then the theta behind that size), whether it closes the account. No signature is needed.
 
 **Request Body:**
 ```json
@@ -719,7 +719,7 @@ What a withdrawal would do, without doing it: the slash, the net amount and, for
 }
 ```
 
-A standard account withdrawing unlocked collateral answers with the same fields plus `locked_theta` and `closes_account: false`, and is never slashed (`slashed_amount` 0), whatever the positions, as long as at least the locked theta stays in place.
+A standard account, or an account whose size is fixed, withdrawing unlocked collateral answers with the same fields plus `locked_theta` and `closes_account: false`, and is never slashed (`slashed_amount` 0), whatever the positions, as long as at least the locked theta stays in place.
 
 **Response (a standard account withdrawing into its locked theta):**
 ```json
@@ -780,7 +780,7 @@ The signature is hex without a `0x` prefix.
 - `timestamp` (int): Request timestamp
 - `signature` (string): The coldkey's signature over the sorted JSON of `amount`, `miner_coldkey`, `miner_hotkey`, `nonce`, `timestamp` and, when it is true, `close_account` (a false value is neither signed nor needed)
 - `version` (string): The vanta-cli version; an outdated one is rejected with a 400
-- `close_account` (bool, optional): A standard account's consent to a withdrawal that closes it (one [Query Withdrawal](#query-withdrawal) answers with `closes_account: true`). Without it such a withdrawal is refused with the closing terms in `error_message`. With it, the mothership validator (the only one that processes a closing withdrawal) cancels any pending limit orders (every position must already be closed), records the elimination `ACCOUNT_CLOSED` with the slash, pays out the rest of the balance and answers `account_closed: true`. A closed hotkey never trades again, and no operator reversal reopens it.
+- `close_account` (bool, optional): A standard account's, or a fixed-size account's, consent to a withdrawal that closes it (one [Query Withdrawal](#query-withdrawal) answers with `closes_account: true`). Without it such a withdrawal is refused with the closing terms in `error_message`. With it, the mothership validator (the only one that processes a closing withdrawal) cancels any pending limit orders (every position must already be closed), records the elimination `ACCOUNT_CLOSED` with the slash, pays out the rest of the balance and answers `account_closed: true`. A closed hotkey never trades again, and no operator reversal reopens it.
 
 ### Get Collateral Balance
 
@@ -803,6 +803,8 @@ The asset class selection endpoint allows miners to permanently select their ass
 Valid asset classes: `crypto`, `forex`, `equities`, `commodities`, `hl_all`, `all_markets`.
 
 Miners selecting `hl_all` can trade any HyperLiquid-sourced pair (`trade_pair_source: "hyperliquid"`). All other selections are restricted to Vanta-sourced pairs of the matching category.
+
+A hotkey on the [standard account track](miner.md#standard-account-track) selects nothing here: its account trades all markets, set by its [opening](#account-opening). The endpoint answers it with `successfully_processed: false` (and asks a hotkey whose registration is not known yet to retry shortly).
 
 ### Asset Selection
 
@@ -837,7 +839,7 @@ Process an asset class selection.
 
 ## Account Opening
 
-A miner whose hotkey registered after the standard account cutoff block opens its trading account here, once it has selected an asset class and deposited collateral; see the [standard account track](miner.md#standard-account-track). The mothership validator processes the request and broadcasts the opened account to the other validators, which apply it as it is.
+A miner whose hotkey registered after the standard account cutoff block opens its trading account here, once it has deposited collateral; the account trades all markets (`all_markets`, which the opening sets whatever was selected before); see the [standard account track](miner.md#standard-account-track). The mothership validator processes the request and broadcasts the opened account to the other validators, which apply it as it is.
 
 ### Open Account
 
@@ -864,7 +866,7 @@ A miner whose hotkey registered after the standard account cutoff block opens it
   "account": {
     "opened_at_ms": 1751409821967,
     "opening_leverage_tier": 2,
-    "asset_class": "forex",
+    "asset_class": "all_markets",
     "account_size": 50000.0,
     "locked_theta": 110.0,
     "opening_price_usd": 5.0,
@@ -887,7 +889,7 @@ A miner whose hotkey registered after the standard account cutoff block opens it
 
 The account size is the collateral's USD value at the opening theta price divided by the tier's collateral percentage (0.7% / 1.1% / 1.5%), capped at $100,000, and the theta that backs it at that price is locked.
 
-A request that fails validation is answered with `{"error": "..."}`: 400 for a missing field, an invalid tier, a malformed key, signature or timestamp, or an outdated `version`; 401 for a bad signature, a reused nonce or a timestamp outside the accepted window; 403 when the coldkey does not own the hotkey; 503 when collateral operations are unavailable; 500 for an unexpected error. A rejection of the opening itself is a 400 with `successfully_processed: false` and the reason in `error_message`: the request reached a validator other than the mothership; the hotkey is not in the last metagraph sync (retry shortly); it registered before the cutoff block, so it trades under the existing rules (while the cutoff is unset, every hotkey); it already trades under the existing rules; it is eliminated, a validator or an entity; it has no asset class or `hl_all`; its collateral could not be read or none is posted; the account would open below $5,000; there is no theta price; or its miner has closed the account. Sending the request again for an open account returns that account. A 503 with `successfully_processed: false` means a validator service did not answer; resend the request.
+A request that fails validation is answered with `{"error": "..."}`: 400 for a missing field, an invalid tier, a malformed key, signature or timestamp, or an outdated `version`; 401 for a bad signature, a reused nonce or a timestamp outside the accepted window; 403 when the coldkey does not own the hotkey; 503 when collateral operations are unavailable; 500 for an unexpected error. A rejection of the opening itself is a 400 with `successfully_processed: false` and the reason in `error_message`: the request reached a validator other than the mothership; the hotkey is not in the last metagraph sync (retry shortly); it registered before the cutoff block, so it trades under the existing rules (while the cutoff is unset, every hotkey); it already trades under the existing rules; it is eliminated, a validator or an entity; its collateral could not be read or none is posted; the account would open below $5,000; there is no theta price; or its miner has closed the account. Sending the request again for an open account returns that account. A 503 with `successfully_processed: false` means a validator service did not answer; resend the request.
 
 ## Limit Orders
 

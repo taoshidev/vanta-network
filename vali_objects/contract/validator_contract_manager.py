@@ -27,6 +27,8 @@ from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 import template.protocol
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
+from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.miner_account.standard_miner import (StandardMinerAccount, OpeningRejected, open_account,
                                                           opening_bucket_thresholds, closing_slash_proportion,
@@ -35,6 +37,7 @@ from vali_objects.enums.elimination_reason_enum import EliminationReason
 from shared_objects.rpc.rpc_client_base import RPCCallTimeoutError
 from shared_objects.subtensor_ops.metagraph_utils import is_validator_stake_weight
 from entity_management.entity_client import EntityClient
+from entity_management.entity_utils import is_synthetic_hotkey
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from shared_objects.log import logger
 
@@ -123,6 +126,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
         self._challenge_period_client = ChallengePeriodClient(connection_mode=connection_mode)
         self._elimination_client = EliminationClient(connection_mode=connection_mode)
+        # A standard account trades all markets: the opening sets the asset selection
+        self._asset_selection_client = AssetSelectionClient(connection_mode=connection_mode)
 
         # Lock for test collateral balances dict (prevents concurrent modifications in tests)
         self._test_balances_lock = threading.Lock()
@@ -421,6 +426,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 logger.info(f"Account opening for {hotkey} rejected: {e}")
                 return False, str(e), None
             repeat = already_opened and self._challenge_period_client.has_miner(hotkey)
+            self._trade_all_markets(hotkey)
             record = self._miner_account_client.open_standard_account(hotkey, record)
             if not repeat:
                 # Sent as soon as the record exists: a failure in the state step costs the miner a retry, not the
@@ -439,11 +445,18 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         with self._account_locks_guard:
             return self._account_locks.setdefault(hotkey, threading.Lock())
 
+    def _trade_all_markets(self, hotkey: str) -> None:
+        """A standard account trades all markets, as a standard subaccount does, whatever the hotkey selected before."""
+        if self._asset_selection_client.get_asset_selection(hotkey) == MinerAssetClass.ALL_MARKETS:
+            return
+        result = self._asset_selection_client.process_asset_selection_request(
+            MinerAssetClass.ALL_MARKETS.value, hotkey, overwrite=True)
+        if not result.get("successfully_processed"):
+            raise RuntimeError(f"Could not move {hotkey} onto all markets: {result.get('error_message')}")
+
     def _standard_miner_opening(self, hotkey: str, leverage_tier: int) -> tuple[StandardMinerAccount, bool]:
-        """The record an opening request earns, with whether it already existed, or OpeningRejected: only a hotkey
-        registered after the cutoff block that is not eliminated, a validator, an entity or trading under the existing
-        rules, with a supported asset class and collateral, can open. An account already opened is returned even if
-        the hotkey has since become a validator by stake weight."""
+        """The record an opening earns and whether it existed, or OpeningRejected: only a post-cutoff hotkey with collateral
+        that is not eliminated, a validator, an entity or trading on the existing rules opens (an open account stays)."""
         after_cutoff = self._metagraph_client.is_registered_after_cutoff(hotkey)
         if after_cutoff is None:
             raise OpeningRejected("This hotkey is not in the last metagraph sync; try again shortly")
@@ -466,11 +479,6 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             raise OpeningRejected("An entity hotkey cannot open a trading account")
         if self._challenge_period_client.has_miner(hotkey):
             raise OpeningRejected("This hotkey already trades under the existing rules and cannot open an account")
-        if account is None or account.asset_class is None:
-            raise OpeningRejected("Select an asset class before opening the account")
-        if account.asset_class == MinerAssetClass.HL_ALL:
-            raise OpeningRejected("The hl_all asset class is for Hyperliquid-linked subaccounts; select all_markets "
-                                  "or a single asset class")
         collateral_theta = self.get_miner_collateral_balance(hotkey)
         if collateral_theta is None:
             raise OpeningRejected("The collateral balance could not be read; try again shortly")
@@ -480,16 +488,20 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         except Exception as e:
             logger.warning(f"Theta price unavailable for the opening of {hotkey}: {e}")
             price_usd = 0.0
-        record = open_account(collateral_theta, price_usd, leverage_tier, account.asset_class.value,
+        record = open_account(collateral_theta, price_usd, leverage_tier, MinerAssetClass.ALL_MARKETS.value,
                               TimeUtil.now_in_millis())
         return record, False
 
     def apply_standard_miner_opening(self, hotkey: str, record: StandardMinerAccount) -> StandardMinerAccount:
         """Put an opened account in place: the record, the opening tier and the bucket on the account in one step,
-        then the SUBACCOUNT_CHALLENGE state with the standard miner limits unless one exists or the account in force
-        is closed. Returns the record in force, which may be an earlier one."""
+        the SUBACCOUNT_CHALLENGE state unless one exists or the account is closed, and all markets."""
         record = self._miner_account_client.open_standard_account(hotkey, record)
         self._add_opening_state(hotkey, record)
+        try:
+            self._trade_all_markets(hotkey)
+        except Exception as e:
+            # The mothership's own selection broadcast, or the nightly sync, still brings it
+            logger.error(f"Could not move {hotkey} onto all markets on its opening: {e}")
         return record
 
     def _add_opening_state(self, hotkey: str, record: StandardMinerAccount) -> None:
@@ -550,10 +562,20 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 elimination = self._elimination_client.get_elimination(miner_hotkey)
                 result = None
                 if elimination is None:
-                    result = self._query_standard_miner_withdrawal(amount, miner_hotkey, record, theta_current_balance)
+                    result = self._query_locked_withdrawal(amount, miner_hotkey, record.locked_theta, record.is_closed,
+                                                           theta_current_balance)
                 elif not elimination.get("collateral_slashed", True):
                     result = self._query_owed_slash_withdrawal(miner_hotkey, record, theta_current_balance, elimination)
                 if result is not None:
+                    logger.info(f"{miner_hotkey} Query withdrawal request results: {result}")
+                    return result
+            elif not is_synthetic_hotkey(miner_hotkey):
+                # A miner on the existing rules with a fixed size withdraws as a standard miner does while it is open;
+                # once eliminated, the path below applies as for every other miner
+                size_lock = getattr(self._miner_account_client.get_account(miner_hotkey), "size_lock", None)
+                if isinstance(size_lock, AccountSizeLock) and self._elimination_client.get_elimination(miner_hotkey) is None:
+                    result = self._query_locked_withdrawal(amount, miner_hotkey, size_lock.locked_theta,
+                                                           size_lock.is_closed, theta_current_balance)
                     logger.info(f"{miner_hotkey} Query withdrawal request results: {result}")
                     return result
 
@@ -639,24 +661,24 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         logger.error(error_msg)
         return error_msg
 
-    def _query_standard_miner_withdrawal(self, amount: float, hotkey: str, record: StandardMinerAccount,
-                                         balance: float) -> Dict[str, Any]:
+    def _query_locked_withdrawal(self, amount: float, hotkey: str, locked_theta: float, is_closed: bool,
+                                 balance: float) -> Dict[str, Any]:
         """Collateral above the locked theta leaves without a slash, whatever the positions. A withdrawal into the
         locked theta closes the account: every position closed, then the whole balance less the closing slash."""
-        result = {"successfully_processed": True, "error_message": "", "locked_theta": record.locked_theta}
-        if not record.is_closed and balance - amount >= record.locked_theta - 1e-9:
+        result = {"successfully_processed": True, "error_message": "", "locked_theta": locked_theta}
+        if not is_closed and balance - amount >= locked_theta - 1e-9:
             return {**result, "closes_account": False, "drawdown": 0.0, "slashed_amount": 0.0,
                     "withdrawal_amount": amount, "new_balance": balance - amount}
 
         error_msg = self._open_positions_error(
-            hotkey, f"Withdrawing {amount:.4f} theta goes into the {record.locked_theta:.4f} theta locked by the account "
+            hotkey, f"Withdrawing {amount:.4f} theta goes into the {locked_theta:.4f} theta locked by the account "
                     f"and closes it")
         if error_msg:
             return {"successfully_processed": False, "error_message": error_msg}
 
-        # A record closed without its elimination row has the close recorded again, never slashed again: its slash
+        # An account closed without its elimination row has the close recorded again, never slashed again: its slash
         # was taken by the close that was cut short, or is owed through the row
-        drawdown = {} if record.is_closed else dict(self._challenge_period_client.get_drawdown_stats(hotkey) or {})
+        drawdown = {} if is_closed else dict(self._challenge_period_client.get_drawdown_stats(hotkey) or {})
         if drawdown:
             # The stats are a refresh pass old; with every position closed the balance is the equity right now
             account = self._miner_account_client.get_account(hotkey)
@@ -670,7 +692,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         proportion = closing_slash_proportion(drawdown)
         intraday_pct = max(0.0, drawdown.get("intraday_drawdown_pct") or 0.0)
         trailing_pct = max(0.0, drawdown.get("trailing_drawdown_pct") or 0.0)
-        slashed_amount = min(record.locked_theta * proportion, balance)
+        slashed_amount = min(locked_theta * proportion, balance)
         return {**result, "closes_account": True, "drawdown": max(intraday_pct, trailing_pct) / 100.0,
                 "intraday_drawdown_pct": intraday_pct, "trailing_drawdown_pct": trailing_pct,
                 "slash_proportion": proportion, "slashed_amount": slashed_amount,
@@ -697,7 +719,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 "slash_proportion": proportion, "slashed_amount": slashed_amount,
                 "withdrawal_amount": balance - slashed_amount, "new_balance": 0.0}
 
-    def _close_standard_miner_account(self, hotkey: str, query_result: Dict[str, Any]) -> tuple[Optional[str], float]:
+    def _close_account(self, hotkey: str, query_result: Dict[str, Any]) -> tuple[Optional[str], float]:
         """Close the account through its elimination (slash, record, account bucket, row) and return (error, the
         balance left to pay out), which is nothing unless the row says closed and slashed and the chain shows it."""
         try:
@@ -750,7 +772,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             amount (float): Amount to withdraw in theta tokens
             miner_coldkey (str): Miner's SS58 wallet coldkey address to return collateral to
             miner_hotkey (str): Miner's SS58 hotkey
-            close_account (bool): The miner's consent to a withdrawal that closes a standard miner's account
+            close_account (bool): The miner's consent to a withdrawal that closes an account with locked collateral
 
         Returns:
             Dict[str, Any]: Result of withdrawal operation
@@ -799,7 +821,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 error_msg = "A withdrawal that closes the account is only processed by the mothership validator"
                 logger.error(f"{error_msg}: {miner_hotkey}")
                 return {"successfully_processed": False, "error_message": error_msg, "returned_amount": 0.0, "returned_to": ""}
-            error_msg, withdrawal_amount = self._close_standard_miner_account(miner_hotkey, query_result)
+            error_msg, withdrawal_amount = self._close_account(miner_hotkey, query_result)
             if error_msg:
                 logger.error(f"{error_msg}: {miner_hotkey}")
                 return {"successfully_processed": False, "error_message": error_msg, "returned_amount": 0.0, "returned_to": ""}

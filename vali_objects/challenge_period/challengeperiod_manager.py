@@ -36,7 +36,7 @@ from vali_objects.vali_dataclasses.position import Position
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
-from vali_objects.enums.miner_bucket_enum import BucketEntry, MinerBucket
+from vali_objects.enums.miner_bucket_enum import EXISTING_RULES_BUCKETS, BucketEntry, MinerBucket
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.miner_account_manager import MinerAccount
@@ -507,6 +507,8 @@ class ChallengePeriodManager(CacheController):
         rank_hotkeys = [hotkey for hotkey, state in self.miner_states.items() if state.current_bucket.is_rank_based]
 
         accounts = self._miner_account_client.get_accounts(evaluation_hotkeys)
+        self._push_existing_rules_buckets(accounts)
+        self._lock_account_sizes(accounts, hk_to_first_order_time)
         ledgers = self._perf_ledger_client.filtered_ledger_for_scoring(evaluation_hotkeys)
         rank_positions, _ = self._position_client.filtered_positions_for_scoring(hotkeys=rank_hotkeys)
         timer.lap("fetch_eval_data")
@@ -834,10 +836,8 @@ class ChallengePeriodManager(CacheController):
         closed, the ledgers kept): the caller must leave the miner in their current bucket rather
         than strand them on the new one with the old size and no history.
         """
-        # Point the account at the size the target bucket trades before resetting it. An auto-promoted
-        # subaccount goes onto its pro account free of the promotion fee. A standard miner never pays one:
-        # its sizing is only checked here and written once the positions are closed, and it trades the
-        # funded leverage tier from SUBACCOUNT_FUNDED on, whatever tier it opened on.
+        # Size the account for the target bucket before resetting it; an auto-promoted subaccount and a standard miner
+        # pay no fee (a standard miner's sizing is checked here and written once its positions are closed)
         record = self._standard_account(hotkey)
         sized = None
         if record is not None:
@@ -930,6 +930,40 @@ class ChallengePeriodManager(CacheController):
             logger.info(f"[CHALLENGE] attempted to promote {len(promotions)}, "
                         f"successfully promoted {promoted_count} miners")
         return state_changed
+
+    LOCKED_SIZE_BUCKETS = EXISTING_RULES_BUCKETS
+
+    def _push_existing_rules_buckets(self, accounts: dict) -> None:
+        """An account on the existing rules carries its bucket, which the order gate and the account size read; push the
+        ones whose copy is missing or stale. Never fails the refresh."""
+        try:
+            stale = [hotkey for hotkey, state in self.miner_states.items()
+                     if state.current_bucket in EXISTING_RULES_BUCKETS and isinstance(accounts.get(hotkey), MinerAccount)
+                     and accounts[hotkey].miner_bucket != state.current_bucket]
+            if stale:
+                self._sync_buckets_to_accounts(hotkeys=stale)
+                for hotkey in stale:
+                    accounts[hotkey].miner_bucket = self.miner_states[hotkey].current_bucket
+        except Exception as e:
+            logger.error(f"[CHALLENGE] Could not push the existing-rules buckets this refresh: {e}", exc_info=True)
+
+    def _lock_account_sizes(self, accounts: dict, first_order_times: dict) -> None:
+        """From the lock start on, a miner on the existing rules that has traded keeps the size in force when it is
+        first seen (the account server decides). Updates the fetched accounts; never fails the refresh."""
+        try:
+            candidates = []
+            for hotkey, state in self.miner_states.items():
+                account = accounts.get(hotkey)
+                if (state.current_bucket in self.LOCKED_SIZE_BUCKETS and hotkey in first_order_times
+                        and not is_synthetic_hotkey(hotkey) and isinstance(account, MinerAccount)
+                        and account.standard_account is None and account.size_lock is None):
+                    candidates.append(hotkey)
+            if not candidates:
+                return
+            for hotkey, lock in self._miner_account_client.lock_account_sizes(candidates).items():
+                accounts[hotkey].size_lock = lock
+        except Exception as e:
+            logger.error(f"[CHALLENGE] Could not lock account sizes this refresh: {e}", exc_info=True)
 
     def promote_subaccount(
         self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None,
@@ -1623,7 +1657,7 @@ class ChallengePeriodManager(CacheController):
 
         rank_ledgers = {hk: ledger for hk, ledger in ledgers.items() if hk in hotkeys}
         rank_positions = {hk: pos for hk, pos in positions.items() if hk in hotkeys}
-        account_sizes = {hk: account.account_size for hk, account in accounts.items() if hk in hotkeys}
+        account_sizes = {hk: account.collateral_account_size() for hk, account in accounts.items() if hk in hotkeys}
 
         # Score all rank-eligible miners (including those without minimum days) for accurate threshold
         asset_competitiveness, asset_softmaxed_scores = Scoring.score_miner_asset_classes(
@@ -1725,6 +1759,14 @@ class ChallengePeriodManager(CacheController):
 
         return True
 
+    def _keeps_its_account(self, hotkey: str) -> bool:
+        """A standard miner flagged for plagiarism while flat keeps its stage; an unreadable record keeps it too."""
+        try:
+            return self._standard_account(hotkey) is not None
+        except Exception as e:
+            logger.warning(f"[CHALLENGE] Could not read the record of {hotkey}, not pruning it: {e}")
+            return True
+
     def _prune_hotkeys_no_positions(self, hotkeys=None) -> bool:
         """
         Prune the challenge period of miners who are no longer valid.
@@ -1747,6 +1789,8 @@ class ChallengePeriodManager(CacheController):
             if hotkey not in hotkeys:
                 bucket = state.current_bucket
                 if bucket.is_pro or bucket in (MinerBucket.ENTITY, MinerBucket.ELIMINATED, MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION):
+                    continue
+                if bucket == MinerBucket.PLAGIARISM and self._keeps_its_account(hotkey):
                     continue
                 hotkeys_prune.append(hotkey)
                 logger.warning(f"[CHALLENGE] {hotkey} pruned from {bucket.value}: no longer in metagraph")

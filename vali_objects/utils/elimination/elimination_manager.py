@@ -44,7 +44,9 @@ from vali_objects.position_management.position_manager_client import PositionMan
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_synthetic_hotkey
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.miner_account.standard_miner import StandardMinerAccount, elimination_slash_proportion
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
+from vali_objects.miner_account.standard_miner import (LIVE_DRAWDOWN_REASONS, StandardMinerAccount,
+                                                       elimination_slash_proportion)
 from vali_objects.position_management.position_utils.position_utils import PositionUtils
 from vali_objects.vali_dataclasses.ledger.ledger_utils import LedgerUtils
 from shared_objects.log import logger
@@ -523,6 +525,14 @@ class EliminationManager(CacheController):
             standard_record = None if is_subaccount else self._miner_account_client.get_standard_account(hotkey)
             if not isinstance(standard_record, StandardMinerAccount):
                 standard_record = None
+            # A miner on the existing rules with a fixed size that its own withdrawal closes (or closed already)
+            closed_lock = None
+            if not is_subaccount and standard_record is None:
+                size_lock = getattr(self._miner_account_client.get_account(hotkey), "size_lock", None)
+                if isinstance(size_lock, AccountSizeLock) and (size_lock.is_closed or reason == EliminationReason.ACCOUNT_CLOSED):
+                    closed_lock = size_lock
+            if reason == EliminationReason.ACCOUNT_CLOSED and standard_record is None and closed_lock is None:
+                raise RuntimeError(f"{hotkey} has no account its miner could close; nothing is slashed")
             _drawdown_thresholds = {
                 EliminationReason.FAILED_CHALLENGE_PERIOD_EOD_DRAWDOWN: ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD,
                 EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN: ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD,
@@ -546,7 +556,7 @@ class EliminationManager(CacheController):
                     slash_amount = slash_theta or 0.0
                 else:
                     drawdown = None
-                    if reason in (EliminationReason.INACTIVE, EliminationReason.ZOMBIE):
+                    if reason in LIVE_DRAWDOWN_REASONS:
                         drawdown = self._challenge_period_client.get_drawdown_stats(hotkey)
                         if drawdown and intraday_drawdown_pct is None and eod_drawdown_pct is None:
                             # The row keeps what the closing share was measured on, for a slash that has to wait
@@ -564,6 +574,19 @@ class EliminationManager(CacheController):
                         raise RuntimeError(f"The closing slash of {slash_amount} theta for {hotkey} failed; "
                                            f"the account stays open")
                     self._slashed_before_row[hotkey] = collateral_slashed
+            elif closed_lock is not None:
+                # The closing slash the withdrawal computed on the locked theta, taken once
+                slash_amount = 0.0 if closed_lock.is_closed else (slash_theta or 0.0)
+                if closed_lock.is_closed:
+                    logger.warning(f"[ELIM_DEBUG] {hotkey} was closed by an earlier attempt; not slashing again")
+                if slash_amount > 0:
+                    collateral_slashed = self._slash_for_elimination(
+                        hotkey, lambda: self._contract_client.slash_miner_collateral(hotkey, slash_amount),
+                        f"slash_amount={slash_amount}")
+                    if not collateral_slashed:
+                        raise RuntimeError(f"The closing slash of {slash_amount} theta for {hotkey} failed; "
+                                           f"the account stays open")
+                    self._slashed_before_row[hotkey] = collateral_slashed
             elif not is_subaccount:
                 drawdown_threshold = _drawdown_thresholds.get(reason, 1 - ValiConfig.MAX_TOTAL_DRAWDOWN)  # Other elimination reasons default to max drawdown 10%
                 slash_proportion = (elimination_drawdown_pct or 0) / (drawdown_threshold*100)
@@ -575,10 +598,13 @@ class EliminationManager(CacheController):
                 self._slashed_before_row[hotkey] = collateral_slashed
 
             if standard_record is not None:
-                # Closed as soon as its slash is taken, so nothing trades on while the rest is retried. The record
-                # closes on the mothership and reaches the other validators by its broadcast; the account bucket is
-                # this validator's own view, which the order gate reads
+                # Closed right after its slash so nothing trades while the rest is retried; the record reaches peers by
+                # its broadcast, and the account bucket is this validator's own view, which the order gate reads
                 self._miner_account_client.close_standard_account(hotkey, elimination_time_ms)
+                self._miner_account_client.set_miner_bucket(hotkey, MinerBucket.ELIMINATED)
+            elif closed_lock is not None:
+                # Closed right after its slash, so a retry after a restart never slashes it again
+                self._miner_account_client.close_locked_account(hotkey, elimination_time_ms)
                 self._miner_account_client.set_miner_bucket(hotkey, MinerBucket.ELIMINATED)
 
             if is_subaccount and bucket_at_elimination is not None and bucket_at_elimination.is_subaccount_earning:

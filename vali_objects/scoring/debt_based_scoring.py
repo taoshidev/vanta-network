@@ -1249,7 +1249,7 @@ class DebtBasedScoring:
         # Use cached data to avoid rate limiting on-chain queries
         collateral_balances = {}
         for hotkey in pnl_scores.keys():
-            collateral_usd = miner_account_client.get_miner_account_size(hotkey, most_recent=True)
+            collateral_usd = miner_account_client.get_collateral_account_size(hotkey)
             # Handle None or negative values
             if collateral_usd is None or collateral_usd <= 0:
                 collateral_usd = 0.0
