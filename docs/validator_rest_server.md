@@ -780,7 +780,7 @@ The signature is hex without a `0x` prefix.
 - `timestamp` (int): Request timestamp
 - `signature` (string): The coldkey's signature over the sorted JSON of `amount`, `miner_coldkey`, `miner_hotkey`, `nonce`, `timestamp` and, when it is true, `close_account` (a false value is neither signed nor needed)
 - `version` (string): The vanta-cli version; an outdated one is rejected with a 400
-- `close_account` (bool, optional): A standard account's, or a fixed-size account's, consent to a withdrawal that closes it (one [Query Withdrawal](#query-withdrawal) answers with `closes_account: true`). Without it such a withdrawal is refused with the closing terms in `error_message`. With it, the mothership validator (the only one that processes a closing withdrawal) cancels any pending limit orders (every position must already be closed), records the elimination `ACCOUNT_CLOSED` with the slash, pays out the rest of the balance and answers `account_closed: true`. A closed hotkey never trades again, and no operator reversal reopens it.
+- `close_account` (bool, optional): A standard account's, or a fixed-size account's, consent to a withdrawal that closes it (one [Query Withdrawal](#query-withdrawal) answers with `closes_account: true`). Without it such a withdrawal is refused with the closing terms in `error_message`. With it, the mothership validator (the only one that processes a closing withdrawal) cancels any pending limit orders (every position must already be closed), records the elimination `ACCOUNT_CLOSED` with the slash, pays out the rest of the balance and answers `account_closed: true`. A closed hotkey never trades again, no operator reversal reopens it, and payouts it has not yet received are forfeited.
 
 ### Get Collateral Balance
 

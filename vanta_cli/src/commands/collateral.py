@@ -359,7 +359,8 @@ def withdraw(
         console.print(
             f"\n[red]⚠️  This withdrawal goes into the {locked_theta} Theta locked by your account, which "
             f"CLOSES THE ACCOUNT FOR GOOD: all of the collateral comes out, less {slashed_amount} Theta slashed "
-            f"from the locked amount for the current drawdown. The hotkey cannot trade again.[/red]")
+            f"from the locked amount for the current drawdown. Payouts not yet received are forfeited, and the "
+            f"hotkey cannot trade again.[/red]")
 
     if closes_account:
         confirm = typer.confirm(
