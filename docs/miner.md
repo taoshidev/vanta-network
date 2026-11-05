@@ -87,7 +87,7 @@ The theta that backed the account size at the opening price is **locked**: locke
 
 ### Payouts
 
-A standard account is paid exactly what it is owed: its realized PnL above the account's high-water mark for the week, scaled as in the table, with a pro funded week withheld by the weekly penalty the way a subaccount's is. Its weight is capped at that amount, so it takes no share of the surplus emissions that the other miners split, and it receives no dust weight in any stage. When the week's emissions do not cover everything owed, every miner, standard accounts included, is scaled down pro rata. Payouts stop when the account is eliminated or closed: what has not yet been received (the previous week's payout still being paid out, and the current week's PnL) is not paid.
+A standard account is paid exactly what it is owed: its realized PnL above the account's high-water mark for the week, scaled as in the table, with a pro funded week withheld by the weekly penalty the way a subaccount's is. Its weight is capped at that amount, so it takes no share of the surplus emissions that the other miners split, and it receives no dust weight in any stage. When the week's emissions do not cover everything owed, every miner, standard accounts included, receives the same fraction of the payout it is owed. Payouts stop when the account is eliminated or closed: anything not yet received is not paid, including the current week's PnL.
 
 ### Withdrawals, closing and elimination
 
@@ -527,7 +527,7 @@ Starting in December 2025, Vanta uses a debt-based scoring algorithm to calculat
    - CHALLENGE/PLAGIARISM: 1× dust floor (scaled up to +1 dust based on 30-day performance)
    - UNKNOWN: 0× dust (no weight)
 6. **Burn Address**: Excess weight (when sum < 1.0) goes to burn address (UID 229 mainnet / UID 5 testnet)
-7. **Standard accounts**: a [standard account](#standard-account-track) is paid its owed amount and no more: its weight is capped at what it is still owed for the week, it takes no share of the surplus the other miners split, and it receives no dust weight in any stage. When emissions fall short of everything owed, every miner is scaled down pro rata.
+7. **Standard accounts**: a [standard account](#standard-account-track) is paid its owed amount and no more: its weight is capped at what it is still owed for the week, it takes no share of the surplus the other miners split, and it receives no dust weight in any stage. When emissions fall short of everything owed, every miner receives the same fraction of the payout it is owed.
 
 This system ensures miners are compensated fairly based on their performance while maintaining network security through minimum weights and preventing weight concentration through the burn mechanism.
 
