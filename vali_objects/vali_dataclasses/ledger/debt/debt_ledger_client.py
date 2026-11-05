@@ -266,6 +266,11 @@ class DebtLedgerClient(RPCClientBase):
         """Every hotkey's settled segments, oldest first. Raises on error: a weight cycle must not pay without them."""
         return self._server.get_all_settled_segments_rpc()
 
+    def get_sealed_weeks_for(self, hotkeys: list) -> dict:
+        """The sealed weeks of each of hotkeys that has any. Raises on error: a weight cycle or an account switch
+        must not price a settled week live."""
+        return self._server.get_sealed_weeks_for_rpc(list(hotkeys))
+
     def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
         """
         Correct a settled segment's amount. Deliberate corrections only.

@@ -561,7 +561,7 @@ class SlackNotifier:
 
     def send_plagiarism_promotion_notification(self, target_hotkey: str) -> bool:
         """
-        Send notification when a miner is promoted from plagiarism back to probation.
+        Send notification when a miner is promoted from plagiarism back to the main competition.
 
         Args:
             target_hotkey: Hotkey of the miner being promoted
@@ -574,7 +574,7 @@ class SlackNotifier:
 
         message = (
             f"✅ Miner Restored from Plagiarism\n\n"
-            f"Miner ...{target_hotkey[-8:]} has been promoted from PLAGIARISM bucket back to PROBATION."
+            f"Miner ...{target_hotkey[-8:]} has been promoted from PLAGIARISM bucket back to MAINCOMP."
         )
         return self.send_message(message, level="success")
 

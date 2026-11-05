@@ -88,7 +88,7 @@ class PlagiarismClient(RPCClientBase):
         self._server.send_plagiarism_demotion_notification_rpc(hotkey)
 
     def send_plagiarism_promotion_notification(self, hotkey: str) -> None:
-        """Send notification when a miner is promoted from plagiarism back to probation."""
+        """Send notification when a miner is promoted from plagiarism back to the main competition."""
         self._server.send_plagiarism_promotion_notification_rpc(hotkey)
 
     def send_plagiarism_elimination_notification(self, hotkey: str) -> None:

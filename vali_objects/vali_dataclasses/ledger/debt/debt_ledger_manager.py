@@ -4,7 +4,7 @@ import os
 import shutil
 import time
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 from time_util.time_util import TimeUtil
@@ -19,7 +19,7 @@ from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import (
 )
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.enums.miner_bucket_enum import MinerBucket
-from vali_objects.miner_account.standard_miner import StandardMinerAccount
+from vali_objects.miner_account.standard_miner import PipelineAccountInfo, StandardMinerAccount
 from entity_management import entity_utils
 from shared_objects.log import logger
 
@@ -288,6 +288,28 @@ class DebtLedgerManager():
     def get_all_settled_segments(self) -> Dict[str, list]:
         """Every hotkey's settled segments, oldest first."""
         return self.weekly_seal_ledger.get_all_settled()
+
+    def get_sealed_weeks_for(self, hotkeys: List[str]) -> Dict[str, dict]:
+        """The sealed weeks of each of hotkeys that has any, keyed by Monday 00:00 UTC."""
+        return self.weekly_seal_ledger.get_sealed_for(hotkeys)
+
+    def _seal_standard_miner_weeks(self) -> None:
+        """Seal the closed weeks of every standard miner's ledger as the aggregation seals a subaccount's, so a
+        rebuild or a changed multiplier cannot reprice or reclassify a week already paid. Never fails the build."""
+        try:
+            records = self._miner_account_client.get_standard_accounts()
+            ledgers, scales = [], {}
+            for hotkey, record in records.items():
+                ledger = self.debt_ledgers.get(hotkey)
+                if ledger is None or not ledger.checkpoints:
+                    continue
+                info = PipelineAccountInfo.from_standard_miner(record)
+                scales[hotkey] = entity_utils.pro_payout_scale(info.standard_account_size, info.pro_account_size, info.payout_scale)
+                ledgers.append((hotkey, ledger))
+            if ledgers:
+                self._seal_closed_weeks(ledgers, scales)
+        except Exception as e:
+            logger.error(f"[DEBT_LEDGER] Could not seal the standard miners' closed weeks: {e}", exc_info=True)
 
     def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
         """Correct a settled segment's amount. Deliberate corrections only."""
@@ -902,6 +924,7 @@ class DebtLedgerManager():
 
         # Direct assignment to normal dict (no IPC overhead!)
         self.debt_ledgers = candidate_ledgers
+        self._seal_standard_miner_weeks()
 
         # Aggregate entity debt ledgers before saving so entity ledgers are persisted and cached
         logger.info("Aggregating entity debt ledgers...")

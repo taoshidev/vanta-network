@@ -81,7 +81,7 @@ Check collateral balance for a miner address.
 ```bash
 vanta collateral withdraw [OPTIONS]
 ```
-Withdraw collateral from the Vanta Network.
+Withdraw collateral from the Vanta Network. The command first shows what the withdrawal would slash and asks for confirmation. For a miner on the [standard account track](miner.md#standard-account-track), collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good: the command shows the slash, asks you to confirm the close, signs that consent with the request, and refuses to close under `--no-prompt`.
 
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (for display purposes)
@@ -103,6 +103,22 @@ Select the asset class your miner trades. Once selected, it cannot be changed. S
 - `--wallet-path` - Path to the wallet directory (default: `~/.bittensor/wallets`)
 - `--hotkey, --wallet_hotkey` - Hotkey name
 - `--network` - Network to connect to (default: `finney`)
+- `--prompt/--no-prompt` - Whether to prompt for confirmation
+
+### Trading Account
+
+#### Open Account
+```bash
+vanta account open [OPTIONS]
+```
+Open the trading account of a miner on the [standard account track](miner.md#standard-account-track), sized once from its deposited collateral at the chosen leverage tier. Select an asset class and deposit collateral first. The size and the tier cannot be changed afterwards; a higher tier allows more leverage but opens a smaller account from the same collateral.
+
+**Options:**
+- `--wallet-name, --name` - Name of the wallet (required)
+- `--wallet-path` - Path to the wallet directory (default: `~/.bittensor/wallets`)
+- `--hotkey, --wallet_hotkey` - Hotkey name or SS58 address of the hotkey
+- `--network` - Network to connect to (default: `finney`)
+- `--tier` - Leverage tier: 1 Base, 2 Boost I, 3 Boost II (prompted when omitted)
 - `--prompt/--no-prompt` - Whether to prompt for confirmation
 
 ### Entity Management

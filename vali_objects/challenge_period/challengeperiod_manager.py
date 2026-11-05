@@ -1085,10 +1085,14 @@ class ChallengePeriodManager(CacheController):
             # What an earlier switch settled is settled: eligibility starts after it, as on the payout path
             pinned = self._debt_ledger_client.get_settled_segments(hotkey)
             settled_through_ms = max((segment.segment_end_ms for segment in pinned), default=0)
+            weeks = {}
             if ledger is not None and ledger.checkpoints:
+                # A read that raises: a sealed week priced live would be pinned at the wrong terms for good
+                sealed = self._debt_ledger_client.get_sealed_weeks_for([hotkey]).get(hotkey, {})
+                weeks = ledger.weekly_payout_context(scale, sealed=sealed)
                 settlements = DebtBasedScoring.payout_settlements_for_hotkey(
                     positions, perf_ledgers.get(hotkey), ledger, settled_through_ms, None, scale,
-                    first_window_payable=True)
+                    first_window_payable=True, sealed_weeks=sealed, standard_miner=True)
             elif self._traded_for_more_than_a_day(positions, switch_ms):
                 logger.error(f"[CHALLENGE] No debt ledger for {hotkey}, which has traded for over a day; not settling "
                              f"on a ledger that could not be read")
@@ -1101,9 +1105,13 @@ class ChallengePeriodManager(CacheController):
             for settlement in settlements:
                 if settlement.payout_penalized <= 0 or settlement.start_ms in pinned_weeks:
                     continue
+                # Recorded at the week's own terms, sealed or live, as the entity records a subaccount's
+                week = weeks.get(settlement.start_ms)
+                penalty = week.weekly_penalty if week is not None and from_bucket.soft_breach_applies else 1.0
+                week_scale = week.payout_scale if week is not None and from_bucket.payout_scale_applies else applied_scale
                 if not self._debt_ledger_client.record_settled_segment(
                         hotkey, settlement.start_ms, settlement.start_ms, switch_ms, from_bucket.value,
-                        settlement.payout_penalized, settlement.payout_raw, 1.0, applied_scale):
+                        settlement.payout_penalized, settlement.payout_raw, penalty, week_scale):
                     logger.error(f"[CHALLENGE] The week of {settlement.start_ms} could not be settled for {hotkey} "
                                  f"leaving {from_bucket.value}")
                     return False

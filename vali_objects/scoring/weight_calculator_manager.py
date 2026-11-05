@@ -279,19 +279,21 @@ class WeightCalculatorManager(CacheController):
                     if not is_synthetic_hotkey(hotkey)]
         return legacy + standard, set(standard)
 
-    def _standard_miner_payout_inputs(self, hotkeys: List[str]) -> Tuple[dict, dict]:
-        """For the standard miners among hotkeys: the Grow multiplier each is paid at, and what its earlier accounts
-        settled at a switch."""
-        payout_scales, settled_segments = {}, {}
+    def _standard_miner_payout_inputs(self, hotkeys: List[str]) -> Tuple[dict, dict, dict]:
+        """For the standard miners among hotkeys: the Grow multiplier each is paid at, what its earlier accounts
+        settled at a switch, and its sealed weeks."""
+        payout_scales, settled_segments, sealed_weeks = {}, {}, {}
         paid = set(hotkeys)
         records = {hotkey: record for hotkey, record in self._miner_account_client.get_standard_accounts().items()
                    if hotkey in paid}
         all_settled = self._debt_ledger_client.get_all_settled_segments() if records else {}
+        all_sealed = self._debt_ledger_client.get_sealed_weeks_for(list(records)) if records else {}
         for hotkey, record in records.items():
             info = PipelineAccountInfo.from_standard_miner(record)
             payout_scales[hotkey] = pro_payout_scale(info.standard_account_size, info.pro_account_size, info.payout_scale)
             settled_segments[hotkey] = all_settled.get(hotkey, [])
-        return payout_scales, settled_segments
+            sealed_weeks[hotkey] = all_sealed.get(hotkey, {})
+        return payout_scales, settled_segments, sealed_weeks
 
     @staticmethod
     def _first_full_week_start_ms(first_timestamp_ms: int) -> int:
@@ -381,7 +383,7 @@ class WeightCalculatorManager(CacheController):
 
         # Calculate regular hotkey payouts
         funded_hotkeys, on_pipeline = self._paid_hotkeys()
-        payout_scales, settled_segments = self._standard_miner_payout_inputs(funded_hotkeys)
+        payout_scales, settled_segments, sealed_weeks = self._standard_miner_payout_inputs(funded_hotkeys)
         standard_miners = set(payout_scales) | on_pipeline
 
         # Payout settlements are generated starting the first full week of each miner's debt ledger
@@ -394,6 +396,7 @@ class WeightCalculatorManager(CacheController):
             end_time_ms=prev_target_end_ms,
             payout_scales=payout_scales,
             settled_segments=settled_segments,
+            sealed_weeks=sealed_weeks,
         )
         # Lifetime emissions, kept for logging below.
         all_time_emissions = {

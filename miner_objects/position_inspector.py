@@ -50,8 +50,9 @@ class PositionInspector:
         return self.recently_acked_validators
 
     def get_possible_validators(self):
-        return [n.axon_info for n in self._metagraph_client.get_neurons()
-                if n.validator_permit and n.axon_info.ip != MinerConfig.AXON_NO_IP]
+        # By chain stake weight, as the validators pick each other: the permit alone names only the one that sets
+        # weights, and every validator must see the orders
+        return self._metagraph_client.get_validator_axons()
 
     async def query_positions(self, validators, hotkey_to_positions):
         # In test mode, skip network calls

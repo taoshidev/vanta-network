@@ -850,7 +850,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         By default returns only the current bucket + start_time_ms (same shape
         as the challenge_period section of the dashboard endpoints). Pass
         ?history=true to instead get the full ordered bucket transition history
-        (e.g. CHALLENGE -> MAINCOMP -> PROBATION -> ELIMINATED), each with a
+        (e.g. CHALLENGE -> MAINCOMP -> ELIMINATED), each with a
         start_time_ms. If the miner is eliminated, the elimination reason is
         attached to that entry.
         """

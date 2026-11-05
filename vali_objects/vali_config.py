@@ -490,7 +490,7 @@ class ValiConfig:
     # Challenge period
     CHALLENGE_PERIOD_MIN_WEIGHT = 1.5e-05  # essentially nothing
     CHALLENGE_PERIOD_MAX_WEIGHT = 2.4e-05
-    CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75 # miners must pass 75th percentile to enter the main competition
+    CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75  # no longer a promotion rule; kept in the published constants
 
     IDLE_MINER_MAXIMUM_DAYS = 60
     IDLE_MINER_MAXIMUM_MS = IDLE_MINER_MAXIMUM_DAYS * DAILY_MS

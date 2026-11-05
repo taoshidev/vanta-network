@@ -253,6 +253,8 @@ Returns all the hotkeys as seen in the metagraph from the validator's perspectiv
 
 Comprehensive dashboard for a regular (non-entity) miner hotkey. Aggregates the same per-section data as the [Subaccount Dashboard](#get-subaccount-dashboard-version-2) endpoint (challenge period, drawdown, elimination, account size, positions, limit orders, ledger, statistics), minus the entity-specific `subaccount_info` section. Uses the same `create_subaccount_dashboard` aggregation logic — see that endpoint's docs for the full section-by-section response schema.
 
+For a miner on the [standard account track](miner.md#standard-account-track), `account_size_data.standard_account` is the account record: `opened_at_ms`, `opening_leverage_tier`, `asset_class`, `account_size` (fixed at opening, the size the pro challenge is paid on), `locked_theta`, `opening_price_usd`, `trading_account_size` (the size traded when it differs: the pro size on the pro track, else `null`), `pro_account_size`, `payout_scale` (`null` = the configured pro challenge multiplier), `closed_at_ms` and `reopened_at_ms`. It is `null` for every other miner.
+
 **Authentication:** Requires **tier 100 API access**.
 
 **Query Parameters:**
@@ -515,8 +517,7 @@ Challenge-period status for a miner or subaccount hotkey. By default returns onl
   "history": [
     {"bucket": "CHALLENGE", "start_time_ms": 1690000000000},
     {"bucket": "MAINCOMP", "start_time_ms": 1695000000000},
-    {"bucket": "PROBATION", "start_time_ms": 1700000000000},
-    {"bucket": "ELIMINATED", "start_time_ms": 1702345678901, "reason": "FAILED_PROBATION_TIME"}
+    {"bucket": "ELIMINATED", "start_time_ms": 1702345678901, "reason": "MAX_TOTAL_DRAWDOWN"}
   ],
   "timestamp": 1702345690000
 }
@@ -689,6 +690,53 @@ Process a collateral deposit with encoded extrinsic data.
 **Parameters:**
 - `extrinsic_data` (string): Hex-encoded signed extrinsic for stake transfer
 
+### Query Withdrawal
+
+`POST /collateral/query-withdraw`
+
+What a withdrawal would do, without doing it: the slash, the net amount and, for a miner on the [standard account track](miner.md#standard-account-track), whether it closes the account. No signature is needed.
+
+**Request Body:**
+```json
+{
+  "amount": 5.0,
+  "miner_hotkey": "5FrLxJsyJ5x9n2rmxFwosFraxFCKcXZDngEP9H7qjkKgHLcK"
+}
+```
+
+**Response (existing rules, or a standard account withdrawing unlocked collateral):**
+```json
+{
+  "successfully_processed": true,
+  "error_message": "",
+  "drawdown": 0.02,
+  "slashed_amount": 0.1,
+  "withdrawal_amount": 4.9,
+  "new_balance": 295.0
+}
+```
+
+A standard account's response also carries `locked_theta` and `closes_account: false`; a withdrawal that leaves at least the locked theta in place is never slashed, whatever the positions.
+
+**Response (a standard account withdrawing into its locked theta):**
+```json
+{
+  "successfully_processed": true,
+  "error_message": "",
+  "closes_account": true,
+  "locked_theta": 120.0,
+  "intraday_drawdown_pct": 2.0,
+  "trailing_drawdown_pct": 4.0,
+  "drawdown": 0.04,
+  "slash_proportion": 0.8,
+  "slashed_amount": 96.0,
+  "withdrawal_amount": 204.0,
+  "new_balance": 0.0
+}
+```
+
+Every position must be closed first (otherwise `successfully_processed` is false with the reason). The whole balance comes out as `withdrawal_amount`, less `slashed_amount` = `locked_theta` × `slash_proportion`, where the proportion is min(1, max(`intraday_drawdown_pct` ÷ the daily loss limit, `trailing_drawdown_pct` ÷ the EOD limit)) at the account's current stage, on the balance as it is now; `drawdown` is the larger of the two as a fraction. An eliminated standard account whose slash could not be taken at the time answers with `owed_slash: true` and the slash its elimination still owes, which the withdrawal takes first.
+
 ### Withdraw Collateral
 
 `POST /collateral/withdraw`
@@ -713,7 +761,8 @@ Process a collateral withdrawal request.
   "successfully_processed": true,
   "error_message": "",
   "returned_amount": 5.0,
-  "returned_to": "5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2"
+  "returned_to": "5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2",
+  "account_closed": false
 }
 ```
 
@@ -723,7 +772,8 @@ Process a collateral withdrawal request.
 - `miner_hotkey` (string): Miner's hotkey SS58 address
 - `nonce` (string): Request nonce
 - `timestamp` (int): Request timestamp
-- `signature` (string): Request signature
+- `signature` (string): The coldkey's signature over the sorted JSON of `amount`, `miner_coldkey`, `miner_hotkey`, `nonce`, `timestamp` and, when sent, `close_account`
+- `close_account` (bool, optional): A standard account's consent to a withdrawal that closes it (one [Query Withdrawal](#query-withdrawal) answers with `closes_account: true`). Without it such a withdrawal is refused with the closing terms in `error_message`. With it, the mothership validator (the only one that processes a closing withdrawal) closes every position, records the elimination `ACCOUNT_CLOSED` with the slash, pays out the rest of the balance and answers `account_closed: true`. A closed hotkey never trades again, and no operator reversal reopens it.
 
 ### Get Collateral Balance
 
@@ -777,6 +827,58 @@ Process an asset class selection.
 - `miner_coldkey` (string): Miner's coldkey SS58 address
 - `miner_hotkey` (string): Miner's hotkey SS58 address
 - `signature` (string): Request signature
+
+## Account Opening
+
+A miner whose hotkey registered after the standard miner cutoff block opens its trading account here, once it has selected an asset class and deposited collateral; see the [standard account track](miner.md#standard-account-track). The mothership validator processes the request and broadcasts the opened account to the other validators, which apply it as it is.
+
+### Open Account
+
+`POST /account/open`
+
+**Request Body:**
+```json
+{
+  "miner_coldkey": "5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2",
+  "miner_hotkey": "5FrLxJsyJ5x9n2rmxFwosFraxFCKcXZDngEP9H7qjkKgHLcK",
+  "leverage_tier": 2,
+  "nonce": "a-single-use-string",
+  "timestamp": 1751409821967,
+  "signature": "1234567890abcdef...",
+  "version": "3.2.0"
+}
+```
+
+**Response:**
+```json
+{
+  "successfully_processed": true,
+  "success_message": "Opened a $50,000.00 account at tier 2, locking 110.0000 theta at $5.0000 per theta",
+  "account": {
+    "opened_at_ms": 1751409821967,
+    "opening_leverage_tier": 2,
+    "asset_class": "forex",
+    "account_size": 50000.0,
+    "locked_theta": 110.0,
+    "opening_price_usd": 5.0,
+    "trading_account_size": null,
+    "pro_account_size": null,
+    "payout_scale": null,
+    "closed_at_ms": null,
+    "reopened_at_ms": null
+  }
+}
+```
+
+**Parameters:**
+- `miner_coldkey` (string): Miner's coldkey SS58 address; it must own `miner_hotkey` on chain
+- `miner_hotkey` (string): Miner's hotkey SS58 address
+- `leverage_tier` (int): 1 Base, 2 Boost I or 3 Boost II (`ValiConfig.STANDARD_LEVERAGE_TIERS`); it cannot be changed afterwards
+- `nonce` (string) and `timestamp` (int, ms): single use, so every request is freshly signed
+- `signature` (string): The coldkey's signature, hex, over the sorted JSON of `leverage_tier`, `miner_coldkey`, `miner_hotkey`, `nonce` and `timestamp`
+- `version` (string): The vanta-cli version
+
+The account size is the collateral's USD value at the opening theta price divided by the tier's collateral percentage (0.7% / 1.1% / 1.5%), capped at $100,000, and the theta that backs it at that price is locked. A rejection is a 400 with `successfully_processed: false` and the reason in `error_message`: a hotkey registered before the cutoff block (it trades under the existing rules), a hotkey that is eliminated, a validator or an entity, no asset class or `hl_all`, an account that would open below $5,000, no theta price, or an account its miner has closed. Sending the request again for an open account returns that account. A 503 means a validator service did not answer; resend the request.
 
 ## Limit Orders
 

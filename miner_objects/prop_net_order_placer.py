@@ -259,21 +259,19 @@ class PropNetOrderPlacer:
             return len(self._active_futures)
 
     def _get_mothership_and_other_axons(self):
-        """Get mothership axon and other validator axons (filtered by v_trust)."""
+        """The mothership's axon, found by its hotkey, and the axons of the other validators by the stake rule. The
+        others are not filtered on validator trust: only the validator that sets weights has any."""
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
-        axons = self.position_inspector.get_possible_validators()
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
         mothership_axon = None
         other_axons = []
-        for axon in axons:
+        for axon in self.position_inspector.get_possible_validators():
             if axon.hotkey == mothership_hotkey:
                 mothership_axon = axon
-            elif hotkey_to_v_trust.get(axon.hotkey, 0) >= MinerConfig.HIGH_V_TRUST_THRESHOLD:
+            else:
                 other_axons.append(axon)
-
-        # logger.info(f"Validator hotkey -> v_trust: {hotkey_to_v_trust}")
-        # logger.info(f"Mothership validator: {mothership_axon.hotkey if mothership_axon else 'None'}")
-        # logger.info(f"Other validators ({len(other_axons)}): {[a.hotkey for a in other_axons]}")
+        if mothership_axon is None:
+            mothership_axon = next((n.axon_info for n in self.metagraph_client.get_neurons()
+                                    if n.hotkey == mothership_hotkey and n.axon_info.ip != MinerConfig.AXON_NO_IP), None)
         return mothership_axon, other_axons
 
     async def _send_order(self, synapse, mothership_axon, other_axons) -> dict:

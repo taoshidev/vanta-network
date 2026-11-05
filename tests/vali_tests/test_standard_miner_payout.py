@@ -19,7 +19,7 @@ from vali_objects.scoring.weight_calculator_manager import WeightCalculatorManag
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger
-from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SettledSegment
+from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek, SettledSegment
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint, PerfLedger
 
 HOTKEY = "standard_miner_hotkey"
@@ -93,18 +93,18 @@ class TestWeeklySettlementsWithTheGrowMultiplier(TestBase):
         self.assertEqual(payouts(self._settle(legacy, 1.0)), expected)
         self.assertEqual(payouts(self._settle(legacy, GROW_SCALE)), expected)
         self.assertEqual(payouts(self._settle(None, 1.0)), expected)
-        self.assertEqual(legacy.payout_scale_change_times(), [])
+        self.assertEqual(legacy.payout_rule_change_times(), [])
 
     def test_the_pro_challenge_is_paid_at_the_multiplier_above_the_unscaled_high_water_mark(self):
         grow = debt_ledger([GROW] * 42)
         self.assertEqual(payouts(self._settle(grow, GROW_SCALE)),
                          [(WEEK, 90.0, 90.0), (WEEK + MS_IN_WEEK, 0.0, 0.0), (WEEK + 2 * MS_IN_WEEK, 12.0, 12.0)])
-        self.assertEqual(grow.payout_scale_change_times(), [])
+        self.assertEqual(grow.payout_rule_change_times(), [])
 
     def test_the_week_of_the_pass_is_priced_stretch_by_stretch(self):
         # The checkpoint at T closes the window ending at T: GROW through Tuesday 00:00, PRO_FUNDED from then on
         passed = debt_ledger([GROW, GROW] + [PRO] * 40)
-        self.assertEqual(passed.payout_scale_change_times(), [WEEK + 24 * HOUR])
+        self.assertEqual(passed.payout_rule_change_times(), [WEEK + 24 * HOUR])
         # +100 in Grow pays 60 and lifts the mark to 100; +50 funded pays 50 in full
         self.assertEqual(payouts(self._settle(passed, GROW_SCALE))[0], (WEEK, 110.0, 110.0))
         # A loss in Grow is carried in full into the funded stretch: the account is up 50, so 50 is paid
@@ -233,6 +233,7 @@ class TestSettlingAtTheSwitch(TestBase):
         # A ledger opened by the switch into the funded bucket last week
         self.manager._debt_ledger_client.get_ledger.return_value = debt_ledger([TRANSITION] * 28, self.last_week + CP)
         self.manager._debt_ledger_client.get_settled_segments.return_value = []
+        self.manager._debt_ledger_client.get_sealed_weeks_for.return_value = {}
         self.manager._debt_ledger_client.record_settled_segment.return_value = True
         self.settle = self.manager._debt_ledger_client.record_settled_segment
 
@@ -319,6 +320,43 @@ class TestSettlingAtTheSwitch(TestBase):
         self.entity.settle_wound_down_segment.assert_called_once_with(SUBACCOUNT, TRANSITION.value, NOW_MS)
         self.settle.assert_not_called()
 
+    def _moved_out_by_an_admin(self, from_bucket, ledger):
+        self.settle.reset_mock()
+        self.records[HOTKEY] = record(pro_account_size=PRO_SIZE, trading_account_size=PRO_SIZE)
+        self.manager._debt_ledger_client.get_ledger.return_value = ledger
+        self.manager.set_miner_bucket(HOTKEY, from_bucket, NOW_MS - 10 * ValiConfig.DAILY_MS)
+        moved, message = self.manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS)
+        self.assertTrue(moved, message)
+
+    def test_a_sealed_week_is_pinned_at_the_terms_it_was_sealed_with(self):
+        # Last week was sealed at an earlier multiplier; this week is priced live
+        self.manager._debt_ledger_client.get_sealed_weeks_for.return_value = {HOTKEY: {self.last_week: SealedWeek(
+            week_start_ms=self.last_week, weekly_penalty=1.0, payout_scale=0.5, track="OFF_TRACK",
+            first_earning_ms=self.last_week + CP, sealed_ms=self.week_start)}}
+        self._moved_out_by_an_admin(GROW, debt_ledger([GROW] * 28, self.last_week + CP))
+        self.assertEqual(self._pinned(), [(self.last_week, GROW.value, 50.0, 50.0, 0.5),
+                                          (self.week_start, GROW.value, 30.0, 30.0, GROW_SCALE)])
+        self.manager._debt_ledger_client.get_sealed_weeks_for.assert_called_once_with([HOTKEY])
+
+    def test_a_breached_funded_week_is_pinned_at_its_penalty_or_lost(self):
+        ledger = debt_ledger([PRO] * 28, self.last_week + CP)
+        for cp in ledger.checkpoints[14:]:
+            cp.weekly_penalty = 0.5
+        self._moved_out_by_an_admin(PRO, ledger)
+        # Last week clean and unscaled on the pro size; this week half withheld, the half in escrow lost with the account
+        self.assertEqual(self._pinned(), [(self.last_week, PRO.value, 100.0, 100.0, 1.0),
+                                          (self.week_start, PRO.value, 25.0, 50.0, 1.0)])
+        self.assertEqual([c.args[7] for c in self.settle.call_args_list], [1.0, 0.5])
+        for cp in ledger.checkpoints[14:]:
+            cp.weekly_penalty = 0.0
+        self._moved_out_by_an_admin(PRO, ledger)
+        self.assertEqual(self._pinned(), [(self.last_week, PRO.value, 100.0, 100.0, 1.0)])
+
+    def test_an_unreadable_seal_ledger_holds_the_switch(self):
+        self.manager._debt_ledger_client.get_sealed_weeks_for.side_effect = RuntimeError("ledger server down")
+        self._leave_the_transition(switched=False)
+        self.settle.assert_not_called()
+
 
 class TestWeightCalculatorInputs(TestBase):
 
@@ -330,18 +368,23 @@ class TestWeightCalculatorInputs(TestBase):
             HOTKEY: record(pro_account_size=PRO_SIZE), "other": record()}
         calculator._debt_ledger_client.get_all_settled_segments.return_value = {
             HOTKEY: [settled(WEEK, 10.0)], "other": [settled(WEEK, 5.0)]}
-        scales, segments = calculator._standard_miner_payout_inputs([HOTKEY, LEGACY])
+        calculator._debt_ledger_client.get_sealed_weeks_for.return_value = {HOTKEY: {WEEK: "sealed"}}
+        scales, segments, sealed = calculator._standard_miner_payout_inputs([HOTKEY, LEGACY])
         self.assertAlmostEqual(scales[HOTKEY], GROW_SCALE)
         self.assertEqual(set(scales), {HOTKEY})
         self.assertEqual(segments, {HOTKEY: [settled(WEEK, 10.0)]})
+        self.assertEqual(sealed, {HOTKEY: {WEEK: "sealed"}})
         calculator._debt_ledger_client.get_all_settled_segments.assert_called_once_with()
+        calculator._debt_ledger_client.get_sealed_weeks_for.assert_called_once_with([HOTKEY])
         # Before the pro size is granted the multiplier is 1, and with no standard miner paid nothing is fetched
         calculator._miner_account_client.get_standard_accounts.return_value = {HOTKEY: record()}
         calculator._debt_ledger_client.get_all_settled_segments.return_value = {}
-        self.assertEqual(calculator._standard_miner_payout_inputs([HOTKEY]), ({HOTKEY: 1.0}, {HOTKEY: []}))
-        calculator._debt_ledger_client.get_all_settled_segments.reset_mock()
-        self.assertEqual(calculator._standard_miner_payout_inputs([LEGACY]), ({}, {}))
+        calculator._debt_ledger_client.get_sealed_weeks_for.return_value = {}
+        self.assertEqual(calculator._standard_miner_payout_inputs([HOTKEY]), ({HOTKEY: 1.0}, {HOTKEY: []}, {HOTKEY: {}}))
+        calculator._debt_ledger_client.reset_mock()
+        self.assertEqual(calculator._standard_miner_payout_inputs([LEGACY]), ({}, {}, {}))
         calculator._debt_ledger_client.get_all_settled_segments.assert_not_called()
+        calculator._debt_ledger_client.get_sealed_weeks_for.assert_not_called()
 
 
 class TestThroughTheServers(TestBase):
@@ -375,3 +418,9 @@ class TestThroughTheServers(TestBase):
         self.assertEqual(self.debt_ledger_client.get_all_settled_segments(), {HOTKEY: segments})
         self.account_client.open_standard_account(HOTKEY, record())
         self.assertEqual(self.account_client.get_standard_accounts(), {HOTKEY: record()})
+        # The sealed weeks of the hotkeys asked for, through the servers
+        sealed = SealedWeek(week_start_ms=WEEK, weekly_penalty=0.0, payout_scale=GROW_SCALE, track="ON_TRACK",
+                            first_earning_ms=WEEK + CP, sealed_ms=WEEK + MS_IN_WEEK)
+        self.assertEqual(self.debt_ledger_client.get_sealed_weeks_for([HOTKEY, "other"]), {})
+        self.debt_ledger_client.sync_weekly_seals({"sealed": {HOTKEY: {str(WEEK): sealed.to_dict()}}, "settled": {}})
+        self.assertEqual(self.debt_ledger_client.get_sealed_weeks_for([HOTKEY, "other"]), {HOTKEY: {WEEK: sealed}})

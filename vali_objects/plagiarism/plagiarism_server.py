@@ -160,7 +160,7 @@ class PlagiarismServer(RPCServerBase):
             return [], []
 
         # The api is the source of truth
-        # If a miner is no longer listed as a plagiarist, put them back in probation
+        # If a miner is no longer listed as a plagiarist, put them back in the main competition
         whitelisted_miners = []
         for miner in plagiarism_miners:
             if miner not in current_plagiarism_miners:
@@ -239,7 +239,7 @@ class PlagiarismServer(RPCServerBase):
             self.slack_notifier.send_plagiarism_demotion_notification(hotkey)
 
     def send_plagiarism_promotion_notification_rpc(self, hotkey: str) -> None:
-        """Send notification when a miner is promoted from plagiarism back to probation."""
+        """Send notification when a miner is promoted from plagiarism back to the main competition."""
         if self.running_unit_tests:
             return
         if self.slack_notifier:
@@ -276,7 +276,7 @@ class PlagiarismServer(RPCServerBase):
         self.send_plagiarism_demotion_notification_rpc(hotkey)
 
     def send_plagiarism_promotion_notification(self, hotkey: str) -> None:
-        """Send notification when a miner is promoted from plagiarism back to probation."""
+        """Send notification when a miner is promoted from plagiarism back to the main competition."""
         self.send_plagiarism_promotion_notification_rpc(hotkey)
 
     def send_plagiarism_elimination_notification(self, hotkey: str) -> None:

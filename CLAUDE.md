@@ -64,11 +64,11 @@ npm run preview  # Preview production build
   - `validator_base.py` - Base validator functionality
   - `backtest_manager.py` - Backtesting utilities
 - **`vali_objects/`** - Validator logic and services
-  - `challenge_period/` - Bucket state machine: challenge, probation, promotion/demotion, and the pro account track
+  - `challenge_period/` - Bucket state machine: challenge, promotion, the standard account track and the pro account track
   - `plagiarism/` - Polls the external plagiarism service and tracks flagged miners
   - `position_management/` - Position tracking and management
   - `price_fetcher/` - Real-time price data services
-  - `miner_account/` - Per-miner account state: balance, account size, asset class, leverage tier, capital used
+  - `miner_account/` - Per-miner account state: balance, account size, asset class, leverage tier, capital used, and the standard account record (`standard_miner.py`)
   - `hl_funding/` - Live Hyperliquid funding rates for HL-sourced positions
   - `scoring/` - Performance metrics calculation
   - `statistics/` - Miner performance statistics
@@ -131,7 +131,7 @@ The system uses a distributed RPC architecture for inter-process communication:
 ## Trading System Architecture
 
 ### Signal Flow
-1. Miners submit LONG/SHORT/FLAT signals via Vanta API (REST/WebSocket)
+1. Miners submit LONG/SHORT/FLAT signals via Vanta API (REST/WebSocket). The miner sends each order to the mothership, found by its hotkey, and to every other validator chosen by chain stake weight (`metagraph_client.get_validator_axons()`, `STAKE_MIN`), the same rule validators broadcast on; the validator permit and validator trust are not consulted, since under Null consensus one UID holds them
 2. Validators receive and validate signals through `vanta_api/validator_rest_server.py`
 3. Real-time price validation using multiple data sources (Hyperliquid, Polygon/Massive, Tiingo, Databento). For equities a Nasdaq Basic quote replaces FMV when one is within 8s (`PriceSource.apply_nasdaq_fmv_rule`)
 4. Position tracking via RPC services with leverage limits and slippage modeling
@@ -176,19 +176,19 @@ The system uses a distributed RPC architecture for inter-process communication:
 - **Max Drawdown**: Automatic elimination at a 5% intraday drawdown (from the day's opening equity) or an 8% end-of-day drawdown (from the highest-ever end-of-day equity)
   - Continuous monitoring via `challenge_period/challengeperiod_manager.py`
   - 30-second refresh interval
-- **Challenge Period**: New miners enter a 61-90 day challenge period (`CHALLENGE_PERIOD_MINIMUM_DAYS` / `CHALLENGE_PERIOD_MAXIMUM_DAYS`)
-  - To promote to MAINCOMP a miner must serve the 61-day minimum, clear its asset class's returns threshold, and rank at or above `PROMOTION_THRESHOLD_RANK` (25) in that class; failing to do so by day 90 eliminates
+- **Challenge Period**: New miners on the existing rules enter the challenge period and promote to MAINCOMP on their asset class's returns threshold alone (10% crypto/equities/commodities/all-market, 8% forex): no rank requirement, no minimum stay and no time limit (`FAILED_CHALLENGE_PERIOD_TIME` and `FAILED_PROBATION_TIME` stay in the enum for history; no miner is placed in PROBATION any more)
   - Minimal weights during challenge period
   - Entity subaccounts run a separate returns-based challenge (10% crypto/equities/commodities/multi-class, 8% forex) with no rank requirement and no time limit
   - Entity subaccounts (standard and HL-linked) may choose an `intraday_drawdown_threshold` (daily loss limit) of 3% or 5% (sent as 0.03 or 0.05, the values in `SUBACCOUNT_INTRADAY_DRAWDOWN_VALUES`) at creation; it replaces the intraday drawdown threshold in every standard and pro bucket except PRO_FUNDED. Omitted keeps each bucket's default
   - Standard subaccounts (not HL-linked, not Instant Funded) in SUBACCOUNT_CHALLENGE, SUBACCOUNT_FUNDED and PRO_CHALLENGE_TRANSITION measure the intraday drawdown from the day-open balance (`DrawdownStats.daily_open_balance`) instead of the day-open equity; every other account keeps the equity
   - Subaccounts may be created directly into a bucket (`bucket`, `ValiConfig.SUBACCOUNT_CREATION_BUCKETS`). **Instant Funded** skips the standard challenge, with a fixed 3% daily loss limit and a chosen 5%/8% EOD HWM limit (`eod_hwm_threshold`), in two forms: created into `SUBACCOUNT_FUNDED` (standard or HL-linked; not eligible for Pro — the hop to `PRO_CHALLENGE_TRANSITION` is refused), or into `PRO_CHALLENGE_FROM_STANDARD` (eligible for Pro): paid immediately on `account_size` (fixed payout scale 1.0) while trading `pro_account_size` under pro rules; on reaching PRO_FUNDED it is paid on the pro size and reverts to the pro 5%/8% limits
   - **Auto-promotion** (`ChallengePeriodManager._auto_promote`, `ValiConfig.AUTO_PROMOTION_*`): standard SUBACCOUNT_FUNDED subaccounts created through the challenge (not Instant Funded, not HL-linked) move to `PRO_CHALLENGE_TRANSITION` on their own, on the fast track (equity, unrealized PnL included, at least 10% above the account size for 3 minutes, 3x) or the steady track (60 days, balance and equity both above 3%, consistency at most 0.5, Calmar 1.5 for 5x or 2.0 for 10x). Only the mothership sizes it; the rest follow its record. It stays at most 7 days in the transition, leaving early once it has no open positions or when the entity hops it out (on the granted size: a `pro_account_size` is refused), then moves to `PRO_CHALLENGE_FROM_STANDARD` with no promotion fee or collateral check. At most once per subaccount
-- **Probation**: Miners below rank 25 in asset class
-  - 90-day probation period
-  - Must achieve rank 25 or better to avoid elimination
+- **Standard account track** (`vali_objects/miner_account/standard_miner.py`, `docs/miner.md#standard-account-track`): a hotkey registered after `ValiConfig.standard_miner_cutoff_block(is_testnet)` (None = every miner stays on the existing rules) has no account until it selects an asset class (not `hl_all`), deposits collateral and opens the account with the coldkey-signed `POST /account/open` (`vanta account open --tier N`), processed by the mothership and broadcast as a `StandardMinerAccount` record; it then runs the subaccount pipeline under its own hotkey (SUBACCOUNT_CHALLENGE → SUBACCOUNT_FUNDED at tier 3 → auto-promotion → PRO_CHALLENGE_FROM_STANDARD → PRO_FUNDED) with a 3% daily loss / 5% EOD limit outside PRO_FUNDED, and no Instant Funded, HL link, static drawdown or self-service promotion
+  - Account size = collateral USD at opening / the tier's collateral percentage (`STANDARD_MINER_COLLATERAL_PCT_BY_TIER`: 0.7% / 1.1% / 1.5%), $5K to $100K, fixed for good; the locked theta that backed it is the only collateral at risk, the rest withdraws freely
+  - A withdrawal into the locked theta closes the account: positions closed first, all collateral out, elimination `ACCOUNT_CLOSED`, slash = locked theta × min(1, max(today's loss / daily limit, drawdown from the EOD high-water mark / EOD limit)), signed `close_account` consent, mothership only, never reopened. Drawdown eliminations slash the locked theta in full, INACTIVE and ZOMBIE by the closing formula, other reasons by the usual drawdown proportion
+  - Paid on realized PnL above the high-water mark: Grow weeks at `STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER` (1.5, read live), PRO_FUNDED weeks withheld by the weekly penalty as a subaccount's; the weight is capped at what is owed (no share of the surplus, no dust in any bucket) and scaled pro rata with everyone when emissions fall short; a bucket switch settles the weeks owed first (`record_settled_segment`)
 - **Inactivity**: Automatic elimination (`INACTIVE`) after 60 days without a submitted order
-  - Applies to every regular-miner bucket (MAINCOMP, CHALLENGE, PROBATION) and every subaccount bucket, standard (SUBACCOUNT_CHALLENGE/SUBACCOUNT_FUNDED/SUBACCOUNT_ALPHA) and pro (PRO_CHALLENGE_TRANSITION/PRO_CHALLENGE_FROM_STANDARD/PRO_CHALLENGE_DIRECT/PRO_FUNDED)
+  - Applies to every regular-miner bucket (MAINCOMP, CHALLENGE) and every subaccount or standard account bucket, standard (SUBACCOUNT_CHALLENGE/SUBACCOUNT_FUNDED/SUBACCOUNT_ALPHA) and pro (PRO_CHALLENGE_TRANSITION/PRO_CHALLENGE_FROM_STANDARD/PRO_CHALLENGE_DIRECT/PRO_FUNDED)
   - Does not apply to the entity hotkey itself (`ENTITY` bucket), which never submits orders directly
 
 ## Development Patterns
