@@ -15,7 +15,7 @@ A long position is a bet that the trade pair will increase, while a short positi
    - Don't exceed a 5% intraday drawdown (measured from the day-open equity) or a 5% EOD drawdown (measured from the highest-ever end-of-day equity)
    - Achieve cumulative returns above 10% (crypto/equities/commodities) or 8% (forex)
 
-   There is no ranking requirement, no minimum number of trading days and no time limit. A miner whose hotkey registered after the standard miner cutoff block does not enter this challenge period: it trades on the [standard account track](#standard-account-track) instead, where rules 3, 6, 7 and 9 below are replaced by that track's own.
+   There is no ranking requirement, no minimum number of trading days and no time limit. A miner whose hotkey registered after the standard account cutoff block does not enter this challenge period: it trades on the [standard account track](#standard-account-track) instead, where rules 3, 6, 7 and 9 below are replaced by that track's own.
 3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral.
 4. Miner's must select an asset category in order to submit trades. Miners will be restricted to only submitting trades in their chosen asset class.
 5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
@@ -44,7 +44,7 @@ A long position is a bet that the trade pair will increase, while a short positi
    leverage and you want to reduce it to a .25x leverage position to start taking profit on it. You would send in a SHORT signal
    of size .25x leverage to reduce the size of the position. LONG and SHORT signals can be thought of working in opposite
    directions in this way.
-9. Miners that have passed the challenge period will be eliminated for exceeding a 5% intraday drawdown (measured from the day-open equity) or an 8% EOD drawdown (measured from the highest-ever end-of-day equity). Miners in the main competition are never demoted: there is no probation.
+9. Miners that have passed the challenge period will be eliminated for exceeding a 5% intraday drawdown (measured from the day-open equity) or an 8% EOD drawdown (measured from the highest-ever end-of-day equity). Miners in the main competition are no longer demoted on rank: there is no probation.
 10. Miners are eliminated for inactivity: if a miner in the challenge period or the main competition, or a standard account in any stage, goes **60 days** without submitting a single order, it is eliminated with reason `INACTIVE`. This is checked continuously alongside the other elimination checks.
 11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
 12. Each asset class has its own trading hours, and which order types are accepted and filled depends on the session. See [Market Hours and Order Types](#market-hours-and-order-types). Market orders sent while their market is closed are rejected.
@@ -54,13 +54,13 @@ A long position is a bet that the trade pair will increase, while a short positi
 
 ## Standard Account Track
 
-A miner whose hotkey registered after the standard miner cutoff block (`ValiConfig.STANDARD_MINER_CUTOFF_BLOCK`, or its testnet value; while it is unset every miner is on the rules above) trades on the standard account track: the same stages, limits and leverage as a standard entity subaccount, under the miner's own hotkey.
+A miner whose hotkey registered after the standard account cutoff block (`ValiConfig.STANDARD_MINER_CUTOFF_BLOCK`, or its testnet value; while it is unset every miner is on the rules above) trades on the standard account track: the same stages and leverage tables as a standard entity subaccount, with the drawdown limits below, under the miner's own hotkey.
 
 ### Opening the account
 
 1. Register the hotkey on the subnet, select an asset class (`vanta asset select`; `hl_all` is not available on this track) and deposit collateral (`vanta collateral deposit`).
 2. Open the account with `vanta account open --tier N` (tier 1 Base, 2 Boost I, 3 Boost II). The request is signed by your coldkey and processed by the mothership validator, which broadcasts the account to the other validators. Until the account is open the hotkey has no account and its orders are rejected.
-3. The account size is the USD value of your collateral at that moment divided by the tier's collateral percentage, capped at $100,000; an opening below $5,000 is rejected. The size and the tier never change afterwards: later deposits do not raise the size, and no promotion costs more collateral.
+3. The account size is the USD value of your collateral at that moment divided by the tier's collateral percentage, capped at $100,000; an opening below $5,000 is rejected. The size never changes afterwards: later deposits do not raise it, and no promotion costs more collateral. The opening tier is fixed too; passing the challenge moves the account to tier 3.
 
 | Tier | Collateral percentage | Collateral for a $100,000 account |
 |------|-----------------------|-----------------------------------|
@@ -76,11 +76,12 @@ The theta that backed the account size at the opening price is **locked**: locke
 |-------|--------|------------------|--------------------|----------|------|
 | Challenge | `SUBACCOUNT_CHALLENGE` | 3% | 5% | standard tier tables at the opening tier | nothing |
 | Funded | `SUBACCOUNT_FUNDED` | 3% | 5% | standard tier tables at tier 3, set on passing | PnL |
-| Pro challenge (Grow) | `PRO_CHALLENGE_TRANSITION`, then `PRO_CHALLENGE_FROM_STANDARD` | 3% | 5% | standard tables in the transition, pro tables after | PnL × 1.5 on the standard size |
+| Transition to the pro challenge (wind-down: closes and reductions only) | `PRO_CHALLENGE_TRANSITION` | 3% | 5% | standard tier tables at tier 3 | PnL |
+| Pro challenge (Grow) | `PRO_CHALLENGE_FROM_STANDARD` | 3% | 5% | pro tables | PnL × 1.5 on the standard size |
 | Pro funded | `PRO_FUNDED` | 5% | 8% | pro tables | PnL on the pro size |
 
 - The challenge is passed on cumulative returns of 10% (forex 8%); there is no rank and no time limit. Passing moves the account to funded on the same size.
-- A funded account is promoted into the pro challenge automatically, on the fast or the steady track described in the [entity miner guide](entity_miner.md#auto-promotion), with the pro size the network grants: there is no promotion fee, no extra collateral and no self-service promotion. The pro challenge is paid on the standard size at 1.5× PnL (`ValiConfig.STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER`, applied to open accounts as it changes) until the account reaches `PRO_FUNDED`, where it is paid on the pro size.
+- A funded account is promoted into the pro challenge automatically, on the fast or the steady track described in the [entity miner guide](entity_miner.md#auto-promotion), with the pro size the network grants: there is no promotion fee, no extra collateral and no self-service promotion. The account first winds down the standard account in the transition stage, where only closes and reductions are accepted and plain PnL is paid, leaving it as soon as it is flat and after 7 days at most; it then trades the pro size in the pro challenge, paid on the standard size at 1.5× PnL (`ValiConfig.STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER`; a change applies to the weeks not yet closed) until the account reaches `PRO_FUNDED`, where it is paid on the pro size.
 - The daily loss is measured from the day-open balance in the challenge, funded and transition stages and from the day-open equity after that; the EOD limit is measured from the highest-ever end-of-day equity. The leverage tables are in the entity miner guide: [Leverage Limits](entity_miner.md#leverage-limits) and [Pro account leverage](entity_miner.md#pro-account-leverage).
 - Instant Funded accounts, Hyperliquid-linked accounts and static drawdown are not available on this track.
 
@@ -813,7 +814,7 @@ Deposit collateral
 vanta collateral deposit
 ```
 
-Withdraw collateral. For a miner on the existing rules, withdrawn collateral is subject to slashing proportional to the miner's current drawdown. For a standard account, collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good and slashes the locked theta by the current drawdown (see [Withdrawals, closing and elimination](#withdrawals-closing-and-elimination)); the command shows this and asks for confirmation. A miner who is eliminated will have their collateral deposit slashed and burnt.
+Withdraw collateral. For a miner on the existing rules, withdrawn collateral is subject to slashing proportional to the miner's current drawdown. For a standard account, collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good and slashes the locked theta by the current drawdown (see [Withdrawals, closing and elimination](#withdrawals-closing-and-elimination)); the command shows this and asks for confirmation. A miner on the existing rules who is eliminated will have their collateral deposit slashed and burnt; for a standard account at most the locked theta is slashed, as that section describes.
 
 ```bash
 vanta collateral withdraw

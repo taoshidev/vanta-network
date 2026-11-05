@@ -81,7 +81,7 @@ Check collateral balance for a miner address.
 ```bash
 vanta collateral withdraw [OPTIONS]
 ```
-Withdraw collateral from the Vanta Network. The command first shows what the withdrawal would slash and asks for confirmation. For a miner on the [standard account track](miner.md#standard-account-track), collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good: the command shows the slash, asks you to confirm the close, signs that consent with the request, and refuses to close under `--no-prompt`.
+Withdraw collateral from the Vanta Network. The command confirms the amount, then shows what the withdrawal would slash and asks again. For a miner on the [standard account track](miner.md#standard-account-track), collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good: the command shows the slash, asks you to confirm the close, signs that consent with the request, and refuses to close under `--no-prompt`.
 
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (for display purposes)
@@ -111,7 +111,7 @@ Select the asset class your miner trades. Once selected, it cannot be changed. S
 ```bash
 vanta account open [OPTIONS]
 ```
-Open the trading account of a miner on the [standard account track](miner.md#standard-account-track), sized once from its deposited collateral at the chosen leverage tier. Select an asset class and deposit collateral first. The size and the tier cannot be changed afterwards; a higher tier allows more leverage but opens a smaller account from the same collateral.
+Open the trading account of a miner on the [standard account track](miner.md#standard-account-track), sized once from its deposited collateral at the chosen leverage tier. Select an asset class and deposit collateral first. The size cannot be changed afterwards and the opening tier is fixed (passing the challenge moves the account to tier 3); a higher tier allows more leverage but opens a smaller account from the same collateral.
 
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (required)

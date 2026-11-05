@@ -94,8 +94,9 @@ def open_account(
     console.print(f"[cyan]Miner hotkey:[/cyan] {hotkey.ss58_address}")
     console.print(f"[cyan]Leverage tier:[/cyan] {leverage_tier} ({LEVERAGE_TIERS[leverage_tier]})")
     console.print("[yellow]The account size is set from your collateral at today's theta price and never changes "
-                  "afterwards, and the tier cannot be changed. A higher tier allows more leverage but opens a smaller "
-                  "account from the same collateral.[/yellow]")
+                  "afterwards, and the tier you choose is fixed until the challenge is passed, which moves the account "
+                  "to tier 3. A higher tier allows more leverage but opens a smaller account from the same "
+                  "collateral.[/yellow]")
 
     if prompt:
         confirm = typer.confirm(f"Open the trading account of miner {hotkey.ss58_address} at tier {leverage_tier}?")

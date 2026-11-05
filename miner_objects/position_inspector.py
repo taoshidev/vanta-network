@@ -50,8 +50,10 @@ class PositionInspector:
         return self.recently_acked_validators
 
     def get_possible_validators(self):
-        # By chain stake weight, as the validators pick each other: the permit alone names only the one that sets
-        # weights, and every validator must see the orders
+        # The validators by chain stake weight (every served axon on testnet), as the validators pick each other:
+        # under Null consensus the permit names only the one that sets weights, and every validator must see the orders
+        if self.is_testnet:
+            return [n.axon_info for n in self._metagraph_client.get_neurons() if n.axon_info.ip != MinerConfig.AXON_NO_IP]
         return self._metagraph_client.get_validator_axons()
 
     async def query_positions(self, validators, hotkey_to_positions):
@@ -65,12 +67,10 @@ class PositionInspector:
         async with bt.Dendrite(wallet=self.wallet) as dendrite:
             responses = await dendrite.aquery(remaining_validators_to_query, GetPositions(version=1), deserialize=True)
 
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self._metagraph_client.get_neurons()}
         ret = []
         for validator, response in zip(remaining_validators_to_query, responses):
-            v_trust = hotkey_to_v_trust.get(validator.hotkey, 0)
-            if response.error_message and v_trust >= MinerConfig.HIGH_V_TRUST_THRESHOLD:
-                logger.warning(f"Error getting positions from {validator}. v_trust {v_trust} Error message: {response.error_message}")
+            if response.error_message:
+                logger.warning(f"Error getting positions from {validator}. Error message: {response.error_message}")
             if response.successfully_processed:
                 ret.append((validator, response.positions))
 
