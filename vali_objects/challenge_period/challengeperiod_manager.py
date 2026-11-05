@@ -934,11 +934,12 @@ class ChallengePeriodManager(CacheController):
     LOCKED_SIZE_BUCKETS = EXISTING_RULES_BUCKETS
 
     def _push_existing_rules_buckets(self, accounts: dict) -> None:
-        """An account on the existing rules carries its bucket, which the order gate and the account size read; push the
-        ones whose copy is missing or stale. Never fails the refresh."""
+        """Push a missing or stale bucket copy to an account on the existing rules, read by the order gate and the
+        account size; a subaccount or standard miner in PLAGIARISM keeps its own, which sets its leverage limits."""
         try:
             stale = [hotkey for hotkey, state in self.miner_states.items()
                      if state.current_bucket in EXISTING_RULES_BUCKETS and isinstance(accounts.get(hotkey), MinerAccount)
+                     and not is_synthetic_hotkey(hotkey) and accounts[hotkey].standard_account is None
                      and accounts[hotkey].miner_bucket != state.current_bucket]
             if stale:
                 self._sync_buckets_to_accounts(hotkeys=stale)
@@ -1162,9 +1163,8 @@ class ChallengePeriodManager(CacheController):
 
     def _commit_standard_account_sizing(self, hotkey: str, record: StandardMinerAccount, sized: StandardMinerAccount,
                                         target_bucket: MinerBucket) -> None:
-        """Write a standard miner's sizing for target_bucket, its asset selection first moved onto all_markets with a
-        pro account as a subaccount's is: the drawdown is measured against the account size, so the record is the
-        last write before the account itself is reset, and its cache is reset when the size traded changes."""
+        """Write a standard miner's sizing for target_bucket, moving a pro account onto all_markets first. The record
+        goes last, just before the account reset, as the drawdown is measured against the size it sets."""
         if target_bucket.is_pro:
             self._asset_selection_client.process_asset_selection_request(
                 MinerAssetClass.ALL_MARKETS.value, hotkey, overwrite=True)

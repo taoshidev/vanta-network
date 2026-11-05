@@ -107,9 +107,8 @@ class ContractClient(RPCClientBase):
         return self._server.refresh_miner_account_size_rpc(hotkey)
 
     def open_standard_miner_account(self, hotkey: str, leverage_tier: int) -> tuple:
-        """Open the account a hotkey registered after the standard miner cutoff block trades on:
-        (opened, message for the miner, the record as a dict). Not retried: a transport error goes back to the
-        miner, who sends a fresh request."""
+        """Open a standard miner's account: (opened, message for the miner, record dict). Not retried: a transport
+        error goes back to the miner, who sends a fresh request."""
         return self._invoke_rpc("open_standard_miner_account_rpc", args=(hotkey, leverage_tier), retry=False)
 
     def receive_standard_miner_opening(

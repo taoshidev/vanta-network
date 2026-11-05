@@ -59,9 +59,8 @@ class StandardMinerAccount:
 
     @property
     def stage(self) -> tuple:
-        """How far the account has come, each step set by the mothership alone: closed, granted a pro size. Of two
-        records of one account, the later stage wins unless a close was undone (supersedes). The size traded is not a
-        stage: each validator sets it at its own bucket move."""
+        """Mothership-set progress (closed, granted a pro size): of two records the later stage wins, unless a close was
+        undone (supersedes). The size traded is not a stage: each validator sets it at its own bucket move."""
         return (self.is_closed, self.pro_account_size is not None)
 
     def supersedes(self, other: "StandardMinerAccount") -> bool:
@@ -202,10 +201,8 @@ class SizingRejected(ValueError):
 
 def bucket_sizing(record: StandardMinerAccount, target_bucket: MinerBucket,
                   pro_account_size=None) -> StandardMinerAccount:
-    """The record after a move into target_bucket, sized as EntityManager.apply_bucket_account_size sizes a subaccount
-    but with no fee: entering the pro track records the pro size given (checked against the opening size), else the
-    one already granted; the buckets past PRO_CHALLENGE_TRANSITION trade the pro size; a standard bucket trades the
-    opening size again and keeps the granted size on record, so an admin move back and forth reuses the grant."""
+    """The record after a move into target_bucket, sized as EntityManager.apply_bucket_account_size sizes a
+    subaccount, no fee. A standard bucket trades the opening size, keeping any granted pro size for a move back."""
     if not target_bucket.is_pro_track:
         return replace(record, trading_account_size=None)
     if pro_account_size is not None:

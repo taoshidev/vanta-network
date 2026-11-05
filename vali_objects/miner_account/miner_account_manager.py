@@ -663,9 +663,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
             logger.error(f"Failed to sync miner accounts data: {e}")
 
     def _keep_standard_accounts_ahead_of(self, incoming: Dict[str, MinerAccount]) -> None:
-        """A synced snapshot can predate an opening, a pro sizing or a close this validator was already told of, so the
-        snapshot fills a missing or less advanced record, and the tier and bucket the opening set, but never undoes
-        one unless the account was reopened after it (supersedes). Caller holds _accounts_lock."""
+        """A snapshot may predate an opening, pro sizing or close seen here: it fills a missing or older record and the
+        opening's tier and bucket, but never undoes one unless reopened after it. Caller holds _accounts_lock."""
         for hotkey, local in self.accounts.items():
             record = local.standard_account
             if record is None:
@@ -1168,10 +1167,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                                       context={"hotkey": hotkey})
 
     def receive_standard_miner_record_update(self, record_data: dict, sender_hotkey: str = None) -> bool:
-        """Take a standard miner's record as the mothership last wrote it: the mothership alone grants a pro size or
-        closes an account, so its record replaces the one held, whatever stage either is at, except for the size
-        traded, which every validator sets at its own bucket move (the drawdown is measured against it, so taking the
-        mothership's early would read as a loss). An account not seen before gets the opening tier and bucket."""
+        """The mothership's record always wins, except for the size traded, which each validator sets at its own bucket
+        move (taking it early would read as a drawdown). An account not seen before gets the opening tier and bucket."""
         def adopt(data: dict):
             hotkey, fields = data.get("hotkey"), data.get("record")
             if not hotkey or not isinstance(fields, dict):

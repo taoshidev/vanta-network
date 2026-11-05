@@ -1711,9 +1711,8 @@ class DebtBasedScoring:
     @staticmethod
     def _hold_capped_weights(weights: dict[str, float], capped_hotkeys: set[str] | None,
                              raw_debt_weights: dict[str, float] | None = None) -> dict[str, float]:
-        """The dust floors can lift the total past one, and the normalization that follows would shave the capped
-        miners' owed share with everyone else's: the others are scaled to what is left instead, unless that would
-        push the ones sitting on their floor below it, when the normalization's shave of everyone stands."""
+        """When the dust floors lift the total past one, the rest are scaled to what is left so the capped miners keep
+        their owed share, unless that pushes a miner on its floor below it: then the plain normalization stands."""
         capped = {hotkey for hotkey in (capped_hotkeys or ()) if hotkey in weights}
         total = sum(weights.values())
         if not capped or total <= 1.0:

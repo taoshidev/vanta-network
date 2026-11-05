@@ -16,7 +16,7 @@ A long position is a bet that the trade pair will increase, while a short positi
    - Achieve cumulative returns above 10% (crypto/equities/commodities) or 8% (forex)
 
    There is no ranking requirement, no minimum number of trading days and no time limit. A miner whose hotkey registered after the standard account cutoff block does not enter this challenge period: it trades on the [standard account track](#standard-account-track) instead, where rules 3, 4, 6, 7 and 9 below are replaced by that track's own.
-3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral. From the lock start (`ValiConfig.ACCOUNT_SIZE_LOCK_START_MS`, not set yet) the account size is fixed at the size in force when a validator first sees the miner trading after it (for a miner already trading, right after the lock start): later deposits never raise it. The theta behind that size (up to 1,000) is locked; collateral above it can be withdrawn at any time without a slash, and a withdrawal into it closes the account for good, as for a [standard account](#withdrawals-closing-and-elimination) (the slash uses the limits of the miner's own stage). The 300 Theta minimum is still measured on the collateral itself, and elimination slashes are unchanged.
+3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral. From the lock start (`ValiConfig.ACCOUNT_SIZE_LOCK_START_MS`, not set yet) the account size is fixed at the size in force when a validator first sees the miner trading after it (for a miner already trading, right after the lock start): later deposits never raise it. The theta behind that size (up to 1,000) is locked. Collateral above the larger of the locked theta and 300 Theta can be withdrawn at any time without a slash; below 300 Theta a withdrawal works as before, with every position closed first and a slash proportional to the drawdown. A withdrawal into the locked theta closes the account for good, as for a [standard account](#withdrawals-closing-and-elimination), with the slash at the limits of the miner's own stage on the larger of the locked theta and 300 Theta. The 300 Theta minimum is still measured on the collateral itself, and elimination slashes are unchanged.
 4. Miner's must select an asset category in order to submit trades. Miners will be restricted to only submitting trades in their chosen asset class.
 5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
    it can't flip SHORT. If you try and have it flip SHORT (using more leverage SHORT than exists LONG) it will close out
@@ -58,7 +58,7 @@ A miner whose hotkey registered after the standard account cutoff block (`ValiCo
 
 ### Opening the account
 
-1. Register the hotkey on the subnet and deposit collateral (`vanta collateral deposit`). No asset class is selected: a standard account trades all markets (the `all_markets` asset class), as a standard subaccount does, and the opening sets it whatever was selected before.
+1. Register the hotkey on the subnet and deposit collateral (`vanta collateral deposit`). No asset class is selected: a standard account trades all markets (the `all_markets` asset class), and the opening sets it whatever was selected before.
 2. Open the account with `vanta account open --tier N` (tier 1 Base, 2 Boost I, 3 Boost II). The request is signed by your coldkey and processed by the mothership validator, which broadcasts the account to the other validators. Until the account is open the hotkey has no account and its orders are rejected.
 3. The account size is the USD value of your collateral at that moment divided by the tier's collateral percentage, capped at $100,000; an opening below $5,000 is rejected. The size never changes afterwards: later deposits do not raise it, and no promotion costs more collateral. The opening tier is fixed too; passing the challenge moves the account to tier 3.
 
@@ -768,7 +768,7 @@ python neurons/miner.py --netuid 116 --subtensor.network test --wallet.name <wal
 
 # Vanta CLI: Selecting your asset class and managing collateral
 
-Miners on the existing rules are required to select an asset class before submitting orders (a [standard account](#standard-account-track) trades all markets and opens with `vanta account open` instead). Miners are also required to deposit a minimum of 300 Theta as collateral, up to a maximum of 1000 Theta. Asset class selection and Collateral can be managed from the Vanta CLI.
+Miners on the existing rules are required to select an asset class before submitting orders (a [standard account](#standard-account-track) trades all markets and opens with `vanta account open` instead). They are also required to deposit a minimum of 300 Theta as collateral, up to a maximum of 1000 Theta. Asset class selection and Collateral can be managed from the Vanta CLI.
 
 ### Installing the Vanta CLI
 
@@ -814,7 +814,7 @@ Deposit collateral
 vanta collateral deposit
 ```
 
-Withdraw collateral. For a miner on the existing rules without a fixed size, withdrawn collateral is subject to slashing proportional to the miner's current drawdown. For a miner whose size is fixed (rule 3) and for a standard account, collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good and slashes the locked theta by the current drawdown (see [Withdrawals, closing and elimination](#withdrawals-closing-and-elimination)); the command shows this and asks for confirmation. A miner on the existing rules who is eliminated will have their collateral deposit slashed and burnt; for a standard account at most the locked theta is slashed, as that section describes.
+Withdraw collateral. For a miner on the existing rules without a fixed size, withdrawn collateral is subject to slashing proportional to the miner's current drawdown. For a miner whose size is fixed (rule 3) and for a standard account, collateral above the locked theta leaves without a slash (for a fixed size, only down to 300 Theta: below that, withdrawals are slashed as above), while a withdrawal into the locked theta closes the account for good with a slash for the current drawdown (see [Withdrawals, closing and elimination](#withdrawals-closing-and-elimination)); the command shows this and asks for confirmation. A miner on the existing rules who is eliminated will have their collateral deposit slashed and burnt; for a standard account at most the locked theta is slashed, as that section describes.
 
 ```bash
 vanta collateral withdraw

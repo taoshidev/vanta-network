@@ -45,8 +45,9 @@ def deposit(theta, at_ms, first=False):
     return CollateralRecord(theta * USD_PER_THETA, theta, at_ms, first)
 
 
-def locked_account(hotkey=LEGACY, closed_at_ms=None):
-    return MinerAccount(miner_hotkey=hotkey, size_lock=AccountSizeLock(START, LOCKED * USD_PER_THETA, LOCKED, closed_at_ms))
+def locked_account(hotkey=LEGACY, closed_at_ms=None, theta=LOCKED):
+    lock = AccountSizeLock(START, theta * USD_PER_THETA, theta, closed_at_ms)
+    return MinerAccount(miner_hotkey=hotkey, size_lock=lock)
 
 
 class TestAccountSizeLock(TestBase):
@@ -289,6 +290,23 @@ class TestLockingInTheRefresh(TestBase):
         self.manager._push_existing_rules_buckets(self.accounts)
         self.client.set_miner_buckets.assert_not_called()
 
+    def test_a_subaccount_or_standard_miner_flagged_for_plagiarism_keeps_its_bucket(self):
+        self.accounts[SUBACCOUNT].miner_bucket = MinerBucket.SUBACCOUNT_FUNDED
+        self.accounts[STANDARD].miner_bucket = MinerBucket.SUBACCOUNT_CHALLENGE
+        self.manager.sync_plagiarism_miners([LEGACY, SUBACCOUNT, STANDARD], START)
+        self.manager._push_existing_rules_buckets(self.accounts)
+        pushed = self.client.set_miner_buckets.call_args.args[0]
+        self.assertEqual(pushed[LEGACY], MinerBucket.PLAGIARISM)
+        self.assertNotIn(SUBACCOUNT, pushed)
+        self.assertNotIn(STANDARD, pushed)
+
+        self.client.set_miner_buckets.reset_mock()
+        self.manager.sync_plagiarism_miners([], START + HOUR)
+        self.manager._push_existing_rules_buckets(self.accounts)
+        self.client.set_miner_buckets.assert_called_once_with({LEGACY: MinerBucket.CHALLENGE})
+        self.assertEqual(self.accounts[SUBACCOUNT].miner_bucket, MinerBucket.SUBACCOUNT_FUNDED)
+        self.assertEqual(self.accounts[STANDARD].miner_bucket, MinerBucket.SUBACCOUNT_CHALLENGE)
+
     def test_nothing_is_asked_without_candidates_and_a_failure_never_stops_the_refresh(self):
         self.accounts[LEGACY].size_lock = self.accounts[LATE].size_lock = AccountSizeLock(START, 5_000.0, 0.0)
         self.manager._lock_account_sizes(self.accounts, self.first_orders)
@@ -350,14 +368,33 @@ class TestLockedWithdrawals(TestBase):
     def _withdrawn_theta(self):
         return self.m.collateral_manager.withdraw.call_args.kwargs["amount"] / 10 ** 9
 
-    def test_the_collateral_above_the_locked_theta_leaves_without_a_slash_whatever_the_positions(self):
+    def test_the_collateral_above_the_minimum_leaves_without_a_slash_whatever_the_positions(self):
+        self.m.get_miner_collateral_balance.return_value = 400.0
         self.m._position_client.get_positions_for_one_hotkey.return_value = [self._open_position()]
-        result = self.m.query_withdrawal_request(30.0, LEGACY)
+        result = self.m.query_withdrawal_request(100.0, LEGACY)
         self.assertTrue(result["successfully_processed"], result)
         self.assertEqual((result["closes_account"], result["slashed_amount"], result["locked_theta"]), (False, 0.0, LOCKED))
-        processed = self.m.process_withdrawal_request(30.0, COLDKEY, LEGACY)
+        processed = self.m.process_withdrawal_request(100.0, COLDKEY, LEGACY)
         self.assertTrue(processed["successfully_processed"], processed)
-        self.assertEqual((processed["returned_amount"], processed["account_closed"]), (30.0, False))
+        self.assertEqual((processed["returned_amount"], processed["account_closed"]), (100.0, False))
+        self.m._elimination_client.append_elimination_row.assert_not_called()
+
+    def test_the_collateral_below_the_minimum_leaves_flat_and_slashed_on_the_drawdown(self):
+        # 4% below the high-water mark against the main competition's 8%: half of the part below 300 theta
+        account = locked_account()
+        account.total_realized_pnl = -0.04 * account.get_account_size()
+        self.m._miner_account_client.get_account.return_value = account
+        self.m.get_miner_collateral_balance.return_value = 400.0
+        self.m._position_client.get_positions_for_one_hotkey.return_value = [self._open_position()]
+        self.assertIn("close all positions", self.m.query_withdrawal_request(250.0, LEGACY)["error_message"])
+        self.m._position_client.get_positions_for_one_hotkey.return_value = []
+        result = self.m.query_withdrawal_request(250.0, LEGACY)
+        self.assertNotIn("closes_account", result)
+        self.assertAlmostEqual(result["slashed_amount"], 0.5 * 150.0)
+        processed = self.m.process_withdrawal_request(250.0, COLDKEY, LEGACY)
+        self.assertTrue(processed["successfully_processed"], processed)
+        self.assertAlmostEqual(self.m.collateral_manager.slash.call_args.kwargs["amount"] / 10 ** 9, 75.0)
+        self.assertAlmostEqual(self._withdrawn_theta(), 250.0 - 75.0)
         self.m._elimination_client.append_elimination_row.assert_not_called()
 
     def test_a_withdrawal_into_the_locked_theta_closes_the_account(self):
@@ -365,9 +402,10 @@ class TestLockedWithdrawals(TestBase):
         self.assertIn("close all positions", self.m.query_withdrawal_request(31.0, LEGACY)["error_message"])
         self.m._position_client.get_positions_for_one_hotkey.return_value = []
         result = self.m.query_withdrawal_request(31.0, LEGACY)
+        # Below 300 theta the closing slash takes in the whole balance, not just the locked theta
         self.assertEqual((result["closes_account"], result["slash_proportion"]), (True, 0.5))
-        self.assertAlmostEqual(result["slashed_amount"], 0.5 * LOCKED)
-        self.assertAlmostEqual(result["withdrawal_amount"], BALANCE - 0.5 * LOCKED)
+        self.assertAlmostEqual(result["slashed_amount"], 0.5 * BALANCE)
+        self.assertAlmostEqual(result["withdrawal_amount"], BALANCE - 0.5 * BALANCE)
         # Without the consent nothing happens
         refused = self.m.process_withdrawal_request(31.0, COLDKEY, LEGACY)
         self.assertFalse(refused["successfully_processed"])
@@ -376,9 +414,20 @@ class TestLockedWithdrawals(TestBase):
         self.assertTrue(processed["successfully_processed"], processed)
         self.assertTrue(processed["account_closed"])
         kwargs = self.m._elimination_client.append_elimination_row.call_args.kwargs
-        self.assertEqual((kwargs["reason"], kwargs["slash_theta"]), (ACCOUNT_CLOSED, 0.5 * LOCKED))
-        self.assertAlmostEqual(self._withdrawn_theta(), BALANCE - 0.5 * LOCKED)
+        self.assertEqual((kwargs["reason"], kwargs["slash_theta"]), (ACCOUNT_CLOSED, 0.5 * BALANCE))
+        self.assertAlmostEqual(self._withdrawn_theta(), BALANCE - 0.5 * BALANCE)
         self.m.collateral_manager.slash.assert_not_called()
+
+    def test_a_lock_of_at_least_the_minimum_frees_everything_above_it_and_slashes_only_it_on_closing(self):
+        self.m._miner_account_client.get_account.return_value = locked_account(theta=350.0)
+        self.m.get_miner_collateral_balance.return_value = 400.0
+        self.m._position_client.get_positions_for_one_hotkey.return_value = [self._open_position()]
+        free = self.m.query_withdrawal_request(50.0, LEGACY)
+        self.assertEqual((free["closes_account"], free["slashed_amount"]), (False, 0.0))
+        self.m._position_client.get_positions_for_one_hotkey.return_value = []
+        closing = self.m.query_withdrawal_request(60.0, LEGACY)
+        self.assertTrue(closing["closes_account"])
+        self.assertAlmostEqual(closing["slashed_amount"], 0.5 * 350.0)
 
     def test_a_lock_closed_without_its_row_closes_again_without_a_slash(self):
         self.m._miner_account_client.get_account.return_value = locked_account(closed_at_ms=START)

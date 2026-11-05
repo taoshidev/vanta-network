@@ -719,7 +719,7 @@ What a withdrawal would do, without doing it: the slash, the net amount and, for
 }
 ```
 
-A standard account, or an account whose size is fixed, withdrawing unlocked collateral answers with the same fields plus `locked_theta` and `closes_account: false`, and is never slashed (`slashed_amount` 0), whatever the positions, as long as at least the locked theta stays in place.
+A standard account, or an account whose size is fixed, withdrawing unlocked collateral answers with the same fields plus `locked_theta` and `closes_account: false`, and is never slashed (`slashed_amount` 0), whatever the positions, as long as at least the locked theta stays in place. An account whose size is fixed keeps that only down to 300 theta: a withdrawal taking its balance below 300 answers as for every other miner, needs every position closed and is slashed on the part below 300.
 
 **Response (a standard account withdrawing into its locked theta):**
 ```json
@@ -738,7 +738,7 @@ A standard account, or an account whose size is fixed, withdrawing unlocked coll
 }
 ```
 
-Every position must be closed first (otherwise `successfully_processed` is false with the reason). The whole balance comes out as `withdrawal_amount`, less `slashed_amount` = `locked_theta` × `slash_proportion`, where the proportion is min(1, max(`intraday_drawdown_pct` ÷ the daily loss limit, `trailing_drawdown_pct` ÷ the EOD limit)) at the account's current stage, on the balance as it is now; `drawdown` is the larger of the two as a fraction. An eliminated standard account whose slash could not be taken at the time answers with `owed_slash: true` and the slash its elimination still owes, which the withdrawal takes first.
+Every position must be closed first (otherwise `successfully_processed` is false with the reason). The whole balance comes out as `withdrawal_amount`, less `slashed_amount` = `locked_theta` × `slash_proportion` (for an account whose size is fixed, `slash_proportion` applies to the larger of `locked_theta` and 300 theta), where the proportion is min(1, max(`intraday_drawdown_pct` ÷ the daily loss limit, `trailing_drawdown_pct` ÷ the EOD limit)) at the account's current stage, on the balance as it is now; `drawdown` is the larger of the two as a fraction. An eliminated standard account whose slash could not be taken at the time answers with `owed_slash: true` and the slash its elimination still owes, which the withdrawal takes first.
 
 ### Withdraw Collateral
 
@@ -882,7 +882,7 @@ A miner whose hotkey registered after the standard account cutoff block opens it
 **Parameters:**
 - `miner_coldkey` (string): Miner's coldkey SS58 address; it must own `miner_hotkey` on chain
 - `miner_hotkey` (string): Miner's hotkey SS58 address
-- `leverage_tier` (int): 1 Base, 2 Boost I or 3 Boost II (`ValiConfig.STANDARD_LEVERAGE_TIERS`); it cannot be changed afterwards
+- `leverage_tier` (int): 1 Base, 2 Boost I or 3 Boost II (`ValiConfig.STANDARD_LEVERAGE_TIERS`); the miner cannot change it afterwards, and passing the challenge moves the account to tier 3
 - `nonce` (string) and `timestamp` (int, ms): single use, so every request is freshly signed
 - `signature` (string): The coldkey's signature, hex, over the sorted JSON of `leverage_tier`, `miner_coldkey`, `miner_hotkey`, `nonce` and `timestamp`
 - `version` (string): The vanta-cli version

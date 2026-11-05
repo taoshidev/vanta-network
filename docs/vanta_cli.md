@@ -81,7 +81,7 @@ Check collateral balance for a miner address.
 ```bash
 vanta collateral withdraw [OPTIONS]
 ```
-Withdraw collateral from the Vanta Network. The command shows what the withdrawal would slash and asks for confirmation. For a miner on the [standard account track](miner.md#standard-account-track), or a miner whose account size is fixed ([miner rule 3](miner.md#basic-rules)), collateral above the locked theta leaves without a slash, while a withdrawal into the locked theta closes the account for good, forfeiting payouts not yet received: the command shows the slash, asks you to confirm the close and signs that consent with the request.
+Withdraw collateral from the Vanta Network. The command shows what the withdrawal would slash and asks for confirmation. For a miner on the [standard account track](miner.md#standard-account-track), or a miner whose account size is fixed ([miner rule 3](miner.md#basic-rules)), collateral above the locked theta leaves without a slash (for a fixed size, only down to 300 Theta), while a withdrawal into the locked theta closes the account for good, forfeiting payouts not yet received: the command shows the slash, asks you to confirm the close and signs that consent with the request.
 
 **Options:**
 - `--wallet-name, --name` - Name of the wallet (for display purposes)

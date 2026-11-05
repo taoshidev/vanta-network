@@ -413,10 +413,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         return self._set_miner_account_size(hotkey, TimeUtil.now_in_millis())
 
     def open_standard_miner_account(self, hotkey: str, leverage_tier: int) -> tuple[bool, str, Optional[dict]]:
-        """Open the account a hotkey registered after the standard miner cutoff block trades on, sized from its
-        collateral at today's price (standard_miner.open_account), and broadcast the record; only the mothership does.
-        Returns (opened, message for the miner, the record as a dict); an opened account is returned as it is, completed
-        and broadcast again only when a step had been left missing."""
+        """Mothership only: open a hotkey's account, sized from its collateral at today's price, and broadcast it.
+        Returns (opened, message for the miner, record dict); an opened account comes back, a missing step redone."""
         if not self.running_unit_tests and not self.is_mothership:
             return False, "Account openings are only processed by the mothership validator", None
         with self._account_lock(hotkey):
@@ -446,7 +444,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return self._account_locks.setdefault(hotkey, threading.Lock())
 
     def _trade_all_markets(self, hotkey: str) -> None:
-        """A standard account trades all markets, as a standard subaccount does, whatever the hotkey selected before."""
+        """A standard account trades all markets, whatever the hotkey selected before."""
         if self._asset_selection_client.get_asset_selection(hotkey) == MinerAssetClass.ALL_MARKETS:
             return
         result = self._asset_selection_client.process_asset_selection_request(
@@ -555,6 +553,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 logger.error(error_msg)
                 return {"successfully_processed": False, "error_message": error_msg}
 
+            free_above = self.max_theta
             record = self._miner_account_client.get_standard_account(miner_hotkey)
             if record is not None:
                 # The elimination row is the word on a standard miner's account: none means it is open; one whose
@@ -574,10 +573,16 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 # once eliminated, the path below applies as for every other miner
                 size_lock = getattr(self._miner_account_client.get_account(miner_hotkey), "size_lock", None)
                 if isinstance(size_lock, AccountSizeLock) and self._elimination_client.get_elimination(miner_hotkey) is None:
-                    result = self._query_locked_withdrawal(amount, miner_hotkey, size_lock.locked_theta,
-                                                           size_lock.is_closed, theta_current_balance)
-                    logger.info(f"{miner_hotkey} Query withdrawal request results: {result}")
-                    return result
+                    # Theta up to the minimum collateral stays at risk: withdrawn by the path below, slashed by a close
+                    at_risk = max(size_lock.locked_theta, ValiConfig.MIN_COLLATERAL_BALANCE_THETA)
+                    new_balance = theta_current_balance - amount
+                    if size_lock.is_closed or not size_lock.locked_theta - 1e-9 <= new_balance < at_risk - 1e-9:
+                        result = self._query_locked_withdrawal(
+                            amount, miner_hotkey, size_lock.locked_theta, size_lock.is_closed, theta_current_balance,
+                            slashed_theta=max(size_lock.locked_theta, min(theta_current_balance, at_risk)))
+                        logger.info(f"{miner_hotkey} Query withdrawal request results: {result}")
+                        return result
+                    free_above = at_risk
 
             required_min_theta = self._entity_collateral_client.compute_entity_required_collateral(miner_hotkey)
             if theta_current_balance - amount < required_min_theta:
@@ -613,9 +618,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     current_return = account.balance / account.account_size
                     drawdown = 1.0 - current_return / max_return
 
-                # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA
+                # penalty free withdrawals down to MAX_COLLATERAL_BALANCE_THETA, or a fixed size's theta at risk
                 # Prioritize withdrawing penalty free theta
-                penalty_free_amount = max(0.0, theta_current_balance - self.max_theta)
+                penalty_free_amount = max(0.0, theta_current_balance - free_above)
                 penalty_amount = max(0.0, amount - penalty_free_amount)
 
                 # max drawdown closer to eod drawdown
@@ -662,9 +667,9 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         return error_msg
 
     def _query_locked_withdrawal(self, amount: float, hotkey: str, locked_theta: float, is_closed: bool,
-                                 balance: float) -> Dict[str, Any]:
-        """Collateral above the locked theta leaves without a slash, whatever the positions. A withdrawal into the
-        locked theta closes the account: every position closed, then the whole balance less the closing slash."""
+                                 balance: float, slashed_theta: Optional[float] = None) -> Dict[str, Any]:
+        """Collateral above the locked theta leaves without a slash, whatever the positions. A withdrawal into it closes
+        the account: positions closed, then the balance less the closing slash on slashed_theta (the locked theta)."""
         result = {"successfully_processed": True, "error_message": "", "locked_theta": locked_theta}
         if not is_closed and balance - amount >= locked_theta - 1e-9:
             return {**result, "closes_account": False, "drawdown": 0.0, "slashed_amount": 0.0,
@@ -692,7 +697,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         proportion = closing_slash_proportion(drawdown)
         intraday_pct = max(0.0, drawdown.get("intraday_drawdown_pct") or 0.0)
         trailing_pct = max(0.0, drawdown.get("trailing_drawdown_pct") or 0.0)
-        slashed_amount = min(locked_theta * proportion, balance)
+        slashed_amount = min((locked_theta if slashed_theta is None else slashed_theta) * proportion, balance)
         return {**result, "closes_account": True, "drawdown": max(intraday_pct, trailing_pct) / 100.0,
                 "intraday_drawdown_pct": intraday_pct, "trailing_drawdown_pct": trailing_pct,
                 "slash_proportion": proportion, "slashed_amount": slashed_amount,

@@ -641,8 +641,8 @@ class ValiConfig:
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
 
-    # Standard miners: a regular miner registered after its network's cutoff block trades on the standard
-    # account pipeline under its own hotkey. None turns the feature off on that network.
+    # Standard miners: a regular miner registered after its network's cutoff block trades on the standard account
+    # pipeline under its own hotkey. None = off; set a block after every validator runs the release that sets it.
     STANDARD_MINER_CUTOFF_BLOCK = None
     STANDARD_MINER_CUTOFF_BLOCK_TESTNET = None
     # Account size at opening = collateral USD value / the tier's collateral percentage, within the bounds
@@ -664,8 +664,8 @@ class ValiConfig:
             return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK_TESTNET
         return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK
 
-    # From this time (ms) a miner on the existing rules keeps the size in force when it is first seen trading, and
-    # withdrawing the collateral behind it closes the account. None = no new locks (locks already written stay).
+    # From this time (ms; the cutoff block's moment) a miner on the existing rules keeps the size in force when first
+    # seen trading, and withdrawing the theta behind it closes the account. None = no new locks (written ones stay).
     ACCOUNT_SIZE_LOCK_START_MS = None
     ACCOUNT_SIZE_LOCK_START_MS_TESTNET = None
 
