@@ -656,6 +656,9 @@ class ValiConfig:
     STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER = 1.5
     # The leverage tier a standard miner trades from SUBACCOUNT_FUNDED on, whatever tier it opened on
     STANDARD_MINER_FUNDED_LEVERAGE_TIER = 3
+    # A standard miner's fast track return until each day count from its first order as a funded account, then
+    # AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
+    STANDARD_MINER_FAST_TRACK_EQUITY_RETURNS = ((7, 0.03), (14, 0.05))
 
     @staticmethod
     def standard_miner_cutoff_block(is_testnet: bool = False) -> int | None:

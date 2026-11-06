@@ -518,7 +518,8 @@ class ChallengePeriodManager(CacheController):
         timer.lap("pro_stats")
         # Before the eliminations, so a failure here must not stop them: nothing is evaluated this refresh
         try:
-            self._refresh_auto_promotion_stats(evaluation_hotkeys, ledgers, accounts, current_time_ms)
+            self._refresh_auto_promotion_stats(evaluation_hotkeys, ledgers, accounts, current_time_ms,
+                                               hk_to_first_order_time)
         except Exception as e:
             logger.error(f"[CHALLENGE] auto-promotion stats failed, skipping auto-promotion this refresh: {e}",
                          exc_info=True)
@@ -1429,7 +1430,8 @@ class ChallengePeriodManager(CacheController):
             )
 
     def _refresh_auto_promotion_stats(self, hotkeys: list[str], ledgers: dict[str, PerfLedger],
-                                      accounts: dict[str, MinerAccount], current_time_ms: int) -> None:
+                                      accounts: dict[str, MinerAccount], current_time_ms: int,
+                                      first_order_times: dict[str, int] | None = None) -> None:
         """Track every auto-promotion candidate's drawdown and measure its track record as in the pro
         challenge.
 
@@ -1458,7 +1460,12 @@ class ChallengePeriodManager(CacheController):
                 if drawdown.eod_hwm > 0:
                     drawdown.max_drawdown = min(drawdown.max_drawdown, 1.0,
                                                 drawdown.current_equity / drawdown.eod_hwm)
-            if drawdown.current_equity - 1.0 >= ValiConfig.AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN:
+            first_order_ms = (first_order_times or {}).get(hotkey)
+            line = self._fast_track_return(hotkey, account, first_order_ms, current_time_ms)
+            since_ms = self._fast_track_since_ms.get(hotkey)
+            if since_ms is not None and self._fast_track_return(hotkey, account, first_order_ms, since_ms) != line:
+                del self._fast_track_since_ms[hotkey]  # a hold never spans two lines
+            if drawdown.current_equity - 1.0 >= line:
                 self._fast_track_since_ms.setdefault(hotkey, current_time_ms)
             else:
                 self._fast_track_since_ms.pop(hotkey, None)
@@ -1608,6 +1615,17 @@ class ChallengePeriodManager(CacheController):
         if self._move_failure_logged.get(hotkey) != week_start_ms:
             self._move_failure_logged[hotkey] = week_start_ms
             logger.error(f"[CHALLENGE] auto-promotion of {hotkey} failed, retrying on later refreshes: {message}")
+
+    def _fast_track_return(self, hotkey: str, account: MinerAccount, first_order_ms: int | None,
+                           current_time_ms: int) -> float:
+        """A standard miner's fast track asks less in its first weeks from its first order as a funded account (the
+        positions before were archived on becoming funded); a subaccount's never changes."""
+        if first_order_ms is not None and self._standard_account(hotkey, account) is not None:
+            days = (current_time_ms - first_order_ms) / ValiConfig.DAILY_MS
+            for until_days, required in ValiConfig.STANDARD_MINER_FAST_TRACK_EQUITY_RETURNS:
+                if days < until_days:
+                    return required
+        return ValiConfig.AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
 
     @staticmethod
     def _auto_promotion_path(stats: AutoPromotionStats, fast_track_held: bool,
