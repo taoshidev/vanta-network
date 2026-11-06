@@ -15,7 +15,8 @@ from vanta_cli.src.options import EPILOG, Amount, Network, WalletHotkey, WalletN
 from vanta_cli.src.utils.api import make_api_request
 from vanta_cli.src.utils.console import console
 
-app = typer.Typer(no_args_is_help=True, help="Vanta Network - Collateral operation commands", epilog=EPILOG)
+app = typer.Typer(no_args_is_help=True, help="Vanta Network - Collateral operation commands", epilog=EPILOG,
+                  pretty_exceptions_show_locals=False)
 
 
 @app.command("list", rich_help_panel="Collateral Management")
@@ -93,13 +94,18 @@ def deposit(
     if amount is None:
         amount = FloatPrompt.ask("Enter collateral deposit amount")
 
-    from collateral_sdk import CollateralManager, Network # importing on compile time causes help menu to break
-    manager = CollateralManager(Network.TESTNET if network == 'test' else Network.MAINNET)
+    from collateral_sdk import CollateralManager, Network as CollateralNetwork # importing on compile time causes help menu to break
+    manager = CollateralManager(CollateralNetwork.TESTNET if network == 'test' else CollateralNetwork.MAINNET)
 
     password = getpass.getpass(prompt='Enter your password: ')
 
-    coldkey = wallet.get_coldkey(password)
-    hotkey = wallet.hotkey
+    try:
+        coldkey = wallet.get_coldkey(password)
+        hotkey = wallet.hotkey
+    except Exception as e:
+        console.print(f"[red]Failed to unlock wallet: {e}[/red]")
+        manager.subtensor_api.close()
+        return False
 
     # Set netuid based on network
     netuid = 116 if network == 'test' else 8
@@ -288,8 +294,12 @@ def withdraw(
     # Load wallet and get keys
     password = getpass.getpass(prompt='Enter your password: ')
 
-    coldkey = wallet.get_coldkey(password=password)
-    hotkey = wallet.hotkey
+    try:
+        coldkey = wallet.get_coldkey(password=password)
+        hotkey = wallet.hotkey
+    except Exception as e:
+        console.print(f"[red]Failed to unlock wallet: {e}[/red]")
+        return False
 
     # Determine which API base URL to use based on network
     base_url = VANTA_API_BASE_URL_TESTNET if network == "test" else VANTA_API_BASE_URL_MAINNET

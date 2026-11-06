@@ -16,6 +16,7 @@ app = typer.Typer(
     rich_markup_mode="rich",
     epilog=EPILOG,
     no_args_is_help=True,
+    pretty_exceptions_show_locals=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 app.add_typer(collateral.app, name="collateral")

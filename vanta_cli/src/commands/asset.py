@@ -11,7 +11,8 @@ from vanta_cli.src.options import EPILOG, Network, PromptFlag, WalletHotkey, Wal
 from vanta_cli.src.utils.api import make_api_request
 from vanta_cli.src.utils.console import console
 
-app = typer.Typer(no_args_is_help=True, help="Vanta Network - Asset selection commands", epilog=EPILOG)
+app = typer.Typer(no_args_is_help=True, help="Vanta Network - Asset selection commands", epilog=EPILOG,
+                  pretty_exceptions_show_locals=False)
 
 
 @app.command("select", rich_help_panel="Asset class selection")
@@ -44,8 +45,12 @@ def select(
     # Load wallet and get keys
     password = getpass.getpass(prompt='Enter your password: ')
 
-    coldkey = wallet.get_coldkey(password=password)
-    hotkey = wallet.hotkey
+    try:
+        coldkey = wallet.get_coldkey(password=password)
+        hotkey = wallet.hotkey
+    except Exception as e:
+        console.print(f"[red]Failed to unlock wallet: {e}[/red]")
+        return False
 
     if prompt:
         confirm = typer.confirm(f"Are you sure you want to select asset class {asset} for miner {hotkey.ss58_address}?")
