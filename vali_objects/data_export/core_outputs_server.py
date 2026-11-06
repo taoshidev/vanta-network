@@ -86,6 +86,7 @@ class CoreOutputsServer(RPCServerBase):
             hang_timeout_s = 300.0,  # 5 minute hang timeout
             connection_mode=connection_mode,
             daemon_stagger_s=30,
+            daemon_priority=10,
         )
 
         # Create the actual CoreOutputsManager (contains all business logic)
