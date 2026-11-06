@@ -311,7 +311,7 @@ class RPCServerBase(ABC):
         initial_backoff_s: float = None,
         max_backoff_s: float = None,
         daemon_stagger_s: float = 0.0,
-        daemon_priority: int = 10,
+        daemon_priority: Optional[int] = None,
     ):
         """
         Initialize the RPC server base.
@@ -805,11 +805,12 @@ class RPCServerBase(ABC):
         setproctitle(self.get_daemon_name())
         logger.info(f"{self.service_name} daemon running")
 
-        try:
-            native_thread_id = threading.get_native_id()
-            os.setpriority(os.PRIO_PROCESS, native_thread_id, self.daemon_priority)
-        except (OSError, AttributeError) as e:
-            logger.warning(f"{self.service_name} could not set daemon priority to {self.daemon_priority}: {e}")
+        if self.daemon_priority is not None:
+            try:
+                native_thread_id = threading.get_native_id()
+                os.setpriority(os.PRIO_PROCESS, native_thread_id, self.daemon_priority)
+            except (OSError, AttributeError) as e:
+                logger.warning(f"{self.service_name} could not set daemon priority to {self.daemon_priority}: {e}")
 
         while not self._is_shutdown():
             try:
