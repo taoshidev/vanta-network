@@ -13,7 +13,8 @@ from vanta_cli.src.options import EPILOG, Network, PromptFlag, WalletHotkey, Wal
 from vanta_cli.src.utils.api import make_api_request
 from vanta_cli.src.utils.console import console
 
-app = typer.Typer(no_args_is_help=True, help="Vanta Network - Entity management commands", epilog=EPILOG)
+app = typer.Typer(no_args_is_help=True, help="Vanta Network - Entity management commands", epilog=EPILOG,
+                  pretty_exceptions_show_locals=False)
 
 
 @app.command("register", rich_help_panel="Entity Management")

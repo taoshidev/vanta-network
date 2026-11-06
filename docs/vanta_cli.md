@@ -87,6 +87,7 @@ Withdraw collateral from the Vanta Network.
 - `--wallet-name, --name` - Name of the wallet (for display purposes)
 - `--wallet-path` - Path to wallet directory (default: `~/.bittensor/wallets`)
 - `--hotkey, --wallet_hotkey` - Hotkey name
+- `--network` - Network to connect to (default: `finney`)
 - `--amount` - Amount of Theta to withdraw (prompted if omitted)
 
 ### Asset Class Selection
