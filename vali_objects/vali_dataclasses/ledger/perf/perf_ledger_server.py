@@ -100,7 +100,8 @@ class PerfLedgerServer(RPCServerBase):
             start_daemon=False,  # We'll start daemon after full initialization
             daemon_interval_s=ValiConfig.PERF_LEDGER_REFRESH_TIME_MS / 1000.0,
             hang_timeout_s=1800,  # 30 minutes (heavy hotkey?)
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            daemon_priority=10
         )
 
         self._regenerate_all_ledgers = True  # Full rebuild on first daemon iteration
