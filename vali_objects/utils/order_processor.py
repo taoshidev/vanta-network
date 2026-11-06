@@ -11,12 +11,14 @@ from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.trade_pair import NATIVE_CRYPTO_TO_HL_TRADE_PAIR, TradePair
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.utils.market_order.market_order_client import MarketOrderClient
+from vali_objects.utils.trigger_order.legacy_converter import signal_to_bracket, signal_to_trigger_order
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_dataclasses.order import Order
 from vali_objects.vali_dataclasses.order_signal import Signal
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.vali_dataclasses.price_source import PriceSource
+from vali_objects.vali_dataclasses.trigger_order import TriggerOrder
 from vali_objects.utils.limit_order.order_utils import OrderSize
 from shared_objects.log import logger
 
@@ -32,6 +34,14 @@ def _validate_single_size(quantity: float | None, value: float | None, leverage:
         raise SignalException(
             "Exactly one of quantity, value, or leverage must be provided."
         )
+
+def _to_trigger_order(hotkey: str, order: Order) -> TriggerOrder:
+    """A legacy LIMIT or STOP_LIMIT order as its trigger order (brackets become children)."""
+    try:
+        return signal_to_trigger_order(hotkey, order, order.order_uuid, order.processed_ms)
+    except ValueError as e:
+        raise SignalException(str(e))
+
 
 @dataclass(frozen=True)
 class OrderProcessingResult:
@@ -212,8 +222,11 @@ class OrderProcessor:
                 self.process_limit_cancel(hotkey, trade_pair, "ALL", now_ms, ExecutionType.BRACKET)
 
             if created_order and (updated_position and not updated_position.is_closed_position) and signal.bracket_orders:
-                created_order.bracket_orders = signal.bracket_orders
-                self.limit_order_client.create_sltp_order(hotkey, created_order)
+                brackets = [b if b.get('order_uuid') else {**b, 'order_uuid': str(uuid.uuid4())} for b in signal.bracket_orders]
+                self.limit_order_client.process_bracket_orders(
+                    hotkey, trade_pair, brackets, created_order.processed_ms,
+                    position_type=updated_position.position_type, best_price=created_order.price,
+                )
         except Exception as e:
             logger.error(
                 f"[ORDER_PROCESSOR] {hotkey} {order_uuid} order COMMITTED but post-commit "
@@ -337,8 +350,12 @@ class OrderProcessor:
         if execution_type == ExecutionType.BRACKET:
             # BRACKET orders never carry a limit_price.
             order.limit_price = None
-
-        self.limit_order_client.process_limit_order(hotkey, order, is_edit=is_edit)
+            self.limit_order_client.process_bracket_orders(
+                hotkey, trade_pair, [signal_to_bracket(signal, order_uuid)], now_ms, is_edit=is_edit
+            )
+        else:
+            trigger_order = _to_trigger_order(hotkey, order)
+            (self.limit_order_client.replace if is_edit else self.limit_order_client.place)(trigger_order)
         logger.info(
             f"[ORDER_PROCESSOR] Processed {execution_type.name} order{'(EDIT)' if is_edit else ''}: "
             f"{order.order_uuid} for {hotkey}"
@@ -370,20 +387,14 @@ class OrderProcessor:
         order_uuid: str,
         now_ms: int,
     ) -> Optional[Order]:
-        existing_order_dict = self.limit_order_client.get_limit_order_by_uuid(hotkey, order_uuid)
+        existing_order = self.limit_order_client.get(hotkey, order_uuid)
 
         # If the envelope uuid is also listed in bracket_orders, defer to the
         # bulk path so a single request can't double-process the same order.
-        if existing_order_dict:
-            bracket_orders_list = signal.bracket_orders or []
-            if any(b.get("order_uuid") == order_uuid for b in bracket_orders_list):
-                existing_order_dict = None
+        if existing_order and any(b.get("order_uuid") == order_uuid for b in signal.bracket_orders or []):
+            existing_order = None
 
-        if existing_order_dict:
-            existing_order = Order.from_dict(existing_order_dict)
-
-            if existing_order.src not in [OrderSource.LIMIT_UNFILLED, OrderSource.BRACKET_UNFILLED, OrderSource.STOP_LIMIT_UNFILLED]:
-                raise SignalException(f"Cannot edit order {order_uuid}: order is not unfilled (status: {existing_order.src})")
+        if existing_order:
             if signal.trade_pair is None:
                 raise SignalException("Invalid trade pair in signal for LIMIT_EDIT")
             if signal.trade_pair != existing_order.trade_pair:
@@ -416,7 +427,7 @@ class OrderProcessor:
                 bracket_uuid = str(uuid.uuid4())
                 # raise SignalException("bulk bracket order updates must require bracket uuid") TODO enforce
 
-            existing_bracket = self.limit_order_client.get_limit_order_by_uuid(hotkey, bracket_uuid)
+            existing_bracket = self.limit_order_client.get(hotkey, bracket_uuid)
 
             if existing_bracket and self._is_bracket_cancel_intent(bracket):
                 self.process_limit_cancel(hotkey, None, bracket_uuid, now_ms)
@@ -426,7 +437,7 @@ class OrderProcessor:
             bracket_signal = self._build_bracket_signal(trade_pair, bracket)
             order = self.process_unfilled_order(
                 hotkey, bracket_signal, bracket_uuid, now_ms,
-                ExecutionType.BRACKET, is_edit=bool(existing_bracket),
+                ExecutionType.BRACKET, is_edit=existing_bracket is not None,
             )
             processed_orders.append(order)
 

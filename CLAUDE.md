@@ -73,6 +73,7 @@ npm run preview  # Preview production build
   - `scoring/` - Performance metrics calculation
   - `statistics/` - Miner performance statistics
   - `utils/` - Utility services (elimination, asset selection, MDD checking, limit orders, market orders, entity collateral)
+  - `utils/trigger_order/` - Limit, stop-limit and bracket orders as trigger orders: store, stateless engine, manager, and the legacy Order converter. `utils/limit_order/limit_order_server.py` serves them over the legacy RPC/API shapes
   - `utils/leverage_utils.py` - Resolves which leverage curve (legacy / standard tier / pro) an account is on and clamps order size
   - `vali_dataclasses/` - Data structures for positions, orders, and the perf/debt/penalty/weekly-seal ledgers
 - **`shared_objects/`** - Common infrastructure
@@ -142,7 +143,7 @@ The system uses a distributed RPC architecture for inter-process communication:
 - **Forex**: 28 tradable currency pairs (EUR/USD, GBP/USD, USD/JPY, etc.); USDMXN is blocked
   - Grouped into G1-G5 subcategories by liquidity/volume
 - **Equities**: Russell 1000 single stocks plus HL-matched additions (COIN, CRCL, MSTR, PLTR, SNDK, INTC, HOOD, SPCX) - priced via Massive Nasdaq Basic quotes (if the key has the expansion) or Business FMV, plus optional Databento
-  - Sessions (ET): regular 09:30–16:00; pre-market 04:00–09:30 and after-hours 16:00–20:00 are limit-only, filling at the limit price on round-lot Nasdaq Basic trades at or through it (`get_equity_session`); market orders, stops and brackets wait for the regular session
+  - Sessions (ET): regular 09:30–16:00; pre-market 04:00–09:30 and after-hours 16:00–20:00 accept only trigger orders (limit, stop-limit, bracket), filling at the trigger price on round-lot Nasdaq Basic trades at or through it (`get_equity_session`); market orders wait for the regular session
 - **Indices**: Hyperliquid index perps SP500USDC, XYZ100USDC, EWYUSDC. The 6 Vanta-native indices (SPX, DJI, NDX, VIX, FTSE, GDAXI) are blocked. There is no `indices` MinerAssetClass — index perps are reached through `hl_all`, `all_markets` or a pro account
 - **Commodities**: Hyperliquid perps GOLDUSDC, SILVERUSDC, COPPERUSDC, NATGASUSDC, PLATINUMUSDC, WTIOILUSDC. Vanta-native spot XAU/USD and XAG/USD are blocked in their favor
 

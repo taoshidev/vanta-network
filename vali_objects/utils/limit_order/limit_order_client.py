@@ -1,6 +1,7 @@
 from shared_objects.rpc.rpc_client_base import RPCClientBase
-from vali_objects.vali_config import RPCConnectionMode, ValiConfig
-from vali_objects.vali_dataclasses.order import Order
+from vali_objects.enums.order_type_enum import OrderType
+from vali_objects.vali_config import RPCConnectionMode, TradePair, ValiConfig
+from vali_objects.vali_dataclasses.trigger_order import TriggerOrder
 
 
 class LimitOrderClient(RPCClientBase):
@@ -14,7 +15,7 @@ class LimitOrderClient(RPCClientBase):
         # In any process that needs limit order data
         client = LimitOrderClient()
 
-        client.process_limit_order(miner_hotkey, order)
+        client.place(*trigger_orders)
 
     For child processes:
         # Parent passes port number (not manager object!)
@@ -23,7 +24,7 @@ class LimitOrderClient(RPCClientBase):
         # Child creates its own client
         def child_func(limit_order_port):
             client = LimitOrderClient(port=limit_order_port)
-            client.process_limit_order(miner_hotkey, order)
+            client.place(*trigger_orders)
     """
 
     def __init__(self, port: int = None, connect_immediately: bool = False, running_unit_tests=False,
@@ -45,25 +46,43 @@ class LimitOrderClient(RPCClientBase):
             connection_mode=connection_mode
         )
 
-    # ==================== Order Processing Methods ====================
+    # ==================== Placement ====================
 
-    def process_limit_order(self, miner_hotkey: str, order: Order, is_edit: bool = False) -> dict:
+    def place(self, *orders: TriggerOrder) -> None:
         """
-        Process a limit order via RPC.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-            order: Order object to save
-            is_edit: If True, this is an edit operation (replaces existing order)
-
-        Returns:
-            dict with status and order_uuid
+        Open trigger orders together, all or none. Re-placing orders that are all open is a no-op.
 
         Raises:
             SignalException: Validation errors (pickled from server)
-            Exception: RPC or server errors
         """
-        return self._server.process_limit_order_rpc(miner_hotkey, order, is_edit)
+        return self._server.place_rpc(orders)
+
+    def replace(self, *orders: TriggerOrder) -> None:
+        """
+        Swap the open orders with these orders' uuids for them, all or none (an edit).
+
+        Raises:
+            SignalException: An order isn't open, or validation errors (pickled from server)
+        """
+        return self._server.replace_rpc(orders)
+
+    def process_bracket_orders(self, miner_hotkey: str, trade_pair: TradePair, brackets: list[dict], now_ms: int,
+                               position_type: OrderType | None = None, best_price: float | None = None,
+                               is_edit: bool = False) -> list[TriggerOrder]:
+        """
+        Place (or, with is_edit, replace) legacy bracket dicts as legs bound to the open position.
+        Each dict carries its order_uuid, stop_loss / take_profit / trailing_*, and optional size.
+        position_type defaults to the open position's side; a MARKET fill passes it, with its fill
+        price as best_price for trailing stops. Returns the legs.
+
+        Raises:
+            SignalException: No open position, invalid brackets, or validation errors (pickled from server)
+        """
+        return self._server.process_bracket_orders_rpc(
+            miner_hotkey, trade_pair, brackets, now_ms, position_type, best_price, is_edit
+        )
+
+    # ==================== Cancellation ====================
 
     def cancel_limit_order(self, miner_hotkey: str, trade_pair_id: str | None,
                           order_uuid: str, now_ms: int, execution_type=None, order_src=None) -> dict:
@@ -85,7 +104,7 @@ class LimitOrderClient(RPCClientBase):
             SignalException: Order not found (pickled from server)
             Exception: RPC or server errors
         """
-        return self._server.cancel_limit_order(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
+        return self._server.cancel_limit_order_rpc(miner_hotkey, trade_pair_id, order_uuid, now_ms, execution_type, order_src)
 
     def cancel_entry_orders(self, miner_hotkey: str, now_ms: int, order_src=None) -> dict:
         """
@@ -100,55 +119,17 @@ class LimitOrderClient(RPCClientBase):
         Returns:
             dict with cancellation details
         """
-        return self._server.cancel_entry_orders(miner_hotkey, now_ms, order_src)
+        return self._server.cancel_entry_orders_rpc(miner_hotkey, now_ms, order_src)
 
     # ==================== Query Methods ====================
 
-    def get_limit_order_by_uuid(self, miner_hotkey: str, order_uuid: str) -> dict:
-        """
-        Get an unfilled limit order by UUID via RPC.
+    def get(self, miner_hotkey: str, order_uuid: str) -> TriggerOrder | None:
+        """The open trigger order with this uuid, or None."""
+        return self._server.get_rpc(miner_hotkey, order_uuid)
 
-        Args:
-            miner_hotkey: Miner's hotkey
-            order_uuid: UUID of the order to find
-
-        Returns:
-            Order dict if found, None if not found
-        """
-        return self._server.get_limit_order_by_uuid_rpc(miner_hotkey, order_uuid)
-
-    def get_limit_orders(self, miner_hotkey: str) -> list:
-        """
-        Get all limit orders for a hotkey via RPC.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-
-        Returns:
-            List of order dicts
-        """
-        return self._server.get_limit_orders_for_hotkey_rpc(miner_hotkey)
-
-    def get_limit_orders_for_trade_pair(self, trade_pair_id: str) -> dict:
-        """
-        Get all limit orders for a trade pair via RPC.
-
-        Args:
-            trade_pair_id: Trade pair ID string
-
-        Returns:
-            Dict of {hotkey: [order_dicts]}
-        """
-        return self._server.get_limit_orders_for_trade_pair_rpc(trade_pair_id)
-
-    def get_all_limit_orders(self) -> dict:
-        """
-        Get all limit orders via RPC.
-
-        Returns:
-            Dict of {trade_pair_id: {hotkey: [order_dicts]}}
-        """
-        return self._server.get_all_limit_orders_rpc()
+    def select(self, miner_hotkey: str | None = None, trade_pair_id: str | None = None) -> list[TriggerOrder]:
+        """Open trigger orders, optionally for one hotkey and/or trade pair."""
+        return self._server.select_rpc(miner_hotkey, trade_pair_id)
 
     def to_dashboard_dict(self, miner_hotkey: str, status_filter: list = None):
         """
@@ -190,14 +171,17 @@ class LimitOrderClient(RPCClientBase):
         """Restore all ELIMINATION_CANCELLED limit orders for a hotkey via RPC."""
         return self._server.restore_cancelled_limit_orders_rpc(miner_hotkey)
 
-    def sync_limit_orders(self, sync_data: dict) -> None:
-        """
-        Sync limit orders from external source via RPC.
+    # ==================== Checkpoint ====================
 
-        Args:
-            sync_data: Dict of {miner_hotkey: [order_dicts]}
-        """
-        return self._server.sync_limit_orders_rpc(sync_data)
+    def get_checkpoint(self) -> dict:
+        """Open orders for the validator checkpoint: {hotkey: [TriggerOrder dicts]}."""
+        return self._server.get_checkpoint_rpc()
+
+    def sync_checkpoint(self, sync_data: dict) -> None:
+        """Load a checkpoint's {hotkey: [TriggerOrder dicts]}, overwriting orders with the same uuid."""
+        return self._server.sync_checkpoint_rpc(sync_data)
+
+    # ==================== Test-Only Methods ====================
 
     def clear_limit_orders(self) -> None:
         """
@@ -207,8 +191,6 @@ class LimitOrderClient(RPCClientBase):
         Does NOT delete orders from disk.
         """
         return self._server.clear_limit_orders_rpc()
-
-    # ==================== Test-Only Methods ====================
 
     def check_and_fill_limit_orders(self, call_id=None) -> dict:
         """
@@ -224,23 +206,6 @@ class LimitOrderClient(RPCClientBase):
             dict: Execution stats with {'checked': int, 'filled': int, 'timestamp_ms': int}
         """
         return self._server.check_and_fill_limit_orders_rpc(call_id)
-
-    def get_limit_orders_dict(self) -> dict:
-        """
-        Get internal _limit_orders dict for test verification via RPC.
-
-        Returns: Dict[str, Dict[str, List[dict]]] - trade_pair_id -> hotkey -> [order_dicts]
-        """
-        return self._server.get_limit_orders_dict_rpc()
-
-    def set_limit_orders_dict(self, orders_dict: dict) -> None:
-        """
-        Set internal _limit_orders dict for testing via RPC.
-
-        Args:
-            orders_dict: Dict[str, Dict[str, List[dict]]] - trade_pair_id -> hotkey -> [order_dicts]
-        """
-        return self._server.set_limit_orders_dict_rpc(orders_dict)
 
     def get_last_fill_time(self) -> dict:
         """
@@ -260,26 +225,6 @@ class LimitOrderClient(RPCClientBase):
             fill_time: Timestamp in milliseconds
         """
         return self._server.set_last_fill_time_rpc(trade_pair_id, hotkey, fill_time)
-
-    def fill_limit_order_with_price_source(self, miner_hotkey: str, order,
-                                          price_source, fill_price: float,
-                                          enforce_market_cooldown: bool = False):
-        """
-        Test filling a limit order with a specific price source via RPC.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-            order: Order object
-            price_source: PriceSource object
-            fill_price: Price to fill at
-            enforce_market_cooldown: Whether to enforce market cooldown
-
-        Returns:
-            Error message on failure, None on success
-        """
-        return self._server.fill_limit_order_with_price_source_rpc(
-            miner_hotkey, order, price_source, fill_price, enforce_market_cooldown
-        )
 
     def count_unfilled_orders_for_hotkey(self, miner_hotkey: str) -> int:
         """
@@ -305,21 +250,3 @@ class LimitOrderClient(RPCClientBase):
             Position object or None
         """
         return self._server.get_position_for_rpc(hotkey, order)
-
-    def create_sltp_order(self, miner_hotkey: str, parent_order):
-        """
-        Create SL/TP bracket order from a filled market order via RPC.
-
-        Called by OrderProcessor after a market order with stop_loss/take_profit
-        fields is successfully filled. Creates a bracket order that will trigger
-        when price hits SL or TP levels.
-
-        Args:
-            miner_hotkey: Miner's hotkey
-            parent_order: Parent order object - the filled market order with SL/TP fields
-
-        Returns:
-            None
-        """
-        return self._server.create_sltp_order_rpc(miner_hotkey, parent_order)
-

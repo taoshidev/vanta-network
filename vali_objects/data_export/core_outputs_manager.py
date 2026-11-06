@@ -255,7 +255,7 @@ class CoreOutputsManager:
         oldest_order_processed_ms,
         challengeperiod_dict,
         miner_account_sizes_dict,
-        limit_orders_dict,
+        trigger_orders_dict,
         archived_positions=None,
         save_to_disk=True,
         upload_to_gcloud=True
@@ -325,7 +325,7 @@ class CoreOutputsManager:
             'emissions_ledgers': emissions_ledgers,
             'penalty_ledgers': penalty_ledgers,
             'asset_selections': asset_selections,
-            'limit_orders': limit_orders_dict,
+            'trigger_orders': trigger_orders_dict,
             'weekly_seals': weekly_seals,
             'archived_positions': archived_positions or {}
         }
@@ -464,15 +464,15 @@ class CoreOutputsManager:
             upload_production_files = True
 
         if create_production_files:
-            limit_orders_dict = {}
+            trigger_orders_dict = {}
             if self._limit_order_client:
-                limit_orders_dict = self._limit_order_client.get_all_limit_orders()
+                trigger_orders_dict = self._limit_order_client.get_checkpoint()
 
             if save_production_files or upload_production_files:
                 self.create_and_upload_production_files(
                     eliminations, ord_dict_hotkey_position_map, time_now_ms,
                     youngest_order_processed_ms, oldest_order_processed_ms,
-                    challengeperiod_dict, miner_account_sizes_dict, limit_orders_dict,
+                    challengeperiod_dict, miner_account_sizes_dict, trigger_orders_dict,
                     archived_positions=archived_positions_map,
                     save_to_disk=save_production_files,
                     upload_to_gcloud=upload_production_files
