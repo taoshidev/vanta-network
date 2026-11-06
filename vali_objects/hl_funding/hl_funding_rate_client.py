@@ -14,8 +14,10 @@ class HLFundingRateClient(RPCClientBase):
         self,
         port: int = None,
         connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
-        connect_immediately: bool = True,
+        running_unit_tests: bool = False,
+        connect_immediately: bool = False,
     ):
+        self.running_unit_tests = running_unit_tests
         super().__init__(
             service_name=ValiConfig.RPC_HL_FUNDING_SERVICE_NAME,
             port=port or ValiConfig.RPC_HL_FUNDING_PORT,

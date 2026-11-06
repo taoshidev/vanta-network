@@ -278,6 +278,7 @@ class Validator(ValidatorBase):
                 'miner_statistics',
                 'weight_calculator',
                 'entity',
+                'hl_funding',
             ])
             logger.info("[INIT] Core-tier daemons started (state daemons run in vanta-state)")
         else:
@@ -298,7 +299,8 @@ class Validator(ValidatorBase):
                 'miner_statistics',
                 'weight_calculator',
                 'entity',
-                'entity_collateral'
+                'entity_collateral',
+                'hl_funding',
             ])
             logger.info("[INIT] All daemons started, caches warmed")
         # ============================================================================
