@@ -1,43 +1,56 @@
+"""`vanta asset`: Asset selection commands."""
 import getpass
 import json
+
 import typer
-
 from rich.panel import Panel
-from rich.text import Text
-
-from bittensor_wallet import Wallet
-from bittensor_cli.src.bittensor.utils import console
+from rich.prompt import IntPrompt
 
 from vanta_cli.src.config import VANTA_API_BASE_URL_MAINNET, VANTA_API_BASE_URL_TESTNET
+from vanta_cli.src.options import EPILOG, Network, PromptFlag, WalletHotkey, WalletName, WalletPath, wallet_ask
 from vanta_cli.src.utils.api import make_api_request
+from vanta_cli.src.utils.console import console
 
-async def select(
-    wallet: Wallet,
-    network: str,
-    asset: str,
-    prompt: bool,
-    quiet: bool = False,
-    verbose: bool = False,
-    json_output: bool = False
+app = typer.Typer(no_args_is_help=True, help="Vanta Network - Asset selection commands", epilog=EPILOG,
+                  pretty_exceptions_show_locals=False)
+
+
+@app.command("select", rich_help_panel="Asset class selection")
+def select(
+    wallet_name: WalletName = None,
+    wallet_path: WalletPath = None,
+    wallet_hotkey: WalletHotkey = None,
+    network: Network = "finney",
+    prompt: PromptFlag = True,
 ):
-    # Display the main title with Rich Panel
-    title = Text("🔗 VANTA NETWORK 🔗", style="bold blue")
-    subtitle = Text("Miner Asset Class Selection", style="italic cyan")
+    """
+    Select the asset class your miner trades
+    """
+    wallet = wallet_ask(wallet_name, wallet_path, wallet_hotkey)
 
-    panel = Panel.fit(
-        f"{title}\n{subtitle}",
-        style="bold blue",
-        border_style="bright_blue"
+    assets = ["crypto", "forex", "equities", "commodities"]
+
+    for idx, asset in enumerate(assets, start=1):
+        console.print(f"{idx}. {asset}")
+
+    choice = IntPrompt.ask(
+        "\nEnter the [bold]number[/bold] of the asset class you want to select",
+        choices=[str(i) for i in range(1, len(assets) + 1)],
+        show_choices=False,
     )
+    asset = assets[choice - 1]
 
-    console.print(panel)
     console.print("[blue]Selecting miner asset class on Vanta Network[/blue]")
 
     # Load wallet and get keys
     password = getpass.getpass(prompt='Enter your password: ')
 
-    coldkey = wallet.get_coldkey(password=password)
-    hotkey = wallet.hotkey
+    try:
+        coldkey = wallet.get_coldkey(password=password)
+        hotkey = wallet.hotkey
+    except Exception as e:
+        console.print(f"[red]Failed to unlock wallet: {e}[/red]")
+        return False
 
     if prompt:
         confirm = typer.confirm(f"Are you sure you want to select asset class {asset} for miner {hotkey.ss58_address}?")
@@ -101,5 +114,3 @@ async def select(
             return False
     except Exception as e:
         console.print(f"[red]❌ Error during asset selection: {e}[/red]")
-
-

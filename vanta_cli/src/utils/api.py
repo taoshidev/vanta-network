@@ -1,17 +1,14 @@
 import json
 import requests
 from typing import Dict, Any, Optional
-from rich.console import Console
 from vanta_cli.src.config import VANTA_API_BASE_URL_TESTNET, VANTA_API_BASE_URL_MAINNET, VANTA_CLI_VERSION
-
-console = Console()
+from vanta_cli.src.utils.console import console
 
 def make_api_request(
     endpoint: str,
     payload: Optional[Dict[str, Any]] = None,
     method: str = "POST",
     base_url: str = VANTA_API_BASE_URL_MAINNET,
-    dev_mode: bool = False
 ) -> Optional[Dict[str, Any]]:
     """
     Make an API request to the Vanta backend.
@@ -28,39 +25,15 @@ def make_api_request(
     url = f"{base_url}{endpoint}"
 
     try:
-        # Inject Vanta CLI version into payload for tracking
         if payload is not None:
+            # Inject Vanta CLI version into payload for tracking
             payload["version"] = VANTA_CLI_VERSION
-
-        if dev_mode:
-            console.print(f"[cyan]Making {method} request to: {url}[/cyan]")
-
-        if payload is not None:
-            if dev_mode:
-                console.print("[cyan]Payload:[/cyan]")
-                console.print(json.dumps(payload, indent=2))
             response = requests.request(method, url, json=payload)
         else:
             response = requests.request(method, url)
 
-        if dev_mode:
-            console.print(f"[cyan]Response status: {response.status_code}[/cyan]")
-            console.print("[cyan]Response body:[/cyan]")
-
         try:
-            response_data = response.json()
-            if dev_mode:
-                console.print(json.dumps(response_data, indent=2))
-
-            if response.status_code == 200:
-                if dev_mode:
-                    console.print("[green]✅ API call successful[/green]")
-                return response_data
-            else:
-                if dev_mode:
-                    console.print(f"[yellow]⚠️ API call returned status {response.status_code}[/yellow]")
-                return response_data
-
+            return response.json()
         except json.JSONDecodeError:
             console.print(f"[red]❌ Invalid JSON response: {response.text}[/red]")
             return None

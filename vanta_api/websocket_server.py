@@ -1019,7 +1019,8 @@ class WebSocketServer(APIKeyMixin, RPCServerBase):
                         ping_timeout=60,
                         close_timeout=10,
                         reuse_address=True,  # Allow reuse of the address
-                        reuse_port=True  # Allow reuse of the port (on platforms that support it)
+                        reuse_port=True,  # Allow reuse of the port (on platforms that support it)
+                        server_header=None,
                     )
                     logger.info("WebSocketServer: websockets.serve() completed successfully")
                 except Exception as serve_error:

@@ -44,6 +44,20 @@ class RecentEventTracker:
             self._cleanup_old_events_unsafe()
             #print(event, tp_debug_str)
 
+    def add_or_replace_event(self, event):
+        """Thread-safe event addition that replaces any existing event at the same timestamp,
+        for feeds that push several updates per (rounded) timestamp where the latest should win."""
+        event_time_ms = event.start_ms
+
+        with self._lock:
+            if self._timestamp_exists_unsafe(event_time_ms):
+                del self.events[self.events.bisect_key_left(event_time_ms)]
+
+            self.events.add((event_time_ms, event))
+            self.timestamp_to_event[event_time_ms] = (event, None)
+
+            self._cleanup_old_events_unsafe()
+
     def get_event_by_timestamp(self, timestamp_ms):
         """Thread-safe event retrieval by timestamp."""
         with self._lock:

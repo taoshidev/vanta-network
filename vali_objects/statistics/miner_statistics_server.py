@@ -86,7 +86,8 @@ class MinerStatisticsServer(RPCServerBase):
             daemon_interval_s=300.0,  # Refresh statistics cache every 5 minutes (expensive operation)
             hang_timeout_s=600.0,  # 10 minute timeout for statistics generation
             connection_mode=connection_mode,
-            daemon_stagger_s=60
+            daemon_stagger_s=60,
+            daemon_priority=10
         )
 
         # Create the actual MinerStatisticsManager (contains all business logic)
