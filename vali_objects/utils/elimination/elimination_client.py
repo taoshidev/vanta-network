@@ -139,6 +139,7 @@ class EliminationClient(RPCClientBase):
         eod_drawdown_pct: float | None = None,
         elimination_time_ms: int | None = None,
         bucket_at_elimination: MinerBucket | None = None,
+        slash_theta: float | None = None,
     ) -> None:
         """
         Add elimination row.
@@ -159,7 +160,8 @@ class EliminationClient(RPCClientBase):
             args=(hotkey, reason),
             kwargs={"elimination_drawdown_pct": elimination_drawdown_pct,
                     "intraday_drawdown_pct": intraday_drawdown_pct, "eod_drawdown_pct": eod_drawdown_pct,
-                    "elimination_time_ms": elimination_time_ms, "bucket_at_elimination": bucket_at_elimination},
+                    "elimination_time_ms": elimination_time_ms, "bucket_at_elimination": bucket_at_elimination,
+                    "slash_theta": slash_theta},
             timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S,
         )
 
@@ -174,6 +176,10 @@ class EliminationClient(RPCClientBase):
             True if removed, False if not found
         """
         return self._server.remove_elimination_rpc(hotkey)
+
+    def set_collateral_slashed(self, hotkey: str, collateral_slashed: bool) -> bool:
+        """Record on the row whether the elimination's slash has been taken. False if not found."""
+        return self._server.set_collateral_slashed_rpc(hotkey, collateral_slashed)
 
     def delete_eliminations(self, deleted_hotkeys) -> None:
         """Delete multiple eliminations."""

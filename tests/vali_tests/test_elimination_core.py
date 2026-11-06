@@ -170,7 +170,7 @@ class TestEliminationCore(TestBase):
         # Challenge fail miner in challenge period
         miners[self.CHALLENGE_FAIL_MINER] = (
             MinerBucket.CHALLENGE,
-            TimeUtil.now_in_millis() - (ValiConfig.CHALLENGE_PERIOD_MINIMUM_DAYS * 24 * 60 * 60 * 1000) - MS_IN_8_HOURS,
+            TimeUtil.now_in_millis() - 100 * 24 * 60 * 60 * 1000 - MS_IN_8_HOURS,
             None,
             None
         )

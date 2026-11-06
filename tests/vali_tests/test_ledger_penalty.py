@@ -369,7 +369,9 @@ class TestPenaltyLedgerWeeklyScope(TestBase):
             get_positions_for_all_miners=lambda: {self.HOTKEY: []}
         )
         manager._miner_account_client = SimpleNamespace(
-            get_miner_account_size=lambda _hk: ACCOUNT_SIZE
+            get_miner_account_size=lambda _hk: ACCOUNT_SIZE,
+            get_all_collateral_account_sizes=lambda: {self.HOTKEY: ACCOUNT_SIZE},
+            get_standard_account=lambda _hk: None,
         )
         # NOTE: a real epoch timestamp, not 0 - _get_status_for_checkpoint reads start_time_ms with
         # an `or` fallback, so a zero start time is treated as missing and the entry is skipped.

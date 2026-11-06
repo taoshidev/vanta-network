@@ -13,7 +13,6 @@ export interface ChallengeMetric {
 }
 
 export interface ChallengePeriod {
-  remaining_time_ms: number;
   start_time_ms: number;
   status: "testing" | "success";
   scores: ChallengeMetric;

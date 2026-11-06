@@ -239,17 +239,22 @@ class EliminationServer(RPCServerBase):
             self, hotkey: str, reason: EliminationReason, elimination_drawdown_pct: float | None = None,
             intraday_drawdown_pct: float | None = None, eod_drawdown_pct: float | None = None,
             elimination_time_ms: int | None = None,
-            bucket_at_elimination: MinerBucket | None = None) -> None:
+            bucket_at_elimination: MinerBucket | None = None, slash_theta: float | None = None) -> None:
         """Add elimination row."""
         self._manager.append_elimination_row(
             hotkey, reason, elimination_drawdown_pct=elimination_drawdown_pct,
             intraday_drawdown_pct=intraday_drawdown_pct, eod_drawdown_pct=eod_drawdown_pct,
             elimination_time_ms=elimination_time_ms, bucket_at_elimination=bucket_at_elimination,
+            slash_theta=slash_theta,
         )
 
     def remove_elimination_rpc(self, hotkey: str) -> bool:
         """Remove elimination. Returns True if removed, False if not found."""
         return self._manager.remove_elimination(hotkey)
+
+    def set_collateral_slashed_rpc(self, hotkey: str, collateral_slashed: bool) -> bool:
+        """Record on the row whether the elimination's slash has been taken. False if not found."""
+        return self._manager.set_collateral_slashed(hotkey, collateral_slashed)
 
     def sync_eliminations_rpc(self, eliminations_list: list) -> list:
         """Sync eliminations from external source (batch update). Returns list of removed hotkeys."""

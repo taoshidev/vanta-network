@@ -11,12 +11,12 @@ A long position is a bet that the trade pair will increase, while a short positi
 1. Your miner must register on the Bittensor network to participate.
    - There is a minimal registration fee <1 TAO on mainnet.
    - There is an immunity period of 4 hours. Eliminated miners do not benefit from being in the immunity period.
-2. Your miner will start in the challenge period upon entry. Miners must demonstrate consistent performance within 90 days to pass the challenge period. During this period, they will receive a small amount of TAO that will help them avoid getting deregistered. The minimum requirements to pass the challenge period:
-   - Have at least 61 full days of trading
+2. Your miner will start in the challenge period upon entry. During this period, they will receive a small amount of TAO that will help them avoid getting deregistered. The requirements to pass the challenge period:
    - Don't exceed a 5% intraday drawdown (measured from the day-open equity) or a 5% EOD drawdown (measured from the highest-ever end-of-day equity)
    - Achieve cumulative returns above 10% (crypto/equities/commodities) or 8% (forex)
-   - Score at or above the 25th miner in each asset class in main competition. The details may be found [here](https://docs.taoshi.io/tips/p21/).
-3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral.
+
+   There is no ranking requirement, no minimum number of trading days and no time limit. A miner whose hotkey registered after the standard account cutoff block does not enter this challenge period: it trades on the [standard account track](#standard-account-track) instead, where rules 3, 4, 6, 7 and 9 below are replaced by that track's own.
+3. Miner's account size is determined from your miner's deposited collateral. Each theta deposited unlocks \$500 of trading capacity. Miners are required to deposit a minimum of 300 Theta, and are capped at a maximum of 1000 Theta deposited as collateral. From the lock start (`ValiConfig.ACCOUNT_SIZE_LOCK_START_MS`, not set yet) the account size is fixed at the size in force when a validator first sees the miner trading after it (for a miner already trading, right after the lock start): later deposits never raise it. The theta behind that size (up to 1,000) is locked. Collateral above the larger of the locked theta and 300 Theta can be withdrawn at any time without a slash; below 300 Theta a withdrawal works as before, with every position closed first and a slash proportional to the drawdown. A withdrawal into the locked theta closes the account for good, as for a [standard account](#withdrawals-closing-and-elimination), with the slash at the limits of the miner's own stage on the larger of the locked theta and 300 Theta. The 300 Theta minimum is still measured on the collateral itself, and elimination slashes are unchanged.
 4. Miner's must select an asset category in order to submit trades. Miners will be restricted to only submitting trades in their chosen asset class.
 5. Positions are uni-directional. Meaning, if a position starts LONG (the first order it receives is LONG),
    it can't flip SHORT. If you try and have it flip SHORT (using more leverage SHORT than exists LONG) it will close out
@@ -44,17 +44,56 @@ A long position is a bet that the trade pair will increase, while a short positi
    leverage and you want to reduce it to a .25x leverage position to start taking profit on it. You would send in a SHORT signal
    of size .25x leverage to reduce the size of the position. LONG and SHORT signals can be thought of working in opposite
    directions in this way.
-9. Miners that have passed the challenge period will be eliminated for exceeding a 5% intraday drawdown (measured from the day-open equity) or an 8% EOD drawdown (measured from the highest-ever end-of-day equity).
-10. Miners in main competition who fall below the top 25 in each asset class will be observed under a probation period.
-   - Miners in probation have 90 days from time of demotion to be promoted back into main competition (`ValiConfig.PROBATION_MAXIMUM_DAYS`).
-   - Promotion requires cumulative returns above 10% (crypto/equities/commodities) or 8% (forex) and ranking back into the top 25.
-   - If they fail to do so within this window, they will be eliminated.
-11. Miners are eliminated for inactivity: if a miner in challenge period, main competition, or probation goes **60 days** without submitting a single order, it is eliminated with reason `INACTIVE`. This is checked continuously alongside the other elimination checks.
-12. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
-13. Each asset class has its own trading hours, and which order types are accepted and filled depends on the session. See [Market Hours and Order Types](#market-hours-and-order-types). Market orders sent while their market is closed are rejected.
-14. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
-15. There is a 60-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
-16. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
+9. Miners that have passed the challenge period will be eliminated for exceeding a 5% intraday drawdown (measured from the day-open equity) or an 8% EOD drawdown (measured from the highest-ever end-of-day equity). Miners in the main competition are no longer demoted on rank: there is no probation.
+10. Miners are eliminated for inactivity: if a miner in the challenge period or the main competition, or a standard account in any stage, goes **60 days** without submitting a single order, it is eliminated with reason `INACTIVE`. This is checked continuously alongside the other elimination checks.
+11. A miner can have a maximum of 1 open position per trade pair. No limit on the number of closed positions.
+12. Each asset class has its own trading hours, and which order types are accepted and filled depends on the session. See [Market Hours and Order Types](#market-hours-and-order-types). Market orders sent while their market is closed are rejected.
+13. A miner's order will be ignored if they are rate limited (maliciously sending too many requests)
+14. There is a 60-second cooldown period between orders of the same trade pair, during which the miner cannot place another order.
+15. **CRITICAL**: Never reuse hotkeys that have been previously eliminated or deregistered. Once a hotkey is eliminated or deregistered, it is **permanently blacklisted** by the network. Validators internally track all departed hotkeys (both eliminated miners and voluntary deregistrations) and will reject orders from re-registered hotkeys. **Each registration must use a completely new, unused hotkey**. This policy ensures network integrity and prevents circumventing elimination penalties.
+
+## Standard Account Track
+
+A miner whose hotkey registered after the standard account cutoff block (`ValiConfig.STANDARD_MINER_CUTOFF_BLOCK`, or its testnet value; while it is unset every miner is on the rules above) trades on the standard account track: the same stages and leverage tables as a standard entity subaccount, with the drawdown limits below, under the miner's own hotkey.
+
+### Opening the account
+
+1. Register the hotkey on the subnet and deposit collateral (`vanta collateral deposit`). No asset class is selected: a standard account trades all markets (the `all_markets` asset class), and the opening sets it whatever was selected before.
+2. Open the account with `vanta account open --tier N` (tier 1 Base, 2 Boost I, 3 Boost II). The request is signed by your coldkey and processed by the mothership validator, which broadcasts the account to the other validators. Until the account is open the hotkey has no account and its orders are rejected.
+3. The account size is the USD value of your collateral at that moment divided by the tier's collateral percentage, capped at $100,000; an opening below $5,000 is rejected. The size never changes afterwards: later deposits do not raise it, and no promotion costs more collateral. The opening tier is fixed too; passing the challenge moves the account to tier 3.
+
+| Tier | Collateral percentage | Collateral for a $100,000 account |
+|------|-----------------------|-----------------------------------|
+| 1 Base | 0.7% | $700 |
+| 2 Boost I | 1.1% | $1,100 |
+| 3 Boost II | 1.5% | $1,500 |
+
+The theta that backed the account size at the opening price is **locked**: locked theta = account size × collateral percentage ÷ theta price at opening. It is the only collateral ever at risk. Anything above it, deposited then or later, is unlocked and can be withdrawn at any time without a slash, whatever your positions.
+
+### Stages
+
+| Stage | Bucket | Daily loss limit | EOD drawdown limit | Leverage | Paid |
+|-------|--------|------------------|--------------------|----------|------|
+| Challenge | `SUBACCOUNT_CHALLENGE` | 3% | 5% | standard tier tables at the opening tier | nothing |
+| Funded | `SUBACCOUNT_FUNDED` | 3% | 5% | standard tier tables at tier 3, set on passing | PnL |
+| Transition to the pro challenge (wind-down: closes and reductions only) | `PRO_CHALLENGE_TRANSITION` | 3% | 5% | standard tier tables at tier 3 | PnL |
+| Pro challenge (Grow) | `PRO_CHALLENGE_FROM_STANDARD` | 3% | 5% | pro tables | PnL × 1.5 on the standard size |
+| Pro funded | `PRO_FUNDED` | 5% | 8% | pro tables | PnL on the pro size |
+
+- The challenge is passed on cumulative returns of 10%; there is no rank and no time limit. Passing moves the account to funded on the same size.
+- A funded account is promoted into the pro challenge automatically, on the fast or the steady track described in the [entity miner guide](entity_miner.md#auto-promotion), with the pro size the network grants: there is no promotion fee, no extra collateral and no self-service promotion. Its fast track asks for less at first: equity, unrealized PnL included, 3% above the account size at any time in the first week from the account's first order as a funded account, then 5% in the second week and 10% after that, each held for 3 minutes (`ValiConfig.STANDARD_MINER_FAST_TRACK_EQUITY_RETURNS`). The account first winds down the standard account in the transition stage, where only closes and reductions are accepted and plain PnL is paid, leaving it as soon as it is flat and after 7 days at most; it then trades the pro size in the pro challenge, paid on the standard size at 1.5× PnL (`ValiConfig.STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER`; a change applies to the weeks not yet closed) until the account reaches `PRO_FUNDED`, where it is paid on the pro size.
+- The daily loss is measured from the day-open balance in the challenge, funded and transition stages and from the day-open equity after that; the EOD limit is measured from the highest-ever end-of-day equity. The leverage tables are in the entity miner guide: [Leverage Limits](entity_miner.md#leverage-limits) and [Pro account leverage](entity_miner.md#pro-account-leverage).
+- Instant Funded accounts, Hyperliquid-linked accounts and static drawdown are not available on this track.
+
+### Payouts
+
+A standard account is paid exactly what it is owed: its realized PnL above the account's high-water mark for the week, scaled as in the table, with a pro funded week withheld by the weekly penalty the way a subaccount's is. Its weight is capped at that amount, so it takes no share of the surplus emissions that the other miners split, and it receives no dust weight in any stage. When the week's emissions do not cover everything owed, every miner, standard accounts included, receives the same fraction of the payout it is owed. Payouts stop when the account is eliminated or closed: anything not yet received is not paid, including the current week's PnL.
+
+### Withdrawals, closing and elimination
+
+- Withdrawing unlocked collateral never slashes and never touches the account.
+- A withdrawal that goes into the locked theta **closes the account for good**: every position must be closed first, all of the collateral comes out, and the locked theta is slashed by min(1, max(today's loss ÷ the daily loss limit, the drawdown from the EOD high-water mark ÷ the EOD limit)) at the stage's limits. For example, down 2% today under a 3% limit and 4% below the high-water mark under a 5% limit slashes 80% of the locked theta. `vanta collateral withdraw` shows this before asking you to confirm, the confirmation is signed with the request, and a closed hotkey can never trade again or be reopened. Payouts not yet received are forfeited.
+- An elimination for a daily loss or EOD drawdown breach slashes the whole locked theta. An elimination for inactivity (60 days without an order) or for a hotkey that left the metagraph slashes by the closing formula above, so with no drawdown everything comes back on withdrawal. Any other reason slashes the locked theta in proportion to the drawdown at elimination, as for every miner.
 
 ## Market Hours and Order Types
 
@@ -101,7 +140,7 @@ For 24/7 asset classes every order type is accepted and can fill at any time. Fo
 - Open equity positions are not re-valued during pre-market or after-hours, so drawdown does not move with extended-hours prices. A fill that reduces or closes a position does realize PnL at the limit price immediately.
 
 ## Asset Class Selection
-Each miner selects a single asset class to compete in (crypto, forex, equities, or commodities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders.
+Each miner selects a single asset class to compete in (crypto, forex, equities, or commodities), and competes only against other miners with the same asset class selection. Miners who do not select an asset class are restricted from placing orders. A miner on the [standard account track](#standard-account-track) selects none: its account trades all markets.
 
 ## Available Trade Pairs
 
@@ -324,7 +363,7 @@ These components are combined into a **Debt Ledger** that calculates:
 
 Weights are distributed proportionally to remaining payouts, targeting completion by **midnight on Sunday of each week**.
 
-*Average Daily PnL* currently has 100% weight and incentivizes miners to maintain high returns while increasing account sizes. The remaining scoring metrics (Calmar, Sharpe, Omega, Sortino, Statistical Confidence) are tracked but currently have 0% weight.
+*Average Daily PnL* currently has 100% weight and incentivizes miners to maintain high returns on their account size. The remaining scoring metrics (Calmar, Sharpe, Omega, Sortino, Statistical Confidence) are tracked but currently have 0% weight.
 
 We calculate daily returns for all positions and the entire portfolio, spanning from 12:00 AM UTC to 12:00 AM UTC the following day. However, if a trading day is still ongoing, we still monitor real-time performance and risks. 
 
@@ -343,7 +382,7 @@ We use **Average Daily PnL** and five risk-adjusted scoring metrics to evaluate 
 
 The miner risk used in the risk adjusted returns is the miner’s maximum portfolio drawdown.
 
-_Average Daily PnL_ will look at the average USD change in portfolio value for full trading days. The PnL values are based on the account sizes of miners which are calculated from deposited collateral.
+_Average Daily PnL_ will look at the average USD change in portfolio value for full trading days. The PnL values are based on the account sizes of miners, which are calculated from deposited collateral and fixed from the lock start on.
 
 _Calmar Ratio_ looks at the daily returns held in the performance ledger (`ValiConfig.TARGET_LEDGER_WINDOW_DAYS`, currently 1000 days) and is normalized by the max drawdown.
 
@@ -483,12 +522,12 @@ Starting in December 2025, Vanta uses a debt-based scoring algorithm to calculat
 2. **Current Week's Emissions**: Sum emissions already received in current week (in USD)
 3. **Remaining Debt**: Calculate remaining payout = needed - actual (in USD)
 4. **Weight Assignment**: Weights are proportional to remaining debt, targeting payout completion by midnight on Sunday
-5. **Dynamic Dust Weights**: All miners receive minimum weights based on their challenge period status:
+5. **Dynamic Dust Weights**: Miners on the existing rules receive minimum weights based on their challenge period status:
    - MAINCOMP: 3× dust floor (scaled up to +1 dust based on 30-day performance)
-   - PROBATION: 2× dust floor (scaled up to +1 dust based on 30-day performance)
    - CHALLENGE/PLAGIARISM: 1× dust floor (scaled up to +1 dust based on 30-day performance)
    - UNKNOWN: 0× dust (no weight)
 6. **Burn Address**: Excess weight (when sum < 1.0) goes to burn address (UID 229 mainnet / UID 5 testnet)
+7. **Standard accounts**: a [standard account](#standard-account-track) is paid its owed amount and no more: its weight is capped at what it is still owed for the week, it takes no share of the surplus the other miners split, and it receives no dust weight in any stage. When emissions fall short of everything owed, every miner receives the same fraction of the payout it is owed.
 
 This system ensures miners are compensated fairly based on their performance while maintaining network security through minimum weights and preventing weight concentration through the burn mechanism.
 
@@ -729,7 +768,7 @@ python neurons/miner.py --netuid 116 --subtensor.network test --wallet.name <wal
 
 # Vanta CLI: Selecting your asset class and managing collateral
 
-Miners are required to select an asset class before submitting orders. Miners are also required to deposit a minimum of 300 Theta as collateral, up to a maximum of 1000 Theta. Asset class selection and Collateral can be managed from the Vanta CLI.
+Miners on the existing rules are required to select an asset class before submitting orders (a [standard account](#standard-account-track) trades all markets and opens with `vanta account open` instead). They are also required to deposit a minimum of 300 Theta as collateral, up to a maximum of 1000 Theta. Asset class selection and Collateral can be managed from the Vanta CLI.
 
 ### Installing the Vanta CLI
 
@@ -751,7 +790,7 @@ See [Upgrading from the standalone vanta-cli](vanta_cli.md#upgrading-from-the-st
 
 ### Selecting an asset class with the Vanta CLI
 
-Miners can select an asset class using the following command. Once an asset class is selected, it cannot be changed. Miners who wish to participate in multiple asset classes must register another miner.
+Miners can select an asset class using the following command. Once an asset class is selected, it cannot be changed. Miners who wish to participate in multiple asset classes must register another miner. A miner on the [standard account track](#standard-account-track) selects no asset class: its account trades all markets.
 
 ```bash
 vanta asset select
@@ -775,13 +814,21 @@ Deposit collateral
 vanta collateral deposit
 ```
 
-Withdraw collateral. Withdrawn collateral is subject to slashing proportional the miner's current drawdown. A miner who is eliminated will have their collateral deposit slashed and burnt.
+Withdraw collateral. For a miner on the existing rules without a fixed size, withdrawn collateral is subject to slashing proportional to the miner's current drawdown. For a miner whose size is fixed (rule 3) and for a standard account, collateral above the locked theta leaves without a slash (for a fixed size, only down to 300 Theta: below that, withdrawals are slashed as above), while a withdrawal into the locked theta closes the account for good with a slash for the current drawdown (see [Withdrawals, closing and elimination](#withdrawals-closing-and-elimination)); the command shows this and asks for confirmation. A miner on the existing rules who is eliminated will have their collateral deposit slashed and burnt; for a standard account at most the locked theta is slashed, as that section describes.
 
 ```bash
 vanta collateral withdraw
 ```
 
 To manage collateral on the testnet add the `--subtensor.network test` flag
+
+### Opening the trading account
+
+A miner on the [standard account track](#standard-account-track) opens its account once its collateral is deposited; the account trades all markets. Omit `--tier` to pick the tier from a prompt; the command prints the account size, the locked theta and the theta price at opening.
+
+```bash
+vanta account open --tier 2
+```
 
 # Miner Dashboard
 

@@ -101,13 +101,14 @@ those that provide the most returns, while never exceeding certain drawdown limi
 4. There is a spread (transaction) fee applied to crypto, equities, and commodities orders, calculated as a percentage of order value - 0.03% for crypto, 0.01% for equities, and 0.005% for commodities (forex and indices have no spread fee). This simulates a transaction cost that a normal exchange would add. Maker and taker fills are priced identically.
 5. There is a slippage assessed per order. The slippage cost is is greater for orders with higher leverages, and in assets with lower liquidity.
 6. Miners are rewarded using a debt-based scoring system that tracks their emissions, performance, and penalties. Weights are set based on the previous week's performance (PnL scaled by penalties), with payout periods starting and ending at midnight UTC on Sunday <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md">More info</a>
+7. Miners whose hotkey registered after the standard account cutoff block trade on the standard account track: an account sized once from their collateral, the same challenge and funded stages as an entity subaccount, and a weight that pays what they are owed and no share of the surplus <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner.md#standard-account-track">More info</a>
 
 With this system only the world's best traders & deep learning / quant based trading systems can compete.
 
 
 # Eliminations
 
-In the Vanta Network, eliminations occur for miners that commit plagiarism, breach drawdown limits, fail to exit probation in time, or are inactive.
+In the Vanta Network, eliminations occur for miners that commit plagiarism, breach drawdown limits, or are inactive.
 
 
 ### Plagiarism Eliminations
@@ -120,13 +121,9 @@ Miners who exceed a 5% intraday drawdown (measured from the day's opening equity
 
 Entity subaccounts (see <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/entity_miner.md">Entity Miner docs</a>) follow a related but distinct drawdown rule set, assigned per-subaccount at creation: either the same trailing intraday/EOD rules as regular miners, or a static rule set that eliminates if equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or if equity drops more than 5% below the day's opening equity (the same intraday drawdown check as trailing accounts, with a flat 5% threshold). Standard subaccounts in the challenge and funded stages (not HL-linked, not Instant Funded) measure that intraday drop from the day's opening balance instead of the opening equity.
 
-### Probation Elimination
-
-Miners who rank below the 25th highest ranking miner in each asset class will be observed in a probationary period. From that point, they have 90 days to achieve a rank of 25 or better in their asset class. If they fail to do so within that window, they will be eliminated.
-
 ### Inactivity Elimination
 
-Miners in challenge period, main competition, or probation who go 60 days without submitting a single order will be eliminated. This also applies to entity-miner subaccounts, though not to the entity hotkey itself, which never submits orders directly.
+Miners in the challenge period or the main competition, and standard accounts in any stage, who go 60 days without submitting a single order will be eliminated. This also applies to entity-miner subaccounts, though not to the entity hotkey itself, which never submits orders directly.
 
 ### Post-Elimination
 

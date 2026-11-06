@@ -26,6 +26,7 @@ from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from shared_objects.rpc.rpc_server_base import RPCServerBase
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager, MinerAccount
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from shared_objects.log import logger
 
 
@@ -281,6 +282,88 @@ class MinerAccountServer(RPCServerBase):
     def set_miner_buckets(self, hotkey_to_bucket: Dict[str, MinerBucket]) -> None:
         """Bulk set miner buckets across multiple accounts."""
         self._manager.set_miner_buckets(hotkey_to_bucket)
+
+    def set_registered_after_cutoff(self, cutoff_block: Optional[int], registered_after: Dict[str, Optional[bool]]) -> None:
+        """Replace the copy of who registered after the standard miner cutoff block that core pushes after each sync."""
+        self._manager.set_registered_after_cutoff(cutoff_block, registered_after)
+
+    def get_registered_after_cutoff(self) -> tuple:
+        """The pushed copy, as (cutoff block, hotkey -> registered after it)."""
+        return self._manager.get_registered_after_cutoff()
+
+    def is_registered_after_cutoff(self, hotkey: str) -> Optional[bool]:
+        """Whether a real hotkey registered after the cutoff block (see MinerAccountManager.is_registered_after_cutoff)."""
+        return self._manager.is_registered_after_cutoff(hotkey)
+
+    def open_standard_account(self, hotkey: str, record: StandardMinerAccount) -> StandardMinerAccount:
+        """Open a standard miner's account in one step; an account already opened comes back as it is."""
+        return self._manager.open_standard_account(hotkey, record)
+
+    def set_standard_account(self, hotkey: str, record: StandardMinerAccount) -> None:
+        """Attach or replace the record of the account a standard miner opened."""
+        self._manager.set_standard_account(hotkey, record)
+
+    def close_standard_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Close a standard miner's account; returns whether the record held is closed."""
+        return self._manager.close_standard_account(hotkey, closed_at_ms)
+
+    def reopen_standard_account(self, hotkey: str, reopened_at_ms: int) -> bool:
+        """Undo the close of a standard miner's account; returns whether the record held is open."""
+        return self._manager.reopen_standard_account(hotkey, reopened_at_ms)
+
+    def receive_standard_miner_record_rpc(
+        self, synapse: template.protocol.StandardMinerRecord
+    ) -> template.protocol.StandardMinerRecord:
+        """Receive a StandardMinerRecord synapse (RPC method for the axon handler)."""
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            logger.info(f"Received standard miner record from validator hotkey [{sender_hotkey}]")
+            success = self._manager.receive_standard_miner_record_update(synapse.record, sender_hotkey)
+            synapse.successfully_processed = success
+            synapse.error_message = "" if success else "Failed to process the standard miner record"
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing the standard miner record: {e}"
+            logger.error(f"Exception in receive_standard_miner_record: {e}")
+        return synapse
+
+    def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
+        """The record of the account a standard miner opened; None for every other hotkey."""
+        return self._manager.get_standard_account(hotkey)
+
+    def get_standard_accounts(self) -> Dict[str, StandardMinerAccount]:
+        """The records of every standard miner, by hotkey."""
+        return self._manager.get_standard_accounts()
+
+    def lock_account_sizes(self, hotkeys: List[str]) -> dict:
+        """Fix each given miner's size at the size in force, from the lock start on; returns the locks written."""
+        return self._manager.lock_account_sizes(hotkeys)
+
+    def close_locked_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Mark a locked account closed by its miner's withdrawal."""
+        return self._manager.close_locked_account(hotkey, closed_at_ms)
+
+    def receive_size_locks_rpc(self, synapse: template.protocol.AccountSizeLocks) -> template.protocol.AccountSizeLocks:
+        """Receive an AccountSizeLocks synapse (RPC method for the axon handler)."""
+        try:
+            sender_hotkey = synapse.dendrite.hotkey
+            logger.info(f"Received account size locks from validator hotkey [{sender_hotkey}]")
+            success = self._manager.receive_size_locks_update(synapse.size_locks, sender_hotkey)
+            synapse.successfully_processed = success
+            synapse.error_message = "" if success else "Failed to process the account size locks"
+        except Exception as e:
+            synapse.successfully_processed = False
+            synapse.error_message = f"Error processing the account size locks: {e}"
+            logger.error(f"Exception in receive_size_locks: {e}")
+        return synapse
+
+    def get_collateral_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[float]:
+        """The size the collateral alone gives, lock or not; None for a hotkey without an account."""
+        return self._manager.get_collateral_account_size(hotkey, timestamp_ms)
+
+    def get_all_collateral_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict:
+        """Every account's collateral-only size."""
+        return self._manager.get_all_collateral_account_sizes(timestamp_ms)
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""

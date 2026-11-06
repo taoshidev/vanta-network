@@ -4,11 +4,12 @@ import { ProgressBar } from "../Tremor";
 interface ScoreCardProps {
   label: string;
   value: number;
-  target: number;
+  target?: number;
   max?: number;
 }
 
 export const ScoreCard = ({ label, value, target, max=1.00 }: ScoreCardProps) => {
+  const passing = target === undefined ? undefined : value >= target;
   return (
     <Card withBorder className="flex-1">
       <div>
@@ -24,17 +25,19 @@ export const ScoreCard = ({ label, value, target, max=1.00 }: ScoreCardProps) =>
         <ProgressBar
           showAnimation
           className="mb-4"
-          variant={value >= target ? "success" : "default"}
+          variant={passing ? "success" : "default"}
           value={value}
           max={max}
         />
-        <div className="flex justify-between text-sm">
-          {value >= target ? (
-            <Badge variant="success">Passing</Badge>
-          ) : (
-            <Badge>Not Passing</Badge>
-          )}
-        </div>
+        {passing !== undefined && (
+          <div className="flex justify-between text-sm">
+            {passing ? (
+              <Badge variant="success">Passing</Badge>
+            ) : (
+              <Badge>Not Passing</Badge>
+            )}
+          </div>
+        )}
       </div>
     </Card>
   );

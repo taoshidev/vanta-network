@@ -77,6 +77,23 @@ class MetagraphClient(RPCClientBase):
         """Get emission list"""
         return self._server.get_emission_rpc()
 
+    def get_stake_weight(self) -> list:
+        """Get per-UID chain stake weight list, in tokens (bittensor's metagraph.total_stake)"""
+        return self._server.get_stake_weight_rpc()
+
+    def get_validator_axons(self, exclude_hotkey: str = None) -> list:
+        """Axons of the reachable validators, minus exclude_hotkey"""
+        return self._server.get_validator_axons_rpc(exclude_hotkey)
+
+    def is_registered_after_cutoff(self, hotkey: str) -> bool | None:
+        """Whether a hotkey registered after the standard miner cutoff block given with the last full sync;
+        None when that sync did not list it or its block is unknown"""
+        return self._server.is_registered_after_cutoff_rpc(hotkey)
+
+    def get_registered_after_cutoff(self) -> dict:
+        """hotkey -> is_registered_after_cutoff for every hotkey of the last full sync"""
+        return self._server.get_registered_after_cutoff_rpc()
+
     def get_tao_reserve_rao(self) -> float:
         """Get TAO reserve in RAO"""
         return self._server.get_tao_reserve_rao_rpc()
@@ -110,7 +127,8 @@ class MetagraphClient(RPCClientBase):
     def update_metagraph(self, neurons: list = None, uids: list = None, hotkeys: list = None,
                         block_at_registration: list = None, axons: list = None,
                         emission: list = None, tao_reserve_rao: float = None,
-                        alpha_reserve_rao: float = None, tao_to_usd_rate: float = None) -> None:
+                        alpha_reserve_rao: float = None, tao_to_usd_rate: float = None,
+                        stake_weight: list = None, standard_miner_cutoff_block: int = None) -> None:
         """
         Atomically update multiple metagraph fields in a single RPC call.
         Much faster than individual setter calls (1 RPC call instead of N).
@@ -125,6 +143,9 @@ class MetagraphClient(RPCClientBase):
             tao_reserve_rao: TAO reserve in RAO (optional)
             alpha_reserve_rao: ALPHA reserve in RAO (optional)
             tao_to_usd_rate: TAO to USD conversion rate (optional)
+            stake_weight: Per-UID chain stake weight in tokens (optional; re-derives the validator axons)
+            standard_miner_cutoff_block: This network's cutoff block, None while the standard miner rules
+                are off; a full sync (hotkeys with their block_at_registration) re-derives who registered after it
 
         Example:
             # Update all metagraph fields in one atomic RPC call
@@ -145,7 +166,9 @@ class MetagraphClient(RPCClientBase):
             emission=emission,
             tao_reserve_rao=tao_reserve_rao,
             alpha_reserve_rao=alpha_reserve_rao,
-            tao_to_usd_rate=tao_to_usd_rate
+            tao_to_usd_rate=tao_to_usd_rate,
+            stake_weight=stake_weight,
+            standard_miner_cutoff_block=standard_miner_cutoff_block
         )
 
     def is_development_hotkey(self, hotkey: str) -> bool:
@@ -201,19 +224,22 @@ class MetagraphClient(RPCClientBase):
 
     # ==================== Test Convenience Methods ====================
 
-    def set_hotkeys(self, hotkeys: List[str]) -> None:
+    def set_hotkeys(self, hotkeys: List[str], block_at_registration: list = None, stake_weight: list = None,
+                    standard_miner_cutoff_block: int = None) -> None:
         """
         Convenience method for tests: Set hotkeys with auto-generated default values.
 
         Automatically generates:
         - uids: Sequential integers [0, 1, 2, ...]
         - neurons: Empty list (most tests don't need actual neuron objects)
-        - block_at_registration: All set to 1000
+        - block_at_registration: All set to 1000, unless given
         - axons: Empty list
         - emission: All set to 1.0
+        - stake_weight: All set to 0.0 (no validators), unless given
         - tao_reserve_rao: 1_000_000_000_000 (1000 TAO)
         - alpha_reserve_rao: 1_000_000_000_000 (1000 ALPHA)
         - tao_to_usd_rate: 100.0
+        The standard miner cutoff block is None (rules off) unless given.
 
         Args:
             hotkeys: List of hotkey strings
@@ -226,12 +252,14 @@ class MetagraphClient(RPCClientBase):
             hotkeys=hotkeys,
             uids=list(range(n)),
             neurons=[None] * n,  # Placeholder - most tests don't need actual neurons
-            block_at_registration=[1000] * n,
+            block_at_registration=block_at_registration if block_at_registration is not None else [1000] * n,
             axons=[None] * n,
             emission=[1.0] * n,
             tao_reserve_rao=1_000_000_000_000,  # 1000 TAO in RAO
             alpha_reserve_rao=1_000_000_000_000,  # 1000 ALPHA in RAO
-            tao_to_usd_rate=100.0
+            tao_to_usd_rate=100.0,
+            stake_weight=stake_weight if stake_weight is not None else [0.0] * n,
+            standard_miner_cutoff_block=standard_miner_cutoff_block
         )
 
     def set_block_at_registration(self, hotkey: str, block: int) -> None:

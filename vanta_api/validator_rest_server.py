@@ -29,11 +29,13 @@ from shared_objects.locks.position_lock_client import PositionLockClient
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.data_export.core_outputs_client import CoreOutputsClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import EXISTING_RULES_BUCKETS, MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.hl_funding.hl_funding_rate_client import HLFundingRateClient
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
 from vali_objects.miner_account.account_snapshot import DEFAULT_SNAPSHOT_LIMIT, MAX_SNAPSHOT_LIMIT, read_last_n
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
@@ -362,6 +364,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/trade-pairs", methods=["GET"])(self.get_allowed_trade_pairs)
         self.app.route("/asset-selection", methods=["POST"])(self.asset_selection)
         self.app.route("/asset-selection/update/", methods=["POST"])(self.update_asset_selection)
+        self.app.route("/account/open", methods=["POST"])(self.open_account)
         self.app.route("/miner-selections", methods=["GET"])(self.get_miner_selections)
         self.app.route("/development/order", methods=["POST"])(self.process_development_order)
 
@@ -848,7 +851,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         By default returns only the current bucket + start_time_ms (same shape
         as the challenge_period section of the dashboard endpoints). Pass
         ?history=true to instead get the full ordered bucket transition history
-        (e.g. CHALLENGE -> MAINCOMP -> PROBATION -> ELIMINATED), each with a
+        (e.g. CHALLENGE -> MAINCOMP -> ELIMINATED), each with a
         start_time_ms. If the miner is eliminated, the elimination reason is
         attached to that entry.
         """
@@ -1305,15 +1308,23 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 if field not in data:
                     return jsonify({'error': f'Missing required field: {field}'}), 400
 
+            # A withdrawal that closes an account with locked collateral is signed with its consent
+            close_account = data.get('close_account', False)
+            if close_account is not True and close_account is not False:
+                return jsonify({'error': 'close_account must be a boolean'}), 400
+
             # Verify the withdrawal signature
             keypair = Keypair(ss58_address=data['miner_coldkey'])
-            message = json.dumps({
+            signed = {
                 "amount": data['amount'],
                 "miner_coldkey": data['miner_coldkey'],
                 "miner_hotkey": data['miner_hotkey'],
                 "nonce": data['nonce'],
                 "timestamp": data['timestamp']
-            }, sort_keys=True).encode('utf-8')
+            }
+            if close_account:
+                signed["close_account"] = True
+            message = json.dumps(signed, sort_keys=True).encode('utf-8')
             is_valid = keypair.verify(message, bytes.fromhex(data['signature']))
             if not is_valid:
                 return jsonify({'error': 'Invalid signature. Withdrawal request unauthorized'}), 401
@@ -1345,7 +1356,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             result = self.contract_manager.process_withdrawal_request(
                 amount=data['amount'],
                 miner_coldkey=data['miner_coldkey'],
-                miner_hotkey=data['miner_hotkey']
+                miner_hotkey=data['miner_hotkey'],
+                close_account=close_account,
             )
 
             # Return response
@@ -1490,6 +1502,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             if not owns_hotkey:
                 return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
 
+            refusal = self._standard_track_selection_refusal(data['miner_hotkey'])
+            if refusal:
+                return jsonify({'successfully_processed': False, 'error_message': refusal})
+
             # Allow overwriting an existing selection only when switching into commodities
             allow_overwrite = (
                 isinstance(data['asset_selection'], str)
@@ -1509,6 +1525,123 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         except Exception as e:
             logger.error(f"Error processing asset selection: {e}")
             return jsonify({'error': 'Internal server error processing asset selection'}), 500
+
+    def _standard_track_selection_refusal(self, hotkey: str) -> str | None:
+        """A hotkey on the standard account track trades all markets, which its account opening sets, so it selects
+        nothing here (nor switches into commodities later); None for a hotkey on the existing rules."""
+        if isinstance(self._miner_account_client.get_standard_account(hotkey), StandardMinerAccount):
+            return "A standard account trades all markets; its asset class cannot be changed"
+        if getattr(self._miner_account_client.get_account(hotkey), "miner_bucket", None) in EXISTING_RULES_BUCKETS:
+            return None
+        after_cutoff = self._miner_account_client.is_registered_after_cutoff(hotkey)
+        if after_cutoff is None:
+            return "The registration of this hotkey is not known yet; try again shortly"
+        if after_cutoff is True:
+            return ("This hotkey trades on the standard account track, on all markets, and selects no asset class: "
+                    "deposit collateral and open the account with vanta account open")
+        return None
+
+    def open_account(self):
+        """
+        Open the trading account of a miner registered after the standard miner cutoff block: sized once from
+        its collateral at today's theta price and the chosen leverage tier, by the mothership, on all markets. The
+        miner deposits collateral first.
+
+        Example:
+        curl -X POST http://localhost:48888/account/open \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "miner_coldkey": "5FxY...",
+            "miner_hotkey": "5GhDr...",
+            "leverage_tier": 2,
+            "nonce": "a-single-use-string",
+            "timestamp": 1700000000000,
+            "signature": "<the coldkey signature, hex without 0x>",
+            "version": "3.2.0"
+          }'
+
+        leverage_tier is one of ValiConfig.STANDARD_LEVERAGE_TIERS and version the vanta-cli version. The signature
+        is the coldkey's over the sorted JSON of leverage_tier, miner_coldkey, miner_hotkey, nonce and timestamp;
+        nonce and timestamp are single use within the NonceManager window, so every request is freshly signed. A
+        rejection is a 400 with the reason; a validator service that did not answer the opening itself is a 503.
+        """
+        if not self.contract_manager:
+            return jsonify({'error': 'Collateral operations not available'}), 503
+
+        try:
+            if not request.is_json:
+                return jsonify({'error': 'Content-Type must be application/json'}), 400
+
+            data = request.get_json(silent=True)
+            if not data or not isinstance(data, dict):
+                return jsonify({'error': 'Invalid JSON body'}), 400
+
+            vanta_cli_version = (
+                data.get('version')
+                or data.get('ptncli_version')
+                or '0.0.0'
+            )
+            vanta_cli_error = self.check_vanta_cli_version(vanta_cli_version)
+            if vanta_cli_error:
+                return jsonify({'error': vanta_cli_error}), 400
+
+            required_fields = ['miner_coldkey', 'miner_hotkey', 'leverage_tier', 'nonce', 'timestamp', 'signature']
+            missing_fields = [field for field in required_fields if field not in data]
+            if missing_fields:
+                return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+            leverage_tier = data['leverage_tier']
+            if not ValiConfig.is_valid_standard_leverage_tier(leverage_tier):
+                return jsonify({'error': f'leverage_tier must be one of {list(ValiConfig.STANDARD_LEVERAGE_TIERS)}'}), 400
+
+            try:
+                keypair = Keypair(ss58_address=data['miner_coldkey'])
+                Keypair(ss58_address=data['miner_hotkey'])
+                signature = bytes.fromhex(data['signature'])
+                timestamp = int(data['timestamp'])
+            except Exception:
+                return jsonify({'error': 'miner_coldkey and miner_hotkey must be SS58 addresses, '
+                                         'signature a hex string and timestamp an integer'}), 400
+
+            signed = json.dumps({
+                "leverage_tier": leverage_tier,
+                "miner_coldkey": data['miner_coldkey'],
+                "miner_hotkey": data['miner_hotkey'],
+                "nonce": data['nonce'],
+                "timestamp": data['timestamp']
+            }, sort_keys=True).encode('utf-8')
+            try:
+                is_valid = keypair.verify(signed, signature)
+            except ValueError:  # a signature of the wrong length
+                is_valid = False
+            if not is_valid:
+                return jsonify({'error': 'Invalid signature. Account opening request unauthorized'}), 401
+
+            owns_hotkey = self._verify_coldkey_owns_hotkey(data['miner_coldkey'], data['miner_hotkey'])
+            if not owns_hotkey:
+                return jsonify({'error': 'Coldkey does not own the specified hotkey'}), 403
+
+            nonce_key = f"{data['miner_coldkey']}::{data['miner_hotkey']}"
+            nonce_ok, nonce_error = self.nonce_manager.is_valid_request(
+                address=nonce_key,
+                nonce=str(data['nonce']),
+                timestamp=timestamp
+            )
+            if not nonce_ok:
+                return jsonify({'error': f'{nonce_error}'}), 401
+        except Exception as e:
+            logger.error(f"Error validating account opening request: {e}")
+            return jsonify({'error': 'Internal server error processing account opening'}), 500
+
+        try:
+            opened, message, account = self.contract_manager.open_standard_miner_account(data['miner_hotkey'], leverage_tier)
+        except Exception as e:
+            logger.error(f"Account opening for {data['miner_hotkey']} could not be processed: {e}")
+            return jsonify({'successfully_processed': False,
+                            'error_message': 'A validator service did not answer; try again shortly'}), 503
+        if not opened:
+            return jsonify({'successfully_processed': False, 'error_message': message}), 400
+        return jsonify({'successfully_processed': True, 'success_message': message, 'account': account})
 
     def update_asset_selection(self):
         """
@@ -1928,8 +2061,13 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': 'account_size update requires the entity client, which is unavailable'}), 500
 
         if move_to_funded:
-            if not is_subaccount:
-                return jsonify({'error': 'move_to_funded can only be set for entity subaccounts'}), 400
+            try:
+                standard_miner = not is_subaccount and isinstance(
+                    self._miner_account_client.get_standard_account(hotkey), StandardMinerAccount)
+            except Exception as e:
+                return jsonify({'error': f'Could not read the account of {hotkey}: {e}'}), 503
+            if not is_subaccount and not standard_miner:
+                return jsonify({'error': 'move_to_funded can only be set for entity subaccounts and standard miners'}), 400
             # The bucket the reset leaves the miner in: an elimination is reverted to the bucket before it
             history = self._challenge_period_client.get_bucket_history(hotkey) or []
             buckets = [entry['bucket'] for entry in history]
@@ -1942,11 +2080,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 }), 400
 
         try:
+            closed_by_miner = self._closed_by_its_miner(hotkey)
+            if closed_by_miner:
+                return jsonify({'error': closed_by_miner}), 400
             result = self._position_client.wipe_hotkey(hotkey, wipe_positions=True)
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
             self._elimination_client.remove_elimination(hotkey)
             self._challenge_period_client.revert_elimination(hotkey)
+            if not is_subaccount:
+                self._miner_account_client.reopen_standard_account(hotkey, TimeUtil.now_in_millis())
             self._miner_account_client.reset_account(hotkey)
 
             if is_subaccount and self._entity_client:
@@ -3310,6 +3453,20 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             logger.error(f"Error eliminating subaccount: {e}")
             return jsonify({'error': 'Internal server error eliminating subaccount'}), 500
 
+    def _closed_by_its_miner(self, hotkey: str) -> str | None:
+        """The refusal for an account its standard miner closed by withdrawing the collateral, which no reversal
+        reopens; None for every other hotkey."""
+        if is_synthetic_hotkey(hotkey):
+            return None
+        elimination = self._elimination_client.get_elimination(hotkey)
+        if elimination and elimination.get('reason') == EliminationReason.ACCOUNT_CLOSED.value:
+            return f'The account of {hotkey} was closed by its miner ({elimination["reason"]}) and cannot be reopened'
+        # A fixed-size account closes only by its miner's withdrawal, row or not
+        size_lock = getattr(self._miner_account_client.get_account(hotkey), 'size_lock', None)
+        if isinstance(size_lock, AccountSizeLock) and size_lock.is_closed:
+            return f'The account of {hotkey} was closed by its miner and cannot be reopened'
+        return None
+
     def revert_elimination(self, hotkey: str):
         """
         Revert an elimination for a hotkey (regular or synthetic). Updates:
@@ -3336,11 +3493,16 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         reopen_orders = str(request.args.get('reopen_orders', 'false')).strip().lower() == 'true'
 
         try:
+            closed_by_miner = self._closed_by_its_miner(hotkey)
+            if closed_by_miner:
+                return jsonify({'error': closed_by_miner}), 400
             self._elimination_client.remove_elimination(hotkey)
             self._challenge_period_client.revert_elimination(hotkey)
 
             if is_synthetic_hotkey(hotkey):
                 self._entity_client.restore_subaccount(hotkey)
+            else:
+                self._miner_account_client.reopen_standard_account(hotkey, TimeUtil.now_in_millis())
 
             self._perf_ledger_client.wipe_miners_perf_ledgers([hotkey], wipe_frozen=True)
             self._debt_ledger_client.delete_debt_ledger(hotkey)
@@ -3522,6 +3684,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             except ValueError:
                 valid = [r.value for r in EliminationReason]
                 return jsonify({'error': f'Invalid reason. Must be one of: {valid}'}), 400
+            if reason == EliminationReason.ACCOUNT_CLOSED:
+                return jsonify({'error': f'{reason.value} is recorded by the withdrawal that closes an account'}), 400
 
             if is_synthetic_hotkey(hotkey):
                 entity_hotkey, subaccount_id = parse_synthetic_hotkey(hotkey)

@@ -409,6 +409,19 @@ class DebtLedger:
             previous_bucket = bucket
         return boundaries
 
+    def payout_rule_change_times(self) -> List[int]:
+        """The bucket changes (bucket_change_times) at which the payout scale or the soft-breach withholding starts
+        or stops applying."""
+        boundaries: List[int] = []
+        previous_rules = None
+        for index, cp in enumerate(self.checkpoints):
+            bucket = self._bucket_from_status(cp.challenge_period_status)
+            rules = (bucket.payout_scale_applies, bucket.soft_breach_applies)
+            if previous_rules is not None and rules != previous_rules:
+                boundaries.append(self.checkpoints[index - 1].timestamp_ms)
+            previous_rules = rules
+        return boundaries
+
     def fee_baseline_at_first_earning(self) -> float:
         """`cumulative_fees_usd` as of the checkpoint *before* the first earning one.
 

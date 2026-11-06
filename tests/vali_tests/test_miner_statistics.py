@@ -519,12 +519,12 @@ class TestMinerStatistics(TestBase):
 
             if hotkey == testing_miner:
                 self.assertEqual(cp_info.get('status'), 'testing')
-                self.assertIn('remaining_time_ms', cp_info)
+                self.assertNotIn('remaining_time_ms', cp_info)
             elif hotkey == success_miner:
                 self.assertEqual(cp_info.get('status'), 'success')
             elif hotkey == probation_miner:
                 self.assertEqual(cp_info.get('status'), 'probation')
-                self.assertIn('remaining_time_ms', cp_info)
+                self.assertNotIn('remaining_time_ms', cp_info)
 
     def test_account_size_data_injection(self):
         """Test that miners with different account sizes can be properly set up and retrieved."""

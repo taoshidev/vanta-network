@@ -206,6 +206,16 @@ class WeeklySealLedger:
         with self._lock:
             return list(self.settled.get(hotkey, []))
 
+    def get_all_settled(self) -> Dict[str, List[SettledSegment]]:
+        """Every hotkey's settled segments, oldest first."""
+        with self._lock:
+            return {hotkey: list(segments) for hotkey, segments in self.settled.items() if segments}
+
+    def get_sealed_for(self, hotkeys) -> Dict[str, Dict[int, SealedWeek]]:
+        """The sealed weeks of each of hotkeys that has any, keyed by Monday 00:00 UTC."""
+        with self._lock:
+            return {hotkey: dict(self.sealed[hotkey]) for hotkey in hotkeys if self.sealed.get(hotkey)}
+
     # ============================ Writes ============================
 
     def seal(
@@ -221,13 +231,16 @@ class WeeklySealLedger:
         """Record a closed week's classification. Write-once.
 
         Returns True when a new record was written. A second seal for the same week never
-        overwrites; it logs at warning level when the new values disagree with what is stored,
-        which is the signal that a rebuild would have rewritten settled history.
+        overwrites; it logs at warning level when the penalty or the track disagrees with what is
+        stored, the signal that a rebuild would have rewritten settled history, and at info level
+        when only the scale does, which a changed multiplier or a resize changes by design.
         """
         with self._lock:
             existing = self.sealed.get(hotkey, {}).get(week_start_ms)
             if existing is not None:
-                if not existing.matches(weekly_penalty, payout_scale, track):
+                # The scale is a live input (a changed multiplier or a resize reprices nothing already sealed), so
+                # only the penalty and the track are the rebuild's word against the seal's
+                if existing.weekly_penalty != weekly_penalty or existing.track != track:
                     logger.warning(
                         f"[WEEKLY_SEAL] Rebuild disagrees with sealed week for {hotkey} at "
                         f"{TimeUtil.millis_to_formatted_date_str(week_start_ms)}: sealed "
@@ -235,6 +248,12 @@ class WeeklySealLedger:
                         f"track={existing.track}) vs recomputed "
                         f"(penalty={weekly_penalty}, scale={payout_scale}, track={track}). "
                         f"Keeping the sealed values."
+                    )
+                elif existing.payout_scale != payout_scale:
+                    logger.info(
+                        f"[WEEKLY_SEAL] Sealed week for {hotkey} at "
+                        f"{TimeUtil.millis_to_formatted_date_str(week_start_ms)} keeps scale={existing.payout_scale} "
+                        f"(recomputed {payout_scale})"
                     )
                 return False
 

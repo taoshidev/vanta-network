@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Any
 
+import template.protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.contract.contract_server import ContractServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
@@ -47,15 +48,18 @@ class ContractClient(RPCClientBase):
     # vault-signed with a fresh nonce = NOT idempotent). _invoke_rpc's self-heal RE-EXECUTES a call on
     # a transient error, so auto-retrying a lost ACK here would double-slash/double-withdraw real
     # funds. retry=False surfaces the failure to the caller instead of silently re-applying it.
+    # Chain timeout: the slash and burn legitimately exceed the 60s default, and a timeout is taken as slashed.
     def slash_miner_collateral_proportion(self, miner_hotkey: str, slash_proportion: float=None) -> bool:
         """Slash miner's collateral by a proportion."""
         return self._invoke_rpc("slash_miner_collateral_proportion_rpc",
-                                args=(miner_hotkey, slash_proportion), retry=False)
+                                args=(miner_hotkey, slash_proportion), retry=False,
+                                timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     def slash_miner_collateral(self, miner_hotkey: str, slash_amount: float = None) -> bool:
         """Slash miner's collateral by a raw theta amount."""
         return self._invoke_rpc("slash_miner_collateral_rpc",
-                                args=(miner_hotkey, slash_amount), retry=False)
+                                args=(miner_hotkey, slash_amount), retry=False,
+                                timeout_s=ValiConfig.RPC_CHAIN_CALL_TIMEOUT_S)
 
     # ==================== Collateral Balance Methods ====================
 
@@ -81,12 +85,13 @@ class ContractClient(RPCClientBase):
         self,
         amount: float,
         miner_coldkey: str,
-        miner_hotkey: str
+        miner_hotkey: str,
+        close_account: bool = False
     ) -> Dict[str, Any]:
-        """Process a collateral withdrawal request."""
+        """Process a collateral withdrawal request; close_account consents to one that closes the account."""
         # fail-fast: irreversible on-chain slash + withdraw (see slashing note) — never auto-retry.
         return self._invoke_rpc("process_withdrawal_request_rpc",
-                                args=(amount, miner_coldkey, miner_hotkey), retry=False)
+                                args=(amount, miner_coldkey, miner_hotkey, close_account), retry=False)
 
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
         """Query withdrawal request (preview only - no execution)."""
@@ -100,6 +105,19 @@ class ContractClient(RPCClientBase):
     def refresh_miner_account_size(self, hotkey: str) -> bool:
         """Refresh a miner's cached account size from their current on-chain collateral balance."""
         return self._server.refresh_miner_account_size_rpc(hotkey)
+
+    def open_standard_miner_account(self, hotkey: str, leverage_tier: int) -> tuple:
+        """Open a standard miner's account: (opened, message for the miner, record dict). Not retried: a transport
+        error goes back to the miner, who sends a fresh request."""
+        return self._invoke_rpc("open_standard_miner_account_rpc", args=(hotkey, leverage_tier), retry=False)
+
+    def receive_standard_miner_opening(
+        self, synapse: template.protocol.StandardMinerOpening
+    ) -> template.protocol.StandardMinerOpening:
+        """Receive a StandardMinerOpening synapse (for axon attachment). Applying a record never waits on the chain,
+        so the ordinary call timeout bounds the axon thread, not the chain-call one above."""
+        return self._invoke_rpc("receive_standard_miner_opening_rpc", args=(synapse,),
+                                timeout_s=RPCClientBase.RPC_CALL_TIMEOUT_S)
 
     # ==================== Verification Methods ====================
 

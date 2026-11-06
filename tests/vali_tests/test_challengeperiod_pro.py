@@ -151,7 +151,7 @@ def manager():
             stack.enter_context(patch(path))
         mgr = ChallengePeriodManager(is_backtesting=True)
         mgr._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
-        mgr._entity_client.is_instant_funded.return_value = False
+        mgr._entity_client.get_subaccount_info_for_synthetic.return_value = {"initial_bucket": None}
         yield mgr
 
 
@@ -1316,7 +1316,8 @@ def test_entity_rejection_blocks_the_promotion(hop_manager):
 @pytest.mark.parametrize("instant_funded,allowed", [(False, True), (True, False)])
 def test_instant_funded_cannot_enter_the_transition(hop_manager, instant_funded, allowed):
     _in_bucket(hop_manager, MinerBucket.SUBACCOUNT_FUNDED)
-    hop_manager._entity_client.is_instant_funded.return_value = instant_funded
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.return_value = {
+        "initial_bucket": "SUBACCOUNT_FUNDED" if instant_funded else None}
 
     success, _ = hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
 
@@ -1327,7 +1328,7 @@ def test_instant_funded_cannot_enter_the_transition(hop_manager, instant_funded,
 
 def test_instant_funded_cannot_be_admin_moved_into_the_transition(hop_manager):
     _in_bucket(hop_manager, MinerBucket.SUBACCOUNT_FUNDED)
-    hop_manager._entity_client.is_instant_funded.return_value = True
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.return_value = {"initial_bucket": "SUBACCOUNT_FUNDED"}
 
     success, _ = hop_manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)
 
@@ -1780,7 +1781,7 @@ class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
             stack.enter_context(patch(path))
         self.manager = ChallengePeriodManager(is_backtesting=True)
         self.manager._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
-        self.manager._entity_client.is_instant_funded.return_value = False
+        self.manager._entity_client.get_subaccount_info_for_synthetic.return_value = {"initial_bucket": None}
         stack.enter_context(patch.object(self.manager, "_sync_buckets_to_accounts"))
         stack.enter_context(patch.object(self.manager, "_save_to_disk"))
         self.manager.set_miner_bucket(ORDER_HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, ORDER_NOW_MS)

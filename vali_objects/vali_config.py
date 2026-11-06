@@ -490,19 +490,10 @@ class ValiConfig:
     # Challenge period
     CHALLENGE_PERIOD_MIN_WEIGHT = 1.5e-05  # essentially nothing
     CHALLENGE_PERIOD_MAX_WEIGHT = 2.4e-05
-    CHALLENGE_PERIOD_MINIMUM_DAYS = 61
-    CHALLENGE_PERIOD_MINIMUM_MS = CHALLENGE_PERIOD_MINIMUM_DAYS * DAILY_MS
-    CHALLENGE_PERIOD_MAXIMUM_DAYS = 90
-    CHALLENGE_PERIOD_MAXIMUM_MS = CHALLENGE_PERIOD_MAXIMUM_DAYS * DAILY_MS
-    CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75 # miners must pass 75th percentile to enter the main competition
-
-    PROBATION_MAXIMUM_DAYS = 90
-    PROBATION_MAXIMUM_MS = PROBATION_MAXIMUM_DAYS * DAILY_MS
+    CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75  # no longer a promotion rule; kept in the published constants
 
     IDLE_MINER_MAXIMUM_DAYS = 60
     IDLE_MINER_MAXIMUM_MS = IDLE_MINER_MAXIMUM_DAYS * DAILY_MS
-
-    PROMOTION_THRESHOLD_RANK = 25 # Number of MAINCOMP miners per asset class
 
     # Plagiarism
     ORDER_SIMILARITY_WINDOW_MS = 60000 * 60 * 24
@@ -649,6 +640,44 @@ class ValiConfig:
     MOTHERSHIP_HOTKEY_TESTNET = "5GTNzNkJiQWK4NpEErQohqZC8EzzeqrckgLgrQPwuvu8bHLN"
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
+
+    # Standard miners: a regular miner registered after its network's cutoff block trades on the standard account
+    # pipeline under its own hotkey. None = off; set a block after every validator runs the release that sets it.
+    STANDARD_MINER_CUTOFF_BLOCK = None
+    STANDARD_MINER_CUTOFF_BLOCK_TESTNET = None
+    # Account size at opening = collateral USD value / the tier's collateral percentage, within the bounds
+    STANDARD_MINER_COLLATERAL_PCT_BY_TIER = {1: 0.007, 2: 0.011, 3: 0.015}  # Base, Boost I, Boost II
+    STANDARD_MINER_MIN_ACCOUNT_SIZE = 5_000
+    STANDARD_MINER_MAX_ACCOUNT_SIZE = 100_000
+    # EOD high-water mark and daily loss limits in every bucket before PRO_FUNDED, which keeps its own
+    STANDARD_MINER_EOD_HWM_THRESHOLD = 0.05
+    STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
+    # Payout basis in PRO_CHALLENGE_FROM_STANDARD, as PRO_TRANSITION_PAYOUT_MULTIPLIER is for subaccounts
+    STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER = 1.5
+    # The leverage tier a standard miner trades from SUBACCOUNT_FUNDED on, whatever tier it opened on
+    STANDARD_MINER_FUNDED_LEVERAGE_TIER = 3
+    # A standard miner's fast track return until each day count from its first order as a funded account, then
+    # AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
+    STANDARD_MINER_FAST_TRACK_EQUITY_RETURNS = ((7, 0.03), (14, 0.05))
+
+    @staticmethod
+    def standard_miner_cutoff_block(is_testnet: bool = False) -> int | None:
+        """This network's cutoff block; None while the feature is off."""
+        if is_testnet:
+            return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK_TESTNET
+        return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK
+
+    # From this time (ms; the cutoff block's moment) a miner on the existing rules keeps the size in force when first
+    # seen trading, and withdrawing the theta behind it closes the account. None = no new locks (written ones stay).
+    ACCOUNT_SIZE_LOCK_START_MS = None
+    ACCOUNT_SIZE_LOCK_START_MS_TESTNET = None
+
+    @staticmethod
+    def account_size_lock_start_ms(is_testnet: bool = False) -> int | None:
+        """This network's account size lock start; None while the lock is off."""
+        if is_testnet:
+            return ValiConfig.ACCOUNT_SIZE_LOCK_START_MS_TESTNET
+        return ValiConfig.ACCOUNT_SIZE_LOCK_START_MS
 
     # Legacy leverage tiers 1 to 4 (HL-linked subaccounts, pro subaccounts, regular miners):
     # tier 1 = subaccount challenge, then by account size. Standard subaccounts use the

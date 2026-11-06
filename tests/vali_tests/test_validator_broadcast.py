@@ -18,6 +18,7 @@ from unittest.mock import Mock
 from types import SimpleNamespace
 
 import template.protocol
+from vali_objects.vali_config import ValiConfig
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
 
@@ -62,6 +63,11 @@ class TestSynapsePickling(unittest.TestCase):
             "subaccount_id": 0,
             "subaccount_uuid": "uuid-123",
             "synthetic_hotkey": "entity_hotkey_1_0"
+        }
+
+        self.opening = {
+            "hotkey": "test_hotkey",
+            "record": {"opened_at_ms": 1_700_000_000_000, "opening_leverage_tier": 2, "account_size": 50_000.0}
         }
 
     def test_pickle_send_signal_synapse(self):
@@ -148,6 +154,26 @@ class TestSynapsePickling(unittest.TestCase):
         self.assertIsInstance(unpickled, template.protocol.SubaccountRegistration)
         self.assertEqual(unpickled.subaccount_data, self.subaccount_data)
 
+    def test_pickle_standard_miner_opening_synapse(self):
+        """Test that StandardMinerOpening synapse can be pickled."""
+        synapse = template.protocol.StandardMinerOpening(opening=self.opening)
+
+        pickled = pickle.dumps(synapse)
+        unpickled = pickle.loads(pickled)
+
+        self.assertIsInstance(unpickled, template.protocol.StandardMinerOpening)
+        self.assertEqual(unpickled.opening, self.opening)
+
+    def test_pickle_standard_miner_record_synapse(self):
+        """Test that StandardMinerRecord synapse can be pickled."""
+        synapse = template.protocol.StandardMinerRecord(record=self.opening)
+
+        pickled = pickle.dumps(synapse)
+        unpickled = pickle.loads(pickled)
+
+        self.assertIsInstance(unpickled, template.protocol.StandardMinerRecord)
+        self.assertEqual(unpickled.record, self.opening)
+
     def test_pickle_all_synapses_with_full_state(self):
         """Test pickling synapses with all fields populated."""
         # Create synapses with all fields
@@ -183,6 +209,14 @@ class TestSynapsePickling(unittest.TestCase):
             template.protocol.SubaccountRegistration(
                 subaccount_data=self.subaccount_data,
                 successfully_processed=True
+            ),
+            template.protocol.StandardMinerOpening(
+                opening=self.opening,
+                successfully_processed=True
+            ),
+            template.protocol.StandardMinerRecord(
+                record=self.opening,
+                successfully_processed=True
             )
         ]
 
@@ -213,6 +247,38 @@ class TestValidatorBroadcastBase(unittest.TestCase):
             running_unit_tests=True,
             is_testnet=True
         )
+
+    @staticmethod
+    def _neuron(hotkey, ip="1.2.3.4"):
+        return SimpleNamespace(axon_info=SimpleNamespace(hotkey=hotkey, ip=ip))
+
+    def test_mainnet_targets_come_from_the_metagraph_validator_set_minus_self(self):
+        """The chain may grant a single permit, so the targets are the validators the metagraph server
+        derives from stake weight, excluding this validator."""
+        base = ValidatorBroadcastBase(running_unit_tests=True, is_testnet=False)
+        base._metagraph_client = Mock()
+        base._metagraph_client.get_validator_axons.return_value = [self._neuron("other").axon_info]
+
+        base._hotkey = "self"
+        self.assertEqual([a.hotkey for a in base._get_validator_axons()], ["other"])
+        base._metagraph_client.get_validator_axons.assert_called_once_with(exclude_hotkey="self")
+
+        base._hotkey = None
+        base._get_validator_axons()
+        base._metagraph_client.get_validator_axons.assert_called_with(exclude_hotkey=None)
+        base._metagraph_client.get_neurons.assert_not_called()
+
+    def test_testnet_targets_are_every_served_axon_but_self(self):
+        base = self.broadcast_base
+        base._hotkey = "self"
+        base._metagraph_client = Mock()
+        base._metagraph_client.get_neurons.return_value = [
+            self._neuron("self"),
+            self._neuron("unstaked"),
+            self._neuron("no_ip", ip=ValiConfig.AXON_NO_IP),
+        ]
+        self.assertEqual([a.hotkey for a in base._get_validator_axons()], ["unstaked"])
+        base._metagraph_client.get_validator_axons.assert_not_called()
 
     def test_serialize_synapse_valid(self):
         """Test that valid picklable synapses pass validation."""
@@ -422,7 +488,9 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
             template.protocol.ValidatorCheckpoint(checkpoint="checkpoint"),
             template.protocol.CollateralRecord(collateral_record={"amount": 100}),
             template.protocol.AssetSelection(asset_selection={"asset": "CRYPTO"}),
-            template.protocol.SubaccountRegistration(subaccount_data={"id": 0})
+            template.protocol.SubaccountRegistration(subaccount_data={"id": 0}),
+            template.protocol.StandardMinerOpening(opening={"hotkey": "h", "record": {"account_size": 50_000.0}}),
+            template.protocol.StandardMinerRecord(record={"hotkey": "h", "record": {"pro_account_size": 250_000.0}})
         ]
 
         for original_synapse in synapses:
@@ -448,6 +516,10 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
                 self.assertEqual(transmitted.asset_selection, original_synapse.asset_selection)
             elif isinstance(transmitted, template.protocol.SubaccountRegistration):
                 self.assertEqual(transmitted.subaccount_data, original_synapse.subaccount_data)
+            elif isinstance(transmitted, template.protocol.StandardMinerOpening):
+                self.assertEqual(transmitted.opening, original_synapse.opening)
+            elif isinstance(transmitted, template.protocol.StandardMinerRecord):
+                self.assertEqual(transmitted.record, original_synapse.record)
 
 
 if __name__ == '__main__':

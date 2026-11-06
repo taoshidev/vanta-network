@@ -38,6 +38,7 @@ from entity_management.entity_utils import (
 )
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.miner_account.account_snapshot import read_all_snapshots, DEFAULT_TOLERANCE_MS
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.leverage_utils import tier_change_lowers_a_limit
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -402,11 +403,15 @@ class EntityManager(ValidatorBroadcastBase):
             if positions and len(positions) > 0:
                 return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
 
-            if not self.running_unit_tests:
-                # Non-mothership slashes are dry runs, so registering here would skip the fee
-                if not self.is_mothership:
-                    return False, "Entity registration is only processed by the mothership validator"
+            # Non-mothership slashes are dry runs, so registering here would skip the fee
+            if not self.running_unit_tests and not self.is_mothership:
+                return False, "Entity registration is only processed by the mothership validator"
 
+            # A standard miner's opened account makes the hotkey a miner before its first order
+            if isinstance(self._miner_account_client.get_standard_account(entity_hotkey), StandardMinerAccount):
+                return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
+
+            if not self.running_unit_tests:
                 # Verify collateral balance
                 try:
                     current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
