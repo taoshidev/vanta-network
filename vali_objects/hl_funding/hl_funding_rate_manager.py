@@ -7,6 +7,7 @@ and persists to disk for crash recovery.
 import json
 import os
 import threading
+import time
 from bisect import bisect_left, bisect_right
 from typing import Dict, List, Optional
 
@@ -63,6 +64,12 @@ class HLFundingRateManager:
         Deduplicates and persists.
         """
         api_url = ValiConfig.hl_info_url()
+        t0 = time.time()
+        total_fetched = 0
+        total_new = 0
+        failed_coins = []
+        logger.info(f"[HL_FUNDING] Fetching funding rates for {len(coins)} coins, "
+                    f"start_ms={start_ms} end_ms={end_ms}")
         for coin in coins:
             try:
                 resp = requests.post(api_url, json={
@@ -73,6 +80,9 @@ class HLFundingRateManager:
                 }, timeout=15)
                 raw_rates = resp.json()
                 if not isinstance(raw_rates, list):
+                    logger.warning(f"[HL_FUNDING] Unexpected fundingHistory response for {coin} "
+                                   f"(status={resp.status_code}): {str(raw_rates)[:200]}")
+                    failed_coins.append(coin)
                     continue
 
                 new_records = []
@@ -81,6 +91,7 @@ class HLFundingRateManager:
                     rate = float(r.get("fundingRate", 0))
                     if time_ms > 0:
                         new_records.append({"time_ms": time_ms, "rate": rate})
+                total_fetched += len(new_records)
 
                 if new_records:
                     with self._lock:
@@ -90,12 +101,18 @@ class HLFundingRateManager:
                             if rec["time_ms"] not in existing_times:
                                 existing.append(rec)
                                 existing_times.add(rec["time_ms"])
+                                total_new += 1
                         self._rates[coin] = sorted(existing, key=lambda r: r["time_ms"])
 
             except Exception as e:
                 logger.warning(f"[HL_FUNDING] Failed to fetch rates for {coin}: {e}")
+                failed_coins.append(coin)
 
         self._save_to_disk()
+        logger.info(f"[HL_FUNDING] Fetched {total_fetched} rate records ({total_new} new) for "
+                    f"{len(coins) - len(failed_coins)}/{len(coins)} coins in {time.time() - t0:.1f}s")
+        if failed_coins:
+            logger.warning(f"[HL_FUNDING] Failed to fetch rates for {len(failed_coins)} coin(s): {sorted(failed_coins)}")
 
     def get_rates_for_position(self, coin: str, open_ms: int, current_ms: int) -> Dict[int, float]:
         """
