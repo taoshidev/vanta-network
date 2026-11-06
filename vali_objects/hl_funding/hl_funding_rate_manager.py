@@ -151,3 +151,22 @@ class HLFundingRateManager:
         """Clear all cached rates (for testing)."""
         with self._lock:
             self._rates.clear()
+
+
+if __name__ == "__main__":
+    import argparse
+
+    from time_util.time_util import TimeUtil
+    from vali_objects.vali_config import TradePair, TradePairSource
+
+    parser = argparse.ArgumentParser(description="Backfill HL funding rates into validation/hl_funding_rates.json")
+    parser.add_argument("--hours", type=float, default=ValiConfig.HL_FUNDING_BACKFILL_HOURS,
+                        help=f"Hours to backfill (default: {ValiConfig.HL_FUNDING_BACKFILL_HOURS})")
+    args = parser.parse_args()
+
+    coins = sorted({tp.hl_coin for tp in TradePair if tp.src == TradePairSource.HYPERLIQUID})
+    end_ms = TimeUtil.now_in_millis()
+    start_ms = end_ms - int(args.hours * 3600 * 1000)
+
+    manager = HLFundingRateManager()
+    manager.fetch_and_store_rates(coins, start_ms, end_ms)
