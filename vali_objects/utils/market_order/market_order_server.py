@@ -64,6 +64,7 @@ class MarketOrderServer(RPCServerBase):
         is_hl_taker=None,
         now_ms=None,
         enforce_cooldown=True,
+        limit_price=None,
     ):
         from vali_objects.enums.order_source_enum import OrderSource
         if order_src is None:
@@ -84,6 +85,7 @@ class MarketOrderServer(RPCServerBase):
             is_hl_taker=is_hl_taker,
             now_ms=now_ms,
             enforce_cooldown=enforce_cooldown,
+            limit_price=limit_price,
         )
 
     def close_positions_rpc(self, hotkey, position_uuids=None, close_all=False, now_ms=None):
