@@ -468,7 +468,8 @@ class EntityServer(RPCServerBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: Optional[int]
+        end_time_ms: Optional[int],
+        instant_payouts: Optional[list] = None,
     ) -> Optional[dict]:
         """
         RPC method to calculate payout for a subaccount.
@@ -477,6 +478,7 @@ class EntityServer(RPCServerBase):
             subaccount_uuid: The subaccount UUID
             start_time_ms: Start timestamp (inclusive)
             end_time_ms: End timestamp (inclusive); if None, uses current time
+            instant_payouts: [{cut_ms, payout_usd}] already paid on demand (see EntityManager)
 
         Returns:
             Dict with payout data or None if not found
@@ -484,7 +486,8 @@ class EntityServer(RPCServerBase):
         return self._manager.calculate_subaccount_payout(
             subaccount_uuid,
             start_time_ms,
-            end_time_ms
+            end_time_ms,
+            instant_payouts,
         )
 
     # ==================== Validator Broadcast RPC Methods ====================

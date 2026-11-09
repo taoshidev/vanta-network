@@ -473,7 +473,8 @@ class EntityClient(RPCClientBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: Optional[int]
+        end_time_ms: Optional[int],
+        instant_payouts: Optional[list] = None,
     ) -> Optional[dict]:
         """
         Calculate payout for a subaccount based on debt ledger checkpoints.
@@ -482,6 +483,7 @@ class EntityClient(RPCClientBase):
             subaccount_uuid: The subaccount UUID
             start_time_ms: Start timestamp (inclusive)
             end_time_ms: End timestamp (inclusive); if None, uses current time
+            instant_payouts: [{cut_ms, payout_usd}] already paid on demand (see EntityManager)
 
         Returns:
             Dict with {hotkey, total_checkpoints, checkpoints, payout} or None
@@ -489,7 +491,8 @@ class EntityClient(RPCClientBase):
         return self._server.calculate_subaccount_payout_rpc(
             subaccount_uuid,
             start_time_ms,
-            end_time_ms
+            end_time_ms,
+            instant_payouts,
         )
 
     # ==================== Validator Broadcast Methods ====================

@@ -109,7 +109,7 @@ def apply_deferral(
 
 def frozen_week_penalties(closed_weeks: Optional[List[dict]]) -> Dict[int, float]:
     """week start -> the weekly penalty each closed payout week froze with, for the weeks of
-    buckets the penalty governs. The payout paths pin only this, as a sealed week did; the
+    buckets the penalty governs. The payout paths pin only this; the
     week's dollars are still computed."""
     penalties = {}
     for row in closed_weeks or []:

@@ -448,10 +448,8 @@ class ChallengePeriodManager(CacheController):
         # Transitions read from bucket entries written before the merge, moved onto the accounts on refresh
         self._legacy_transition_starts: dict[str, int] = {}
         self.miner_states: dict[str, MinerBucketState] = self._read_states_from_disk()
-        # Per-bucket record of every stint, kept after the live state is wound down. Off while
-        # backtesting, which never persists anything (see _save_to_disk)
         self._bucket_history = BucketHistoryStore(
-            running_unit_tests=running_unit_tests, enabled=not is_backtesting or running_unit_tests)
+            running_unit_tests=running_unit_tests)
 
         # Cached scores for MinerStatisticsManager
         self._cached_asset_softmaxed_scores: dict[MinerAssetClass, dict[str, float]] = {}

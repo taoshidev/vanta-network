@@ -195,9 +195,9 @@ class Scenario:
 
     # ── Reading the payout ────────────────────────────────────────────────────
 
-    def payout(self, end_ms: int | None = None, start_ms: int = 0) -> dict:
+    def payout(self, end_ms: int | None = None, start_ms: int = 0, instant_payouts: list | None = None) -> dict:
         end_ms = self.now_ms if end_ms is None else end_ms
-        result = self.em._calculate_payout_for_hotkey(HK, start_ms, end_ms)
+        result = self.em._calculate_payout_for_hotkey(HK, start_ms, end_ms, instant_payouts)
         assert result is not None
         assert_no_double_payout_or_holes(result, self.cpm.get_bucket_segments(HK))
         return result
@@ -602,3 +602,101 @@ def test_a_reverted_pro_challenge_funded_elimination_resumes_its_segment(scenari
     s.run_until(W(3, 0.5))
 
     assert [r['payout'] for r in s.payout(W(3))['weekly_settlements']] == [200.0, 100.0, 20.0]
+
+
+# ── Instant payouts: a cut splits the week, and what it paid is not owed again ────
+
+def cut(at_ms: int, paid_usd: float) -> dict:
+    return {'cut_ms': at_ms, 'payout_usd': paid_usd}
+
+
+def test_no_instant_payouts_leave_the_payout_unchanged(scenario):
+    s = scenario
+    pro_funded_from_week_1(s)
+    s.trade(W(1, 1), W(1, 2), 500.0)
+    s.run_until(W(2, 0.5))
+
+    result = s.payout(W(2))
+    assert s.payout(W(2), instant_payouts=[]) == result
+    assert result['instant_paid_usd'] == 0.0
+    assert all(r['instant_paid'] == 0.0 for r in result['weekly_settlements'])
+
+
+def test_an_instant_payout_splits_its_week_and_only_the_rest_is_still_owed(scenario):
+    s = scenario
+    pro_funded_from_week_1(s)
+    s.trade(W(1, 1), W(1, 2), 500.0)
+    s.trade(W(1, 4), W(1, 5), 300.0)
+    s.run_until(W(2, 0.5))
+    without = s.payout(W(2), start_ms=W(1))
+
+    result = s.payout(W(2), start_ms=W(1), instant_payouts=[cut(W(1, 3), 500.0)])
+    assert spans(result)[1:] == [("PRO_FUNDED", (1, 0), (1, 3), 500.0), ("PRO_FUNDED", (1, 3), (2, 0), 300.0)]
+    assert [r['instant_paid'] for r in result['weekly_settlements'][1:]] == [500.0, 0.0]
+    assert (result['payout'], result['instant_paid_usd']) == (300.0, 500.0)
+    assert result['payout'] + result['instant_paid_usd'] == pytest.approx(without['payout'])
+    # The challenge week before the cut's week is left to the weekly payout
+    assert s.payout(W(2), instant_payouts=[cut(W(1, 3), 500.0)])['instant_paid_usd'] == 500.0
+
+
+def test_a_loss_after_an_instant_payout_is_won_back_before_anything_more_is_paid(scenario):
+    """Paid 500 at the cut, then down 200 and up 300: only the 100 above the cut is owed. Without
+    the split the week would close its high water mark at 300 and pay the 200 recovery twice."""
+    s = scenario
+    pro_funded_from_week_1(s)
+    s.trade(W(1, 1), W(1, 2), 500.0)
+    s.trade(W(1, 4), W(1, 5), -200.0)
+    s.trade(W(2, 1), W(2, 2), 300.0)
+    s.run_until(W(3, 0.5))
+
+    result = s.payout(W(3), start_ms=W(1), instant_payouts=[cut(W(1, 3), 500.0)])
+    assert [r['payout'] for r in result['weekly_settlements'][1:]] == [500.0, 0.0, 100.0]
+    assert (result['payout'], result['instant_paid_usd']) == (100.0, 500.0)
+
+
+def test_a_breach_after_an_instant_payout_only_withholds_what_was_made_after_it(scenario):
+    s = scenario
+    pro_funded_from_week_1(s)
+    s.trade(W(1, 1), W(1, 2), 500.0)
+    s.trade(W(1, 3.5), W(1, 4), 300.0)
+    s.run_until(W(3, 0.5), breach_days=(W(1, 5),))
+
+    result = s.payout(W(3), start_ms=W(1), instant_payouts=[cut(W(1, 3), 500.0)])
+    paid, after_cut, week_2 = result['weekly_settlements'][1:]
+    assert (paid['payout'], paid['weekly_penalty'], paid['deferred']) == (500.0, 1.0, 0.0)
+    assert (after_cut['payout'], after_cut['deferred'], after_cut['deferred_balance']) == (0.0, 300.0, 300.0)
+    assert (week_2['payout'], week_2['deferred_released']) == (300.0, 300.0)
+    assert (result['payout'], result['instant_paid_usd']) == (300.0, 500.0)
+
+
+def test_two_instant_payouts_in_one_week(scenario):
+    s = scenario
+    pro_funded_from_week_1(s)
+    s.trade(W(1, 1), W(1, 1.5), 200.0)
+    s.trade(W(1, 2.5), W(1, 3), 300.0)
+    s.trade(W(1, 5), W(1, 6), 100.0)
+    s.run_until(W(2, 0.5))
+
+    result = s.payout(W(2), start_ms=W(1), instant_payouts=[cut(W(1, 4), 300.0), cut(W(1, 2), 200.0)])
+    assert spans(result)[1:] == [
+        ("PRO_FUNDED", (1, 0), (1, 2), 200.0),
+        ("PRO_FUNDED", (1, 2), (1, 4), 300.0),
+        ("PRO_FUNDED", (1, 4), (2, 0), 100.0),
+    ]
+    assert (result['payout'], result['instant_paid_usd']) == (100.0, 500.0)
+
+
+def test_an_instant_payout_before_a_promotion_is_netted_from_the_payout_record(scenario):
+    """The record is pinned without the cut, so the amount the instant payout paid is taken off
+    the record's week instead."""
+    s = scenario
+    s.trade(W(0, 1), W(0, 2), 1_000.0)
+    s.trade(W(0, 4), W(0, 5), 500.0)
+    s.promote(W(0, 6))
+    s.run_until(W(1, 0.5))
+
+    result = s.payout(W(1), instant_payouts=[cut(W(0, 3), 200.0)])
+    record_row = result['weekly_settlements'][0]
+    assert (record_row['payout_record'], record_row['payout'], record_row['instant_paid']) == (True, 300.0, 200.0)
+    assert (result['payout'], result['instant_paid_usd']) == (100.0, 200.0)
+

@@ -1858,10 +1858,15 @@ class EntityManager(ValidatorBroadcastBase):
         self,
         subaccount_uuid: str,
         start_time_ms: int,
-        end_time_ms: Optional[int]
+        end_time_ms: Optional[int],
+        instant_payouts: Optional[List[dict]] = None,
     ) -> Optional[dict]:
         """
         Calculate payout for a subaccount based on debt ledger checkpoints in time range.
+
+        instant_payouts are the on-demand payouts already made, [{cut_ms, payout_usd}], as tracked by
+        the caller. Each one paid its segment's rows from the start of its week (or the previous cut)
+        up to cut_ms; those rows are reported in instant_paid rather than payout.
 
         Orchestrates:
         1. UUID -> hotkey translation
@@ -1883,7 +1888,8 @@ class EntityManager(ValidatorBroadcastBase):
                                                    # deferred_forfeited / deferred_balance, and
                                                    # payout_record for one pinned when its bucket
                                                    # segment closed rather than computed here
-                'payout': float,
+                'payout': float,              # still owed: excludes what instant payouts paid
+                'instant_paid_usd': float,    # paid by instant_payouts within the period
                 'deferred_balance': float,    # escrow still held at end_time_ms
                 'deferred_forfeited': float,  # cumulative escrow dropped by leaving the pro track
                 'off_track': bool,            # current bucket does not hold deferred payouts - true for
@@ -1894,13 +1900,14 @@ class EntityManager(ValidatorBroadcastBase):
         synthetic_hotkey = self.get_synthetic_hotkey_from_uuid(subaccount_uuid)
         if not synthetic_hotkey:
             return None
-        return self._calculate_payout_for_hotkey(synthetic_hotkey, start_time_ms, end_time_ms)
+        return self._calculate_payout_for_hotkey(synthetic_hotkey, start_time_ms, end_time_ms, instant_payouts)
 
     def _calculate_payout_for_hotkey(
         self,
         synthetic_hotkey: str,
         start_time_ms: int,
         end_time_ms: Optional[int],
+        instant_payouts: Optional[List[dict]] = None,
     ) -> Optional[dict]:
         """Payout for one subaccount, keyed by synthetic hotkey. See calculate_subaccount_payout.
 
@@ -1935,30 +1942,31 @@ class EntityManager(ValidatorBroadcastBase):
 
             segments = self._payout_segments(synthetic_hotkey, miner_bucket)
             current = next((s for s in reversed(segments) if s['start_ms'] < end_time_ms), None)
-            record_rows = [
-                {**row, 'payout_record': True}
-                for segment in segments if segment.get('payout_record')
-                for row in segment['payout_record']['settlements']
-                if row['start_ms'] < end_time_ms
-            ]
-            # A segment that closed without a record (e.g. eliminated) still keeps the weeks it froze
-            record_rows += [
-                row for segment in segments
-                if segment is not current and not segment.get('payout_record')
-                for row in segment.get('closed_weeks') or []
-                if row['end_ms'] <= end_time_ms
-            ]
+            cuts = sorted((int(p['cut_ms']), float(p['payout_usd'])) for p in instant_payouts or [])
+            record_rows = []
+            for segment in segments:
+                if segment.get('payout_record'):
+                    rows = [{**row, 'payout_record': True}
+                            for row in segment['payout_record']['settlements'] if row['start_ms'] < end_time_ms]
+                elif segment is not current:
+                    # A segment that closed without a record (e.g. eliminated) still keeps the weeks it froze
+                    rows = [dict(row) for row in segment.get('closed_weeks') or [] if row['end_ms'] <= end_time_ms]
+                else:
+                    continue
+                record_rows += self._net_instant_payouts(rows, segment, cuts)
             checkpoints_dict = [cp.to_dict() for cp in debt_ledger.checkpoints] if debt_ledger else []
 
             def _finalize(computed_rows, deferred_balance):
                 rows = sorted(computed_rows + record_rows, key=lambda w: (w['start_ms'], w['end_ms']))
+                # Only sum settlements that fall within the requested period.
+                in_period = [w for w in rows if w['start_ms'] >= start_time_ms]
                 return {
                     'hotkey': synthetic_hotkey,
                     'total_checkpoints': len(checkpoints_dict),
                     'checkpoints': checkpoints_dict,
                     'weekly_settlements': rows,
-                    # Only sum settlements that fall within the requested period.
-                    'payout': sum(w['payout'] for w in rows if w['start_ms'] >= start_time_ms),
+                    'payout': sum(w['payout'] - w['instant_paid'] for w in in_period),
+                    'instant_paid_usd': sum(w['instant_paid'] for w in in_period),
                     'deferred_balance': deferred_balance,
                     'deferred_forfeited': sum((w['deferred_forfeited'] for w in rows), 0.0),
                     'off_track': off_track,
@@ -1973,8 +1981,10 @@ class EntityManager(ValidatorBroadcastBase):
                 p for p in self._position_client.get_positions_for_one_hotkey(synthetic_hotkey, sort_positions=True)
                 if p.open_ms >= current['start_ms']
             ]
+            live_cuts = [cut_ms for cut_ms, _ in cuts if current['start_ms'] < cut_ms < end_time_ms]
             settled = self._settle_segment(synthetic_hotkey, current, positions, end_time_ms, realtime,
-                                           debt_ledger, self._payout_perf_ledger(synthetic_hotkey, miner_bucket))
+                                           debt_ledger, self._payout_perf_ledger(synthetic_hotkey, miner_bucket),
+                                           instant_cuts_ms=live_cuts)
             if settled is None:
                 return None
             return _finalize(*settled)
@@ -1995,6 +2005,27 @@ class EntityManager(ValidatorBroadcastBase):
             }]
         return segments
 
+    @staticmethod
+    def _net_instant_payouts(rows: List[dict], segment: dict, cuts: List[Tuple[int, float]]) -> List[dict]:
+        """Mark what instant payouts already paid on rows pinned without their cuts (a payout record
+        or the frozen weeks of a closed segment). Each cut taken inside the segment paid its own
+        week up to cut_ms, so its amount is taken from those rows, latest first."""
+        for row in rows:
+            row['instant_paid'] = 0.0
+        end_ms = segment.get('end_ms')
+        for cut_ms, paid_usd in cuts:
+            if not (segment['start_ms'] < cut_ms and (end_ms is None or cut_ms <= end_ms)):
+                continue
+            week_start_ms = TimeUtil.ms_at_start_of_week(cut_ms)
+            for row in reversed(rows):
+                if paid_usd <= 0:
+                    break
+                if row['start_ms'] < cut_ms and row['end_ms'] > week_start_ms:
+                    take = min(paid_usd, max(0.0, row['payout'] - row['instant_paid']))
+                    row['instant_paid'] += take
+                    paid_usd -= take
+        return rows
+
     def _payout_perf_ledger(self, synthetic_hotkey: str, miner_bucket: Optional[MinerBucket] = None):
         _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(synthetic_hotkey)
         perf_ledger = _perf_ledger.get(synthetic_hotkey) if _perf_ledger else None
@@ -2005,7 +2036,8 @@ class EntityManager(ValidatorBroadcastBase):
         return perf_ledger
 
     def _settle_segment(self, synthetic_hotkey: str, segment: dict, positions: list, end_ms: int,
-                        realtime: bool, debt_ledger, perf_ledger) -> Optional[Tuple[List[dict], float]]:
+                        realtime: bool, debt_ledger, perf_ledger,
+                        instant_cuts_ms: List[int] = ()) -> Optional[Tuple[List[dict], float]]:
         """Weekly settlement rows for one earning segment, from its own positions, up to end_ms.
 
         The balance and the payout high water mark start at zero at the segment start, so nothing
@@ -2014,7 +2046,12 @@ class EntityManager(ValidatorBroadcastBase):
         (frozen_week_penalties), as a sealed week did, so a rebuild cannot move it between paid and
         withheld. Returns (rows, deferred_balance), or None when the unrealized PnL at a row end
         cannot be determined.
+
+        instant_cuts_ms also split rows. A row from the start of a cut's week (or the cut before it)
+        up to the cut was paid by that instant payout: it is settled unpenalized, since a breach
+        later in the week cannot withhold money already paid, and reported in instant_paid.
         """
+        instant_cuts_ms = sorted(instant_cuts_ms)
         bucket = MinerBucket(segment['bucket'])
         transition_start = segment.get('transition_start_ms')
         transition_end = segment.get('transition_end_ms')
@@ -2050,6 +2087,11 @@ class EntityManager(ValidatorBroadcastBase):
             row_end = min(TimeUtil.ms_at_start_of_week(row_start) + MS_IN_24_HOURS * 7, end_ms)
             if transition_start is not None and row_start < transition_start < row_end:
                 row_end = transition_start
+            next_cut = next((c for c in instant_cuts_ms if c > row_start), None)
+            if next_cut is not None and next_cut < row_end:
+                row_end = next_cut
+            instant = (next_cut is not None and row_end <= next_cut
+                       and TimeUtil.ms_at_start_of_week(next_cut) <= row_start)
             in_transition = (transition_start is not None and transition_start <= row_start
                              and (transition_end is None or row_start < transition_end))
 
@@ -2065,6 +2107,9 @@ class EntityManager(ValidatorBroadcastBase):
 
             if realtime and row_end == end_ms:
                 unrealized_pnl = realtime_unrealized
+            elif row_end == next_cut:
+                # An instant payout is only taken with every position closed
+                unrealized_pnl = 0.0
             else:
                 # Prefer the account snapshot (equity - balance) nearest the row end; fall back to
                 # the perf ledger checkpoint. row_end only increases, so idx_snap never rewinds.
@@ -2103,14 +2148,14 @@ class EntityManager(ValidatorBroadcastBase):
             gross_payout = max(0.0, payable - payout_hwm)
             payout_hwm = max(payout_hwm, payable)
             row_scale = scale if bucket.payout_scale_applies else 1.0
-            penalty = week.weekly_penalty if bucket.soft_breach_applies else 1.0
+            penalty = week.weekly_penalty if bucket.soft_breach_applies and not instant else 1.0
             owed = gross_payout * row_scale
             earned = owed * penalty
             released, deferred_balance, forfeited = apply_deferral(
                 deferred_balance,
                 owed - earned,
                 track=week.track,
-                week_penalty=week.weekly_penalty,
+                week_penalty=1.0 if instant else week.weekly_penalty,
             )
             rows.append({
                 'start_ms': row_start,
@@ -2124,6 +2169,7 @@ class EntityManager(ValidatorBroadcastBase):
                 'frozen_ms': frozen_ms_by_start.get(row_start),
                 'gross_payout': gross_payout,
                 'payout': earned + released,
+                'instant_paid': earned + released if instant else 0.0,
                 'deferred': owed - earned,
                 'deferred_released': released,
                 'deferred_forfeited': forfeited,
