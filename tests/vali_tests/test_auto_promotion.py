@@ -244,7 +244,8 @@ def test_a_qualifying_candidate_moves_into_the_transition_at_its_multiple(hop_ma
     state = hop_manager.miner_states[HOTKEY]
     assert state.current_bucket == TRANSITION
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, TRANSITION, multiplier * ACCOUNT_SIZE, waive_promotion_fee=False)
+        HOTKEY, TRANSITION, multiplier * ACCOUNT_SIZE, waive_promotion_fee=False,
+        payout_scale=ValiConfig.grow_payout_multiplier(multiplier))
     assert state.auto_promotion == AutoPromotion(
         path=path, multiplier=multiplier, pro_account_size=multiplier * ACCOUNT_SIZE, promoted_ms=NOW_MS,
         equity_return=pytest.approx(equity - 1.0), balance_return=pytest.approx(balance - 1.0), calmar=calmar,
@@ -263,7 +264,7 @@ def test_a_pro_size_already_on_the_record_is_kept(hop_manager, mothership):
     assert _auto_promote(hop_manager) == [HOTKEY]
 
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, TRANSITION, None, waive_promotion_fee=False)
+        HOTKEY, TRANSITION, None, waive_promotion_fee=False, payout_scale=None)
     record = hop_manager.miner_states[HOTKEY].auto_promotion
     assert (record.path, record.multiplier, record.pro_account_size) == (FAST, 5.0, 500_000)
 
@@ -283,7 +284,7 @@ def test_a_validator_other_than_the_mothership_waits_for_its_size(hop_manager):
         "initial_bucket": None, "account_type": "pro", "pro_account_size": 300_000}
     assert _auto_promote(hop_manager, now_ms=NOW_MS + 30_000) == [HOTKEY]
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, TRANSITION, None, waive_promotion_fee=False)
+        HOTKEY, TRANSITION, None, waive_promotion_fee=False, payout_scale=None)
     assert hop_manager.miner_states[HOTKEY].auto_promotion.pro_account_size == 300_000
 
 
@@ -413,7 +414,7 @@ def test_an_entity_promotion_landing_first_is_left_alone(hop_manager):
     assert state.current_bucket == TRANSITION
     assert state.auto_promotion is None
     hop_manager._entity_client.apply_bucket_account_size.assert_called_once_with(
-        HOTKEY, TRANSITION, 250_000, waive_promotion_fee=False)
+        HOTKEY, TRANSITION, 250_000, waive_promotion_fee=False, payout_scale=ValiConfig.grow_payout_multiplier())
 
 
 def test_the_move_is_only_ever_the_hop_out_of_funded(hop_manager):
@@ -566,7 +567,8 @@ def test_the_waiver_reaches_the_entity_manager_through_the_client_and_server(wai
     client = EntityClient(connection_mode=RPCConnectionMode.LOCAL, running_unit_tests=True)
     client.set_direct_server(server)
     client.apply_bucket_account_size(HOTKEY, GROW, waive_promotion_fee=waive)
-    server._manager.apply_bucket_account_size.assert_called_once_with(HOTKEY, GROW, None, waive_promotion_fee=waive)
+    server._manager.apply_bucket_account_size.assert_called_once_with(HOTKEY, GROW, None, waive_promotion_fee=waive,
+                                                                      payout_scale=None)
 
 
 def test_the_entity_can_move_an_auto_promoted_account_on_early_free_of_the_fee(hop_manager):
@@ -574,7 +576,7 @@ def test_the_entity_can_move_an_auto_promoted_account_on_early_free_of_the_fee(h
     assert hop_manager.promote_subaccount(HOTKEY, NOW_MS + DAILY_MS)[0]
     assert hop_manager.miner_states[HOTKEY].current_bucket == GROW
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, GROW, None, waive_promotion_fee=True)
+        HOTKEY, GROW, None, waive_promotion_fee=True, payout_scale=None)
 
 
 def test_the_entity_cannot_change_an_auto_promoted_accounts_size(hop_manager):

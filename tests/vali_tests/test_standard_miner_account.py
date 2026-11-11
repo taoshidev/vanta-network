@@ -201,7 +201,7 @@ class TestStandardMinerAccount(TestBase):
         self.assertEqual(opened.account_type, AccountType.STANDARD.value)
         self.assertIsNone(opened.standard_account_size)
         self.assertIsNone(opened.pro_account_size)
-        self.assertEqual(opened.payout_scale, ValiConfig.STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER)
+        self.assertEqual(opened.payout_scale, ValiConfig.grow_payout_multiplier())
         self.assertEqual(pro_payout_scale(opened.standard_account_size, opened.pro_account_size, opened.payout_scale), 1.0)
 
         # Once auto-promotion grants a pro size the view reads as a subaccount on the pro track does
@@ -210,6 +210,6 @@ class TestStandardMinerAccount(TestBase):
         self.assertEqual(grown.standard_account_size, 50_000.0)
         self.assertTrue(grown.account_type == AccountType.PRO.value and bool(grown.pro_account_size))
         self.assertEqual(pro_payout_scale(grown.standard_account_size, grown.pro_account_size, grown.payout_scale),
-                         ValiConfig.STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER * 50_000.0 / 250_000.0)
+                         ValiConfig.grow_payout_multiplier() * 50_000.0 / 250_000.0)
         pinned = PipelineAccountInfo.from_standard_miner(record(payout_scale=1.0))
         self.assertEqual(pinned.payout_scale, 1.0)

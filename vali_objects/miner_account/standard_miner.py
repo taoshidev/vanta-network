@@ -25,7 +25,7 @@ class StandardMinerAccount:
     opening_price_usd: float
     trading_account_size: Optional[float] = None  # the size traded now when it differs: the pro size on the pro track
     pro_account_size: Optional[float] = None
-    payout_scale: Optional[float] = None  # None pays STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER
+    payout_scale: Optional[float] = None  # the Grow payout multiplier, fixed with the pro size
     closed_at_ms: Optional[int] = None
     reopened_at_ms: Optional[int] = None  # when an admin last undid a close; a later reopening outranks a close
 
@@ -120,7 +120,7 @@ class PipelineAccountInfo:
     @classmethod
     def from_standard_miner(cls, record: StandardMinerAccount) -> "PipelineAccountInfo":
         """From a standard miner's record: always created through the challenge, on the pro track once
-        auto-promotion granted a pro size, paid STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER unless pinned."""
+        auto-promotion granted a pro size, paid the multiplier fixed with it (the lowest if none was)."""
         on_pro_track = record.pro_account_size is not None
         return cls(
             initial_bucket=MinerBucket.SUBACCOUNT_CHALLENGE.value,
@@ -128,7 +128,7 @@ class PipelineAccountInfo:
             standard_account_size=record.account_size if on_pro_track else None,
             pro_account_size=record.pro_account_size,
             payout_scale=(record.payout_scale if record.payout_scale is not None
-                          else ValiConfig.STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER),
+                          else ValiConfig.grow_payout_multiplier()),
         )
 
 
@@ -200,15 +200,18 @@ class SizingRejected(ValueError):
 
 
 def bucket_sizing(record: StandardMinerAccount, target_bucket: MinerBucket,
-                  pro_account_size=None) -> StandardMinerAccount:
+                  pro_account_size=None, payout_scale=None) -> StandardMinerAccount:
     """The record after a move into target_bucket, sized as EntityManager.apply_bucket_account_size sizes a
-    subaccount, no fee. A standard bucket trades the opening size, keeping any granted pro size for a move back."""
+    subaccount, no fee. A standard bucket keeps any granted pro size; the first pro size given fixes payout_scale."""
     if not target_bucket.is_pro_track:
         return replace(record, trading_account_size=None)
     if pro_account_size is not None:
         error = pro_account_size_error(pro_account_size, record.account_size)
         if error:
             raise SizingRejected(error)
+        if record.pro_account_size is None and record.payout_scale is None:
+            record = replace(record, payout_scale=(payout_scale if payout_scale is not None
+                                                   else ValiConfig.grow_payout_multiplier()))
     elif record.pro_account_size is not None:
         pro_account_size = record.pro_account_size
     else:

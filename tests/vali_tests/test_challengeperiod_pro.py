@@ -1226,7 +1226,7 @@ def test_each_hop_moves_to_its_own_target(hop_manager, source, target):
     assert success, message
     assert hop_manager.miner_states[HOTKEY].current_bucket == target
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, target, GRANTED_SIZE, waive_promotion_fee=False)
+        HOTKEY, target, GRANTED_SIZE, waive_promotion_fee=False, payout_scale=ValiConfig.grow_payout_multiplier())
 
 
 def test_an_omitted_size_is_passed_through_as_none(hop_manager):
@@ -1236,7 +1236,7 @@ def test_an_omitted_size_is_passed_through_as_none(hop_manager):
     assert hop_manager.promote_subaccount(HOTKEY, NOW_MS)[0]
 
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, None, waive_promotion_fee=False
+        HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, None, waive_promotion_fee=False, payout_scale=None
     )
 
 

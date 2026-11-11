@@ -969,7 +969,7 @@ class ChallengePeriodManager(CacheController):
 
     def promote_subaccount(
         self, hotkey: str, current_time_ms: int, pro_account_size: float | None = None,
-        from_bucket: MinerBucket | None = None,
+        from_bucket: MinerBucket | None = None, auto_promotion_multiple: int | None = None,
     ) -> tuple[bool, str]:
         """Promote a subaccount one step up the pro track on the entity miner's request, or a subaccount or
         standard miner by auto-promotion (_auto_promote).
@@ -982,7 +982,8 @@ class ChallengePeriodManager(CacheController):
         is still in it, so a caller that decided on one hop never makes the next. A subaccount promoted
         automatically may be moved out of PRO_CHALLENGE_TRANSITION early, but only on the size the
         network granted and free of the promotion fee: a request that sends a pro_account_size is
-        rejected.
+        rejected. A pro size granted here fixes the account's Grow payout multiplier: the one of
+        auto_promotion_multiple, else the lowest (ValiConfig.grow_payout_multiplier).
 
         Only a target with switches_account wipes trading state, which is the two hops landing on a
         pro account (PRO_CHALLENGE_DIRECT and PRO_CHALLENGE_FROM_STANDARD): positions closed, limit
@@ -997,10 +998,12 @@ class ChallengePeriodManager(CacheController):
         if from_bucket is None and hotkey in self.miner_states:
             from_bucket = self.miner_states[hotkey].current_bucket
         with self._promotion_lock(hotkey):
-            return self._promote_subaccount(hotkey, current_time_ms, pro_account_size, from_bucket)
+            return self._promote_subaccount(hotkey, current_time_ms, pro_account_size, from_bucket,
+                                            auto_promotion_multiple)
 
     def _promote_subaccount(self, hotkey: str, current_time_ms: int, pro_account_size: float | None,
-                            from_bucket: MinerBucket | None) -> tuple[bool, str]:
+                            from_bucket: MinerBucket | None,
+                            auto_promotion_multiple: int | None = None) -> tuple[bool, str]:
         """promote_subaccount, run under the subaccount's promotion lock."""
         state = self.miner_states.get(hotkey)
         if state is None:
@@ -1026,14 +1029,17 @@ class ChallengePeriodManager(CacheController):
 
         # Record the granted pro size first: the account switch reads it back to size the new account.
         # Every pro bucket past TRANSITION trades the pro size
+        payout_scale = (ValiConfig.grow_payout_multiplier(auto_promotion_multiple)
+                        if pro_account_size is not None else None)
         record = self._standard_account(hotkey)
         if record is not None:
             sizing_snapshot = {"record": record.to_dict()}
-            success, message = self._size_standard_account(hotkey, record, target_bucket, pro_account_size)
+            success, message = self._size_standard_account(hotkey, record, target_bucket, pro_account_size,
+                                                           payout_scale)
         else:
             sizing_snapshot = self._entity_client.snapshot_bucket_account_size(hotkey)
             success, message = self._entity_client.apply_bucket_account_size(
-                hotkey, target_bucket, pro_account_size, waive_promotion_fee=auto_promoted
+                hotkey, target_bucket, pro_account_size, waive_promotion_fee=auto_promoted, payout_scale=payout_scale
             )
         if not success:
             logger.warning(f"[CHALLENGE] promotion rejected for {hotkey}: {message}")
@@ -1097,11 +1103,12 @@ class ChallengePeriodManager(CacheController):
         return PipelineAccountInfo.from_subaccount(info) if info else None
 
     def _size_standard_account(self, hotkey: str, record: StandardMinerAccount, target_bucket: MinerBucket,
-                               pro_account_size: float | None = None) -> tuple[bool, str]:
+                               pro_account_size: float | None = None,
+                               payout_scale: float | None = None) -> tuple[bool, str]:
         """Point a standard miner's account at the size its target bucket trades, as apply_bucket_account_size does
         for a subaccount: through its own record, with no fee."""
         try:
-            sized = bucket_sizing(record, target_bucket, pro_account_size)
+            sized = bucket_sizing(record, target_bucket, pro_account_size, payout_scale)
         except SizingRejected as e:
             return False, str(e)
         self._commit_standard_account_sizing(hotkey, record, sized, target_bucket)
@@ -1579,7 +1586,8 @@ class ChallengePeriodManager(CacheController):
             state.auto_promotion = record
         try:
             moved, message = self.promote_subaccount(hotkey, current_time_ms, requested_size,
-                                                     from_bucket=MinerBucket.SUBACCOUNT_FUNDED)
+                                                     from_bucket=MinerBucket.SUBACCOUNT_FUNDED,
+                                                     auto_promotion_multiple=multiple)
         except Exception as e:
             # It can raise after its own bucket entry has landed (see promote_subaccount); an entry made
             # by anyone else (the entity's own request) carries another time

@@ -253,7 +253,7 @@ Returns all the hotkeys as seen in the metagraph from the validator's perspectiv
 
 Comprehensive dashboard for a regular (non-entity) miner hotkey. Aggregates the same per-section data as the [Subaccount Dashboard](#get-subaccount-dashboard-version-2) endpoint (challenge period, drawdown, elimination, account size, positions, limit orders, ledger, statistics), minus the entity-specific `subaccount_info` section. Uses the same `create_subaccount_dashboard` aggregation logic — see that endpoint's docs for the full section-by-section response schema.
 
-For a miner on the [standard account track](miner.md#standard-account-track), `account_size_data.standard_account` is the account record: `opened_at_ms`, `opening_leverage_tier`, `asset_class`, `account_size` (fixed at opening, the size the pro challenge is paid on), `locked_theta`, `opening_price_usd`, `trading_account_size` (the size traded when it differs: the pro size on the pro track, else `null`), `pro_account_size`, `payout_scale` (`null` = the configured pro challenge multiplier), `closed_at_ms` and `reopened_at_ms`. It is `null` for every other miner. For a miner on the existing rules whose size is fixed (see [miner rule 3](miner.md#basic-rules)), `account_size_data.size_lock` is `{locked_ms, account_size, locked_theta, closed_at_ms}`: when the size was fixed, the size, the theta behind it and, once a withdrawal closed the account, when; `null` otherwise. Every validator fixes the size at its first pass after the lock start; the mothership broadcasts its locks and closes, which the other validators adopt.
+For a miner on the [standard account track](miner.md#standard-account-track), `account_size_data.standard_account` is the account record: `opened_at_ms`, `opening_leverage_tier`, `asset_class`, `account_size` (fixed at opening, the size the pro challenge is paid on), `locked_theta`, `opening_price_usd`, `trading_account_size` (the size traded when it differs: the pro size on the pro track, else `null`), `pro_account_size`, `payout_scale` (the pro challenge multiplier, fixed with the pro size by the auto-promotion's multiple: 1.3 at 3x, 1.5 at 5x, 2.0 at 10x; `null` before one is granted), `closed_at_ms` and `reopened_at_ms`. It is `null` for every other miner. For a miner on the existing rules whose size is fixed (see [miner rule 3](miner.md#basic-rules)), `account_size_data.size_lock` is `{locked_ms, account_size, locked_theta, closed_at_ms}`: when the size was fixed, the size, the theta behind it and, once a withdrawal closed the account, when; `null` otherwise. Every validator fixes the size at its first pass after the lock start; the mothership broadcasts its locks and closes, which the other validators adopt.
 
 **Authentication:** Requires **tier 100 API access**.
 
@@ -1427,6 +1427,9 @@ subaccount it does not own.
   - **Required entering the pro track** (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`).
   - **Optional on the hop within the track** (out of `PRO_CHALLENGE_TRANSITION`): a new size replaces
     the recorded one; omitted, the recorded size is kept.
+  - For a subaccount created at or after the promotion rules start
+    (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`), the first size granted fixes its
+    `PRO_CHALLENGE_FROM_STANDARD` payout multiplier at 1.3, whatever the size.
 - `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
 - `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
 - `signature` (string, required): Coldkey signature over the sorted-JSON of
@@ -1473,9 +1476,14 @@ the pro size off the pro track and let the next size-less attempt reuse that siz
   "synthetic_hotkey": "5GhDr3xy...abc_0",
   "bucket": "PRO_CHALLENGE_FROM_STANDARD",
   "pro_account_size": 500000.0,
-  "account_size": 500000.0
+  "account_size": 500000.0,
+  "payout_scale": null,
+  "pro_fee_theta": 100.0,
+  "pro_fee_theta_pending": 100.0
 }
 ```
+
+`payout_scale` is the `PRO_CHALLENGE_FROM_STANDARD` payout multiplier fixed on the subaccount (`null` for the default 2.0).
 
 **Errors:**
 - `400`: a field or `pro_account_size` is missing or invalid, `synthetic_hotkey` is not a subaccount, or the promotion was rejected (the subaccount's bucket has no promotion target, no pro account size to use, or insufficient entity collateral for the promotion fee)
@@ -2095,6 +2103,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "account_size": 100000.0,
       "standard_account_size": null,
       "pro_account_size": null,
+      "payout_scale": null,
       "account_type": "standard",
       "drawdown_criteria": "static",
       "status": "active",
@@ -2289,6 +2298,7 @@ This is the only guaranteed section of the response. All other sections may be m
 - `account_size`: Current account size (in USD)
 - `standard_account_size`: Account size on the standard track, snapshotted when the subaccount entered the pro track (null until then)
 - `pro_account_size`: Pro account size the admin set when offering the subaccount the pro track, at least the subaccount's standard account size and at most $1,000,000 (null until the subaccount is first offered the pro track)
+- `payout_scale`: The `PRO_CHALLENGE_FROM_STANDARD` payout multiplier fixed on the subaccount, which its margin there follows: `1.0` for Instant Funded, the one fixed with the first pro size for a subaccount created at or after the promotion rules start; `null` means `ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER` (2.0)
 - `account_type`: `"standard"` or `"pro"`
 - `status`: Current status ("active", "eliminated", or "unknown")
 - `created_at_ms`: Timestamp when subaccount was created
@@ -2826,7 +2836,7 @@ All USD figures are against the live `balance`, which is what the order path app
 - `max_asset_class_usd`: Per-asset-class exposure cap in USD, from the account's own curve.
 - `correlation_limits`: Present for pro accounts only. Groups with no exposure are omitted — they are at full room, which a client fills from `pro.correlation_limits` in `/trade-pairs`. A pro account with no exposure at all still returns the block with an empty `groups`, so "pro with nothing open" is distinguishable from "not pro".
 - `entity_collateral.headroom_theta`: The parent entity's spare collateral (deposited minus what all its subaccounts require). **`null` means the entity's balance is unknown, not that there is no headroom** — do not render it as zero.
-- `entity_collateral.headroom_usd`: The headroom as margin this subaccount could still open: `headroom_theta` × its margin CPT (70 in `PRO_FUNDED`, else 35), divided by 2 for a standard account growing into pro (`PRO_CHALLENGE_FROM_STANDARD` at the 2x payout scale). `null` when `headroom_theta` is.
+- `entity_collateral.headroom_usd`: The headroom as margin this subaccount could still open: `headroom_theta` × its margin CPT (70 in `PRO_FUNDED`, else 35), divided by its payout multiplier for a standard account growing into pro (`PRO_CHALLENGE_FROM_STANDARD`: 2, or the multiplier fixed with the pro size for a subaccount created at or after the promotion rules start). `null` when `headroom_theta` is.
 
 **Example:**
 ```bash

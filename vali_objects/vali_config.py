@@ -605,11 +605,35 @@ class ValiConfig:
     AUTO_PROMOTION_STEADY_TRACK_MAX_DAILY_CONSISTENCY = 0.5
     AUTO_PROMOTION_STEADY_TRACK_CALMAR_MULTIPLIERS = ((2.0, 10), (1.5, 5))  # (minimum calmar, multiple)
     AUTO_PROMOTION_TRANSITION_DAYS = 7  # longest time in PRO_CHALLENGE_TRANSITION after an auto-promotion; ends early once flat
+    # PRO_CHALLENGE_FROM_STANDARD payout multiplier by the multiple an auto-promotion grants, fixed with the pro size
+    # (any other grant gets the lowest), for standard miners and subaccounts from SUBACCOUNT_PROMOTION_RULES_START_MS on
+    AUTO_PROMOTION_PAYOUT_MULTIPLIERS = {3: 1.3, 5: 1.5, 10: 2.0}
+    # Creation time (ms) from which subaccounts take AUTO_PROMOTION_PAYOUT_MULTIPLIERS. None = off; set it after
+    # every validator runs the release that reads it, and never move it back
+    SUBACCOUNT_PROMOTION_RULES_START_MS = None
+    SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET = None
+
+    @staticmethod
+    def subaccount_promotion_rules_start_ms(is_testnet: bool = False) -> int | None:
+        """This network's SUBACCOUNT_PROMOTION_RULES_START_MS; None while it is off."""
+        if is_testnet:
+            return ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET
+        return ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS
+
+    @staticmethod
+    def grow_payout_multiplier(auto_promotion_multiple: int | None = None) -> float:
+        """The PRO_CHALLENGE_FROM_STANDARD payout multiplier of an auto-promotion at this multiple; the lowest for
+        a pro size granted any other way (None)."""
+        multipliers = ValiConfig.AUTO_PROMOTION_PAYOUT_MULTIPLIERS
+        if auto_promotion_multiple in multipliers:
+            return multipliers[auto_promotion_multiple]
+        return min(multipliers.values())
 
     # Payout basis for a trader running the pro challenge after passing the standard challenge
     # (PRO_CHALLENGE_FROM_STANDARD). PnL earned on the pro account is paid as though it had been
     # earned on this multiple of their standard account size: at 2.0, $5K of eligible PnL on a
     # $500K pro account pays a $100K standard account (5K / 500K) * 2 * 100K = $2K.
+    # Read whenever a subaccount has no payout_scale of its own.
     PRO_TRANSITION_PAYOUT_MULTIPLIER = 2.0
     # Multiplier used instead when a subaccount is created directly into PRO_CHALLENGE_FROM_STANDARD
     # (Instant Funded). Not caller-selectable: the fee does not price a larger multiplier.
@@ -652,8 +676,6 @@ class ValiConfig:
     # EOD high-water mark and daily loss limits in every bucket before PRO_FUNDED, which keeps its own
     STANDARD_MINER_EOD_HWM_THRESHOLD = 0.05
     STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
-    # Payout basis in PRO_CHALLENGE_FROM_STANDARD, as PRO_TRANSITION_PAYOUT_MULTIPLIER is for subaccounts
-    STANDARD_MINER_PRO_TRANSITION_PAYOUT_MULTIPLIER = 1.5
     # The leverage tier a standard miner trades from SUBACCOUNT_FUNDED on, whatever tier it opened on
     STANDARD_MINER_FUNDED_LEVERAGE_TIER = 3
     # A standard miner's fast track return until each day count from its first order as a funded account, then
@@ -916,7 +938,7 @@ class ValiConfig:
     @staticmethod
     def margin_theta(margin_usd: float, pro_funded: bool = False, multiplier: float = 1.0) -> float:
         """Theta held against `margin_usd` of a subaccount's remaining loss capacity. `multiplier` is
-        the payout multiplier the margin backs (2 for a standard account growing into pro)."""
+        the payout multiplier the margin backs (a standard account growing into pro holds its own)."""
         cpt = ValiConfig.PRO_MARGIN_CPT if pro_funded else ValiConfig.MARGIN_CPT
         return max(0.0, margin_usd or 0.0) * multiplier / cpt
 

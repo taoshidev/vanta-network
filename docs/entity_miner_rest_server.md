@@ -358,6 +358,7 @@ exist (`MinerBucket.promotion_target`):
   "bucket": "PRO_CHALLENGE_DIRECT",
   "pro_account_size": 500000,
   "account_size": 500000,
+  "payout_scale": null,
   "pro_fee_theta": 100.0,
   "pro_fee_theta_pending": 100.0
 }
@@ -367,6 +368,8 @@ exist (`MinerBucket.promotion_target`):
 `500,000 / 3,000 − 100,000 / 1,500`. At a 3% daily loss limit it is `500,000 / 5,000 − 100,000 / 2,500 = 60`.
 See [entity_miner.md](entity_miner.md#pro-promotion-fee).)
 
+- `payout_scale`: The `PRO_CHALLENGE_FROM_STANDARD` payout multiplier fixed on the subaccount, `null` for the
+  default 2.0; a subaccount created at or after the promotion rules start gets 1.3 with its first pro size
 - `pro_fee_theta`: Total theta assessed for this subaccount's pro account so far
 - `pro_fee_theta_pending`: The portion charged but not yet slashed on-chain by the collateral daemon
 
@@ -393,6 +396,9 @@ See [entity_miner.md](entity_miner.md#pro-promotion-fee).)
   the increase over the fee already assessed is billed — so re-entering the pro track at the same
   size is free, and a pro size of exactly twice the standard size is charged nothing. A
   collateral-exempt subaccount (`reg_fee_theta == 0`) stays exempt on the pro track.
+- A subaccount created at or after the promotion rules start
+  (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`) is paid in `PRO_CHALLENGE_FROM_STANDARD` at 1.3x
+  on a pro size granted this way, whatever the size; one created before keeps 2x.
 - A subaccount left in `PRO_CHALLENGE_TRANSITION` is advanced automatically at the first Monday
   00:00 UTC after it entered the bucket, on the first challenge-period refresh at or after that
   boundary.

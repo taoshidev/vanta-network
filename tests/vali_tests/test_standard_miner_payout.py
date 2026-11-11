@@ -31,7 +31,8 @@ HOUR = 60 * 60 * 1000
 CP = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
 SIZE = 50_000.0
 PRO_SIZE = 125_000.0
-GROW_SCALE = 1.5 * SIZE / PRO_SIZE  # 0.6
+GROW_MULTIPLIER = 1.5
+GROW_SCALE = GROW_MULTIPLIER * SIZE / PRO_SIZE  # 0.6
 GROW, PRO, TRANSITION = (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
                          MinerBucket.PRO_CHALLENGE_TRANSITION)
 OPENING = dict(opened_at_ms=NOW_MS - 30 * ValiConfig.DAILY_MS, opening_leverage_tier=2, asset_class="crypto",
@@ -39,6 +40,8 @@ OPENING = dict(opened_at_ms=NOW_MS - 30 * ValiConfig.DAILY_MS, opening_leverage_
 
 
 def record(**overrides) -> StandardMinerAccount:
+    if "pro_account_size" in overrides:  # a granted pro size carries the multiplier fixed with it
+        overrides.setdefault("payout_scale", GROW_MULTIPLIER)
     return StandardMinerAccount(**{**OPENING, **overrides})
 
 

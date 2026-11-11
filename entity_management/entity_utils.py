@@ -131,9 +131,9 @@ def pro_payout_scale(standard_account_size, pro_account_size, payout_scale=None)
 
     A trader running the pro challenge after passing the standard challenge trades the larger pro
     account but is paid on their standard account, uplifted by the subaccount's payout_scale when
-    one was set at creation, else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER. Returns 1.0 when
-    either size is missing, so a subaccount that never entered the pro track is paid on its own
-    PnL unchanged.
+    one was fixed (at creation or with the pro size), else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER.
+    Returns 1.0 when either size is missing, so a subaccount that never entered the pro track is paid
+    on its own PnL unchanged.
 
     Both payout paths (EntityManager.get_payout_scale and the debt-ledger aggregation) read this,
     so the number a trader is quoted is the number the weight calculator pays.
@@ -154,6 +154,12 @@ def is_created_through_challenge(initial_bucket: Optional[str]) -> bool:
     """True for a subaccount created into SUBACCOUNT_CHALLENGE (None is the default from before
     initial_bucket was recorded)."""
     return initial_bucket in (None, "SUBACCOUNT_CHALLENGE")
+
+
+def is_on_promotion_rules(created_at_ms, is_testnet: bool = False) -> bool:
+    """True for a subaccount created at or after its network's ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS."""
+    start_ms = ValiConfig.subaccount_promotion_rules_start_ms(is_testnet)
+    return start_ms is not None and created_at_ms is not None and created_at_ms >= start_ms
 
 
 def registration_cpt(account_size, initial_bucket=None, intraday_drawdown_threshold=None,

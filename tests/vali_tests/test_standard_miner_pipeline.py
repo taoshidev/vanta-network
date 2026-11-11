@@ -173,7 +173,8 @@ class TestPipelineOnARealHotkey(TestBase):
         self.assertTrue(self.manager._move_to_auto_promotion(
             HOTKEY, account(standard_account=record()), stats, ("steady_track", 5), NOW_MS))
         self.assertEqual(self._bucket(HOTKEY), MinerBucket.PRO_CHALLENGE_TRANSITION)
-        self.assertEqual(self.records[HOTKEY], record(pro_account_size=5 * SIZE))
+        self.assertEqual(self.records[HOTKEY],
+                         record(pro_account_size=5 * SIZE, payout_scale=ValiConfig.grow_payout_multiplier(5)))
         self.assertEqual(state.auto_promotion.pro_account_size, 5 * SIZE)
         self.entity.apply_bucket_account_size.assert_not_called()
         self.entity.snapshot_bucket_account_size.assert_not_called()
@@ -186,6 +187,18 @@ class TestPipelineOnARealHotkey(TestBase):
             OTHER, account(OTHER, standard_account=self.records[OTHER]), stats, ("fast_track", 3), NOW_MS))
         self.assertEqual(self._bucket(OTHER), MinerBucket.PRO_CHALLENGE_TRANSITION)
         self.assertEqual(self.records[OTHER], record(pro_account_size=PRO_SIZE))
+
+    def test_the_mothership_fixes_the_multiplier_of_the_multiple_it_grants(self):
+        stats = AutoPromotionStats(calmar=2.0, daily_consistency=0.3, max_drawdown=0.97, trading_days=60)
+        for path, multiple in (("fast_track", 3), ("steady_track", 5), ("steady_track", 10)):
+            with self.subTest(multiple=multiple):
+                hotkey = f"standard_miner_{multiple}x"
+                self.records[hotkey] = record()
+                self._in(hotkey, MinerBucket.SUBACCOUNT_FUNDED)
+                self.assertTrue(self.manager._move_to_auto_promotion(
+                    hotkey, account(hotkey, standard_account=record()), stats, (path, multiple), NOW_MS))
+                self.assertEqual((self.records[hotkey].pro_account_size, self.records[hotkey].payout_scale),
+                                 (multiple * SIZE, ValiConfig.grow_payout_multiplier(multiple)))
 
     def test_leaving_the_transition_trades_the_pro_size_on_all_markets(self):
         self.records[HOTKEY] = record(pro_account_size=PRO_SIZE)

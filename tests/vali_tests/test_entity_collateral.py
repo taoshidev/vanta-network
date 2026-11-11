@@ -1202,6 +1202,29 @@ class TestMarginCpt(unittest.TestCase):
         self.manager.process_pending_slashes()
         return self.manager._contract_client.slash_miner_collateral.call_args.args[1]
 
+    def test_grow_margin_follows_the_multiplier_fixed_with_the_pro_size(self):
+        """Margin, the order gate, the reservation for a realized loss and the slash of a maximum loss, at each
+        auto-promotion payout multiplier."""
+        grow = MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+        for multiplier in ValiConfig.AUTO_PROMOTION_PAYOUT_MULTIPLIERS.values():
+            with self.subTest(multiplier=multiplier):
+                self._subaccount(grow, self.PRO_SIZE, payout_scale=multiplier)
+                held = self.manager.compute_entity_required_collateral(self.ENTITY)
+                self.assertAlmostEqual(held, multiplier * 5_000 / 35)
+
+                self._subaccount(grow, self.PRO_SIZE, position_value=0.0, payout_scale=multiplier)
+                self.manager._collateral_cache = {self.ENTITY: held - 0.01}
+                self.assertFalse(self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)[0])
+                self.manager._collateral_cache = {self.ENTITY: held + 0.01}
+                self.assertTrue(self.manager.can_open_position(self.ENTITY, self.HOTKEY, 1_000_000.0)[0])
+
+                self.manager._collateral_cache = {self.ENTITY: 1_000.0}
+                self.manager.slash_on_realized_loss(self.ENTITY, self.HOTKEY, 700.0)
+                self.assertAlmostEqual(self.manager._collateral_cache[self.ENTITY], 1_000.0 - multiplier * 700 / 35)
+
+                slashed = self._pending_loss_slash(grow, self.PRO_SIZE, 10_000_000.0, multiplier)
+                self.assertAlmostEqual(slashed, held)
+
     def test_a_maximum_loss_slashes_exactly_the_margin_held(self):
         """Losses are slashed at the margin rate, so the whole 5% slash ceiling costs what the margin holds."""
         cases = (
