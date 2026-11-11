@@ -95,6 +95,7 @@ class MinerAccount:
     daily_open_snapshot: Optional[AccountSnapshot] = None
     standard_account: Optional[StandardMinerAccount] = None
     size_lock: Optional[AccountSizeLock] = None  # a miner on the existing rules, from the lock start on
+    peak_leverage_use: float = 0.0  # the highest leverage_use() after a fill or a fee since the account was last reset
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -151,6 +152,20 @@ class MinerAccount:
             return get_standard_account_portfolio_leverage(self)
         tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
         return ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
+
+    def leverage_use(self) -> float:
+        """The share of its leverage limits the account uses: the larger of its open positions' entry value over the
+        portfolio cap and its highest asset class's over that class's cap, each as a multiple of the balance."""
+        from vali_objects.utils.leverage_utils import get_per_class_leverage_cap
+        balance = self.balance
+        if balance <= 0:
+            return 0.0
+        uses = [self.capital_used / (balance * self.multiplier)] if self.multiplier > 0 else []
+        for category, used in self.capital_used_by_class.items():
+            cap = get_per_class_leverage_cap(self, category)
+            if cap > 0:
+                uses.append(used / (balance * cap))
+        return max(uses, default=0.0)
 
     def leverage_limits(self) -> dict:
         """Which leverage curve this account trades on, and where it sits on it.
@@ -270,6 +285,7 @@ class MinerAccount:
             'hl_address': self.hl_address,
             'leverage_tier': self.leverage_tier,
             'max_return': self.max_return,
+            'peak_leverage_use': self.peak_leverage_use,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
             # JSON keys must be str; convert TradePairCategory enum to its .value
@@ -295,6 +311,7 @@ class MinerAccount:
             'total_fees_paid': self.total_fees_paid,
             'buying_power': self.buying_power,
             'max_return': self.max_return,
+            'peak_leverage_use': self.peak_leverage_use,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
@@ -513,6 +530,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     hl_address = last_record.get("hl_address")
                     leverage_tier = last_record.get("leverage_tier")
                     max_return = last_record.get("max_return", 1.0)
+                    peak_leverage_use = last_record.get("peak_leverage_use", 0.0)
                     unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
                     correlated_exposure_raw = last_record.get("correlated_exposure_by_group", {})
@@ -529,6 +547,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     hl_address = None
                     leverage_tier = None
                     max_return = 1.0
+                    peak_leverage_use = 0.0
                     unrealized_pnl = 0.0
                     capital_used_by_class_raw = {}
                     correlated_exposure_raw = {}
@@ -623,6 +642,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     hl_address=hl_address,
                     leverage_tier=leverage_tier,
                     max_return=max_return,
+                    peak_leverage_use=peak_leverage_use,
                     unrealized_pnl=unrealized_pnl,
                     capital_used_by_class=capital_used_by_class,
                     correlated_exposure_by_group=correlated_exposure_by_group,
@@ -779,6 +799,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             self.take_account_snapshot(hotkey=hotkey, reset_snapshot=True)
             account.max_return = 1.0
+            account.peak_leverage_use = 0.0
 
             self._save_accounts_to_disk()
         return True
@@ -1298,6 +1319,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     account.capital_used_by_class.get(trade_pair_category, 0.0) + order_value_usd
                 )
             self._apply_correlated_exposure(account, trade_pair, position_type, order_value_usd, opening=True)
+            self._advance_peak_leverage_use(account)
 
             self._save_accounts_to_disk()
 
@@ -1305,6 +1327,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 f"[PROCESS ORDER BUY {hotkey}] ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
+
+    @staticmethod
+    def _advance_peak_leverage_use(account: MinerAccount) -> None:
+        """Raise the account's peak leverage use to its use now, after a fill or a fee; never fails the caller."""
+        try:
+            account.peak_leverage_use = max(account.peak_leverage_use, account.leverage_use())
+        except Exception as e:
+            logger.error(f"[MINER_ACCOUNT] leverage use of {account.miner_hotkey} not measured: {e}")
 
     def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0, trade_pair=None, position_type=None) -> None:
         """
@@ -1345,6 +1375,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 # Clamp to actual borrowed amount and repay
                 loan_repaid = min(loan_repaid, account.total_borrowed_amount)
                 account.total_borrowed_amount -= loan_repaid
+            # A realized loss shrinks the balance the remaining positions are measured against
+            self._advance_peak_leverage_use(account)
 
             self._save_accounts_to_disk()
 
@@ -1366,6 +1398,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             for hotkey, fee_usd in hotkey_to_fee.items():
                 account = self.get_or_create(hotkey)
                 account.total_fees_paid += fee_usd
+                self._advance_peak_leverage_use(account)  # a fee shrinks the balance open positions are measured on
             self._save_accounts_to_disk()
 
     def process_dividend_income(self, hotkey_to_credit: Dict[str, float]) -> None:

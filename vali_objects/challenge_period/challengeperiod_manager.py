@@ -167,6 +167,7 @@ class AutoPromotion:
     calmar: float = 0.0
     daily_consistency: float = 1.0
     trading_days: int = 0
+    peak_leverage_use: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -460,6 +461,8 @@ class ChallengePeriodManager(CacheController):
         # each candidate's equity has held the fast track's return, the payout week a failed move was last
         # logged in, the ledgers logged incomplete, and whether this validator is the mothership
         self._initial_buckets: dict[str, str | None] = {}
+        self._promotion_rules: dict[str, bool] = {}  # whether each account is on the weekly and leverage fast track
+        self._testnet: bool | None = None
         self._auto_promotion_candidates: set[str] = set()
         self._auto_promotion_stats: dict[str, AutoPromotionStats] = {}
         self._fast_track_since_ms: dict[str, int] = {}
@@ -1476,7 +1479,7 @@ class ChallengePeriodManager(CacheController):
             line = self._fast_track_return(hotkey, account, first_order_ms, current_time_ms)
             since_ms = self._fast_track_since_ms.get(hotkey)
             if since_ms is not None and self._fast_track_return(hotkey, account, first_order_ms, since_ms) != line:
-                del self._fast_track_since_ms[hotkey]  # a hold never spans two lines
+                del self._fast_track_since_ms[hotkey]  # a weekly rise of the line starts the hold over
             if drawdown.current_equity - 1.0 >= line:
                 self._fast_track_since_ms.setdefault(hotkey, current_time_ms)
             else:
@@ -1512,8 +1515,9 @@ class ChallengePeriodManager(CacheController):
         self._incomplete_ledgers_logged &= candidates
         with self._buckets_lock:
             known = set(self.miner_states)
-        for hotkey in self._initial_buckets.keys() - known:
-            del self._initial_buckets[hotkey]
+        for cache in (self._initial_buckets, self._promotion_rules):
+            for hotkey in cache.keys() - known:
+                del cache[hotkey]
 
     def _is_auto_promotion_candidate(self, hotkey: str, account: MinerAccount | None) -> bool:
         """A standard account that can be auto-promoted out of SUBACCOUNT_FUNDED: created through
@@ -1526,6 +1530,7 @@ class ChallengePeriodManager(CacheController):
                 info = self._pipeline_account_info(hotkey, account)
                 if info is None:
                     return False
+                self._promotion_rules[hotkey] = info.standard_miner or info.on_promotion_rules(self._is_testnet())
                 self._initial_buckets[hotkey] = info.initial_bucket
             return is_created_through_challenge(self._initial_buckets[hotkey])
         except Exception as e:
@@ -1585,7 +1590,8 @@ class ChallengePeriodManager(CacheController):
                                pro_account_size=pro_account_size, promoted_ms=current_time_ms,
                                equity_return=state.drawdown.current_equity - 1.0,
                                balance_return=state.drawdown.current_balance - 1.0, calmar=stats.calmar,
-                               daily_consistency=stats.daily_consistency, trading_days=stats.trading_days)
+                               daily_consistency=stats.daily_consistency, trading_days=stats.trading_days,
+                               peak_leverage_use=account.peak_leverage_use)
         # Recorded before the move so it is saved to disk with it
         with self._buckets_lock:
             state.auto_promotion = record
@@ -1622,6 +1628,22 @@ class ChallengePeriodManager(CacheController):
             self._mothership = bool(self._entity_client.is_mothership())
         return self._mothership
 
+    def _is_testnet(self) -> bool:
+        """Whether this validator runs on testnet, read once from the entity server."""
+        if self._testnet is None:
+            self._testnet = bool(self._entity_client.is_testnet())
+        return self._testnet
+
+    def _on_promotion_rules(self, hotkey: str, account: MinerAccount | None) -> bool:
+        """A standard miner, or a subaccount created from ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS on; read once
+        per account (an auto-promotion candidate is read with its creation bucket)."""
+        if hotkey not in self._promotion_rules:
+            info = self._pipeline_account_info(hotkey, account)
+            if info is None:
+                return False
+            self._promotion_rules[hotkey] = info.standard_miner or info.on_promotion_rules(self._is_testnet())
+        return self._promotion_rules[hotkey]
+
     def _log_move_failure(self, hotkey: str, current_time_ms: int, message: str) -> None:
         """A failed move is retried every refresh but logged once a payout week."""
         week_start_ms = TimeUtil.ms_at_start_of_week(current_time_ms)
@@ -1631,13 +1653,16 @@ class ChallengePeriodManager(CacheController):
 
     def _fast_track_return(self, hotkey: str, account: MinerAccount, first_order_ms: int | None,
                            current_time_ms: int) -> float:
-        """A standard miner's fast track asks less in its first weeks from its first order as a funded account (the
-        positions before were archived on becoming funded); a subaccount's never changes."""
-        if first_order_ms is not None and self._standard_account(hotkey, account) is not None:
-            days = (current_time_ms - first_order_ms) / ValiConfig.DAILY_MS
-            for until_days, required in ValiConfig.STANDARD_MINER_FAST_TRACK_EQUITY_RETURNS:
-                if days < until_days:
-                    return required
+        """On the promotion rules the fast track asks less once the account has used enough of its leverage, and in the
+        first weeks from its first order as a funded account (the positions before were archived on becoming funded)."""
+        if self._on_promotion_rules(hotkey, account):
+            if account.peak_leverage_use >= ValiConfig.AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE:
+                return ValiConfig.AUTO_PROMOTION_FAST_TRACK_LEVERAGED_RETURN
+            if first_order_ms is not None:
+                days = (current_time_ms - first_order_ms) / ValiConfig.DAILY_MS
+                for until_days, required in ValiConfig.AUTO_PROMOTION_FAST_TRACK_WEEKLY_RETURNS:
+                    if days < until_days:
+                        return required
         return ValiConfig.AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
 
     @staticmethod

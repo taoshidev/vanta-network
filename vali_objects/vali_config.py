@@ -598,6 +598,13 @@ class ValiConfig:
     # ChallengePeriodManager.AUTO_PROMOTION_FAST_TRACK_HOLD_MS
     AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN = 0.10
     AUTO_PROMOTION_FAST_TRACK_MULTIPLIER = 3
+    # For standard miners and subaccounts from SUBACCOUNT_PROMOTION_RULES_START_MS on: the return until each day count
+    # from the first order as a funded account, then AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
+    AUTO_PROMOTION_FAST_TRACK_WEEKLY_RETURNS = ((7, 0.03), (14, 0.05))
+    # For them too, the return in any week once the account's peak leverage use (MinerAccount.peak_leverage_use)
+    # as a funded account has reached AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE
+    AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE = 0.5
+    AUTO_PROMOTION_FAST_TRACK_LEVERAGED_RETURN = 0.03
     # Steady track: every condition below, sized by the highest calmar tier reached. The return is on the
     # lower of balance and equity, so open losses count and open gains do not
     AUTO_PROMOTION_STEADY_TRACK_MINIMUM_DAYS = 60
@@ -608,8 +615,8 @@ class ValiConfig:
     # PRO_CHALLENGE_FROM_STANDARD payout multiplier by the multiple an auto-promotion grants, fixed with the pro size
     # (any other grant gets the lowest), for standard miners and subaccounts from SUBACCOUNT_PROMOTION_RULES_START_MS on
     AUTO_PROMOTION_PAYOUT_MULTIPLIERS = {3: 1.3, 5: 1.5, 10: 2.0}
-    # Creation time (ms) from which subaccounts take AUTO_PROMOTION_PAYOUT_MULTIPLIERS. None = off; set it after
-    # every validator runs the release that reads it, and never move it back
+    # Creation time (ms) from which subaccounts take AUTO_PROMOTION_PAYOUT_MULTIPLIERS and the weekly and leverage fast
+    # track returns. None = off; set it after every validator runs the release that reads it, and never move it back
     SUBACCOUNT_PROMOTION_RULES_START_MS = None
     SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET = None
 
@@ -678,9 +685,6 @@ class ValiConfig:
     STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
     # The leverage tier a standard miner trades from SUBACCOUNT_FUNDED on, whatever tier it opened on
     STANDARD_MINER_FUNDED_LEVERAGE_TIER = 3
-    # A standard miner's fast track return until each day count from its first order as a funded account, then
-    # AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
-    STANDARD_MINER_FAST_TRACK_EQUITY_RETURNS = ((7, 0.03), (14, 0.05))
 
     @staticmethod
     def standard_miner_cutoff_block(is_testnet: bool = False) -> int | None:

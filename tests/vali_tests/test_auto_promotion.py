@@ -730,6 +730,9 @@ class _EntityClient:
     def is_mothership(self):
         return True
 
+    def is_testnet(self):
+        return self._manager.is_testnet
+
 
 def _seed_on_the_fast_track(manager, hotkey: str = HOTKEY) -> None:
     """As _on_the_fast_track, for a full refresh: 12% up on an open position, held long enough."""

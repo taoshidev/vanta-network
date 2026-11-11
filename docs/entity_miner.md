@@ -475,7 +475,7 @@ A subaccount qualifies on whichever of two paths it meets first:
 
 | Path | Requirements | Pro account size |
 |---|---|---|
-| Fast track | Equity, unrealized PnL included, at least 10% above the account size, held there for 3 minutes | 3x the standard account size |
+| Fast track | Equity, unrealized PnL included, at least 10% above the account size (less for a subaccount created at or after the promotion rules start, below), held there for 3 minutes | 3x the standard account size |
 | Steady track | All of: at least 60 full days on its funded ledger, balance and equity both more than 3% above the account size, return consistency of at most 50%, and all-time Calmar of at least 1.5 | 5x the standard account size, or 10x at a Calmar of at least 2.0 |
 
 Meeting both on the same check takes the larger multiple. The thresholds are the
@@ -485,6 +485,14 @@ Meeting both on the same check takes the larger multiple. The thresholds are the
   becomes funded. Balance is the account size plus realized PnL and dividends, net of fees; equity adds
   the unrealized PnL of open positions.
   The steady track reads the lower of the two, so open losses count and open gains do not.
+- **The fast track for a subaccount created at or after the promotion rules start**
+  (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`): 3% in the first week from its first order as a
+  funded account, 5% in the second week and 10% after that
+  (`ValiConfig.AUTO_PROMOTION_FAST_TRACK_WEEKLY_RETURNS`), and 3% in any week once its leverage use
+  has reached 50% at any time as a funded account (`ValiConfig.AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE`).
+  Leverage use is the larger of the open positions' entry value over the portfolio cap and the
+  highest asset class's over that class's cap, each on the balance; it is measured after every fill and fee,
+  and its peak is `peak_leverage_use` in the subaccount's account data.
 - **The fast track's hold**: equity must stay at or above the line on every challenge-period refresh
   for 3 minutes (`ChallengePeriodManager.AUTO_PROMOTION_FAST_TRACK_HOLD_MS`), so a bad price tick
   cannot trigger it. A refresh below the line starts the hold over.

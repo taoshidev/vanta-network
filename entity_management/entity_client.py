@@ -222,6 +222,10 @@ class EntityClient(RPCClientBase):
         """Whether this validator is the mothership, the one whose subaccount sizing is broadcast."""
         return self._server.is_mothership_rpc()
 
+    def is_testnet(self) -> bool:
+        """Whether this validator runs on testnet."""
+        return self._server.is_testnet_rpc()
+
     def get_subaccount_info_for_synthetic(self, synthetic_hotkey: str) -> Optional[dict]:
         """
         Get SubaccountInfo for a synthetic hotkey.

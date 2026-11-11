@@ -6,7 +6,12 @@ import math
 from dataclasses import asdict, dataclass, fields, replace
 from typing import Optional
 
-from entity_management.entity_utils import is_created_through_challenge, is_instant_funded, pro_account_size_error
+from entity_management.entity_utils import (
+    is_created_through_challenge,
+    is_instant_funded,
+    is_on_promotion_rules,
+    pro_account_size_error,
+)
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
@@ -95,6 +100,12 @@ class PipelineAccountInfo:
     pro_account_size: Optional[float]
     payout_scale: float  # the multiplier PRO_CHALLENGE_FROM_STANDARD is paid with
     hl_linked: bool = False  # a Hyperliquid-linked subaccount (hl_address, or hl_all from before it was recorded)
+    created_at_ms: Optional[int] = None  # a subaccount's creation time
+    standard_miner: bool = False
+
+    def on_promotion_rules(self, is_testnet: bool) -> bool:
+        """A standard miner, or a subaccount created from ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS on."""
+        return self.standard_miner or is_on_promotion_rules(self.created_at_ms, is_testnet)
 
     @property
     def created_through_challenge(self) -> bool:
@@ -118,6 +129,7 @@ class PipelineAccountInfo:
             pro_account_size=info.get("pro_account_size"),
             payout_scale=payout_scale if payout_scale is not None else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER,
             hl_linked=bool(info.get("hl_address")) or info.get("asset_class") == MinerAssetClass.HL_ALL.value,
+            created_at_ms=info.get("created_at_ms"),
         )
 
     @classmethod
@@ -132,6 +144,7 @@ class PipelineAccountInfo:
             pro_account_size=record.pro_account_size,
             payout_scale=(record.payout_scale if record.payout_scale is not None
                           else ValiConfig.grow_payout_multiplier()),
+            standard_miner=True,
         )
 
 

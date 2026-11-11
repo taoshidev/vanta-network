@@ -266,6 +266,10 @@ class EntityServer(RPCServerBase):
         """Whether this validator is the mothership, the one whose subaccount sizing is broadcast."""
         return self._manager.is_mothership
 
+    def is_testnet_rpc(self) -> bool:
+        """Whether this validator runs on testnet."""
+        return self._manager.is_testnet
+
     def get_subaccount_info_for_synthetic_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
         """
         Get SubaccountInfo for a synthetic hotkey.
