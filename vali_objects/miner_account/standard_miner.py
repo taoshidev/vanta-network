@@ -9,6 +9,7 @@ from typing import Optional
 from entity_management.entity_utils import is_created_through_challenge, is_instant_funded, pro_account_size_error
 from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.elimination_reason_enum import EliminationReason
+from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 
@@ -93,6 +94,7 @@ class PipelineAccountInfo:
     standard_account_size: Optional[float]  # the size the pro challenge is paid on, kept with the pro size
     pro_account_size: Optional[float]
     payout_scale: float  # the multiplier PRO_CHALLENGE_FROM_STANDARD is paid with
+    hl_linked: bool = False  # a Hyperliquid-linked subaccount (hl_address, or hl_all from before it was recorded)
 
     @property
     def created_through_challenge(self) -> bool:
@@ -115,6 +117,7 @@ class PipelineAccountInfo:
             standard_account_size=info.get("standard_account_size"),
             pro_account_size=info.get("pro_account_size"),
             payout_scale=payout_scale if payout_scale is not None else ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER,
+            hl_linked=bool(info.get("hl_address")) or info.get("asset_class") == MinerAssetClass.HL_ALL.value,
         )
 
     @classmethod

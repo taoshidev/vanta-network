@@ -1445,7 +1445,8 @@ collateral once the pro account goes live — the hops into `PRO_CHALLENGE_DIREC
 The fee is `pro_account_size / PRO_REG_CPT − standard_account_size / STD_REG_CPT` at the subaccount's
 daily loss limit (3,000 and 1,500 at 5%; 5,000 and 2,500 at 3%), floored at zero, less any promotion
 fee already charged — see [entity_miner.md](entity_miner.md#pro-promotion-fee). An Instant Funded
-subaccount created into `SUBACCOUNT_FUNDED` cannot be promoted onto the pro track.
+subaccount created into `SUBACCOUNT_FUNDED`, or a Hyperliquid-linked subaccount, cannot be promoted
+onto the pro track; a Hyperliquid-linked one already on it moves on.
 
 **Only the two hops onto a pro account wipe trading state.** A hop switches accounts when the target
 bucket changes the account size (`MinerBucket.switches_account`), and `PRO_CHALLENGE_TRANSITION` does
@@ -1486,7 +1487,7 @@ the pro size off the pro track and let the next size-less attempt reuse that siz
 `payout_scale` is the `PRO_CHALLENGE_FROM_STANDARD` payout multiplier fixed on the subaccount (`null` for the default 2.0).
 
 **Errors:**
-- `400`: a field or `pro_account_size` is missing or invalid, `synthetic_hotkey` is not a subaccount, or the promotion was rejected (the subaccount's bucket has no promotion target, no pro account size to use, or insufficient entity collateral for the promotion fee)
+- `400`: a field or `pro_account_size` is missing or invalid, `synthetic_hotkey` is not a subaccount, or the promotion was rejected (the subaccount's bucket has no promotion target, it is Instant Funded in `SUBACCOUNT_FUNDED` or Hyperliquid-linked and not yet on the pro track, no pro account size to use, or insufficient entity collateral for the promotion fee)
 - `401`: missing or invalid API key, invalid signature, reused nonce, or expired timestamp
 - `403`: API key below tier 200, coldkey does not own the hotkey, or the subaccount belongs to another entity
 - `404`: no such subaccount

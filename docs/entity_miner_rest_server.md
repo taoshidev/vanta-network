@@ -377,7 +377,7 @@ See [entity_miner.md](entity_miner.md#pro-promotion-fee).)
 
 | Code | Cause |
 |------|-------|
-| 400 | Missing/invalid `synthetic_hotkey` or `pro_account_size`, or the validator rejected the promotion: a bucket with no promotion target, a size below twice the standard account size, an Instant Funded subaccount in `SUBACCOUNT_FUNDED`, a `pro_account_size` sent for an auto-promoted subaccount in `PRO_CHALLENGE_TRANSITION`, a request that overlapped another promotion of the same subaccount which moved it first, missing size when entering the track, or insufficient entity collateral for the promotion fee |
+| 400 | Missing/invalid `synthetic_hotkey` or `pro_account_size`, or the validator rejected the promotion: a bucket with no promotion target, a size below twice the standard account size, an Instant Funded subaccount in `SUBACCOUNT_FUNDED`, a Hyperliquid-linked subaccount not yet on the pro track, a `pro_account_size` sent for an auto-promoted subaccount in `PRO_CHALLENGE_TRANSITION`, a request that overlapped another promotion of the same subaccount which moved it first, missing size when entering the track, or insufficient entity collateral for the promotion fee |
 | 401 | Invalid or missing API key, or a rejected signature/nonce at the validator |
 | 403 | API key below tier 200, or the coldkey does not own the entity hotkey / the subaccount |
 | 404 | Subaccount not found |

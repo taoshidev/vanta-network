@@ -975,7 +975,8 @@ class ChallengePeriodManager(CacheController):
         standard miner by auto-promotion (_auto_promote).
 
         The only moves allowed are the three hops in MinerBucket.promotion_target; a subaccount in
-        any other bucket is rejected, as is an Instant Funded subaccount in SUBACCOUNT_FUNDED.
+        any other bucket is rejected, as is an Instant Funded subaccount in SUBACCOUNT_FUNDED and a
+        Hyperliquid-linked subaccount not already on the pro track.
         pro_account_size is the size the entity asked for: entering the pro track needs one, and None
         keeps the size already recorded (see EntityManager.apply_bucket_account_size, which rejects a
         subaccount that has neither). from_bucket, when given, rejects the call unless the subaccount
@@ -1190,11 +1191,15 @@ class ChallengePeriodManager(CacheController):
             return False, f"{hotkey} not found in challenge period manager"
         if state.current_bucket == bucket:
             return False, f"{hotkey} is already in {bucket.value}"
+        entering_pro_track = bucket.is_pro_track and not state.current_bucket.is_pro_track
+        info = (self._pipeline_account_info(hotkey)
+                if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION or entering_pro_track else None)
         # Instant Funded accounts never enter the pro track through the transition
-        if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            info = self._pipeline_account_info(hotkey)
-            if info is not None and info.instant_funded:
-                return False, f"{hotkey} is Instant Funded and cannot move to {bucket.value}"
+        if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION and info is not None and info.instant_funded:
+            return False, f"{hotkey} is Instant Funded and cannot move to {bucket.value}"
+        # Hyperliquid-linked accounts never enter the pro track; one already on it carries on
+        if entering_pro_track and info is not None and info.hl_linked:
+            return False, f"{hotkey} is Hyperliquid-linked and cannot move to {bucket.value}"
         return True, ""
 
     def admin_set_bucket(self, hotkey: str, bucket: MinerBucket, current_time_ms: int) -> tuple[bool, str]:

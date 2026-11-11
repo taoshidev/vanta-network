@@ -354,8 +354,9 @@ standard funded one.
 
 Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
 margin-interest rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs.
-Hyperliquid *subaccounts* have no pro tier, but the pro universe itself is not Vanta-only: its
-crypto, commodities and indices pairs are all Hyperliquid-sourced. Note that the pro fee schedule
+Hyperliquid *subaccounts* have no pro tier (a request to promote one onto the pro track is
+refused), but the pro universe itself is not Vanta-only: its crypto, commodities and indices pairs
+are all Hyperliquid-sourced. Note that the pro fee schedule
 applies only to Vanta-sourced positions (`position.py` gates it on `src == VANTA`), so HL-sourced
 pro positions pay live HL funding plus the standard schedule.
 

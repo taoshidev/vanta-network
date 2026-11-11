@@ -3228,7 +3228,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
 
         Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FROM_STANDARD)
         cannot take the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_TRANSITION hop. One created into
-        PRO_CHALLENGE_FROM_STANDARD still reaches PRO_FUNDED by passing its challenge. A subaccount the
+        PRO_CHALLENGE_FROM_STANDARD still reaches PRO_FUNDED by passing its challenge. A Hyperliquid-linked
+        subaccount takes neither hop onto the pro track; one already on it moves on. A subaccount the
         network promoted automatically may take the PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
         hop early, on the pro size the network granted and free of the promotion fee: a request that
         sends a pro_account_size for it is rejected.
