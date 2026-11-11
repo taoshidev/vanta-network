@@ -266,6 +266,10 @@ class EntityServer(RPCServerBase):
         """Whether this validator is the mothership, the one whose subaccount sizing is broadcast."""
         return self._manager.is_mothership
 
+    def is_testnet_rpc(self) -> bool:
+        """Whether this validator runs on testnet."""
+        return self._manager.is_testnet
+
     def get_subaccount_info_for_synthetic_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
         """
         Get SubaccountInfo for a synthetic hotkey.
@@ -285,10 +289,12 @@ class EntityServer(RPCServerBase):
         target_bucket: MinerBucket,
         pro_account_size: Optional[float] = None,
         waive_promotion_fee: bool = False,
+        payout_scale: Optional[float] = None,
     ) -> Tuple[bool, str]:
         """Point a subaccount at the account size its target bucket trades."""
         return self._manager.apply_bucket_account_size(synthetic_hotkey, target_bucket, pro_account_size,
-                                                       waive_promotion_fee=waive_promotion_fee)
+                                                       waive_promotion_fee=waive_promotion_fee,
+                                                       payout_scale=payout_scale)
 
     def snapshot_bucket_account_size_rpc(self, synthetic_hotkey: str) -> Optional[dict]:
         """The sizing fields apply_bucket_account_size writes, read before it runs."""

@@ -116,8 +116,8 @@ class TestEliminationManager(TestBase):
 
         # Set up performance ledgers
         ledgers = {}
-        ledgers[self.MDD_MINER] = generate_losing_ledger(0, ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS)
-        ledgers[self.REGULAR_MINER] = generate_winning_ledger(0, ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS)
+        ledgers[self.MDD_MINER] = generate_losing_ledger(0, 90 * ValiConfig.DAILY_MS)
+        ledgers[self.REGULAR_MINER] = generate_winning_ledger(0, 90 * ValiConfig.DAILY_MS)
         self.perf_ledger_client.save_perf_ledgers(ledgers)
 
         # Set up challenge period status

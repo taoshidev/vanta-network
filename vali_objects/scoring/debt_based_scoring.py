@@ -49,7 +49,7 @@ from shared_objects.rpc.metagraph_client import MetagraphClient
 from time_util.time_util import MS_IN_WEEK, TimeUtil
 from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtLedger, DebtCheckpoint, WeekTrack, apply_deferral
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from vali_objects.scoring.scoring import Scoring
@@ -57,6 +57,7 @@ from collections import defaultdict
 
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.order import Order
+from shared_objects.subtensor_ops.metagraph_utils import is_validator_stake_weight
 from vali_objects.vali_dataclasses.position import Position
 from shared_objects.log import logger
 
@@ -284,10 +285,11 @@ class DebtBasedScoring:
         debt_ledger: DebtLedger | None = None,
         start_time_ms: int = 0,
         end_time_ms: int | None = None,
+        payout_scale: float = 1.0,
+        week_context: dict | None = None,
     ) -> list[PayoutSettlement]:
-        """
-        Calculate weekly payout from positions
-        """
+        """Weekly payouts from positions, priced stretch by stretch where the rules change: payout_scale multiplies the
+        buckets it applies to, and week_context (a standard miner's) gives each week its sealed or live scale and penalty."""
         CP_DURATION_MS = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
         is_realtime = False
         if end_time_ms is None:
@@ -310,58 +312,94 @@ class DebtBasedScoring:
         balance_raw = 0
         eow_hwm_raw = 0
 
+        # Where the scale or the withholding starts or stops applying, the week is priced stretch by stretch, each
+        # under the rules of the bucket it traded in, with the high water mark carried from one stretch to the next
+        rule_change_times = (debt_ledger.payout_rule_change_times()
+                             if debt_ledger is not None and (payout_scale != 1.0 or week_context is not None) else [])
+
+        def bucket_at(stretch_start_ms: int):
+            # +1: a checkpoint stamped at T closes the window ending at T, so the stretch starting at T is the next one's
+            return debt_ledger.bucket_at(stretch_start_ms + 1) if debt_ledger is not None else None
+
+        escrow = 0.0
         # Always start week_start at the Monday 00:00 UTC of the first order.
         week_start_ms = TimeUtil.ms_at_start_of_week(orders[0].processed_ms)
         order_idx, fee_idx = 0, 0
         while week_start_ms < end_time_ms:
             week_end_ms = min(week_start_ms + MS_IN_WEEK, end_time_ms)
             realized_orders_in_week = []
+            week = week_context.get(week_start_ms) if week_context else None
+            week_scale = week.payout_scale if week is not None else payout_scale
+            week_penalty = week.weekly_penalty if week is not None else 1.0
 
             weekly_pnl_raw, weekly_pnl_penalized = 0, 0
             payout_eligible_pnl_raw, payout_eligible_pnl_penalized = 0, 0
-            while order_idx < len(orders) and orders[order_idx].processed_ms < week_end_ms:
-                order = orders[order_idx]
-                realized_pnl = order.realized_pnl
-                if realized_pnl != 0:
-                    realized_orders_in_week.append(order)
+            payout_raw, payout_penalized, withheld = 0.0, 0.0, 0.0
+            stretch_hwm_raw = eow_hwm_raw
+            stretch_start_ms = week_start_ms
+            for stretch_end_ms in [t for t in rule_change_times if week_start_ms < t < week_end_ms] + [week_end_ms]:
+                while order_idx < len(orders) and orders[order_idx].processed_ms < stretch_end_ms:
+                    order = orders[order_idx]
+                    realized_pnl = order.realized_pnl
+                    if realized_pnl != 0:
+                        realized_orders_in_week.append(order)
 
-                order_penalty = 1.0
-                if debt_ledger:
-                    order_penalty_ms = TimeUtil.align_to_12hour_checkpoint_boundary(order.processed_ms)
-                    penalty_checkpoint = debt_ledger.get_checkpoint_at_time(order_penalty_ms, CP_DURATION_MS)
-                    order_penalty = penalty_checkpoint.total_penalty if penalty_checkpoint else 1.0
-                    order_penalty = min(1.0, max(0, order_penalty))
+                    order_penalty = 1.0
+                    if debt_ledger:
+                        order_penalty_ms = TimeUtil.align_to_12hour_checkpoint_boundary(order.processed_ms)
+                        penalty_checkpoint = debt_ledger.get_checkpoint_at_time(order_penalty_ms, CP_DURATION_MS)
+                        order_penalty = penalty_checkpoint.total_penalty if penalty_checkpoint else 1.0
+                        order_penalty = min(1.0, max(0, order_penalty))
 
-                _payout_pnl = realized_pnl if order.processed_ms > start_time_ms else 0
-                weekly_pnl_raw += realized_pnl
-                payout_eligible_pnl_raw += _payout_pnl
-                weekly_pnl_penalized += realized_pnl * order_penalty if realized_pnl > 0 else realized_pnl
-                payout_eligible_pnl_penalized += _payout_pnl * order_penalty if _payout_pnl > 0 else _payout_pnl
+                    _payout_pnl = realized_pnl if order.processed_ms > start_time_ms else 0
+                    weekly_pnl_raw += realized_pnl
+                    payout_eligible_pnl_raw += _payout_pnl
+                    weekly_pnl_penalized += realized_pnl * order_penalty if realized_pnl > 0 else realized_pnl
+                    payout_eligible_pnl_penalized += _payout_pnl * order_penalty if _payout_pnl > 0 else _payout_pnl
 
-                order_idx += 1
-            while fee_idx < len(fees) and fees[fee_idx].time_ms < week_end_ms:
-                _payout_fee = fees[fee_idx].amount if fees[fee_idx].time_ms > start_time_ms else 0
-                weekly_pnl_raw -= fees[fee_idx].amount
-                payout_eligible_pnl_raw -= _payout_fee
-                weekly_pnl_penalized -= fees[fee_idx].amount
-                payout_eligible_pnl_penalized -= _payout_fee
-                fee_idx += 1
+                    order_idx += 1
+                while fee_idx < len(fees) and fees[fee_idx].time_ms < stretch_end_ms:
+                    _payout_fee = fees[fee_idx].amount if fees[fee_idx].time_ms > start_time_ms else 0
+                    weekly_pnl_raw -= fees[fee_idx].amount
+                    payout_eligible_pnl_raw -= _payout_fee
+                    weekly_pnl_penalized -= fees[fee_idx].amount
+                    payout_eligible_pnl_penalized -= _payout_fee
+                    fee_idx += 1
 
-            # Use perf ledger instead of delayed debt ledger
-            perf_checkpoint = perf_ledger.get_checkpoint_at_time(week_end_ms, ValiConfig.TARGET_CHECKPOINT_DURATION_MS)
-            unrealized_pnl = perf_checkpoint.unrealized_pnl if perf_checkpoint else 0.0
-            if week_end_ms == end_time_ms and is_realtime:
-                unrealized_pnl = realtime_unrealized_pnl
+                # Use perf ledger instead of delayed debt ledger
+                perf_checkpoint = (perf_ledger.get_checkpoint_at_time(stretch_end_ms, ValiConfig.TARGET_CHECKPOINT_DURATION_MS)
+                                   if perf_ledger else None)
+                unrealized_pnl = perf_checkpoint.unrealized_pnl if perf_checkpoint else 0.0
+                if stretch_end_ms == end_time_ms and is_realtime:
+                    unrealized_pnl = realtime_unrealized_pnl
+
+                # Cannot be paid out for more than payout eligible pnl (case if first earning checkpoint is mid-week)
+                payout_balance_raw = balance_raw + min(weekly_pnl_raw, payout_eligible_pnl_raw)
+                payout_balance_penalized = balance_raw + min(weekly_pnl_penalized, payout_eligible_pnl_penalized)
+
+                unrealized_losses = min(0, unrealized_pnl)
+                bucket = bucket_at(stretch_start_ms) if week_context is not None or week_scale != 1.0 else None
+                if week_scale == 1.0:
+                    scale = 1.0
+                else:  # no checkpoints to read a bucket from: the scale given applies throughout
+                    scale = week_scale if bucket is None or bucket.payout_scale_applies else 1.0
+                stretch_raw = max(0.0, payout_balance_raw - stretch_hwm_raw + unrealized_losses) * scale
+                stretch_penalized = max(0.0, payout_balance_penalized - stretch_hwm_raw + unrealized_losses) * scale
+                if week_penalty < 1.0 and bucket is not None and bucket.soft_breach_applies:
+                    withheld += stretch_penalized * (1.0 - week_penalty)
+                    stretch_penalized *= week_penalty
+                payout_raw += stretch_raw
+                payout_penalized += stretch_penalized
+                stretch_hwm_raw = max(stretch_hwm_raw, balance_raw + weekly_pnl_raw)
+                stretch_start_ms = stretch_end_ms
+
+            if week_context is not None:
+                # What a breach withheld waits in escrow for a clean week on the pro track and is lost on leaving it
+                released, escrow, _forfeited = apply_deferral(
+                    escrow, withheld, track=week.track if week is not None else WeekTrack.NO_DATA, week_penalty=week_penalty)
+                payout_penalized += released
 
             eow_balance_raw = balance_raw + weekly_pnl_raw
-
-            # Cannot be paid out for more than payout eligible pnl (case if first earning checkpoint is mid-week)
-            eow_payout_balance_raw = balance_raw + min(weekly_pnl_raw, payout_eligible_pnl_raw)
-            eow_payout_balance_penalized = balance_raw + min(weekly_pnl_penalized, payout_eligible_pnl_penalized)
-
-            unrealized_losses = min(0, unrealized_pnl)
-            payout_raw = max(0.0, eow_payout_balance_raw - eow_hwm_raw + unrealized_losses)
-            payout_penalized = max(0.0, eow_payout_balance_penalized - eow_hwm_raw + unrealized_losses)
 
             # Only return desired weekly settlements
             if (start_time_ms <= week_end_ms <= end_time_ms
@@ -377,10 +415,69 @@ class DebtBasedScoring:
                 ))
 
             balance_raw = eow_balance_raw
-            eow_hwm_raw = max(eow_hwm_raw, balance_raw)
+            eow_hwm_raw = stretch_hwm_raw  # max(eow_hwm_raw, balance_raw) when the week was one stretch
             week_start_ms = week_end_ms
 
         return weekly_settlements
+
+    @staticmethod
+    def payout_settlements_for_hotkey(
+        positions: list[Position] | None,
+        perf_ledger: PerfLedger | None,
+        debt_ledger: DebtLedger | None,
+        start_time_ms: int,
+        end_time_ms: int | None,
+        payout_scale: float = 1.0,
+        first_window_payable: bool = False,
+        sealed_weeks: dict | None = None,
+        standard_miner: bool = False,
+    ) -> list[PayoutSettlement]:
+        """Settlements from the ledger's first earning checkpoint; first_window_payable also pays the window before it
+        when it is the ledger's first; end_time_ms None is now. A standard miner's weeks take sealed_weeks' terms."""
+        if not positions or not perf_ledger or not debt_ledger or not debt_ledger.checkpoints:
+            return []
+
+        # Start the payout cycle from the full week we have of the debt ledger
+        first_earning_checkpoint = next((cp for cp in debt_ledger.checkpoints
+                                         if cp.challenge_period_status in DebtBasedScoring.EARNING_MINER_BUCKETS), None)
+        if first_earning_checkpoint is None:
+            return []
+        payable_from_ms = first_earning_checkpoint.timestamp_ms
+        if first_window_payable and first_earning_checkpoint is debt_ledger.checkpoints[0]:
+            payable_from_ms -= ValiConfig.TARGET_CHECKPOINT_DURATION_MS
+
+        return DebtBasedScoring.generate_weekly_settlements(
+            positions=positions,
+            perf_ledger=perf_ledger,
+            debt_ledger=debt_ledger,
+            start_time_ms=max(payable_from_ms, start_time_ms),
+            end_time_ms=end_time_ms,
+            payout_scale=payout_scale,
+            week_context=debt_ledger.weekly_payout_context(payout_scale, sealed=sealed_weeks) if standard_miner else None,
+        )
+
+    @staticmethod
+    def _with_settled_segments(settlements: list[PayoutSettlement], segments: list,
+                               last_closed_week_ms: int) -> list[PayoutSettlement]:
+        """Add each SettledSegment to the week it was earned in (a settlement of its own when the week has none), and
+        end on the last closed week so a reader never takes an older settled week for the one just closed."""
+        by_week = {settlement.start_ms: settlement for settlement in settlements}
+
+        def week(start_ms):
+            settlement = by_week.get(start_ms)
+            if settlement is None:
+                settlement = PayoutSettlement(start_ms=start_ms, end_ms=start_ms + MS_IN_WEEK, balance=0.0,
+                                              unrealized_pnl=0.0, payout_raw=0.0, payout_penalized=0.0)
+                by_week[start_ms] = settlement
+            return settlement
+
+        for segment in segments:
+            settlement = week(segment.week_start_ms)
+            settlement.payout_raw += segment.gross_payout_usd
+            settlement.payout_penalized += segment.payout_usd
+        if by_week and max(by_week) < last_closed_week_ms:
+            week(last_closed_week_ms)
+        return sorted(by_week.values(), key=lambda settlement: settlement.start_ms)
 
     @staticmethod
     def generate_payout_settlements(
@@ -390,43 +487,33 @@ class DebtBasedScoring:
         debt_ledgers: dict[str, DebtLedger],
         start_time_ms: int | None = None,
         end_time_ms: int | None = None,
+        payout_scales: dict[str, float] | None = None,
+        settled_segments: dict[str, list] | None = None,
+        sealed_weeks: dict[str, dict] | None = None,
         # interval,  # TODO support different intervals base
     ) -> dict[str, list[PayoutSettlement]]:
-        """
-        Calculate weekly payout for hotkeys for what their debt ledger allows
-        """
+        """Weekly payouts for hotkeys over the weeks closed by end_time_ms. A standard miner (in payout_scales, with its
+        Grow multiplier) is also paid what its earlier accounts settled at a switch, and on its sealed weeks' terms."""
         if not start_time_ms:
             start_time_ms = 0
 
         if not end_time_ms:
             end_time_ms = TimeUtil.now_in_millis()
+        payout_end_ms = TimeUtil.ms_at_start_of_week(end_time_ms)
+        payout_scales = payout_scales or {}
 
         result = {}
         for hotkey in hotkeys:
-            positions = miner_positions.get(hotkey)
-            perf_ledger = perf_ledgers.get(hotkey)
-            debt_ledger = debt_ledgers.get(hotkey)
-            if not positions or not perf_ledger or not debt_ledger or not debt_ledger.checkpoints:
-                result[hotkey] = []
-                continue
-
-            # Start the payout cycle from the full week we have of the debt ledger
-            first_earning_checkpoint = next((cp for cp in debt_ledger.checkpoints
-                                             if cp.challenge_period_status in DebtBasedScoring.EARNING_MINER_BUCKETS), None)
-            if first_earning_checkpoint is None:
-                result[hotkey] = []
-                continue
-
-            payout_start_ms = max(first_earning_checkpoint.timestamp_ms, start_time_ms)
-            payout_end_ms = TimeUtil.ms_at_start_of_week(end_time_ms)
-
-            settlements = DebtBasedScoring.generate_weekly_settlements(
-                positions=positions,
-                perf_ledger=perf_ledger,
-                debt_ledger=debt_ledger,
-                start_time_ms=payout_start_ms,
-                end_time_ms=payout_end_ms
-            )
+            segments = [segment for segment in (settled_segments or {}).get(hotkey, [])
+                        if segment.week_start_ms + MS_IN_WEEK <= payout_end_ms]
+            settled_through_ms = max((segment.segment_end_ms for segment in segments), default=0)
+            settlements = DebtBasedScoring.payout_settlements_for_hotkey(
+                miner_positions.get(hotkey), perf_ledgers.get(hotkey), debt_ledgers.get(hotkey),
+                max(start_time_ms, settled_through_ms), payout_end_ms, payout_scales.get(hotkey, 1.0),
+                first_window_payable=hotkey in payout_scales, sealed_weeks=(sealed_weeks or {}).get(hotkey),
+                standard_miner=hotkey in payout_scales)
+            if segments:
+                settlements = DebtBasedScoring._with_settled_segments(settlements, segments, payout_end_ms - MS_IN_WEEK)
             result[hotkey] = settlements
 
         return result
@@ -709,7 +796,10 @@ class DebtBasedScoring:
     def _compute_raw_weights_from_payouts(
         miner_daily_target_payouts_usd: dict[str, float],
         projected_daily_emissions_usd: float,
-        verbose: bool = False
+        verbose: bool = False,
+        capped_hotkeys: set[str] | None = None,
+        capped_targets: dict[str, float] | None = None,
+        emissions_cover_owed: bool | None = None,
     ) -> dict[str, float]:
         """
         Convert daily-target USD payouts to unit-less weight proportions.
@@ -722,6 +812,10 @@ class DebtBasedScoring:
             miner_daily_target_payouts_usd: Dict of {hotkey: daily_target_usd}
             projected_daily_emissions_usd: Projected daily alpha emissions in USD
             verbose: Enable detailed logging
+            capped_hotkeys: Standard miners, paid what they are owed and no share of a surplus
+            capped_targets: What a capped miner is still owed, spread over the days left
+            emissions_cover_owed: Whether the week's emissions cover everything owed; derived from the daily
+                figures when not given
 
         Returns:
             Dict of {hotkey: raw_weight} — contains only miners who have a debt ledger.
@@ -733,8 +827,28 @@ class DebtBasedScoring:
             logger.info(
                 f"Distributing emissions by PnL share: "
                 f"total_daily_target=${total_daily_target_payout:.2f}, "
-                f"projected_daily_emissions=${projected_daily_emissions_usd:.2f} (informational only)"
+                f"projected_daily_emissions=${projected_daily_emissions_usd:.2f}"
             )
+
+        capped = {hotkey for hotkey in (capped_hotkeys or ()) if hotkey in miner_daily_target_payouts_usd}
+        if emissions_cover_owed is None:
+            emissions_cover_owed = bool(projected_daily_emissions_usd) and projected_daily_emissions_usd >= total_daily_target_payout
+        if capped and projected_daily_emissions_usd and emissions_cover_owed and total_daily_target_payout > 0:
+            # Emissions cover everything owed: a standard miner's weight is its share of the day's emissions and the
+            # rest is split among everyone else by owed; what nobody else is owed stays unassigned
+            targets = capped_targets or {}
+            weights = {hotkey: targets.get(hotkey, miner_daily_target_payouts_usd[hotkey]) / projected_daily_emissions_usd
+                       for hotkey in capped}
+            capped_total = sum(weights.values())
+            if capped_total > 1.0:  # a balance caught up on faster than the projection allows for
+                weights = {hotkey: weight / capped_total for hotkey, weight in weights.items()}
+            others = {hotkey: payout_usd for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
+                      if hotkey not in capped}
+            others_total = sum(others.values())
+            remainder = max(0.0, 1.0 - sum(weights.values()))
+            weights.update({hotkey: remainder * payout_usd / others_total if others_total > 0 else 0.0
+                            for hotkey, payout_usd in others.items()})
+            return weights
 
         if total_daily_target_payout > 0:
             return {
@@ -779,7 +893,8 @@ class DebtBasedScoring:
     def _estimate_alpha_emissions_until_target(
         metagraph_client: 'MetagraphClient',
         days_until_target: int,
-        verbose: bool = False
+        verbose: bool = False,
+        burn_uid: int | None = None,
     ) -> float:
         """
         Estimate total ALPHA emissions available from now until target day.
@@ -796,7 +911,14 @@ class DebtBasedScoring:
             Estimated total ALPHA emissions available (float)
         """
         try:
-            total_alpha_per_tempo = sum(metagraph_client.get_emission())
+            # The emission of a validator's UID is its dividend, not part of what miners share; what the burn
+            # address takes is unassigned miner emission and stays in
+            emission = list(metagraph_client.get_emission())
+            stake_weight = list(metagraph_client.get_stake_weight() or [])
+            if len(stake_weight) == len(emission):
+                emission = [e for uid, (e, w) in enumerate(zip(emission, stake_weight))
+                            if uid == burn_uid or not is_validator_stake_weight(w)]
+            total_alpha_per_tempo = sum(emission)
             total_alpha_per_block = total_alpha_per_tempo / 360
             if verbose:
                 logger.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")
@@ -1127,7 +1249,7 @@ class DebtBasedScoring:
         # Use cached data to avoid rate limiting on-chain queries
         collateral_balances = {}
         for hotkey in pnl_scores.keys():
-            collateral_usd = miner_account_client.get_miner_account_size(hotkey, most_recent=True)
+            collateral_usd = miner_account_client.get_collateral_account_size(hotkey)
             # Handle None or negative values
             if collateral_usd is None or collateral_usd <= 0:
                 collateral_usd = 0.0
@@ -1474,10 +1596,12 @@ class DebtBasedScoring:
         challengeperiod_client: 'ChallengePeriodClient',
         miner_account_client: 'MinerAccountClient',
         current_time_ms: int = None,
-        verbose: bool = False
+        verbose: bool = False,
+        no_dust_hotkeys: set[str] | None = None,
     ) -> dict[str, float]:
         """
-        Enforce minimum dust weights for ALL eligible hotkeys.
+        Enforce minimum dust weights for ALL eligible hotkeys. no_dust_hotkeys (standard miners) get none in any
+        bucket: their weight is what they are owed and nothing else.
 
         Iterates over eligible_hotkeys (the full metagraph-filtered, bucket-assigned set),
         which is a superset of ledger_dict. Miners present in ledger_dict get performance-scaled
@@ -1563,7 +1687,9 @@ class DebtBasedScoring:
             debt_weight = raw_debt_weights.get(hotkey, 0.0)
             current_status = miner_statuses.get(hotkey, MinerBucket.UNKNOWN.value)
 
-            if dynamic_dust_weights is not None and hotkey in dynamic_dust_weights:
+            if no_dust_hotkeys and hotkey in no_dust_hotkeys:
+                minimum_weight = 0.0
+            elif dynamic_dust_weights is not None and hotkey in dynamic_dust_weights:
                 minimum_weight = dynamic_dust_weights[hotkey]
             else:
                 minimum_weight = status_to_minimum_weight.get(current_status, 1 * DUST)
@@ -1581,6 +1707,25 @@ class DebtBasedScoring:
                 )
 
         return miner_weights_with_minimums
+
+    @staticmethod
+    def _hold_capped_weights(weights: dict[str, float], capped_hotkeys: set[str] | None,
+                             raw_debt_weights: dict[str, float] | None = None) -> dict[str, float]:
+        """When the dust floors lift the total past one, the rest are scaled to what is left so the capped miners keep
+        their owed share, unless that pushes a miner on its floor below it: then the plain normalization stands."""
+        capped = {hotkey for hotkey in (capped_hotkeys or ()) if hotkey in weights}
+        total = sum(weights.values())
+        if not capped or total <= 1.0:
+            return weights
+        capped_total = sum(weights[hotkey] for hotkey in capped)
+        others_total = total - capped_total
+        room = max(0.0, 1.0 - capped_total)
+        floors = sum(weight for hotkey, weight in weights.items()
+                     if hotkey not in capped and (raw_debt_weights or {}).get(hotkey, 0.0) <= 0.0)
+        if others_total <= 0 or room < floors:
+            return weights
+        factor = room / others_total
+        return {hotkey: weight if hotkey in capped else weight * factor for hotkey, weight in weights.items()}
 
     @staticmethod
     def _get_burn_address_hotkey(

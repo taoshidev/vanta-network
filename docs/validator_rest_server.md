@@ -253,6 +253,8 @@ Returns all the hotkeys as seen in the metagraph from the validator's perspectiv
 
 Comprehensive dashboard for a regular (non-entity) miner hotkey. Aggregates the same per-section data as the [Subaccount Dashboard](#get-subaccount-dashboard-version-2) endpoint (challenge period, drawdown, elimination, account size, positions, limit orders, ledger, statistics), minus the entity-specific `subaccount_info` section. Uses the same `create_subaccount_dashboard` aggregation logic — see that endpoint's docs for the full section-by-section response schema.
 
+For a miner on the [standard account track](miner.md#standard-account-track), `account_size_data.standard_account` is the account record: `opened_at_ms`, `opening_leverage_tier`, `asset_class`, `account_size` (fixed at opening, the size the pro challenge is paid on), `locked_theta`, `opening_price_usd`, `trading_account_size` (the size traded when it differs: the pro size on the pro track, else `null`), `pro_account_size`, `payout_scale` (the pro challenge multiplier, fixed with the pro size by the auto-promotion's multiple: 1.3 at 3x, 1.5 at 5x, 2.0 at 10x; `null` before one is granted), `closed_at_ms` and `reopened_at_ms`. It is `null` for every other miner. For a miner on the existing rules whose size is fixed (see [miner rule 3](miner.md#basic-rules)), `account_size_data.size_lock` is `{locked_ms, account_size, locked_theta, closed_at_ms}`: when the size was fixed, the size, the theta behind it and, once a withdrawal closed the account, when; `null` otherwise. Every validator fixes the size at its first pass after the lock start; the mothership broadcasts its locks and closes, which the other validators adopt. `account_size_data.peak_leverage_use` is the highest leverage use after any fill or fee since the account was last reset (on every move to a new account): the larger of the open positions' entry value over the portfolio cap and the highest asset class's over that class's cap, each on the balance. From 0.5 on, a funded standard account's fast track asks only 3% (see [miner.md](miner.md#standard-account-track)).
+
 **Authentication:** Requires **tier 100 API access**.
 
 **Query Parameters:**
@@ -515,8 +517,7 @@ Challenge-period status for a miner or subaccount hotkey. By default returns onl
   "history": [
     {"bucket": "CHALLENGE", "start_time_ms": 1690000000000},
     {"bucket": "MAINCOMP", "start_time_ms": 1695000000000},
-    {"bucket": "PROBATION", "start_time_ms": 1700000000000},
-    {"bucket": "ELIMINATED", "start_time_ms": 1702345678901, "reason": "FAILED_PROBATION_TIME"}
+    {"bucket": "ELIMINATED", "start_time_ms": 1702345678901, "reason": "FAILED_FUNDED_PERIOD_EOD_DRAWDOWN"}
   ],
   "timestamp": 1702345690000
 }
@@ -689,6 +690,56 @@ Process a collateral deposit with encoded extrinsic data.
 **Parameters:**
 - `extrinsic_data` (string): Hex-encoded signed extrinsic for stake transfer
 
+### Query Withdrawal
+
+`POST /collateral/query-withdraw`
+
+What a withdrawal would do, without doing it: the slash, the net amount and, for a miner on the [standard account track](miner.md#standard-account-track) or a miner on the existing rules whose size is fixed (`locked_theta` is then the theta behind that size), whether it closes the account. No signature is needed.
+
+**Request Body:**
+```json
+{
+  "amount": 5.0,
+  "miner_hotkey": "5FrLxJsyJ5x9n2rmxFwosFraxFCKcXZDngEP9H7qjkKgHLcK",
+  "version": "3.2.0"
+}
+```
+
+`version` is the vanta-cli version; an outdated one is rejected with a 400.
+
+**Response (existing rules):**
+```json
+{
+  "successfully_processed": true,
+  "error_message": "",
+  "drawdown": 0.02,
+  "slashed_amount": 1.25,
+  "withdrawal_amount": 3.75,
+  "new_balance": 295.0
+}
+```
+
+A standard account, or an account whose size is fixed, withdrawing unlocked collateral answers with the same fields plus `locked_theta` and `closes_account: false`, and is never slashed (`slashed_amount` 0), whatever the positions, as long as at least the locked theta stays in place. An account whose size is fixed keeps that only down to 300 theta: a withdrawal taking its balance below 300 answers as for every other miner, needs every position closed and is slashed on the part below 300.
+
+**Response (a standard account withdrawing into its locked theta):**
+```json
+{
+  "successfully_processed": true,
+  "error_message": "",
+  "closes_account": true,
+  "locked_theta": 120.0,
+  "intraday_drawdown_pct": 2.0,
+  "trailing_drawdown_pct": 4.0,
+  "drawdown": 0.04,
+  "slash_proportion": 0.8,
+  "slashed_amount": 96.0,
+  "withdrawal_amount": 204.0,
+  "new_balance": 0.0
+}
+```
+
+Every position must be closed first (otherwise `successfully_processed` is false with the reason). The whole balance comes out as `withdrawal_amount`, less `slashed_amount` = `locked_theta` × `slash_proportion` (for an account whose size is fixed, `slash_proportion` applies to the larger of `locked_theta` and 300 theta), where the proportion is min(1, max(`intraday_drawdown_pct` ÷ the daily loss limit, `trailing_drawdown_pct` ÷ the EOD limit)) at the account's current stage, on the balance as it is now; `drawdown` is the larger of the two as a fraction. An eliminated standard account whose slash could not be taken at the time answers with `owed_slash: true` and the slash its elimination still owes, which the withdrawal takes first.
+
 ### Withdraw Collateral
 
 `POST /collateral/withdraw`
@@ -701,11 +752,14 @@ Process a collateral withdrawal request.
   "amount": 5.0,
   "miner_coldkey": "5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2",
   "miner_hotkey": "5FrLxJsyJ5x9n2rmxFwosFraxFCKcXZDngEP9H7qjkKgHLcK",
-  "nonce": "0x1234567890abcdef...",
+  "nonce": "a-single-use-string",
   "timestamp": 1751409821967,
-  "signature": "0x1234567890abcdef..."
+  "signature": "1234567890abcdef...",
+  "version": "3.2.0"
 }
 ```
+
+The signature is hex without a `0x` prefix.
 
 **Response:**
 ```json
@@ -713,7 +767,8 @@ Process a collateral withdrawal request.
   "successfully_processed": true,
   "error_message": "",
   "returned_amount": 5.0,
-  "returned_to": "5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2"
+  "returned_to": "5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2",
+  "account_closed": false
 }
 ```
 
@@ -723,7 +778,9 @@ Process a collateral withdrawal request.
 - `miner_hotkey` (string): Miner's hotkey SS58 address
 - `nonce` (string): Request nonce
 - `timestamp` (int): Request timestamp
-- `signature` (string): Request signature
+- `signature` (string): The coldkey's signature over the sorted JSON of `amount`, `miner_coldkey`, `miner_hotkey`, `nonce`, `timestamp` and, when it is true, `close_account` (a false value is neither signed nor needed)
+- `version` (string): The vanta-cli version; an outdated one is rejected with a 400
+- `close_account` (bool, optional): A standard account's, or a fixed-size account's, consent to a withdrawal that closes it (one [Query Withdrawal](#query-withdrawal) answers with `closes_account: true`). Without it such a withdrawal is refused with the closing terms in `error_message`. With it, the mothership validator (the only one that processes a closing withdrawal) cancels any pending limit orders (every position must already be closed), records the elimination `ACCOUNT_CLOSED` with the slash, pays out the rest of the balance and answers `account_closed: true`. A closed hotkey never trades again, no operator reversal reopens it, and payouts it has not yet received are forfeited.
 
 ### Get Collateral Balance
 
@@ -746,6 +803,8 @@ The asset class selection endpoint allows miners to permanently select their ass
 Valid asset classes: `crypto`, `forex`, `equities`, `commodities`, `hl_all`, `all_markets`.
 
 Miners selecting `hl_all` can trade any HyperLiquid-sourced pair (`trade_pair_source: "hyperliquid"`). All other selections are restricted to Vanta-sourced pairs of the matching category.
+
+A hotkey on the [standard account track](miner.md#standard-account-track) selects nothing here: its account trades all markets, set by its [opening](#account-opening). The endpoint answers it with `successfully_processed: false` (and asks a hotkey whose registration is not known yet to retry shortly).
 
 ### Asset Selection
 
@@ -777,6 +836,60 @@ Process an asset class selection.
 - `miner_coldkey` (string): Miner's coldkey SS58 address
 - `miner_hotkey` (string): Miner's hotkey SS58 address
 - `signature` (string): Request signature
+
+## Account Opening
+
+A miner whose hotkey registered after the standard account cutoff block opens its trading account here, once it has deposited collateral; the account trades all markets (`all_markets`, which the opening sets whatever was selected before); see the [standard account track](miner.md#standard-account-track). The mothership validator processes the request and broadcasts the opened account to the other validators, which apply it as it is.
+
+### Open Account
+
+`POST /account/open`
+
+**Request Body:**
+```json
+{
+  "miner_coldkey": "5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2",
+  "miner_hotkey": "5FrLxJsyJ5x9n2rmxFwosFraxFCKcXZDngEP9H7qjkKgHLcK",
+  "leverage_tier": 2,
+  "nonce": "a-single-use-string",
+  "timestamp": 1751409821967,
+  "signature": "1234567890abcdef...",
+  "version": "3.2.0"
+}
+```
+
+**Response:**
+```json
+{
+  "successfully_processed": true,
+  "success_message": "Opened a $50,000.00 account at tier 2, locking 110.0000 theta at $5.0000 per theta",
+  "account": {
+    "opened_at_ms": 1751409821967,
+    "opening_leverage_tier": 2,
+    "asset_class": "all_markets",
+    "account_size": 50000.0,
+    "locked_theta": 110.0,
+    "opening_price_usd": 5.0,
+    "trading_account_size": null,
+    "pro_account_size": null,
+    "payout_scale": null,
+    "closed_at_ms": null,
+    "reopened_at_ms": null
+  }
+}
+```
+
+**Parameters:**
+- `miner_coldkey` (string): Miner's coldkey SS58 address; it must own `miner_hotkey` on chain
+- `miner_hotkey` (string): Miner's hotkey SS58 address
+- `leverage_tier` (int): 1 Base, 2 Boost I or 3 Boost II (`ValiConfig.STANDARD_LEVERAGE_TIERS`); the miner cannot change it afterwards, and passing the challenge moves the account to tier 3
+- `nonce` (string) and `timestamp` (int, ms): single use, so every request is freshly signed
+- `signature` (string): The coldkey's signature, hex, over the sorted JSON of `leverage_tier`, `miner_coldkey`, `miner_hotkey`, `nonce` and `timestamp`
+- `version` (string): The vanta-cli version
+
+The account size is the collateral's USD value at the opening theta price divided by the tier's collateral percentage (0.7% / 1.1% / 1.5%), capped at $100,000, and the theta that backs it at that price is locked.
+
+A request that fails validation is answered with `{"error": "..."}`: 400 for a missing field, an invalid tier, a malformed key, signature or timestamp, or an outdated `version`; 401 for a bad signature, a reused nonce or a timestamp outside the accepted window; 403 when the coldkey does not own the hotkey; 503 when collateral operations are unavailable; 500 for an unexpected error. A rejection of the opening itself is a 400 with `successfully_processed: false` and the reason in `error_message`: the request reached a validator other than the mothership; the hotkey is not in the last metagraph sync (retry shortly); it registered before the cutoff block, so it trades under the existing rules (while the cutoff is unset, every hotkey); it already trades under the existing rules; it is eliminated, a validator or an entity; its collateral could not be read or none is posted; the account would open below $5,000; there is no theta price; or its miner has closed the account. Sending the request again for an open account returns that account. A 503 with `successfully_processed: false` means a validator service did not answer; resend the request.
 
 ## Limit Orders
 
@@ -1314,6 +1427,9 @@ subaccount it does not own.
   - **Required entering the pro track** (`SUBACCOUNT_CHALLENGE` or `SUBACCOUNT_FUNDED`).
   - **Optional on the hop within the track** (out of `PRO_CHALLENGE_TRANSITION`): a new size replaces
     the recorded one; omitted, the recorded size is kept.
+  - For a subaccount created at or after the promotion rules start
+    (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`), the first size granted fixes its
+    `PRO_CHALLENGE_FROM_STANDARD` payout multiplier at 1.3, whatever the size.
 - `nonce` (string, required): Random string, new for every request. A nonce is accepted once per entity; a repeat is rejected with 401.
 - `timestamp` (int, required): Request time in milliseconds. Requests older than 5 minutes, or more than 1 minute in the future, are rejected with 401.
 - `signature` (string, required): Coldkey signature over the sorted-JSON of
@@ -1329,7 +1445,8 @@ collateral once the pro account goes live — the hops into `PRO_CHALLENGE_DIREC
 The fee is `pro_account_size / PRO_REG_CPT − standard_account_size / STD_REG_CPT` at the subaccount's
 daily loss limit (3,000 and 1,500 at 5%; 5,000 and 2,500 at 3%), floored at zero, less any promotion
 fee already charged — see [entity_miner.md](entity_miner.md#pro-promotion-fee). An Instant Funded
-subaccount created into `SUBACCOUNT_FUNDED` cannot be promoted onto the pro track.
+subaccount created into `SUBACCOUNT_FUNDED`, or a Hyperliquid-linked subaccount, cannot be promoted
+onto the pro track; a Hyperliquid-linked one already on it moves on.
 
 **Only the two hops onto a pro account wipe trading state.** A hop switches accounts when the target
 bucket changes the account size (`MinerBucket.switches_account`), and `PRO_CHALLENGE_TRANSITION` does
@@ -1360,12 +1477,17 @@ the pro size off the pro track and let the next size-less attempt reuse that siz
   "synthetic_hotkey": "5GhDr3xy...abc_0",
   "bucket": "PRO_CHALLENGE_FROM_STANDARD",
   "pro_account_size": 500000.0,
-  "account_size": 500000.0
+  "account_size": 500000.0,
+  "payout_scale": null,
+  "pro_fee_theta": 100.0,
+  "pro_fee_theta_pending": 100.0
 }
 ```
 
+`payout_scale` is the `PRO_CHALLENGE_FROM_STANDARD` payout multiplier fixed on the subaccount (`null` for the default 2.0).
+
 **Errors:**
-- `400`: a field or `pro_account_size` is missing or invalid, `synthetic_hotkey` is not a subaccount, or the promotion was rejected (the subaccount's bucket has no promotion target, no pro account size to use, or insufficient entity collateral for the promotion fee)
+- `400`: a field or `pro_account_size` is missing or invalid, `synthetic_hotkey` is not a subaccount, or the promotion was rejected (the subaccount's bucket has no promotion target, it is Instant Funded in `SUBACCOUNT_FUNDED` or Hyperliquid-linked and not yet on the pro track, no pro account size to use, or insufficient entity collateral for the promotion fee)
 - `401`: missing or invalid API key, invalid signature, reused nonce, or expired timestamp
 - `403`: API key below tier 200, coldkey does not own the hotkey, or the subaccount belongs to another entity
 - `404`: no such subaccount
@@ -1816,7 +1938,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
 - `eliminated_at_ms`: Timestamp when eliminated (null if active)
 
 **Challenge Period:**
-- `bucket`: Challenge period bucket ("CHALLENGE", "MAINCOMP", "PROBATION", etc.)
+- `bucket`: Challenge period bucket ("CHALLENGE", "MAINCOMP", "PLAGIARISM", etc.)
 - `start_time_ms`: Timestamp when challenge period started
 
 **Ledger (DebtLedger):**
@@ -1895,7 +2017,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
 **Statistics:**
 - `hotkey`: The synthetic hotkey
 - `challengeperiod`: Detailed challenge period progress (if applicable)
-  - `bucket`: Current bucket (CHALLENGE/MAINCOMP/PROBATION/PLAGIARISM/UNKNOWN)
+  - `bucket`: Current bucket (CHALLENGE/MAINCOMP/PLAGIARISM/UNKNOWN)
   - `start_time_ms`: Timestamp when miner entered challenge period
   - `returns`: Current returns during challenge period (e.g., 0.035 = 3.5%)
   - `drawdown`: Current drawdown during challenge period (e.g., 0.015 = 1.5%)
@@ -1982,6 +2104,7 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "account_size": 100000.0,
       "standard_account_size": null,
       "pro_account_size": null,
+      "payout_scale": null,
       "account_type": "standard",
       "drawdown_criteria": "static",
       "status": "active",
@@ -2026,6 +2149,8 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "balance": 98339.3684339573,
       "buying_power": 122924.21054244661,
       "max_return": 1.0,
+      // The highest share of its leverage limits the account has used after a fill or a fee since it was last reset
+      "peak_leverage_use": 0.0,
       // Which leverage curve this account trades and where it sits on it. `leverage_tier` is the
       // *standard* tier and is null for pro accounts, so size against `tier` + `tier_curve`
       // instead, pairing them with the matching table in GET /trade-pairs. A negative `tier` is a
@@ -2176,13 +2301,14 @@ This is the only guaranteed section of the response. All other sections may be m
 - `account_size`: Current account size (in USD)
 - `standard_account_size`: Account size on the standard track, snapshotted when the subaccount entered the pro track (null until then)
 - `pro_account_size`: Pro account size the admin set when offering the subaccount the pro track, at least the subaccount's standard account size and at most $1,000,000 (null until the subaccount is first offered the pro track)
+- `payout_scale`: The `PRO_CHALLENGE_FROM_STANDARD` payout multiplier fixed on the subaccount, which its margin there follows: `1.0` for Instant Funded, the one fixed with the first pro size for a subaccount created at or after the promotion rules start; `null` means `ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER` (2.0)
 - `account_type`: `"standard"` or `"pro"`
 - `status`: Current status ("active", "eliminated", or "unknown")
 - `created_at_ms`: Timestamp when subaccount was created
 - `eliminated_at_ms`: Timestamp when eliminated (null if active)
 
 **Challenge Period:**
-- `bucket`: Challenge period bucket ("CHALLENGE", "MAINCOMP", "PROBATION", etc.)
+- `bucket`: Challenge period bucket ("CHALLENGE", "MAINCOMP", "PLAGIARISM", etc.)
 - `start_time_ms`: Timestamp when challenge period started
 
 **Drawdown (synthetic hotkeys only):**
@@ -2713,7 +2839,7 @@ All USD figures are against the live `balance`, which is what the order path app
 - `max_asset_class_usd`: Per-asset-class exposure cap in USD, from the account's own curve.
 - `correlation_limits`: Present for pro accounts only. Groups with no exposure are omitted — they are at full room, which a client fills from `pro.correlation_limits` in `/trade-pairs`. A pro account with no exposure at all still returns the block with an empty `groups`, so "pro with nothing open" is distinguishable from "not pro".
 - `entity_collateral.headroom_theta`: The parent entity's spare collateral (deposited minus what all its subaccounts require). **`null` means the entity's balance is unknown, not that there is no headroom** — do not render it as zero.
-- `entity_collateral.headroom_usd`: The headroom as margin this subaccount could still open: `headroom_theta` × its margin CPT (70 in `PRO_FUNDED`, else 35), divided by 2 for a standard account growing into pro (`PRO_CHALLENGE_FROM_STANDARD` at the 2x payout scale). `null` when `headroom_theta` is.
+- `entity_collateral.headroom_usd`: The headroom as margin this subaccount could still open: `headroom_theta` × its margin CPT (70 in `PRO_FUNDED`, else 35), divided by its payout multiplier for a standard account growing into pro (`PRO_CHALLENGE_FROM_STANDARD`: 2, or the multiplier fixed with the pro size for a subaccount created at or after the promotion rules start). `null` when `headroom_theta` is.
 
 **Example:**
 ```bash

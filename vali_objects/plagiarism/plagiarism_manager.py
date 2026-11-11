@@ -48,7 +48,7 @@ class PlagiarismManager:
             return [], []
 
         # The api is the source of truth
-        # If a miner is no longer listed as a plagiarist, put them back in probation
+        # If a miner is no longer listed as a plagiarist, restore the bucket it was in before the review
         whitelisted_miners = []
         for miner in plagiarism_miners:
             if miner not in current_plagiarism_miners:
@@ -103,7 +103,7 @@ class PlagiarismManager:
         self.slack_notifier.send_plagiarism_demotion_notification(hotkey)
 
     def send_plagiarism_promotion_notification(self, hotkey: str):
-        """Send notification when a miner is promoted from plagiarism back to probation"""
+        """Send notification when a miner cleared of plagiarism is restored to the bucket it was in before the review"""
         if self.running_unit_tests:
             return
         self.slack_notifier.send_plagiarism_promotion_notification(hotkey)

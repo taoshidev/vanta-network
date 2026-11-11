@@ -27,6 +27,7 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.vali_config import ValiConfig
 from time_util.time_util import TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.log import logger
 
@@ -854,6 +855,8 @@ class PenaltyLedgerManager:
         total_checkpoints_added = 0
         total_hotkeys = len(all_perf_ledgers)
         current_hotkey_index = 0
+        # The minimum collateral rule measures the collateral itself, not a size locked below it
+        collateral_sizes = self._miner_account_client.get_all_collateral_account_sizes()
 
         for miner_hotkey, portfolio_ledger in all_perf_ledgers.items():
             current_hotkey_index += 1
@@ -886,6 +889,10 @@ class PenaltyLedgerManager:
             miner_account_size = self._miner_account_client.get_miner_account_size(miner_hotkey)
             if miner_account_size is None:
                 miner_account_size = 0
+            collateral_size = collateral_sizes.get(miner_hotkey) or 0
+            # A standard miner posts no minimum collateral and, like a subaccount, has no per-checkpoint product
+            standard_miner = (not is_synthetic_hotkey(miner_hotkey) and isinstance(
+                self._miner_account_client.get_standard_account(miner_hotkey), StandardMinerAccount))
 
             # ProStats is maintained by ChallengePeriodManager.
             miner_pro_stats = (challenge_period_data.get(miner_hotkey) or {}).get('pro_stats') or {}
@@ -992,7 +999,7 @@ class PenaltyLedgerManager:
                             penalty_value = penalty_config.function(miner_positions_at_checkpoint)
 
                         elif penalty_config.input_type == PenaltyInputType.COLLATERAL:
-                            penalty_value = penalty_config.function(miner_account_size)
+                            penalty_value = 1.0 if standard_miner else penalty_config.function(collateral_size)
 
                     except Exception as e:
                         if verbose:
@@ -1027,9 +1034,9 @@ class PenaltyLedgerManager:
                     # that week looks clean.
                     weekly_penalty = 0.0
 
-                if is_synthetic_hotkey(miner_hotkey):
-                    # Only the per-checkpoint product is waived for subaccounts - weekly_penalty
-                    # is how pro subaccounts get their payout week blocked.
+                if is_synthetic_hotkey(miner_hotkey) or standard_miner:
+                    # Only the per-checkpoint product is waived on the standard account pipeline - weekly_penalty
+                    # is how pro accounts get their payout week blocked.
                     total_penalty = 1
 
                 # Create penalty checkpoint

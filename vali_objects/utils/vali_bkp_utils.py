@@ -293,6 +293,11 @@ class ValiBkpUtils:
         return ValiConfig.BASE_DIR + f"{suffix}/validation/miner_account_sizes.json"
 
     @staticmethod
+    def get_registered_after_cutoff_file_location(running_unit_tests=False) -> str:
+        suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
+        return ValiConfig.BASE_DIR + f"{suffix}/validation/registered_after_cutoff.json"
+
+    @staticmethod
     def get_entity_file_location(running_unit_tests=False) -> str:
         suffix = ValiBkpUtils.get_test_dir_suffix(running_unit_tests)
         return ValiConfig.BASE_DIR + f"{suffix}/validation/entities.json"

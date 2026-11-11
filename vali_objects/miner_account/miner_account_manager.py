@@ -12,20 +12,23 @@ This module contains ALL account size functionality, previously split across
 ValidatorContractManager. The contract manager now delegates to this module.
 """
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
 
+import template.protocol
 from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
+from vali_objects.miner_account.account_size_lock import AccountSizeLock
 from vali_objects.miner_account.account_snapshot import AccountSnapshot
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.exceptions.signal_exception import SignalException
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
-from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.enums.miner_bucket_enum import EXISTING_RULES_BUCKETS, MinerBucket
 from vali_objects.enums.order_type_enum import OrderType
 from vali_objects.vali_dataclasses.position import Position
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
@@ -90,6 +93,9 @@ class MinerAccount:
     capital_used_by_class: Dict[TradePairCategory, float] = field(default_factory=dict)
     correlated_exposure_by_group: Dict[str, List[float]] = field(default_factory=dict)
     daily_open_snapshot: Optional[AccountSnapshot] = None
+    standard_account: Optional[StandardMinerAccount] = None
+    size_lock: Optional[AccountSizeLock] = None  # a miner on the existing rules, from the lock start on
+    peak_leverage_use: float = 0.0  # the highest leverage_use() after a fill or a fee since the account was last reset
 
     def __post_init__(self):
         """Initialize collateral_records to empty list if None."""
@@ -147,6 +153,20 @@ class MinerAccount:
         tier = get_legacy_leverage_tier(self.miner_bucket, self.get_account_size())
         return ValiConfig.LEGACY_TIER_PORTFOLIO_LEVERAGE_BY_ASSET_CLASS[tier].get(self.asset_class, 1.0)
 
+    def leverage_use(self) -> float:
+        """The share of its leverage limits the account uses: the larger of its open positions' entry value over the
+        portfolio cap and its highest asset class's over that class's cap, each as a multiple of the balance."""
+        from vali_objects.utils.leverage_utils import get_per_class_leverage_cap
+        balance = self.balance
+        if balance <= 0:
+            return 0.0
+        uses = [self.capital_used / (balance * self.multiplier)] if self.multiplier > 0 else []
+        for category, used in self.capital_used_by_class.items():
+            cap = get_per_class_leverage_cap(self, category)
+            if cap > 0:
+                uses.append(used / (balance * cap))
+        return max(uses, default=0.0)
+
     def leverage_limits(self) -> dict:
         """Which leverage curve this account trades on, and where it sits on it.
 
@@ -189,7 +209,21 @@ class MinerAccount:
         self.collateral_records.append(record)
 
     def get_account_size(self, timestamp_ms: Optional[int] = None) -> float:
-        """Get account size at a given timestamp. Returns MIN_CAPITAL if no collateral records."""
+        """The account size: a standard miner's from its record, a locked one's from its lock (from the lock time on),
+        otherwise from the collateral record valid at the timestamp (the latest when None; MIN_CAPITAL without one)."""
+        if self.standard_account is not None:
+            return self.standard_account.size_traded
+        if self.size_lock is not None and (timestamp_ms is None or timestamp_ms >= self.size_lock.locked_ms):
+            return self.size_lock.account_size
+        return self.collateral_account_size(timestamp_ms)
+
+    def size_lock_now(self, now_ms: int) -> AccountSizeLock:
+        """The lock of the size in force now: the latest collateral record's, as orders are sized."""
+        theta = self.collateral_records[-1].account_size_theta if self.collateral_records else 0.0
+        return AccountSizeLock.from_collateral(theta, now_ms)
+
+    def collateral_account_size(self, timestamp_ms: Optional[int] = None) -> float:
+        """The size the collateral alone gives, lock or not: what the minimum collateral rule measures."""
         if not self.collateral_records:
             return ValiConfig.MIN_CAPITAL
 
@@ -251,12 +285,15 @@ class MinerAccount:
             'hl_address': self.hl_address,
             'leverage_tier': self.leverage_tier,
             'max_return': self.max_return,
+            'peak_leverage_use': self.peak_leverage_use,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
             # JSON keys must be str; convert TradePairCategory enum to its .value
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'daily_open_snapshot': self.daily_open_snapshot.to_dict() if self.daily_open_snapshot else None,
+            'standard_account': self.standard_account.to_dict() if self.standard_account else None,
+            'size_lock': self.size_lock.to_dict() if self.size_lock else None,
         }
 
         if include_collateral_records:
@@ -274,11 +311,14 @@ class MinerAccount:
             'total_fees_paid': self.total_fees_paid,
             'buying_power': self.buying_power,
             'max_return': self.max_return,
+            'peak_leverage_use': self.peak_leverage_use,
             'unrealized_pnl': self.unrealized_pnl,
             'equity': self.equity,
             'capital_used_by_class': {cat.value: amt for cat, amt in self.capital_used_by_class.items()},
             'correlated_exposure_by_group': {k: list(v) for k, v in self.correlated_exposure_by_group.items()},
             'leverage_tier': self.leverage_tier,
+            'standard_account': self.standard_account.to_dict() if self.standard_account else None,
+            'size_lock': self.size_lock.to_dict() if self.size_lock else None,
             **self.leverage_limits(),
         }
 
@@ -337,6 +377,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         # Unified MinerAccount storage - single source of truth
         self.accounts: Dict[str, MinerAccount] = {}
+        # (cutoff block, hotkey -> registered after it), pushed by core after each metagraph sync
+        self._registered_after_cutoff: tuple = (None, {})
 
         # Locking strategy - EAGER initialization (not lazy!)
         # Lock order: _accounts_lock, then _disk_lock. Never take _accounts_lock while holding
@@ -366,9 +408,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
         self.ASSET_SELECTIONS_FILE = ValiBkpUtils.get_asset_selections_file_location(
             running_unit_tests=running_unit_tests
         )
+        self.REGISTERED_AFTER_CUTOFF_FILE = ValiBkpUtils.get_registered_after_cutoff_file_location(
+            running_unit_tests=running_unit_tests
+        )
 
         # Load from disk
         self._load_accounts_from_disk()
+        self._registered_after_cutoff = self._load_registered_after_cutoff()
 
     # ==================== Disk Persistence ====================
 
@@ -484,10 +530,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     hl_address = last_record.get("hl_address")
                     leverage_tier = last_record.get("leverage_tier")
                     max_return = last_record.get("max_return", 1.0)
+                    peak_leverage_use = last_record.get("peak_leverage_use", 0.0)
                     unrealized_pnl = last_record.get("unrealized_pnl", 0.0)
                     capital_used_by_class_raw = last_record.get("capital_used_by_class", {})
                     correlated_exposure_raw = last_record.get("correlated_exposure_by_group", {})
                     daily_open_snapshot_raw = last_record.get("daily_open_snapshot")
+                    standard_account_raw = last_record.get("standard_account")
+                    size_lock_raw = last_record.get("size_lock")
                 else:
                     total_realized_pnl = None
                     capital_used = None
@@ -498,10 +547,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     hl_address = None
                     leverage_tier = None
                     max_return = 1.0
+                    peak_leverage_use = 0.0
                     unrealized_pnl = 0.0
                     capital_used_by_class_raw = {}
                     correlated_exposure_raw = {}
                     daily_open_snapshot_raw = None
+                    standard_account_raw = None
+                    size_lock_raw = None
 
                 # Deserialize capital_used_by_class: string keys → TradePairCategory enum.
                 # Missing field (older checkpoint) → empty dict; will be lazy-backfilled by
@@ -563,6 +615,20 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     except Exception:
                         pass
 
+                standard_account = None
+                if standard_account_raw:
+                    try:
+                        standard_account = StandardMinerAccount.from_dict(standard_account_raw)
+                    except Exception as e:
+                        logger.error(f"Unreadable standard miner record for {hotkey}, loading the account without it: {e}")
+
+                size_lock = None
+                if size_lock_raw:
+                    try:
+                        size_lock = AccountSizeLock.from_dict(size_lock_raw)
+                    except Exception as e:
+                        logger.error(f"Unreadable account size lock for {hotkey}, loading the account without it: {e}")
+
                 parsed_accounts[hotkey] = MinerAccount(
                     miner_hotkey=hotkey,
                     total_realized_pnl=total_realized_pnl if total_realized_pnl is not None else 0.0,
@@ -576,10 +642,13 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     hl_address=hl_address,
                     leverage_tier=leverage_tier,
                     max_return=max_return,
+                    peak_leverage_use=peak_leverage_use,
                     unrealized_pnl=unrealized_pnl,
                     capital_used_by_class=capital_used_by_class,
                     correlated_exposure_by_group=correlated_exposure_by_group,
                     daily_open_snapshot=daily_open_snapshot,
+                    standard_account=standard_account,
+                    size_lock=size_lock,
                 )
 
             except Exception as e:
@@ -603,6 +672,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
                 asset_data = dict(ValiUtils.get_vali_json_file(self.ASSET_SELECTIONS_FILE))
                 parsed_accounts = self._parse_accounts_dict(account_sizes_data, asset_data)
+                self._keep_standard_accounts_ahead_of(parsed_accounts)
+                self._keep_account_size_locks_of(parsed_accounts)
                 self.accounts.clear()
                 self.accounts.update(parsed_accounts)
 
@@ -610,6 +681,33 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 logger.info(f"Synced {len(self.accounts)} miner accounts")
         except Exception as e:
             logger.error(f"Failed to sync miner accounts data: {e}")
+
+    def _keep_standard_accounts_ahead_of(self, incoming: Dict[str, MinerAccount]) -> None:
+        """A snapshot may predate an opening, pro sizing or close seen here: it fills a missing or older record and the
+        opening's tier and bucket, but never undoes one unless reopened after it. Caller holds _accounts_lock."""
+        for hotkey, local in self.accounts.items():
+            record = local.standard_account
+            if record is None:
+                continue
+            account = incoming.get(hotkey)
+            if account is None:
+                incoming[hotkey] = local
+            elif account.standard_account is None or record.supersedes(account.standard_account):
+                account.standard_account = record
+                if account.leverage_tier is None:
+                    account.leverage_tier = local.leverage_tier
+                if account.miner_bucket is None:
+                    account.miner_bucket = local.miner_bucket
+
+    def _keep_account_size_locks_of(self, incoming: Dict[str, MinerAccount]) -> None:
+        """A synced snapshot never unlocks a miner's size nor reopens a closed account; otherwise a lock it carries
+        replaces the one held, since it is the mothership's. Caller holds _accounts_lock."""
+        for hotkey, local in self.accounts.items():
+            account = incoming.get(hotkey)
+            if local.size_lock is None or account is None:
+                continue
+            if account.size_lock is None or (local.size_lock.is_closed and not account.size_lock.is_closed):
+                account.size_lock = local.size_lock
 
     # ==================== Account Size Methods ====================
 
@@ -648,6 +746,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             # Get or create account
             account = self.get_or_create(hotkey)
+            if account.standard_account is not None:
+                # Collateral never resizes an opened account: the record tracks the balance at the fixed size
+                collateral_record = CollateralRecord(account.get_account_size(), collateral_balance_theta, timestamp_ms,
+                                                     is_first_record)
 
             # Skip if the new record matches the last existing record
             if account.collateral_records:
@@ -658,6 +760,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     return collateral_record
             # Add the new record and update account size
             account.add_collateral_record(collateral_record)
+            shrunk = self._fit_size_lock(account, collateral_balance_theta, timestamp_ms)
 
             if is_first_record:
                 self.take_account_snapshot(hotkey=hotkey, timestamp_ms=timestamp_ms, reset_snapshot=True)
@@ -665,10 +768,24 @@ class MinerAccountManager(ValidatorBroadcastBase):
             # Save to disk
             self._save_accounts_to_disk()
 
+        if shrunk is not None:
+            self._broadcast_size_locks({hotkey: shrunk})
         logger.info(
-            f"Updated account size for {hotkey}: ${account_size:,.2f} (valid from {collateral_record.valid_date_str})")
+            f"Updated account size for {hotkey}: ${collateral_record.account_size:,.2f} (valid from {collateral_record.valid_date_str})")
 
         return collateral_record
+
+    @staticmethod
+    def _fit_size_lock(account: MinerAccount, theta: Optional[float], record_ms: int) -> Optional[AccountSizeLock]:
+        """An open lock never stands on more theta than a record made after it shows (a withdrawal still in flight when
+        it was written, or a slash once a record follows): that balance shrinks it. Caller holds _accounts_lock."""
+        lock = account.size_lock
+        if (lock is None or lock.is_closed or theta is None or record_ms < lock.locked_ms
+                or theta >= lock.locked_theta - 1e-9):
+            return None
+        account.size_lock = AccountSizeLock.from_collateral(theta, record_ms)
+        logger.info(f"The account size lock of {account.miner_hotkey} shrank to the {theta} theta posted: {account.size_lock}")
+        return account.size_lock
 
     def reset_account(self, hotkey: str, miner_bucket: MinerBucket | None = None) -> bool:
         with self._accounts_lock:
@@ -682,6 +799,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
             self.take_account_snapshot(hotkey=hotkey, reset_snapshot=True)
             account.max_return = 1.0
+            account.peak_leverage_use = 0.0
 
             self._save_accounts_to_disk()
         return True
@@ -709,6 +827,89 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 logger.debug(f"No account size to delete for {hotkey}")
                 return True  # Return True - idempotent behavior
 
+    def lock_account_sizes(self, hotkeys: List[str], now_ms: Optional[int] = None) -> Dict[str, AccountSizeLock]:
+        """From this network's lock start on, fix each given miner's size at the size in force now; the mothership
+        broadcasts the locks it writes. Returns them; an account already locked keeps its lock."""
+        start_ms = ValiConfig.account_size_lock_start_ms(self.is_testnet)
+        now_ms = TimeUtil.now_in_millis() if now_ms is None else now_ms
+        if start_ms is None or now_ms < start_ms:
+            return {}
+        locks = {}
+        with self._accounts_lock:
+            for hotkey in hotkeys:
+                account = self.accounts.get(hotkey)
+                if (is_synthetic_hotkey(hotkey) or account is None or account.standard_account is not None
+                        or account.size_lock is not None):
+                    continue
+                account.size_lock = account.size_lock_now(now_ms)
+                locks[hotkey] = account.size_lock
+            if locks:
+                self._save_accounts_to_disk()
+        if locks:
+            logger.info(f"Locked the account size of {len(locks)} miners: {locks}")
+            self._broadcast_size_locks(locks)
+        return locks
+
+    def close_locked_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Mark a locked account closed by its miner's withdrawal, and broadcast the close; returns whether the lock
+        held is closed."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            if account is None or account.size_lock is None:
+                return False
+            if account.size_lock.is_closed:
+                return True
+            account.size_lock = account.size_lock.closed(closed_at_ms)
+            lock = account.size_lock
+            self._save_accounts_to_disk()
+        self._broadcast_size_locks({hotkey: lock})
+        return True
+
+    def _broadcast_size_locks(self, locks: Dict[str, AccountSizeLock]) -> None:
+        def create_synapse():
+            return template.protocol.AccountSizeLocks(size_locks={hotkey: lock.to_dict() for hotkey, lock in locks.items()})
+
+        self._broadcast_to_validators(synapse_factory=create_synapse, broadcast_name="AccountSizeLocks",
+                                      context={"hotkeys": list(locks)})
+
+    def receive_size_locks_update(self, locks_data: dict, sender_hotkey: str = None) -> bool:
+        """Take the locks the mothership wrote or closed as they are, in place of any held (a close is never undone):
+        every validator then trades the mothership's size and refuses a closed account."""
+        def adopt(data: dict):
+            locks = {hotkey: AccountSizeLock.from_dict(fields) for hotkey, fields in data.items()}
+            if not locks:
+                raise ValueError(f"Invalid account size lock data: {data}")
+            with self._accounts_lock:
+                for hotkey, lock in locks.items():
+                    if is_synthetic_hotkey(hotkey):
+                        continue
+                    account = self.get_or_create(hotkey)
+                    held = account.size_lock
+                    if account.standard_account is None and not (held is not None and held.is_closed and not lock.is_closed):
+                        account.size_lock = lock
+                self._save_accounts_to_disk()
+
+        return self._handle_incoming_broadcast(synapse_data=locks_data, sender_hotkey=sender_hotkey,
+                                               broadcast_name="AccountSizeLocks", update_callback=adopt)
+
+    def _collateral_size(self, account: MinerAccount, timestamp_ms: Optional[int]) -> float:
+        # The minimum collateral rule never binds a standard miner, which posts no minimum: it reads as meeting it
+        if account.standard_account is not None:
+            return max(account.get_account_size(timestamp_ms), ValiConfig.MIN_COLLATERAL_VALUE)
+        return account.collateral_account_size(timestamp_ms)
+
+    def get_collateral_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[float]:
+        """The size the collateral alone gives, lock aside: what the minimum collateral rule measures. None without
+        an account."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            return self._collateral_size(account, timestamp_ms) if account is not None else None
+
+    def get_all_collateral_account_sizes(self, timestamp_ms: Optional[int] = None) -> dict[str, float]:
+        """Every account's collateral size (get_collateral_account_size)."""
+        with self._accounts_lock:
+            return {hotkey: self._collateral_size(account, timestamp_ms) for hotkey, account in self.accounts.items()}
+
     def get_miner_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None, most_recent: bool = False,
                                use_account_floor: bool = False) -> float | None:
         """
@@ -722,10 +923,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
         Returns:
             Account size in USD. Returns MIN_CAPITAL for accounts without collateral records.
-            Returns None if account doesn't exist (or MIN_CAPITAL if use_account_floor=True).
+            Returns None if account doesn't exist (or MIN_CAPITAL if use_account_floor=True), and None, floor
+            or not, for a hotkey registered after the standard miner cutoff block that has not opened its account.
         """
         with self._accounts_lock:
             account = self.accounts.get(hotkey)
+            if ((account is None or account.standard_account is None)
+                    and (account is None or account.miner_bucket not in EXISTING_RULES_BUCKETS)
+                    and self.is_registered_after_cutoff(hotkey) is True):
+                # Registered after the cutoff block: nothing to trade before the opening, and no $5K floor
+                return None
             if not account:
                 return ValiConfig.MIN_CAPITAL if use_account_floor else None
 
@@ -784,12 +991,16 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
                 # Check if we already have this record (avoid duplicates)
                 if account.collateral_records:
-                    if account.collateral_records[-1].account_size == account_size:
+                    last_record = account.collateral_records[-1]
+                    if last_record.account_size == account_size and last_record.account_size_theta == account_size_theta:
                         logger.debug(f"Most recent collateral record for {hotkey} already exists")
+                        if self._fit_size_lock(account, account_size_theta, update_time_ms) is not None:
+                            self._save_accounts_to_disk()
                         return True
 
                 # Add the new record and update account size
                 account.add_collateral_record(collateral_record)
+                self._fit_size_lock(account, account_size_theta, update_time_ms)
 
                 # Save to disk
                 self._save_accounts_to_disk()
@@ -862,6 +1073,154 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 account = self.get_or_create(hotkey)
                 account.miner_bucket = bucket
             self._save_accounts_to_disk()
+
+    def _load_registered_after_cutoff(self) -> tuple:
+        """The pushed copy as last saved, so a restart keeps answering until core's next push."""
+        try:
+            data = ValiUtils.get_vali_json_file_dict(self.REGISTERED_AFTER_CUTOFF_FILE)
+            return data.get("cutoff_block"), dict(data.get("registered_after") or {})
+        except Exception as e:
+            logger.warning(f"Could not load the registered-after-cutoff copy, starting without one: {e}")
+            return None, {}
+
+    def set_registered_after_cutoff(self, cutoff_block: Optional[int], registered_after: Dict[str, Optional[bool]]) -> None:
+        """Replace the copy of MetagraphServer.get_registered_after_cutoff that core pushes after each sync, on disk too."""
+        registered_after = dict(registered_after)
+        self._registered_after_cutoff = (cutoff_block, registered_after)
+        try:
+            ValiBkpUtils.write_file(self.REGISTERED_AFTER_CUTOFF_FILE,
+                                    {"cutoff_block": cutoff_block, "registered_after": registered_after})
+        except Exception as e:
+            logger.warning(f"Could not save the registered-after-cutoff copy: {e}")
+
+    def get_registered_after_cutoff(self) -> tuple:
+        """The pushed copy, as (cutoff block, hotkey -> registered after it)."""
+        cutoff_block, registered_after = self._registered_after_cutoff
+        return cutoff_block, dict(registered_after)
+
+    def is_registered_after_cutoff(self, hotkey: str) -> Optional[bool]:
+        """Whether a real hotkey registered after this network's cutoff block. False while the cutoff is unset and for
+        development and synthetic hotkeys; None when the pushed copy is missing, from another cutoff or silent on it."""
+        cutoff_block = ValiConfig.standard_miner_cutoff_block(self.is_testnet)
+        if cutoff_block is None or hotkey == ValiConfig.DEVELOPMENT_HOTKEY or is_synthetic_hotkey(hotkey):
+            return False
+        pushed_cutoff_block, registered_after = self._registered_after_cutoff
+        if pushed_cutoff_block != cutoff_block:
+            return None
+        return registered_after.get(hotkey)
+
+    @staticmethod
+    def _check_standard_record(hotkey: str, record: StandardMinerAccount) -> None:
+        if not isinstance(record, StandardMinerAccount):
+            raise TypeError(f"A StandardMinerAccount is required, not {type(record).__name__}")
+        if is_synthetic_hotkey(hotkey):
+            raise ValueError(f"{hotkey} is a subaccount; a standard miner account needs a real hotkey")
+
+    def open_standard_account(self, hotkey: str, record: StandardMinerAccount) -> StandardMinerAccount:
+        """Open a standard miner's account in one step: the record, the opening tier and the SUBACCOUNT_CHALLENGE
+        bucket, saved together. An account already opened is returned as it is, with a missing tier restored."""
+        self._check_standard_record(hotkey, record)
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            existing = account.standard_account
+            if existing is not None:
+                if account.leverage_tier is None:
+                    account.leverage_tier = existing.opening_leverage_tier
+                    self._save_accounts_to_disk()
+                return existing
+            account.standard_account = record
+            account.leverage_tier = record.opening_leverage_tier
+            account.miner_bucket = MinerBucket.SUBACCOUNT_CHALLENGE
+            self._save_accounts_to_disk()
+            return record
+
+    def set_standard_account(self, hotkey: str, record: StandardMinerAccount) -> None:
+        """Attach or replace the record of the account a standard miner opened, and as the mothership tell the other
+        validators; a copy read before a close or a reopening keeps that close or reopening. Saves to disk."""
+        self._check_standard_record(hotkey, record)
+        with self._accounts_lock:
+            account = self.get_or_create(hotkey)
+            held = account.standard_account
+            if held is not None:
+                reopened, held_reopened = record.reopened_at_ms or -1, held.reopened_at_ms or -1
+                if reopened < held_reopened or (reopened == held_reopened and held.is_closed and not record.is_closed):
+                    record = replace(record, closed_at_ms=held.closed_at_ms, reopened_at_ms=held.reopened_at_ms)
+            account.standard_account = record
+            self._save_accounts_to_disk()
+        self._broadcast_standard_miner_record(hotkey, record)
+
+    def close_standard_account(self, hotkey: str, closed_at_ms: int) -> bool:
+        """Close a standard miner's account, as the mothership alone does (the others take its broadcast). Returns
+        whether the record held is closed."""
+        record = self.get_standard_account(hotkey)
+        if record is None:
+            return False
+        if record.is_closed:
+            return True
+        if not self.is_mothership:
+            logger.info(f"Standard miner account of {hotkey} closes when the mothership says so")
+            return False
+        self.set_standard_account(hotkey, replace(record, closed_at_ms=closed_at_ms))
+        logger.info(f"Closed the standard miner account of {hotkey}")
+        return True
+
+    def reopen_standard_account(self, hotkey: str, reopened_at_ms: int) -> bool:
+        """Undo the close of a standard miner's account, as the mothership alone does when an admin reverts the
+        elimination; the reopening outranks the close on every copy. Returns whether the record held is open."""
+        record = self.get_standard_account(hotkey)
+        if record is None:
+            return False
+        if not record.is_closed:
+            return True
+        if not self.is_mothership:
+            logger.info(f"Standard miner account of {hotkey} reopens when the mothership says so")
+            return False
+        reopened_at_ms = max(reopened_at_ms, (record.reopened_at_ms or 0) + 1)
+        self.set_standard_account(hotkey, replace(record, closed_at_ms=None, reopened_at_ms=reopened_at_ms))
+        logger.info(f"Reopened the standard miner account of {hotkey}")
+        return True
+
+    def _broadcast_standard_miner_record(self, hotkey: str, record: StandardMinerAccount) -> None:
+        def create_synapse():
+            return template.protocol.StandardMinerRecord(record={"hotkey": hotkey, "record": record.to_dict()})
+
+        self._broadcast_to_validators(synapse_factory=create_synapse, broadcast_name="StandardMinerRecord",
+                                      context={"hotkey": hotkey})
+
+    def receive_standard_miner_record_update(self, record_data: dict, sender_hotkey: str = None) -> bool:
+        """The mothership's record always wins, except for the size traded, which each validator sets at its own bucket
+        move (taking it early would read as a drawdown). An account not seen before gets the opening tier and bucket."""
+        def adopt(data: dict):
+            hotkey, fields = data.get("hotkey"), data.get("record")
+            if not hotkey or not isinstance(fields, dict):
+                raise ValueError(f"Invalid standard miner record data: {data}")
+            record = StandardMinerAccount.from_dict(fields)
+            self._check_standard_record(hotkey, record)
+            with self._accounts_lock:
+                account = self.get_or_create(hotkey)
+                held = account.standard_account
+                record = replace(record, trading_account_size=held.trading_account_size if held else None)
+                account.standard_account = record
+                if account.leverage_tier is None:
+                    account.leverage_tier = record.opening_leverage_tier
+                if account.miner_bucket is None:
+                    account.miner_bucket = MinerBucket.SUBACCOUNT_CHALLENGE
+                self._save_accounts_to_disk()
+
+        return self._handle_incoming_broadcast(synapse_data=record_data, sender_hotkey=sender_hotkey,
+                                               broadcast_name="StandardMinerRecord", update_callback=adopt)
+
+    def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
+        """The record of the account a standard miner opened; None for every other hotkey."""
+        with self._accounts_lock:
+            account = self.accounts.get(hotkey)
+            return account.standard_account if account else None
+
+    def get_standard_accounts(self) -> Dict[str, StandardMinerAccount]:
+        """The records of every standard miner, by hotkey."""
+        with self._accounts_lock:
+            return {hotkey: account.standard_account for hotkey, account in self.accounts.items()
+                    if account.standard_account is not None}
 
     def get_hl_address(self, hotkey: str) -> Optional[str]:
         """Return the HL address for an account, or None if not an HS subaccount."""
@@ -960,6 +1319,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     account.capital_used_by_class.get(trade_pair_category, 0.0) + order_value_usd
                 )
             self._apply_correlated_exposure(account, trade_pair, position_type, order_value_usd, opening=True)
+            self._advance_peak_leverage_use(account)
 
             self._save_accounts_to_disk()
 
@@ -967,6 +1327,14 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 f"[PROCESS ORDER BUY {hotkey}] ${order_value_usd:.2f}, capital_used: ${account.capital_used:.2f}, "
                 f"buying_power: ${account.buying_power:.2f}, borrowed: ${borrowed_amount:.2f}"
             )
+
+    @staticmethod
+    def _advance_peak_leverage_use(account: MinerAccount) -> None:
+        """Raise the account's peak leverage use to its use now, after a fill or a fee; never fails the caller."""
+        try:
+            account.peak_leverage_use = max(account.peak_leverage_use, account.leverage_use())
+        except Exception as e:
+            logger.error(f"[MINER_ACCOUNT] leverage use of {account.miner_hotkey} not measured: {e}")
 
     def process_order_sell(self, hotkey: str, entry_value_usd: float, realized_pnl: float, loan_repaid: float, fee_usd: float = 0, trade_pair_category: Optional[TradePairCategory] = None, unrealized_pnl_released: float = 0.0, trade_pair=None, position_type=None) -> None:
         """
@@ -1007,6 +1375,8 @@ class MinerAccountManager(ValidatorBroadcastBase):
                 # Clamp to actual borrowed amount and repay
                 loan_repaid = min(loan_repaid, account.total_borrowed_amount)
                 account.total_borrowed_amount -= loan_repaid
+            # A realized loss shrinks the balance the remaining positions are measured against
+            self._advance_peak_leverage_use(account)
 
             self._save_accounts_to_disk()
 
@@ -1028,6 +1398,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             for hotkey, fee_usd in hotkey_to_fee.items():
                 account = self.get_or_create(hotkey)
                 account.total_fees_paid += fee_usd
+                self._advance_peak_leverage_use(account)  # a fee shrinks the balance open positions are measured on
             self._save_accounts_to_disk()
 
     def process_dividend_income(self, hotkey_to_credit: Dict[str, float]) -> None:

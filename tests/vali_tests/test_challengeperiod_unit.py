@@ -25,10 +25,7 @@ from vanta_api.validator_rest_server import ValidatorRestServer
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DAILY_MS = ValiConfig.DAILY_MS
-MIN_CHALLENGE_MS = ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS    # 61 days
-MAX_CHALLENGE_MS = ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS    # 90 days
 THRESHOLD = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT  # 0.1
-RANK_LIMIT = ValiConfig.PROMOTION_THRESHOLD_RANK             # 25
 INTRADAY_THRESHOLD_PCT = ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100  # 5.0
 
 NOW_MS = 1_748_000_000_000  # fixed reference timestamp (ms)
@@ -149,82 +146,43 @@ def test_current_bucket_start_ms():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Section 3 — _should_promote / _should_demote
+# Section 3 — _check_promotion / _check_time
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def test_should_promote_challenge_too_early():
-    start_ms = NOW_MS - MIN_CHALLENGE_MS + DAILY_MS  # one day short
-    state = _state(MinerBucket.CHALLENGE, start_ms)
-    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    state.rank = 1
-    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
-
-
-def test_should_promote_challenge_met_threshold():
-    start_ms = NOW_MS - MIN_CHALLENGE_MS - DAILY_MS  # past minimum
-    state = _state(MinerBucket.CHALLENGE, start_ms)
-    # current_returns = equity - 1.0 = THRESHOLD + 0.01 > THRESHOLD → promote
-    state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD + 0.01, current_balance=1.0 + THRESHOLD + 0.01)
-    state.rank = 1
-    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
+def test_should_promote_challenge_met_threshold_at_any_age():
+    for age_ms in (DAILY_MS, DAILY_MS * 500):
+        state = _state(MinerBucket.CHALLENGE, NOW_MS - age_ms)
+        # current_returns = equity - 1.0 = THRESHOLD + 0.01 > THRESHOLD → promote
+        state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD + 0.01, current_balance=1.0 + THRESHOLD + 0.01)
+        assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
 
 
 def test_should_promote_challenge_below_equity_threshold():
-    start_ms = NOW_MS - MIN_CHALLENGE_MS - DAILY_MS
-    state = _state(MinerBucket.CHALLENGE, start_ms)
+    state = _state(MinerBucket.CHALLENGE, NOW_MS - DAILY_MS * 500)
     # current_returns = THRESHOLD - 0.01 < THRESHOLD → no promote
     state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD - 0.01, current_balance=1.0 + THRESHOLD - 0.01)
-    state.rank = 1
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
-def test_should_promote_rank_based_good_rank():
-    state = _state(MinerBucket.PROBATION)  # rank-based, promotes to MAINCOMP
-    # current_returns = 0.5 > THRESHOLD → equity condition met
+def test_should_promote_ignores_rank():
+    state = _state(MinerBucket.CHALLENGE)
     state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    state.rank = RANK_LIMIT  # at the boundary (≤ 25 passes)
-    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
+    for rank in (None, 1, 500):
+        state.rank = rank
+        assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
 
 
-def test_should_promote_rank_based_bad_rank():
-    state = _state(MinerBucket.PROBATION)
-    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    state.rank = RANK_LIMIT + 1
-    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
+def test_check_time_never_expires_regular_buckets():
+    for bucket in (MinerBucket.CHALLENGE, MinerBucket.MAINCOMP, MinerBucket.PROBATION):
+        state = _state(bucket, NOW_MS - DAILY_MS * 1000)
+        assert ChallengePeriodManager._check_time(state, NOW_MS) is None
 
 
-def test_should_promote_rank_based_no_rank():
-    state = _state(MinerBucket.PROBATION)
-    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    state.rank = None
-    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
-
-
-def test_should_demote_maincomp_bad_rank():
-    state = _state(MinerBucket.MAINCOMP)
-    state.rank = RANK_LIMIT + 1
-    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    assert ChallengePeriodManager._check_demotion(state) is True
-
-
-def test_should_demote_maincomp_good_rank():
-    state = _state(MinerBucket.MAINCOMP)
-    state.rank = RANK_LIMIT  # at boundary (not > 25) → no demotion
-    state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    assert ChallengePeriodManager._check_demotion(state) is False
-
-
-def test_should_demote_maincomp_good_rank_low_equity():
-    state = _state(MinerBucket.MAINCOMP)
-    state.rank = 1  # good rank → demotion is rank-only, equity does not trigger it
-    state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD - 0.01)
-    assert ChallengePeriodManager._check_demotion(state) is False
-
-
-def test_should_demote_maincomp_no_rank():
-    state = _state(MinerBucket.MAINCOMP)
-    state.rank = None
-    assert ChallengePeriodManager._check_demotion(state) is False
+def test_check_time_expires_plagiarism_review():
+    expired = _state(MinerBucket.PLAGIARISM, NOW_MS - ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS - DAILY_MS)
+    assert ChallengePeriodManager._check_time(expired, NOW_MS) == EliminationReason.PLAGIARISM
+    under_review = _state(MinerBucket.PLAGIARISM, NOW_MS - DAILY_MS)
+    assert ChallengePeriodManager._check_time(under_review, NOW_MS) is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -265,13 +223,6 @@ def test_check_static_ignores_trailing_drawdown_pcts():
     assert state.drawdown.intraday_drawdown_pct == pytest.approx(12.0)
     assert state.drawdown.eod_drawdown_pct == pytest.approx(9.0)
     assert ChallengePeriodManager._check_static_drawdown(state) is None
-
-
-def test_should_demote_non_maincomp():
-    for bucket in (MinerBucket.CHALLENGE, MinerBucket.PROBATION):
-        state = _state(bucket)
-        state.rank = RANK_LIMIT + 10
-        assert ChallengePeriodManager._check_demotion(state) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -327,11 +278,11 @@ def test_remove_miners_idempotent(manager):
 
 def test_refresh_promotes_eligible_challenge_miner(manager):
     hk = "hk_promote"
-    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - MIN_CHALLENGE_MS - DAILY_MS)
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - DAILY_MS)  # one day old: no minimum
     manager.miner_states[hk].drawdown = DrawdownStats(
         current_equity=1.5, current_balance=1.5  # current_returns = 0.5 > THRESHOLD
     )
-    manager.miner_states[hk].rank = 1
+    manager.miner_states[hk].rank = 500  # rank plays no part
     _setup_refresh_clients(manager, hk)
 
     with (
@@ -345,11 +296,11 @@ def test_refresh_promotes_eligible_challenge_miner(manager):
     assert manager.miner_states[hk].current_bucket == MinerBucket.MAINCOMP
 
 
-def test_refresh_demotes_maincomp_miner(manager):
-    hk = "hk_demote"
+def test_refresh_keeps_maincomp_miner_whatever_the_rank(manager):
+    hk = "hk_last"
     manager.miner_states[hk] = _state(MinerBucket.MAINCOMP, NOW_MS - DAILY_MS)
     manager.miner_states[hk].drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-    manager.miner_states[hk].rank = RANK_LIMIT + 1
+    manager.miner_states[hk].rank = 500
     _setup_refresh_clients(manager, hk)
 
     with (
@@ -360,23 +311,94 @@ def test_refresh_demotes_maincomp_miner(manager):
     ):
         manager.refresh(current_time_ms=NOW_MS)
 
-    assert manager.miner_states[hk].current_bucket == MinerBucket.PROBATION
+    assert manager.miner_states[hk].current_bucket == MinerBucket.MAINCOMP
 
 
-def test_refresh_eliminates_time_expired(manager):
-    hk = "hk_expired"
-    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - MAX_CHALLENGE_MS - DAILY_MS)
-    _setup_refresh_clients(manager, hk)
-
+def _refresh(manager, current_time_ms=NOW_MS):
+    """Run refresh with the caches and disk patched out; returns the account-sync mock."""
     with (
         patch.object(manager, '_refresh_drawdown_cache'),
         patch.object(manager, '_refresh_rank_cache'),
         patch.object(manager, '_save_to_disk'),
-        patch.object(manager, '_sync_buckets_to_accounts'),
+        patch.object(manager, '_sync_buckets_to_accounts') as mock_sync,
     ):
-        manager.refresh(current_time_ms=NOW_MS)
+        manager.refresh(current_time_ms=current_time_ms)
+    return mock_sync
+
+
+def test_refresh_moves_probation_miner_to_maincomp(manager):
+    hk = "hk_probation"
+    manager.miner_states[hk] = _state(MinerBucket.PROBATION, NOW_MS - DAILY_MS)
+    manager.miner_states[hk].drawdown = DrawdownStats(current_equity=0.98, current_balance=0.98)
+    manager.miner_states[hk].rank = 500
+    _setup_refresh_clients(manager, hk)
+
+    mock_sync = _refresh(manager)
+
+    assert manager.miner_states[hk].current_bucket == MinerBucket.MAINCOMP
+    mock_sync.assert_called_once_with(hotkeys=[hk])
+    # The account carries over: nothing is closed or reset
+    manager._position_client.close_all_positions.assert_not_called()
+    manager._miner_account_client.reset_account.assert_not_called()
+
+
+def test_refresh_moves_probation_miner_without_asset_selection(manager):
+    hk = "hk_probation_no_asset"
+    manager.miner_states[hk] = _state(MinerBucket.PROBATION, NOW_MS - DAILY_MS)
+    _setup_refresh_clients(manager, hk)
+    manager._asset_selection_client.get_asset_selections.return_value = {}
+
+    _refresh(manager)
+
+    assert manager.miner_states[hk].current_bucket == MinerBucket.MAINCOMP
+
+
+def test_refresh_eliminates_probation_miner_past_intraday_limit(manager):
+    hk = "hk_probation_breach"
+    after_activation_ms = ChallengePeriodManager.DRAWDOWN_ACTIVATION_MS + DAILY_MS
+    manager.miner_states[hk] = _state(MinerBucket.PROBATION, after_activation_ms - DAILY_MS)
+    manager.miner_states[hk].drawdown = DrawdownStats(
+        daily_open_equity=1 / (1 - (INTRADAY_THRESHOLD_PCT + 1.0) / 100)
+    )
+    _setup_refresh_clients(manager, hk)
+
+    _refresh(manager, after_activation_ms)
 
     assert manager.miner_states[hk].current_bucket == MinerBucket.ELIMINATED
+    reason = manager._elimination_client.append_elimination_row.call_args.kwargs["reason"]
+    assert reason == EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN
+
+
+def test_refresh_eliminates_expired_plagiarism_review(manager):
+    hk = "hk_plagiarist"
+    manager.miner_states[hk] = MinerBucketState(hk, [
+        BucketEntry(MinerBucket.PROBATION, NOW_MS - DAILY_MS * 100),
+        BucketEntry(MinerBucket.PLAGIARISM, NOW_MS - ValiConfig.PLAGIARISM_REVIEW_PERIOD_MS - DAILY_MS),
+    ])
+    _setup_refresh_clients(manager, hk)
+    manager._plagiarism_client.get_plagiarism_miners.return_value = [hk]  # still flagged: entry stays
+
+    _refresh(manager)
+
+    assert manager.miner_states[hk].current_bucket == MinerBucket.ELIMINATED
+    reason = manager._elimination_client.append_elimination_row.call_args.kwargs["reason"]
+    assert reason == EliminationReason.PLAGIARISM
+
+
+def test_refresh_keeps_old_challenge_miner(manager):
+    hk = "hk_old"
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - DAILY_MS * 500)
+    _setup_refresh_clients(manager, hk)
+
+    with (
+        patch.object(manager, '_refresh_drawdown_cache'),
+        patch.object(manager, '_refresh_rank_cache'),
+        patch.object(manager, '_save_to_disk'),
+        patch.object(manager, '_sync_buckets_to_accounts'),
+    ):
+        manager.refresh(current_time_ms=NOW_MS)
+
+    assert manager.miner_states[hk].current_bucket == MinerBucket.CHALLENGE
 
 
 def test_refresh_eliminates_intraday_drawdown(manager):
@@ -400,7 +422,7 @@ def test_refresh_eliminates_intraday_drawdown(manager):
 
 
 def test_refresh_no_changes_still_saves(manager):
-    # CHALLENGE miner only 1 day old — too early for promotion, no drawdown issues.
+    # CHALLENGE miner below the returns target, no drawdown issues.
     # refresh() always persists (equity snapshots move even when buckets don't),
     # but skips the account sync when no bucket changed.
     hk = "hk_stable"

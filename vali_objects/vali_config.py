@@ -490,19 +490,10 @@ class ValiConfig:
     # Challenge period
     CHALLENGE_PERIOD_MIN_WEIGHT = 1.5e-05  # essentially nothing
     CHALLENGE_PERIOD_MAX_WEIGHT = 2.4e-05
-    CHALLENGE_PERIOD_MINIMUM_DAYS = 61
-    CHALLENGE_PERIOD_MINIMUM_MS = CHALLENGE_PERIOD_MINIMUM_DAYS * DAILY_MS
-    CHALLENGE_PERIOD_MAXIMUM_DAYS = 90
-    CHALLENGE_PERIOD_MAXIMUM_MS = CHALLENGE_PERIOD_MAXIMUM_DAYS * DAILY_MS
-    CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75 # miners must pass 75th percentile to enter the main competition
-
-    PROBATION_MAXIMUM_DAYS = 90
-    PROBATION_MAXIMUM_MS = PROBATION_MAXIMUM_DAYS * DAILY_MS
+    CHALLENGE_PERIOD_PERCENTILE_THRESHOLD = 0.75  # no longer a promotion rule; kept in the published constants
 
     IDLE_MINER_MAXIMUM_DAYS = 60
     IDLE_MINER_MAXIMUM_MS = IDLE_MINER_MAXIMUM_DAYS * DAILY_MS
-
-    PROMOTION_THRESHOLD_RANK = 25 # Number of MAINCOMP miners per asset class
 
     # Plagiarism
     ORDER_SIMILARITY_WINDOW_MS = 60000 * 60 * 24
@@ -607,6 +598,13 @@ class ValiConfig:
     # ChallengePeriodManager.AUTO_PROMOTION_FAST_TRACK_HOLD_MS
     AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN = 0.10
     AUTO_PROMOTION_FAST_TRACK_MULTIPLIER = 3
+    # For standard miners and subaccounts from SUBACCOUNT_PROMOTION_RULES_START_MS on: the return until each day count
+    # from the first order as a funded account, then AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
+    AUTO_PROMOTION_FAST_TRACK_WEEKLY_RETURNS = ((7, 0.03), (14, 0.05))
+    # For them too, the return in any week once the account's peak leverage use (MinerAccount.peak_leverage_use)
+    # as a funded account has reached AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE
+    AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE = 0.5
+    AUTO_PROMOTION_FAST_TRACK_LEVERAGED_RETURN = 0.03
     # Steady track: every condition below, sized by the highest calmar tier reached. The return is on the
     # lower of balance and equity, so open losses count and open gains do not
     AUTO_PROMOTION_STEADY_TRACK_MINIMUM_DAYS = 60
@@ -614,11 +612,35 @@ class ValiConfig:
     AUTO_PROMOTION_STEADY_TRACK_MAX_DAILY_CONSISTENCY = 0.5
     AUTO_PROMOTION_STEADY_TRACK_CALMAR_MULTIPLIERS = ((2.0, 10), (1.5, 5))  # (minimum calmar, multiple)
     AUTO_PROMOTION_TRANSITION_DAYS = 7  # longest time in PRO_CHALLENGE_TRANSITION after an auto-promotion; ends early once flat
+    # PRO_CHALLENGE_FROM_STANDARD payout multiplier by the multiple an auto-promotion grants, fixed with the pro size
+    # (any other grant gets the lowest), for standard miners and subaccounts from SUBACCOUNT_PROMOTION_RULES_START_MS on
+    AUTO_PROMOTION_PAYOUT_MULTIPLIERS = {3: 1.3, 5: 1.5, 10: 2.0}
+    # Creation time (ms) from which subaccounts take AUTO_PROMOTION_PAYOUT_MULTIPLIERS and the weekly and leverage fast
+    # track returns. None = off; set it after every validator runs the release that reads it, and never move it back
+    SUBACCOUNT_PROMOTION_RULES_START_MS = None
+    SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET = None
+
+    @staticmethod
+    def subaccount_promotion_rules_start_ms(is_testnet: bool = False) -> int | None:
+        """This network's SUBACCOUNT_PROMOTION_RULES_START_MS; None while it is off."""
+        if is_testnet:
+            return ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET
+        return ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS
+
+    @staticmethod
+    def grow_payout_multiplier(auto_promotion_multiple: int | None = None) -> float:
+        """The PRO_CHALLENGE_FROM_STANDARD payout multiplier of an auto-promotion at this multiple; the lowest for
+        a pro size granted any other way (None)."""
+        multipliers = ValiConfig.AUTO_PROMOTION_PAYOUT_MULTIPLIERS
+        if auto_promotion_multiple in multipliers:
+            return multipliers[auto_promotion_multiple]
+        return min(multipliers.values())
 
     # Payout basis for a trader running the pro challenge after passing the standard challenge
     # (PRO_CHALLENGE_FROM_STANDARD). PnL earned on the pro account is paid as though it had been
     # earned on this multiple of their standard account size: at 2.0, $5K of eligible PnL on a
     # $500K pro account pays a $100K standard account (5K / 500K) * 2 * 100K = $2K.
+    # Read whenever a subaccount has no payout_scale of its own.
     PRO_TRANSITION_PAYOUT_MULTIPLIER = 2.0
     # Multiplier used instead when a subaccount is created directly into PRO_CHALLENGE_FROM_STANDARD
     # (Instant Funded). Not caller-selectable: the fee does not price a larger multiplier.
@@ -649,6 +671,39 @@ class ValiConfig:
     MOTHERSHIP_HOTKEY_TESTNET = "5GTNzNkJiQWK4NpEErQohqZC8EzzeqrckgLgrQPwuvu8bHLN"
     # Require at least this many successful checkpoints before building golden
     MIN_CHECKPOINTS_RECEIVED = 5
+
+    # Standard miners: a regular miner registered after its network's cutoff block trades on the standard account
+    # pipeline under its own hotkey. None = off; set a block after every validator runs the release that sets it.
+    STANDARD_MINER_CUTOFF_BLOCK = None
+    STANDARD_MINER_CUTOFF_BLOCK_TESTNET = None
+    # Account size at opening = collateral USD value / the tier's collateral percentage, within the bounds
+    STANDARD_MINER_COLLATERAL_PCT_BY_TIER = {1: 0.007, 2: 0.011, 3: 0.015}  # Base, Boost I, Boost II
+    STANDARD_MINER_MIN_ACCOUNT_SIZE = 5_000
+    STANDARD_MINER_MAX_ACCOUNT_SIZE = 100_000
+    # EOD high-water mark and daily loss limits in every bucket before PRO_FUNDED, which keeps its own
+    STANDARD_MINER_EOD_HWM_THRESHOLD = 0.05
+    STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
+    # The leverage tier a standard miner trades from SUBACCOUNT_FUNDED on, whatever tier it opened on
+    STANDARD_MINER_FUNDED_LEVERAGE_TIER = 3
+
+    @staticmethod
+    def standard_miner_cutoff_block(is_testnet: bool = False) -> int | None:
+        """This network's cutoff block; None while the feature is off."""
+        if is_testnet:
+            return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK_TESTNET
+        return ValiConfig.STANDARD_MINER_CUTOFF_BLOCK
+
+    # From this time (ms; the cutoff block's moment) a miner on the existing rules keeps the size in force when first
+    # seen trading, and withdrawing the theta behind it closes the account. None = no new locks (written ones stay).
+    ACCOUNT_SIZE_LOCK_START_MS = None
+    ACCOUNT_SIZE_LOCK_START_MS_TESTNET = None
+
+    @staticmethod
+    def account_size_lock_start_ms(is_testnet: bool = False) -> int | None:
+        """This network's account size lock start; None while the lock is off."""
+        if is_testnet:
+            return ValiConfig.ACCOUNT_SIZE_LOCK_START_MS_TESTNET
+        return ValiConfig.ACCOUNT_SIZE_LOCK_START_MS
 
     # Legacy leverage tiers 1 to 4 (HL-linked subaccounts, pro subaccounts, regular miners):
     # tier 1 = subaccount challenge, then by account size. Standard subaccounts use the
@@ -887,7 +942,7 @@ class ValiConfig:
     @staticmethod
     def margin_theta(margin_usd: float, pro_funded: bool = False, multiplier: float = 1.0) -> float:
         """Theta held against `margin_usd` of a subaccount's remaining loss capacity. `multiplier` is
-        the payout multiplier the margin backs (2 for a standard account growing into pro)."""
+        the payout multiplier the margin backs (a standard account growing into pro holds its own)."""
         cpt = ValiConfig.PRO_MARGIN_CPT if pro_funded else ValiConfig.MARGIN_CPT
         return max(0.0, margin_usd or 0.0) * multiplier / cpt
 

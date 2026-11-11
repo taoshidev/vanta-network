@@ -45,10 +45,7 @@ from vali_objects.vali_dataclasses.position import Position
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DAILY_MS = ValiConfig.DAILY_MS
-MIN_CHALLENGE_MS = ValiConfig.CHALLENGE_PERIOD_MINIMUM_MS
-MAX_CHALLENGE_MS = ValiConfig.CHALLENGE_PERIOD_MAXIMUM_MS
 THRESHOLD = ValiConfig.SUBACCOUNT_CHALLENGE_RETURNS_THRESHOLD_DEFAULT
-RANK_LIMIT = ValiConfig.PROMOTION_THRESHOLD_RANK
 INTRADAY_DD_PCT = ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD * 100
 EOD_DD_PCT = ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD * 100
 
@@ -385,34 +382,21 @@ class TestChallengePeriodManagerLogic(TestBase):
 
     # ── Section 4: Refresh flows ──────────────────────────────────────────────
 
-    def test_refresh_promotes_challenge_miner_after_minimum_time(self):
-        """CHALLENGE miner with sufficient time and returns is promoted to MAINCOMP."""
+    def _refresh(self, mgr, now):
+        """Run refresh with the caches and disk patched out; returns the account-sync mock."""
+        with (
+            patch.object(mgr, '_refresh_drawdown_cache'),
+            patch.object(mgr, '_refresh_rank_cache'),
+            patch.object(mgr, '_save_to_disk'),
+            patch.object(mgr, '_sync_buckets_to_accounts') as mock_sync,
+        ):
+            mgr.refresh(current_time_ms=now)
+        return mock_sync
+
+    def test_refresh_promotes_challenge_miner_on_returns_alone(self):
+        """A CHALLENGE miner above the returns target is promoted at once: no minimum time, no rank."""
         now = TimeUtil.now_in_millis()
         hk = "hk_promote"
-        mgr, stack = self._make_manager()
-        with stack:
-            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - MIN_CHALLENGE_MS - DAILY_MS)
-            mgr.miner_states[hk].drawdown = DrawdownStats(
-                current_equity=1.0 + THRESHOLD + 0.05,
-                current_balance=1.0 + THRESHOLD + 0.05,
-            )
-            mgr.miner_states[hk].rank = 1
-            _wire_refresh_clients(mgr, hk, now, elapsed_ms=MIN_CHALLENGE_MS + DAILY_MS)
-
-            with (
-                patch.object(mgr, '_refresh_drawdown_cache'),
-                patch.object(mgr, '_refresh_rank_cache'),
-                patch.object(mgr, '_save_to_disk'),
-                patch.object(mgr, '_sync_buckets_to_accounts'),
-            ):
-                mgr.refresh(current_time_ms=now)
-
-        self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.MAINCOMP)
-
-    def test_refresh_does_not_promote_before_minimum_time(self):
-        """CHALLENGE miner below minimum time is NOT promoted regardless of returns."""
-        now = TimeUtil.now_in_millis()
-        hk = "hk_early"
         mgr, stack = self._make_manager()
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS)  # only 1 day old
@@ -420,84 +404,64 @@ class TestChallengePeriodManagerLogic(TestBase):
                 current_equity=1.0 + THRESHOLD + 0.05,
                 current_balance=1.0 + THRESHOLD + 0.05,
             )
-            mgr.miner_states[hk].rank = 1
+            mgr.miner_states[hk].rank = 500
             _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS)
+            self._refresh(mgr, now)
 
-            with (
-                patch.object(mgr, '_refresh_drawdown_cache'),
-                patch.object(mgr, '_refresh_rank_cache'),
-                patch.object(mgr, '_save_to_disk'),
-                patch.object(mgr, '_sync_buckets_to_accounts'),
-            ):
-                mgr.refresh(current_time_ms=now)
+        self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.MAINCOMP)
 
-        self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.CHALLENGE)
-
-    def test_refresh_eliminates_time_expired_challenge_miner(self):
-        """CHALLENGE miner past max duration is eliminated."""
+    def test_refresh_keeps_challenge_miner_below_returns_target(self):
+        """A CHALLENGE miner below the returns target stays, however long it has been there."""
         now = TimeUtil.now_in_millis()
-        hk = "hk_timeout"
+        hk = "hk_waiting"
         mgr, stack = self._make_manager()
         with stack:
-            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - MAX_CHALLENGE_MS - DAILY_MS)
-            mgr.miner_states[hk].drawdown = DrawdownStats()
-            _wire_refresh_clients(mgr, hk, now, elapsed_ms=MAX_CHALLENGE_MS + DAILY_MS)
+            mgr.set_miner_bucket(hk, MinerBucket.CHALLENGE, now - DAILY_MS * 500)
+            mgr.miner_states[hk].drawdown = DrawdownStats(
+                current_equity=1.0 + THRESHOLD - 0.01,
+                current_balance=1.0 + THRESHOLD - 0.01,
+            )
+            mgr.miner_states[hk].rank = 1
+            _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS * 500)
+            self._refresh(mgr, now)
 
-            with (
-                patch.object(mgr, '_refresh_drawdown_cache'),
-                patch.object(mgr, '_refresh_rank_cache'),
-                patch.object(mgr, '_save_to_disk'),
-                patch.object(mgr, '_sync_buckets_to_accounts'),
-            ):
-                mgr.refresh(current_time_ms=now)
+        self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.CHALLENGE)
+        self.assertFalse(mgr.miner_states[hk].is_eliminated)
 
-        self.assertTrue(mgr.has_miner(hk))
-        self.assertTrue(mgr.miner_states[hk].is_eliminated)
-
-    def test_refresh_demotes_maincomp_miner_with_bad_rank(self):
-        """MAINCOMP miner with rank beyond threshold is demoted to PROBATION."""
+    def test_refresh_keeps_maincomp_miner_whatever_the_rank(self):
+        """There is no demotion: a MAINCOMP miner ranked last stays in MAINCOMP."""
         now = TimeUtil.now_in_millis()
-        hk = "hk_demote"
+        hk = "hk_last"
         mgr, stack = self._make_manager()
         with stack:
             mgr.set_miner_bucket(hk, MinerBucket.MAINCOMP, now - DAILY_MS * 30)
             mgr.miner_states[hk].drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-            mgr.miner_states[hk].rank = RANK_LIMIT + 1
+            mgr.miner_states[hk].rank = 500
             _wire_refresh_clients(mgr, hk, now)
-
-            with (
-                patch.object(mgr, '_refresh_drawdown_cache'),
-                patch.object(mgr, '_refresh_rank_cache'),
-                patch.object(mgr, '_save_to_disk'),
-                patch.object(mgr, '_sync_buckets_to_accounts'),
-            ):
-                mgr.refresh(current_time_ms=now)
-
-        self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.PROBATION)
-
-    def test_refresh_promotes_probation_miner_with_good_rank(self):
-        """PROBATION miner with rank within threshold and sufficient returns is promoted to MAINCOMP."""
-        now = TimeUtil.now_in_millis()
-        hk = "hk_probation_promote"
-        mgr, stack = self._make_manager()
-        with stack:
-            mgr.set_miner_bucket(hk, MinerBucket.PROBATION, now - DAILY_MS * 5)
-            mgr.miner_states[hk].drawdown = DrawdownStats(
-                current_equity=1.0 + THRESHOLD + 0.05,
-                current_balance=1.0 + THRESHOLD + 0.05,
-            )
-            mgr.miner_states[hk].rank = RANK_LIMIT
-            _wire_refresh_clients(mgr, hk, now)
-
-            with (
-                patch.object(mgr, '_refresh_drawdown_cache'),
-                patch.object(mgr, '_refresh_rank_cache'),
-                patch.object(mgr, '_save_to_disk'),
-                patch.object(mgr, '_sync_buckets_to_accounts'),
-            ):
-                mgr.refresh(current_time_ms=now)
+            self._refresh(mgr, now)
 
         self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.MAINCOMP)
+        self.assertEqual(len(mgr.miner_states[hk].entries), 1)
+
+    def test_refresh_moves_probation_miner_to_maincomp(self):
+        """A miner still in PROBATION rejoins MAINCOMP on the next refresh, whatever its returns or rank."""
+        now = TimeUtil.now_in_millis()
+        hk = "hk_probation"
+        mgr, stack = self._make_manager()
+        with stack:
+            mgr.set_miner_bucket(hk, MinerBucket.MAINCOMP, now - DAILY_MS * 30)
+            mgr.set_miner_bucket(hk, MinerBucket.PROBATION, now - DAILY_MS * 5)
+            mgr.miner_states[hk].drawdown = DrawdownStats(current_equity=0.98, current_balance=0.98)
+            mgr.miner_states[hk].rank = 500
+            _wire_refresh_clients(mgr, hk, now)
+            mock_sync = self._refresh(mgr, now)
+
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.MAINCOMP)
+            self.assertEqual(len(mgr.miner_states[hk].entries), 3)  # MAINCOMP → PROBATION → MAINCOMP
+            mock_sync.assert_called_once_with(hotkeys=[hk])
+            # The account carries over: nothing is closed or reset
+            mgr._position_client.close_all_positions.assert_not_called()
+            mgr._miner_account_client.reset_account.assert_not_called()
 
     def test_refresh_eliminates_intraday_drawdown(self):
         """Miner whose intraday drawdown exceeds the threshold is eliminated during refresh."""
@@ -580,46 +544,6 @@ class TestChallengePeriodManagerLogic(TestBase):
             mock_save.assert_called()     # refresh() always persists at end of cycle
             mock_sync.assert_not_called()  # no bucket change → no account sync
 
-    def test_demotion_then_re_promotion_full_cycle(self):
-        """MAINCOMP → PROBATION → MAINCOMP bucket progression works end-to-end."""
-        now = TimeUtil.now_in_millis()
-        hk = "hk_cycle"
-        mgr, stack = self._make_manager()
-        with stack:
-            # Phase 1: MAINCOMP with bad rank → demote
-            mgr.set_miner_bucket(hk, MinerBucket.MAINCOMP, now - DAILY_MS * 30)
-            mgr.miner_states[hk].drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)
-            mgr.miner_states[hk].rank = RANK_LIMIT + 5
-            _wire_refresh_clients(mgr, hk, now)
-
-            with (
-                patch.object(mgr, '_refresh_drawdown_cache'),
-                patch.object(mgr, '_refresh_rank_cache'),
-                patch.object(mgr, '_save_to_disk'),
-                patch.object(mgr, '_sync_buckets_to_accounts'),
-            ):
-                mgr.refresh(current_time_ms=now)
-
-            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.PROBATION)
-
-            # Phase 2: PROBATION with good rank → promote back
-            mgr.miner_states[hk].drawdown = DrawdownStats(
-                current_equity=1.0 + THRESHOLD + 0.05,
-                current_balance=1.0 + THRESHOLD + 0.05,
-            )
-            mgr.miner_states[hk].rank = RANK_LIMIT - 5
-            _wire_refresh_clients(mgr, hk, now)
-
-            with (
-                patch.object(mgr, '_refresh_drawdown_cache'),
-                patch.object(mgr, '_refresh_rank_cache'),
-                patch.object(mgr, '_save_to_disk'),
-                patch.object(mgr, '_sync_buckets_to_accounts'),
-            ):
-                mgr.refresh(current_time_ms=now)
-
-        self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.MAINCOMP)
-        self.assertEqual(len(mgr.miner_states[hk].entries), 3)  # MAINCOMP → PROBATION → MAINCOMP
 
     # ── Section 5: Drawdown cache computation ────────────────────────────────
 

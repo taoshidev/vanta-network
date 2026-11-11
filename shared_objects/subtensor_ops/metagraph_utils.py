@@ -2,12 +2,42 @@
 # Copyright (c) 2024 Taoshi Inc
 
 """
-Shared utilities for metagraph analysis and anomaly detection.
+Shared utilities for metagraph analysis: validator selection and anomaly detection.
 """
+
+from vali_objects.vali_config import ValiConfig
 
 # Constants for anomaly detection
 ANOMALY_DETECTION_MIN_LOST = 10  # Minimum number of lost hotkeys to trigger anomaly detection
 ANOMALY_DETECTION_PERCENT_THRESHOLD = 25  # Percentage threshold for anomaly detection
+
+
+def is_validator_stake_weight(stake_weight: float) -> bool:
+    """A validator is any UID whose chain stake weight (bittensor's metagraph.total_stake, in tokens: the
+    quantity permits are granted on) reaches STAKE_MIN; the chain may grant the permit itself to one UID only."""
+    return stake_weight >= ValiConfig.STAKE_MIN
+
+
+def validator_axons(neurons, stake_weights) -> list:
+    """Axons of the reachable validators: stake weight (indexed by UID) at or above STAKE_MIN and a served IP."""
+    return [
+        n.axon_info for n in neurons
+        if n is not None and n.uid < len(stake_weights) and is_validator_stake_weight(stake_weights[n.uid])
+        and n.axon_info.ip != ValiConfig.AXON_NO_IP
+    ]
+
+
+def registered_after_cutoff(hotkeys, blocks_at_registration, cutoff_block) -> dict:
+    """hotkey -> whether it registered after cutoff_block, the start of the standard miner rules: False for every
+    hotkey while the cutoff is None (rules off), None where the block is unknown. The lists are indexed alike."""
+    flags = {}
+    for i, hotkey in enumerate(hotkeys):
+        block = blocks_at_registration[i] if i < len(blocks_at_registration) else None
+        if cutoff_block is None:
+            flags[hotkey] = False
+        else:
+            flags[hotkey] = bool(block > cutoff_block) if block is not None else None
+    return flags
 
 
 def is_anomalous_hotkey_loss(lost_hotkeys: set, total_hotkeys_before: int) -> tuple[bool, float]:

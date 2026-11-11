@@ -11,7 +11,7 @@ Architecture:
 The server maintains self._manager and delegates all business logic to it.
 """
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from time_util.time_util import MS_IN_1_HOUR
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
@@ -333,6 +333,14 @@ class DebtLedgerServer(RPCServerBase):
             List of SettledSegment
         """
         return self._manager.get_settled_segments(hotkey)
+
+    def get_all_settled_segments_rpc(self) -> Dict[str, list]:
+        """Every hotkey's settled segments, oldest first (RPC method)."""
+        return self._manager.get_all_settled_segments()
+
+    def get_sealed_weeks_for_rpc(self, hotkeys: List[str]) -> Dict[str, dict]:
+        """The sealed weeks of each of hotkeys that has any (RPC method)."""
+        return self._manager.get_sealed_weeks_for(hotkeys)
 
     def amend_settled_segment_rpc(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
         """

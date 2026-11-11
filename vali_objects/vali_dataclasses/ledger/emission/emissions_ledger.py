@@ -1114,23 +1114,6 @@ class EmissionsLedgerManager:
             f"target_cp_duration_ms: {reference_portfolio_ledger.target_cp_duration_ms}ms)"
         )
 
-        # Rate limit before initial query (skip in test mode)
-        if not self.running_unit_tests:
-            self._rate_limit()
-
-        # Verify max UIDs is still 256 (sanity check - has never changed in Bittensor history)
-        if self.running_unit_tests:
-            # In test mode, assume standard 256 UIDs
-            current_max_uids = 256
-        else:
-            current_max_uids_result = self.subtensor.substrate.query(
-                module='SubtensorModule',
-                storage_function='SubnetworkN',
-                params=[self.netuid]
-            )
-            current_max_uids = int(current_max_uids_result.value if hasattr(current_max_uids_result, 'value') else current_max_uids_result) if current_max_uids_result else 0
-        assert current_max_uids == 256, f"Expected max UIDs to be 256, but got {current_max_uids}. The hardcoded value needs to be updated!"
-
         # Validate that start_time_ms doesn't conflict with existing data
         checkpoint_info = self.get_checkpoint_info()
         last_computed_chunk_end_ms = checkpoint_info["last_computed_chunk_end_ms"]
@@ -1429,7 +1412,7 @@ class EmissionsLedgerManager:
         # Rate limit before query_map
         self._rate_limit()
 
-        # Query all Keys entries for this netuid at once (much more efficient than 256 individual queries)
+        # Query all Keys entries for this netuid at once (much more efficient than one query per UID)
         keys_map = self.subtensor.substrate.query_map(
             module='SubtensorModule',
             storage_function='Keys',

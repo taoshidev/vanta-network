@@ -151,7 +151,7 @@ def manager():
             stack.enter_context(patch(path))
         mgr = ChallengePeriodManager(is_backtesting=True)
         mgr._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
-        mgr._entity_client.is_instant_funded.return_value = False
+        mgr._entity_client.get_subaccount_info_for_synthetic.return_value = {"initial_bucket": None}
         yield mgr
 
 
@@ -1226,7 +1226,7 @@ def test_each_hop_moves_to_its_own_target(hop_manager, source, target):
     assert success, message
     assert hop_manager.miner_states[HOTKEY].current_bucket == target
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, target, GRANTED_SIZE, waive_promotion_fee=False)
+        HOTKEY, target, GRANTED_SIZE, waive_promotion_fee=False, payout_scale=ValiConfig.grow_payout_multiplier())
 
 
 def test_an_omitted_size_is_passed_through_as_none(hop_manager):
@@ -1236,7 +1236,7 @@ def test_an_omitted_size_is_passed_through_as_none(hop_manager):
     assert hop_manager.promote_subaccount(HOTKEY, NOW_MS)[0]
 
     hop_manager._entity_client.apply_bucket_account_size.assert_any_call(
-        HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, None, waive_promotion_fee=False
+        HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, None, waive_promotion_fee=False, payout_scale=None
     )
 
 
@@ -1316,7 +1316,8 @@ def test_entity_rejection_blocks_the_promotion(hop_manager):
 @pytest.mark.parametrize("instant_funded,allowed", [(False, True), (True, False)])
 def test_instant_funded_cannot_enter_the_transition(hop_manager, instant_funded, allowed):
     _in_bucket(hop_manager, MinerBucket.SUBACCOUNT_FUNDED)
-    hop_manager._entity_client.is_instant_funded.return_value = instant_funded
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.return_value = {
+        "initial_bucket": "SUBACCOUNT_FUNDED" if instant_funded else None}
 
     success, _ = hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
 
@@ -1325,9 +1326,60 @@ def test_instant_funded_cannot_enter_the_transition(hop_manager, instant_funded,
     assert hop_manager.miner_states[HOTKEY].current_bucket == expected
 
 
+HL_LINKED_RECORDS = ({"initial_bucket": None, "hl_address": "0x" + "a" * 40},
+                     {"initial_bucket": None, "asset_class": "hl_all"})
+
+
+@pytest.mark.parametrize("record", HL_LINKED_RECORDS)
+@pytest.mark.parametrize("source,target", [
+    (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION),
+    (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.PRO_CHALLENGE_DIRECT),
+])
+def test_a_hyperliquid_linked_subaccount_cannot_enter_the_pro_track(hop_manager, record, source, target):
+    _in_bucket(hop_manager, source)
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.return_value = record
+
+    success, message = hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)
+
+    assert not success and "Hyperliquid-linked" in message
+    assert hop_manager.miner_states[HOTKEY].current_bucket == source
+    hop_manager._entity_client.apply_bucket_account_size.assert_not_called()
+    for admin_target in (target, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED):
+        assert not hop_manager.admin_set_bucket(HOTKEY, admin_target, NOW_MS)[0]
+    assert hop_manager.miner_states[HOTKEY].current_bucket == source
+
+
+@pytest.mark.parametrize("hl_linked", [True, False])
+def test_the_hyperliquid_refusal_reads_the_entitys_own_record(hop_manager, hl_linked):
+    entity_manager = _bare_entity_manager()
+    hotkey = _add_standard_subaccount(entity_manager)
+    if hl_linked:
+        entity_manager.get_subaccount_info_for_synthetic(hotkey).hl_address = "0x" + "b" * 40
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.side_effect = (
+        entity_manager.get_subaccount_info_for_synthetic)
+    hop_manager.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS - DAILY_MS)
+
+    success, _ = hop_manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)
+
+    assert success != hl_linked
+    expected = MinerBucket.SUBACCOUNT_FUNDED if hl_linked else MinerBucket.PRO_CHALLENGE_TRANSITION
+    assert hop_manager.miner_states[hotkey].current_bucket == expected
+
+
+@pytest.mark.parametrize("record", HL_LINKED_RECORDS)
+def test_a_hyperliquid_linked_subaccount_already_on_the_pro_track_carries_on(hop_manager, record):
+    _in_bucket(hop_manager, MinerBucket.PRO_CHALLENGE_TRANSITION)
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.return_value = {
+        **record, "account_type": "pro", "pro_account_size": GRANTED_SIZE}
+
+    assert hop_manager.promote_subaccount(HOTKEY, NOW_MS)[0]
+    assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+    assert hop_manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS + DAILY_MS)[0]
+
+
 def test_instant_funded_cannot_be_admin_moved_into_the_transition(hop_manager):
     _in_bucket(hop_manager, MinerBucket.SUBACCOUNT_FUNDED)
-    hop_manager._entity_client.is_instant_funded.return_value = True
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.return_value = {"initial_bucket": "SUBACCOUNT_FUNDED"}
 
     success, _ = hop_manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)
 
@@ -1780,7 +1832,7 @@ class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
             stack.enter_context(patch(path))
         self.manager = ChallengePeriodManager(is_backtesting=True)
         self.manager._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
-        self.manager._entity_client.is_instant_funded.return_value = False
+        self.manager._entity_client.get_subaccount_info_for_synthetic.return_value = {"initial_bucket": None}
         stack.enter_context(patch.object(self.manager, "_sync_buckets_to_accounts"))
         stack.enter_context(patch.object(self.manager, "_save_to_disk"))
         self.manager.set_miner_bucket(ORDER_HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, ORDER_NOW_MS)

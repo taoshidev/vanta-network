@@ -7,7 +7,7 @@ import typer
 from vanta_cli.src.config import VANTA_CLI_VERSION
 from vanta_cli.src.options import EPILOG
 from vanta_cli.src.utils.console import console
-from vanta_cli.src.commands import asset, collateral, entity
+from vanta_cli.src.commands import account, asset, collateral, entity
 
 # meta/meta.json lives at the repo root; this file is at vanta_cli/main.py.
 _META_JSON_PATH = Path(__file__).resolve().parent.parent / "meta" / "meta.json"
@@ -21,6 +21,7 @@ app = typer.Typer(
 )
 app.add_typer(collateral.app, name="collateral")
 app.add_typer(asset.app, name="asset")
+app.add_typer(account.app, name="account")
 app.add_typer(entity.app, name="entity")
 # Temporarily disabled - re-enable with dashboard visibility
 # app.add_typer(profile.app, name="profile")

@@ -95,6 +95,7 @@ class PropNetOrderPlacer:
     MAX_NETWORK_RETRIES = 3
     NETWORK_RETRY_DELAY_SECONDS = 5
     ELIMINATION_CACHE_TTL_SECONDS = 600
+    NO_TARGETS_WARNING_INTERVAL_S = 600
     # DEPRECATED: Thread pool used by file-based signal processing. Use REST server instead.
     MAX_WORKERS = 10
     THREAD_POOL_TIMEOUT = 300  # 5 minutes
@@ -118,6 +119,7 @@ class PropNetOrderPlacer:
         self._active_futures = set()
         self._lock = threading.Lock()
         self._elimination_cache: Dict[int, float] = {}
+        self._last_no_targets_warning_s = 0.0
 
     def _is_subaccount_eliminated(self, subaccount_id: int) -> bool:
         expiry = self._elimination_cache.get(subaccount_id)
@@ -259,22 +261,31 @@ class PropNetOrderPlacer:
             return len(self._active_futures)
 
     def _get_mothership_and_other_axons(self):
-        """Get mothership axon and other validator axons (filtered by v_trust)."""
+        """The mothership's axon, found by its hotkey, and the axons of the other validators by the stake rule (every
+        served axon on testnet), with no validator-trust filter: under Null consensus only the weight setter has any."""
         mothership_hotkey = ValiConfig.MOTHERSHIP_HOTKEY_TESTNET if self.is_testnet else ValiConfig.MOTHERSHIP_HOTKEY
-        axons = self.position_inspector.get_possible_validators()
-        hotkey_to_v_trust = {neuron.hotkey: neuron.validator_trust for neuron in self.metagraph_client.get_neurons()}
         mothership_axon = None
         other_axons = []
-        for axon in axons:
+        for axon in self.position_inspector.get_possible_validators():
             if axon.hotkey == mothership_hotkey:
                 mothership_axon = axon
-            elif hotkey_to_v_trust.get(axon.hotkey, 0) >= MinerConfig.HIGH_V_TRUST_THRESHOLD:
+            else:
                 other_axons.append(axon)
-
-        # logger.info(f"Validator hotkey -> v_trust: {hotkey_to_v_trust}")
-        # logger.info(f"Mothership validator: {mothership_axon.hotkey if mothership_axon else 'None'}")
-        # logger.info(f"Other validators ({len(other_axons)}): {[a.hotkey for a in other_axons]}")
+        if mothership_axon is None:
+            mothership_axon = next((n.axon_info for n in self.metagraph_client.get_neurons()
+                                    if n.hotkey == mothership_hotkey and n.axon_info.ip != MinerConfig.AXON_NO_IP), None)
+        if not other_axons:
+            self._warn_no_other_validators()
         return mothership_axon, other_axons
+
+    def _warn_no_other_validators(self):
+        """Orders reach the mothership alone: the stake list is still empty after a failed metagraph sync, or no other
+        validator serves an IP. At most once per NO_TARGETS_WARNING_INTERVAL_S."""
+        now = time.time()
+        if now - self._last_no_targets_warning_s >= self.NO_TARGETS_WARNING_INTERVAL_S:
+            self._last_no_targets_warning_s = now
+            logger.warning("No validator besides the mothership to send orders to: the metagraph's stake list may be "
+                           "empty after a failed sync, or no other validator serves an IP")
 
     async def _send_order(self, synapse, mothership_axon, other_axons) -> dict:
         """

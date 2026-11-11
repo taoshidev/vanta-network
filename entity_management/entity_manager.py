@@ -29,6 +29,7 @@ import template.protocol
 from entity_management.entity_utils import (
     attach_correlated_exposure_report,
     is_instant_funded,
+    is_on_promotion_rules,
     is_synthetic_hotkey,
     parse_synthetic_hotkey,
     pro_account_size_error,
@@ -38,6 +39,7 @@ from entity_management.entity_utils import (
 )
 from vali_objects.miner_account import MinerAccountClient
 from vali_objects.miner_account.account_snapshot import read_all_snapshots, DEFAULT_TOLERANCE_MS
+from vali_objects.miner_account.standard_miner import StandardMinerAccount
 from vali_objects.utils.entity_collateral.entity_collateral_client import EntityCollateralClient
 from vali_objects.utils.leverage_utils import tier_change_lowers_a_limit
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -87,7 +89,7 @@ class SubaccountInfo(BaseModel):
     drawdown_criteria: str = Field(default="trailing", description="Drawdown rules: 'trailing' or 'static' (immutable once set)")
     intraday_drawdown_threshold: Optional[float] = Field(default=None, description="Chosen intraday drawdown threshold (daily loss limit) as a fraction, applied in every bucket (immutable once set). None keeps each bucket's default")
     eod_hwm_threshold: Optional[float] = Field(default=None, description="Chosen EOD high-water-mark drawdown threshold as a fraction (PRO_CHALLENGE_FROM_STANDARD creation only, immutable once set). None keeps each bucket's default")
-    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FROM_STANDARD, set to ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER on Instant Funded creation (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
+    payout_scale: Optional[float] = Field(default=None, description="Payout multiplier for PRO_CHALLENGE_FROM_STANDARD, set to ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER on Instant Funded creation, or with the first pro size granted to a subaccount created from ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS on (immutable once set). None uses ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER")
     initial_bucket: Optional[str] = Field(default=None, description="MinerBucket the subaccount was created into. None means SUBACCOUNT_CHALLENGE")
     account_type: str = Field(default="standard", description="Account tier: 'standard' or 'pro'. Set to 'pro' only by admin promotion")
     leverage_tier: Optional[int] = Field(default=None, description="Standard leverage tier 1 to 3 (Base, Boost I, Boost II). None for HL-linked subaccounts; a standard subaccount with None trades tier 0 (each limit is max of its legacy value and Base)")
@@ -402,11 +404,15 @@ class EntityManager(ValidatorBroadcastBase):
             if positions and len(positions) > 0:
                 return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
 
-            if not self.running_unit_tests:
-                # Non-mothership slashes are dry runs, so registering here would skip the fee
-                if not self.is_mothership:
-                    return False, "Entity registration is only processed by the mothership validator"
+            # Non-mothership slashes are dry runs, so registering here would skip the fee
+            if not self.running_unit_tests and not self.is_mothership:
+                return False, "Entity registration is only processed by the mothership validator"
 
+            # A standard miner's opened account makes the hotkey a miner before its first order
+            if isinstance(self._miner_account_client.get_standard_account(entity_hotkey), StandardMinerAccount):
+                return False, f"Entity {entity_hotkey} is already used as a miner. Choose a new hotkey."
+
+            if not self.running_unit_tests:
                 # Verify collateral balance
                 try:
                     current_balance = self._contract_client.get_miner_collateral_balance(entity_hotkey)
@@ -1048,6 +1054,7 @@ class EntityManager(ValidatorBroadcastBase):
         pro_account_size: Optional[float] = None,
         broadcast: bool = True,
         waive_promotion_fee: bool = False,
+        payout_scale: Optional[float] = None,
     ) -> Tuple[bool, str]:
         """
         Point a subaccount at the account size its target bucket trades.
@@ -1064,6 +1071,9 @@ class EntityManager(ValidatorBroadcastBase):
 
         waive_promotion_fee grants the pro size without the promotion fee or its collateral check: the
         network, not the entity, promoted the subaccount (auto-promotion).
+
+        On a subaccount created from ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS on, the first explicit pro size
+        fixes its payout_scale: the one given, else the lowest (ValiConfig.grow_payout_multiplier).
 
         There is no network default pro size. The entity picks it when it promotes the subaccount
         (POST /entity/subaccount/promote), and this is the last check before it is stored:
@@ -1151,6 +1161,11 @@ class EntityManager(ValidatorBroadcastBase):
             account_type = AccountType.STANDARD.value
             target_size = standard_account_size or subaccount.account_size
 
+        new_payout_scale = subaccount.payout_scale
+        if (new_payout_scale is None and pro_size_source == "explicit" and subaccount.pro_account_size is None
+                and is_on_promotion_rules(subaccount.created_at_ms, self.is_testnet)):
+            new_payout_scale = payout_scale if payout_scale is not None else ValiConfig.grow_payout_multiplier()
+
         if target_size != subaccount.account_size:
             cpt = registration_cpt(target_size, subaccount.initial_bucket, subaccount.intraday_drawdown_threshold,
                                    subaccount.eod_hwm_threshold)
@@ -1170,6 +1185,7 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount.pro_account_size = pro_account_size
             subaccount.account_type = account_type
             subaccount.account_size = target_size
+            subaccount.payout_scale = new_payout_scale
             subaccount.pro_fee_theta += promotion_fee_theta
             subaccount.pro_fee_theta_pending += promotion_fee_theta
             entity_data = self.entities.get(entity_hotkey)
@@ -1196,7 +1212,8 @@ class EntityManager(ValidatorBroadcastBase):
                     f"(assessed {subaccount.pro_fee_theta:.4f} theta total)") if promotion_fee_theta else ""
         logger.info(
             f"[ENTITY_MANAGER] {synthetic_hotkey} -> {target_bucket.value}: account_size=${subaccount.account_size}, "
-            f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}{pro_size_note}{fee_note}"
+            f"standard=${subaccount.standard_account_size}, pro=${subaccount.pro_account_size}, "
+            f"payout_scale={subaccount.payout_scale}{pro_size_note}{fee_note}"
         )
         return True, f"{synthetic_hotkey} account size set to ${subaccount.account_size}"
 
@@ -1232,7 +1249,7 @@ class EntityManager(ValidatorBroadcastBase):
     # Fields a pro promotion writes onto SubaccountInfo. They are only ever set by the validator
     # handling the promote request (apply_bucket_account_size / restore_bucket_account_size), never
     # derived locally, so a peer adopts the sender's values wholesale.
-    _PRO_SIZING_FIELDS = ("account_size", "standard_account_size", "pro_account_size", "account_type")
+    _PRO_SIZING_FIELDS = ("account_size", "standard_account_size", "pro_account_size", "account_type", "payout_scale")
 
     @staticmethod
     def adopt_pro_sizing(local_sub: SubaccountInfo, incoming_sub: SubaccountInfo,
@@ -1240,7 +1257,7 @@ class EntityManager(ValidatorBroadcastBase):
         """Copy an incoming subaccount's pro sizing onto the local record. Returns True if anything
         changed.
 
-        The four fields move as one unit. account_size and account_type are never None, so copying
+        The fields move as one unit. account_size and account_type are never None, so copying
         field by field would let a stale record half-revert a promotion - account_type back to
         "standard" beside a live pro_account_size, which reads as "not on the pro track" to
         apply_bucket_account_size while still scaling the payout.
@@ -1252,10 +1269,16 @@ class EntityManager(ValidatorBroadcastBase):
           * A checkpoint sync is a snapshot that may predate the promotion, so it only fills the gap
             on a peer that has not heard about the promotion at all. It never downgrades a pro
             subaccount back to standard, which a stale checkpoint would otherwise do.
+            On a pro subaccount it only fills a missing payout_scale, which is fixed once.
         """
         if not allow_clear:
             on_pro_track = incoming_sub.account_type == AccountType.PRO.value
-            if not on_pro_track or local_sub.account_type == AccountType.PRO.value:
+            if not on_pro_track:
+                return False
+            if local_sub.account_type == AccountType.PRO.value:
+                if local_sub.payout_scale is None and incoming_sub.payout_scale is not None:
+                    local_sub.payout_scale = incoming_sub.payout_scale
+                    return True
                 return False
 
         changed = False
@@ -1315,6 +1338,7 @@ class EntityManager(ValidatorBroadcastBase):
             "standard_account_size": subaccount.standard_account_size,
             "pro_account_size": subaccount.pro_account_size,
             "account_type": subaccount.account_type,
+            "payout_scale": subaccount.payout_scale,
             "asset_class": subaccount.asset_class,
             "pro_fee_theta": subaccount.pro_fee_theta,
             "pro_fee_theta_pending": subaccount.pro_fee_theta_pending,
@@ -1379,6 +1403,7 @@ class EntityManager(ValidatorBroadcastBase):
             subaccount.standard_account_size = snapshot.get("standard_account_size")
             subaccount.pro_account_size = snapshot.get("pro_account_size")
             subaccount.account_type = snapshot.get("account_type", AccountType.STANDARD.value)
+            subaccount.payout_scale = snapshot.get("payout_scale", subaccount.payout_scale)
             subaccount.pro_fee_theta_pending = max(0.0, subaccount.pro_fee_theta_pending - refund_theta)
             subaccount.pro_fee_theta = max(0.0, subaccount.pro_fee_theta - refund_theta)
             entity_data = self.entities.get(entity_hotkey)
@@ -1819,6 +1844,7 @@ class EntityManager(ValidatorBroadcastBase):
             "account_size": subaccount.account_size,
             "standard_account_size": subaccount.standard_account_size,
             "pro_account_size": subaccount.pro_account_size,
+            "payout_scale": subaccount.payout_scale,
             "account_type": subaccount.account_type,
             "status": subaccount.status,
             "created_at_ms": subaccount.created_at_ms,
@@ -2452,6 +2478,7 @@ class EntityManager(ValidatorBroadcastBase):
             'account_type': subaccount.account_type,
             'standard_account_size': subaccount.standard_account_size,
             'pro_account_size': subaccount.pro_account_size,
+            'payout_scale': subaccount.payout_scale,
         }
         if subaccount.hl_address:
             subaccount_info_dict['hl_address'] = subaccount.hl_address
@@ -2879,7 +2906,8 @@ class EntityManager(ValidatorBroadcastBase):
                                         f"[ENTITY_MANAGER] Synced pro sizing for {incoming_sub.synthetic_hotkey}: "
                                         f"account_size=${local_sub.account_size}, "
                                         f"standard=${local_sub.standard_account_size}, "
-                                        f"pro=${local_sub.pro_account_size}, type={local_sub.account_type}"
+                                        f"pro=${local_sub.pro_account_size}, type={local_sub.account_type}, "
+                                        f"payout_scale={local_sub.payout_scale}"
                                     )
                                     stats['subaccounts_updated'] += 1
                                 if incoming_sub.asset_class and local_sub.asset_class != incoming_sub.asset_class:
@@ -3072,7 +3100,8 @@ class EntityManager(ValidatorBroadcastBase):
                                 f"[ENTITY_MANAGER] Updating subaccount {synthetic_hotkey} pro sizing: "
                                 f"account_size=${existing_sub.account_size}, "
                                 f"standard=${existing_sub.standard_account_size}, "
-                                f"pro=${existing_sub.pro_account_size}, type={existing_sub.account_type}"
+                                f"pro=${existing_sub.pro_account_size}, type={existing_sub.account_type}, "
+                                f"payout_scale={existing_sub.payout_scale}"
                             )
                             changed = True
                         # Adopt the sender's tier; the MinerAccount is checked even when the tier is

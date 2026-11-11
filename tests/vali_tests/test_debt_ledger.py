@@ -936,7 +936,7 @@ class TestEliminatedSubaccountPayoutScale(TestBase):
     An eliminated subaccount still reaches the aggregation through its frozen ledger, and its
     closed weeks are sealed there. Sealing them at the default 1.0 would pin the wrong scale into
     settled history, and revert-elimination could not undo it: `seal` is write-once and a later
-    build computing the right scale would only log the disagreement.
+    build computing the right scale would only note the difference.
     """
 
     ENTITY_HOTKEY = "entity"

@@ -79,7 +79,7 @@ Both CPTs are taken at the subaccount's own daily loss limit, so a pro account o
 
 ### Cross-Margin Requirement
 
-After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all *earning* subaccounts — `SUBACCOUNT_FUNDED`, `SUBACCOUNT_ALPHA`, `PRO_FUNDED`, `PRO_CHALLENGE_TRANSITION` and `PRO_CHALLENGE_FROM_STANDARD` (`MinerBucket.is_subaccount_earning`). Each one's margin is capped at **5%** of its account size, whatever daily loss limit it chose. Theta is held at **35 USD per theta** (`ValiConfig.MARGIN_CPT`), except in `PRO_FUNDED`, which holds **70 USD per theta** (`ValiConfig.PRO_MARGIN_CPT`). A standard account growing into pro (`PRO_CHALLENGE_FROM_STANDARD` reached by promotion, paid at 2x) holds **twice** its standard margin to back the double payouts; an Instant Funded account in the same bucket is paid at 1x and holds 1x. The challenge buckets (`SUBACCOUNT_CHALLENGE` and `PRO_CHALLENGE_DIRECT`) are fully exempt, and do not require or consume any margin collateral.
+After subaccounts are funded, the entity must maintain enough theta on-chain to cover the combined open-position exposure of all *earning* subaccounts — `SUBACCOUNT_FUNDED`, `SUBACCOUNT_ALPHA`, `PRO_FUNDED`, `PRO_CHALLENGE_TRANSITION` and `PRO_CHALLENGE_FROM_STANDARD` (`MinerBucket.is_subaccount_earning`). Each one's margin is capped at **5%** of its account size, whatever daily loss limit it chose. Theta is held at **35 USD per theta** (`ValiConfig.MARGIN_CPT`), except in `PRO_FUNDED`, which holds **70 USD per theta** (`ValiConfig.PRO_MARGIN_CPT`). A standard account growing into pro (`PRO_CHALLENGE_FROM_STANDARD` reached by promotion) holds its standard margin times its [payout multiplier](#traders-who-have-already-passed-the-standard-challenge): **twice** it at the 2x a subaccount created before the promotion rules start is paid, or 1.3, 1.5 or 2 times it at the multiplier fixed with the pro size of one created at or after; an Instant Funded account in the same bucket is paid at 1x and holds 1x. The challenge buckets (`SUBACCOUNT_CHALLENGE` and `PRO_CHALLENGE_DIRECT`) are fully exempt, and do not require or consume any margin collateral.
 
 Incoming orders from funded subaccounts are blocked if the projected required collateral would exceed the entity's deposited balance. The validator reads deposited balances from an on-chain cache refreshed every ~30 minutes — if the cache has no entry for the entity, orders are rejected.
 
@@ -90,7 +90,7 @@ Full margin at a glance ($100,000 standard account, $500,000 pro account):
 | State | Margin held (= maximum slash) |
 |---|---|
 | Standard funded, `PRO_CHALLENGE_TRANSITION`, `SUBACCOUNT_ALPHA` | 5,000 / 35 = **142.86 Theta** |
-| Grow (`PRO_CHALLENGE_FROM_STANDARD` reached by promotion) | 2 × 5,000 / 35 = **285.71 Theta** |
+| Grow (`PRO_CHALLENGE_FROM_STANDARD` reached by promotion) | 2 × 5,000 / 35 = **285.71 Theta**; created at or after the promotion rules start: 1.3, 1.5 or 2 × 5,000 / 35 = **185.71**, **214.29** or **285.71 Theta** |
 | Instant Funded (`SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_FROM_STANDARD`) | 5,000 / 35 = **142.86 Theta** |
 | `PRO_FUNDED` | 25,000 / 70 = **357.14 Theta** |
 | `SUBACCOUNT_CHALLENGE`, `PRO_CHALLENGE_DIRECT` | 0 |
@@ -114,7 +114,8 @@ margin_theta   = margin_usd × multiplier / CPT          (ValiConfig.margin_thet
 
 CPT            = 70 in PRO_FUNDED, else 35
 multiplier     = the subaccount's payout multiplier in PRO_CHALLENGE_FROM_STANDARD
-                 (2 growing from standard funded, 1 Instant Funded), else 1
+                 (2 growing from standard funded, or the one fixed with the pro size for a
+                 subaccount created at or after the promotion rules start; 1 Instant Funded), else 1
 
 required_theta = sum(margin_theta across all earning subaccounts)
 ```
@@ -164,7 +165,7 @@ if slash_delta > 0:
 | 2     | $500   | $900      | $900        | $400        | $500        | 14.3 theta |
 | 3     | $600   | $1,500    | $1,250 (cap)| $900        | $350        | 10.0 theta (eliminated) |
 
-The same losses on a `PRO_FUNDED` account slash half the theta (`/ 70`), and on a Grow account twice the theta (`× 2 / 35`).
+The same losses on a `PRO_FUNDED` account slash half the theta (`/ 70`), and on a Grow account the theta times its payout multiplier (`× 2 / 35`, or `× 1.3`, `× 1.5` or `× 2` for a subaccount created at or after the promotion rules start).
 
 ### Slashing on Elimination
 
@@ -353,15 +354,16 @@ standard funded one.
 
 Pro accounts run on a parallel bucket track with their own leverage tables, carry, stock-borrow and
 margin-interest rates, drawdown thresholds, correlated-exposure caps, and permitted trade pairs.
-Hyperliquid *subaccounts* have no pro tier, but the pro universe itself is not Vanta-only: its
-crypto, commodities and indices pairs are all Hyperliquid-sourced. Note that the pro fee schedule
+Hyperliquid *subaccounts* have no pro tier (a request to promote one onto the pro track is
+refused), but the pro universe itself is not Vanta-only: its crypto, commodities and indices pairs
+are all Hyperliquid-sourced. Note that the pro fee schedule
 applies only to Vanta-sourced positions (`position.py` gates it on `src == VANTA`), so HL-sourced
 pro positions pay live HL funding plus the standard schedule.
 
 | Bucket                        | Account traded | Earns payouts | Payout basis            |
 |-------------------------------|----------------|---------------|-------------------------|
 | `PRO_CHALLENGE_TRANSITION`    | standard       | yes           | standard account size   |
-| `PRO_CHALLENGE_FROM_STANDARD` | pro            | yes           | 2x standard account size (1x for Instant Funded) |
+| `PRO_CHALLENGE_FROM_STANDARD` | pro            | yes           | 2x standard account size (1x for Instant Funded; 1.3x, 1.5x or 2x if created at or after the promotion rules start) |
 | `PRO_CHALLENGE_DIRECT`        | pro            | no            | —                       |
 | `PRO_FUNDED`                  | pro            | yes           | pro account size        |
 
@@ -427,7 +429,7 @@ Both forms share:
 
 The eligible form runs the pro challenge in every other respect: pro leverage, `all_markets`, the pro
 universe and the promotion criteria. Its payout scale is fixed at `1.0`
-(`ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than the `2.0` of a standard-to-pro
+(`ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER`) rather than the multiplier of a standard-to-pro
 transition, and is not selectable. **After passing**, it is in `PRO_FUNDED`: it is paid on the pro
 account size, and both creation-time limits are dropped for the pro defaults, a **5%** daily loss
 limit and an **8%** EOD limit. From then on it follows every `PRO_FUNDED` rule.
@@ -455,6 +457,13 @@ multiplier at `2.0`. So $5K of eligible PnL on a $500K pro account pays a $100K 
 `(5K / 500K) × 2 × 100K = $2K`. A soft breach (all-time Calmar) does **not** withhold their payout
 during either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
 
+A subaccount created at or after the promotion rules start
+(`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`, set at release; until then no subaccount is) is
+paid instead at the multiplier fixed when its pro size is granted: the one of its
+[auto-promotion](#auto-promotion)'s multiple, 1.3 at 3x, 1.5 at 5x and 2.0 at 10x
+(`ValiConfig.AUTO_PROMOTION_PAYOUT_MULTIPLIERS`), or 1.3 when the entity grants the pro size itself
+through `POST /api/promote`, whatever the size. It never changes afterwards, and the margin follows it.
+
 #### Auto-promotion
 
 The network also moves standard funded subaccounts onto the pro track by itself, with no entity
@@ -466,7 +475,7 @@ A subaccount qualifies on whichever of two paths it meets first:
 
 | Path | Requirements | Pro account size |
 |---|---|---|
-| Fast track | Equity, unrealized PnL included, at least 10% above the account size, held there for 3 minutes | 3x the standard account size |
+| Fast track | Equity, unrealized PnL included, at least 10% above the account size (less for a subaccount created at or after the promotion rules start, below), held there for 3 minutes | 3x the standard account size |
 | Steady track | All of: at least 60 full days on its funded ledger, balance and equity both more than 3% above the account size, return consistency of at most 50%, and all-time Calmar of at least 1.5 | 5x the standard account size, or 10x at a Calmar of at least 2.0 |
 
 Meeting both on the same check takes the larger multiple. The thresholds are the
@@ -476,6 +485,14 @@ Meeting both on the same check takes the larger multiple. The thresholds are the
   becomes funded. Balance is the account size plus realized PnL and dividends, net of fees; equity adds
   the unrealized PnL of open positions.
   The steady track reads the lower of the two, so open losses count and open gains do not.
+- **The fast track for a subaccount created at or after the promotion rules start**
+  (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`): 3% in the first week from its first order as a
+  funded account, 5% in the second week and 10% after that
+  (`ValiConfig.AUTO_PROMOTION_FAST_TRACK_WEEKLY_RETURNS`), and 3% in any week once its leverage use
+  has reached 50% at any time as a funded account (`ValiConfig.AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE`).
+  Leverage use is the larger of the open positions' entry value over the portfolio cap and the
+  highest asset class's over that class's cap, each on the balance; it is measured after every fill and fee,
+  and its peak is `peak_leverage_use` in the subaccount's account data.
 - **The fast track's hold**: equity must stay at or above the line on every challenge-period refresh
   for 3 minutes (`ChallengePeriodManager.AUTO_PROMOTION_FAST_TRACK_HOLD_MS`), so a bad price tick
   cannot trigger it. A refresh below the line starts the hold over.
@@ -499,7 +516,8 @@ Once it qualifies:
 2. When the transition ends it moves to `PRO_CHALLENGE_FROM_STANDARD`: remaining positions are force
    closed, the account is resized to the pro account size, and the ledgers restart. From then on it is
    like any subaccount promoted there, paid at twice its standard account size and holding twice its
-   standard margin (see [Cross-Margin Requirement](#cross-margin-requirement)).
+   standard margin (see [Cross-Margin Requirement](#cross-margin-requirement)), or, if it was created
+   at or after the promotion rules start, at the multiplier of its multiple, with the margin to match.
 3. No [promotion fee](#pro-promotion-fee) is charged, and the entity's collateral is not checked for
    the move.
 

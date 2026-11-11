@@ -74,6 +74,7 @@ def _bare_manager():
     manager = object.__new__(EntityManager)
     manager.is_backtesting = True
     manager.running_unit_tests = True
+    manager.is_testnet = False
     manager.entities = {}
     manager._entities_lock = threading.RLock()
     manager._entity_locks = {}

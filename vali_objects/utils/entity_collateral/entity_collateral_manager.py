@@ -260,7 +260,8 @@ class EntityCollateralManager(CacheController):
         PRO_CHALLENGE_FROM_STANDARD, which stays at the standard account size until it reaches
         PRO_FUNDED. CPT is ValiConfig.PRO_MARGIN_CPT in PRO_FUNDED and ValiConfig.MARGIN_CPT
         otherwise. multiplier is the payout multiplier the margin backs: in PRO_CHALLENGE_FROM_STANDARD
-        the subaccount's payout_scale (2 growing from standard funded, 1 Instant Funded), else 1.
+        the subaccount's payout_scale (2 growing from standard funded unless one was fixed with the pro size,
+        1 Instant Funded), else 1.
 
         Args:
             entity_hotkey: The entity's hotkey.

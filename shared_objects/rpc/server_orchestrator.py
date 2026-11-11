@@ -1199,6 +1199,7 @@ class ServerOrchestrator:
             def clear_miner_account():
                 miner_account_client.sync_miner_account_sizes_data({})  # Empty dict = clear all
                 miner_account_client.re_init_account_sizes()  # Reload from disk
+                miner_account_client.set_registered_after_cutoff(None, {})
             safe_clear('miner_account', clear_miner_account)
 
         # Clear entity data (entities and subaccounts)

@@ -11,7 +11,6 @@ interface ChallengesProps {
 export const Challenges = ({ statistics }: ChallengesProps) => {
   const { challengeperiod, scores } = statistics.data[0];
   const { status } = challengeperiod;
-  const { CHALLENGE_PERIOD_PERCENTILE_THRESHOLD } = statistics.constants;
 
   // if anything is in challenge period show element
   const isInChallenge = status === "testing";
@@ -43,7 +42,6 @@ export const Challenges = ({ statistics }: ChallengesProps) => {
                     key={label}
                     label={label}
                     value={score.percentile}
-                    target={CHALLENGE_PERIOD_PERCENTILE_THRESHOLD}
                   />
                 );
               }

@@ -12,6 +12,7 @@ Pattern follows test_challengeperiod_integration.py with ServerOrchestrator.
 """
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from time_util.time_util import TimeUtil
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
@@ -19,6 +20,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.vali_config import ValiConfig, TradePairCategory, RPCConnectionMode
 from vali_objects.utils.vali_utils import ValiUtils
 from entity_management.entity_manager import EntityManager
+from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.utils.asset_selection.asset_selection_manager import AssetSelectionManager
 from vali_objects.miner_account.miner_account_manager import MinerAccountManager
 from shared_objects.log import logger
@@ -266,6 +268,48 @@ class TestBroadcastIntegration(TestBase):
         self.assertEqual(received.intraday_drawdown_threshold, 0.03)
         stats = challenge_period_client.get_drawdown_stats(subaccount_info.synthetic_hotkey)
         self.assertEqual(stats["intraday_drawdown_threshold"], 0.03)
+
+    def test_a_pro_sizing_broadcast_carries_the_payout_multiplier(self):
+        """A receiving validator takes the payout multiplier fixed with the pro size, and the rollback's broadcast
+        clears it again."""
+        receiver_manager = EntityManager(
+            running_unit_tests=True,
+            config=SimpleNamespace(netuid=116, wallet=SimpleNamespace(hotkey=self.NON_MOTHERSHIP_HOTKEY),
+                                   subtensor=SimpleNamespace(network="test")),
+            is_backtesting=False
+        )
+        receiver_manager.is_mothership = False
+        mothership_manager = EntityManager(
+            running_unit_tests=True,
+            config=SimpleNamespace(netuid=116, wallet=SimpleNamespace(hotkey=self.MOTHERSHIP_HOTKEY),
+                                   subtensor=SimpleNamespace(network="test")),
+            is_backtesting=False
+        )
+        mothership_manager.is_mothership = True
+        success, msg = mothership_manager.register_entity(entity_hotkey=self.TEST_ENTITY_HOTKEY)
+        self.assertTrue(success, msg)
+        success, subaccount_info, msg = mothership_manager.create_subaccount(
+            entity_hotkey=self.TEST_ENTITY_HOTKEY, account_size=50000.0, asset_class="crypto")
+        self.assertTrue(success, msg)
+        hotkey = subaccount_info.synthetic_hotkey
+
+        def broadcast(info):
+            """The payload broadcast_subaccount_registration sends, received from the mothership."""
+            data = info.model_dump()
+            data["entity_hotkey"] = self.TEST_ENTITY_HOTKEY
+            with patch.object(ValiConfig, "MOTHERSHIP_HOTKEY", self.MOTHERSHIP_HOTKEY):
+                self.assertTrue(receiver_manager.receive_subaccount_registration_update(
+                    subaccount_data=data, sender_hotkey=ValiConfig.MOTHERSHIP_HOTKEY_TESTNET))
+            return receiver_manager.get_subaccount_info_for_synthetic(hotkey)
+
+        broadcast(subaccount_info)
+        with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", subaccount_info.created_at_ms):
+            snapshot = mothership_manager.snapshot_bucket_account_size(hotkey)
+            self.assertTrue(mothership_manager.apply_bucket_account_size(
+                hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 150_000.0, payout_scale=1.3)[0])
+        self.assertEqual(broadcast(mothership_manager.get_subaccount_info_for_synthetic(hotkey)).payout_scale, 1.3)
+        self.assertTrue(mothership_manager.restore_bucket_account_size(hotkey, snapshot)[0])
+        self.assertIsNone(broadcast(mothership_manager.get_subaccount_info_for_synthetic(hotkey)).payout_scale)
 
     def test_entity_manager_reject_unauthorized_broadcast(self):
         """
