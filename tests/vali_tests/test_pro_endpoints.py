@@ -15,11 +15,14 @@ mocked RPC clients.
     against, plus the correlated-exposure limits published alongside it.
   * The subaccount dashboard payloads (v1, v2, hl-traders and the websocket frames) that carry the
     granted pro_account_size.
+  * The same payloads' auto_promotion section: where a standard funded account stands on its way to a
+    pro account, read from a real ChallengePeriodManager through its server and client.
 
 The rules behind these payloads are tested elsewhere: promotion and elimination in
 test_challengeperiod_pro.py, account sizing in test_pro_account_size.py, and correlated exposure
 enforcement in test_correlated_pair_limits.py.
 """
+import contextlib
 import json
 import unittest
 import uuid
@@ -29,6 +32,11 @@ from bittensor_wallet import Keypair
 from flask import Flask
 
 from entity_management.entity_utils import create_subaccount_dashboard
+from tests.vali_tests.test_auto_promotion import _full_refresh, _standard_miner
+from tests.vali_tests.test_auto_promotion_stats import _account, _ledger, _refresh, _seed
+from tests.vali_tests.test_challengeperiod_pro import _CP_CLIENT_PATHS
+from tests.vali_tests.test_challengeperiod_pro import HOTKEY as MINER_HOTKEY
+from tests.vali_tests.test_challengeperiod_pro import NOW_MS as REFRESH_MS
 from tests.vali_tests.test_pro_account_size import (
     GRANTED_SIZE,
     INVALID_SIZES,
@@ -39,6 +47,10 @@ from tests.vali_tests.test_pro_account_size import (
     _bare_manager,
 )
 from time_util.time_util import TimeUtil
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
+from vali_objects.challenge_period.challengeperiod_server import ChallengePeriodServer
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount
@@ -52,7 +64,7 @@ from vali_objects.utils.leverage_utils import (
     get_pro_positional_leverage,
     get_standard_positional_leverage,
 )
-from vali_objects.vali_config import TradePair, TradePairCategory, ValiConfig
+from vali_objects.vali_config import RPCConnectionMode, TradePair, TradePairCategory, ValiConfig
 from vanta_api.validator_rest_server import ValidatorRestServer
 
 PROMOTE_SIGNED_FIELDS = ("entity_coldkey", "entity_hotkey", "synthetic_hotkey", "nonce", "timestamp")
@@ -69,6 +81,7 @@ def _no_section_clients():
     clients["challenge_period"].get_dashboard.return_value = None
     clients["challenge_period"].get_drawdown_stats.return_value = None
     clients["challenge_period"].get_pro_stats.return_value = None
+    clients["challenge_period"].get_auto_promotion.return_value = None
     for name in ("elimination", "miner_account", "position", "limit_order", "debt_ledger", "statistics"):
         clients[name].get_dashboard.return_value = None
     return clients
@@ -918,6 +931,237 @@ class TestDashboardEndpointsProAccountSize(unittest.TestCase):
                     info = json.loads(serialized)["data"]["dashboard"]["subaccount_info"]
                     self.assertNotIn(REMOVED_FIELD, info)
                     self.assertEqual(info["pro_account_size"], granted)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Section 6 — the dashboards' auto_promotion section
+#
+# What the challenge period's last refresh decided for an auto-promotion candidate, on every dashboard
+# payload: v1 sends null for any other account, as for its other sections; v2, /miner and the websocket
+# frames leave the key out.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _strict_json(data):
+    """Parsed as a browser would: json.loads alone accepts the NaN and Infinity that json.dumps writes."""
+    def refuse(literal):
+        raise ValueError(f"{literal} is not JSON")
+    return json.loads(data, parse_constant=refuse)
+
+
+class TestDashboardEndpointsAutoPromotion(unittest.TestCase):
+
+    def setUp(self):
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for path in _CP_CLIENT_PATHS:
+            stack.enter_context(patch(path))
+        self.challenge_period = ChallengePeriodManager(is_backtesting=True)
+        self.challenge_period._entity_client.get_subaccount_info_for_synthetic.return_value = {"initial_bucket": None}
+        cp_server = ChallengePeriodServer.__new__(ChallengePeriodServer)  # only its forwarding is needed
+        cp_server._manager = self.challenge_period
+        cp_client = ChallengePeriodClient(connection_mode=RPCConnectionMode.LOCAL, running_unit_tests=True)
+        cp_client.set_direct_server(cp_server)
+
+        self.manager = _bare_manager()
+        self.manager._challenge_period_client = cp_client  # the v1 payload is built by the entity manager
+        self.candidate = _add_standard(self.manager)
+        self.in_challenge = _add_standard(self.manager, subaccount_id=1)
+        _seed(self.challenge_period, self.candidate, current_equity=1.12)
+        self.challenge_period.miner_states[self.candidate].drawdown.current_balance = 1.0
+        _seed(self.challenge_period, self.in_challenge, bucket=MinerBucket.SUBACCOUNT_CHALLENGE)
+
+        server = object.__new__(ValidatorRestServer)
+        server._get_api_key_safe = MagicMock(return_value="key")
+        server.is_valid_api_key = MagicMock(return_value=True)
+        server.can_access_tier = MagicMock(return_value=True)
+        server._entity_client = MagicMock()
+        server._entity_client.get_subaccount_dashboard.side_effect = self.manager.get_subaccount_dashboard
+        server._entity_client.get_subaccount_dashboard_data.side_effect = self.manager.get_subaccount_dashboard_data
+        self.clients = _no_section_clients()
+        self.clients["challenge_period"] = cp_client
+        self._attach_clients(server)
+        self.server = server
+        app = Flask(__name__)
+        app.config["TESTING"] = True
+        app.route("/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(server.get_subaccount_dashboard)
+        app.route("/v2/entity/subaccount/<synthetic_hotkey>", methods=["GET"])(server.v2_get_subaccount_dashboard)
+        app.route("/miner/<hotkey>", methods=["GET"])(server.get_miner_dashboard)
+        self.client = app.test_client()
+
+    def _attach_clients(self, server):
+        server._challenge_period_client = self.clients["challenge_period"]
+        server._elimination_client = self.clients["elimination"]
+        server._miner_account_client = self.clients["miner_account"]
+        server._position_client = self.clients["position"]
+        server._limit_order_client = self.clients["limit_order"]
+        server._debt_ledger_client = self.clients["debt_ledger"]
+        server._statistics_client = self.clients["statistics"]
+
+    def _stats_pass(self, accounts=None, now_ms=REFRESH_MS):
+        """One stats pass over both subaccounts, as a refresh runs it."""
+        ledgers = {self.candidate: _ledger(low=0.96), self.in_challenge: _ledger(low=0.96)}
+        _refresh(self.challenge_period, ledgers, accounts, now_ms)
+
+    def _dashboard(self, path):
+        resp = self.client.get(path)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        return _strict_json(resp.data)["dashboard"]
+
+    def _expected(self, **changes):
+        return {
+            "on_promotion_rules": False,
+            "fast_track_target": 0.10,
+            "first_funded_order_ms": None,
+            "peak_leverage_use": 0.0,
+            "fast_track_held_since_ms": REFRESH_MS,
+            "fast_track_hold_ms": 180_000,
+            "trading_days": 60,
+            "calmar": 1.75,
+            "daily_consistency": 1 / 60,
+            "as_of_ms": REFRESH_MS,
+            **changes,
+        }
+
+    def _assert_section(self, section, expected):
+        self.assertEqual(set(section), set(expected))
+        for key, value in expected.items():
+            if isinstance(value, float):
+                self.assertAlmostEqual(section[key], value, msg=key)
+            else:
+                self.assertEqual(section[key], value, msg=key)
+                self.assertIs(type(section[key]), type(value), msg=key)
+
+    def test_v1_carries_the_section_and_null_for_any_other_account(self):
+        self._stats_pass()
+        self._assert_section(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"],
+                             self._expected())
+        other = self._dashboard(f"/entity/subaccount/{self.in_challenge}")
+        self.assertIn("auto_promotion", other)
+        self.assertIsNone(other["auto_promotion"])
+
+    def test_v2_carries_the_section_and_leaves_it_out_for_any_other_account(self):
+        self._stats_pass()
+        dashboard = self._dashboard(f"/v2/entity/subaccount/{self.candidate}")
+        self._assert_section(dashboard["auto_promotion"], self._expected())
+        self.assertEqual(dashboard["challenge_period"]["bucket"], MinerBucket.SUBACCOUNT_FUNDED.value)
+        self.assertNotIn("pro_stats", dashboard)
+
+        other = self._dashboard(f"/v2/entity/subaccount/{self.in_challenge}")
+        self.assertNotIn("auto_promotion", other)
+        self.assertEqual(other["challenge_period"]["bucket"], MinerBucket.SUBACCOUNT_CHALLENGE.value)
+
+    def test_before_the_first_refresh_no_payload_has_a_section(self):
+        self.assertIsNone(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"])
+        self.assertNotIn("auto_promotion", self._dashboard(f"/v2/entity/subaccount/{self.candidate}"))
+
+    def test_an_account_promoted_automatically_has_no_section(self):
+        self._stats_pass()
+        self.challenge_period._entity_client.is_mothership.return_value = True
+        self.challenge_period._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
+        with patch.object(self.challenge_period, "_sync_buckets_to_accounts"):
+            promoted = self.challenge_period._auto_promote(
+                {self.candidate: _account(self.candidate)}, set(), REFRESH_MS + 180_000)
+        self.assertEqual(promoted, [self.candidate])
+
+        self.assertIsNone(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"])
+        dashboard = self._dashboard(f"/v2/entity/subaccount/{self.candidate}")
+        self.assertNotIn("auto_promotion", dashboard)
+        self.assertEqual(dashboard["challenge_period"]["bucket"], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+
+    def test_a_candidate_without_stats_carries_its_target_with_null_stats(self):
+        ledgers = {self.candidate: None}
+        _refresh(self.challenge_period, ledgers, {self.candidate: _account(self.candidate)})
+        expected = self._expected(trading_days=None, calmar=None, daily_consistency=None)
+        self._assert_section(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"], expected)
+        self._assert_section(self._dashboard(f"/v2/entity/subaccount/{self.candidate}")["auto_promotion"], expected)
+
+    def test_after_a_failed_stats_pass_both_payloads_carry_only_what_still_stands(self):
+        _full_refresh(self.challenge_period, self.candidate, REFRESH_MS, holding=True)
+        with patch.object(self.challenge_period, "_refresh_auto_promotion_stats", side_effect=RuntimeError("down")):
+            _full_refresh(self.challenge_period, self.candidate, REFRESH_MS + 30_000, holding=True)
+
+        expected = {"on_promotion_rules": False, "as_of_ms": REFRESH_MS + 30_000}
+        self._assert_section(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"], expected)
+        self._assert_section(self._dashboard(f"/v2/entity/subaccount/{self.candidate}")["auto_promotion"], expected)
+
+    def test_after_a_reverted_elimination_both_payloads_carry_only_what_still_stands(self):
+        """Funded again, but the hold and the stats were read before the revert restarted its drawdown."""
+        self._stats_pass()
+        self.challenge_period.eliminate_hotkeys(
+            {self.candidate: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN}, REFRESH_MS + 1)
+        self.assertTrue(self.challenge_period.revert_elimination(self.candidate))
+
+        expected = {"on_promotion_rules": False, "as_of_ms": REFRESH_MS}
+        self._assert_section(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"], expected)
+        dashboard = self._dashboard(f"/v2/entity/subaccount/{self.candidate}")
+        self._assert_section(dashboard["auto_promotion"], expected)
+        self.assertEqual(dashboard["challenge_period"]["bucket"], MinerBucket.SUBACCOUNT_FUNDED.value)
+
+        self._stats_pass(now_ms=REFRESH_MS + 30_000)
+        expected = self._expected(fast_track_held_since_ms=None, as_of_ms=REFRESH_MS + 30_000)
+        self._assert_section(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"], expected)
+
+    def test_a_number_that_is_not_finite_never_reaches_the_wire(self):
+        accounts = {hotkey: _account(hotkey) for hotkey in (self.candidate, self.in_challenge)}
+        accounts[self.candidate].peak_leverage_use = float("inf")
+        with patch("vali_objects.challenge_period.challengeperiod_manager.Metrics.all_time_calmar",
+                   return_value=float("nan")):
+            self._stats_pass(accounts)
+
+        expected = self._expected(peak_leverage_use=None, calmar=None)
+        self._assert_section(self._dashboard(f"/entity/subaccount/{self.candidate}")["auto_promotion"], expected)
+        self._assert_section(self._dashboard(f"/v2/entity/subaccount/{self.candidate}")["auto_promotion"], expected)
+
+    def test_an_unreachable_challenge_period_costs_only_the_section(self):
+        self._stats_pass()
+        with patch.object(self.challenge_period, "get_auto_promotion", side_effect=ConnectionError("rpc down")):
+            v1 = self._dashboard(f"/entity/subaccount/{self.candidate}")
+            v2 = self._dashboard(f"/v2/entity/subaccount/{self.candidate}")
+        self.assertIsNone(v1["auto_promotion"])
+        self.assertEqual(v1["challenge_period"]["bucket"], MinerBucket.SUBACCOUNT_FUNDED.value)
+        self.assertNotIn("auto_promotion", v2)
+        self.assertIn("drawdown", v2)
+
+    def test_a_standard_miners_dashboard_carries_the_section(self):
+        """A miner on the standard account track is a candidate under its own hotkey, on the promotion rules."""
+        _seed(self.challenge_period, MINER_HOTKEY)
+        first_order_ms = REFRESH_MS - 86_400_000
+        self.challenge_period._refresh_auto_promotion_stats(
+            [MINER_HOTKEY], {MINER_HOTKEY: _ledger(low=0.96)}, {MINER_HOTKEY: _standard_miner()}, REFRESH_MS,
+            {MINER_HOTKEY: first_order_ms})
+
+        self._assert_section(self._dashboard(f"/miner/{MINER_HOTKEY}")["auto_promotion"], self._expected(
+            on_promotion_rules=True, fast_track_target=0.03, first_funded_order_ms=first_order_ms,
+            fast_track_held_since_ms=None))
+
+    def test_websocket_frames_carry_the_section_and_leave_it_out_for_any_other_account(self):
+        from vanta_api.websocket_server import DashboardSubscription, WebSocketServer, WebSocketServerClient
+
+        self._stats_pass()
+        server = object.__new__(WebSocketServer)
+        server._event_loop = MagicMock()
+        server._entity_client = MagicMock()
+        server._entity_client.get_subaccount_dashboard.side_effect = self.manager.get_subaccount_dashboard
+        self._attach_clients(server)
+        server._send_serialized = MagicMock()
+
+        for hotkey, expected in ((self.candidate, self._expected()), (self.in_challenge, None)):
+            ws_client = WebSocketServerClient(client_id=1, websocket=MagicMock(), api_key="k", tier=200)
+            subscription = DashboardSubscription()
+            for frame in ("initial", "incremental"):
+                with self.subTest(hotkey=hotkey, frame=frame), \
+                        patch("vanta_api.websocket_server.asyncio.run_coroutine_threadsafe"):
+                    if frame == "incremental":
+                        subscription.positions_time_ms = NOW_MS
+                        subscription.checkpoints_time_ms = NOW_MS
+                    server._send_serialized.reset_mock()
+                    server._send_dashboard_update(hotkey, ws_client, subscription)
+                    _client, serialized = server._send_serialized.call_args.args
+                    dashboard = _strict_json(serialized)["data"]["dashboard"]
+                    if expected is None:
+                        self.assertNotIn("auto_promotion", dashboard)
+                    else:
+                        self._assert_section(dashboard["auto_promotion"], expected)
 
 
 if __name__ == "__main__":

@@ -6,8 +6,12 @@ pro size at a multiple of its standard account, on whichever of two paths it qua
   * steady track: 60 trading days, equity (unrealized PnL included) more than 3% above the account size,
     daily consistency at most 0.5, and calmar of at least 1.5 (5x) or 2.0 (10x)
 On the same check it takes the larger multiple.
+
+A candidate's dashboard shows where it stands on both (get_auto_promotion): what the last refresh decided.
 """
 import contextlib
+import json
+import pickle
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -27,6 +31,8 @@ from tests.vali_tests.test_challengeperiod_pro import (  # noqa: F401 - manager 
 from entity_management.entity_client import EntityClient
 from entity_management.entity_server import EntityServer
 from tests.vali_tests.test_pro_account_size import STANDARD_SIZE, _add_standard, _bare_manager
+from vali_objects.challenge_period.challengeperiod_client import ChallengePeriodClient
+from vali_objects.challenge_period.challengeperiod_server import ChallengePeriodServer
 from vali_objects.challenge_period.challengeperiod_manager import (
     AutoPromotion,
     AutoPromotionStats,
@@ -161,6 +167,27 @@ def test_the_hold_is_dropped_once_the_account_is_no_longer_a_candidate(hop_manag
     hop_manager.miner_states[HOTKEY].add_bucket_entry(MinerBucket.ELIMINATED, NOW_MS + 30_000)
     _refresh(hop_manager, {HOTKEY: _ledger(low=0.98)}, now_ms=NOW_MS + 30_000)
     assert hop_manager._fast_track_since_ms == {}
+
+
+def test_the_dashboard_shows_the_hold_from_its_first_refresh_until_the_promotion(hop_manager):
+    _seed(hop_manager)
+    _tick(hop_manager, NOW_MS, equity=1.0999)
+    assert hop_manager.get_auto_promotion(HOTKEY)["fast_track_held_since_ms"] is None
+
+    _tick(hop_manager, NOW_MS + 30_000, equity=1.10)
+    _tick(hop_manager, NOW_MS + 60_000, equity=1.12)
+    section = hop_manager.get_auto_promotion(HOTKEY)
+    assert section["fast_track_held_since_ms"] == NOW_MS + 30_000
+    assert section["fast_track_hold_ms"] == HOLD_MS and section["as_of_ms"] == NOW_MS + 60_000
+
+    _tick(hop_manager, NOW_MS + 90_000, equity=1.0999)
+    assert hop_manager.get_auto_promotion(HOTKEY)["fast_track_held_since_ms"] is None
+
+    _tick(hop_manager, NOW_MS + 120_000, equity=1.10)
+    assert hop_manager.get_auto_promotion(HOTKEY)["fast_track_held_since_ms"] == NOW_MS + 120_000
+
+    assert _tick(hop_manager, NOW_MS + 120_000 + HOLD_MS, equity=1.10) == [HOTKEY]
+    assert hop_manager.get_auto_promotion(HOTKEY) is None  # promoted: no longer a candidate
 
 
 # ── A standard miner's fast track ─────────────────────────────────────────────
@@ -347,6 +374,65 @@ def test_a_failed_move_leaves_no_record_and_is_retried_but_logged_once_a_week(ho
 
     hop_manager._entity_client.apply_bucket_account_size.return_value = (True, "account size set")
     assert _auto_promote(hop_manager, now_ms=NEXT_MONDAY_MS + 30_000) == [HOTKEY]
+
+
+@pytest.mark.parametrize("failure", ["rejected", "raised"])
+def test_the_dashboard_keeps_showing_a_candidate_while_its_move_is_attempted_and_after_it_fails(hop_manager, failure):
+    """The record is on the state for the length of the move: a dashboard built meanwhile still has the
+    section, as it does once the move has failed and the record is gone again."""
+    _seed(hop_manager)
+    _tick(hop_manager, NOW_MS, equity=1.12)
+    shown = hop_manager.get_auto_promotion(HOTKEY)
+    assert shown["fast_track_held_since_ms"] == NOW_MS
+    during_the_move = []
+
+    def read_then_fail(*args, **kwargs):
+        assert hop_manager.miner_states[HOTKEY].auto_promotion is not None  # the read is of a move in flight
+        during_the_move.append(hop_manager.get_auto_promotion(HOTKEY))
+        if failure == "raised":
+            raise TimeoutError("apply_bucket_account_size")
+        return False, "rejected"
+
+    hop_manager._entity_client.apply_bucket_account_size.side_effect = read_then_fail
+    drawdown = hop_manager.miner_states[HOTKEY].drawdown
+    drawdown.current_equity, drawdown.current_balance = 1.12, 1.0
+    assert _auto_promote(hop_manager, now_ms=NOW_MS + HOLD_MS) == []
+
+    assert during_the_move == [shown]
+    assert hop_manager._auto_promoting == {}
+    assert hop_manager.miner_states[HOTKEY].auto_promotion is None
+    assert hop_manager.get_auto_promotion(HOTKEY) == shown
+
+
+def test_the_dashboard_stops_showing_the_candidate_once_its_move_has_landed(hop_manager):
+    """From the bucket entry on, also for a read made before the move has returned."""
+    _seed(hop_manager)
+    _tick(hop_manager, NOW_MS, equity=1.12)
+    real_promote = hop_manager.promote_subaccount
+    after_landing = []
+
+    def promote_then_read(*args, **kwargs):
+        result = real_promote(*args, **kwargs)
+        after_landing.append(hop_manager.get_auto_promotion(HOTKEY))
+        return result
+
+    with patch.object(hop_manager, "promote_subaccount", side_effect=promote_then_read):
+        assert _auto_promote(hop_manager, now_ms=NOW_MS + HOLD_MS) == [HOTKEY]
+
+    assert after_landing == [None]
+    assert hop_manager._auto_promoting == {}
+    assert hop_manager.get_auto_promotion(HOTKEY) is None
+
+
+def test_the_dashboard_never_shows_an_account_promoted_before_and_moved_back_into_funded(hop_manager):
+    """The stats pass still counts it a candidate, and a record of its own is not a move in flight."""
+    _seed(hop_manager)
+    hop_manager.miner_states[HOTKEY].auto_promotion = AutoPromotion(
+        path=FAST, multiplier=3.0, pro_account_size=300_000, promoted_ms=NOW_MS - WEEK_MS)
+    _tick(hop_manager, NOW_MS, equity=1.12)
+
+    assert HOTKEY in hop_manager._auto_promotion_snapshot
+    assert hop_manager.get_auto_promotion(HOTKEY) is None
 
 
 def test_a_move_that_lands_before_raising_keeps_its_record(hop_manager):
@@ -845,6 +931,99 @@ def test_failing_auto_promotion_stats_never_stop_the_eliminations(hop_manager):
     hop_manager._elimination_client.append_elimination_row.assert_called_once()
     assert hop_manager._auto_promotion_stats == {}
     assert hop_manager._fast_track_since_ms == {}
+    assert hop_manager._auto_promotion_snapshot == {}
+
+
+def test_through_refresh_the_dashboard_shows_the_candidate_and_only_until_it_is_promoted(hop_manager):
+    _seed(hop_manager, current_equity=1.12)
+    hop_manager.miner_states[HOTKEY].drawdown.current_balance = 1.0
+    first_order_ms = NOW_MS - 3 * DAILY_MS
+    hop_manager._position_client.get_first_order_times.return_value = {HOTKEY: first_order_ms}
+
+    _full_refresh(hop_manager, HOTKEY, NOW_MS, holding=True)
+    assert hop_manager.get_auto_promotion(HOTKEY) == {
+        "on_promotion_rules": False,
+        "fast_track_target": 0.10,
+        "first_funded_order_ms": first_order_ms,
+        "peak_leverage_use": 0.0,
+        "fast_track_held_since_ms": NOW_MS,
+        "fast_track_hold_ms": HOLD_MS,
+        "trading_days": 60,
+        "calmar": pytest.approx(3.5),
+        "daily_consistency": pytest.approx(1 / 60),
+        "as_of_ms": NOW_MS,
+    }
+
+    _full_refresh(hop_manager, HOTKEY, NOW_MS + HOLD_MS, holding=True)
+    assert hop_manager.miner_states[HOTKEY].current_bucket == TRANSITION
+    assert hop_manager.get_auto_promotion(HOTKEY) is None
+
+
+@pytest.mark.parametrize("on_the_rules", [False, True])
+def test_after_a_failed_stats_pass_the_dashboard_shows_only_whether_the_account_is_on_the_rules(hop_manager,
+                                                                                               on_the_rules):
+    """The hold and the stats of the pass before no longer stand, and the target is not worked out anywhere
+    else. Whether the account is on the promotion rules never changes, so that much is still shown."""
+    created_ms = NOW_MS - 30 * DAILY_MS
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.return_value = {
+        "initial_bucket": None, "created_at_ms": created_ms}
+    hop_manager._entity_client.is_testnet.return_value = False
+    hop_manager._position_client.get_first_order_times.return_value = {HOTKEY: NOW_MS - DAILY_MS}
+    _seed(hop_manager, current_equity=1.05)
+    hop_manager.miner_states[HOTKEY].drawdown.current_balance = 1.0  # all of it open: off the steady track
+
+    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", created_ms if on_the_rules else None):
+        _full_refresh(hop_manager, HOTKEY, NOW_MS, holding=True)
+        section = hop_manager.get_auto_promotion(HOTKEY)
+        assert section["on_promotion_rules"] is on_the_rules
+        assert section["fast_track_target"] == (0.03 if on_the_rules else 0.10)
+        assert section["fast_track_held_since_ms"] == (NOW_MS if on_the_rules else None)
+
+        with patch.object(hop_manager, "_refresh_auto_promotion_stats", side_effect=RuntimeError("unexpected")):
+            _full_refresh(hop_manager, HOTKEY, NOW_MS + 30_000, holding=True)
+        assert hop_manager._auto_promotion_snapshot == {}
+        assert hop_manager.get_auto_promotion(HOTKEY) == {"on_promotion_rules": on_the_rules,
+                                                          "as_of_ms": NOW_MS + 30_000}
+
+        _full_refresh(hop_manager, HOTKEY, NOW_MS + 60_000, holding=True)
+        section = hop_manager.get_auto_promotion(HOTKEY)
+        assert section["fast_track_target"] == (0.03 if on_the_rules else 0.10)
+        assert section["fast_track_held_since_ms"] == (NOW_MS + 60_000 if on_the_rules else None)  # started over
+        assert section["trading_days"] == 60 and section["as_of_ms"] == NOW_MS + 60_000
+
+
+def test_a_stats_pass_that_fails_before_any_has_completed_shows_nothing(hop_manager):
+    """Nothing has yet told a candidate from any other funded account."""
+    _seed(hop_manager)
+    with patch.object(hop_manager, "_refresh_auto_promotion_stats", side_effect=RuntimeError("unexpected")):
+        _full_refresh(hop_manager, HOTKEY, NOW_MS)
+    assert hop_manager.get_auto_promotion(HOTKEY) is None
+
+
+def test_after_a_failed_stats_pass_a_funded_account_that_was_no_candidate_still_shows_nothing(hop_manager):
+    hop_manager._entity_client.get_subaccount_info_for_synthetic.return_value = {
+        "initial_bucket": MinerBucket.SUBACCOUNT_FUNDED.value}
+    _seed(hop_manager)
+    _full_refresh(hop_manager, HOTKEY, NOW_MS)
+    with patch.object(hop_manager, "_refresh_auto_promotion_stats", side_effect=RuntimeError("unexpected")):
+        _full_refresh(hop_manager, HOTKEY, NOW_MS + 30_000)
+    assert hop_manager.get_auto_promotion(HOTKEY) is None
+
+
+def test_the_dashboard_section_reaches_a_client_through_the_server_as_it_was_read(manager):
+    _seed(manager, current_equity=1.12)
+    _refresh(manager, {HOTKEY: _ledger(low=0.98)})
+    server = ChallengePeriodServer.__new__(ChallengePeriodServer)  # only its forwarding is under test
+    server._manager = manager
+    client = ChallengePeriodClient(connection_mode=RPCConnectionMode.LOCAL, running_unit_tests=True)
+    client.set_direct_server(server)
+
+    section = client.get_auto_promotion(HOTKEY)
+
+    assert section == manager.get_auto_promotion(HOTKEY) and section["fast_track_held_since_ms"] == NOW_MS
+    assert pickle.loads(pickle.dumps(section)) == section  # as the RPC carries it between processes
+    assert json.loads(json.dumps(section, allow_nan=False)) == section
+    assert client.get_auto_promotion("nobody") is None
 
 
 @pytest.mark.parametrize("record", [{"initial_bucket": MinerBucket.SUBACCOUNT_FUNDED.value}, None])
@@ -857,3 +1036,4 @@ def test_through_refresh_a_non_candidate_is_never_promoted(hop_manager, record):
     assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.SUBACCOUNT_FUNDED
     hop_manager._entity_client.apply_bucket_account_size.assert_not_called()
     assert hop_manager._fast_track_since_ms == {}
+    assert hop_manager.get_auto_promotion(HOTKEY) is None

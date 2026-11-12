@@ -4,7 +4,11 @@ not HL-linked). From the first refresh that sees one, its drawdown is tracked li
 as the pro challenge ratchets its own; the time before is replayed from the perf ledger
 (LedgerUtils.eod_hwm_drawdown). Calmar, daily consistency and trading days are measured as in the pro challenge
 into AutoPromotionStats. The pro track and every other account are unaffected.
+
+What each refresh decided for a candidate is what its dashboard shows (get_auto_promotion); no other account
+has that section.
 """
+import json
 from unittest.mock import patch
 
 import pytest
@@ -20,7 +24,13 @@ from tests.vali_tests.test_challengeperiod_pro import (  # noqa: F401 - manager 
     _even_ledger,
     manager,
 )
-from vali_objects.challenge_period.challengeperiod_manager import DrawdownStats, ProStats
+from vali_objects.challenge_period.challengeperiod_manager import (
+    AutoPromotion,
+    ChallengePeriodManager,
+    DrawdownStats,
+    ProStats,
+)
+from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.misc import TradePairReturnStatus
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -334,6 +344,259 @@ def test_a_ledger_missing_lows_gets_no_stats_and_is_logged_once(manager):
 
     _refresh(manager, {HOTKEY: _ledger(low=0.94)})
     assert _stats(manager).max_drawdown == pytest.approx(0.94)
+
+
+# ── What the dashboard is told ────────────────────────────────────────────────
+
+def test_a_candidate_shows_what_the_refresh_decided(manager):
+    """A subaccount from before the promotion rules, 7% realized over a 4% drawdown, flat, never traded as funded."""
+    _seed(manager)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+
+    section = manager.get_auto_promotion(HOTKEY)
+    assert section == {
+        "on_promotion_rules": False,
+        "fast_track_target": ValiConfig.AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN,
+        "first_funded_order_ms": None,
+        "peak_leverage_use": 0.0,
+        "fast_track_held_since_ms": None,
+        "fast_track_hold_ms": ChallengePeriodManager.AUTO_PROMOTION_FAST_TRACK_HOLD_MS,
+        "trading_days": DAYS,
+        "calmar": pytest.approx(1.75),
+        "daily_consistency": pytest.approx(1 / DAYS),
+        "as_of_ms": NOW_MS,
+    }
+    assert {key: type(value) for key, value in section.items()} == {
+        "on_promotion_rules": bool, "fast_track_target": float, "first_funded_order_ms": type(None),
+        "peak_leverage_use": float, "fast_track_held_since_ms": type(None), "fast_track_hold_ms": int,
+        "trading_days": int, "calmar": float, "daily_consistency": float, "as_of_ms": int,
+    }
+    stats = _stats(manager)
+    assert (section["trading_days"], section["calmar"], section["daily_consistency"]) == (
+        stats.trading_days, stats.calmar, stats.daily_consistency)
+
+
+def test_every_refresh_replaces_what_is_shown(manager):
+    _seed(manager)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    _refresh(manager, {HOTKEY: _ledger(low=0.93)}, now_ms=NOW_MS + 30_000)
+
+    section = manager.get_auto_promotion(HOTKEY)
+    assert section["as_of_ms"] == NOW_MS + 30_000
+    assert section["calmar"] == pytest.approx(1.0)
+
+
+def test_a_candidate_with_no_ledger_yet_shows_its_target_and_no_stats(manager):
+    _seed(manager)
+    _refresh(manager, {HOTKEY: None})
+
+    section = manager.get_auto_promotion(HOTKEY)
+    assert (section["trading_days"], section["calmar"], section["daily_consistency"]) == (None, None, None)
+    assert section["fast_track_target"] == ValiConfig.AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
+    assert section["on_promotion_rules"] is False and section["as_of_ms"] == NOW_MS
+
+
+def test_a_candidate_whose_ledger_cannot_be_replayed_shows_no_stats(manager):
+    _seed(manager)
+    ledger = _ledger(low=0.99)
+    ledger.cps[0].min_equity_ret = None
+    _refresh(manager, {HOTKEY: ledger})
+
+    section = manager.get_auto_promotion(HOTKEY)
+    assert (section["trading_days"], section["calmar"], section["daily_consistency"]) == (None, None, None)
+
+
+@pytest.mark.parametrize("record", [
+    {"initial_bucket": MinerBucket.SUBACCOUNT_FUNDED.value},             # Instant Funded
+    {"initial_bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value},   # Instant Funded
+    None,                                                                # no entity record
+])
+def test_an_account_not_created_through_the_challenge_shows_nothing(manager, record):
+    manager._entity_client.get_subaccount_info_for_synthetic.return_value = record
+    _seed(manager)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    assert manager.get_auto_promotion(HOTKEY) is None
+
+
+@pytest.mark.parametrize("account_kwargs", [{"hl_address": HL_ADDRESS}, {"asset_class": MinerAssetClass.HL_ALL}])
+def test_an_hl_linked_subaccount_shows_nothing(manager, account_kwargs):
+    _seed(manager)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)}, {HOTKEY: _account(**account_kwargs)})
+    assert manager.get_auto_promotion(HOTKEY) is None
+
+
+@pytest.mark.parametrize("bucket", [MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.MAINCOMP, *PRO_BUCKETS])
+def test_no_other_bucket_shows_anything(manager, bucket):
+    _seed(manager, bucket=bucket)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    assert manager.get_auto_promotion(HOTKEY) is None
+
+
+def test_an_unknown_account_shows_nothing(manager):
+    assert manager.get_auto_promotion("nobody") is None
+
+
+def test_nothing_is_shown_before_the_first_refresh(manager):
+    """A restarted validator has decided nothing yet, and cannot tell a candidate from any other funded account."""
+    _seed(manager)
+    assert manager.get_auto_promotion(HOTKEY) is None
+
+
+def test_an_account_that_left_the_bucket_shows_nothing_at_once(manager):
+    """Eliminated or promoted later in the same refresh: the bucket is read live, not from the last pass."""
+    _seed(manager)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    assert manager.get_auto_promotion(HOTKEY) is not None
+
+    manager.miner_states[HOTKEY].add_bucket_entry(MinerBucket.ELIMINATED, NOW_MS + 1)
+    assert manager.get_auto_promotion(HOTKEY) is None
+
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)}, now_ms=NOW_MS + 30_000)
+    assert manager._auto_promotion_snapshot == {}
+
+
+def test_an_account_promoted_automatically_before_shows_nothing(manager):
+    """It is never evaluated again, so there is no progress to show."""
+    _seed(manager)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    manager.miner_states[HOTKEY].auto_promotion = AutoPromotion(path=AutoPromotion.FAST_TRACK, multiplier=3)
+    assert manager.get_auto_promotion(HOTKEY) is None
+
+
+# ── A state reset or replaced between two refreshes ──────────────────────────
+
+ON_THE_RULES_ONLY = {"on_promotion_rules": False, "as_of_ms": NOW_MS}
+
+
+def _eliminate_then_revert(manager) -> None:
+    """A breach eliminates the account after the pass and an operator reverts it (as POST /admin/reset-hotkey
+    does too), which restarts its drawdown."""
+    manager.eliminate_hotkeys({HOTKEY: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN}, NOW_MS + 1)
+    assert manager.get_auto_promotion(HOTKEY) is None
+    assert manager.revert_elimination(HOTKEY)
+
+
+def _admin_moves_it_back_into_funded(manager) -> None:
+    """An operator moves the account back to the challenge and on to funded again (move_to_funded): each
+    move switches to a new account."""
+    assert manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_CHALLENGE, NOW_MS + 1)[0]
+    assert manager.get_auto_promotion(HOTKEY) is None
+    assert manager.admin_set_bucket(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS + 2)[0]
+
+
+def _sync_replaces_the_states(manager) -> None:
+    """The nightly sync swaps in another validator's states, here the very same ones."""
+    manager.sync_challenge_period_data(manager.to_checkpoint_dict())
+
+
+def _its_drawdown_is_reset(manager) -> None:
+    """As for a standard miner whose traded size changed."""
+    manager._reset_drawdown_stats_cache(HOTKEY)
+
+
+def _it_leaves_the_bucket_and_comes_back(manager) -> None:
+    state = manager.miner_states[HOTKEY]
+    state.add_bucket_entry(MinerBucket.ELIMINATED, NOW_MS + 1)
+    state.add_bucket_entry(MinerBucket.SUBACCOUNT_FUNDED, NOW_MS + 2)
+
+
+@pytest.mark.parametrize("change", [_eliminate_then_revert, _admin_moves_it_back_into_funded,
+                                    _sync_replaces_the_states, _its_drawdown_is_reset,
+                                    _it_leaves_the_bucket_and_comes_back])
+def test_a_state_reset_or_replaced_since_the_refresh_shows_only_whether_it_is_on_the_rules(manager, change):
+    """Funded again with no record, so the live checks pass, but the hold, the target and the stats were read
+    from the state before: none of them is shown until a refresh has read the one in its place. What the
+    refresh keeps for the promotion itself is left exactly as it was."""
+    _seed(manager, current_equity=1.12)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    shown = manager.get_auto_promotion(HOTKEY)
+    assert shown["fast_track_held_since_ms"] == NOW_MS and shown["trading_days"] == DAYS
+    kept = (dict(manager._auto_promotion_stats), dict(manager._fast_track_since_ms),
+            set(manager._auto_promotion_candidates), dict(manager._promotion_rules))
+
+    change(manager)
+
+    state = manager.miner_states[HOTKEY]
+    assert state.current_bucket == MinerBucket.SUBACCOUNT_FUNDED and state.auto_promotion is None
+    assert manager.get_auto_promotion(HOTKEY) == ON_THE_RULES_ONLY
+    assert (manager._auto_promotion_stats, manager._fast_track_since_ms, manager._auto_promotion_candidates,
+            manager._promotion_rules) == kept
+
+    state.drawdown.current_equity = 1.0  # the new account's, as the drawdown cache fills it in
+    _refresh(manager, {HOTKEY: None}, {HOTKEY: _account()}, now_ms=NOW_MS + 30_000)
+    section = manager.get_auto_promotion(HOTKEY)
+    assert (section["fast_track_held_since_ms"], section["trading_days"], section["as_of_ms"]) == (
+        None, None, NOW_MS + 30_000)
+    assert section["fast_track_target"] == shown["fast_track_target"]
+
+
+def test_a_reset_landing_while_the_refresh_runs_is_not_shown_as_what_it_decided(manager):
+    """The pass read the drawdown that the reset then replaced: what it publishes is of the state before."""
+    _seed(manager, current_equity=1.12)
+    daily_return_log = LedgerUtils.daily_return_log
+
+    def reset_then_measure(ledger):
+        manager._reset_drawdown_stats_cache(HOTKEY)
+        return daily_return_log(ledger)
+
+    with patch("vali_objects.challenge_period.challengeperiod_manager.LedgerUtils.daily_return_log",
+               side_effect=reset_then_measure):
+        _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+
+    assert manager._auto_promotion_stats[HOTKEY].trading_days == DAYS
+    assert manager.get_auto_promotion(HOTKEY) == ON_THE_RULES_ONLY
+
+
+def test_an_elimination_landing_while_the_dashboard_reads_is_not_shown_as_a_candidate(manager):
+    """The bucket was SUBACCOUNT_FUNDED when the read began and ELIMINATED before it ended: the candidates
+    of the last pass still list the account, and it must not be shown as one."""
+    _seed(manager, current_equity=1.12)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    assert manager.get_auto_promotion(HOTKEY) is not None
+
+    class EliminatedOnRead(dict):
+        def get(self, key, default=None):
+            manager.miner_states[key].add_bucket_entry(MinerBucket.ELIMINATED, NOW_MS + 1)
+            return super().get(key, default)
+
+    manager._auto_promotion_snapshot = EliminatedOnRead(manager._auto_promotion_snapshot)
+
+    assert manager.get_auto_promotion(HOTKEY) is None
+
+
+def test_an_edit_of_the_drawdown_in_place_keeps_what_the_refresh_decided(manager):
+    """Neither the refresh's own drawdown cache nor an operator's edit replaces anything: both write onto the
+    drawdown the pass read."""
+    _seed(manager, current_equity=1.12)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    shown = manager.get_auto_promotion(HOTKEY)
+
+    manager.miner_states[HOTKEY].drawdown.current_equity = 1.13
+    success, _, _ = manager.set_miner_drawdown_stats(HOTKEY, {"eod_hwm": 1.01}, now_ms=NOW_MS)
+
+    assert success and manager.get_auto_promotion(HOTKEY) == shown
+
+
+def test_what_is_shown_is_a_copy(manager):
+    _seed(manager)
+    _refresh(manager, {HOTKEY: _ledger(low=0.96)})
+    manager.get_auto_promotion(HOTKEY)["fast_track_target"] = 0.0
+    assert manager.get_auto_promotion(HOTKEY)["fast_track_target"] == ValiConfig.AUTO_PROMOTION_FAST_TRACK_EQUITY_RETURN
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_number_that_is_not_finite_is_shown_as_none(manager, bad):
+    """json.dumps would write it as a bare NaN or Infinity, which no JSON parser accepts."""
+    _seed(manager)
+    account = _account()
+    account.peak_leverage_use = bad
+    with patch("vali_objects.challenge_period.challengeperiod_manager.Metrics.all_time_calmar", return_value=bad):
+        _refresh(manager, {HOTKEY: _ledger(low=0.96)}, {HOTKEY: account})
+
+    section = manager.get_auto_promotion(HOTKEY)
+    assert section["calmar"] is None and section["peak_leverage_use"] is None
+    assert section["trading_days"] == DAYS and section["fast_track_target"] == 0.10
+    json.dumps(section, allow_nan=False)
 
 
 # ── Nothing else reads the candidates' stats ─────────────────────────────────

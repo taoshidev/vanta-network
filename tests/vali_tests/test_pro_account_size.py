@@ -84,6 +84,7 @@ def _bare_manager():
     manager._challenge_period_client = MagicMock()
     manager._challenge_period_client.has_miner.return_value = False
     manager._challenge_period_client.get_drawdown_stats.return_value = None
+    manager._challenge_period_client.get_auto_promotion.return_value = None
     manager._debt_ledger_client = MagicMock()
     manager._debt_ledger_client.get_ledger.return_value = None
     manager._position_client = MagicMock()

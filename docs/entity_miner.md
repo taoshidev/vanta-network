@@ -500,6 +500,10 @@ Meeting both on the same check takes the larger multiple. The thresholds are the
   before a validator began tracking it live is replayed from the perf ledger's lowest equity in each
   checkpoint.
 - The paths are checked on every challenge-period refresh.
+- **Progress** on both paths is the `auto_promotion` section of the subaccount's dashboard: the fast
+  track's line in force, the first order its weeks are counted from, since when the equity has held,
+  and the steady track's measurements, as of the last refresh (see
+  [Auto-promotion Progress](validator_rest_server.md#auto-promotion-progress)).
 
 Once it qualifies:
 

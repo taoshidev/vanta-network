@@ -253,6 +253,8 @@ Returns all the hotkeys as seen in the metagraph from the validator's perspectiv
 
 Comprehensive dashboard for a regular (non-entity) miner hotkey. Aggregates the same per-section data as the [Subaccount Dashboard](#get-subaccount-dashboard-version-2) endpoint (challenge period, drawdown, elimination, account size, positions, limit orders, ledger, statistics), minus the entity-specific `subaccount_info` section. Uses the same `create_subaccount_dashboard` aggregation logic — see that endpoint's docs for the full section-by-section response schema.
 
+A miner on the [standard account track](miner.md#standard-account-track) that is an auto-promotion candidate also gets the `auto_promotion` section: see [Auto-promotion Progress](#auto-promotion-progress).
+
 For a miner on the [standard account track](miner.md#standard-account-track), `account_size_data.standard_account` is the account record: `opened_at_ms`, `opening_leverage_tier`, `asset_class`, `account_size` (fixed at opening, the size the pro challenge is paid on), `locked_theta`, `opening_price_usd`, `trading_account_size` (the size traded when it differs: the pro size on the pro track, else `null`), `pro_account_size`, `payout_scale` (the pro challenge multiplier, fixed with the pro size by the auto-promotion's multiple: 1.3 at 3x, 1.5 at 5x, 2.0 at 10x; `null` before one is granted), `closed_at_ms` and `reopened_at_ms`. It is `null` for every other miner. For a miner on the existing rules whose size is fixed (see [miner rule 3](miner.md#basic-rules)), `account_size_data.size_lock` is `{locked_ms, account_size, locked_theta, closed_at_ms}`: when the size was fixed, the size, the theta behind it and, once a withdrawal closed the account, when; `null` otherwise. Every validator fixes the size at its first pass after the lock start; the mothership broadcasts its locks and closes, which the other validators adopt. `account_size_data.peak_leverage_use` is the highest leverage use after any fill or fee since the account was last reset (on every move to a new account): the larger of the open positions' entry value over the portfolio cap and the highest asset class's over that class's cap, each on the balance. From 0.5 on, a funded standard account's fast track asks only 3% (see [miner.md](miner.md#standard-account-track)).
 
 **Authentication:** Requires **tier 100 API access**.
@@ -1645,6 +1647,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 - Subaccount info (status, timestamps, entity parent)
 - Challenge period status (bucket, start time, progress)
 - Drawdown stats (trailing and static rule inputs/thresholds, applicable criteria — synthetic hotkeys only)
+- Auto-promotion progress (auto-promotion candidates only)
 - Debt ledger data (performance metrics, returns)
 - Position data (open positions, leverage, PnL)
 - Statistics (cached metrics, scores, rankings)
@@ -1689,6 +1692,19 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
       "static_eod_drawdown_threshold": 0.05,
       "criteria": "trailing",
       "static_rules_apply": false
+    },
+    // auto_promotion is null unless the subaccount is an auto-promotion candidate
+    "auto_promotion": {
+      "on_promotion_rules": true,
+      "fast_track_target": 0.03,
+      "first_funded_order_ms": 1702000000000,
+      "peak_leverage_use": 0.31,
+      "fast_track_held_since_ms": 1702345620000,
+      "fast_track_hold_ms": 180000,
+      "trading_days": 3,
+      "calmar": 0.9,
+      "daily_consistency": 0.42,
+      "as_of_ms": 1702345680000
     },
     "ledger": {
       "hotkey": "5GhDr3xy...abc_0",
@@ -2051,6 +2067,10 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
   - `rank`: Rank among all miners
   - `percentile`: Percentile ranking
 
+**Auto-promotion:**
+- `null` unless the subaccount is an auto-promotion candidate
+- Object with the fields described under [Auto-promotion Progress](#auto-promotion-progress) if it is one
+
 **Elimination:**
 - `null` if subaccount is active
 - Object with elimination details if eliminated:
@@ -2077,6 +2097,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 - Subaccount info (status, timestamps, entity parent)
 - Challenge period status (bucket, start time, progress)
 - Drawdown stats (trailing and static rule inputs/thresholds, applicable criteria — synthetic hotkeys only)
+- Auto-promotion progress (auto-promotion candidates only)
 - Debt ledger data (performance metrics, returns)
 - Position data (open positions, leverage, PnL)
 - Statistics (daily returns)
@@ -2138,6 +2159,19 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "static_eod_drawdown_threshold": 0.05,
       "criteria": "static",
       "static_rules_apply": true
+    },
+    // auto_promotion is only included if the subaccount is an auto-promotion candidate
+    "auto_promotion": {
+      "on_promotion_rules": true,
+      "fast_track_target": 0.03,
+      "first_funded_order_ms": 1702000000000,
+      "peak_leverage_use": 0.31,
+      "fast_track_held_since_ms": 1702345620000,
+      "fast_track_hold_ms": 180000,
+      "trading_days": 3,
+      "calmar": 0.9,
+      "daily_consistency": 0.42,
+      "as_of_ms": 1702345680000
     },
     // elimination is only included if the subaccount is eliminated
     "elimination": {
@@ -2346,6 +2380,23 @@ Each subaccount is assigned a `drawdown_criteria` at creation (see [Create Subac
 Under either rule set, a standard subaccount in `SUBACCOUNT_CHALLENGE`, `SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_TRANSITION` measures its intraday drawdown from the day's opening balance (`daily_open_balance`) instead of the opening equity. HL-linked, Instant Funded and pro accounts keep the opening equity.
 
 Elimination reasons reflect which rule triggered: `FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN` / `FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN` for the starting-balance rule. The intraday drawdown rule reuses the same `FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN` / `FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN` reasons for both `"static"` and `"trailing"` subaccounts — check `criteria` to tell which threshold actually applied. `FAILED_*_STATIC_EOD_DRAWDOWN` is retired and no longer produced, but remains a valid value on historical elimination rows.
+
+#### Auto-promotion Progress
+
+`auto_promotion` is where a standard funded account stands on its way to a pro account (see [auto-promotion](entity_miner.md#auto-promotion)). Every value is the one the challenge period decided on at its last refresh (about every 30 seconds), so a client shows them as they are instead of working the rules out again. The section is on every dashboard built for the account: this endpoint, `GET /entity/subaccount/<synthetic_hotkey>`, `GET /miner/<hotkey>` and the websocket dashboard frames.
+
+Only an auto-promotion candidate has it: an account in `SUBACCOUNT_FUNDED` that was created through `SUBACCOUNT_CHALLENGE`, is not HL-linked and has not been auto-promoted before. For any other account the key is left out here, on `GET /miner/<hotkey>` and in the websocket frames, and is `null` on `GET /entity/subaccount/<synthetic_hotkey>`. Between a validator restart and its first challenge period refresh a candidate reads like any other account.
+
+- `on_promotion_rules` (bool): Whether the account takes the weekly and leverage fast track targets: a subaccount created at or after the promotion rules start (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`), or a miner on the standard account track. An account that does not has a 10% target at all times.
+- `fast_track_target` (float): The fast track's return in force at `as_of_ms`, as a fraction of the account size (`0.03`, `0.05` or `0.10`). The fast track is met while `drawdown.current_equity - 1` is at or above it.
+- `first_funded_order_ms` (int or `null`): The account's first order as a funded account (the first order of its live positions, since the positions before were archived on becoming funded), which the weeks of the target are counted from; `null` when it has none. Sent for every candidate, though only the target of one on the promotion rules depends on it. An account on the promotion rules with no such order yet has the 10% target until its first order.
+- `peak_leverage_use` (float): `account_size_data.peak_leverage_use` as the refresh read it, which is the value the target was decided on. From `0.5` on, an account on the promotion rules has a 3% target in any week.
+- `fast_track_held_since_ms` (int or `null`): Since when the account's equity has been at or above the target on every refresh; `null` when the last refresh found it below. The hold starts over after any refresh below the target, when the target rises at the end of a week, and when the validator restarts.
+- `fast_track_hold_ms` (int): How long the equity has to hold (`180000`). The account is promoted on the first refresh at or after `fast_track_held_since_ms + fast_track_hold_ms`, provided the three values below are not `null`.
+- `trading_days` (int or `null`), `calmar` (float or `null`), `daily_consistency` (float or `null`): What the steady track is measured on: full days on the funded ledger, all-time Calmar, and return consistency (the best day's share of the total return), each as in the pro challenge. All three are `null` for a candidate that cannot be measured yet, because it has no perf ledger or one whose drawdown cannot be replayed; it is promoted on neither track until it can.
+- `as_of_ms` (int): The time of the refresh these values were decided at, on the same clock as `fast_track_held_since_ms`.
+
+After a refresh that could not work these out, a candidate's section carries only `on_promotion_rules` and `as_of_ms` (the time of that refresh) until the next refresh that can. The same two fields, with the time of the last refresh, are all a candidate has when its challenge period state was reset or replaced since that refresh (an elimination reverted, an operator's move back into `SUBACCOUNT_FUNDED`, a state synced from another validator): the rest was decided for the state before and comes back with the next refresh. Read every missing field as unknown, never as a default. A number that is not finite is sent as `null`.
 
 **Elimination:**
 
