@@ -729,7 +729,7 @@ A standard account, or an account whose size is fixed, withdrawing unlocked coll
   "closes_account": true,
   "locked_theta": 120.0,
   "intraday_drawdown_pct": 2.0,
-  "trailing_drawdown_pct": 4.0,
+  "static_drawdown_pct": 4.0,
   "drawdown": 0.04,
   "slash_proportion": 0.8,
   "slashed_amount": 96.0,
@@ -738,7 +738,7 @@ A standard account, or an account whose size is fixed, withdrawing unlocked coll
 }
 ```
 
-Every position must be closed first (otherwise `successfully_processed` is false with the reason). The whole balance comes out as `withdrawal_amount`, less `slashed_amount` = `locked_theta` × `slash_proportion` (for an account whose size is fixed, `slash_proportion` applies to the larger of `locked_theta` and 300 theta), where the proportion is min(1, max(`intraday_drawdown_pct` ÷ the daily loss limit, `trailing_drawdown_pct` ÷ the EOD limit)) at the account's current stage, on the balance as it is now; `drawdown` is the larger of the two as a fraction. An eliminated standard account whose slash could not be taken at the time answers with `owed_slash: true` and the slash its elimination still owes, which the withdrawal takes first.
+Every position must be closed first (otherwise `successfully_processed` is false with the reason). The whole balance comes out as `withdrawal_amount`, less `slashed_amount` = `locked_theta` × `slash_proportion` (for an account whose size is fixed, `slash_proportion` applies to the larger of `locked_theta` and 300 theta), where the proportion is min(1, max(`intraday_drawdown_pct` ÷ the daily loss limit, the other drawdown ÷ its limit)) at the account's current stage, on the balance as it is now. The other drawdown is `static_drawdown_pct`, from the starting balance against the 5% static limit, while the static rules apply (a standard account before the pro challenge, or an account whose size is fixed that runs the static rules), and `trailing_drawdown_pct`, from the end-of-day high-water mark against the EOD limit, otherwise (a standard account in the pro challenge or pro funded, or an account whose size is fixed on the trailing rules); the response carries the one that applies. `drawdown` is the larger of the two as a fraction. An eliminated standard account whose slash could not be taken at the time answers with `owed_slash: true` and the slash its elimination still owes, which the withdrawal takes first.
 
 ### Withdraw Collateral
 
@@ -1686,7 +1686,8 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
       "eod_drawdown_threshold": 0.05,
       "static_drawdown_threshold": 0.05,
       "static_eod_drawdown_threshold": 0.05,
-      "criteria": "trailing"
+      "criteria": "trailing",
+      "static_rules_apply": false
     },
     "ledger": {
       "hotkey": "5GhDr3xy...abc_0",
@@ -2134,7 +2135,8 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "eod_drawdown_threshold": 0.05,
       "static_drawdown_threshold": 0.05,
       "static_eod_drawdown_threshold": 0.05,
-      "criteria": "static"
+      "criteria": "static",
+      "static_rules_apply": true
     },
     // elimination is only included if the subaccount is eliminated
     "elimination": {
@@ -2332,12 +2334,13 @@ Only present after the first challenge period evaluation cycle (~60s after start
 - `static_drawdown_threshold`: Elimination threshold for the static starting-balance rule (`0.05` = 5%).
 - `static_eod_drawdown_threshold`: Retired rule's threshold — no longer enforced, kept for dashboard payload compatibility.
 - `criteria`: Which rule set is actually applied for this subaccount — `"trailing"` or `"static"`. Mirrors `subaccount_info.drawdown_criteria`, fixed at creation.
+- `static_rules_apply`: Whether the static rules are checked now: `true` for a `"static"` account in any bucket before the pro ones (once eliminated, judged on the bucket it was eliminated in). The pro buckets run the pro rules (daily loss and EOD high-water mark) whatever the criteria.
 
 #### Static vs. Trailing Drawdown Rules
 
 Each subaccount is assigned a `drawdown_criteria` at creation (see [Create Subaccount](#create-subaccount)) that never changes for the life of the subaccount:
 - **`"trailing"`** (default): eliminated at intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaching the applicable threshold (5% during challenge, 8% once funded — same as regular miners).
-- **`"static"`**: eliminated when equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or when intraday drawdown from the day's opening equity reaches 5% — the same intraday-drawdown check used for trailing accounts, just with the threshold pinned to a flat 5% instead of the bucket/registration-time lookup. These thresholds do not change between challenge and funded periods. HL-linked subaccounts always use `"trailing"`.
+- **`"static"`**: eliminated when equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or when intraday drawdown from the day's opening equity reaches 5% — the same intraday-drawdown check used for trailing accounts, just with the threshold pinned to a flat 5% instead of the bucket/registration-time lookup. These thresholds do not change between challenge and funded periods. HL-linked subaccounts always use `"trailing"`. A miner on the [standard account track](miner.md#standard-account-track) always runs `"static"`, with its own 3% daily loss limit in place of the flat 5%.
 
 Under either rule set, a standard subaccount in `SUBACCOUNT_CHALLENGE`, `SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_TRANSITION` measures its intraday drawdown from the day's opening balance (`daily_open_balance`) instead of the opening equity. HL-linked, Instant Funded and pro accounts keep the opening equity.
 

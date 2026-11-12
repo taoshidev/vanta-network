@@ -41,7 +41,7 @@ from vali_objects.plagiarism.plagiarism_client import PlagiarismClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.miner_account_manager import MinerAccount
 from vali_objects.miner_account.standard_miner import (PipelineAccountInfo, SizingRejected, StandardMinerAccount,
-                                                        bucket_sizing, opening_bucket_thresholds)
+                                                        bucket_sizing, opening_drawdown_rules)
 from shared_objects.rpc.common_data_client import CommonDataClient
 from entity_management.entity_utils import is_created_through_challenge, is_synthetic_hotkey, pro_payout_scale
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
@@ -360,6 +360,17 @@ class MinerBucketState:
         return self.eod_drawdown_threshold * 100
 
     @property
+    def static_rules_apply(self) -> bool:
+        """True while a static account is checked on the static rules: in every bucket before the pro ones, judged on
+        the bucket it was eliminated in once eliminated."""
+        if self.drawdown_criteria != DrawdownCriteria.STATIC:
+            return False
+        bucket = self.current_bucket
+        if bucket == MinerBucket.ELIMINATED and len(self.entries) >= 2:
+            bucket = self.entries[-2].bucket
+        return not bucket.is_pro
+
+    @property
     def soft_breach(self) -> bool:
         """True when a pro rule is currently breached in a bucket that withholds the week's payout.
         """
@@ -567,7 +578,7 @@ class ChallengePeriodManager(CacheController):
                     eliminations[hotkey] = reason
                     continue
             elif state.drawdown_criteria == DrawdownCriteria.STATIC:
-                # Static rules for subaccounts registered after the effective time (Hyperscaled excluded)
+                # Static rules: standard miners, and subaccounts created static (never HL-linked)
                 # Rule 1: Static drawdown — equity (including unrealized PnL) cannot drop more than 5% below starting balance
                 if reason := self._check_static_drawdown(state):
                     eliminations[hotkey] = reason
@@ -1897,7 +1908,7 @@ class ChallengePeriodManager(CacheController):
             if record.is_closed:
                 return False
             self.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, record.opened_at_ms,
-                                  drawdown_criteria=DrawdownCriteria.TRAILING, **opening_bucket_thresholds())
+                                  **opening_drawdown_rules())
             account = self._miner_account_client.get_account(hotkey)
             if account is None or account.leverage_tier is None:
                 self._miner_account_client.set_leverage_tier(hotkey, record.opening_leverage_tier)
@@ -2139,6 +2150,7 @@ class ChallengePeriodManager(CacheController):
             "static_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD,
             "static_eod_drawdown_threshold": ValiConfig.SUBACCOUNT_STATIC_EOD_DRAWDOWN_THRESHOLD,
             "drawdown_criteria": criteria.value,
+            "static_rules_apply": state.static_rules_apply,
         }
 
     def get_pro_stats(self, synthetic_hotkey: str) -> dict | None:

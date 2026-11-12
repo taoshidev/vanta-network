@@ -559,9 +559,11 @@ class EliminationManager(CacheController):
                     if reason in LIVE_DRAWDOWN_REASONS:
                         drawdown = self._challenge_period_client.get_drawdown_stats(hotkey)
                         if drawdown and intraday_drawdown_pct is None and eod_drawdown_pct is None:
-                            # The row keeps what the closing share was measured on, for a slash that has to wait
+                            # The row keeps what the closing share was measured on, for a slash that has to wait:
+                            # the drawdown from the starting balance while the static rules apply
                             intraday_drawdown_pct = drawdown.get("intraday_drawdown_pct")
-                            eod_drawdown_pct = drawdown.get("trailing_drawdown_pct")
+                            eod_drawdown_pct = drawdown.get("static_drawdown_pct" if drawdown.get("static_rules_apply")
+                                                            else "trailing_drawdown_pct")
                     slash_amount = standard_record.locked_theta * elimination_slash_proportion(
                         reason, elimination_drawdown_pct, drawdown)
                 if slash_amount > 0:

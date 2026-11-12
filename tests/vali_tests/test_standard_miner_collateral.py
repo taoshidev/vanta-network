@@ -41,6 +41,11 @@ OPENING = dict(opened_at_ms=NOW_MS, opening_leverage_tier=2, asset_class="crypto
 # Down 2% today against a 3% daily loss limit, 4% below the end-of-day high-water mark against a 5% limit: 80%
 STANDARD_LIMITS = {"intraday_drawdown_threshold": 0.03, "eod_drawdown_threshold": 0.05}
 EIGHTY_PERCENT = {"intraday_drawdown_pct": 2.0, "trailing_drawdown_pct": 4.0, **STANDARD_LIMITS}
+# While the static rules apply, the other drawdown is the one from the starting balance against the 5% static limit:
+# down 2% today and 4% below the starting balance is 80% too, whatever the 9% from the high-water mark says
+STATIC_LIMITS = {**STANDARD_LIMITS, "static_drawdown_threshold": 0.05, "static_rules_apply": True}
+STATIC_EIGHTY_PERCENT = {"intraday_drawdown_pct": 2.0, "static_drawdown_pct": 4.0, "trailing_drawdown_pct": 9.0,
+                         **STATIC_LIMITS}
 CLOSING_SLASH = 0.8 * LOCKED
 ACCOUNT_CLOSED = EliminationReason.ACCOUNT_CLOSED
 
@@ -74,6 +79,13 @@ class TestClosingSlash(TestBase):
                "intraday_drawdown_threshold": 0.05, "eod_drawdown_threshold": 0.08}
         self.assertAlmostEqual(closing_slash_proportion(pro), 0.5)
 
+    def test_under_the_static_rules_the_other_drawdown_is_the_one_from_the_starting_balance(self):
+        self.assertAlmostEqual(closing_slash_proportion(STATIC_EIGHTY_PERCENT), 0.8)
+        # Above the starting balance only today's loss counts
+        self.assertAlmostEqual(closing_slash_proportion({**STATIC_EIGHTY_PERCENT, "static_drawdown_pct": -3.0}), 2.0 / 3)
+        # Out of the static rules (the pro buckets) the high-water mark counts again
+        self.assertEqual(closing_slash_proportion({**STATIC_EIGHTY_PERCENT, "static_rules_apply": False}), 1.0)
+
     def test_a_gain_or_no_stats_slashes_nothing(self):
         self.assertEqual(closing_slash_proportion({**EIGHTY_PERCENT, "intraday_drawdown_pct": -1.0,
                                                    "trailing_drawdown_pct": -2.0}), 0.0)
@@ -88,7 +100,10 @@ class TestClosingSlash(TestBase):
             (EliminationReason.FAILED_FUNDED_PERIOD_EOD_DRAWDOWN, 5.2, EIGHTY_PERCENT, 1.0),
             (EliminationReason.FAILED_PRO_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN, 5.1, None, 1.0),
             (EliminationReason.FAILED_PRO_FUNDED_PERIOD_EOD_DRAWDOWN, 8.3, None, 1.0),
+            (EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN, 5.1, None, 1.0),
+            (EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN, 5.1, STATIC_EIGHTY_PERCENT, 1.0),
             (EliminationReason.INACTIVE, 7.0, EIGHTY_PERCENT, 0.8),
+            (EliminationReason.INACTIVE, None, STATIC_EIGHTY_PERCENT, 0.8),
             (EliminationReason.ZOMBIE, None, None, 0.0),
             (ACCOUNT_CLOSED, 4.0, EIGHTY_PERCENT, 0.8),
             (EliminationReason.PLAGIARISM, 5.0, EIGHTY_PERCENT, 0.5),
@@ -360,6 +375,30 @@ class TestWithdrawals(TestBase):
         self.assertAlmostEqual(result["slash_proportion"], 0.5 / 3)
         self.assertAlmostEqual(result["slashed_amount"], LOCKED * 0.5 / 3)
 
+    def test_under_the_static_rules_the_closing_slash_reads_the_drawdown_from_the_starting_balance(self):
+        # The balance 4% below the starting balance and 2% below the day's open: 80%, though it stands 9% below the
+        # high-water mark
+        self.m._challenge_period_client.get_drawdown_stats.return_value = {
+            **STATIC_EIGHTY_PERCENT, "daily_open_balance": 0.96 / 0.98, "eod_hwm": 0.96 / 0.91}
+        self.m._miner_account_client.get_account.return_value = SimpleNamespace(
+            balance=48_000.0, get_account_size=lambda: 50_000.0)
+        result = self.m.query_withdrawal_request(31.0, HOTKEY)
+        self.assertAlmostEqual(result["slash_proportion"], 0.8)
+        self.assertAlmostEqual(result["slashed_amount"], CLOSING_SLASH)
+        self.assertAlmostEqual(result["intraday_drawdown_pct"], 2.0)
+        self.assertAlmostEqual(result["static_drawdown_pct"], 4.0)
+        self.assertAlmostEqual(result["drawdown"], 0.04)
+        self.assertNotIn("trailing_drawdown_pct", result)
+        # Above the starting balance only today's loss counts
+        self.m._challenge_period_client.get_drawdown_stats.return_value = {
+            **STATIC_EIGHTY_PERCENT, "daily_open_balance": 1.02 / 0.98, "eod_hwm": 1.02 / 0.91}
+        self.m._miner_account_client.get_account.return_value = SimpleNamespace(
+            balance=51_000.0, get_account_size=lambda: 50_000.0)
+        result = self.m.query_withdrawal_request(31.0, HOTKEY)
+        self.assertAlmostEqual(result["slash_proportion"], 2.0 / 3)
+        self.assertEqual(result["static_drawdown_pct"], 0.0)
+        self.assertAlmostEqual(result["drawdown"], 0.02)
+
     def test_a_withdrawal_that_closes_the_account_needs_the_consent(self):
         processed = self.m.process_withdrawal_request(31.0, COLDKEY, HOTKEY)
         self.assertFalse(processed["successfully_processed"])
@@ -370,6 +409,15 @@ class TestWithdrawals(TestBase):
         self.m.collateral_manager.withdraw.assert_not_called()
         self.assertTrue(self._close()["successfully_processed"])
         self.m._elimination_client.append_elimination_row.assert_called_once()
+
+    def test_under_the_static_rules_the_closing_row_keeps_the_drawdown_from_the_starting_balance(self):
+        self.m._challenge_period_client.get_drawdown_stats.return_value = STATIC_EIGHTY_PERCENT
+        processed = self._close()
+        self.assertTrue(processed["successfully_processed"], processed)
+        self.assertEqual(processed["returned_amount"], BALANCE - CLOSING_SLASH)
+        self.m._elimination_client.append_elimination_row.assert_called_once_with(
+            hotkey=HOTKEY, reason=ACCOUNT_CLOSED, elimination_drawdown_pct=4.0, intraday_drawdown_pct=2.0,
+            eod_drawdown_pct=4.0, elimination_time_ms=ANY, slash_theta=CLOSING_SLASH)
 
     def test_closing_runs_the_elimination_then_pays_out_what_is_left(self):
         calls = Mock()
@@ -448,6 +496,23 @@ class TestWithdrawals(TestBase):
         self.assertEqual((processed["returned_amount"], processed["account_closed"]), (BALANCE - CLOSING_SLASH, False))
         self.m._elimination_client.append_elimination_row.assert_called_once()
         self.m.collateral_manager.slash.assert_not_called()
+
+    def test_an_account_eliminated_under_the_static_rules_pays_on_the_drawdown_from_the_starting_balance(self):
+        # The row's eod_dd holds the drawdown from the starting balance; read against the 8% EOD limit instead, the
+        # inactive account would owe only two thirds
+        self.m._miner_account_client.get_standard_account.return_value = record(closed_at_ms=NOW_MS)
+        self.m._challenge_period_client.get_drawdown_stats.return_value = {**STATIC_LIMITS, "eod_drawdown_threshold": 0.08}
+        for row, slash in (
+            (elimination_row(reason=EliminationReason.INACTIVE, collateral_slashed=False), CLOSING_SLASH),
+            (elimination_row(reason=EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN, collateral_slashed=False,
+                             elimination_drawdown_pct=5.1), LOCKED),
+        ):
+            with self.subTest(reason=row["reason"]):
+                self.m._elimination_client.get_elimination.return_value = row
+                result = self.m.query_withdrawal_request(1.0, HOTKEY)
+                self.assertTrue(result["successfully_processed"], result)
+                self.assertAlmostEqual(result["slashed_amount"], slash)
+                self.assertAlmostEqual(result["withdrawal_amount"], BALANCE - slash)
 
     def test_an_eliminated_account_whose_slash_failed_pays_it_on_the_way_out(self):
         self.m._miner_account_client.get_standard_account.return_value = record(closed_at_ms=NOW_MS)
@@ -643,6 +708,23 @@ class TestEliminationSlash(TestBase):
         self.assertTrue(row.collateral_slashed)
         self.assertEqual(self._slashed_theta(), [])
         self.assertIsNone(row.intraday_drawdown_pct)
+
+    def test_under_the_static_rules_a_breach_takes_everything_and_a_closing_share_reads_the_starting_balance(self):
+        self.m._challenge_period_client.get_drawdown_stats.return_value = STATIC_EIGHTY_PERCENT
+        for reason, kwargs, expected in (
+            (EliminationReason.FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN, dict(elimination_drawdown_pct=5.1), LOCKED),
+            (EliminationReason.FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN, dict(elimination_drawdown_pct=5.1), LOCKED),
+            (EliminationReason.INACTIVE, {}, CLOSING_SLASH),
+        ):
+            with self.subTest(reason=reason):
+                self.m.eliminations.clear()
+                self.m._contract_client.reset_mock()
+                row = self._eliminate(reason, **kwargs)
+                slashed = self._slashed_theta()
+                self.assertEqual(len(slashed), 1)
+                self.assertAlmostEqual(slashed[0], expected)
+        # The row keeps the drawdown from the starting balance that the closing share was measured on
+        self.assertEqual((row.intraday_drawdown_pct, row.eod_drawdown_pct), (2.0, 4.0))
 
     def test_a_record_closed_by_an_attempt_a_restart_forgot_is_not_slashed_again(self):
         self.m._miner_account_client.get_standard_account.side_effect = lambda hotkey: record(closed_at_ms=NOW_MS)
@@ -890,10 +972,13 @@ class TestThroughTheServers(TestBase):
         self.orchestrator.clear_all_test_data()
         super().tearDown()
 
-    def _down_two_percent_today_and_four_from_the_high_water_mark(self):
-        # Equity 0.98 against a day open of 1.0 and a high-water mark of 0.98 / 0.96
+    def _down_two_percent_today_and_four_from_the_start(self):
+        # Equity 0.96 of the starting balance against a day open of 0.96 / 0.98: the static rules read 4% and 2%. The
+        # high-water mark of 1.2 puts it 20% below, which would take everything if it were read
+        today_ms = TimeUtil.get_start_of_day_ms(TimeUtil.now_in_millis())
         set_ok, message, _ = self.challenge_period_client.set_miner_drawdown_stats(
-            NEW, {"current_equity": 0.98, "eod_hwm": 0.98 / 0.96})
+            NEW, {"current_equity": 0.96, "current_balance": 0.96, "daily_open_equity": 0.96 / 0.98,
+                  "eod_hwm": 1.2, "last_eod_checked_ms": today_ms}, force=True)
         self.assertTrue(set_ok, message)
 
     def test_the_withdrawal_queries_of_an_opened_account(self):
@@ -910,20 +995,20 @@ class TestThroughTheServers(TestBase):
         # Nothing traded yet: no drawdown, nothing slashed, the whole balance comes out
         self.assertEqual((closing["slashed_amount"], closing["slash_proportion"]), (0.0, 0.0))
         self.assertAlmostEqual(closing["withdrawal_amount"], self.locked + 1.0)
-        # Under the standard limits of 3% a day and 5% from the high-water mark, 2% and 4% down costs 80%: the balance
-        # carries the 2% loss and the high-water mark stands 4% above it
-        self._down_two_percent_today_and_four_from_the_high_water_mark()
-        self.account_client.process_order_sell(NEW, entry_value_usd=0, realized_pnl=-0.02 * 50_000.0, loan_repaid=0)
+        # An opened account runs the static rules: under 3% a day and 5% below the starting balance, 2% and 4% down
+        # costs 80%. The balance carries the 4% loss and the day opened 2% above it
+        self._down_two_percent_today_and_four_from_the_start()
+        self.account_client.process_order_sell(NEW, entry_value_usd=0, realized_pnl=-0.04 * 50_000.0, loan_repaid=0)
         closing = self.contract_client.query_withdrawal_request(1.5, NEW)
         self.assertTrue(closing["successfully_processed"], closing)
         self.assertAlmostEqual(closing["slash_proportion"], 0.8)
         self.assertAlmostEqual(closing["slashed_amount"], 0.8 * self.locked)
         self.assertAlmostEqual(closing["withdrawal_amount"], self.locked + 1.0 - 0.8 * self.locked)
         self.assertAlmostEqual(closing["intraday_drawdown_pct"], 2.0)
-        self.assertAlmostEqual(closing["trailing_drawdown_pct"], 4.0)
+        self.assertAlmostEqual(closing["static_drawdown_pct"], 4.0)
 
     def test_an_elimination_marks_the_account_and_leaves_the_record_to_the_mothership(self):
-        self._down_two_percent_today_and_four_from_the_high_water_mark()
+        self._down_two_percent_today_and_four_from_the_start()
         self.elimination_client.append_elimination_row(NEW, EliminationReason.INACTIVE,
                                                        elimination_time_ms=TimeUtil.now_in_millis())
         row = self.elimination_client.get_elimination(NEW)

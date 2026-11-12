@@ -680,7 +680,9 @@ class ValiConfig:
     STANDARD_MINER_COLLATERAL_PCT_BY_TIER = {1: 0.007, 2: 0.011, 3: 0.015}  # Base, Boost I, Boost II
     STANDARD_MINER_MIN_ACCOUNT_SIZE = 5_000
     STANDARD_MINER_MAX_ACCOUNT_SIZE = 100_000
-    # EOD high-water mark and daily loss limits in every bucket before PRO_FUNDED, which keeps its own
+    # Daily loss limit in every bucket before PRO_FUNDED, which keeps its own. The static rules
+    # (SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD from the starting balance) apply until the pro buckets, then this EOD
+    # high-water mark limit until PRO_FUNDED
     STANDARD_MINER_EOD_HWM_THRESHOLD = 0.05
     STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
     # The leverage tier a standard miner trades from SUBACCOUNT_FUNDED on, whatever tier it opened on

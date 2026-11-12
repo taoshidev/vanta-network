@@ -13,6 +13,7 @@ from entity_management.entity_utils import (
     pro_account_size_error,
 )
 from vali_objects.enums.account_type_enum import AccountType
+from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -174,9 +175,11 @@ def open_account(collateral_theta, price_usd, leverage_tier, asset_class: str, o
     )
 
 
-def opening_bucket_thresholds() -> dict:
-    """The drawdown limits a standard miner trades under before PRO_FUNDED, as set_miner_bucket overrides."""
-    return dict(intraday_drawdown_threshold=ValiConfig.STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD,
+def opening_drawdown_rules() -> dict:
+    """The drawdown rules of a standard miner, as set_miner_bucket takes them: the static rules until the pro buckets,
+    then the EOD high-water mark limit, with the daily loss limit, both overriding every bucket but PRO_FUNDED."""
+    return dict(drawdown_criteria=DrawdownCriteria.STATIC,
+                intraday_drawdown_threshold=ValiConfig.STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD,
                 eod_hwm_threshold=ValiConfig.STANDARD_MINER_EOD_HWM_THRESHOLD)
 
 
@@ -186,13 +189,15 @@ LIVE_DRAWDOWN_REASONS = (EliminationReason.ACCOUNT_CLOSED, EliminationReason.INA
 
 
 def closing_slash_proportion(drawdown: Optional[dict]) -> float:
-    """The share of the locked theta an account forfeits on closing: the worse of today's loss and the live drawdown
-    from the end-of-day high-water mark, each against its limit, at most all of it (the drawdown stats dict)."""
+    """The share of the locked theta an account forfeits on closing: the worse of today's loss and the account's other
+    drawdown, each against its limit, at most all of it (the drawdown stats dict). The other drawdown is the one from
+    the starting balance while the static rules apply, else the live one from the end-of-day high-water mark."""
     if not drawdown:
         return 0.0
+    other = (("static_drawdown_pct", "static_drawdown_threshold") if drawdown.get("static_rules_apply")
+             else ("trailing_drawdown_pct", "eod_drawdown_threshold"))
     shares = []
-    for pct_key, limit_key in (("intraday_drawdown_pct", "intraday_drawdown_threshold"),
-                               ("trailing_drawdown_pct", "eod_drawdown_threshold")):
+    for pct_key, limit_key in (("intraday_drawdown_pct", "intraday_drawdown_threshold"), other):
         limit = drawdown.get(limit_key)
         if limit:
             shares.append(max(0.0, drawdown.get(pct_key) or 0.0) / (limit * 100.0))
@@ -201,9 +206,10 @@ def closing_slash_proportion(drawdown: Optional[dict]) -> float:
 
 def elimination_slash_proportion(reason: EliminationReason, elimination_drawdown_pct: Optional[float],
                                  drawdown: Optional[dict]) -> float:
-    """The share of the locked theta an elimination takes: all of it past a drawdown limit, the closing share when the
-    account closed, went inactive or left the metagraph, else the drawdown against the maximum total drawdown."""
-    if reason.is_intraday_drawdown or reason.is_eod_drawdown:
+    """The share of the locked theta an elimination takes: all of it past a drawdown limit (daily loss, static or EOD),
+    the closing share when the account closed, went inactive or left the metagraph, else the drawdown against the
+    maximum total drawdown."""
+    if reason.is_intraday_drawdown or reason.is_eod_drawdown or reason.is_static_drawdown:
         return 1.0
     if reason in LIVE_DRAWDOWN_REASONS:
         return closing_slash_proportion(drawdown)
