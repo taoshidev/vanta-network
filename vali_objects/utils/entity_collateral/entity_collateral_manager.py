@@ -257,10 +257,10 @@ class EntityCollateralManager(CacheController):
 
         where max_slash_usd = exposed account size * the bucket's intraday drawdown threshold (5% in
         every earning bucket). The exposed size is the traded account except in
-        PRO_CHALLENGE_FROM_STANDARD, which stays at the standard account size until it reaches
+        PRO_CHALLENGE_FUNDED, which stays at the standard account size until it reaches
         PRO_FUNDED. CPT is ValiConfig.PRO_MARGIN_CPT in PRO_FUNDED and ValiConfig.MARGIN_CPT
-        otherwise. multiplier is the payout multiplier the margin backs: in PRO_CHALLENGE_FROM_STANDARD
-        the subaccount's payout_scale (2 growing from standard funded, 1 Instant Funded), else 1.
+        otherwise. multiplier is the payout multiplier the margin backs: in PRO_CHALLENGE_FUNDED the
+        subaccount's payout_scale (2 growing from standard funded, 1 Instant Funded), else 1.
 
         Args:
             entity_hotkey: The entity's hotkey.
@@ -290,7 +290,7 @@ class EntityCollateralManager(CacheController):
 
             margin_usd = self.compute_subaccount_margin_requirement(synthetic_hotkey, bucket, sa_info)
             multiplier = 1.0
-            if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+            if bucket.payout_scale_applies:
                 payout_scale = sa_info.get("payout_scale")
                 multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
             total_required_theta += ValiConfig.margin_theta(margin_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
@@ -384,11 +384,11 @@ class EntityCollateralManager(CacheController):
         current_position_value = sum(abs(p.net_value) for p in open_positions)
         projected_position_value = current_position_value + abs(additional_position_value)
 
-        # PRO_CHALLENGE_FROM_STANDARD reads its record twice (the standard size it is exposed at and the
+        # PRO_CHALLENGE_FUNDED reads its record twice (the standard size it is exposed at and the
         # payout multiplier its margin backs), so look it up once. Unreadable, it is {}: the exposure is
         # withheld (see _exposed_account_size), so no margin is required.
         subaccount_info = None
-        if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+        if bucket.payout_scale_applies:
             try:
                 subaccount_info = self._entity_client.get_subaccount_info_for_synthetic(synthetic_hotkey) or {}
             except Exception as e:
@@ -403,7 +403,7 @@ class EntityCollateralManager(CacheController):
         projected_margin_usd = min(projected_position_value, remaining_headroom)
         margin_delta_usd = projected_margin_usd - current_margin_usd
         multiplier = 1.0
-        if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+        if bucket.payout_scale_applies:
             payout_scale = subaccount_info.get("payout_scale")
             multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
         margin_delta_theta = ValiConfig.margin_theta(margin_delta_usd, bucket == MinerBucket.PRO_FUNDED, multiplier)
@@ -442,7 +442,7 @@ class EntityCollateralManager(CacheController):
         Cumulative MDD slashing model:
         - Track cumulative_realized_loss per subaccount (total losses over lifetime)
         - max_slash = exposed account size * MDD% (dynamic, tracks current size; a
-          PRO_CHALLENGE_FROM_STANDARD subaccount is exposed at its standard size)
+          PRO_CHALLENGE_FUNDED subaccount out of transition is exposed at its standard size)
         - target_slash = min(cumulative_realized_loss, max_slash)
         - slash_delta = target_slash - cumulative_slashed (only slash the new delta)
         - If account size increases, max_slash grows, opening new slash headroom
@@ -478,7 +478,7 @@ class EntityCollateralManager(CacheController):
         payout_scale = (subaccount_info or {}).get("payout_scale")
         # Losses are slashed at the rate the subaccount's margin is held at (see compute_entity_required_collateral)
         multiplier = 1.0
-        if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+        if bucket.payout_scale_applies:
             multiplier = ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER if payout_scale is None else payout_scale
         pro_funded = bucket == MinerBucket.PRO_FUNDED
 
@@ -609,7 +609,7 @@ class EntityCollateralManager(CacheController):
                 pending_loss_usd: Dict[str, float] = {}  # synthetic hotkey -> USD
                 # Losses are slashed at the rate the subaccount's margin is held at (see
                 # compute_entity_required_collateral): PRO_MARGIN_CPT in PRO_FUNDED, MARGIN_CPT otherwise,
-                # times the payout multiplier in PRO_CHALLENGE_FROM_STANDARD.
+                # times the payout multiplier in PRO_CHALLENGE_FUNDED.
                 pending_loss_theta: Dict[str, float] = {}  # synthetic hotkey -> theta
                 records = {s.get("synthetic_hotkey"): s for s in subaccounts.values() if isinstance(s, dict)}
                 eligible_hotkeys = {hk for hk in synthetic_hotkeys if hk and hk not in exempt_hotkeys}
@@ -636,7 +636,7 @@ class EntityCollateralManager(CacheController):
                         if slash_usd > 0:
                             pending_loss_usd[synthetic_hotkey] = slash_usd
                             multiplier = 1.0
-                            if bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+                            if bucket.payout_scale_applies:
                                 payout_scale = records.get(synthetic_hotkey, {}).get("payout_scale")
                                 multiplier = (ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER
                                               if payout_scale is None else payout_scale)
@@ -799,7 +799,7 @@ class EntityCollateralManager(CacheController):
                 When omitted it is resolved here, so every caller gets the threshold and the
                 account size that actually apply (a pro account's are not the standard one's).
             subaccount_info: The subaccount's record, when the caller already has it; None looks it
-                up when needed (only PRO_CHALLENGE_FROM_STANDARD reads it).
+                up when needed (only PRO_CHALLENGE_FUNDED reads it).
 
         Returns:
             Maximum slash amount in USD.
@@ -817,13 +817,13 @@ class EntityCollateralManager(CacheController):
         Account size the entity's collateral is exposed to, normally the account the
         subaccount trades.
 
-        PRO_CHALLENGE_FROM_STANDARD is the exception: it trades the pro account but is paid
+        PRO_CHALLENGE_FUNDED is the exception: it trades the pro account but is paid
         as though it were still on the standard one (`payout_scale_applies`), so the entity
         stays exposed to the standard account it already collateralized. The pro account's
         larger margin requirement is charged at PRO_FUNDED, where the larger payouts begin.
         """
         account_size = self._miner_account_client.get_miner_account_size(synthetic_hotkey) or 0.0
-        if account_size <= 0 or bucket != MinerBucket.PRO_CHALLENGE_FROM_STANDARD:
+        if account_size <= 0 or bucket is None or not bucket.payout_scale_applies:
             return account_size
 
         if subaccount_info is None:

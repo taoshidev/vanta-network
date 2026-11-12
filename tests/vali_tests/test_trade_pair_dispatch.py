@@ -197,7 +197,7 @@ class TestGetLegacyLeverageTier(unittest.TestCase):
     SIZES = (5_000.0, 50_000.0, 100_000.0, 200_000.0, 1_000_000.0)
 
     def test_subaccount_challenge_buckets_are_tier_1_at_any_size(self):
-        for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD):
+        for bucket in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FUNDED):
             for size in self.SIZES:
                 with self.subTest(bucket=bucket, size=size):
                     self.assertEqual(get_legacy_leverage_tier(bucket, size), 1)

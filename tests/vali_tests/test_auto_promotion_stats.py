@@ -17,6 +17,8 @@ from tests.vali_tests.test_challengeperiod_pro import (  # noqa: F401 - manager 
     LEDGER_START_MS,
     MIDNIGHT_MS,
     NOW_MS,
+    TRANSITION,
+    _bucket,
     _even_ledger,
     manager,
 )
@@ -33,8 +35,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint
 HL_ADDRESS = "0x" + "d" * 40
 DAYS = 60
 REALIZED_USD = 7_000.0  # 7% on the account
-PRO_BUCKETS = (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-               MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
+PRO_BUCKETS = (TRANSITION, MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
 
 
 def _account(hotkey: str = HOTKEY, hl_address: str | None = None,
@@ -54,9 +55,11 @@ def _ledger(low: float = 1.0, close: float = 1.0, days: int = DAYS) -> PerfLedge
     return ledger
 
 
-def _seed(manager, hotkey: str = HOTKEY, bucket: MinerBucket = MinerBucket.SUBACCOUNT_FUNDED,
+def _seed(manager, hotkey: str = HOTKEY, bucket=MinerBucket.SUBACCOUNT_FUNDED,
           current_equity: float = 1.0, eod_hwm: float = 1.0) -> None:
-    manager.set_miner_bucket(hotkey, bucket, NOW_MS - DAYS * DAILY_MS)
+    manager.set_miner_bucket(hotkey, _bucket(bucket), NOW_MS - DAYS * DAILY_MS)
+    if bucket == TRANSITION:
+        manager._miner_account_client.set_transition(hotkey, NOW_MS - DAYS * DAILY_MS)
     manager.miner_states[hotkey].drawdown = DrawdownStats(current_equity=current_equity, current_balance=current_equity,
                                                           eod_hwm=eod_hwm, last_eod_equity=1.0,
                                                           last_eod_checked_ms=MIDNIGHT_MS)
@@ -259,7 +262,7 @@ def test_the_live_ratchet_and_the_replay_both_count_and_only_the_ratchet_is_kept
 
 @pytest.mark.parametrize("record", [
     {"initial_bucket": MinerBucket.SUBACCOUNT_FUNDED.value},             # Instant Funded
-    {"initial_bucket": MinerBucket.PRO_CHALLENGE_FROM_STANDARD.value},   # Instant Funded
+    {"initial_bucket": MinerBucket.PRO_CHALLENGE_FUNDED.value},          # Instant Funded
     None,                                                                # no entity record
 ])
 def test_only_subaccounts_created_through_the_challenge_are_candidates(manager, record):
@@ -290,7 +293,8 @@ def test_no_other_bucket_is_tracked(manager, bucket):
 @pytest.mark.parametrize("bucket", PRO_BUCKETS)
 def test_the_pro_track_keeps_its_own_ratchet(manager, bucket):
     _seed(manager, bucket=bucket, current_equity=0.97)
-    manager._refresh_pro_stats([HOTKEY], {HOTKEY: _ledger(low=0.50)}, {HOTKEY: _account()})
+    manager._refresh_pro_stats([HOTKEY], {HOTKEY: _ledger(low=0.50)}, {HOTKEY: _account()},
+                               manager._miner_account_client.get_transition_starts([HOTKEY]))
     assert manager.miner_states[HOTKEY].pro_stats.max_drawdown == pytest.approx(0.97)
 
 

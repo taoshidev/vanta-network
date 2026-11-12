@@ -24,6 +24,7 @@ The two tiers are complementary:
 import contextlib
 from unittest.mock import patch
 
+from tests.vali_tests.mock_utils import fake_account_transitions
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
 from tests.vali_tests.base_objects.test_base import TestBase
 from time_util.time_util import TimeUtil, MS_IN_24_HOURS
@@ -99,6 +100,7 @@ def _local_manager() -> ChallengePeriodManager:
     for path in _CLIENT_PATHS:
         stack.enter_context(patch(path))
     mgr = ChallengePeriodManager(is_backtesting=True)
+    fake_account_transitions(mgr)
     return mgr, stack
 
 
@@ -318,6 +320,7 @@ class TestChallengePeriodManagerLogic(TestBase):
         for path in _CLIENT_PATHS:
             stack.enter_context(patch(path))
         mgr = ChallengePeriodManager(is_backtesting=True)
+        fake_account_transitions(mgr)
         return mgr, stack
 
     # ── Section 3: Sync method flows ─────────────────────────────────────────

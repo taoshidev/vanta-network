@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from flask import Flask
 
+from tests.vali_tests.mock_utils import fake_account_transitions
 from vali_objects.challenge_period.challengeperiod_manager import (
     ChallengePeriodManager,
     DrawdownStats,
@@ -55,6 +56,7 @@ def manager():
         for path in _CLIENT_PATHS:
             stack.enter_context(patch(path))
         mgr = ChallengePeriodManager(is_backtesting=True)
+        fake_account_transitions(mgr)
         yield mgr
 
 

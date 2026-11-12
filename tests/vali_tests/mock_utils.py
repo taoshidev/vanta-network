@@ -636,3 +636,31 @@ class MockDebtBasedScoring:
         # Sort by score descending
         results.sort(key=lambda x: x[1], reverse=True)
         return results
+
+
+def fake_account_transitions(manager) -> dict:
+    """Back a ChallengePeriodManager's mocked account client transition calls with a dict, which
+    reads as in transition only while the miner is in SUBACCOUNT_FUNDED (MinerAccount.in_transition)."""
+    starts: Dict[str, int] = {}
+    client = manager._miner_account_client
+
+    def get_transition_starts(hotkeys=None):
+        return {hk: t for hk, t in starts.items() if (hotkeys is None or hk in hotkeys)
+                and hk in manager.miner_states and manager.miner_states[hk].current_bucket == MinerBucket.SUBACCOUNT_FUNDED}
+
+    def set_transition(hotkey, start_ms):
+        if start_ms is None:
+            starts.pop(hotkey, None)
+        else:
+            starts[hotkey] = start_ms
+        return True
+
+    def reset_account(hotkey, miner_bucket=None):
+        if miner_bucket:
+            starts.pop(hotkey, None)
+        return True
+
+    client.get_transition_starts.side_effect = get_transition_starts
+    client.set_transition.side_effect = set_transition
+    client.reset_account.side_effect = reset_account
+    return starts

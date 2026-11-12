@@ -14,22 +14,47 @@ class MinerBucket(Enum):
     # Entity system buckets
     ENTITY = "ENTITY"
     SUBACCOUNT_CHALLENGE = "SUBACCOUNT_CHALLENGE"
+    # A funded standard subaccount. Moving onto the pro track starts its transition week
+    # (MinerAccount.transition_start_ms): a wind-down still trading the standard account, which
+    # ends in PRO_CHALLENGE_FUNDED.
     SUBACCOUNT_FUNDED = "SUBACCOUNT_FUNDED"
     SUBACCOUNT_ALPHA = "SUBACCOUNT_ALPHA"
     # Pro account buckets
-    PRO_CHALLENGE_TRANSITION = "PRO_CHALLENGE_TRANSITION"
-    PRO_CHALLENGE_FROM_STANDARD = "PRO_CHALLENGE_FROM_STANDARD"
+    # A funded standard subaccount that has left its transition week: trading the pro account, paid
+    # on the standard size while passing the pro challenge. Keeps its pre-merge value on the wire.
+    PRO_CHALLENGE_FUNDED = "PRO_CHALLENGE_FROM_STANDARD"
+    PRO_CHALLENGE_FROM_STANDARD = "PRO_CHALLENGE_FROM_STANDARD"  # alias of PRO_CHALLENGE_FUNDED
     PRO_CHALLENGE_DIRECT = "PRO_CHALLENGE_DIRECT"
     PRO_FUNDED = "PRO_FUNDED"
+
+    @classmethod
+    def _missing_(cls, value):
+        """Parse the retired bucket names."""
+        if value in LEGACY_BUCKET_NAMES:
+            return cls(LEGACY_BUCKET_NAMES[value])
+        return None
+
+    @classmethod
+    def from_status(cls, status: str | None) -> "MinerBucket":
+        """Parse a stored status string, tolerating unknown values."""
+        try:
+            return cls(status)
+        except ValueError:
+            return cls.UNKNOWN
+
+    @property
+    def statuses(self) -> set[str]:
+        """Every status string this bucket may have been stored as, retired names included."""
+        return {self.value, *(name for name, value in LEGACY_BUCKET_NAMES.items() if value == self.value)}
 
     def intraday_drawdown_threshold(self, time_ms: int | None = None) -> float:
         """
         Returns the intraday drawdown threshold for this bucket from ValiConfig.
-        For SUBACCOUNT_FUNDED and PRO_CHALLENGE_TRANSITION, time_ms is the miner's
-        SUBACCOUNT_CHALLENGE registration timestamp and determines which versioned threshold
-        applies. Pro buckets are not versioned - they have no legacy tier.
+        For SUBACCOUNT_FUNDED (in or out of its transition week), time_ms is the miner's
+        SUBACCOUNT_CHALLENGE registration timestamp and determines which versioned threshold applies. Pro buckets are not versioned - they have no
+        legacy tier.
         """
-        if self in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
+        if self in (MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT):
             return ValiConfig.PRO_CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
 
         if self == MinerBucket.PRO_FUNDED:
@@ -38,8 +63,7 @@ class MinerBucket(Enum):
         if self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.CHALLENGE):
             return ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
 
-        # TRANSITION is still trading the standard funded account, so it keeps funded rules
-        if self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION):
+        if self == MinerBucket.SUBACCOUNT_FUNDED:
             if time_ms is not None and time_ms < ValiConfig.FUNDED_V0_CUTOFF_MS:
                 return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0
             if time_ms is not None and time_ms < ValiConfig.FUNDED_V1_CUTOFF_MS:
@@ -54,11 +78,11 @@ class MinerBucket(Enum):
     def eod_drawdown_threshold(self, time_ms: int | None = None) -> float:
         """
         Returns the intraday drawdown threshold for this bucket from ValiConfig.
-        For SUBACCOUNT_FUNDED and PRO_CHALLENGE_TRANSITION, time_ms is the miner's
+        For SUBACCOUNT_FUNDED (in or out of its transition week), time_ms is the miner's
         SUBACCOUNT_CHALLENGE registration timestamp and determines which versioned threshold
         applies.
         """
-        if self in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
+        if self in (MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT):
             return ValiConfig.PRO_CHALLENGE_EOD_DRAWDOWN_THRESHOLD
 
         if self == MinerBucket.PRO_FUNDED:
@@ -67,7 +91,7 @@ class MinerBucket(Enum):
         if self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.CHALLENGE):
             return ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD
 
-        if self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION):
+        if self == MinerBucket.SUBACCOUNT_FUNDED:
             if time_ms is not None and time_ms < ValiConfig.FUNDED_V0_CUTOFF_MS:
                 return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD_V0
             return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
@@ -84,20 +108,21 @@ class MinerBucket(Enum):
     @property
     def is_subaccount(self) -> bool:
         return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA,
-                        MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-                        MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
+                        MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT,
+                        MinerBucket.PRO_FUNDED)
 
     @property
     def is_pro(self) -> bool:
-        """True for buckets trading the pro account. Excludes TRANSITION, which is still on the
-        standard account and so keeps standard fees, leverage, and permitted trade pairs."""
-        return self in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT,
+        """True for buckets trading the pro account. The SUBACCOUNT_FUNDED transition week is still
+        on the standard account and so is not pro."""
+        return self in (MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT,
                         MinerBucket.PRO_FUNDED)
 
     @property
     def is_pro_track(self) -> bool:
-        """True for every bucket on the pro journey, including the transition week."""
-        return self.is_pro or self == MinerBucket.PRO_CHALLENGE_TRANSITION
+        """True for every bucket on the pro account. The SUBACCOUNT_FUNDED transition week is on the
+        pro journey too; check MinerAccount.in_transition for it."""
+        return self.is_pro
 
     @property
     def calmar_threshold(self) -> float | None:
@@ -132,25 +157,24 @@ class MinerBucket(Enum):
     def daily_loss_from_balance(self) -> bool:
         """True for the standard buckets whose daily loss limit is measured from the day-open balance
         instead of the day-open equity, for subaccounts created through SUBACCOUNT_CHALLENGE that are
-        not HL-linked."""
-        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                        MinerBucket.PRO_CHALLENGE_TRANSITION)
+        not HL-linked. SUBACCOUNT_FUNDED includes its transition week, still on the standard account."""
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED)
 
     @property
     def payout_scale_applies(self) -> bool:
         """True for buckets whose PnL is scaled by standard_account_size / pro_account_size."""
-        return self == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+        return self == MinerBucket.PRO_CHALLENGE_FUNDED
 
     @property
     def is_subaccount_challenge(self) -> bool:
         """True for a subaccount's challenge bucket on either track."""
-        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.PRO_CHALLENGE_FUNDED,
                         MinerBucket.PRO_CHALLENGE_DIRECT)
 
     @property
     def is_subaccount_funded(self) -> bool:
         """True for either subaccount track's funded buckets."""
-        return self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION)
+        return self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_FUNDED)
 
     @property
     def is_subaccount_earning(self) -> bool:
@@ -158,7 +182,7 @@ class MinerBucket(Enum):
         subject to entity collateral slashing."""
         return self.is_subaccount_funded or self in (
             MinerBucket.SUBACCOUNT_ALPHA,
-            MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+            MinerBucket.PRO_CHALLENGE_FUNDED,
         )
 
     @property
@@ -169,9 +193,7 @@ class MinerBucket(Enum):
             return MinerBucket.MAINCOMP
         elif self == MinerBucket.SUBACCOUNT_CHALLENGE:
             return MinerBucket.SUBACCOUNT_FUNDED
-        elif self == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            return MinerBucket.PRO_CHALLENGE_FROM_STANDARD
-        elif self in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
+        elif self in (MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT):
             return MinerBucket.PRO_FUNDED
         # TODO determine if we need alpha or keep subaccounts as funded
         # elif self == MinerBucket.SUBACCOUNT_FUNDED:
@@ -182,15 +204,15 @@ class MinerBucket(Enum):
     def promotion_target(self) -> "MinerBucket | None":
         """Where a miner may promote itself with its own signed request (POST /entity/subaccount/promote).
 
-        These three hops onto the pro track are the only self-service bucket moves on the network;
-        every other bucket returns None and cannot be promoted this way.
+        These hops onto the pro track are the only self-service bucket moves on the network; every
+        other bucket returns None and cannot be promoted this way. SUBACCOUNT_FUNDED first enters its
+        transition week, which stays in SUBACCOUNT_FUNDED, and leaves it for PRO_CHALLENGE_FUNDED
+        (ChallengePeriodManager.promote_subaccount).
         """
         if self == MinerBucket.SUBACCOUNT_CHALLENGE:
             return MinerBucket.PRO_CHALLENGE_DIRECT
         elif self == MinerBucket.SUBACCOUNT_FUNDED:
-            return MinerBucket.PRO_CHALLENGE_TRANSITION
-        elif self == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            return MinerBucket.PRO_CHALLENGE_FROM_STANDARD
+            return MinerBucket.PRO_CHALLENGE_FUNDED
         return None
 
     @property
@@ -199,12 +221,15 @@ class MinerBucket(Enum):
         positions, cancelling limit orders, and restarting the ledgers.
 
         PRO_FUNDED is deliberately absent: passing the pro challenge keeps the same account, so
-        balance, equity, positions and the ledgers carry over and all-time calmar keeps the ratio
-        it passed with. Nothing earned before the promotion is paid at pro scale - the payout paths
+        balance, equity and the ledgers carry over and all-time calmar keeps the ratio it passed
+        with. Its positions are still closed (closes_positions_from). Nothing earned before the promotion is paid at pro scale - the payout paths
         exclude it by reading each checkpoint's own bucket instead of wiping the history.
+
+        Entering the SUBACCOUNT_FUNDED transition week is not a bucket move and keeps the
+        standard account.
         """
         return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                        MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT)
+                        MinerBucket.PRO_CHALLENGE_FUNDED, MinerBucket.PRO_CHALLENGE_DIRECT)
 
     @property
     def max_time_ms(self) -> int | None:
@@ -236,11 +261,40 @@ class MinerBucket(Enum):
                 MinerBucket.SUBACCOUNT_CHALLENGE,
                 MinerBucket.SUBACCOUNT_FUNDED,
                 MinerBucket.SUBACCOUNT_ALPHA,
-                MinerBucket.PRO_CHALLENGE_TRANSITION,
-                MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
+                MinerBucket.PRO_CHALLENGE_FUNDED,
                 MinerBucket.PRO_CHALLENGE_DIRECT,
                 MinerBucket.PRO_FUNDED
                 )
+
+    def closes_positions_from(self, from_bucket: "MinerBucket") -> bool:
+        """True when entering this bucket from from_bucket closes the open positions: every move into
+        or out of an earning bucket, so each earning bucket is only paid on what it trades itself.
+        An elimination forfeits instead."""
+        return ((from_bucket.is_subaccount_earning or self.is_subaccount_earning)
+                and self != from_bucket
+                and self != MinerBucket.ELIMINATED)
+
+
+# Bucket names that are not a bucket value, mapped to the value they parse as. The transition week
+# became MinerAccount.transition_start_ms on SUBACCOUNT_FUNDED (still reported by name through
+# api_bucket_name), and PRO_CHALLENGE_FUNDED is accepted as a spelling of its wire value.
+LEGACY_BUCKET_NAMES = {
+    "PRO_CHALLENGE_TRANSITION": "SUBACCOUNT_FUNDED",
+    "PRO_CHALLENGE_FUNDED": "PRO_CHALLENGE_FROM_STANDARD",
+}
+LEGACY_TRANSITION_BUCKET = "PRO_CHALLENGE_TRANSITION"
+
+
+def api_bucket_name(bucket: "MinerBucket | str | None", in_transition: bool = False) -> str | None:
+    """Bucket name for API output and ledger checkpoint statuses: the SUBACCOUNT_FUNDED transition
+    week reads as the retired PRO_CHALLENGE_TRANSITION while ValiConfig.API_LEGACY_BUCKET_NAMES is on."""
+    if bucket is None:
+        return None
+    value = bucket.value if isinstance(bucket, MinerBucket) else bucket
+    if in_transition and value == MinerBucket.SUBACCOUNT_FUNDED.value and ValiConfig.API_LEGACY_BUCKET_NAMES:
+        return LEGACY_TRANSITION_BUCKET
+    return value
+
 
 @dataclass
 class BucketEntry:
@@ -267,12 +321,10 @@ class BucketEntry:
 
     @classmethod
     def from_dict(cls, d: dict) -> 'BucketEntry':
-        """Create from dict for deserialization."""
+        """Create from dict for deserialization. Retired bucket names map to their new bucket."""
         bucket = d.get('bucket', MinerBucket.UNKNOWN)
-        if isinstance(bucket, str):
-            bucket = MinerBucket(bucket)
         return cls(
-            bucket=bucket,
+            bucket=MinerBucket(bucket) if isinstance(bucket, str) else bucket,
             start_time_ms=d.get('start_time_ms') or d.get('bucket_start_time', 0),
             reverted_ms=d.get('reverted_ms'),
         )
