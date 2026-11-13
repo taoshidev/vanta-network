@@ -1388,7 +1388,7 @@ The target bucket is derived from the subaccount's current one, and only these t
 | `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
 
 A subaccount in any other bucket is rejected with a 400. One that was promoted automatically can take the
-`PRO_CHALLENGE_TRANSITION` hop early, on the size the network granted and free of the promotion fee, but a
+`PRO_CHALLENGE_TRANSITION` hop itself (the next refresh takes it otherwise), on the size the network granted and free of the promotion fee, but a
 request that sends a `pro_account_size` for it is rejected with a 400. Every other bucket change on the
 network happens organically (the end-of-week promotions, auto-promotion, demotions and eliminations), not
 through this endpoint.
@@ -1448,21 +1448,22 @@ fee already charged — see [entity_miner.md](entity_miner.md#pro-promotion-fee)
 subaccount created into `SUBACCOUNT_FUNDED`, or a Hyperliquid-linked subaccount, cannot be promoted
 onto the pro track; a Hyperliquid-linked one already on it moves on.
 
-**Only the two hops onto a pro account wipe trading state.** A hop switches accounts when the target
-bucket changes the account size (`MinerBucket.switches_account`), and `PRO_CHALLENGE_TRANSITION` does
-not — it is a wind-down on the standard account, running to the first Monday 00:00 UTC after the
-hop (after an auto-promotion, at most seven days, ending early once it has no open positions):
+**Every hop closes out the account; only the two hops onto a pro account wipe it.** A hop switches
+accounts when the target bucket changes the account size (`MinerBucket.switches_account`), and
+`PRO_CHALLENGE_TRANSITION` does not — it is a pass-through stage on the standard account lasting 1ms
+(`ValiConfig.PRO_TRANSITION_DURATION_MS`), which the next challenge-period refresh ends by moving the
+subaccount on to `PRO_CHALLENGE_FROM_STANDARD`:
 
 | Hop | Positions | Limit orders | Ledgers |
 | --- | --- | --- | --- |
 | `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT` | force closed | all cancelled | restart on the pro size |
-| `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION` | **kept open** | **kept**, except entry orders | **kept** |
-| `PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD` | force closed | all cancelled | restart on the pro size |
+| `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION` | force closed | all cancelled | **kept** |
+| `PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD` | none left open | none left | restart on the pro size |
 
-The two account-switching hops cannot be undone. Entering `PRO_CHALLENGE_TRANSITION` resets nothing:
-the subaccount keeps its positions, its perf and debt ledgers, and its account size, and only the
-resting orders that could open or increase a position are swept (`PRO_TRANSITION_CANCELLED`), leaving
-closes and reductions in place for the rest of the week.
+The two account-switching hops cannot be undone. Entering `PRO_CHALLENGE_TRANSITION` closes every
+position and cancels every limit order (`SUBACCOUNT_PROMOTION`) while the subaccount is still in
+`SUBACCOUNT_FUNDED`, so the realized PnL is earned there, and keeps its perf and debt ledgers and its
+account size.
 
 A rejected promotion changes nothing: an invalid or missing size is a 400 before the subaccount or its
 bucket is touched, and a move that fails *after* the sizing is applied rolls the sizing back, so a

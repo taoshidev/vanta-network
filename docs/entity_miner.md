@@ -228,7 +228,7 @@ pending → active → [SUBACCOUNT_CHALLENGE] → [SUBACCOUNT_FUNDED]
 | Forex                                  | ≥ 8%                    |
 | Crypto, Equities, Commodities, HL All  | ≥ 10%                   |
 
-Passing is evaluated continuously — a subaccount is promoted immediately once `min(account balance, account equity)` meets the threshold. Assessment runs automatically via the validator's EntityServer daemon every 5 minutes.
+Passing is evaluated continuously — a subaccount is promoted once its equity, unrealized PnL included, has met the threshold on every challenge-period refresh for 3 minutes (`ChallengePeriodManager.PROMOTION_HOLD_MS`), so a bad price tick cannot promote it. A refresh below the threshold starts the hold over. Assessment runs automatically via the validator's EntityServer daemon every 5 minutes.
 
 **Elimination during challenge:** Each subaccount is assigned a drawdown rule set at creation (`drawdown_criteria`), which is fixed for the life of the subaccount:
 - **Trailing** (default): eliminated if intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaches **5%**.
@@ -440,15 +440,14 @@ limit and an **8%** EOD limit. From then on it follows every `PRO_FUNDED` rule.
 #### Traders who have already passed the standard challenge
 
 A `SUBACCOUNT_FUNDED` trader offered a pro account is moved to `PRO_CHALLENGE_TRANSITION`, a
-wind-down window on their existing standard account that runs to the end of the payout week. While
-they are in it they keep the `SUBACCOUNT_FUNDED` rules and keep earning payouts, but they cannot
-open new positions or increase existing ones — those orders are rejected and only closes and
-reductions are accepted. They move to `PRO_CHALLENGE_FROM_STANDARD` as soon as they promote again
-(`POST /api/promote`), or automatically at the first **Monday 00:00 UTC** after they entered the
-bucket — on the first challenge-period refresh at or after that boundary — at which point any
-remaining positions are force closed, the account is resized to the pro account size, and the
-ledgers restart. An [auto-promoted](#auto-promotion) trader instead stays at most 7 days, moving on
-as soon as they have no open positions, and can still be promoted on early.
+pass-through stage on their existing standard account. Entering it force closes every open position
+and cancels every pending limit order on the standard account, while it is still in
+`SUBACCOUNT_FUNDED`, so the PnL realized by the close is earned there. The transition lasts 1ms
+(`ValiConfig.PRO_TRANSITION_DURATION_MS`): the next challenge-period refresh, within seconds, moves
+the trader to `PRO_CHALLENGE_FROM_STANDARD`, resizes the account to the pro account size and
+restarts the ledgers. The entity can also take that hop itself (`POST /api/promote`). If the hop
+fails (for instance, the entity's collateral cannot cover the promotion fee), the trader stays in
+the transition and every later refresh retries it.
 
 Throughout `PRO_CHALLENGE_FROM_STANDARD` the trader trades the larger pro account but is paid on
 **twice** the size of the standard account they came from:
@@ -476,7 +475,7 @@ A subaccount qualifies on whichever of two paths it meets first:
 | Path | Requirements | Pro account size |
 |---|---|---|
 | Fast track | Equity, unrealized PnL included, at least 10% above the account size (less for a subaccount created at or after the promotion rules start, below), held there for 3 minutes | 3x the standard account size |
-| Steady track | All of: at least 60 full days on its funded ledger, balance and equity both more than 3% above the account size, return consistency of at most 50%, and all-time Calmar of at least 1.5 | 5x the standard account size, or 10x at a Calmar of at least 2.0 |
+| Steady track | All of: at least 60 full days on its funded ledger, equity more than 3% above the account size, return consistency of at most 50%, and all-time Calmar of at least 1.5 | 5x the standard account size, or 10x at a Calmar of at least 2.0 |
 
 Meeting both on the same check takes the larger multiple. The thresholds are the
 `ValiConfig.AUTO_PROMOTION_*` values.
@@ -484,7 +483,7 @@ Meeting both on the same check takes the larger multiple. The thresholds are the
 - **Balance and equity** are the funded account's own, which starts at its account size when it
   becomes funded. Balance is the account size plus realized PnL and dividends, net of fees; equity adds
   the unrealized PnL of open positions.
-  The steady track reads the lower of the two, so open losses count and open gains do not.
+  Both paths read equity, so open gains count as well as open losses.
 - **The fast track for a subaccount created at or after the promotion rules start**
   (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`): 3% in the first week from its first order as a
   funded account, 5% in the second week and 10% after that
@@ -505,16 +504,13 @@ Meeting both on the same check takes the larger multiple. The thresholds are the
 
 Once it qualifies:
 
-1. It moves to `PRO_CHALLENGE_TRANSITION` with the pro account size above. The wind-down works as
-   in any transition (see [above](#traders-who-have-already-passed-the-standard-challenge)), but it
-   lasts at most **7 days** from the auto-promotion (`ValiConfig.AUTO_PROMOTION_TRANSITION_DAYS`),
-   whatever the day of the week. It ends early on the first challenge-period refresh that finds the
-   subaccount with no open positions, so one that had none when it was promoted moves on at once.
-   The entity can also move it on early with `POST /api/promote`, with positions open or not, but
-   only without a `pro_account_size`: the network has set the size, and a request that sends one is
-   rejected.
-2. When the transition ends it moves to `PRO_CHALLENGE_FROM_STANDARD`: remaining positions are force
-   closed, the account is resized to the pro account size, and the ledgers restart. From then on it is
+1. It moves to `PRO_CHALLENGE_TRANSITION` with the pro account size above. As in any transition
+   (see [above](#traders-who-have-already-passed-the-standard-challenge)), every open position is
+   force closed and every pending limit order cancelled on entry. The entity can take the next hop
+   itself with `POST /api/promote`, but only without a `pro_account_size`: the network has set the
+   size, and a request that sends one is rejected.
+2. On the next challenge-period refresh it moves to `PRO_CHALLENGE_FROM_STANDARD`: the account is
+   resized to the pro account size and the ledgers restart. From then on it is
    like any subaccount promoted there, paid at twice its standard account size and holding twice its
    standard margin (see [Cross-Margin Requirement](#cross-margin-requirement)), or, if it was created
    at or after the promotion rules start, at the multiplier of its multiple, with the margin to match.
@@ -536,8 +532,11 @@ Promotion from a pro challenge bucket to `PRO_FUNDED` requires all of:
 - **90 full calendar days since the account's first trade.** Counted from the ledger, which starts
   at the first order on the pro account, so sitting in the bucket without trading earns nothing and
   the partial first and current days do not count.
-- **6% return** on the account. Missing this target only prevents promotion — pro buckets have no
-  time limit, so it never eliminates the trader.
+- **6% return** on the account, read on the lower of balance and equity, so open losses count and
+  open gains do not, and held on every challenge-period refresh for 3 minutes
+  (`ChallengePeriodManager.PROMOTION_HOLD_MS`). This is the only promotion that does not read equity
+  alone. Missing this target only prevents promotion — pro buckets have no time limit, so it never
+  eliminates the trader.
 - **All-time Calmar of at least 1.75** — realized return since the start of the challenge divided by
   the max drawdown over the same period. Max drawdown is the largest drop of live account equity
   below the end-of-day equity high-water mark, so it tracks real-time equity against the marks
@@ -553,9 +552,10 @@ history from the first day of the challenge onward, so a funded account keeps th
 with. Return consistency is **not** a soft breach: it decides whether a trader reaches `PRO_FUNDED`
 and nothing after that, so a funded trader's lumpy week is still paid in full.
 
-Passing the pro challenge **keeps the account**. Balance, equity, open positions, pending limit
-orders and every ledger carry over unchanged into `PRO_FUNDED`; unlike the two hops *onto* a pro
-account, this one wipes nothing. What resets is the payout basis: the high-water mark rebases at the
+Passing the pro challenge **keeps the account**, but starts it flat. Every open position is force
+closed and every pending limit order cancelled while the account is still in the pro challenge, and
+it enters `PRO_FUNDED` 1ms later. Balance, equity and every ledger carry over; unlike the two hops
+*onto* a pro account, this one wipes nothing. What resets is the payout basis: the high-water mark rebases at the
 promotion, so returns earned during the challenge move the balance but are never paid at pro scale.
 A `PRO_CHALLENGE_DIRECT` trader is therefore paid nothing for the challenge, and a
 `PRO_CHALLENGE_FROM_STANDARD` trader keeps what they were already paid at standard scale without
@@ -1047,14 +1047,13 @@ the network set.
 `pro_account_size` is required entering the pro track and optional on the hop within it (omitted
 keeps the recorded size) — see [Pro account size](#pro-account-size).
 
-Only the two hops onto a pro account wipe trading state: promoting into `PRO_CHALLENGE_DIRECT` or
-`PRO_CHALLENGE_FROM_STANDARD` force closes every open position, cancels every pending limit order and
-restarts the ledgers on the pro size, so neither can be undone. Promoting into
-`PRO_CHALLENGE_TRANSITION` keeps trading the standard account and wipes nothing — positions, limit
-orders and ledgers all carry on, and only the resting orders that could open or increase a position
-are cancelled. The automatic promotion to `PRO_FUNDED` also wipes nothing: it is the same account,
-already on the pro size, and only the payout basis moves (see
-[Passing the pro challenge](#passing-the-pro-challenge)).
+Every hop force closes every open position and cancels every pending limit order. Only the two hops
+onto a pro account, into `PRO_CHALLENGE_DIRECT` or `PRO_CHALLENGE_FROM_STANDARD`, also restart the
+ledgers on the pro size, so neither can be undone. Promoting into `PRO_CHALLENGE_TRANSITION` closes
+out the standard account but keeps its balance and ledgers, and the next challenge-period refresh
+moves it on to `PRO_CHALLENGE_FROM_STANDARD`. The automatic promotion to `PRO_FUNDED` also keeps the
+balance and ledgers: it is the same account, already on the pro size, and only the payout basis moves
+(see [Passing the pro challenge](#passing-the-pro-challenge)).
 
 #### Settled payout weeks
 
