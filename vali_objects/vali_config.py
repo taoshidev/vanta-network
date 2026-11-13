@@ -605,13 +605,14 @@ class ValiConfig:
     # as a funded account has reached AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE
     AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE = 0.5
     AUTO_PROMOTION_FAST_TRACK_LEVERAGED_RETURN = 0.03
-    # Steady track: every condition below, sized by the highest calmar tier reached. The return is on the
-    # lower of balance and equity, so open losses count and open gains do not
+    # Steady track: every condition below, sized by the highest calmar tier reached. The return is on
+    # equity, unrealized PnL included
     AUTO_PROMOTION_STEADY_TRACK_MINIMUM_DAYS = 60
     AUTO_PROMOTION_STEADY_TRACK_MINIMUM_RETURN = 0.03
     AUTO_PROMOTION_STEADY_TRACK_MAX_DAILY_CONSISTENCY = 0.5
     AUTO_PROMOTION_STEADY_TRACK_CALMAR_MULTIPLIERS = ((2.0, 10), (1.5, 5))  # (minimum calmar, multiple)
-    AUTO_PROMOTION_TRANSITION_DAYS = 7  # longest time in PRO_CHALLENGE_TRANSITION after an auto-promotion; ends early once flat
+    # How long PRO_CHALLENGE_TRANSITION lasts before the refresh moves the account on
+    PRO_TRANSITION_DURATION_MS = 1
     # PRO_CHALLENGE_FROM_STANDARD payout multiplier by the multiple an auto-promotion grants, fixed with the pro size
     # (any other grant gets the lowest), for standard miners and subaccounts from SUBACCOUNT_PROMOTION_RULES_START_MS on
     AUTO_PROMOTION_PAYOUT_MULTIPLIERS = {3: 1.3, 5: 1.5, 10: 2.0}
