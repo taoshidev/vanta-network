@@ -302,6 +302,34 @@ def test_refresh_promotes_eligible_challenge_miner(manager):
         patch.object(manager, '_sync_buckets_to_accounts'),
     ):
         manager.refresh(current_time_ms=NOW_MS)
+        assert manager.miner_states[hk].current_bucket == MinerBucket.CHALLENGE  # held, not yet promoted
+        manager.refresh(current_time_ms=NOW_MS + ChallengePeriodManager.PROMOTION_HOLD_MS)
+
+    assert manager.miner_states[hk].current_bucket == MinerBucket.MAINCOMP
+
+
+def test_refresh_promotion_hold_starts_over_after_a_miss(manager):
+    """Equity must pass on every refresh of the hold: one refresh below the target restarts it."""
+    hk = "hk_promote"
+    manager.miner_states[hk] = _state(MinerBucket.CHALLENGE, NOW_MS - DAILY_MS)
+    _setup_refresh_clients(manager, hk)
+    hold = ChallengePeriodManager.PROMOTION_HOLD_MS
+    passing = DrawdownStats(current_equity=1.5, current_balance=1.5)
+
+    with (
+        patch.object(manager, '_refresh_drawdown_cache'),
+        patch.object(manager, '_refresh_rank_cache'),
+        patch.object(manager, '_save_to_disk'),
+        patch.object(manager, '_sync_buckets_to_accounts'),
+    ):
+        manager.miner_states[hk].drawdown = passing
+        manager.refresh(current_time_ms=NOW_MS)
+        manager.miner_states[hk].drawdown = DrawdownStats(current_equity=1.0, current_balance=1.0)
+        manager.refresh(current_time_ms=NOW_MS + hold // 2)
+        manager.miner_states[hk].drawdown = passing
+        manager.refresh(current_time_ms=NOW_MS + hold)  # passing again, but the hold restarts here
+        assert manager.miner_states[hk].current_bucket == MinerBucket.CHALLENGE
+        manager.refresh(current_time_ms=NOW_MS + 2 * hold)
 
     assert manager.miner_states[hk].current_bucket == MinerBucket.MAINCOMP
 

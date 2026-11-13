@@ -394,7 +394,7 @@ class TestChallengePeriodManagerLogic(TestBase):
         return mock_sync
 
     def test_refresh_promotes_challenge_miner_on_returns_alone(self):
-        """A CHALLENGE miner above the returns target is promoted at once: no minimum time, no rank."""
+        """A CHALLENGE miner above the returns target is promoted once it holds: no minimum time, no rank."""
         now = TimeUtil.now_in_millis()
         hk = "hk_promote"
         mgr, stack = self._make_manager()
@@ -407,6 +407,8 @@ class TestChallengePeriodManagerLogic(TestBase):
             mgr.miner_states[hk].rank = 500
             _wire_refresh_clients(mgr, hk, now, elapsed_ms=DAILY_MS)
             self._refresh(mgr, now)
+            self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.CHALLENGE)
+            self._refresh(mgr, now + ChallengePeriodManager.PROMOTION_HOLD_MS)
 
         self.assertEqual(mgr.get_miner_bucket(hk), MinerBucket.MAINCOMP)
 

@@ -432,6 +432,8 @@ class ChallengePeriodManager(CacheController):
     DRAWDOWN_ACTIVATION_MS = TimeUtil.formatted_date_str_to_millis("2026-10-01 00:00:00")   # TODO: remove
     # The fast track's equity must hold on every refresh for this long, so a bad price tick cannot promote
     AUTO_PROMOTION_FAST_TRACK_HOLD_MS = 3 * 60 * 1000
+    # A returns-target promotion must likewise pass on every refresh for this long
+    PROMOTION_HOLD_MS = 3 * 60 * 1000
 
     def __init__(
         self,
@@ -484,6 +486,8 @@ class ChallengePeriodManager(CacheController):
         self._auto_promotion_candidates: set[str] = set()
         self._auto_promotion_stats: dict[str, AutoPromotionStats] = {}
         self._fast_track_since_ms: dict[str, int] = {}
+        # (bucket, ms) since each miner has passed its promotion check on every refresh
+        self._promotion_since_ms: dict[str, tuple[MinerBucket, int]] = {}
         self._move_failure_logged: dict[str, int] = {}
         self._incomplete_ledgers_logged: set[str] = set()
         self._mothership: bool | None = None
@@ -556,6 +560,7 @@ class ChallengePeriodManager(CacheController):
 
         eliminations: dict[str, EliminationReason] = {}
         promotions: dict[str, MinerBucket] = {}  # the bucket each was evaluated in
+        promotion_since_ms: dict[str, tuple[MinerBucket, int]] = {}  # replaces the holds: a miss starts over
         for hotkey, state in self.miner_states.items():
             if hotkey not in evaluation_hotkeys:
                 if state.current_bucket == MinerBucket.UNKNOWN:
@@ -624,9 +629,18 @@ class ChallengePeriodManager(CacheController):
             if hotkey == "5EPeU7Y8bqokEVf31ZWPZkP3F7Kv1v3ALuhnpp5T5Fvfjp85_87": # remove once eliminated or promoted
                 returns_threshold = 0.08
             if self._check_promotion(state, returns_threshold, current_time_ms):
-                promotions[hotkey] = state.current_bucket
+                held_bucket, since_ms = self._promotion_since_ms.get(hotkey, (None, None))
+                if held_bucket != state.current_bucket:
+                    since_ms = current_time_ms
+                promotion_since_ms[hotkey] = (state.current_bucket, since_ms)
+                if current_time_ms - since_ms >= self.PROMOTION_HOLD_MS:
+                    promotions[hotkey] = state.current_bucket
+                else:
+                    logger.info(f"[CHALLENGE] promotion held {(current_time_ms - since_ms) / 1000:.0f}s "
+                                f"of {self.PROMOTION_HOLD_MS / 1000:.0f}s: {state}")
                 continue
 
+        self._promotion_since_ms = promotion_since_ms
         timer.lap("evaluate")
 
         state_changed |= self.eliminate_hotkeys(eliminations, current_time_ms)

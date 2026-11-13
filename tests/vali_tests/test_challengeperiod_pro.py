@@ -657,6 +657,8 @@ def test_refresh_promotes_to_pro_funded_when_every_gate_clears(manager, bucket):
     manager.miner_states[HOTKEY].drawdown = _healthy_drawdown(1.08)
 
     _run_refresh(manager, HOTKEY, ledger=ledger)
+    assert manager.get_miner_bucket(HOTKEY) == bucket  # held, not yet promoted
+    _run_refresh(manager, HOTKEY, ledger=ledger, now_ms=NOW_MS + ChallengePeriodManager.PROMOTION_HOLD_MS)
 
     # The PRO_FUNDED hop keeps the account, so the funded miner carries the ratio it passed with
     # rather than restarting at calmar 0 (which would read as an immediate soft breach)
