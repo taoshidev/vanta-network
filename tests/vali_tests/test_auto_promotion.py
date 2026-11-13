@@ -934,6 +934,9 @@ def test_failing_auto_promotion_stats_never_stop_the_eliminations(hop_manager):
     assert hop_manager._auto_promotion_snapshot == {}
 
 
+# The steady track reads equity, so the open gain seeded here would qualify it on the first refresh; one day short
+# keeps it on the fast track the dashboard is shown for, with the stats it reports unchanged
+@patch.object(ValiConfig, "AUTO_PROMOTION_STEADY_TRACK_MINIMUM_DAYS", 61)
 def test_through_refresh_the_dashboard_shows_the_candidate_and_only_until_it_is_promoted(hop_manager):
     _seed(hop_manager, current_equity=1.12)
     hop_manager.miner_states[HOTKEY].drawdown.current_balance = 1.0
@@ -959,6 +962,9 @@ def test_through_refresh_the_dashboard_shows_the_candidate_and_only_until_it_is_
     assert hop_manager.get_auto_promotion(HOTKEY) is None
 
 
+# The steady track reads equity, so the open gain seeded here would qualify it on the first refresh; one day short
+# keeps it on the fast track the dashboard is shown for, with the stats it reports unchanged
+@patch.object(ValiConfig, "AUTO_PROMOTION_STEADY_TRACK_MINIMUM_DAYS", 61)
 @pytest.mark.parametrize("on_the_rules", [False, True])
 def test_after_a_failed_stats_pass_the_dashboard_shows_only_whether_the_account_is_on_the_rules(hop_manager,
                                                                                                on_the_rules):
@@ -970,7 +976,7 @@ def test_after_a_failed_stats_pass_the_dashboard_shows_only_whether_the_account_
     hop_manager._entity_client.is_testnet.return_value = False
     hop_manager._position_client.get_first_order_times.return_value = {HOTKEY: NOW_MS - DAILY_MS}
     _seed(hop_manager, current_equity=1.05)
-    hop_manager.miner_states[HOTKEY].drawdown.current_balance = 1.0  # all of it open: off the steady track
+    hop_manager.miner_states[HOTKEY].drawdown.current_balance = 1.0  # all of it open
 
     with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", created_ms if on_the_rules else None):
         _full_refresh(hop_manager, HOTKEY, NOW_MS, holding=True)
