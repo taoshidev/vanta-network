@@ -246,6 +246,8 @@ class TestPipelineOnARealHotkey(TestBase):
         self.manager._asset_selection_client.get_asset_selections.return_value = {HOTKEY: MinerAssetClass.CRYPTO}
         with patch.object(self.manager, "_refresh_drawdown_cache"), patch.object(self.manager, "_refresh_rank_cache"):
             self.manager.refresh(current_time_ms=NOW_MS)
+            self.assertEqual(self._bucket(HOTKEY), MinerBucket.SUBACCOUNT_CHALLENGE)  # held, not yet promoted
+            self.manager.refresh(current_time_ms=NOW_MS + self.manager.PROMOTION_HOLD_MS)
         self.assertEqual(self._bucket(HOTKEY), MinerBucket.SUBACCOUNT_FUNDED)
         self.accounts.set_leverage_tier.assert_called_once_with(HOTKEY, FUNDED_TIER)
         self.assertEqual(self.records[HOTKEY], record())
