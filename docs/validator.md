@@ -49,7 +49,7 @@ The validator picks the price source for each asset class automatically. All Mas
 | Crypto, commodities, indices, equity perps (Hyperliquid USDC pairs) | Hyperliquid order book websocket (best bid/ask) | Hyperliquid REST |
 | Forex | Massive forex quotes and Tiingo websockets | Massive and Tiingo REST |
 | Equities, regular session (09:30–16:00 ET) | **With Nasdaq Basic:** Massive Nasdaq Basic quotes, racing Databento quotes (if configured) on timestamp. **Without Nasdaq Basic:** Massive Business FMV, racing Databento quotes (if configured) | Massive REST per-second bars |
-| Equities, pre-market (04:00–09:30 ET) and after-hours (16:00–20:00 ET) | Massive Nasdaq Basic round-lot trades. Used only to fill limit orders; open positions are not re-valued | None. Without Nasdaq Basic, no orders fill in these sessions |
+| Equities, pre-market (04:00–09:30 ET) and after-hours (16:00–20:00 ET) | Massive Nasdaq Basic round-lot trades fill limit orders. Open positions are re-valued from the newest websocket quote of any age (Nasdaq Basic over FMV, no Databento or REST; `get_tp_to_sorted_price_sources(..., websocket_only=True)`), which also holds overnight and on closed days | None. Without Nasdaq Basic, no orders fill in these sessions |
 
 ### Nasdaq Basic (equities)
 

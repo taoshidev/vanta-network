@@ -456,8 +456,7 @@ multiplier at `2.0`. So $5K of eligible PnL on a $500K pro account pays a $100K 
 `(5K / 500K) × 2 × 100K = $2K`. A soft breach (all-time Calmar) does **not** withhold their payout
 during either of these two buckets. Scaling stops once they reach `PRO_FUNDED`.
 
-A subaccount created at or after the promotion rules start
-(`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`, set at release; until then no subaccount is) is
+A subaccount created at or after 2026-11-14 00:00 UTC is
 paid instead at the multiplier fixed when its pro size is granted: the one of its
 [auto-promotion](#auto-promotion)'s multiple, 1.3 at 3x, 1.5 at 5x and 2.0 at 10x
 (`ValiConfig.AUTO_PROMOTION_PAYOUT_MULTIPLIERS`), or 1.3 when the entity grants the pro size itself
@@ -945,7 +944,7 @@ Response:
   "payout_data": {
     "hotkey": "5GhDr..._0",
     "total_checkpoints": 14,
-    "checkpoints": [...],
+    "checkpoints": [],
     "payout": 123.45
   },
   "timestamp": 1700604800000
@@ -1102,7 +1101,7 @@ Each subaccount is identified by a synthetic hotkey with the format `{entity_hot
 |------------------------------------------------|----------------------------------------|
 | Max entities on the network                   | 10                                     |
 | Max account size per subaccount               | $100,000 USD                           |
-| Challenge period return threshold             | ≥ 8% for fx + equities, 10% for crypto |
+| Challenge period return threshold             | 10% crypto/equities/commodities/multi-class, 8% forex; on equity, held 3 minutes |
 | Challenge period drawdown threshold (trailing) | 5%                                     |
 | Funded period drawdown threshold (trailing)    | 8%                                     |
 | Drawdown threshold (static, challenge + funded) | 5%                                    |
