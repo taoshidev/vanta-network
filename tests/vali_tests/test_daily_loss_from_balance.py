@@ -226,7 +226,10 @@ def test_an_overnight_gain_loosens_the_day(manager, bucket, criteria):
     _seed(manager, bucket, criteria)
     _refresh_cache(manager, _account(OPEN_BALANCE * (1 - 0.04), OPEN_EQUITY_GAIN))
     _run_refresh(manager, HOTKEY, now_ms=NOW)
-    assert manager.get_miner_bucket(HOTKEY) == bucket
+    # A surviving transition is moved straight on: it is zero-length
+    survived = (MinerBucket.PRO_CHALLENGE_FROM_STANDARD if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
+                else bucket)
+    assert manager.get_miner_bucket(HOTKEY) == survived
 
 
 @pytest.mark.parametrize("open_equity,eliminated", [(OPEN_EQUITY_GAIN, False), (OPEN_EQUITY_LOSS, True)])

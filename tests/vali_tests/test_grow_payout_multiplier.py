@@ -256,7 +256,7 @@ def test_an_auto_promotion_fixes_the_multiplier_of_the_multiple_it_grants(hop_ma
 
 def test_an_auto_promotion_of_an_older_subaccount_keeps_the_old_multiplier(hop_manager):
     entity_manager, hotkey = _real_entity(hop_manager)
-    _candidate(hop_manager, hotkey, equity=1.12, balance=1.0, held_since_ms=HELD_SINCE_MS)
+    _candidate(hop_manager, hotkey, stats=_stats(days=20), equity=1.12, balance=1.0, held_since_ms=HELD_SINCE_MS)
     with _starting(CREATED_MS + 1):
         assert _auto_promote(hop_manager, hotkeys=(hotkey,)) == [hotkey]
     assert _info(entity_manager, hotkey).payout_scale is None

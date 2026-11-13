@@ -164,6 +164,16 @@ def test_should_promote_challenge_below_equity_threshold():
     assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
 
 
+def test_should_promote_subaccount_challenge_on_equity_with_a_lower_balance():
+    """Unrealized gains count: equity past the threshold promotes even with the balance below it."""
+    state = _state(MinerBucket.SUBACCOUNT_CHALLENGE)
+    state.drawdown = DrawdownStats(current_equity=1.0 + THRESHOLD + 0.01, current_balance=1.0)
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is True
+
+    state.drawdown = DrawdownStats(current_equity=1.0, current_balance=1.0 + THRESHOLD + 0.01)
+    assert ChallengePeriodManager._check_promotion(state, THRESHOLD, NOW_MS) is False
+
+
 def test_should_promote_ignores_rank():
     state = _state(MinerBucket.CHALLENGE)
     state.drawdown = DrawdownStats(current_equity=1.5, current_balance=1.5)

@@ -3245,9 +3245,8 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
         PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
         restarts the ledgers against the pro size, so neither is reversible. The hop into
-        PRO_CHALLENGE_TRANSITION keeps trading the standard account, so it wipes nothing: positions,
-        limit orders and ledgers all carry on, and only the resting orders that could open or increase
-        a position are cancelled (OrderSource.PRO_TRANSITION_CANCELLED).
+        PRO_CHALLENGE_TRANSITION closes every open position and cancels every pending limit order on the
+        standard account; the next refresh moves it on to PRO_CHALLENGE_FROM_STANDARD.
 
         Example:
         curl -X POST http://localhost:48888/entity/subaccount/promote \\

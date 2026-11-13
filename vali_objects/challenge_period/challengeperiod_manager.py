@@ -92,6 +92,12 @@ class DrawdownStats:
 
     @property
     def current_return(self) -> float:
+        # Promotions are measured on equity, unrealized PnL included; the balance may be lower
+        return self.current_equity - 1.0
+
+    @property
+    def lower_return(self) -> float:
+        """The lesser of equity and balance; only the pro challenge promotes on it"""
         return min(self.current_equity, self.current_balance) - 1.0
 
     def to_dict(self) -> dict:
@@ -102,6 +108,7 @@ class DrawdownStats:
         d['static_drawdown_pct'] = self.static_drawdown_pct
         d['static_eod_drawdown_pct'] = self.static_eod_drawdown_pct
         d['current_return'] = self.current_return
+        d['lower_return'] = self.lower_return
         return d
 
     @classmethod
@@ -546,13 +553,6 @@ class ChallengePeriodManager(CacheController):
         timer.lap("latch_soft_breaches")
         self._refresh_rank_cache(rank_hotkeys, ledgers, rank_positions, accounts, asset_selections, current_time_ms)
         timer.lap("rank_cache")
-        try:
-            flat_transitions = self._flat_auto_promoted_transitions()
-        except Exception as e:
-            logger.error(f"[CHALLENGE] open position lookup failed, auto-promoted transitions keep their "
-                         f"schedule this refresh: {e}", exc_info=True)
-            flat_transitions = set()
-        timer.lap("flat_transitions")
 
         eliminations: dict[str, EliminationReason] = {}
         promotions: dict[str, MinerBucket] = {}  # the bucket each was evaluated in
@@ -604,8 +604,8 @@ class ChallengePeriodManager(CacheController):
                         eliminations[hotkey] = reason
                     continue
 
-            # The transition wind-down ends on schedule (see _check_transition_expiry), regardless of performance
-            if self._check_transition_expiry(state, current_time_ms, hotkey in flat_transitions):
+            # The transition ends on schedule (see _check_transition_expiry), regardless of performance
+            if self._check_transition_expiry(state, current_time_ms):
                 promotions[hotkey] = state.current_bucket
                 continue
 
@@ -721,32 +721,12 @@ class ChallengePeriodManager(CacheController):
             logger.info(f"[CHALLENGE] near static drawdown {threshold_pct}%: {state}")
         return None
 
-    def _flat_auto_promoted_transitions(self) -> set[str]:
-        """Auto-promoted subaccounts in PRO_CHALLENGE_TRANSITION with no open position. The transition
-        cannot open one, so nothing is left to wind down."""
-        hotkeys = [hotkey for hotkey, state in self.miner_states.items()
-                   if state.current_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION and state.auto_promotion is not None]
-        if not hotkeys:
-            return set()
-        open_positions = self._position_client.get_positions_for_hotkeys(hotkeys, only_open_positions=True)
-        return {hotkey for hotkey in hotkeys if not open_positions.get(hotkey)}
-
     @staticmethod
-    def _check_transition_expiry(state: MinerBucketState, current_time_ms: int, flat: bool = False) -> bool:
-        """True once PRO_CHALLENGE_TRANSITION has run its course: after an auto-promotion, once the account
-        is flat or AUTO_PROMOTION_TRANSITION_DAYS have passed, else past the first Monday 00:00 UTC after
-        the miner entered it"""
+    def _check_transition_expiry(state: MinerBucketState, current_time_ms: int) -> bool:
+        """True once PRO_CHALLENGE_TRANSITION has lasted PRO_TRANSITION_DURATION_MS"""
         if state.current_bucket != MinerBucket.PRO_CHALLENGE_TRANSITION:
             return False
-        if state.auto_promotion is not None and flat:
-            logger.info(f"[CHALLENGE] transition ended early, no open positions: {state}")
-            return True
-        if state.auto_promotion is not None:
-            promoted_ms = state.auto_promotion.promoted_ms or state.current_bucket_start_ms
-            expired = current_time_ms >= promoted_ms + ValiConfig.AUTO_PROMOTION_TRANSITION_DAYS * ValiConfig.DAILY_MS
-        else:
-            expired = (TimeUtil.ms_at_start_of_week(current_time_ms)
-                       > TimeUtil.ms_at_start_of_week(state.current_bucket_start_ms))
+        expired = current_time_ms >= state.current_bucket_start_ms + ValiConfig.PRO_TRANSITION_DURATION_MS
         if expired:
             logger.info(f"[CHALLENGE] transition window closed: {state}")
         return expired
@@ -773,10 +753,12 @@ class ChallengePeriodManager(CacheController):
         if consistency_threshold is not None and state.pro_stats.daily_consistency > consistency_threshold:
             return False
 
-        if state.drawdown.current_return > returns_threshold:
+        # The pro challenge alone promotes on the lesser of equity and balance
+        current_return = state.drawdown.lower_return if state.current_bucket.is_pro else state.drawdown.current_return
+        if current_return > returns_threshold:
             logger.info(f"[CHALLENGE] PROMOTION {state}")
             return True
-        elif state.drawdown.current_return > returns_threshold * 0.75:
+        elif current_return > returns_threshold * 0.75:
             logger.info(f"[CHALLENGE] near promotion: {state}")
 
         return False
@@ -912,6 +894,15 @@ class ChallengePeriodManager(CacheController):
         self.miner_states[hotkey].pro_stats = ProStats()
         return True
 
+    def _close_out(self, hotkey: str, current_time_ms: int) -> None:
+        """Close every open position and cancel every pending limit order, keeping the account."""
+        self._position_client.close_all_positions(
+            hotkey=hotkey,
+            close_time_ms=current_time_ms,
+            order_source=OrderSource.SUBACCOUNT_PROMOTION
+        )
+        self._limit_order_client.cancel_limit_order(hotkey, None, "ALL", current_time_ms)
+
     def promote_hotkeys(self, promotions: dict[str, MinerBucket], current_time_ms: int) -> bool:
         """Promote miners to next tier. promotions maps each miner to the bucket it was evaluated in; one
         that has left it since, e.g. through an entity promotion, is not promoted again."""
@@ -934,9 +925,16 @@ class ChallengePeriodManager(CacheController):
                 if target_bucket.switches_account and not self._switch_account(hotkey, target_bucket, current_time_ms):
                     continue
 
+                entry_ms = current_time_ms
+                if target_bucket == MinerBucket.PRO_FUNDED:
+                    # Keeps the account, but starts flat: everything open is closed in the pro challenge,
+                    # which PRO_FUNDED then enters 1ms after
+                    self._close_out(hotkey, current_time_ms)
+                    entry_ms = current_time_ms + 1
+
                 from_state = str(state)
                 with self._buckets_lock:
-                    moved = self.miner_states[hotkey].add_bucket_entry(target_bucket, current_time_ms)
+                    moved = self.miner_states[hotkey].add_bucket_entry(target_bucket, entry_ms)
                 state_changed |= moved
                 promoted_count += moved
                 logger.info(f"[CHALLENGE] promoted to {target_bucket.value}: {from_state}")
@@ -995,16 +993,16 @@ class ChallengePeriodManager(CacheController):
         keeps the size already recorded (see EntityManager.apply_bucket_account_size, which rejects a
         subaccount that has neither). from_bucket, when given, rejects the call unless the subaccount
         is still in it, so a caller that decided on one hop never makes the next. A subaccount promoted
-        automatically may be moved out of PRO_CHALLENGE_TRANSITION early, but only on the size the
-        network granted and free of the promotion fee: a request that sends a pro_account_size is
-        rejected. A pro size granted here fixes the account's Grow payout multiplier: the one of
-        auto_promotion_multiple, else the lowest (ValiConfig.grow_payout_multiplier).
+        automatically leaves PRO_CHALLENGE_TRANSITION only on the size the network granted and free of
+        the promotion fee: a request that sends a pro_account_size is rejected. A pro size granted here
+        fixes the account's Grow payout multiplier: the one of auto_promotion_multiple, else the lowest
+        (ValiConfig.grow_payout_multiplier).
 
         Only a target with switches_account wipes trading state, which is the two hops landing on a
         pro account (PRO_CHALLENGE_DIRECT and PRO_CHALLENGE_FROM_STANDARD): positions closed, limit
-        orders cancelled, ledgers restarted. PRO_CHALLENGE_TRANSITION is a wind-down week on the
-        standard account, so the hop into it keeps the positions, limit orders and ledgers as they
-        are and only sweeps the entry orders (see admin_set_bucket).
+        orders cancelled, ledgers restarted. Entering PRO_CHALLENGE_TRANSITION closes every position on
+        the standard account (see admin_set_bucket); the refresh moves it on once the transition expires
+        (see _check_transition_expiry).
 
         Runs under the subaccount's promotion lock, so two promotions of it never interleave their
         sizing and bucket moves. Without from_bucket the bucket at the time of the call is used, so a
@@ -1247,15 +1245,13 @@ class ChallengePeriodManager(CacheController):
                 )
                 return False, f"{hotkey} account size update failed, bucket unchanged: {message}"
 
+        if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
+            self._close_out(hotkey, current_time_ms)
+
         with self._buckets_lock:
             state.add_bucket_entry(bucket, current_time_ms)
 
         self._sync_buckets_to_accounts(hotkeys=[hotkey])
-
-        if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            self._limit_order_client.cancel_entry_orders(
-                hotkey, current_time_ms, OrderSource.PRO_TRANSITION_CANCELLED
-            )
 
         self._save_to_disk()
         return True, f"{hotkey} moved to {bucket.value}"
