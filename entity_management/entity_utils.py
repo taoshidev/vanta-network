@@ -279,6 +279,7 @@ def create_subaccount_dashboard(
     add_to_dashboard("challenge_period", challenge_period_client.get_dashboard)
     add_to_dashboard("drawdown", challenge_period_client.get_drawdown_stats)
     add_to_dashboard("pro_stats", challenge_period_client.get_pro_stats)
+    add_to_dashboard("auto_promotion", challenge_period_client.get_auto_promotion)
     add_to_dashboard("elimination", elimination_client.get_dashboard)
     add_to_dashboard("account_size_data", miner_account_client.get_dashboard)
     attach_correlated_exposure_report(dashboard.get("account_size_data"))
