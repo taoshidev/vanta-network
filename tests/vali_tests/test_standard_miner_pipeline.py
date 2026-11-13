@@ -222,9 +222,10 @@ class TestPipelineOnARealHotkey(TestBase):
         self.records[OTHER] = record()
         self.manager._position_client.close_all_positions.side_effect = RuntimeError("position server unavailable")
         for hotkey, bucket in ((HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION), (OTHER, MinerBucket.SUBACCOUNT_CHALLENGE)):
-            with self.subTest(hotkey=hotkey), self.assertRaises(RuntimeError):
-                self.manager.promote_hotkeys({hotkey: bucket}, NOW_MS)
-            self.assertEqual(self._bucket(hotkey), bucket)
+            # The failure is logged and the miner left for the next refresh, not raised into the refresh
+            with self.subTest(hotkey=hotkey):
+                self.assertFalse(self.manager.promote_hotkeys({hotkey: bucket}, NOW_MS))
+                self.assertEqual(self._bucket(hotkey), bucket)
         self.assertEqual(self.records[HOTKEY], record(pro_account_size=PRO_SIZE))
         self.manager._asset_selection_client.process_asset_selection_request.assert_not_called()
         self.accounts.set_leverage_tier.assert_not_called()

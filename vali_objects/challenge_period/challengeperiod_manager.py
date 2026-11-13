@@ -935,16 +935,23 @@ class ChallengePeriodManager(CacheController):
                     logger.warning(f"[CHALLENGE] no next bucket for promotion: {state}")
                     continue
 
-                # Leave the miner where they are when the account switch fails; the next refresh retries
-                if target_bucket.switches_account and not self._switch_account(hotkey, target_bucket, current_time_ms):
-                    continue
+                # Leave the miner where they are when the account switch or the close out fails: the next refresh
+                # retries, and one miner's failure never stops the others' promotions or the rest of the refresh
+                try:
+                    if target_bucket.switches_account and not self._switch_account(hotkey, target_bucket,
+                                                                                   current_time_ms):
+                        continue
 
-                entry_ms = current_time_ms
-                if target_bucket == MinerBucket.PRO_FUNDED:
-                    # Keeps the account, but starts flat: everything open is closed in the pro challenge,
-                    # which PRO_FUNDED then enters 1ms after
-                    self._close_out(hotkey, current_time_ms)
-                    entry_ms = current_time_ms + 1
+                    entry_ms = current_time_ms
+                    if target_bucket == MinerBucket.PRO_FUNDED:
+                        # Keeps the account, but starts flat: everything open is closed in the pro challenge,
+                        # which PRO_FUNDED then enters 1ms after
+                        self._close_out(hotkey, current_time_ms)
+                        entry_ms = current_time_ms + 1
+                except Exception as e:
+                    logger.error(f"[CHALLENGE] promotion to {target_bucket.value} failed, left in "
+                                 f"{evaluated_bucket.value} to retry next refresh: {e} {state}", exc_info=True)
+                    continue
 
                 from_state = str(state)
                 with self._buckets_lock:
