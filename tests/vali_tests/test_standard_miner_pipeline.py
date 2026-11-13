@@ -222,9 +222,10 @@ class TestPipelineOnARealHotkey(TestBase):
         self.records[OTHER] = record()
         self.manager._position_client.close_all_positions.side_effect = RuntimeError("position server unavailable")
         for hotkey, bucket in ((HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION), (OTHER, MinerBucket.SUBACCOUNT_CHALLENGE)):
-            with self.subTest(hotkey=hotkey), self.assertRaises(RuntimeError):
-                self.manager.promote_hotkeys({hotkey: bucket}, NOW_MS)
-            self.assertEqual(self._bucket(hotkey), bucket)
+            # The failure is logged and the miner left for the next refresh, not raised into the refresh
+            with self.subTest(hotkey=hotkey):
+                self.assertFalse(self.manager.promote_hotkeys({hotkey: bucket}, NOW_MS))
+                self.assertEqual(self._bucket(hotkey), bucket)
         self.assertEqual(self.records[HOTKEY], record(pro_account_size=PRO_SIZE))
         self.manager._asset_selection_client.process_asset_selection_request.assert_not_called()
         self.accounts.set_leverage_tier.assert_not_called()
@@ -246,6 +247,8 @@ class TestPipelineOnARealHotkey(TestBase):
         self.manager._asset_selection_client.get_asset_selections.return_value = {HOTKEY: MinerAssetClass.CRYPTO}
         with patch.object(self.manager, "_refresh_drawdown_cache"), patch.object(self.manager, "_refresh_rank_cache"):
             self.manager.refresh(current_time_ms=NOW_MS)
+            self.assertEqual(self._bucket(HOTKEY), MinerBucket.SUBACCOUNT_CHALLENGE)  # held, not yet promoted
+            self.manager.refresh(current_time_ms=NOW_MS + self.manager.PROMOTION_HOLD_MS)
         self.assertEqual(self._bucket(HOTKEY), MinerBucket.SUBACCOUNT_FUNDED)
         self.accounts.set_leverage_tier.assert_called_once_with(HOTKEY, FUNDED_TIER)
         self.assertEqual(self.records[HOTKEY], record())

@@ -70,9 +70,9 @@ def test_the_multiplier_of_each_multiple_and_the_lowest_for_any_other_grant(mult
 
 
 def test_the_switch_is_off_until_it_is_set():
-    assert ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS is None
-    assert ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET is None
-    assert not is_on_promotion_rules(CREATED_MS) and not is_on_promotion_rules(CREATED_MS, is_testnet=True)
+    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None), \
+            patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None):
+        assert not is_on_promotion_rules(CREATED_MS) and not is_on_promotion_rules(CREATED_MS, is_testnet=True)
 
 
 def test_a_subaccount_is_on_the_rules_from_its_networks_start():
@@ -133,10 +133,11 @@ def test_an_account_that_already_has_a_pro_size_keeps_its_multiplier(entity_mana
 def test_a_validator_reads_its_own_networks_switch(entity_manager):
     entity_manager.is_testnet = True
     mainnet_start = _add_standard(entity_manager, subaccount_id=0)
-    with _starting(CREATED_MS):
+    with _starting(CREATED_MS), patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None):
         assert entity_manager.apply_bucket_account_size(mainnet_start, TRANSITION, 3 * STANDARD_SIZE)[0]
     testnet_start = _add_standard(entity_manager, subaccount_id=1)
-    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", CREATED_MS):
+    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None), \
+            patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", CREATED_MS):
         assert entity_manager.apply_bucket_account_size(testnet_start, TRANSITION, 3 * STANDARD_SIZE)[0]
     assert _info(entity_manager, mainnet_start).payout_scale is None
     assert _info(entity_manager, testnet_start).payout_scale == LOWEST
@@ -256,7 +257,7 @@ def test_an_auto_promotion_fixes_the_multiplier_of_the_multiple_it_grants(hop_ma
 
 def test_an_auto_promotion_of_an_older_subaccount_keeps_the_old_multiplier(hop_manager):
     entity_manager, hotkey = _real_entity(hop_manager)
-    _candidate(hop_manager, hotkey, equity=1.12, balance=1.0, held_since_ms=HELD_SINCE_MS)
+    _candidate(hop_manager, hotkey, stats=_stats(days=20), equity=1.12, balance=1.0, held_since_ms=HELD_SINCE_MS)
     with _starting(CREATED_MS + 1):
         assert _auto_promote(hop_manager, hotkeys=(hotkey,)) == [hotkey]
     assert _info(entity_manager, hotkey).payout_scale is None

@@ -605,20 +605,21 @@ class ValiConfig:
     # as a funded account has reached AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE
     AUTO_PROMOTION_FAST_TRACK_LEVERAGE_USE = 0.5
     AUTO_PROMOTION_FAST_TRACK_LEVERAGED_RETURN = 0.03
-    # Steady track: every condition below, sized by the highest calmar tier reached. The return is on the
-    # lower of balance and equity, so open losses count and open gains do not
+    # Steady track: every condition below, sized by the highest calmar tier reached. The return is on
+    # equity, unrealized PnL included
     AUTO_PROMOTION_STEADY_TRACK_MINIMUM_DAYS = 60
     AUTO_PROMOTION_STEADY_TRACK_MINIMUM_RETURN = 0.03
     AUTO_PROMOTION_STEADY_TRACK_MAX_DAILY_CONSISTENCY = 0.5
     AUTO_PROMOTION_STEADY_TRACK_CALMAR_MULTIPLIERS = ((2.0, 10), (1.5, 5))  # (minimum calmar, multiple)
-    AUTO_PROMOTION_TRANSITION_DAYS = 7  # longest time in PRO_CHALLENGE_TRANSITION after an auto-promotion; ends early once flat
+    # How long PRO_CHALLENGE_TRANSITION lasts before the refresh moves the account on
+    PRO_TRANSITION_DURATION_MS = 1
     # PRO_CHALLENGE_FROM_STANDARD payout multiplier by the multiple an auto-promotion grants, fixed with the pro size
     # (any other grant gets the lowest), for standard miners and subaccounts from SUBACCOUNT_PROMOTION_RULES_START_MS on
     AUTO_PROMOTION_PAYOUT_MULTIPLIERS = {3: 1.3, 5: 1.5, 10: 2.0}
     # Creation time (ms) from which subaccounts take AUTO_PROMOTION_PAYOUT_MULTIPLIERS and the weekly and leverage fast
     # track returns. None = off; set it after every validator runs the release that reads it, and never move it back
-    SUBACCOUNT_PROMOTION_RULES_START_MS = None
-    SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET = None
+    SUBACCOUNT_PROMOTION_RULES_START_MS = 1794614400000  # 2026-11-14 00:00:00 UTC
+    SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET = 1794614400000  # 2026-11-14 00:00:00 UTC
 
     @staticmethod
     def subaccount_promotion_rules_start_ms(is_testnet: bool = False) -> int | None:
@@ -674,13 +675,15 @@ class ValiConfig:
 
     # Standard miners: a regular miner registered after its network's cutoff block trades on the standard account
     # pipeline under its own hotkey. None = off; set a block after every validator runs the release that sets it.
-    STANDARD_MINER_CUTOFF_BLOCK = None
-    STANDARD_MINER_CUTOFF_BLOCK_TESTNET = None
+    STANDARD_MINER_CUTOFF_BLOCK = 9500888  # ≈ 2026-11-14 00:00 UTC (12s blocks from 9499381 at 18:58:36 UTC on 11/13)
+    STANDARD_MINER_CUTOFF_BLOCK_TESTNET = 8439345  # ≈ 2026-11-14 00:00 UTC (12s blocks from 8437839 at 18:58:48 UTC on 11/13)
     # Account size at opening = collateral USD value / the tier's collateral percentage, within the bounds
     STANDARD_MINER_COLLATERAL_PCT_BY_TIER = {1: 0.007, 2: 0.011, 3: 0.015}  # Base, Boost I, Boost II
     STANDARD_MINER_MIN_ACCOUNT_SIZE = 5_000
     STANDARD_MINER_MAX_ACCOUNT_SIZE = 100_000
-    # EOD high-water mark and daily loss limits in every bucket before PRO_FUNDED, which keeps its own
+    # Daily loss limit in every bucket before PRO_FUNDED, which keeps its own. The static rules
+    # (SUBACCOUNT_STATIC_DRAWDOWN_THRESHOLD from the starting balance) apply until the pro buckets, then this EOD
+    # high-water mark limit until PRO_FUNDED
     STANDARD_MINER_EOD_HWM_THRESHOLD = 0.05
     STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD = 0.03
     # The leverage tier a standard miner trades from SUBACCOUNT_FUNDED on, whatever tier it opened on
@@ -695,8 +698,8 @@ class ValiConfig:
 
     # From this time (ms; the cutoff block's moment) a miner on the existing rules keeps the size in force when first
     # seen trading, and withdrawing the theta behind it closes the account. None = no new locks (written ones stay).
-    ACCOUNT_SIZE_LOCK_START_MS = None
-    ACCOUNT_SIZE_LOCK_START_MS_TESTNET = None
+    ACCOUNT_SIZE_LOCK_START_MS = 1794614400000  # 2026-11-14 00:00:00 UTC, the mainnet cutoff block's moment
+    ACCOUNT_SIZE_LOCK_START_MS_TESTNET = 1794614400000  # 2026-11-14 00:00:00 UTC, the testnet cutoff block's moment
 
     @staticmethod
     def account_size_lock_start_ms(is_testnet: bool = False) -> int | None:

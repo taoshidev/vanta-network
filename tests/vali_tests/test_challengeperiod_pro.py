@@ -435,7 +435,16 @@ def test_the_return_is_the_lesser_of_equity_and_balance():
     state.drawdown.current_equity = 1.20
     state.drawdown.current_balance = 1.05
 
-    assert state.drawdown.current_return == pytest.approx(0.05)
+    assert state.drawdown.lower_return == pytest.approx(0.05)
+    assert ChallengePeriodManager._check_promotion(state, RETURNS_THRESHOLD, NOW_MS) is False
+
+
+def test_a_balance_above_equity_does_not_promote():
+    """Realized gains given back on an open position do not count either."""
+    state = _promotable_state(MinerBucket.PRO_CHALLENGE_DIRECT)
+    state.drawdown.current_equity = 1.0
+    state.drawdown.current_balance = 1.20
+
     assert ChallengePeriodManager._check_promotion(state, RETURNS_THRESHOLD, NOW_MS) is False
 
 
@@ -625,41 +634,10 @@ def test_non_pro_buckets_ignore_pro_stats():
 
 
 def test_the_transition_bucket_never_promotes_on_returns():
-    """The transition runs to the week boundary: returns cannot shorten it, however good they are.
-    Blocking the returns path leaves that boundary as the only automatic way out."""
+    """The transition is left by its own hop, never by the returns path."""
     state = _promotable_state(MinerBucket.PRO_CHALLENGE_TRANSITION)
     state.drawdown = DrawdownStats(current_equity=2.0, current_balance=2.0)
     assert ChallengePeriodManager._check_promotion(state, RETURNS_THRESHOLD, NOW_MS) is False
-
-
-def test_the_transition_ends_at_the_next_monday_however_short_that_is():
-    """Entering mid-week does not buy a full week: the wind-down closes at the first Monday 00:00
-    UTC after the miner entered, so a Saturday entry has two days of it."""
-    state = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, MONDAY_MS - 2 * DAILY_MS)  # the Saturday before
-
-    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS - DAILY_MS) is False
-    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS - 1) is False
-    # The boundary itself, and every refresh after it: whichever run comes first promotes them
-    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS) is True
-    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS) is True
-
-
-def test_a_transition_entered_on_the_boundary_keeps_the_whole_week():
-    """The Monday has to be crossed, so a miner moved in at the seam is not promoted straight back
-    out on the same refresh."""
-    state = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, MONDAY_MS)
-
-    assert ChallengePeriodManager._check_transition_expiry(state, MONDAY_MS) is False
-    assert ChallengePeriodManager._check_transition_expiry(state, NEXT_MONDAY_MS - 1) is False
-    assert ChallengePeriodManager._check_transition_expiry(state, NEXT_MONDAY_MS) is True
-
-
-@pytest.mark.parametrize("bucket", [b for b in MinerBucket if b != MinerBucket.PRO_CHALLENGE_TRANSITION])
-def test_no_other_bucket_leaves_on_the_week_boundary(bucket):
-    """Only the transition is advanced by the calendar; every other bucket promotes on its own
-    gates however many Mondays it has sat through."""
-    state = _state(bucket, NOW_MS - 400 * DAILY_MS)
-    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -679,6 +657,8 @@ def test_refresh_promotes_to_pro_funded_when_every_gate_clears(manager, bucket):
     manager.miner_states[HOTKEY].drawdown = _healthy_drawdown(1.08)
 
     _run_refresh(manager, HOTKEY, ledger=ledger)
+    assert manager.get_miner_bucket(HOTKEY) == bucket  # held, not yet promoted
+    _run_refresh(manager, HOTKEY, ledger=ledger, now_ms=NOW_MS + ChallengePeriodManager.PROMOTION_HOLD_MS)
 
     # The PRO_FUNDED hop keeps the account, so the funded miner carries the ratio it passed with
     # rather than restarting at calmar 0 (which would read as an immediate soft breach)
@@ -727,16 +707,32 @@ def test_refresh_holds_in_bucket_when_one_day_carries_the_return(manager):
     assert manager.get_miner_bucket(HOTKEY) == MinerBucket.PRO_CHALLENGE_DIRECT
 
 
-def test_refresh_moves_the_transition_onto_the_pro_account_once_the_week_turns(manager):
-    """End to end: a miner that entered the wind-down on Sunday is still in it on Sunday night and
-    is moved on by the first refresh past Monday 00:00 UTC, with nothing but the calendar changing."""
-    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, MONDAY_MS - DAILY_MS)
+def test_the_transition_expires_1ms_after_it_is_entered():
+    state = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)
+    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS) is False
+    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS + 1) is True
+
+
+def test_the_transition_expires_after_its_configured_duration():
+    state = _state(MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)
+    with patch.object(ValiConfig, "PRO_TRANSITION_DURATION_MS", DAILY_MS):
+        assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS + DAILY_MS - 1) is False
+        assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS + DAILY_MS) is True
+
+
+@pytest.mark.parametrize("bucket", [b for b in MinerBucket if b != MinerBucket.PRO_CHALLENGE_TRANSITION])
+def test_no_other_bucket_expires(bucket):
+    state = _state(bucket, NOW_MS - 400 * DAILY_MS)
+    assert ChallengePeriodManager._check_transition_expiry(state, NOW_MS) is False
+
+
+def test_refresh_moves_an_account_left_in_the_transition_onto_the_pro_account(manager):
+    """The transition is zero-length: an account still in it (its move on failed) is moved on by the
+    next refresh, whatever the calendar says."""
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS - 1)
     manager.miner_states[HOTKEY].drawdown = _healthy_drawdown(1.0)
 
-    _run_refresh(manager, HOTKEY, now_ms=MONDAY_MS - 1)
-    assert manager.get_miner_bucket(HOTKEY) == MinerBucket.PRO_CHALLENGE_TRANSITION
-
-    _run_refresh(manager, HOTKEY, now_ms=MONDAY_MS)
+    _run_refresh(manager, HOTKEY, now_ms=NOW_MS)
     assert manager.get_miner_bucket(HOTKEY) == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
 
 
@@ -1258,43 +1254,49 @@ def test_only_the_hops_onto_a_pro_account_wind_the_standard_account_down(hop_man
     hop_manager._limit_order_client.cancel_entry_orders.assert_not_called()
 
 
-def test_entering_the_transition_wipes_nothing_and_only_sweeps_entry_orders(hop_manager):
-    """PRO_CHALLENGE_TRANSITION is a wind-down week on the standard account, so this hop keeps the
-    subaccount's positions, limit orders and ledgers. Only the resting orders that could open or
-    increase a position are cancelled; closes and reductions stay for the week."""
+def test_entering_the_transition_closes_out_the_standard_account(hop_manager):
+    """Entering PRO_CHALLENGE_TRANSITION closes every position and cancels every limit order on the
+    standard account, while still in SUBACCOUNT_FUNDED. The refresh moves it on; this hop wipes nothing."""
     _in_bucket(hop_manager, MinerBucket.SUBACCOUNT_FUNDED)
+    closed_in = []
+    hop_manager._position_client.close_all_positions.side_effect = (
+        lambda **kwargs: closed_in.append(hop_manager.miner_states[HOTKEY].current_bucket))
 
     assert hop_manager.promote_subaccount(HOTKEY, NOW_MS, GRANTED_SIZE)[0]
 
     assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
-    hop_manager._position_client.close_all_positions.assert_not_called()
+    assert closed_in == [MinerBucket.SUBACCOUNT_FUNDED]
+    hop_manager._position_client.close_all_positions.assert_called_once_with(
+        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION)
+    hop_manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
+    hop_manager._limit_order_client.cancel_entry_orders.assert_not_called()
     hop_manager._position_client.archive_positions_for_hotkey.assert_not_called()
     hop_manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
-    hop_manager._debt_ledger_client.delete_debt_ledger.assert_not_called()
     hop_manager._miner_account_client.reset_account.assert_not_called()
-    # the blanket "cancel everything" sweep belongs to an account switch; this hop is not one
-    hop_manager._limit_order_client.cancel_limit_order.assert_not_called()
-    hop_manager._limit_order_client.cancel_entry_orders.assert_called_once_with(
-        HOTKEY, NOW_MS, OrderSource.PRO_TRANSITION_CANCELLED
-    )
 
 
 @pytest.mark.parametrize("challenge_bucket", PRO_CHALLENGE_BUCKETS)
 def test_pro_funded_keeps_the_account_it_passed_on(hop_manager, challenge_bucket):
-    """Passing the pro challenge keeps the same account.
+    """Passing the pro challenge keeps the same account, but closed out.
 
-    Balance, equity, positions and the ledgers all carry over, so all-time calmar keeps the ratio
-    the miner passed with. Challenge-period gains are kept out of the payout by the payout paths
-    reading each checkpoint's own bucket, not by wiping the history.
+    Every position is closed and every limit order cancelled while still in the pro challenge, and
+    PRO_FUNDED is entered 1ms later. Balance and the ledgers carry over, so all-time calmar keeps the
+    ratio the miner passed with; nothing is archived, reset or wiped.
     """
     _in_bucket(hop_manager, challenge_bucket)
+    closed_in = []
+    hop_manager._position_client.close_all_positions.side_effect = (
+        lambda **kwargs: closed_in.append(hop_manager.miner_states[HOTKEY].current_bucket))
 
     assert hop_manager.promote_hotkeys({HOTKEY: challenge_bucket}, NOW_MS)
 
-    assert hop_manager.miner_states[HOTKEY].current_bucket == MinerBucket.PRO_FUNDED
-    hop_manager._position_client.close_all_positions.assert_not_called()
+    state = hop_manager.miner_states[HOTKEY]
+    assert (state.current_bucket, state.current_bucket_start_ms) == (MinerBucket.PRO_FUNDED, NOW_MS + 1)
+    assert closed_in == [challenge_bucket]
+    hop_manager._position_client.close_all_positions.assert_called_once_with(
+        hotkey=HOTKEY, close_time_ms=NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION)
+    hop_manager._limit_order_client.cancel_limit_order.assert_called_once_with(HOTKEY, None, "ALL", NOW_MS)
     hop_manager._position_client.archive_positions_for_hotkey.assert_not_called()
-    hop_manager._limit_order_client.cancel_limit_order.assert_not_called()
     hop_manager._perf_ledger_client.wipe_miners_perf_ledgers.assert_not_called()
     hop_manager._debt_ledger_client.delete_debt_ledger.assert_not_called()
     hop_manager._miner_account_client.reset_account.assert_not_called()
@@ -1422,9 +1424,17 @@ def _with_real_entity_manager(manager, bucket=MinerBucket.SUBACCOUNT_FUNDED,
     return entity_manager, hotkey
 
 
+def _left_in_transition(manager, entity_manager, hotkey, size=GRANTED_SIZE):
+    """A subaccount whose move on out of the transition failed: the pro size recorded, still in it."""
+    assert entity_manager.apply_bucket_account_size(hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, size)[0]
+    manager.miner_states[hotkey].add_bucket_entry(MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)
+
+
+@patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None)
+@patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None)
 def test_the_transition_records_the_size_then_the_next_hop_trades_it(hop_manager):
-    """Entering the transition records the pro size but keeps trading the standard account; the
-    hop out of it is what puts the subaccount on the pro account and rescales its payout."""
+    """Entering the transition records the pro size but keeps the standard account; the hop out of it
+    is what puts the subaccount on the pro account and rescales its payout."""
     entity_manager, hotkey = _with_real_entity_manager(hop_manager)
 
     assert hop_manager.promote_subaccount(hotkey, NOW_MS, 250_000)[0]
@@ -1433,10 +1443,9 @@ def test_the_transition_records_the_size_then_the_next_hop_trades_it(hop_manager
     assert info.pro_account_size == 250_000
     assert info.standard_account_size == STANDARD_SIZE
     assert info.account_size == STANDARD_SIZE
-    # PRO_CHALLENGE_TRANSITION still trades the standard account, so it keeps its own class
     assert info.asset_class == "forex"
 
-    success, message = hop_manager.promote_subaccount(hotkey, NOW_MS + 1000)
+    success, message = hop_manager.promote_subaccount(hotkey, NOW_MS + 1)
 
     assert success, message
     assert hop_manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
@@ -1485,9 +1494,9 @@ def test_entering_the_track_without_a_size_is_rejected(hop_manager):
 
 
 def test_organic_promotion_keeps_the_recorded_size(hop_manager):
-    """The end-of-week auto promotion and the pro funded promotion send no size either."""
+    """The refresh's move out of the transition and the pro funded promotion send no size either."""
     entity_manager, hotkey = _with_real_entity_manager(hop_manager)
-    assert hop_manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
+    _left_in_transition(hop_manager, entity_manager, hotkey)
 
     assert hop_manager.promote_hotkeys({hotkey: MinerBucket.PRO_CHALLENGE_TRANSITION}, NOW_MS)
     assert hop_manager.miner_states[hotkey].current_bucket == MinerBucket.PRO_CHALLENGE_FROM_STANDARD
@@ -1536,7 +1545,7 @@ def test_a_failed_hop_onto_the_pro_account_rolls_the_sizing_back(hop_manager, fa
     PRO_CHALLENGE_FROM_STANDARD trades the pro size, and a subaccount left holding it while still in
     PRO_CHALLENGE_TRANSITION is supposed to be trading the standard account."""
     entity_manager, hotkey = _with_real_entity_manager(hop_manager)
-    assert hop_manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
+    _left_in_transition(hop_manager, entity_manager, hotkey)
     before = entity_manager.get_subaccount_info_for_synthetic(hotkey).model_copy()
     assert before.account_size == STANDARD_SIZE
 
@@ -1563,10 +1572,10 @@ def test_a_failed_hop_onto_the_pro_account_rolls_the_sizing_back(hop_manager, fa
 
 
 def test_a_crash_after_the_bucket_moves_keeps_the_sizing(hop_manager):
-    """The disk write and the entry-order sweep run after the bucket entry has landed. Rolling the
+    """The disk write runs after the bucket entry has landed. Rolling the
     sizing back there would leave a pro bucket trading the standard size."""
     entity_manager, hotkey = _with_real_entity_manager(hop_manager)
-    assert hop_manager.promote_subaccount(hotkey, NOW_MS, GRANTED_SIZE)[0]
+    _left_in_transition(hop_manager, entity_manager, hotkey)
 
     with patch.object(hop_manager, "_save_to_disk", side_effect=RuntimeError("disk full")):
         with pytest.raises(RuntimeError):
@@ -1823,7 +1832,7 @@ class ProTransitionRestingOrdersTest(unittest.TestCase):
 
 
 class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
-    """The challenge period side: the sweep is wired into the move into the transition."""
+    """The challenge period side: which orders each admin move cancels."""
 
     def setUp(self):
         stack = contextlib.ExitStack()
@@ -1837,17 +1846,16 @@ class AdminSetBucketCancelsEntryOrdersTest(unittest.TestCase):
         stack.enter_context(patch.object(self.manager, "_save_to_disk"))
         self.manager.set_miner_bucket(ORDER_HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, ORDER_NOW_MS)
 
-    def test_entering_the_transition_sweeps_entry_orders_only(self):
+    def test_entering_the_transition_closes_out_the_standard_account(self):
         success, message = self.manager.admin_set_bucket(
             ORDER_HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, ORDER_NOW_MS)
 
         self.assertTrue(success, message)
-        self.manager._limit_order_client.cancel_entry_orders.assert_called_once_with(
-            ORDER_HOTKEY, ORDER_NOW_MS, OrderSource.PRO_TRANSITION_CANCELLED
-        )
-        # The transition is not an account switch, so the brackets and the resting exits survive.
-        self.manager._limit_order_client.cancel_limit_order.assert_not_called()
-        self.manager._position_client.close_all_positions.assert_not_called()
+        self.manager._position_client.close_all_positions.assert_called_once_with(
+            hotkey=ORDER_HOTKEY, close_time_ms=ORDER_NOW_MS, order_source=OrderSource.SUBACCOUNT_PROMOTION)
+        self.manager._limit_order_client.cancel_limit_order.assert_called_once_with(
+            ORDER_HOTKEY, None, "ALL", ORDER_NOW_MS)
+        self.manager._limit_order_client.cancel_entry_orders.assert_not_called()
 
     def test_an_account_switch_still_cancels_everything(self):
         self.manager.set_miner_bucket(ORDER_HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, ORDER_NOW_MS)

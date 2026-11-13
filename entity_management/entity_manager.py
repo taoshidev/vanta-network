@@ -2464,6 +2464,13 @@ class EntityManager(ValidatorBroadcastBase):
         except Exception as e:
             logger.debug(f"[ENTITY_MANAGER] Drawdown stats unavailable for {synthetic_hotkey}: {e}")
 
+        # Auto-promotion progress (None unless the subaccount is an auto-promotion candidate)
+        auto_promotion_data = None
+        try:
+            auto_promotion_data = self._challenge_period_client.get_auto_promotion(synthetic_hotkey)
+        except Exception as e:
+            logger.debug(f"[ENTITY_MANAGER] Auto-promotion progress unavailable for {synthetic_hotkey}: {e}")
+
         # 3. Build aggregated response
         subaccount_info_dict = {
             'synthetic_hotkey': synthetic_hotkey,
@@ -2495,6 +2502,7 @@ class EntityManager(ValidatorBroadcastBase):
             'statistics': statistics_data,
             'elimination': elimination_data,
             'drawdown': drawdown_data,
+            'auto_promotion': auto_promotion_data,
         }
 
     def broadcast_subaccount_dashboard(self, synthetic_hotkey: str) -> None:

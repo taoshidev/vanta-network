@@ -295,7 +295,8 @@ class TestSubtensorOpsManager(TestBase):
         self.assertEqual(account_client.get_registered_after_cutoff(), (999, {hk: True for hk in hotkeys}))
 
         # With the cutoff unset nobody is after it
-        updater.update_metagraph()
+        with patch.object(ValiConfig, "STANDARD_MINER_CUTOFF_BLOCK", None):
+            updater.update_metagraph()
         self.assertEqual(self.metagraph_client.get_registered_after_cutoff(), {hk: False for hk in hotkeys})
         self.assertEqual(account_client.get_registered_after_cutoff(), (None, {hk: False for hk in hotkeys}))
 

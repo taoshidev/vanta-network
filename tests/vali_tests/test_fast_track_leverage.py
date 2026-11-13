@@ -196,10 +196,12 @@ def test_a_testnet_validator_reads_the_testnet_switch_and_asks_its_network_once(
         "initial_bucket": None, "created_at_ms": CREATED_MS}
     manager._entity_client.is_testnet.return_value = True
     _seed(manager)
-    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", CREATED_MS):
+    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", CREATED_MS), \
+            patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None):
         assert not _holds(manager, _account(), 1.04, NOW_MS - DAILY_MS)
     manager._promotion_rules.clear()
-    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", CREATED_MS):
+    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None), \
+            patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", CREATED_MS):
         assert _holds(manager, _account(), 1.04, NOW_MS - DAILY_MS, now_ms=NOW_MS + 30_000)
     manager._entity_client.is_testnet.assert_called_once()
 
@@ -210,6 +212,69 @@ def test_a_hold_begun_under_ten_percent_carries_on_once_the_leverage_line_applie
     assert _holds(manager, account, 1.10, WEEK_THREE_MS)
     assert _holds(manager, _with_peak(account, HALF), 1.04, WEEK_THREE_MS, now_ms=NOW_MS + 60_000)
     assert manager._fast_track_since_ms[HOTKEY] == NOW_MS
+
+
+# ── The line and what it was read from, as the dashboard shows them ──────────
+
+@pytest.mark.parametrize("days,line", [(None, 0.10), (0, 0.03), (6.99, 0.03), (7, 0.05), (13.99, 0.05), (14, 0.10)])
+def test_the_dashboard_shows_a_new_subaccounts_weekly_line_and_its_first_order(manager, on_the_rules, days, line):
+    _seed(manager)
+    first_order_ms = None if days is None else NOW_MS - int(days * DAILY_MS)
+    _holds(manager, _account(), 1.0, first_order_ms)
+
+    section = manager.get_auto_promotion(HOTKEY)
+    assert section["on_promotion_rules"] is True
+    assert section["fast_track_target"] == line
+    assert section["first_funded_order_ms"] == first_order_ms
+    assert section["as_of_ms"] == NOW_MS
+
+
+@pytest.mark.parametrize("make_account", [_standard_miner, _account], ids=["standard miner", "new subaccount"])
+@pytest.mark.parametrize("peak,line", [(HALF - 0.0001, 0.10), (HALF, 0.03), (1.0, 0.03)])
+def test_the_dashboard_shows_the_leverage_line_and_the_peak_it_was_read_from(manager, on_the_rules, make_account,
+                                                                             peak, line):
+    _seed(manager)
+    _holds(manager, _with_peak(make_account(), peak), 1.0, WEEK_THREE_MS)
+
+    section = manager.get_auto_promotion(HOTKEY)
+    assert section["on_promotion_rules"] is True
+    assert section["fast_track_target"] == line
+    assert section["peak_leverage_use"] == peak
+    assert section["first_funded_order_ms"] == WEEK_THREE_MS
+
+
+@pytest.mark.parametrize("start_ms", [None, CREATED_MS + 1])
+def test_the_dashboard_shows_an_older_subaccount_off_the_rules_at_ten_percent(manager, start_ms):
+    """Its first order and its peak are still shown as read, but neither moves its line."""
+    manager._entity_client.get_subaccount_info_for_synthetic.return_value = {
+        "initial_bucket": None, "created_at_ms": CREATED_MS}
+    manager._entity_client.is_testnet.return_value = False
+    _seed(manager)
+    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", start_ms):
+        _holds(manager, _with_peak(_account(), 1.0), 1.0, NOW_MS - DAILY_MS)
+
+    section = manager.get_auto_promotion(HOTKEY)
+    assert section["on_promotion_rules"] is False
+    assert section["fast_track_target"] == 0.10
+    assert (section["peak_leverage_use"], section["first_funded_order_ms"]) == (1.0, NOW_MS - DAILY_MS)
+
+
+def test_the_dashboard_shows_the_line_the_hold_is_timed_against(manager, on_the_rules):
+    """The first week ends a minute after NOW_MS: the hold begun under 3% starts over under 5%, and both the
+    line and the hold's start shown move with it."""
+    first_order_ms = NOW_MS - 7 * DAILY_MS + 60_000
+    _seed(manager)
+    _holds(manager, _account(), 1.055, first_order_ms)
+    section = manager.get_auto_promotion(HOTKEY)
+    assert (section["fast_track_target"], section["fast_track_held_since_ms"]) == (0.03, NOW_MS)
+
+    _holds(manager, _account(), 1.055, first_order_ms, now_ms=NOW_MS + 120_000)
+    section = manager.get_auto_promotion(HOTKEY)
+    assert (section["fast_track_target"], section["fast_track_held_since_ms"]) == (0.05, NOW_MS + 120_000)
+
+    _holds(manager, _account(), 1.04, first_order_ms, now_ms=NOW_MS + 150_000)
+    section = manager.get_auto_promotion(HOTKEY)
+    assert (section["fast_track_target"], section["fast_track_held_since_ms"]) == (0.05, None)
 
 
 def test_the_auto_promotion_records_the_peak(manager, on_the_rules):

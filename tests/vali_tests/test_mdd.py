@@ -557,6 +557,79 @@ class TestMDDChecker(TestBase):
         position.force_close_position(order_src=OrderSource.PRICE_FILLED_ELIMINATION_FLAT)
         self.assertEqual(position.orders[-1].price, 100.5)
 
+    def _open_aapl_long_and_mark_outside_regular(self, session: str, quote_age_ms: int = None,
+                                                 fmv: float = None, fmv_age_ms: int = 0):
+        """Open an AAPL long at 100 and run the MDD mark with the market closed to market orders."""
+        from data_generator.base_data_service import POLYGON_WS_SOURCE
+        from data_generator.polygon_nasdaq_basic_data_service import NASDAQ_BASIC_SOURCE
+        self.live_price_fetcher_client.set_test_market_open(False)
+        self.live_price_fetcher_client.set_test_equity_session(session)
+        now_ms = TimeUtil.now_in_millis()
+        position = self.trade_pair_to_default_position[TradePair.AAPL]
+        self.add_order_to_position_and_save_to_disk(position, Order(
+            order_type=OrderType.LONG, leverage=1.0, price=100.0, trade_pair=TradePair.AAPL,
+            processed_ms=now_ms - 120000, order_uuid="aapl_long"))
+
+        if fmv is not None:
+            fmv_ps = self.create_price_source(fmv, order_time_ms=now_ms - fmv_age_ms)
+            fmv_ps.source = POLYGON_WS_SOURCE
+            self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, fmv_ps)
+        if quote_age_ms is not None:
+            self.live_price_fetcher_client.set_test_price_source(TradePair.AAPL, PriceSource(
+                source=NASDAQ_BASIC_SOURCE, open=100.0, close=100.0, high=100.0, low=100.0, vwap=100.0,
+                start_ms=now_ms - quote_age_ms, websocket=True, bid=99.9, ask=100.1))
+
+        self.mdd_checker_client.last_price_fetch_time_ms = now_ms - 1000 * 30
+        self.mdd_checker_client.mdd_check()
+        return self.position_client.get_miner_position_by_uuid(self.MINER_HOTKEY, position.position_uuid)
+
+    def test_mdd_marks_equity_after_hours_at_nasdaq_bid(self):
+        from data_generator.polygon_nasdaq_basic_data_service import NASDAQ_BASIC_SOURCE
+        position = self._open_aapl_long_and_mark_outside_regular('post', quote_age_ms=100)
+        self.assertEqual(position.last_price_source.source, NASDAQ_BASIC_SOURCE)
+        self.assertAlmostEqual(position.current_return, 0.999, places=6)
+
+    def test_mdd_marks_equity_overnight_from_stale_quote_over_older_fmv(self):
+        from data_generator.polygon_nasdaq_basic_data_service import NASDAQ_BASIC_SOURCE
+        from vali_objects.vali_config import ValiConfig
+        stale_ms = ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS + 50000
+        position = self._open_aapl_long_and_mark_outside_regular(
+            'closed', quote_age_ms=stale_ms, fmv=100.5, fmv_age_ms=stale_ms + 10000)
+        self.assertEqual(position.last_price_source.source, NASDAQ_BASIC_SOURCE)
+        self.assertAlmostEqual(position.current_return, 0.999, places=6)
+
+    def test_mdd_marks_equity_overnight_at_stale_fmv_without_nasdaq_basic(self):
+        from vali_objects.vali_config import ValiConfig
+        position = self._open_aapl_long_and_mark_outside_regular(
+            'closed', fmv=100.5, fmv_age_ms=ValiConfig.WEBSOCKET_PRICE_MAX_AGE_MS + 50000)
+        self.assertEqual(position.last_price_source.source, 'Polygon_ws')
+        self.assertAlmostEqual(position.current_return, 1.005, places=6)
+
+    def test_mdd_after_hours_mark_updates_account_equity(self):
+        self.orchestrator.get_client('miner_account').set_miner_account_size(
+            self.MINER_HOTKEY, 0, TimeUtil.now_in_millis(), account_size=self.DEFAULT_ACCOUNT_SIZE)
+        self._open_aapl_long_and_mark_outside_regular('post', quote_age_ms=100)
+        account = self.orchestrator.get_client('miner_account').get_account(self.MINER_HOTKEY)
+        self.assertIsNotNone(account)
+        self.assertLess(account.unrealized_pnl, 0)
+        self.assertAlmostEqual(account.unrealized_pnl, self.position_client.get_unrealized_pnl(self.MINER_HOTKEY))
+
+    def test_mdd_does_not_mark_closed_market_without_limit_session(self):
+        self.live_price_fetcher_client.set_test_market_open(False)
+        now_ms = TimeUtil.now_in_millis()
+        position = self.trade_pair_to_default_position[TradePair.EURUSD]
+        self.add_order_to_position_and_save_to_disk(position, Order(
+            order_type=OrderType.LONG, leverage=1.0, price=1.10, trade_pair=TradePair.EURUSD,
+            processed_ms=now_ms - 120000, order_uuid="eur_long"))
+        self.live_price_fetcher_client.set_test_price_source(
+            TradePair.EURUSD, self.create_price_source(1.12, order_time_ms=now_ms))
+
+        self.mdd_checker_client.last_price_fetch_time_ms = now_ms - 1000 * 30
+        self.mdd_checker_client.mdd_check()
+        position = self.position_client.get_miner_position_by_uuid(self.MINER_HOTKEY, position.position_uuid)
+        self.assertNotEqual(position.last_price_source.source, 'test')
+        self.assertAlmostEqual(position.current_return, 1.0, places=6)
+
     def test_mdd_price_correction_prefers_valid_nasdaq_quote_over_closer_fmv(self):
         """
         Re-pricing applies the same Nasdaq quote vs FMV rule as live pricing: a valid quote 200ms after the

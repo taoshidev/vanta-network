@@ -49,9 +49,7 @@ class TestWeightsOneToOne(TestBase):
         self.assertEqual(raw_weights(self.OWED, 400.0, {STANDARD}), {STANDARD: 0.2, LEGACY: 0.2, BIG_LEGACY: 0.6})
         self.assertEqual(raw_weights(self.OWED, 400.0, {STANDARD}, {STANDARD: 40.0}),
                          {STANDARD: 0.2, LEGACY: 0.2, BIG_LEGACY: 0.6})
-        # No projection to measure against: pro rata as well
-        self.assertEqual(raw_weights(self.OWED, 0.0, {STANDARD}), {STANDARD: 0.2, LEGACY: 0.2, BIG_LEGACY: 0.6})
-        self.assertEqual(raw_weights(self.OWED, None, {STANDARD}), {STANDARD: 0.2, LEGACY: 0.2, BIG_LEGACY: 0.6})
+        # No projection to measure against: see test_without_a_projection_a_standard_miner_takes_nothing...
 
     def test_the_surplus_over_standard_miners_alone_goes_unassigned(self):
         # Nothing but standard miners owed: their weights sum below one and the rest is left for the burn address
@@ -85,16 +83,30 @@ class TestWeightsOneToOne(TestBase):
                          {STANDARD: 1.0, LEGACY: 0.0})
 
     def test_the_projection_counts_the_miners_emission_only(self):
+        # Subnet 8 at block 9,486,004 (alpha per tempo): the two miners holding nearly all the incentive also hold
+        # stake (12,207 and 1,820), so stake cannot tell them from the validators earning dividends
         metagraph = MagicMock()
-        metagraph.get_emission.return_value = [10.0, 5.0, 1.0, 4.0]
-        metagraph.get_stake_weight.return_value = [0.0, ValiConfig.STAKE_MIN, 0.0, ValiConfig.STAKE_MIN]
+        metagraph.get_emission.return_value = [137.3, 42.4, 0.3, 92.2, 57.2, 21.2, 9.4]  # 180 incentive, 180 dividends
+        metagraph.get_stake_weight.return_value = [12_207.5, 1_820.0, 0.0, 1_722_573.5, 1_065_128.1, 397_995.1, 104_000.0]
         per_day = DebtBasedScoring.BLOCKS_PER_DAY_FALLBACK / 360
-        alpha = DebtBasedScoring._estimate_alpha_emissions_until_target(metagraph, 2, burn_uid=3)
-        self.assertAlmostEqual(alpha, 15.0 * 2 * per_day)  # the burn address stays in whatever its stake
-        self.assertAlmostEqual(DebtBasedScoring._estimate_alpha_emissions_until_target(metagraph, 2), 11.0 * 2 * per_day)
-        # Without stake weights every UID counts, as before
+        alpha = DebtBasedScoring._estimate_alpha_emissions_until_target(metagraph, 5)
+        self.assertAlmostEqual(alpha, 180.0 * 5 * per_day)  # 0.5 alpha a block over 36,000 blocks
+        self.assertAlmostEqual(alpha, 18_000.0)
+        # Stake weights play no part, nor does any UID's being the burn address
         metagraph.get_stake_weight.return_value = None
-        self.assertAlmostEqual(DebtBasedScoring._estimate_alpha_emissions_until_target(metagraph, 2), 20.0 * 2 * per_day)
+        self.assertAlmostEqual(DebtBasedScoring._estimate_alpha_emissions_until_target(metagraph, 5), alpha)
+
+    def test_without_a_projection_a_standard_miner_takes_nothing_rather_than_a_share_of_the_surplus(self):
+        # Reserves unread (projection 0) or missing: nothing prices the cap, so the standard miner waits for the next
+        # weight setting and the others split pro rata among themselves
+        for projected in (0.0, None):
+            self.assertEqual(raw_weights(self.OWED, projected, {STANDARD}, emissions_cover_owed=False),
+                             {STANDARD: 0.0, LEGACY: 0.25, BIG_LEGACY: 0.75})
+        # Alone, it takes nothing at all
+        self.assertEqual(raw_weights({STANDARD: 10.0}, 0.0, {STANDARD}), {STANDARD: 0.0})
+        # With no standard miner the split is the plain pro rata one, as before
+        self.assertEqual(raw_weights({LEGACY: 100.0, BIG_LEGACY: 300.0}, 0.0),
+                         {LEGACY: 0.25, BIG_LEGACY: 0.75})
 
     def test_the_cap_is_decided_for_the_week_not_the_day(self):
         # Monday: 1000 a day against 700 owed over 7 days passes either test; told the week does not cover it, the

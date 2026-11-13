@@ -19,6 +19,7 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.challenge_period.challengeperiod_manager import ChallengePeriodManager
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.contract.validator_contract_manager import ValidatorContractManager
+from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
@@ -161,6 +162,7 @@ class TestOpening(TestBase):
         self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.SUBACCOUNT_CHALLENGE)
         self.assertEqual(self.challenge_period_client.get_miner_start_time(NEW), opened_record.opened_at_ms)
         state = self.challenge_period_client.to_checkpoint_dict()[NEW]
+        self.assertEqual(state["drawdown_criteria"], DrawdownCriteria.STATIC.value)
         self.assertEqual(state["intraday_drawdown_threshold_override"], ValiConfig.STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD)
         self.assertEqual(state["eod_hwm_threshold_override"], ValiConfig.STANDARD_MINER_EOD_HWM_THRESHOLD)
 
@@ -461,6 +463,7 @@ class TestFirstSight(TestBase):
         self.assertTrue(self._first_sight(NEW, None, record(), leverage_tier=None))  # the record decides, not the registration
         state = self.manager.miner_states[NEW]
         self.assertEqual((state.current_bucket, state.current_bucket_start_ms), (MinerBucket.SUBACCOUNT_CHALLENGE, NOW_MS))
+        self.assertEqual(state.drawdown_criteria, DrawdownCriteria.STATIC)
         self.assertEqual(state.intraday_drawdown_threshold_override, ValiConfig.STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD)
         self.assertEqual(state.eod_hwm_threshold_override, ValiConfig.STANDARD_MINER_EOD_HWM_THRESHOLD)
         self.accounts.set_leverage_tier.assert_called_once_with(NEW, TIER)
@@ -588,6 +591,7 @@ class TestOpeningTransport(TestBase):
         self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.SUBACCOUNT_CHALLENGE)
         self.assertEqual(self.challenge_period_client.get_miner_start_time(NEW), NOW_MS)
         state = self.challenge_period_client.to_checkpoint_dict()[NEW]
+        self.assertEqual(state["drawdown_criteria"], DrawdownCriteria.STATIC.value)
         self.assertEqual(state["intraday_drawdown_threshold_override"], ValiConfig.STANDARD_MINER_INTRADAY_DRAWDOWN_THRESHOLD)
         self.assertEqual(state["eod_hwm_threshold_override"], ValiConfig.STANDARD_MINER_EOD_HWM_THRESHOLD)
         # A repeat, even with other values, changes nothing

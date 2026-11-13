@@ -389,9 +389,8 @@ See [entity_miner.md](entity_miner.md#pro-promotion-fee).)
 - Only the two hops **onto** a pro account (`PRO_CHALLENGE_DIRECT`, `PRO_CHALLENGE_FROM_STANDARD`)
   switch accounts: every open position is closed, every pending limit order is cancelled, and the
   ledgers restart on the pro size. Neither can be undone.
-- Promoting into `PRO_CHALLENGE_TRANSITION` keeps trading the standard account and wipes nothing —
-  positions, limit orders and ledgers all carry on, and only resting orders that could open or
-  increase a position are cancelled (`PRO_TRANSITION_CANCELLED`).
+- Promoting into `PRO_CHALLENGE_TRANSITION` closes every open position and cancels every pending
+  limit order on the standard account, but keeps its balance and ledgers.
 - The entity pays the promotion fee out of its collateral once the pro account goes live, and only
   the increase over the fee already assessed is billed — so re-entering the pro track at the same
   size is free, and a pro size of exactly twice the standard size is charged nothing. A
@@ -399,14 +398,13 @@ See [entity_miner.md](entity_miner.md#pro-promotion-fee).)
 - A subaccount created at or after the promotion rules start
   (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`) is paid in `PRO_CHALLENGE_FROM_STANDARD` at 1.3x
   on a pro size granted this way, whatever the size; one created before keeps 2x.
-- A subaccount left in `PRO_CHALLENGE_TRANSITION` is advanced automatically at the first Monday
-  00:00 UTC after it entered the bucket, on the first challenge-period refresh at or after that
-  boundary.
+- A subaccount in `PRO_CHALLENGE_TRANSITION` is advanced to `PRO_CHALLENGE_FROM_STANDARD`
+  automatically on the next challenge-period refresh: the transition lasts 1ms
+  (`ValiConfig.PRO_TRANSITION_DURATION_MS`). A failed hop is retried on every later refresh.
 - A subaccount the network auto-promoted (see
   [entity_miner.md](entity_miner.md#auto-promotion)) can take the `PRO_CHALLENGE_TRANSITION` →
-  `PRO_CHALLENGE_FROM_STANDARD` hop early, free of the promotion fee, but only without a
-  `pro_account_size`: one sent for it is refused with a 400. Left alone, it is advanced
-  automatically once it has no open positions, or 7 days after its auto-promotion.
+  `PRO_CHALLENGE_FROM_STANDARD` hop itself, free of the promotion fee, but only without a
+  `pro_account_size`: one sent for it is refused with a 400.
 
 ### Create Hyperliquid-Linked Subaccount
 

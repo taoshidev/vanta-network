@@ -573,11 +573,11 @@ class TestDebtBasedScoring(TestBase):
         )
 
         # Expected calculation:
-        # - 10 miners * 1 alpha/block = 10 alpha/block
+        # - 10 UIDs * 1 alpha/block = 10 alpha/block emitted, half of it to miners (the other half is dividends)
         # - 7200 blocks/day * 10 days = 72000 blocks
-        # - 10 alpha/block * 72000 blocks = 720,000 alpha
+        # - 5 alpha/block * 72000 blocks = 360,000 alpha
 
-        expected_alpha = 10 * 7200 * 10  # 720,000
+        expected_alpha = 10 * 7200 * 10 * DebtBasedScoring.MINER_EMISSION_SHARE  # 360,000
         self.assertAlmostEqual(projected_alpha, expected_alpha, places=0)
 
     def test_aggressive_payout_strategy(self):

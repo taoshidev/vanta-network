@@ -98,6 +98,7 @@ class MDDChecker(CacheController):
         """Get sorted price sources for all required trade pairs."""
         try:
             required_trade_pairs_for_candles = set()
+            ws_only_trade_pairs = set()
             trade_pair_to_market_open = {}
             now_ms = TimeUtil.now_in_millis()
 
@@ -109,12 +110,19 @@ class MDDChecker(CacheController):
                             trade_pair_to_market_open[tp] = self._live_price_client.is_market_open(tp, now_ms)
                         if trade_pair_to_market_open[tp]:
                             required_trade_pairs_for_candles.add(tp)
+                        elif self._live_price_client.get_equity_session(tp, now_ms) is not None:
+                            # Limit orders can fill outside the regular session, so keep marking 24/7 from websockets
+                            ws_only_trade_pairs.add(tp)
 
             now = TimeUtil.now_in_millis()
             trade_pair_to_price_sources = self._live_price_client.get_tp_to_sorted_price_sources(
                 list(required_trade_pairs_for_candles),
                 now
             )
+            if ws_only_trade_pairs:
+                trade_pair_to_price_sources.update(
+                    self._live_price_client.get_tp_to_sorted_price_sources(list(ws_only_trade_pairs), now,
+                                                                           websocket_only=True))
 
             for tp, sources in trade_pair_to_price_sources.items():
                 if sources and any(x and not x.websocket for x in sources):

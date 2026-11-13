@@ -31,7 +31,7 @@ from vali_objects.miner_account.account_size_lock import AccountSizeLock
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.miner_account.standard_miner import (StandardMinerAccount, OpeningRejected, open_account,
-                                                          opening_bucket_thresholds, closing_slash_proportion,
+                                                          opening_drawdown_rules, closing_slash_proportion,
                                                           elimination_slash_proportion)
 from vali_objects.enums.elimination_reason_enum import EliminationReason
 from shared_objects.rpc.rpc_client_base import RPCCallTimeoutError
@@ -506,7 +506,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         if record.is_closed or self._challenge_period_client.has_miner(hotkey):
             return
         self._challenge_period_client.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_CHALLENGE, record.opened_at_ms,
-                                                       **opening_bucket_thresholds())
+                                                       **opening_drawdown_rules())
 
     def _broadcast_standard_miner_opening(self, hotkey: str, record: StandardMinerAccount) -> None:
         def create_synapse():
@@ -694,12 +694,15 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     drawdown["intraday_drawdown_pct"] = (1.0 - current / day_open) * 100.0
                 if drawdown.get("eod_hwm"):
                     drawdown["trailing_drawdown_pct"] = (1.0 - current / drawdown["eod_hwm"]) * 100.0
+                drawdown["static_drawdown_pct"] = (1.0 - current) * 100.0
         proportion = closing_slash_proportion(drawdown)
         intraday_pct = max(0.0, drawdown.get("intraday_drawdown_pct") or 0.0)
-        trailing_pct = max(0.0, drawdown.get("trailing_drawdown_pct") or 0.0)
+        # The other drawdown: from the starting balance while the static rules apply, else from the high-water mark
+        other_key = "static_drawdown_pct" if drawdown.get("static_rules_apply") else "trailing_drawdown_pct"
+        other_pct = max(0.0, drawdown.get(other_key) or 0.0)
         slashed_amount = min((locked_theta if slashed_theta is None else slashed_theta) * proportion, balance)
-        return {**result, "closes_account": True, "drawdown": max(intraday_pct, trailing_pct) / 100.0,
-                "intraday_drawdown_pct": intraday_pct, "trailing_drawdown_pct": trailing_pct,
+        return {**result, "closes_account": True, "drawdown": max(intraday_pct, other_pct) / 100.0,
+                "intraday_drawdown_pct": intraday_pct, other_key: other_pct,
                 "slash_proportion": proportion, "slashed_amount": slashed_amount,
                 "withdrawal_amount": balance - slashed_amount, "new_balance": 0.0}
 
@@ -712,9 +715,14 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             return {"successfully_processed": False, "error_message": error_msg}
         limits = self._challenge_period_client.get_drawdown_stats(hotkey) or {}
         drawdown = {"intraday_drawdown_pct": elimination.get("intraday_dd"),
-                    "trailing_drawdown_pct": elimination.get("eod_dd"),
-                    "intraday_drawdown_threshold": limits.get("intraday_drawdown_threshold"),
-                    "eod_drawdown_threshold": limits.get("eod_drawdown_threshold")}
+                    "intraday_drawdown_threshold": limits.get("intraday_drawdown_threshold")}
+        # The row's eod_dd holds the drawdown from the starting balance when the static rules applied
+        if limits.get("static_rules_apply"):
+            drawdown.update(static_rules_apply=True, static_drawdown_pct=elimination.get("eod_dd"),
+                            static_drawdown_threshold=limits.get("static_drawdown_threshold"))
+        else:
+            drawdown.update(trailing_drawdown_pct=elimination.get("eod_dd"),
+                            eod_drawdown_threshold=limits.get("eod_drawdown_threshold"))
         proportion = elimination_slash_proportion(
             EliminationReason(elimination["reason"]), elimination.get("elimination_drawdown_pct"), drawdown)
         slashed_amount = min(record.locked_theta * proportion, balance)
@@ -733,7 +741,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 reason=EliminationReason.ACCOUNT_CLOSED,
                 elimination_drawdown_pct=query_result["drawdown"] * 100.0,
                 intraday_drawdown_pct=query_result.get("intraday_drawdown_pct"),
-                eod_drawdown_pct=query_result.get("trailing_drawdown_pct"),
+                # The other drawdown the slash was measured on: from the starting balance under the static rules
+                eod_drawdown_pct=query_result.get("static_drawdown_pct", query_result.get("trailing_drawdown_pct")),
                 elimination_time_ms=TimeUtil.now_in_millis(),
                 slash_theta=query_result["slashed_amount"],
             )

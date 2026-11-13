@@ -294,9 +294,11 @@ class LivePriceFetcher:
         temp = self.get_tp_to_sorted_price_sources([trade_pair], time_ms, live)
         return temp.get(trade_pair)
 
-    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms: int, live=True) -> Dict[TradePair, List[PriceSource]]:
+    def get_tp_to_sorted_price_sources(self, trade_pairs: List[TradePair], time_ms: int, live=True,
+                                       websocket_only=False) -> Dict[TradePair, List[PriceSource]]:
         """
         Retrieves the latest prices for multiple trade pairs, leveraging both WebSocket and REST APIs as needed.
+        websocket_only: the newest websocket price of any age, no Databento or REST (marks closed markets).
         """
         if not time_ms:
             time_ms = TimeUtil.now_in_millis()
@@ -314,7 +316,7 @@ class LivePriceFetcher:
         # Get Databento prices for equities
         websocket_prices_databento = {}
         equity_pairs = [tp for tp in mapped_trade_pairs if tp.is_equities and tp.src == TradePairSource.VANTA]
-        if self.databento_data_service:
+        if self.databento_data_service and not websocket_only:
             if equity_pairs:
                 websocket_prices_databento = self.databento_data_service.get_closes_websocket(equity_pairs, time_ms)
 
@@ -343,14 +345,19 @@ class LivePriceFetcher:
                     websocket_prices_tiingo_data.get(tp),
                 ]
 
-            sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
+            if websocket_only:
+                # No time: FMV stops streaming at the close while Nasdaq Basic quotes run to 20:00, so any quote wins
+                events = PriceSource.apply_nasdaq_fmv_rule([e for e in events if e])
+                sources = PriceSource.non_null_events_sorted(events, time_ms) if events else None
+            else:
+                sources = self.sorted_valid_price_sources(events, time_ms, filter_recent_only=True)
             if sources:
                 results[tp] = sources
             else:
                 trade_pairs_needing_rest_data.append(tp)
 
         # Fetch from REST APIs if needed
-        if not trade_pairs_needing_rest_data:
+        if websocket_only or not trade_pairs_needing_rest_data:
             return results
 
         rest_prices_polygon, rest_prices_tiingo, rest_prices_hyperliquid = self.dual_rest_get(trade_pairs_needing_rest_data, time_ms, live)

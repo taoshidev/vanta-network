@@ -22,6 +22,7 @@ from vali_objects.miner_account.account_size_lock import AccountSizeLock
 from vali_objects.miner_account.miner_account_manager import CollateralRecord, MinerAccount, MinerAccountManager
 from vali_objects.utils.elimination.elimination_manager import EliminationManager
 from vali_objects.utils.vali_utils import ValiUtils
+from time_util.time_util import TimeUtil
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 
 LEGACY = "legacy_miner_hotkey"
@@ -534,8 +535,15 @@ class TestThroughTheServers(TestBase):
 
     def test_the_calls_round_trip(self):
         self.account_client.set_miner_account_size(LEGACY, 300.0, timestamp_ms=START)
-        # The lock start is unset in the servers' configuration: nothing is locked
-        self.assertEqual(self.account_client.lock_account_sizes([LEGACY]), {})
-        self.assertFalse(self.account_client.close_locked_account(LEGACY, START))
+        # The servers run in their own process on netuid 116 with the configured testnet lock start, read against the
+        # wall clock, which a patch here cannot reach: before it nothing is locked, from it the size in force is
+        lock_start_ms = ValiConfig.account_size_lock_start_ms(is_testnet=True)
+        locks = self.account_client.lock_account_sizes([LEGACY])
+        if lock_start_ms is None or TimeUtil.now_in_millis() < lock_start_ms:
+            self.assertEqual(locks, {})
+            self.assertFalse(self.account_client.close_locked_account(LEGACY, START))
+        else:
+            self.assertEqual(set(locks), {LEGACY})
+            self.assertEqual((locks[LEGACY].account_size, locks[LEGACY].locked_theta), (150_000.0, 300.0))
         self.assertEqual(self.account_client.get_collateral_account_size(LEGACY), 150_000.0)
         self.assertEqual(self.account_client.get_all_collateral_account_sizes()[LEGACY], 150_000.0)

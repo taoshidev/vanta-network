@@ -253,6 +253,8 @@ Returns all the hotkeys as seen in the metagraph from the validator's perspectiv
 
 Comprehensive dashboard for a regular (non-entity) miner hotkey. Aggregates the same per-section data as the [Subaccount Dashboard](#get-subaccount-dashboard-version-2) endpoint (challenge period, drawdown, elimination, account size, positions, limit orders, ledger, statistics), minus the entity-specific `subaccount_info` section. Uses the same `create_subaccount_dashboard` aggregation logic — see that endpoint's docs for the full section-by-section response schema.
 
+A miner on the [standard account track](miner.md#standard-account-track) that is an auto-promotion candidate also gets the `auto_promotion` section: see [Auto-promotion Progress](#auto-promotion-progress).
+
 For a miner on the [standard account track](miner.md#standard-account-track), `account_size_data.standard_account` is the account record: `opened_at_ms`, `opening_leverage_tier`, `asset_class`, `account_size` (fixed at opening, the size the pro challenge is paid on), `locked_theta`, `opening_price_usd`, `trading_account_size` (the size traded when it differs: the pro size on the pro track, else `null`), `pro_account_size`, `payout_scale` (the pro challenge multiplier, fixed with the pro size by the auto-promotion's multiple: 1.3 at 3x, 1.5 at 5x, 2.0 at 10x; `null` before one is granted), `closed_at_ms` and `reopened_at_ms`. It is `null` for every other miner. For a miner on the existing rules whose size is fixed (see [miner rule 3](miner.md#basic-rules)), `account_size_data.size_lock` is `{locked_ms, account_size, locked_theta, closed_at_ms}`: when the size was fixed, the size, the theta behind it and, once a withdrawal closed the account, when; `null` otherwise. Every validator fixes the size at its first pass after the lock start; the mothership broadcasts its locks and closes, which the other validators adopt. `account_size_data.peak_leverage_use` is the highest leverage use after any fill or fee since the account was last reset (on every move to a new account): the larger of the open positions' entry value over the portfolio cap and the highest asset class's over that class's cap, each on the balance. From 0.5 on, a funded standard account's fast track asks only 3% (see [miner.md](miner.md#standard-account-track)).
 
 **Authentication:** Requires **tier 100 API access**.
@@ -729,7 +731,7 @@ A standard account, or an account whose size is fixed, withdrawing unlocked coll
   "closes_account": true,
   "locked_theta": 120.0,
   "intraday_drawdown_pct": 2.0,
-  "trailing_drawdown_pct": 4.0,
+  "static_drawdown_pct": 4.0,
   "drawdown": 0.04,
   "slash_proportion": 0.8,
   "slashed_amount": 96.0,
@@ -738,7 +740,7 @@ A standard account, or an account whose size is fixed, withdrawing unlocked coll
 }
 ```
 
-Every position must be closed first (otherwise `successfully_processed` is false with the reason). The whole balance comes out as `withdrawal_amount`, less `slashed_amount` = `locked_theta` × `slash_proportion` (for an account whose size is fixed, `slash_proportion` applies to the larger of `locked_theta` and 300 theta), where the proportion is min(1, max(`intraday_drawdown_pct` ÷ the daily loss limit, `trailing_drawdown_pct` ÷ the EOD limit)) at the account's current stage, on the balance as it is now; `drawdown` is the larger of the two as a fraction. An eliminated standard account whose slash could not be taken at the time answers with `owed_slash: true` and the slash its elimination still owes, which the withdrawal takes first.
+Every position must be closed first (otherwise `successfully_processed` is false with the reason). The whole balance comes out as `withdrawal_amount`, less `slashed_amount` = `locked_theta` × `slash_proportion` (for an account whose size is fixed, `slash_proportion` applies to the larger of `locked_theta` and 300 theta), where the proportion is min(1, max(`intraday_drawdown_pct` ÷ the daily loss limit, the other drawdown ÷ its limit)) at the account's current stage, on the balance as it is now. The other drawdown is `static_drawdown_pct`, from the starting balance against the 5% static limit, while the static rules apply (a standard account before the pro challenge, or an account whose size is fixed that runs the static rules), and `trailing_drawdown_pct`, from the end-of-day high-water mark against the EOD limit, otherwise (a standard account in the pro challenge or pro funded, or an account whose size is fixed on the trailing rules); the response carries the one that applies. `drawdown` is the larger of the two as a fraction. An eliminated standard account whose slash could not be taken at the time answers with `owed_slash: true` and the slash its elimination still owes, which the withdrawal takes first.
 
 ### Withdraw Collateral
 
@@ -1388,7 +1390,7 @@ The target bucket is derived from the subaccount's current one, and only these t
 | `PRO_CHALLENGE_TRANSITION` | `PRO_CHALLENGE_FROM_STANDARD` |
 
 A subaccount in any other bucket is rejected with a 400. One that was promoted automatically can take the
-`PRO_CHALLENGE_TRANSITION` hop early, on the size the network granted and free of the promotion fee, but a
+`PRO_CHALLENGE_TRANSITION` hop itself (the next refresh takes it otherwise), on the size the network granted and free of the promotion fee, but a
 request that sends a `pro_account_size` for it is rejected with a 400. Every other bucket change on the
 network happens organically (the end-of-week promotions, auto-promotion, demotions and eliminations), not
 through this endpoint.
@@ -1448,21 +1450,22 @@ fee already charged — see [entity_miner.md](entity_miner.md#pro-promotion-fee)
 subaccount created into `SUBACCOUNT_FUNDED`, or a Hyperliquid-linked subaccount, cannot be promoted
 onto the pro track; a Hyperliquid-linked one already on it moves on.
 
-**Only the two hops onto a pro account wipe trading state.** A hop switches accounts when the target
-bucket changes the account size (`MinerBucket.switches_account`), and `PRO_CHALLENGE_TRANSITION` does
-not — it is a wind-down on the standard account, running to the first Monday 00:00 UTC after the
-hop (after an auto-promotion, at most seven days, ending early once it has no open positions):
+**Every hop closes out the account; only the two hops onto a pro account wipe it.** A hop switches
+accounts when the target bucket changes the account size (`MinerBucket.switches_account`), and
+`PRO_CHALLENGE_TRANSITION` does not — it is a pass-through stage on the standard account lasting 1ms
+(`ValiConfig.PRO_TRANSITION_DURATION_MS`), which the next challenge-period refresh ends by moving the
+subaccount on to `PRO_CHALLENGE_FROM_STANDARD`:
 
 | Hop | Positions | Limit orders | Ledgers |
 | --- | --- | --- | --- |
 | `SUBACCOUNT_CHALLENGE` → `PRO_CHALLENGE_DIRECT` | force closed | all cancelled | restart on the pro size |
-| `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION` | **kept open** | **kept**, except entry orders | **kept** |
-| `PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD` | force closed | all cancelled | restart on the pro size |
+| `SUBACCOUNT_FUNDED` → `PRO_CHALLENGE_TRANSITION` | force closed | all cancelled | **kept** |
+| `PRO_CHALLENGE_TRANSITION` → `PRO_CHALLENGE_FROM_STANDARD` | none left open | none left | restart on the pro size |
 
-The two account-switching hops cannot be undone. Entering `PRO_CHALLENGE_TRANSITION` resets nothing:
-the subaccount keeps its positions, its perf and debt ledgers, and its account size, and only the
-resting orders that could open or increase a position are swept (`PRO_TRANSITION_CANCELLED`), leaving
-closes and reductions in place for the rest of the week.
+The two account-switching hops cannot be undone. Entering `PRO_CHALLENGE_TRANSITION` closes every
+position and cancels every limit order (`SUBACCOUNT_PROMOTION`) while the subaccount is still in
+`SUBACCOUNT_FUNDED`, so the realized PnL is earned there, and keeps its perf and debt ledgers and its
+account size.
 
 A rejected promotion changes nothing: an invalid or missing size is a 400 before the subaccount or its
 bucket is touched, and a move that fails *after* the sizing is applied rolls the sizing back, so a
@@ -1644,6 +1647,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 - Subaccount info (status, timestamps, entity parent)
 - Challenge period status (bucket, start time, progress)
 - Drawdown stats (trailing and static rule inputs/thresholds, applicable criteria — synthetic hotkeys only)
+- Auto-promotion progress (auto-promotion candidates only)
 - Debt ledger data (performance metrics, returns)
 - Position data (open positions, leverage, PnL)
 - Statistics (cached metrics, scores, rankings)
@@ -1686,7 +1690,21 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
       "eod_drawdown_threshold": 0.05,
       "static_drawdown_threshold": 0.05,
       "static_eod_drawdown_threshold": 0.05,
-      "criteria": "trailing"
+      "criteria": "trailing",
+      "static_rules_apply": false
+    },
+    // auto_promotion is null unless the subaccount is an auto-promotion candidate
+    "auto_promotion": {
+      "on_promotion_rules": true,
+      "fast_track_target": 0.03,
+      "first_funded_order_ms": 1702000000000,
+      "peak_leverage_use": 0.31,
+      "fast_track_held_since_ms": 1702345620000,
+      "fast_track_hold_ms": 180000,
+      "trading_days": 3,
+      "calmar": 0.9,
+      "daily_consistency": 0.42,
+      "as_of_ms": 1702345680000
     },
     "ledger": {
       "hotkey": "5GhDr3xy...abc_0",
@@ -2049,6 +2067,10 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
   - `rank`: Rank among all miners
   - `percentile`: Percentile ranking
 
+**Auto-promotion:**
+- `null` unless the subaccount is an auto-promotion candidate
+- Object with the fields described under [Auto-promotion Progress](#auto-promotion-progress) if it is one
+
 **Elimination:**
 - `null` if subaccount is active
 - Object with elimination details if eliminated:
@@ -2075,6 +2097,7 @@ Retrieve comprehensive dashboard data for a specific subaccount by aggregating i
 - Subaccount info (status, timestamps, entity parent)
 - Challenge period status (bucket, start time, progress)
 - Drawdown stats (trailing and static rule inputs/thresholds, applicable criteria — synthetic hotkeys only)
+- Auto-promotion progress (auto-promotion candidates only)
 - Debt ledger data (performance metrics, returns)
 - Position data (open positions, leverage, PnL)
 - Statistics (daily returns)
@@ -2134,7 +2157,21 @@ curl -H "Authorization: Bearer YOUR_TIER_200_API_KEY" \
       "eod_drawdown_threshold": 0.05,
       "static_drawdown_threshold": 0.05,
       "static_eod_drawdown_threshold": 0.05,
-      "criteria": "static"
+      "criteria": "static",
+      "static_rules_apply": true
+    },
+    // auto_promotion is only included if the subaccount is an auto-promotion candidate
+    "auto_promotion": {
+      "on_promotion_rules": true,
+      "fast_track_target": 0.03,
+      "first_funded_order_ms": 1702000000000,
+      "peak_leverage_use": 0.31,
+      "fast_track_held_since_ms": 1702345620000,
+      "fast_track_hold_ms": 180000,
+      "trading_days": 3,
+      "calmar": 0.9,
+      "daily_consistency": 0.42,
+      "as_of_ms": 1702345680000
     },
     // elimination is only included if the subaccount is eliminated
     "elimination": {
@@ -2332,16 +2369,34 @@ Only present after the first challenge period evaluation cycle (~60s after start
 - `static_drawdown_threshold`: Elimination threshold for the static starting-balance rule (`0.05` = 5%).
 - `static_eod_drawdown_threshold`: Retired rule's threshold — no longer enforced, kept for dashboard payload compatibility.
 - `criteria`: Which rule set is actually applied for this subaccount — `"trailing"` or `"static"`. Mirrors `subaccount_info.drawdown_criteria`, fixed at creation.
+- `static_rules_apply`: Whether the static rules are checked now: `true` for a `"static"` account in any bucket before the pro ones (once eliminated, judged on the bucket it was eliminated in). The pro buckets run the pro rules (daily loss and EOD high-water mark) whatever the criteria.
 
 #### Static vs. Trailing Drawdown Rules
 
 Each subaccount is assigned a `drawdown_criteria` at creation (see [Create Subaccount](#create-subaccount)) that never changes for the life of the subaccount:
 - **`"trailing"`** (default): eliminated at intraday drawdown from the day's opening equity, or drawdown from the end-of-day equity high-water mark, reaching the applicable threshold (5% during challenge, 8% once funded — same as regular miners).
-- **`"static"`**: eliminated when equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or when intraday drawdown from the day's opening equity reaches 5% — the same intraday-drawdown check used for trailing accounts, just with the threshold pinned to a flat 5% instead of the bucket/registration-time lookup. These thresholds do not change between challenge and funded periods. HL-linked subaccounts always use `"trailing"`.
+- **`"static"`**: eliminated when equity (including unrealized PnL) drops more than 5% below the subaccount's starting balance, or when intraday drawdown from the day's opening equity reaches 5% — the same intraday-drawdown check used for trailing accounts, just with the threshold pinned to a flat 5% instead of the bucket/registration-time lookup. These thresholds do not change between challenge and funded periods. HL-linked subaccounts always use `"trailing"`. A miner on the [standard account track](miner.md#standard-account-track) always runs `"static"`, with its own 3% daily loss limit in place of the flat 5%.
 
 Under either rule set, a standard subaccount in `SUBACCOUNT_CHALLENGE`, `SUBACCOUNT_FUNDED` or `PRO_CHALLENGE_TRANSITION` measures its intraday drawdown from the day's opening balance (`daily_open_balance`) instead of the opening equity. HL-linked, Instant Funded and pro accounts keep the opening equity.
 
 Elimination reasons reflect which rule triggered: `FAILED_CHALLENGE_PERIOD_STATIC_DRAWDOWN` / `FAILED_FUNDED_PERIOD_STATIC_DRAWDOWN` for the starting-balance rule. The intraday drawdown rule reuses the same `FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN` / `FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN` reasons for both `"static"` and `"trailing"` subaccounts — check `criteria` to tell which threshold actually applied. `FAILED_*_STATIC_EOD_DRAWDOWN` is retired and no longer produced, but remains a valid value on historical elimination rows.
+
+#### Auto-promotion Progress
+
+`auto_promotion` is where a standard funded account stands on its way to a pro account (see [auto-promotion](entity_miner.md#auto-promotion)). Every value is the one the challenge period decided on at its last refresh (about every 30 seconds), so a client shows them as they are instead of working the rules out again. The section is on every dashboard built for the account: this endpoint, `GET /entity/subaccount/<synthetic_hotkey>`, `GET /miner/<hotkey>` and the websocket dashboard frames.
+
+Only an auto-promotion candidate has it: an account in `SUBACCOUNT_FUNDED` that was created through `SUBACCOUNT_CHALLENGE`, is not HL-linked and has not been auto-promoted before. For any other account the key is left out here, on `GET /miner/<hotkey>` and in the websocket frames, and is `null` on `GET /entity/subaccount/<synthetic_hotkey>`. Between a validator restart and its first challenge period refresh a candidate reads like any other account.
+
+- `on_promotion_rules` (bool): Whether the account takes the weekly and leverage fast track targets: a subaccount created at or after the promotion rules start (`ValiConfig.SUBACCOUNT_PROMOTION_RULES_START_MS`), or a miner on the standard account track. An account that does not has a 10% target at all times.
+- `fast_track_target` (float): The fast track's return in force at `as_of_ms`, as a fraction of the account size (`0.03`, `0.05` or `0.10`). The fast track is met while `drawdown.current_equity - 1` is at or above it.
+- `first_funded_order_ms` (int or `null`): The account's first order as a funded account (the first order of its live positions, since the positions before were archived on becoming funded), which the weeks of the target are counted from; `null` when it has none. Sent for every candidate, though only the target of one on the promotion rules depends on it. An account on the promotion rules with no such order yet has the 10% target until its first order.
+- `peak_leverage_use` (float): `account_size_data.peak_leverage_use` as the refresh read it, which is the value the target was decided on. From `0.5` on, an account on the promotion rules has a 3% target in any week.
+- `fast_track_held_since_ms` (int or `null`): Since when the account's equity has been at or above the target on every refresh; `null` when the last refresh found it below. The hold starts over after any refresh below the target, when the target rises at the end of a week, and when the validator restarts.
+- `fast_track_hold_ms` (int): How long the equity has to hold (`180000`). The account is promoted on the first refresh at or after `fast_track_held_since_ms + fast_track_hold_ms`, provided the three values below are not `null`.
+- `trading_days` (int or `null`), `calmar` (float or `null`), `daily_consistency` (float or `null`): What the steady track is measured on: full days on the funded ledger, all-time Calmar, and return consistency (the best day's share of the total return), each as in the pro challenge. All three are `null` for a candidate that cannot be measured yet, because it has no perf ledger or one whose drawdown cannot be replayed; it is promoted on neither track until it can.
+- `as_of_ms` (int): The time of the refresh these values were decided at, on the same clock as `fast_track_held_since_ms`.
+
+After a refresh that could not work these out, a candidate's section carries only `on_promotion_rules` and `as_of_ms` (the time of that refresh) until the next refresh that can. The same two fields, with the time of the last refresh, are all a candidate has when its challenge period state was reset or replaced since that refresh (an elimination reverted, an operator's move back into `SUBACCOUNT_FUNDED`, a state synced from another validator): the rest was decided for the state before and comes back with the next refresh. Read every missing field as unknown, never as a default. A number that is not finite is sent as `null`.
 
 **Elimination:**
 

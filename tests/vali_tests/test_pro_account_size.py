@@ -84,6 +84,7 @@ def _bare_manager():
     manager._challenge_period_client = MagicMock()
     manager._challenge_period_client.has_miner.return_value = False
     manager._challenge_period_client.get_drawdown_stats.return_value = None
+    manager._challenge_period_client.get_auto_promotion.return_value = None
     manager._debt_ledger_client = MagicMock()
     manager._debt_ledger_client.get_ledger.return_value = None
     manager._position_client = MagicMock()
@@ -373,6 +374,8 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.assertIsNone(self._info(self.standard).pro_account_size)
         self.assertEqual(self._info(pro).pro_account_size, GRANTED_SIZE)
 
+    @patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None)
+    @patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None)
     def test_a_pro_size_of_twice_the_standard_account_is_allowed_and_free(self):
         success, message = self.manager.apply_bucket_account_size(
             self.standard, MinerBucket.PRO_CHALLENGE_DIRECT, 2 * STANDARD_SIZE
@@ -404,6 +407,8 @@ class TestApplyBucketAccountSize(unittest.TestCase):
         self.assertEqual(info.account_type, AccountType.PRO.value)
         self.assertEqual(info.account_size, STANDARD_SIZE)
 
+    @patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None)
+    @patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None)
     def test_full_journey_offer_demote_reoffer(self):
         """Offer at 500K, start pro, demote, re-offer: the re-offer needs a size and trades the new one."""
         hotkey = self.standard
@@ -438,6 +443,8 @@ class TestApplyBucketAccountSize(unittest.TestCase):
                 self.assertEqual(info.account_size, GRANTED_SIZE)
                 self.assertEqual(info.standard_account_size, STANDARD_SIZE)
 
+    @patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None)
+    @patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None)
     def test_start_pro_now_trades_the_size_set_at_transition(self):
         self.assertTrue(self.manager.apply_bucket_account_size(
             self.standard, MinerBucket.PRO_CHALLENGE_TRANSITION, GRANTED_SIZE)[0])
