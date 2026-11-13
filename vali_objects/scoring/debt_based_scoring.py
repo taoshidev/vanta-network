@@ -57,7 +57,6 @@ from collections import defaultdict
 
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfLedger
 from vali_objects.vali_dataclasses.order import Order
-from shared_objects.subtensor_ops.metagraph_utils import is_validator_stake_weight
 from vali_objects.vali_dataclasses.position import Position
 from shared_objects.log import logger
 
@@ -112,6 +111,8 @@ class DebtBasedScoring:
 
     # Bittensor network parameters (approximate, for fallback)
     BLOCKS_PER_DAY_FALLBACK = 7200  # ~12 seconds per block
+    # The miners' share of a subnet's emission: Yuma and Null both split it evenly with stake dividends
+    MINER_EMISSION_SHARE = 0.5
     RAO_PER_TOKEN = 1e9
 
     # Burn address UIDs (receives excess weight when sum < 1.0)
@@ -831,6 +832,17 @@ class DebtBasedScoring:
             )
 
         capped = {hotkey for hotkey in (capped_hotkeys or ()) if hotkey in miner_daily_target_payouts_usd}
+        if capped and not projected_daily_emissions_usd:
+            # Without a projection a standard miner's share of emissions cannot be priced, and a pro rata share
+            # would pay it out of the surplus: it takes nothing this time, and its target (what it is still owed
+            # less what it has received, over the days left) makes the day up once the projection is back
+            others = {hotkey: payout_usd for hotkey, payout_usd in miner_daily_target_payouts_usd.items()
+                      if hotkey not in capped}
+            others_total = sum(others.values())
+            weights = {hotkey: 0.0 for hotkey in capped}
+            weights.update({hotkey: payout_usd / others_total if others_total > 0 else 0.0
+                            for hotkey, payout_usd in others.items()})
+            return weights
         if emissions_cover_owed is None:
             emissions_cover_owed = bool(projected_daily_emissions_usd) and projected_daily_emissions_usd >= total_daily_target_payout
         if capped and projected_daily_emissions_usd and emissions_cover_owed and total_daily_target_payout > 0:
@@ -894,13 +906,15 @@ class DebtBasedScoring:
         metagraph_client: 'MetagraphClient',
         days_until_target: int,
         verbose: bool = False,
-        burn_uid: int | None = None,
     ) -> float:
         """
-        Estimate total ALPHA emissions available from now until target day.
+        Estimate the ALPHA miners will be emitted from now until target day.
 
-        Uses real-time metagraph data to get current TAO emission rate,
-        then converts to ALPHA using reserve data from shared metagraph.
+        Uses the metagraph's per-UID emission (alpha per tempo of 360 blocks). Miners share half of it: Yuma
+        and Null consensus both split each epoch's budget evenly between miner incentive and stake dividends.
+        No UID is told apart as a validator: a miner may hold stake (and under Null every staked UID earns
+        dividends), so a UID's emission can be incentive, dividends or both. The burn address's share is
+        unassigned miner incentive, inside the miners' half.
 
         Args:
             metagraph_client: Shared IPC metagraph with emission data and substrate reserves
@@ -908,17 +922,10 @@ class DebtBasedScoring:
             verbose: Enable detailed logging
 
         Returns:
-            Estimated total ALPHA emissions available (float)
+            Estimated total ALPHA emitted to miners until target day (float)
         """
         try:
-            # The emission of a validator's UID is its dividend, not part of what miners share; what the burn
-            # address takes is unassigned miner emission and stays in
-            emission = list(metagraph_client.get_emission())
-            stake_weight = list(metagraph_client.get_stake_weight() or [])
-            if len(stake_weight) == len(emission):
-                emission = [e for uid, (e, w) in enumerate(zip(emission, stake_weight))
-                            if uid == burn_uid or not is_validator_stake_weight(w)]
-            total_alpha_per_tempo = sum(emission)
+            total_alpha_per_tempo = sum(metagraph_client.get_emission()) * DebtBasedScoring.MINER_EMISSION_SHARE
             total_alpha_per_block = total_alpha_per_tempo / 360
             if verbose:
                 logger.info(f"Current subnet emission rate: {total_alpha_per_block:.6f} alpha/block")

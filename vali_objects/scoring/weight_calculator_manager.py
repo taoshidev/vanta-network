@@ -539,7 +539,6 @@ class WeightCalculatorManager(CacheController):
             metagraph_client=self._metagraph_client,
             days_until_target=days_until_target,
             verbose=verbose,
-            burn_uid=DebtBasedScoring.get_burn_uid(not self.is_mainnet),
         )
         projected_usd_available = DebtBasedScoring._convert_alpha_to_usd(
             alpha_amount=projected_alpha_available,

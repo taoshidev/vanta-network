@@ -1430,6 +1430,8 @@ def _left_in_transition(manager, entity_manager, hotkey, size=GRANTED_SIZE):
     manager.miner_states[hotkey].add_bucket_entry(MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS)
 
 
+@patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None)
+@patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None)
 def test_the_transition_records_the_size_then_the_next_hop_trades_it(hop_manager):
     """Entering the transition records the pro size but keeps the standard account; the hop out of it
     is what puts the subaccount on the pro account and rescales its payout."""

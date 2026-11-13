@@ -139,11 +139,15 @@ class TestStandardMinerIdentification(TestBase):
             self.assertEqual(restarted.get_registered_after_cutoff(), (CUTOFF, registered_after))
             self.assertIs(restarted.is_registered_after_cutoff(NEW), True)
         # With the cutoff unset the answer is False whatever the copy
-        self.assertIs(manager.is_registered_after_cutoff(NEW), False)
+        with mock.patch.object(ValiConfig, "STANDARD_MINER_CUTOFF_BLOCK", None):
+            self.assertIs(manager.is_registered_after_cutoff(NEW), False)
 
     def test_account_server_holds_the_pushed_copy(self):
         registered_after = {AT_CUTOFF: False, NEW: True, VALIDATOR: None}
-        self.account_client.set_registered_after_cutoff(CUTOFF, registered_after)
-        self.assertEqual(self.account_client.get_registered_after_cutoff(), (CUTOFF, registered_after))
-        # The test-mode server runs with the cutoff unset, so it answers False whatever the copy
-        self.assertIs(self.account_client.is_registered_after_cutoff(NEW), False)
+        # The test-mode server runs in its own process on netuid 116 (test_mock_factory), so on the configured testnet
+        # cutoff, which a patch here cannot reach
+        cutoff = ValiConfig.standard_miner_cutoff_block(is_testnet=True)
+        self.account_client.set_registered_after_cutoff(cutoff, registered_after)
+        self.assertEqual(self.account_client.get_registered_after_cutoff(), (cutoff, registered_after))
+        # A copy made under the configured cutoff answers from the copy; with the cutoff unset, False whatever the copy
+        self.assertIs(self.account_client.is_registered_after_cutoff(NEW), cutoff is not None)

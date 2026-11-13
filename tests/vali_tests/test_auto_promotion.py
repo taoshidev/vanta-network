@@ -708,6 +708,8 @@ def _full_refresh(manager, hotkey: str, now_ms: int, ledger=None, eliminated: bo
         return manager.refresh(current_time_ms=now_ms)
 
 
+@patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None)
+@patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None)
 def test_through_refresh_a_qualifying_account_reaches_grow_on_the_next_refresh_free_of_the_fee(hop_manager):
     """7% realized over a 2% drawdown is calmar 3.5: the 10x tier. Its positions are closed as it enters
     the transition, and the next refresh puts it on the pro size, with no promotion fee charged even

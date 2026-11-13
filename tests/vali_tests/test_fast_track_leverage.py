@@ -196,10 +196,12 @@ def test_a_testnet_validator_reads_the_testnet_switch_and_asks_its_network_once(
         "initial_bucket": None, "created_at_ms": CREATED_MS}
     manager._entity_client.is_testnet.return_value = True
     _seed(manager)
-    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", CREATED_MS):
+    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", CREATED_MS), \
+            patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None):
         assert not _holds(manager, _account(), 1.04, NOW_MS - DAILY_MS)
     manager._promotion_rules.clear()
-    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", CREATED_MS):
+    with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None), \
+            patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", CREATED_MS):
         assert _holds(manager, _account(), 1.04, NOW_MS - DAILY_MS, now_ms=NOW_MS + 30_000)
     manager._entity_client.is_testnet.assert_called_once()
 
