@@ -456,6 +456,30 @@ class TestSlashBurnProportion(TestBase):
             self.assertTrue(m.slash_miner_collateral("5HK", 100.0))
         m.collateral_manager.slash.assert_called_once()
 
+    def test_slash_that_raises_but_landed_reports_success(self):
+        """A slash whose confirmation failed but that was mined must not be retried."""
+        from unittest.mock import MagicMock, patch
+
+        m = self._make_manager(500.0)
+        m.SLASH_CONFIRM_INTERVAL_S = 0
+        m.get_miner_collateral_balance = MagicMock(side_effect=[500.0, 500.0, 400.0])
+        m.collateral_manager.slash.side_effect = RuntimeError("429 Too Many Requests")
+        with patch.object(ValiUtils, "get_secret", return_value="secret"):
+            self.assertTrue(m.slash_miner_collateral("5HK", 100.0))
+        m.collateral_manager.slash.assert_called_once()
+        m.collateral_manager.burn.assert_called_once()
+
+    def test_slash_that_raises_and_did_not_land_reports_failure(self):
+        from unittest.mock import patch
+
+        m = self._make_manager(500.0)
+        m.SLASH_CONFIRM_INTERVAL_S = 0
+        m.collateral_manager.slash.side_effect = RuntimeError("execution reverted")
+        with patch.object(ValiUtils, "get_secret", return_value="secret"):
+            self.assertFalse(m.slash_miner_collateral("5HK", 100.0))
+        m.collateral_manager.burn.assert_not_called()
+        self.assertEqual(m.get_miner_collateral_balance.call_count, 1 + m.SLASH_CONFIRM_ATTEMPTS)
+
     def test_non_mothership_slash_is_dry_run(self):
         m = self._make_manager(500.0)
         m.is_mothership = False

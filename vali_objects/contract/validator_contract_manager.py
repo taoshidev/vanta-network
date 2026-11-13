@@ -943,8 +943,17 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                     owner_private_key=owner_private_key,
                 )
             except Exception as e:
-                logger.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
-                return False
+                # The SDK raises when it cannot confirm the receipt, which includes a transaction
+                # that was broadcast and is mined later (e.g. a 429 while polling). Returning False
+                # then makes process_pending_slashes revert its marks and slash the same amount again
+                # on its next cycle. Only report failure once the balance shows the slash did not land.
+                if not self._slash_landed(miner_hotkey, current_balance_theta, slash_amount):
+                    logger.error(f"Failed to execute slashing for {miner_hotkey}: {e}")
+                    return False
+                logger.warning(
+                    f"Slash call for {miner_hotkey} raised ({e}) but the collateral balance shows the "
+                    f"{slash_amount} Theta slash executed; treating it as successful so it is not charged again"
+                )
 
             logger.info(f"Successfully slashed {slash_amount} Theta from {miner_hotkey}")
 
@@ -970,6 +979,25 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             del owner_address
             del owner_private_key
             del vault_password
+
+    # How long slash_miner_collateral waits for an unconfirmed slash to show up in the balance.
+    SLASH_CONFIRM_ATTEMPTS = 5
+    SLASH_CONFIRM_INTERVAL_S = 12.0
+
+    def _slash_landed(self, miner_hotkey: str, balance_before_theta: float, slash_amount_theta: float) -> bool:
+        """Re-read the balance after a slash call raised, to tell a slash that failed from one
+        whose confirmation failed. Waits about one block between reads, since a transaction that
+        was broadcast but not yet confirmed can still be mined."""
+        tolerance = 1e-6
+        for attempt in range(self.SLASH_CONFIRM_ATTEMPTS):
+            if attempt:
+                time.sleep(self.SLASH_CONFIRM_INTERVAL_S)
+            balance_after = self.get_miner_collateral_balance(miner_hotkey)
+            if balance_after is None:
+                continue
+            if balance_before_theta - balance_after >= slash_amount_theta - tolerance:
+                return True
+        return False
 
     def get_miner_collateral_balance(self, miner_address: str, max_retries: int = 4) -> Optional[float]:
         """
