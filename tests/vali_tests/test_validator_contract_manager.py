@@ -411,6 +411,22 @@ class TestBoundedOwnershipQuery(TestBase):
         self.assertTrue(m.verify_coldkey_owns_hotkey("5Owner", "5HK"))
         self.assertEqual(m.collateral_manager.subtensor_api.queries.query_subtensor.call_count, calls)
 
+    def test_owner_query_passes_hotkey_as_params(self):
+        # Same signature as bittensor's query_subtensor(name, params=None, block=None).
+        # Passing the hotkey list as `block` raises "unhashable type: 'list'" on the
+        # real SDK, so every deregistered hotkey failed the ownership check.
+        seen = {}
+
+        def query_subtensor(name, params=None, block=None):
+            seen.update(name=name, params=params, block=block)
+            if block is not None:
+                raise TypeError("unhashable type: 'list'")
+            return "5Owner"
+
+        m = self._make_manager(query_subtensor)
+        self.assertTrue(m.verify_coldkey_owns_hotkey("5Owner", "5HK"))
+        self.assertEqual(seen, {"name": "Owner", "params": ["5HK"], "block": None})
+
     def test_definitive_negative_is_cached(self):
         m = self._make_manager(lambda *a, **k: "5SomeoneElse")
         self.assertFalse(m.verify_coldkey_owns_hotkey("5CK", "5HK"))

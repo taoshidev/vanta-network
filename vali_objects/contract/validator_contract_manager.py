@@ -1177,7 +1177,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
     def _query_owner_on_chain(self, hotkey_ss58: str):
         """Blocking chain query; runs on the bounded ownership executor."""
         subtensor_api = self.collateral_manager.subtensor_api
-        return subtensor_api.queries.query_subtensor("Owner", None, [hotkey_ss58])
+        return subtensor_api.queries.query_subtensor("Owner", [hotkey_ss58])
 
     def shutdown_ownership_executor(self):
         """Release the bounded ownership executor (operator/teardown hook).
