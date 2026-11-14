@@ -81,6 +81,7 @@ class MarketOrderManager():
         is_hl_taker: bool | None = None,
         now_ms: int | None = None,
         enforce_cooldown: bool = True,
+        limit_price: float | None = None,  # the miner's limit, recorded on the filled order for LIMIT fills
     ) -> tuple[Order, Position] | None:
         _start = TimeUtil.now_in_millis()
         now_ms = now_ms or _start
@@ -171,7 +172,7 @@ class MarketOrderManager():
                 execution_type, order_type, order_size,
                 order_uuid, now_ms, price_sources, order_src,
                 fill_price, usd_base_rate, quote_usd_rate,
-                slippage, is_hl_taker, trigger_price,
+                slippage, is_hl_taker, trigger_price, limit_price,
             )
             logger.info(f"[ORDER_EXECUTION] {hotkey} {order_uuid} completed in {TimeUtil.now_in_millis() - _start}ms")
             return OrderExecution(order, position, binding_cap)
@@ -229,6 +230,7 @@ class MarketOrderManager():
         slippage: float | None = None,
         is_hl_taker: bool | None = None,
         trigger_price: float | None = None,
+        limit_price: float | None = None,
     ) -> Order:
         """Build and execute an order. Caller must hold the position lock."""
         trade_pair = position.trade_pair
@@ -319,6 +321,7 @@ class MarketOrderManager():
             usd_base_rate=usd_base_rate,
             quote_usd_rate=quote_usd_rate,
             is_hl_taker=is_hl_taker,
+            limit_price=limit_price,
         )
 
         if slippage is None:
