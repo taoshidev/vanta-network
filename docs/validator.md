@@ -368,8 +368,9 @@ Subnet 8 uses a commit-reveal mechanism in mainnet for weight setting:
 
 ## Common Pitfalls and Prevention
 
-1. **Rate Limiting**: Run a local subtensor to avoid rate limit issues on finney that prevent weights from being set
-   - [Subtensor installation guide](https://github.com/opentensor/subtensor)
+1. **Rate Limiting**: Run a local subtensor to avoid rate limit issues on finney that prevent weights from being set, and 429 errors during collateral deposits, withdrawals and slashes
+   - [Subtensor installation guide](https://github.com/RaoFoundation/subtensor). A synced lite node (`--sync=warp`) is enough. Build the latest release tag (the runtime upgrades itself on-chain, but the node binary does not)
+   - Start the validator with `--subtensor.chain_endpoint ws://127.0.0.1:9944`. This routes the metagraph, weight setting and collateral traffic through the node: the collateral manager uses the same URL for subtensor calls and `http://127.0.0.1:9944` for EVM calls, and refuses to start if that endpoint serves a different chain id. Leaving `--subtensor.chain_endpoint` at a public entrypoint keeps collateral on the public endpoints
 
 2. **Consensus config overrides**: The `PRO_CHALLENGE_*` environment variables — and the `PTN_ALLOW_CONFIG_OVERRIDES=1` opt-in that unlocks them — are **testnet-only** knobs that change promotion decisions and the weekly penalties the weight calculator reads. A validator started on netuid 8 with any of them set in its environment refuses to start. See [entity_miner.md](entity_miner.md#testnet-overrides).
 
