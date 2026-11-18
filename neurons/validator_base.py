@@ -174,6 +174,9 @@ class ValidatorBase:
         # (developer): Adds your custom arguments to the parser.
         # Adds override arguments for network and netuid.
         parser.add_argument("--netuid", type=int, default=1, help="The chain subnet uid.")
+        parser.add_argument("--collateral.chain_endpoint", type=str, default=None,
+                            help="ws:// or wss:// URL of a self-hosted subtensor node for collateral operations "
+                                 "only (e.g. ws://10.0.0.5:9944). The public endpoints are used while it is unhealthy.")
 
         # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
         bt.Subtensor.add_args(parser)

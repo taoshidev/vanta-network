@@ -261,7 +261,7 @@ client.set_direct_server(server_instance)
 - **Data Visualization**: matplotlib 3.9.0
 - **Cloud Services**: Google Cloud Storage 2.17.0, Secret Manager 2.21.1
 - **Taoshi SDKs**:
-  - collateral_sdk@1.0.11 - Collateral management
+  - collateral_sdk@1.0.12 - Collateral management. `--collateral.chain_endpoint ws://<node>:9944` sends collateral traffic only (substrate on that URL, EVM on it over http(s)) through a self-hosted node; `ValidatorContractManager` keeps a public-endpoint SDK instance and a monitor thread switches between them every 60s on a health probe (genesis hash, EVM chain id, not syncing, within 20 blocks of the public endpoint), alerting Slack on each switch
 
 ## Production Deployment
 
