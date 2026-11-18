@@ -474,54 +474,189 @@ class TestSlashBurnProportion(TestBase):
 
 
 class TestCollateralEndpoints(TestBase):
-    """A custom --subtensor.chain_endpoint routes collateral traffic (substrate and EVM)
-    through that node; public entrypoints keep the collateral SDK's defaults."""
+    """--collateral.chain_endpoint routes collateral traffic (substrate and EVM) through a self-hosted
+    node while it is healthy; everything else, and collateral whenever the node is unhealthy, stays on
+    the public endpoints."""
 
-    def _collateral_manager_call(self, network, chain_endpoint):
-        from unittest.mock import patch
+    NODE = "ws://10.0.0.5:9944"
+
+    def _make_manager(self, network="finney", collateral_endpoint=None, subtensor_endpoint=None,
+                      problem=None, node_constructor_error=None):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
         from shared_objects.rpc.test_mock_factory import TestMockFactory
         from vali_objects.vali_config import RPCConnectionMode
         import vali_objects.contract.validator_contract_manager as vcm
 
         config = TestMockFactory.create_mock_config(netuid=8, network=network)
-        if chain_endpoint is not None:
-            config.subtensor.chain_endpoint = chain_endpoint
-        with patch.object(vcm, "CollateralManager") as collateral_manager_cls:
-            vcm.ValidatorContractManager(
-                config=config, running_unit_tests=True, connection_mode=RPCConnectionMode.LOCAL
-            )
-        return collateral_manager_cls.call_args
+        if subtensor_endpoint is not None:
+            config.subtensor.chain_endpoint = subtensor_endpoint
+        if collateral_endpoint is not None:
+            config.collateral = SimpleNamespace(chain_endpoint=collateral_endpoint)
 
-    def test_local_node_routes_both_endpoints(self):
+        def build(network, **kwargs):
+            if kwargs.get("evm_endpoint") and node_constructor_error:
+                raise node_constructor_error
+            return MagicMock(name="node" if kwargs.get("evm_endpoint") else "public")
+
+        slack = MagicMock()
+        with patch.object(vcm, "CollateralManager", side_effect=build) as collateral_manager_cls, \
+                patch.object(vcm.ValidatorContractManager, "_collateral_node_problem", return_value=problem):
+            m = vcm.ValidatorContractManager(config=config, running_unit_tests=True,
+                                             connection_mode=RPCConnectionMode.LOCAL, slack_notifier=slack)
+        return m, collateral_manager_cls, slack
+
+    def test_no_flag_uses_public_endpoints_only(self):
         from collateral_sdk import Network
 
-        call = self._collateral_manager_call("finney", "ws://127.0.0.1:9944")
-        self.assertEqual(call.args, (Network.MAINNET,))
-        self.assertEqual(call.kwargs, {"evm_endpoint": "http://127.0.0.1:9944", "subtensor_endpoint": "ws://127.0.0.1:9944"})
+        m, cls, slack = self._make_manager()
+        self.assertEqual([c.args for c in cls.call_args_list], [(Network.MAINNET,)])
+        self.assertEqual(cls.call_args.kwargs, {})
+        self.assertIs(m.collateral_manager, m._public_collateral_manager)
+        slack.send_message.assert_not_called()
+
+    def test_subtensor_chain_endpoint_does_not_route_collateral(self):
+        m, cls, _ = self._make_manager(subtensor_endpoint="ws://127.0.0.1:9944")
+        self.assertEqual(cls.call_count, 1)
+        self.assertEqual(cls.call_args.kwargs, {})
+        self.assertIs(m.collateral_manager, m._public_collateral_manager)
+
+    def test_healthy_node_carries_collateral(self):
+        from collateral_sdk import Network
+
+        m, cls, slack = self._make_manager(collateral_endpoint=self.NODE)
+        self.assertEqual(cls.call_args.args, (Network.MAINNET,))
+        self.assertEqual(cls.call_args.kwargs, {"evm_endpoint": "http://10.0.0.5:9944", "subtensor_endpoint": self.NODE})
+        self.assertIs(m.collateral_manager, m._node_collateral_manager)
+        slack.send_message.assert_not_called()
 
     def test_wss_endpoint_maps_to_https(self):
-        call = self._collateral_manager_call("finney", "wss://node.example.com:443")
-        self.assertEqual(call.kwargs["evm_endpoint"], "https://node.example.com:443")
-        self.assertEqual(call.kwargs["subtensor_endpoint"], "wss://node.example.com:443")
+        _, cls, _ = self._make_manager(collateral_endpoint="wss://node.example.com:443")
+        self.assertEqual(cls.call_args.kwargs["evm_endpoint"], "https://node.example.com:443")
+        self.assertEqual(cls.call_args.kwargs["subtensor_endpoint"], "wss://node.example.com:443")
 
-    def test_testnet_custom_endpoint_keeps_testnet(self):
+    def test_testnet_keeps_testnet(self):
         from collateral_sdk import Network
 
-        call = self._collateral_manager_call("test", "ws://127.0.0.1:9945")
-        self.assertEqual(call.args, (Network.TESTNET,))
-        self.assertEqual(call.kwargs["evm_endpoint"], "http://127.0.0.1:9945")
+        m, cls, _ = self._make_manager(network="test", collateral_endpoint="ws://127.0.0.1:9945")
+        self.assertTrue(all(c.args == (Network.TESTNET,) for c in cls.call_args_list))
+        self.assertIs(m.collateral_manager, m._node_collateral_manager)
 
-    def test_public_or_missing_endpoint_uses_sdk_defaults(self):
-        # bittensor fills in the finney entrypoint even when --subtensor.network test is passed.
-        for network, chain_endpoint in (
-            ("finney", "wss://entrypoint-finney.opentensor.ai:443"),
-            ("test", "wss://entrypoint-finney.opentensor.ai:443"),
-            ("test", "wss://test.finney.opentensor.ai:443"),
-            ("finney", None),
-        ):
-            call = self._collateral_manager_call(network, chain_endpoint)
-            self.assertEqual(call.kwargs, {"evm_endpoint": None, "subtensor_endpoint": None}, chain_endpoint)
+    def test_unhealthy_node_at_startup_falls_back_and_alerts(self):
+        m, cls, slack = self._make_manager(collateral_endpoint=self.NODE, problem="unreachable: refused")
+        self.assertEqual(cls.call_count, 1)  # only the public manager
+        self.assertIsNone(m._node_collateral_manager)
+        self.assertIs(m.collateral_manager, m._public_collateral_manager)
+        self.assertIn("unreachable", slack.send_message.call_args.args[0])
 
-    def test_non_websocket_endpoint_uses_sdk_defaults(self):
-        call = self._collateral_manager_call("finney", "http://127.0.0.1:9944")
-        self.assertEqual(call.kwargs, {"evm_endpoint": None, "subtensor_endpoint": None})
+    def test_node_constructor_failure_falls_back(self):
+        m, _, slack = self._make_manager(collateral_endpoint=self.NODE,
+                                         node_constructor_error=ValueError("serves chain id 945, expected 964"))
+        self.assertIs(m.collateral_manager, m._public_collateral_manager)
+        self.assertIn("945", slack.send_message.call_args.args[0])
+
+    def test_non_websocket_endpoint_uses_public_endpoints(self):
+        m, cls, _ = self._make_manager(collateral_endpoint="http://10.0.0.5:9944")
+        self.assertEqual(cls.call_count, 1)
+        self.assertIs(m.collateral_manager, m._public_collateral_manager)
+
+    def _run_monitor_once(self, m, problem):
+        from unittest.mock import MagicMock, patch
+        import vali_objects.contract.validator_contract_manager as vcm
+        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+
+        with patch.object(vcm.time, "sleep"), \
+                patch.object(ShutdownCoordinator, "is_shutdown", side_effect=[False, True]), \
+                patch.object(vcm, "CollateralManager", return_value=MagicMock(name="rebuilt node")), \
+                patch.object(m, "_collateral_node_problem", return_value=problem):
+            m._monitor_collateral_endpoint()
+
+    def test_monitor_fails_over_and_recovers(self):
+        m, _, slack = self._make_manager(collateral_endpoint=self.NODE)
+        node = m._node_collateral_manager
+
+        self._run_monitor_once(m, "stale: block 1, public endpoint at 100")
+        self.assertIs(m.collateral_manager, m._public_collateral_manager)
+        self.assertIn("moved to the public endpoints", slack.send_message.call_args.args[0])
+
+        self._run_monitor_once(m, None)
+        self.assertIs(m.collateral_manager, node)
+        self.assertIn("moved back", slack.send_message.call_args.args[0])
+
+    def test_monitor_builds_node_manager_when_startup_failed(self):
+        m, _, _ = self._make_manager(collateral_endpoint=self.NODE, problem="unreachable: refused")
+        self._run_monitor_once(m, None)
+        self.assertIsNotNone(m._node_collateral_manager)
+        self.assertIs(m.collateral_manager, m._node_collateral_manager)
+
+    def test_monitor_without_change_does_not_alert(self):
+        m, _, slack = self._make_manager(collateral_endpoint=self.NODE)
+        self._run_monitor_once(m, None)
+        self.assertIs(m.collateral_manager, m._node_collateral_manager)
+        slack.send_message.assert_not_called()
+
+
+class TestCollateralNodeProblem(TestBase):
+    """The health probe behind collateral failover."""
+
+    def _probe(self, node, public_block=1000):
+        from unittest.mock import MagicMock, patch
+        from collateral_sdk import Network
+        import vali_objects.contract.validator_contract_manager as vcm
+
+        m = object.__new__(vcm.ValidatorContractManager)
+        m._collateral_network = Network.MAINNET
+        m._collateral_evm_endpoint = "http://10.0.0.5:9944"
+        m._public_collateral_manager = MagicMock(evm_endpoint="https://lite.chain.opentensor.ai")
+
+        def post(url, json, timeout):
+            if url == m._collateral_evm_endpoint:
+                if isinstance(node, Exception):
+                    raise node
+                result = node[json["method"]]
+            elif public_block is None:
+                raise ConnectionError("public down")
+            else:
+                result = {"number": hex(public_block)}
+            return MagicMock(json=MagicMock(return_value={"result": result}), raise_for_status=MagicMock())
+
+        with patch.object(vcm.requests, "post", side_effect=post):
+            return m._collateral_node_problem()
+
+    def _node(self, **overrides):
+        from collateral_sdk import Network
+        import vali_objects.contract.validator_contract_manager as vcm
+
+        node = {
+            "chain_getBlockHash": vcm.ValidatorContractManager.GENESIS_HASHES[Network.MAINNET],
+            "eth_chainId": hex(964),
+            "system_health": {"isSyncing": False, "peers": 10},
+            "chain_getHeader": {"number": hex(995)},
+        }
+        node.update(overrides)
+        return node
+
+    def test_healthy(self):
+        self.assertIsNone(self._probe(self._node()))
+
+    def test_wrong_genesis(self):
+        from collateral_sdk import Network
+        import vali_objects.contract.validator_contract_manager as vcm
+
+        problem = self._probe(self._node(chain_getBlockHash=vcm.ValidatorContractManager.GENESIS_HASHES[Network.TESTNET]))
+        self.assertIn("wrong chain", problem)
+
+    def test_wrong_evm_chain_id(self):
+        self.assertIn("EVM chain id 945", self._probe(self._node(eth_chainId=hex(945))))
+
+    def test_syncing(self):
+        self.assertEqual(self._probe(self._node(system_health={"isSyncing": True, "peers": 3})), "still syncing")
+
+    def test_stale(self):
+        self.assertIn("stale", self._probe(self._node(chain_getHeader={"number": hex(900)})))
+
+    def test_unreachable(self):
+        self.assertIn("unreachable", self._probe(ConnectionError("refused")))
+
+    def test_public_endpoint_down_does_not_fail_the_node(self):
+        self.assertIsNone(self._probe(self._node(), public_block=None))

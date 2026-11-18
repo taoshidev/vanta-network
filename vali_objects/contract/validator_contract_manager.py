@@ -13,7 +13,7 @@ This is pure business logic that can be tested independently.
 """
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from bittensor.core import settings as bt_settings
+import requests
 from collateral_sdk import CollateralManager, Network
 from typing import Dict, Any, Optional
 import time
@@ -72,7 +72,8 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         config=None,
         running_unit_tests=False,
         is_backtesting=False,
-        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC
+        connection_mode: RPCConnectionMode = RPCConnectionMode.RPC,
+        slack_notifier=None
     ):
         """
         Initialize ValidatorContractManager.
@@ -88,6 +89,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             running_unit_tests: Whether running in test mode
             is_backtesting: Whether backtesting
             connection_mode: RPC or LOCAL mode
+            slack_notifier: Alerts when collateral switches between the custom node and the public endpoints
         """
         self.running_unit_tests = running_unit_tests
         self.config = config
@@ -139,32 +141,56 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         self.OWNERSHIP_QUERY_TIMEOUT_S = 10.0
         self.OWNERSHIP_FAILURE_COOLDOWN_S = 30.0
 
-        # A custom --subtensor.chain_endpoint (e.g. a self-hosted node at ws://127.0.0.1:9944)
-        # also carries collateral traffic: the node serves substrate and EVM RPC on the same
-        # port, so the EVM endpoint is that URL over http(s). Public entrypoints keep the
-        # collateral SDK's own defaults, since they don't serve EVM RPC.
-        chain_endpoint = getattr(config.subtensor, 'chain_endpoint', None)
-        public_endpoints = {url for name, url in bt_settings.NETWORK_MAP.items() if name != 'local'}
-        evm_endpoint = None
-        subtensor_endpoint = None
-        if isinstance(chain_endpoint, str) and chain_endpoint and chain_endpoint not in public_endpoints:
+        self._slack_notifier = slack_notifier
+
+        # --collateral.chain_endpoint (e.g. a self-hosted node at ws://10.0.0.5:9944) carries
+        # collateral traffic only; the metagraph and weight setting stay on --subtensor.chain_endpoint.
+        # The node serves substrate and EVM RPC on the same port, so the EVM endpoint is that URL
+        # over http(s). The public endpoints stay available: collateral runs on them whenever the
+        # node is unhealthy, and a monitor thread switches back once it recovers.
+        self._collateral_network = Network.TESTNET if self.is_testnet else Network.MAINNET
+        self._public_collateral_manager = CollateralManager(self._collateral_network)
+        self._node_collateral_manager = None
+        self.collateral_manager = self._public_collateral_manager
+        self._collateral_evm_endpoint = None
+        self._collateral_subtensor_endpoint = None
+        chain_endpoint = getattr(getattr(config, 'collateral', None), 'chain_endpoint', None)
+        if isinstance(chain_endpoint, str) and chain_endpoint:
             if chain_endpoint.startswith(('ws://', 'wss://')):
-                subtensor_endpoint = chain_endpoint
-                evm_endpoint = 'http' + chain_endpoint[len('ws'):]
+                self._collateral_subtensor_endpoint = chain_endpoint
+                self._collateral_evm_endpoint = 'http' + chain_endpoint[len('ws'):]
             else:
-                logger.warning(
-                    f"Custom chain_endpoint {chain_endpoint} is not a ws:// or wss:// URL; "
+                logger.error(
+                    f"--collateral.chain_endpoint {chain_endpoint} is not a ws:// or wss:// URL; "
                     f"collateral operations will use the public endpoints"
                 )
 
-        # Initialize collateral manager based on network type
-        network = Network.TESTNET if self.is_testnet else Network.MAINNET
-        self.collateral_manager = CollateralManager(
-            network, evm_endpoint=evm_endpoint, subtensor_endpoint=subtensor_endpoint
-        )
+        if self._collateral_evm_endpoint is not None:
+            problem = self._collateral_node_problem()
+            if problem is None:
+                try:
+                    self._node_collateral_manager = CollateralManager(
+                        self._collateral_network,
+                        evm_endpoint=self._collateral_evm_endpoint,
+                        subtensor_endpoint=self._collateral_subtensor_endpoint,
+                    )
+                    self.collateral_manager = self._node_collateral_manager
+                except Exception as e:
+                    problem = str(e)
+            if problem is not None:
+                msg = (f"Collateral node {chain_endpoint} is unhealthy at startup ({problem}); "
+                       f"collateral operations will use the public endpoints until it recovers")
+                logger.error(msg)
+                if self._slack_notifier:
+                    self._slack_notifier.send_message(f"⚠️ {msg}", level="error")
+            if not running_unit_tests:
+                threading.Thread(target=self._monitor_collateral_endpoint, daemon=True,
+                                 name="collateral_endpoint_monitor").start()
+
         logger.info(
-            f"Using {network.name.lower()} collateral manager "
-            f"(evm: {self.collateral_manager.evm_endpoint}, subtensor: {self.collateral_manager.subtensor_endpoint})"
+            f"Using {self._collateral_network.name.lower()} collateral manager "
+            f"(evm: {getattr(self.collateral_manager, 'evm_endpoint', self._collateral_network.evm_endpoint)}, "
+            f"subtensor: {getattr(self.collateral_manager, 'subtensor_endpoint', self._collateral_network.subtensor_network)})"
         )
 
         # GCP secret manager
@@ -263,7 +289,84 @@ class ValidatorContractManager(ValidatorBroadcastBase):
         return {
             "status": "ok",
             "timestamp_ms": TimeUtil.now_in_millis(),
+            # collateral_sdk < 1.0.12 has no endpoint overrides and always uses the network's endpoint
+            "collateral_endpoint": getattr(self.collateral_manager, "evm_endpoint", self._collateral_network.evm_endpoint),
         }
+
+    # Collateral node failover (--collateral.chain_endpoint)
+    COLLATERAL_ENDPOINT_CHECK_INTERVAL_S = 60.0
+    COLLATERAL_ENDPOINT_TIMEOUT_S = 5.0
+    # A node this many blocks (~4 min) behind the public endpoint is treated as stale
+    COLLATERAL_ENDPOINT_MAX_LAG_BLOCKS = 20
+    GENESIS_HASHES = {
+        Network.MAINNET: "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03",
+        Network.TESTNET: "0x8f9cf856bf558a14440e75569c9e58594757048d7b3a84b5d25f6bd978263105",
+    }
+
+    def _collateral_node_problem(self) -> Optional[str]:
+        """Why the --collateral.chain_endpoint node can't serve collateral right now, or None if it can:
+        it must answer, serve this network's chain (genesis hash and EVM chain id), have finished
+        syncing, and be within COLLATERAL_ENDPOINT_MAX_LAG_BLOCKS of the public endpoint."""
+        def call(url, method, params=None):
+            response = requests.post(url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []},
+                                     timeout=self.COLLATERAL_ENDPOINT_TIMEOUT_S)
+            response.raise_for_status()
+            body = response.json()
+            if "error" in body:
+                raise RuntimeError(body["error"])
+            return body["result"]
+
+        url = self._collateral_evm_endpoint
+        try:
+            genesis = call(url, "chain_getBlockHash", [0])
+            if genesis != self.GENESIS_HASHES[self._collateral_network]:
+                return f"wrong chain: genesis {genesis} is not {self._collateral_network.name}"
+            chain_id = int(call(url, "eth_chainId"), 16)
+            if chain_id != self._collateral_network.evm_chain_id:
+                return f"wrong chain: EVM chain id {chain_id}, expected {self._collateral_network.evm_chain_id}"
+            if call(url, "system_health")["isSyncing"]:
+                return "still syncing"
+            node_block = int(call(url, "chain_getHeader")["number"], 16)
+        except Exception as e:
+            return f"unreachable: {e}"
+        try:
+            public_block = int(call(self._public_collateral_manager.evm_endpoint, "chain_getHeader")["number"], 16)
+        except Exception:
+            return None  # the public endpoint being down says nothing about the node
+        if public_block - node_block > self.COLLATERAL_ENDPOINT_MAX_LAG_BLOCKS:
+            return f"stale: block {node_block}, public endpoint at {public_block}"
+        return None
+
+    def _monitor_collateral_endpoint(self):
+        """Switch collateral to the public endpoints while the custom node is unhealthy and back once it
+        recovers. An operation already in flight finishes on the manager it started with."""
+        from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        while not ShutdownCoordinator.is_shutdown():
+            time.sleep(self.COLLATERAL_ENDPOINT_CHECK_INTERVAL_S)
+            try:
+                problem = self._collateral_node_problem()
+                on_node = self._node_collateral_manager is not None and self.collateral_manager is self._node_collateral_manager
+                if problem is None and not on_node:
+                    if self._node_collateral_manager is None:
+                        self._node_collateral_manager = CollateralManager(
+                            self._collateral_network,
+                            evm_endpoint=self._collateral_evm_endpoint,
+                            subtensor_endpoint=self._collateral_subtensor_endpoint,
+                        )
+                    self.collateral_manager = self._node_collateral_manager
+                    msg = f"Collateral node {self._collateral_subtensor_endpoint} is healthy; collateral operations moved back to it"
+                    logger.info(msg)
+                    if self._slack_notifier:
+                        self._slack_notifier.send_message(f"✅ {msg}", level="info")
+                elif problem is not None and on_node:
+                    self.collateral_manager = self._public_collateral_manager
+                    msg = (f"Collateral node {self._collateral_subtensor_endpoint} is unhealthy ({problem}); "
+                           f"collateral operations moved to the public endpoints")
+                    logger.error(msg)
+                    if self._slack_notifier:
+                        self._slack_notifier.send_message(f"⚠️ {msg}", level="error")
+            except Exception as e:
+                logger.error(f"Collateral endpoint monitor error: {e}")
 
     def to_theta(self, rao_amount: int) -> float:
         """
