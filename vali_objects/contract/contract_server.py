@@ -77,7 +77,8 @@ class ContractServer(RPCServerBase):
             config=config,
             running_unit_tests=running_unit_tests,
             is_backtesting=is_backtesting,
-            connection_mode=connection_mode
+            connection_mode=connection_mode,
+            slack_notifier=slack_notifier
         )
 
         # Initialize RPCServerBase (may start RPC server immediately if start_server=True)
