@@ -560,46 +560,90 @@ class TestCollateralEndpoints(TestBase):
         self.assertEqual(cls.call_count, 1)
         self.assertIs(m.collateral_manager, m._public_collateral_manager)
 
-    def _run_monitor_once(self, m, problem):
+    def _run_monitor(self, m, problems):
+        """Run the monitor for len(problems) checks, the probe returning each in turn; returns the
+        max_lag_blocks the probe was called with."""
         from unittest.mock import MagicMock, patch
         import vali_objects.contract.validator_contract_manager as vcm
         from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
 
         with patch.object(vcm.time, "sleep"), \
-                patch.object(ShutdownCoordinator, "is_shutdown", side_effect=[False, True]), \
+                patch.object(ShutdownCoordinator, "is_shutdown", side_effect=[False] * len(problems) + [True]), \
                 patch.object(vcm, "CollateralManager", return_value=MagicMock(name="rebuilt node")), \
-                patch.object(m, "_collateral_node_problem", return_value=problem):
+                patch.object(m, "_collateral_node_problem", side_effect=problems) as probe:
             m._monitor_collateral_endpoint()
+        return [c.args[0] for c in probe.call_args_list]
 
     def test_monitor_fails_over_and_recovers(self):
         m, _, slack = self._make_manager(collateral_endpoint=self.NODE)
         node = m._node_collateral_manager
+        stale = "stale: block 1, public endpoint at 100"
 
-        self._run_monitor_once(m, "stale: block 1, public endpoint at 100")
+        # One failed check is not enough to leave; the second is
+        lags = self._run_monitor(m, [stale])
+        self.assertIs(m.collateral_manager, node)
+        self.assertEqual(lags, [m.COLLATERAL_ENDPOINT_MAX_LAG_BLOCKS])
+        lags = self._run_monitor(m, [stale, stale])
         self.assertIs(m.collateral_manager, m._public_collateral_manager)
         self.assertIn("moved to the public endpoints", slack.send_message.call_args.args[0])
+        self.assertTrue(slack.send_message.call_args.kwargs["bypass_cooldown"])
 
-        self._run_monitor_once(m, None)
+        # Returning needs three passes in a row, each at the stricter lag
+        lags = self._run_monitor(m, [None, None, stale, None, None, None])
+        self.assertEqual(lags, [m.COLLATERAL_ENDPOINT_RETURN_LAG_BLOCKS] * 6)
         self.assertIs(m.collateral_manager, node)
         self.assertIn("moved back", slack.send_message.call_args.args[0])
+        self.assertTrue(slack.send_message.call_args.kwargs["bypass_cooldown"])
+
+    def test_monitor_does_not_flap_on_alternating_results(self):
+        m, _, slack = self._make_manager(collateral_endpoint=self.NODE)
+        self._run_monitor(m, ["stale: x", None] * 5)
+        self.assertIs(m.collateral_manager, m._node_collateral_manager)
+        slack.send_message.assert_not_called()
+
+    def test_monitor_ignores_unmeasurable_lag(self):
+        m, _, slack = self._make_manager(collateral_endpoint=self.NODE)
+        unknown = m.COLLATERAL_NODE_LAG_UNKNOWN
+        # Unknown neither counts as a failure nor breaks a failing streak
+        self._run_monitor(m, ["stale: x", unknown, unknown])
+        self.assertIs(m.collateral_manager, m._node_collateral_manager)
+        self._run_monitor(m, ["stale: x", unknown, "stale: x"])
+        self.assertIs(m.collateral_manager, m._public_collateral_manager)
+
+        # On the public endpoints an unknown lag never moves collateral back to the node
+        self._run_monitor(m, [unknown] * 5)
+        self.assertIs(m.collateral_manager, m._public_collateral_manager)
 
     def test_monitor_builds_node_manager_when_startup_failed(self):
         m, _, _ = self._make_manager(collateral_endpoint=self.NODE, problem="unreachable: refused")
-        self._run_monitor_once(m, None)
+        self._run_monitor(m, [None] * m.COLLATERAL_ENDPOINT_PASSES_TO_RETURN)
         self.assertIsNotNone(m._node_collateral_manager)
         self.assertIs(m.collateral_manager, m._node_collateral_manager)
 
     def test_monitor_without_change_does_not_alert(self):
         m, _, slack = self._make_manager(collateral_endpoint=self.NODE)
-        self._run_monitor_once(m, None)
+        self._run_monitor(m, [None] * 3)
         self.assertIs(m.collateral_manager, m._node_collateral_manager)
         slack.send_message.assert_not_called()
+
+    def test_startup_uses_node_when_only_lag_is_unknown(self):
+        from types import SimpleNamespace
+        import vali_objects.contract.validator_contract_manager as vcm
+
+        m, _, slack = self._make_manager(collateral_endpoint=self.NODE,
+                                         problem=vcm.ValidatorContractManager.COLLATERAL_NODE_LAG_UNKNOWN)
+        self.assertIs(m.collateral_manager, m._node_collateral_manager)
+        slack.send_message.assert_not_called()
+
+    def test_startup_alert_bypasses_slack_cooldown(self):
+        _, _, slack = self._make_manager(collateral_endpoint=self.NODE, problem="no peers")
+        self.assertTrue(slack.send_message.call_args.kwargs["bypass_cooldown"])
 
 
 class TestCollateralNodeProblem(TestBase):
     """The health probe behind collateral failover."""
 
-    def _probe(self, node, public_block=1000):
+    def _probe(self, node, public_block=1000, max_lag_blocks=20):
         from unittest.mock import MagicMock, patch
         from collateral_sdk import Network
         import vali_objects.contract.validator_contract_manager as vcm
@@ -621,7 +665,7 @@ class TestCollateralNodeProblem(TestBase):
             return MagicMock(json=MagicMock(return_value={"result": result}), raise_for_status=MagicMock())
 
         with patch.object(vcm.requests, "post", side_effect=post):
-            return m._collateral_node_problem()
+            return m._collateral_node_problem(max_lag_blocks)
 
     def _node(self, **overrides):
         from collateral_sdk import Network
@@ -658,5 +702,22 @@ class TestCollateralNodeProblem(TestBase):
     def test_unreachable(self):
         self.assertIn("unreachable", self._probe(ConnectionError("refused")))
 
-    def test_public_endpoint_down_does_not_fail_the_node(self):
-        self.assertIsNone(self._probe(self._node(), public_block=None))
+    def test_public_endpoint_down_leaves_lag_unknown(self):
+        import vali_objects.contract.validator_contract_manager as vcm
+
+        self.assertEqual(self._probe(self._node(), public_block=None),
+                         vcm.ValidatorContractManager.COLLATERAL_NODE_LAG_UNKNOWN)
+
+    def test_public_endpoint_down_still_reports_node_problems(self):
+        problem = self._probe(self._node(system_health={"isSyncing": False, "peers": 0, "shouldHavePeers": True}),
+                              public_block=None)
+        self.assertEqual(problem, "no peers")
+
+    def test_no_peers(self):
+        self.assertEqual(self._probe(self._node(system_health={"isSyncing": False, "peers": 0, "shouldHavePeers": True})),
+                         "no peers")
+
+    def test_lag_threshold_is_the_callers(self):
+        # 5 blocks behind: fine to stay on (20), not yet to return to (2)
+        self.assertIsNone(self._probe(self._node(), max_lag_blocks=20))
+        self.assertIn("stale", self._probe(self._node(), max_lag_blocks=2))

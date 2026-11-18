@@ -166,7 +166,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 )
 
         if self._collateral_evm_endpoint is not None:
-            problem = self._collateral_node_problem()
+            problem = self._collateral_node_problem(self.COLLATERAL_ENDPOINT_RETURN_LAG_BLOCKS)
+            if problem == self.COLLATERAL_NODE_LAG_UNKNOWN:
+                # Right chain, synced and peered; only its lag can't be measured with the public
+                # endpoint unreachable, and then the public endpoints are no better a choice
+                problem = None
             if problem is None:
                 try:
                     self._node_collateral_manager = CollateralManager(
@@ -182,7 +186,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                        f"collateral operations will use the public endpoints until it recovers")
                 logger.error(msg)
                 if self._slack_notifier:
-                    self._slack_notifier.send_message(f"⚠️ {msg}", level="error")
+                    self._slack_notifier.send_message(f"⚠️ {msg}", level="error", bypass_cooldown=True)
             if not running_unit_tests:
                 threading.Thread(target=self._monitor_collateral_endpoint, daemon=True,
                                  name="collateral_endpoint_monitor").start()
@@ -296,17 +300,28 @@ class ValidatorContractManager(ValidatorBroadcastBase):
     # Collateral node failover (--collateral.chain_endpoint)
     COLLATERAL_ENDPOINT_CHECK_INTERVAL_S = 60.0
     COLLATERAL_ENDPOINT_TIMEOUT_S = 5.0
-    # A node this many blocks (~4 min) behind the public endpoint is treated as stale
+    # Hysteresis: a node in use is left once it is more than 20 blocks (~4 min) behind the public
+    # endpoint, but only used again (or at startup) within 2 blocks, so it has caught up on the
+    # nonces and balances changed while collateral ran on the public endpoints.
     COLLATERAL_ENDPOINT_MAX_LAG_BLOCKS = 20
+    COLLATERAL_ENDPOINT_RETURN_LAG_BLOCKS = 2
+    # Consecutive checks needed to switch, so a node on the edge doesn't flap every minute
+    COLLATERAL_ENDPOINT_FAILS_TO_LEAVE = 2
+    COLLATERAL_ENDPOINT_PASSES_TO_RETURN = 3
+    # The node checks out but the public endpoint can't be reached to measure its lag
+    COLLATERAL_NODE_LAG_UNKNOWN = "lag unknown: public endpoint unreachable"
     GENESIS_HASHES = {
         Network.MAINNET: "0x2f0555cc76fc2840a25a6ea3b9637146806f1f44b090c175ffde2a7e5ab36c03",
         Network.TESTNET: "0x8f9cf856bf558a14440e75569c9e58594757048d7b3a84b5d25f6bd978263105",
     }
 
-    def _collateral_node_problem(self) -> Optional[str]:
+    def _collateral_node_problem(self, max_lag_blocks: int) -> Optional[str]:
         """Why the --collateral.chain_endpoint node can't serve collateral right now, or None if it can:
         it must answer, serve this network's chain (genesis hash and EVM chain id), have finished
-        syncing, and be within COLLATERAL_ENDPOINT_MAX_LAG_BLOCKS of the public endpoint."""
+        syncing, have peers (a node without them stops importing blocks while reporting it isn't
+        syncing), and be within max_lag_blocks of the public endpoint. Returns
+        COLLATERAL_NODE_LAG_UNKNOWN when everything but the lag checks out and the public endpoint
+        can't be reached to measure it."""
         def call(url, method, params=None):
             response = requests.post(url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or []},
                                      timeout=self.COLLATERAL_ENDPOINT_TIMEOUT_S)
@@ -324,29 +339,51 @@ class ValidatorContractManager(ValidatorBroadcastBase):
             chain_id = int(call(url, "eth_chainId"), 16)
             if chain_id != self._collateral_network.evm_chain_id:
                 return f"wrong chain: EVM chain id {chain_id}, expected {self._collateral_network.evm_chain_id}"
-            if call(url, "system_health")["isSyncing"]:
+            health = call(url, "system_health")
+            if health["isSyncing"]:
                 return "still syncing"
+            if health.get("shouldHavePeers", True) and not health.get("peers"):
+                return "no peers"
             node_block = int(call(url, "chain_getHeader")["number"], 16)
         except Exception as e:
             return f"unreachable: {e}"
         try:
             public_block = int(call(self._public_collateral_manager.evm_endpoint, "chain_getHeader")["number"], 16)
         except Exception:
-            return None  # the public endpoint being down says nothing about the node
-        if public_block - node_block > self.COLLATERAL_ENDPOINT_MAX_LAG_BLOCKS:
+            return self.COLLATERAL_NODE_LAG_UNKNOWN
+        if public_block - node_block > max_lag_blocks:
             return f"stale: block {node_block}, public endpoint at {public_block}"
         return None
 
     def _monitor_collateral_endpoint(self):
         """Switch collateral to the public endpoints while the custom node is unhealthy and back once it
-        recovers. An operation already in flight finishes on the manager it started with."""
+        recovers, after COLLATERAL_ENDPOINT_FAILS_TO_LEAVE / COLLATERAL_ENDPOINT_PASSES_TO_RETURN checks
+        in a row. A check that can't measure the node's lag changes nothing. Each SDK call finishes on
+        the endpoint it started on; the later steps of a multi-step operation (e.g. a slash's burn) use
+        whichever endpoint is active when they run."""
         from shared_objects.rpc.shutdown_coordinator import ShutdownCoordinator
+        fails = passes = 0
         while not ShutdownCoordinator.is_shutdown():
             time.sleep(self.COLLATERAL_ENDPOINT_CHECK_INTERVAL_S)
             try:
-                problem = self._collateral_node_problem()
                 on_node = self._node_collateral_manager is not None and self.collateral_manager is self._node_collateral_manager
-                if problem is None and not on_node:
+                problem = self._collateral_node_problem(
+                    self.COLLATERAL_ENDPOINT_MAX_LAG_BLOCKS if on_node else self.COLLATERAL_ENDPOINT_RETURN_LAG_BLOCKS)
+                if problem == self.COLLATERAL_NODE_LAG_UNKNOWN:
+                    continue
+                if problem is None:
+                    passes, fails = passes + 1, 0
+                else:
+                    passes, fails = 0, fails + 1
+                if on_node and fails >= self.COLLATERAL_ENDPOINT_FAILS_TO_LEAVE:
+                    self.collateral_manager = self._public_collateral_manager
+                    fails = 0
+                    msg = (f"Collateral node {self._collateral_subtensor_endpoint} is unhealthy ({problem}); "
+                           f"collateral operations moved to the public endpoints")
+                    logger.error(msg)
+                    if self._slack_notifier:
+                        self._slack_notifier.send_message(f"⚠️ {msg}", level="error", bypass_cooldown=True)
+                elif not on_node and passes >= self.COLLATERAL_ENDPOINT_PASSES_TO_RETURN:
                     if self._node_collateral_manager is None:
                         self._node_collateral_manager = CollateralManager(
                             self._collateral_network,
@@ -354,17 +391,11 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                             subtensor_endpoint=self._collateral_subtensor_endpoint,
                         )
                     self.collateral_manager = self._node_collateral_manager
+                    passes = 0
                     msg = f"Collateral node {self._collateral_subtensor_endpoint} is healthy; collateral operations moved back to it"
                     logger.info(msg)
                     if self._slack_notifier:
-                        self._slack_notifier.send_message(f"✅ {msg}", level="info")
-                elif problem is not None and on_node:
-                    self.collateral_manager = self._public_collateral_manager
-                    msg = (f"Collateral node {self._collateral_subtensor_endpoint} is unhealthy ({problem}); "
-                           f"collateral operations moved to the public endpoints")
-                    logger.error(msg)
-                    if self._slack_notifier:
-                        self._slack_notifier.send_message(f"⚠️ {msg}", level="error")
+                        self._slack_notifier.send_message(f"✅ {msg}", level="info", bypass_cooldown=True)
             except Exception as e:
                 logger.error(f"Collateral endpoint monitor error: {e}")
 
