@@ -1,6 +1,6 @@
 from typing import Optional, Dict, Any
 
-import template.protocol
+import vanta_protocol
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.contract.contract_server import ContractServer
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
@@ -112,11 +112,12 @@ class ContractClient(RPCClientBase):
         return self._invoke_rpc("open_standard_miner_account_rpc", args=(hotkey, leverage_tier), retry=False)
 
     def receive_standard_miner_opening(
-        self, synapse: template.protocol.StandardMinerOpening
-    ) -> template.protocol.StandardMinerOpening:
-        """Receive a StandardMinerOpening synapse (for axon attachment). Applying a record never waits on the chain,
-        so the ordinary call timeout bounds the axon thread, not the chain-call one above."""
-        return self._invoke_rpc("receive_standard_miner_opening_rpc", args=(synapse,),
+        self, request: vanta_protocol.BroadcastRequest, caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
+        """Receive a StandardMinerOpening request (used as a route business_fn, see
+        neurons/validator_base.py's wire_http_server()). Applying a record never waits on the chain,
+        so the ordinary call timeout bounds the HTTP handler thread, not the chain-call one above."""
+        return self._invoke_rpc("receive_standard_miner_opening_rpc", args=(request, caller_hotkey),
                                 timeout_s=RPCClientBase.RPC_CALL_TIMEOUT_S)
 
     # ==================== Verification Methods ====================

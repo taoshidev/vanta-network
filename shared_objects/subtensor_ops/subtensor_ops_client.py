@@ -47,16 +47,20 @@ class SubtensorOpsClient(RPCClientBase):
         """
         return self.call("set_weights_rpc", uids, weights, version_key)
 
-    def broadcast_to_validators_rpc(self, synapse, validator_axons_list: list) -> dict:
+    def broadcast_to_validators_rpc(self, request, validator_axons_list: list, message_name: str = None) -> dict:
         """
         Send broadcast request to SubtensorOpsManager.
 
         This allows processes without direct subtensor/wallet access to broadcast
-        messages to validators using the SubtensorOpsManager's wallet and dendrite.
+        messages to validators using the SubtensorOpsManager's wallet and the
+        signed-request HTTP client.
 
         Args:
-            synapse: The synapse object to broadcast (must be picklable)
+            request: One of vanta_protocol's *Request models (must be picklable)
             validator_axons_list: List of axon_info objects to broadcast to
+            message_name: The MESSAGE_TYPES/HTTP-path key for this broadcast (e.g.
+                "CollateralRecord") — required since several message types share the
+                generic BroadcastRequest shape and can no longer be told apart by class.
 
         Returns:
             dict: {
@@ -66,4 +70,4 @@ class SubtensorOpsClient(RPCClientBase):
                 "errors": list of error messages
             }
         """
-        return self.call("broadcast_to_validators_rpc", synapse, validator_axons_list)
+        return self.call("broadcast_to_validators_rpc", request, validator_axons_list, message_name)

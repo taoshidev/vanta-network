@@ -1,19 +1,21 @@
 from typing import List
 
-from bittensor import Balance
-
 
 class MockAxonInfo:
     ip: str
+    hotkey: str
 
-    def __init__(self, ip: str):
+    def __init__(self, ip: str, hotkey: str = None):
         self.ip = ip
+        self.hotkey = hotkey
 
 class MockNeuron:
     axon_info: MockAxonInfo
-    stake: Balance
+    stake: float  # TAO-denominated chain stake weight (bittensor v11's metagraph.total_stake has no
+                  # .stake field; the real SimpleNeuron (subtensor_ops.py) already carries this as a
+                  # plain float, so the mock matches that shape instead of a bt.Balance)
 
-    def __init__(self, axon_info: MockAxonInfo, stake: Balance):
+    def __init__(self, axon_info: MockAxonInfo, stake: float):
         self.axon_info = axon_info
         self.stake = stake
 

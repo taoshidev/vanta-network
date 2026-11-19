@@ -29,6 +29,7 @@ import bittensor as bt
 
 from shared_objects.rpc.common_data_client import CommonDataClient
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
+from shared_objects.log import logger
 
 
 class OrderUuidDedupClient:
@@ -74,13 +75,13 @@ class OrderUuidDedupClient:
                         if o.order_uuid:
                             uuids.append(o.order_uuid)
         except Exception as e:
-            bt.logging.warning(f"OrderUuidDedupClient: failed to extract seed uuids: {e}")
+            logger.warning(f"OrderUuidDedupClient: failed to extract seed uuids: {e}")
             return
         try:
             total = self._client.seed_order_uuids(uuids)
-            bt.logging.info(f"OrderUuidDedupClient: seeded {len(uuids)} order uuids (server set size {total})")
+            logger.info(f"OrderUuidDedupClient: seeded {len(uuids)} order uuids (server set size {total})")
         except Exception as e:
-            bt.logging.warning(f"OrderUuidDedupClient: server seed failed, using local cache only: {e}")
+            logger.warning(f"OrderUuidDedupClient: server seed failed, using local cache only: {e}")
         for u in uuids:
             self._remember_local(u)
 
@@ -111,7 +112,7 @@ class OrderUuidDedupClient:
             # losing the order, the exact scenario R4.1 exists for). Proceed as if newly claimed:
             # dedup is briefly unavailable, and accepting a possible duplicate during the outage
             # beats losing orders (the server's own dedup still catches repeats once it returns).
-            bt.logging.warning(f"OrderUuidDedupClient.check_and_add fail-open (dedup unreachable): {e}")
+            logger.warning(f"OrderUuidDedupClient.check_and_add fail-open (dedup unreachable): {e}")
             self._remember_local(uuid)
             return True
         self._remember_local(uuid)
@@ -126,7 +127,7 @@ class OrderUuidDedupClient:
         try:
             self._client.confirm_order_uuid(uuid)
         except Exception as e:
-            bt.logging.warning(f"OrderUuidDedupClient.confirm best-effort (dedup unreachable): {e}")
+            logger.warning(f"OrderUuidDedupClient.confirm best-effort (dedup unreachable): {e}")
 
     def release(self, uuid) -> None:
         """Undo a claim after an apply failure (server-authoritative), and drop it from the cache.
@@ -137,7 +138,7 @@ class OrderUuidDedupClient:
         try:
             self._client.release_order_uuid(uuid)
         except Exception as e:
-            bt.logging.warning(f"OrderUuidDedupClient.release best-effort (dedup unreachable): {e}")
+            logger.warning(f"OrderUuidDedupClient.release best-effort (dedup unreachable): {e}")
         finally:
             # Lazy tombstone (mirrors the server): drop from the membership set only; the stale
             # deque entry is reclaimed on the normal FIFO eviction in _remember_local. O(1), and

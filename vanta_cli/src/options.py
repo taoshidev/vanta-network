@@ -3,7 +3,7 @@ import os
 from typing import Annotated, Optional
 
 import typer
-from bittensor_wallet import Wallet
+from bittensor import Wallet
 from rich.prompt import Prompt
 
 from vanta_cli.src.utils.console import err_console

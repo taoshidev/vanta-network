@@ -17,7 +17,7 @@ import pickle
 from unittest.mock import Mock
 from types import SimpleNamespace
 
-import template.protocol
+import vanta_protocol
 from vali_objects.vali_config import ValiConfig
 from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from shared_objects.subtensor_ops.subtensor_ops import SubtensorOpsManager
@@ -71,8 +71,8 @@ class TestSynapsePickling(unittest.TestCase):
         }
 
     def test_pickle_send_signal_synapse(self):
-        """Test that SendSignal synapse can be pickled."""
-        synapse = template.protocol.SendSignal(
+        """Test that SendSignalRequest can be pickled."""
+        synapse = vanta_protocol.SendSignalRequest(
             signal=self.signal_data,
             repo_version="8.8.8",
             miner_order_uuid="test-uuid"
@@ -84,140 +84,87 @@ class TestSynapsePickling(unittest.TestCase):
 
         # Attempt to unpickle
         unpickled = pickle.loads(pickled)
-        self.assertIsInstance(unpickled, template.protocol.SendSignal)
+        self.assertIsInstance(unpickled, vanta_protocol.SendSignalRequest)
         self.assertEqual(unpickled.signal, self.signal_data)
         self.assertEqual(unpickled.repo_version, "8.8.8")
         self.assertEqual(unpickled.miner_order_uuid, "test-uuid")
 
     def test_pickle_get_positions_synapse(self):
-        """Test that GetPositions synapse can be pickled."""
-        synapse = template.protocol.GetPositions(
-            positions=[self.position_data],
-            version=1
-        )
+        """Test that GetPositionsRequest/GetPositionsResponse can be pickled.
 
-        pickled = pickle.dumps(synapse)
-        unpickled = pickle.loads(pickled)
+        version lives on the request, positions on the response (no longer the same
+        mutable object), so each is exercised separately.
+        """
+        request = vanta_protocol.GetPositionsRequest(version=1)
+        pickled_request = pickle.dumps(request)
+        unpickled_request = pickle.loads(pickled_request)
+        self.assertIsInstance(unpickled_request, vanta_protocol.GetPositionsRequest)
+        self.assertEqual(unpickled_request.version, 1)
 
-        self.assertIsInstance(unpickled, template.protocol.GetPositions)
-        self.assertEqual(len(unpickled.positions), 1)
-        self.assertEqual(unpickled.positions[0], self.position_data)
-        self.assertEqual(unpickled.version, 1)
+        response = vanta_protocol.GetPositionsResponse(positions=[self.position_data])
+        pickled_response = pickle.dumps(response)
+        unpickled_response = pickle.loads(pickled_response)
+        self.assertIsInstance(unpickled_response, vanta_protocol.GetPositionsResponse)
+        self.assertEqual(len(unpickled_response.positions), 1)
+        self.assertEqual(unpickled_response.positions[0], self.position_data)
 
     def test_pickle_validator_checkpoint_synapse(self):
-        """Test that ValidatorCheckpoint synapse can be pickled."""
-        synapse = template.protocol.ValidatorCheckpoint(
-            checkpoint=self.checkpoint_data,
-            validator_receive_hotkey="receiver_hotkey"
-        )
+        """Test that ValidatorCheckpointRequest/ValidatorCheckpointResponse can be pickled.
 
-        pickled = pickle.dumps(synapse)
-        unpickled = pickle.loads(pickled)
+        checkpoint lives on the request, validator_receive_hotkey on the response.
+        """
+        request = vanta_protocol.ValidatorCheckpointRequest(checkpoint=self.checkpoint_data)
+        pickled_request = pickle.dumps(request)
+        unpickled_request = pickle.loads(pickled_request)
+        self.assertIsInstance(unpickled_request, vanta_protocol.ValidatorCheckpointRequest)
+        self.assertEqual(unpickled_request.checkpoint, self.checkpoint_data)
 
-        self.assertIsInstance(unpickled, template.protocol.ValidatorCheckpoint)
-        self.assertEqual(unpickled.checkpoint, self.checkpoint_data)
-        self.assertEqual(unpickled.validator_receive_hotkey, "receiver_hotkey")
+        response = vanta_protocol.ValidatorCheckpointResponse(validator_receive_hotkey="receiver_hotkey")
+        pickled_response = pickle.dumps(response)
+        unpickled_response = pickle.loads(pickled_response)
+        self.assertIsInstance(unpickled_response, vanta_protocol.ValidatorCheckpointResponse)
+        self.assertEqual(unpickled_response.validator_receive_hotkey, "receiver_hotkey")
 
-    def test_pickle_collateral_record_synapse(self):
-        """Test that CollateralRecord synapse can be pickled."""
-        synapse = template.protocol.CollateralRecord(
-            collateral_record=self.collateral_record
-        )
+    def test_pickle_broadcast_request_synapse(self):
+        """Test that the generic BroadcastRequest (shared by CollateralRecord, AssetSelection,
+        SubaccountRegistration, StandardMinerOpening, StandardMinerRecord, EntityEndpointUpdate
+        and AccountSizeLocks) can be pickled, whatever payload shape it's carrying."""
+        for payload in (self.collateral_record, self.asset_selection, self.subaccount_data, self.opening):
+            synapse = vanta_protocol.BroadcastRequest(payload=payload)
 
-        pickled = pickle.dumps(synapse)
-        unpickled = pickle.loads(pickled)
+            pickled = pickle.dumps(synapse)
+            unpickled = pickle.loads(pickled)
 
-        self.assertIsInstance(unpickled, template.protocol.CollateralRecord)
-        self.assertEqual(unpickled.collateral_record, self.collateral_record)
-
-    def test_pickle_asset_selection_synapse(self):
-        """Test that AssetSelection synapse can be pickled."""
-        synapse = template.protocol.AssetSelection(
-            asset_selection=self.asset_selection
-        )
-
-        pickled = pickle.dumps(synapse)
-        unpickled = pickle.loads(pickled)
-
-        self.assertIsInstance(unpickled, template.protocol.AssetSelection)
-        self.assertEqual(unpickled.asset_selection, self.asset_selection)
-
-    def test_pickle_subaccount_registration_synapse(self):
-        """Test that SubaccountRegistration synapse can be pickled."""
-        synapse = template.protocol.SubaccountRegistration(
-            subaccount_data=self.subaccount_data
-        )
-
-        pickled = pickle.dumps(synapse)
-        unpickled = pickle.loads(pickled)
-
-        self.assertIsInstance(unpickled, template.protocol.SubaccountRegistration)
-        self.assertEqual(unpickled.subaccount_data, self.subaccount_data)
-
-    def test_pickle_standard_miner_opening_synapse(self):
-        """Test that StandardMinerOpening synapse can be pickled."""
-        synapse = template.protocol.StandardMinerOpening(opening=self.opening)
-
-        pickled = pickle.dumps(synapse)
-        unpickled = pickle.loads(pickled)
-
-        self.assertIsInstance(unpickled, template.protocol.StandardMinerOpening)
-        self.assertEqual(unpickled.opening, self.opening)
-
-    def test_pickle_standard_miner_record_synapse(self):
-        """Test that StandardMinerRecord synapse can be pickled."""
-        synapse = template.protocol.StandardMinerRecord(record=self.opening)
-
-        pickled = pickle.dumps(synapse)
-        unpickled = pickle.loads(pickled)
-
-        self.assertIsInstance(unpickled, template.protocol.StandardMinerRecord)
-        self.assertEqual(unpickled.record, self.opening)
+            self.assertIsInstance(unpickled, vanta_protocol.BroadcastRequest)
+            self.assertEqual(unpickled.payload, payload)
 
     def test_pickle_all_synapses_with_full_state(self):
-        """Test pickling synapses with all fields populated."""
-        # Create synapses with all fields
+        """Test pickling each message type's *Response with all response fields populated.
+
+        (successfully_processed/error_message live only on *Response now, not on the
+        *Request alongside the request payload, so this exercises the Response side.)
+        """
         synapses = [
-            template.protocol.SendSignal(
-                signal=self.signal_data,
-                repo_version="8.8.8",
+            vanta_protocol.SendSignalResponse(
                 successfully_processed=True,
                 error_message="test error",
                 validator_hotkey="validator_key",
-                order_json='{"test": "json"}',
-                miner_order_uuid="uuid-123"
+                order_json='{"test": "json"}'
             ),
-            template.protocol.GetPositions(
+            vanta_protocol.GetPositionsResponse(
                 positions=[self.position_data],
                 successfully_processed=False,
-                error_message="error",
-                version=1
+                error_message="error"
             ),
-            template.protocol.ValidatorCheckpoint(
-                checkpoint=self.checkpoint_data,
+            vanta_protocol.ValidatorCheckpointResponse(
                 successfully_processed=True,
                 validator_receive_hotkey="receiver"
             ),
-            template.protocol.CollateralRecord(
-                collateral_record=self.collateral_record,
+            # Shared by CollateralRecord, AssetSelection, SubaccountRegistration,
+            # StandardMinerOpening, StandardMinerRecord, EntityEndpointUpdate, AccountSizeLocks.
+            vanta_protocol.BroadcastResponse(
                 successfully_processed=True
             ),
-            template.protocol.AssetSelection(
-                asset_selection=self.asset_selection,
-                successfully_processed=True
-            ),
-            template.protocol.SubaccountRegistration(
-                subaccount_data=self.subaccount_data,
-                successfully_processed=True
-            ),
-            template.protocol.StandardMinerOpening(
-                opening=self.opening,
-                successfully_processed=True
-            ),
-            template.protocol.StandardMinerRecord(
-                record=self.opening,
-                successfully_processed=True
-            )
         ]
 
         # Verify all can be pickled and unpickled
@@ -281,25 +228,25 @@ class TestValidatorBroadcastBase(unittest.TestCase):
         base._metagraph_client.get_validator_axons.assert_not_called()
 
     def test_serialize_synapse_valid(self):
-        """Test that valid picklable synapses pass validation."""
-        synapse = template.protocol.SendSignal(
+        """Test that valid picklable requests pass validation."""
+        synapse = vanta_protocol.SendSignalRequest(
             signal={"test": "data"},
             repo_version="8.8.8"
         )
 
-        # Should return synapse unchanged if picklable
-        result = self.broadcast_base._serialize_synapse(synapse)
+        # Should return request unchanged if picklable
+        result = self.broadcast_base._serialize_request(synapse)
 
         self.assertIs(result, synapse)  # Same object reference
 
     def test_serialize_synapse_invalid(self):
         """Test that non-picklable objects raise TypeError."""
-        # Create a synapse with non-picklable attribute
-        synapse = template.protocol.SendSignal()
+        # Create a request with non-picklable attribute
+        synapse = vanta_protocol.SendSignalRequest()
         synapse._unpicklable_lambda = lambda x: x  # Lambdas can't be pickled
 
         with self.assertRaises(TypeError) as context:
-            self.broadcast_base._serialize_synapse(synapse)
+            self.broadcast_base._serialize_request(synapse)
 
         self.assertIn("not picklable", str(context.exception))
 
@@ -316,10 +263,10 @@ class TestValidatorBroadcastBase(unittest.TestCase):
             "list_data": [1, 2, 3, 4, 5]
         }
 
-        synapse = template.protocol.SendSignal(signal=complex_signal)
+        synapse = vanta_protocol.SendSignalRequest(signal=complex_signal)
 
         # Should successfully validate
-        result = self.broadcast_base._serialize_synapse(synapse)
+        result = self.broadcast_base._serialize_request(synapse)
         self.assertIs(result, synapse)
 
         # Verify still picklable
@@ -352,14 +299,14 @@ class TestSubtensorOpsManagerBroadcast(unittest.TestCase):
 
     def test_broadcast_rpc_validates_synapse(self):
         """Test that broadcast_rpc validates synapse object."""
-        valid_synapse = template.protocol.SubaccountRegistration(
-            subaccount_data={"entity_hotkey": "test"}
+        valid_synapse = vanta_protocol.BroadcastRequest(
+            payload={"entity_hotkey": "test"}
         )
 
         mock_axons = [Mock()]
 
         # Should not raise - validation passes
-        result = self.manager.broadcast_to_validators_rpc(valid_synapse, mock_axons)
+        result = self.manager.broadcast_to_validators_rpc(valid_synapse, mock_axons, message_name="SubaccountRegistration")
 
         # In unit test mode, should return success with 0 validators
         self.assertTrue(result["success"])
@@ -375,39 +322,39 @@ class TestSubtensorOpsManagerBroadcast(unittest.TestCase):
         """
         # In unit test mode, None is allowed (early return)
         # This is acceptable since the validation happens in production
-        result = self.manager.broadcast_to_validators_rpc(None, [Mock()])
+        result = self.manager.broadcast_to_validators_rpc(None, [Mock()], message_name="SubaccountRegistration")
         self.assertTrue(result["success"])  # Early return in unit test mode
 
         # The important test: Verify the validation code exists
         # by checking it doesn't crash with valid synapse
-        valid_synapse = template.protocol.SubaccountRegistration(
-            subaccount_data={"entity_hotkey": "test"}
+        valid_synapse = vanta_protocol.BroadcastRequest(
+            payload={"entity_hotkey": "test"}
         )
-        result = self.manager.broadcast_to_validators_rpc(valid_synapse, [Mock()])
+        result = self.manager.broadcast_to_validators_rpc(valid_synapse, [Mock()], message_name="SubaccountRegistration")
         self.assertTrue(result["success"])
 
     def test_broadcast_rpc_handles_empty_validator_list(self):
         """Test that broadcast_rpc handles empty validator list gracefully."""
-        synapse = template.protocol.AssetSelection(
-            asset_selection={"hotkey": "test"}
+        synapse = vanta_protocol.BroadcastRequest(
+            payload={"hotkey": "test"}
         )
 
-        result = self.manager.broadcast_to_validators_rpc(synapse, [])
+        result = self.manager.broadcast_to_validators_rpc(synapse, [], message_name="AssetSelection")
 
         # Should return success with 0 validators
         self.assertTrue(result["success"])
         self.assertEqual(result["success_count"], 0)
         self.assertEqual(result["total_count"], 0)
 
-    def test_broadcast_rpc_extracts_synapse_class_name(self):
-        """Test that broadcast_rpc correctly extracts synapse class name."""
-        synapse = template.protocol.CollateralRecord(
-            collateral_record={"hotkey": "test", "amount": 100.0}
+    def test_broadcast_rpc_requires_message_name(self):
+        """Test that broadcast_rpc requires an explicit message_name now that several
+        message types share the generic BroadcastRequest shape (no longer derivable from
+        the request's class name alone)."""
+        synapse = vanta_protocol.BroadcastRequest(
+            payload={"hotkey": "test", "amount": 100.0}
         )
 
-        # In unit test mode, we can verify the class name is extracted
-        # by checking it doesn't raise an error
-        result = self.manager.broadcast_to_validators_rpc(synapse, [])
+        result = self.manager.broadcast_to_validators_rpc(synapse, [Mock()], message_name="CollateralRecord")
 
         self.assertTrue(result["success"])
 
@@ -440,12 +387,12 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
             "synthetic_hotkey": "entity_1_0"
         }
 
-        synapse = template.protocol.SubaccountRegistration(
-            subaccount_data=synapse_data
+        synapse = vanta_protocol.BroadcastRequest(
+            payload=synapse_data
         )
 
         # 2. Validate synapse is picklable
-        validated_synapse = broadcast_base._serialize_synapse(synapse)
+        validated_synapse = broadcast_base._serialize_request(synapse)
 
         # 3. Simulate RPC transmission (pickle/unpickle)
         pickled = pickle.dumps(validated_synapse)
@@ -465,13 +412,13 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
             running_unit_tests=True
         )
 
-        result = manager.broadcast_to_validators_rpc(transmitted_synapse, [])
+        result = manager.broadcast_to_validators_rpc(transmitted_synapse, [], message_name="SubaccountRegistration")
 
         # 5. Verify success
         self.assertTrue(result["success"])
 
         # 6. Verify data integrity preserved through entire flow
-        self.assertEqual(transmitted_synapse.subaccount_data, synapse_data)
+        self.assertEqual(transmitted_synapse.payload, synapse_data)
 
     def test_broadcast_flow_preserves_all_synapse_types(self):
         """
@@ -482,20 +429,25 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
             is_testnet=True
         )
 
+        # GetPositions is the one type here whose interesting field (positions) lives on the
+        # *Response, not the *Request broadcast by _serialize_request/_broadcast_to_validators
+        # — so it's exercised as a response, pickled directly rather than through
+        # _serialize_request (which is request-only).
         synapses = [
-            template.protocol.SendSignal(signal={"test": "data"}),
-            template.protocol.GetPositions(positions=[{"pos": "data"}]),
-            template.protocol.ValidatorCheckpoint(checkpoint="checkpoint"),
-            template.protocol.CollateralRecord(collateral_record={"amount": 100}),
-            template.protocol.AssetSelection(asset_selection={"asset": "CRYPTO"}),
-            template.protocol.SubaccountRegistration(subaccount_data={"id": 0}),
-            template.protocol.StandardMinerOpening(opening={"hotkey": "h", "record": {"account_size": 50_000.0}}),
-            template.protocol.StandardMinerRecord(record={"hotkey": "h", "record": {"pro_account_size": 250_000.0}})
+            vanta_protocol.SendSignalRequest(signal={"test": "data"}),
+            vanta_protocol.ValidatorCheckpointRequest(checkpoint="checkpoint"),
+            # CollateralRecord/AssetSelection/SubaccountRegistration/StandardMinerOpening/
+            # StandardMinerRecord all share this generic shape now.
+            vanta_protocol.BroadcastRequest(payload={"amount": 100}),
+            vanta_protocol.BroadcastRequest(payload={"asset": "CRYPTO"}),
+            vanta_protocol.BroadcastRequest(payload={"id": 0}),
+            vanta_protocol.BroadcastRequest(payload={"hotkey": "h", "record": {"account_size": 50_000.0}}),
+            vanta_protocol.BroadcastRequest(payload={"hotkey": "h", "record": {"pro_account_size": 250_000.0}}),
         ]
 
         for original_synapse in synapses:
             # Validate
-            validated = broadcast_base._serialize_synapse(original_synapse)
+            validated = broadcast_base._serialize_request(original_synapse)
 
             # Simulate RPC transmission
             transmitted = pickle.loads(pickle.dumps(validated))
@@ -504,22 +456,19 @@ class TestEndToEndBroadcastFlow(unittest.TestCase):
             self.assertEqual(type(transmitted), type(original_synapse))
 
             # Verify data fields preserved (check first field of each type)
-            if isinstance(transmitted, template.protocol.SendSignal):
+            if isinstance(transmitted, vanta_protocol.SendSignalRequest):
                 self.assertEqual(transmitted.signal, original_synapse.signal)
-            elif isinstance(transmitted, template.protocol.GetPositions):
-                self.assertEqual(transmitted.positions, original_synapse.positions)
-            elif isinstance(transmitted, template.protocol.ValidatorCheckpoint):
+            elif isinstance(transmitted, vanta_protocol.ValidatorCheckpointRequest):
                 self.assertEqual(transmitted.checkpoint, original_synapse.checkpoint)
-            elif isinstance(transmitted, template.protocol.CollateralRecord):
-                self.assertEqual(transmitted.collateral_record, original_synapse.collateral_record)
-            elif isinstance(transmitted, template.protocol.AssetSelection):
-                self.assertEqual(transmitted.asset_selection, original_synapse.asset_selection)
-            elif isinstance(transmitted, template.protocol.SubaccountRegistration):
-                self.assertEqual(transmitted.subaccount_data, original_synapse.subaccount_data)
-            elif isinstance(transmitted, template.protocol.StandardMinerOpening):
-                self.assertEqual(transmitted.opening, original_synapse.opening)
-            elif isinstance(transmitted, template.protocol.StandardMinerRecord):
-                self.assertEqual(transmitted.record, original_synapse.record)
+            elif isinstance(transmitted, vanta_protocol.BroadcastRequest):
+                self.assertEqual(transmitted.payload, original_synapse.payload)
+
+        # GetPositionsResponse pickled directly (not a request, so not through
+        # _serialize_request/_broadcast_to_validators).
+        original_response = vanta_protocol.GetPositionsResponse(positions=[{"pos": "data"}])
+        transmitted_response = pickle.loads(pickle.dumps(original_response))
+        self.assertEqual(type(transmitted_response), type(original_response))
+        self.assertEqual(transmitted_response.positions, original_response.positions)
 
 
 if __name__ == '__main__':

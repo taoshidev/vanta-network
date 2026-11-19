@@ -31,6 +31,8 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils  # noqa: E402
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig  # noqa: E402
 from vanta_api.server_readiness import start_readiness_watchdog  # noqa: E402
 from vanta_api.validator_rest_server import ValidatorRestServer  # noqa: E402
+import logging
+from shared_objects.log import logger
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -58,7 +60,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_arg_parser().parse_args()
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
 
     is_mainnet = (args.netuid == 8)
     api_keys_file = args.api_keys_file or ValiBkpUtils.get_api_keys_file_path()
@@ -71,13 +73,13 @@ def main() -> int:
 
     if not os.path.exists(api_keys_file):
         # Unlike the test __main__, a prod server does NOT fabricate keys — surface the misconfig.
-        bt.logging.warning(f"[vanta-rest] API keys file not found at {api_keys_file} — "
+        logger.warning(f"[vanta-rest] API keys file not found at {api_keys_file} — "
                             f"the server will start but reject authenticated requests until it exists.")
 
     # webhook_url=None lets SlackNotifier fall back to the SLACK_WEBHOOK_URL env var.
     slack_notifier = SlackNotifier(hotkey=alert_hotkey, webhook_url=args.slack_webhook_url)
 
-    bt.logging.info(
+    logger.info(
         f"[vanta-rest] Starting standalone REST server: host={args.host} port={port} "
         f"netuid={args.netuid} is_mainnet={is_mainnet} api_keys_file={api_keys_file} "
         f"shutdown_ns={os.environ.get('VANTA_SHUTDOWN_SHM_NAME')}"
@@ -90,7 +92,7 @@ def main() -> int:
     # during a slow startup — swallowing it into an Event makes the process unkillable
     # mid-construction. Route SIGTERM (PM2's stop signal) to the same path.
     def _sigterm_to_keyboard_interrupt(signum, _frame):
-        bt.logging.info(f"[vanta-rest] Received signal {signum} — interrupting for graceful shutdown.")
+        logger.info(f"[vanta-rest] Received signal {signum} — interrupting for graceful shutdown.")
         raise KeyboardInterrupt()
 
     signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
@@ -108,7 +110,7 @@ def main() -> int:
             is_mainnet=is_mainnet,
             slack_notifier=slack_notifier,  # flows via **kwargs to RPCServerBase health/hang alerts
         )
-        bt.logging.success(f"[vanta-rest] REST server up on {args.host}:{port}. Blocking until signal.")
+        logger.info(f"[vanta-rest] REST server up on {args.host}:{port}. Blocking until signal.")
 
         # Alert via Slack if we never become healthy (front door bound + core reachable) within
         # the grace window — makes a stuck spin-up observable despite the lazy-client tolerance.
@@ -128,11 +130,11 @@ def main() -> int:
             stop.wait(1.0)
         return 0
     except KeyboardInterrupt:
-        bt.logging.info("[vanta-rest] Interrupt received — shutting down.")
+        logger.info("[vanta-rest] Interrupt received — shutting down.")
         return 0
     except Exception as e:
-        bt.logging.error(f"[vanta-rest] FATAL: {type(e).__name__}: {e}")
-        bt.logging.error(traceback.format_exc())
+        logger.error(f"[vanta-rest] FATAL: {type(e).__name__}: {e}")
+        logger.error(traceback.format_exc())
         try:
             slack_notifier.send_message(f"🔴 vanta-rest crashed: {type(e).__name__}: {e}", level="error")
         except Exception:
@@ -144,7 +146,7 @@ def main() -> int:
             try:
                 server.shutdown()  # isolated namespace — safe, does not touch core
             except Exception as e:
-                bt.logging.warning(f"[vanta-rest] error during shutdown: {e}")
+                logger.warning(f"[vanta-rest] error during shutdown: {e}")
         # Unlink our OWN coordinator segment so it doesn't leak (resource_tracker warning);
         # safe because this app owns its namespace.
         ShutdownCoordinator.cleanup()

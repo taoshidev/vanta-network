@@ -46,6 +46,8 @@ from vali_objects.utils.vali_bkp_utils import ValiBkpUtils  # noqa: E402
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig  # noqa: E402
 from vanta_api.server_readiness import start_readiness_watchdog  # noqa: E402
 from vanta_api.websocket_server import WebSocketServer  # noqa: E402
+import logging
+from shared_objects.log import logger
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -73,7 +75,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_arg_parser().parse_args()
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
 
     api_keys_file = args.api_keys_file or ValiBkpUtils.get_api_keys_file_path()
     port = args.port if args.port is not None else ValiConfig.VANTA_WEBSOCKET_PORT
@@ -82,7 +84,7 @@ def main() -> int:
     ShutdownCoordinator.initialize(reset_on_attach=True)
 
     if not os.path.exists(api_keys_file):
-        bt.logging.warning(f"[vanta-ws] API keys file not found at {api_keys_file} — "
+        logger.warning(f"[vanta-ws] API keys file not found at {api_keys_file} — "
                            f"the server will start but reject authenticated subscriptions until it exists.")
 
     slack_notifier = SlackNotifier(hotkey=alert_hotkey, webhook_url=args.slack_webhook_url)
@@ -91,12 +93,12 @@ def main() -> int:
     # KeyboardInterrupt (graceful shutdown). Convert SIGTERM to the same path so both
     # stop signals shut down cleanly.
     def _sigterm_to_keyboard_interrupt(signum, _frame):
-        bt.logging.info(f"[vanta-ws] Received signal {signum} — raising KeyboardInterrupt for graceful shutdown.")
+        logger.info(f"[vanta-ws] Received signal {signum} — raising KeyboardInterrupt for graceful shutdown.")
         raise KeyboardInterrupt()
 
     signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
 
-    bt.logging.info(
+    logger.info(
         f"[vanta-ws] Starting standalone WebSocket server: host={args.host} port={port} "
         f"api_keys_file={api_keys_file} shutdown_ns={os.environ.get('VANTA_SHUTDOWN_SHM_NAME')}"
     )
@@ -126,11 +128,11 @@ def main() -> int:
         server.run()
         return 0
     except KeyboardInterrupt:
-        bt.logging.info("[vanta-ws] Interrupt received — shutdown complete.")
+        logger.info("[vanta-ws] Interrupt received — shutdown complete.")
         return 0
     except Exception as e:
-        bt.logging.error(f"[vanta-ws] FATAL: {type(e).__name__}: {e}")
-        bt.logging.error(traceback.format_exc())
+        logger.error(f"[vanta-ws] FATAL: {type(e).__name__}: {e}")
+        logger.error(traceback.format_exc())
         try:
             slack_notifier.send_message(f"🔴 vanta-ws crashed: {type(e).__name__}: {e}", level="error")
         except Exception:

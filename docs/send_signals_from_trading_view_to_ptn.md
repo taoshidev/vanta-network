@@ -31,8 +31,8 @@ testnet miner using the following steps.
    your server is capable of receiving requests via open ports. By default, the expected port will be 80 to receive
    signals for your server.
 
-2. **Follow documentation on running the receive signals server** - We’ve created <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/running_signals_server.md">documentation</a> on how to run the receive
-   signals server for you. Follow the guide to run your server.
+2. **Follow documentation on running the miner REST server** - signals are received by the REST server that runs
+   natively from `miner.py` (no separate signal-reception server to run) — see our <a href="https://github.com/taoshidev/vanta-network/blob/main/docs/miner_rest_server.md">documentation</a> for how it's configured.
 
 3. **Ensure your server can receive signals** - We recommend cloning the vanta-network repository onto
    another machine (locally) & running the `sample_signal_request.py` script inside of it pointing to your server’s endpoint. First, make

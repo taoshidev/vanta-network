@@ -21,6 +21,7 @@ import threading
 import time
 
 import bittensor as bt
+from shared_objects.log import logger
 
 
 def _port_open(host: str, port: int, timeout: float = 0.5) -> bool:
@@ -39,8 +40,8 @@ def _safe_alert(slack_notifier, message: str, level: str) -> None:
         if slack_notifier is not None:
             slack_notifier.send_message(message, level=level, bypass_cooldown=True)
     except Exception as e:
-        bt.logging.warning(f"[readiness] Slack alert failed: {e}")
-    bt.logging.info(f"[readiness] {message}")
+        logger.warning(f"[readiness] Slack alert failed: {e}")
+    logger.info(f"[readiness] {message}")
 
 
 def start_readiness_watchdog(
@@ -82,7 +83,7 @@ def start_readiness_watchdog(
         while stop_event is None or not stop_event.is_set():
             if _healthy():
                 if not logged_ready:
-                    bt.logging.success(
+                    logger.info(
                         f"[{app_name}] readiness: HEALTHY (front door :{front_door_port} bound, "
                         f"core reachable on {core_probe_ports})"
                     )

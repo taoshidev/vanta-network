@@ -12,7 +12,7 @@ from typing import Optional, Tuple, Dict, List
 
 from vali_objects.enums.miner_bucket_enum import MinerBucket
 
-import template.protocol
+import vanta_protocol
 from entity_management.entity_manager import EntityManager
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from shared_objects.rpc.rpc_server_base import RPCServerBase
@@ -523,9 +523,9 @@ class EntityServer(RPCServerBase):
 
     def receive_subaccount_registration_update_rpc(self, subaccount_data: dict, sender_hotkey: str = None) -> bool:
         """
-        Process an incoming SubaccountRegistration synapse and update entity data (RPC method).
+        Process an incoming SubaccountRegistration request and update entity data (RPC method).
 
-        This is the data-level handler that can be called directly via RPC or by the synapse handler.
+        This is the data-level handler that can be called directly via RPC or by the request handler.
 
         Args:
             subaccount_data: Dictionary containing entity_hotkey, subaccount_id, subaccount_uuid, synthetic_hotkey
@@ -538,47 +538,50 @@ class EntityServer(RPCServerBase):
 
     def receive_subaccount_registration_rpc(
         self,
-        synapse: template.protocol.SubaccountRegistration
-    ) -> template.protocol.SubaccountRegistration:
+        request: vanta_protocol.BroadcastRequest,
+        caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
         """
-        Receive subaccount registration synapse (RPC method for axon handler).
+        Receive subaccount registration request (RPC method for the HTTP handler).
 
-        This is called by the validator's axon when receiving a SubaccountRegistration synapse.
+        This is called when the validator receives a SubaccountRegistration broadcast from
+        another validator.
 
         Args:
-            synapse: SubaccountRegistration synapse from another validator
+            request: BroadcastRequest from another validator
+            caller_hotkey: The hotkey of the validator that sent this broadcast (auth-layer-verified)
 
         Returns:
-            Updated synapse with success/error status
+            BroadcastResponse with success/error status
         """
+        response = vanta_protocol.BroadcastResponse()
         try:
-            sender_hotkey = synapse.dendrite.hotkey
             logger.info(
-                f"[ENTITY_SERVER] Received SubaccountRegistration synapse from validator hotkey [{sender_hotkey}]"
+                f"[ENTITY_SERVER] Received SubaccountRegistration request from validator hotkey [{caller_hotkey}]"
             )
-            success = self.receive_subaccount_registration_update_rpc(synapse.subaccount_data, sender_hotkey)
+            success = self.receive_subaccount_registration_update_rpc(request.payload, caller_hotkey)
 
             if success:
-                synapse.successfully_processed = True
-                synapse.error_message = ""
+                response.successfully_processed = True
+                response.error_message = ""
                 logger.info(
-                    f"[ENTITY_SERVER] Successfully processed SubaccountRegistration synapse from {sender_hotkey}"
+                    f"[ENTITY_SERVER] Successfully processed SubaccountRegistration request from {caller_hotkey}"
                 )
             else:
-                synapse.successfully_processed = False
-                synapse.error_message = "Failed to process subaccount registration"
+                response.successfully_processed = False
+                response.error_message = "Failed to process subaccount registration"
                 logger.warning(
-                    f"[ENTITY_SERVER] Failed to process SubaccountRegistration synapse from {sender_hotkey}"
+                    f"[ENTITY_SERVER] Failed to process SubaccountRegistration request from {caller_hotkey}"
                 )
 
         except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing subaccount registration: {e}"
-            logger.error(f"[ENTITY_SERVER] Error processing SubaccountRegistration synapse: {e}")
+            response.successfully_processed = False
+            response.error_message = f"Error processing subaccount registration: {e}"
+            logger.error(f"[ENTITY_SERVER] Error processing SubaccountRegistration request: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
-        return synapse
+        return response
 
     # ==================== Entity Endpoint URL RPC Methods ====================
 
@@ -629,47 +632,49 @@ class EntityServer(RPCServerBase):
         """
         return self._manager.receive_entity_endpoint_update(endpoint_data, sender_hotkey)
 
-    def receive_entity_endpoint_synapse_rpc(
+    def receive_entity_endpoint_update_request_rpc(
         self,
-        synapse: template.protocol.EntityEndpointUpdate
-    ) -> template.protocol.EntityEndpointUpdate:
+        request: vanta_protocol.BroadcastRequest,
+        caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
         """
-        Receive EntityEndpointUpdate synapse (RPC method for axon handler).
+        Receive EntityEndpointUpdate request (RPC method for the HTTP handler).
 
         Args:
-            synapse: EntityEndpointUpdate synapse from another validator
+            request: BroadcastRequest from another validator
+            caller_hotkey: The hotkey of the validator that sent this broadcast (auth-layer-verified)
 
         Returns:
-            Updated synapse with success/error status
+            BroadcastResponse with success/error status
         """
+        response = vanta_protocol.BroadcastResponse()
         try:
-            sender_hotkey = synapse.dendrite.hotkey
             logger.info(
-                f"[ENTITY_SERVER] Received EntityEndpointUpdate synapse from validator hotkey [{sender_hotkey}]"
+                f"[ENTITY_SERVER] Received EntityEndpointUpdate request from validator hotkey [{caller_hotkey}]"
             )
-            success = self.receive_entity_endpoint_update_rpc(synapse.endpoint_data, sender_hotkey)
+            success = self.receive_entity_endpoint_update_rpc(request.payload, caller_hotkey)
 
             if success:
-                synapse.successfully_processed = True
-                synapse.error_message = ""
+                response.successfully_processed = True
+                response.error_message = ""
                 logger.info(
-                    f"[ENTITY_SERVER] Successfully processed EntityEndpointUpdate synapse from {sender_hotkey}"
+                    f"[ENTITY_SERVER] Successfully processed EntityEndpointUpdate request from {caller_hotkey}"
                 )
             else:
-                synapse.successfully_processed = False
-                synapse.error_message = "Failed to process entity endpoint update"
+                response.successfully_processed = False
+                response.error_message = "Failed to process entity endpoint update"
                 logger.warning(
-                    f"[ENTITY_SERVER] Failed to process EntityEndpointUpdate synapse from {sender_hotkey}"
+                    f"[ENTITY_SERVER] Failed to process EntityEndpointUpdate request from {caller_hotkey}"
                 )
 
         except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing entity endpoint update: {e}"
-            logger.error(f"[ENTITY_SERVER] Error processing EntityEndpointUpdate synapse: {e}")
+            response.successfully_processed = False
+            response.error_message = f"Error processing entity endpoint update: {e}"
+            logger.error(f"[ENTITY_SERVER] Error processing EntityEndpointUpdate request: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
-        return synapse
+        return response
 
     # ==================== Testing/Admin RPC Methods ====================
 

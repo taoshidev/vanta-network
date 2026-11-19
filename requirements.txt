@@ -1,6 +1,9 @@
 pydantic == 2.10.3
 polygon-api-client == 1.16.0
-bittensor == 10.3.0
+bittensor == 11.3.2
+fastapi == 0.141.1
+uvicorn == 0.53.0
+httpx == 0.28.1
 scikit-learn == 1.5.0
 scipy == 1.13.0
 pandas == 2.2.2
@@ -25,5 +28,3 @@ orjson==3.11.7
 git+https://github.com/taoshidev/collateral_sdk.git@1.0.12#egg=collateral_sdk
 typer>=0.16
 rich>=13.7,<15.0
-bittensor-wallet==4.0.1
-bittensor-cli==9.21.0

@@ -94,40 +94,23 @@ class MetagraphClient(RPCClientBase):
         """hotkey -> is_registered_after_cutoff for every hotkey of the last full sync"""
         return self._server.get_registered_after_cutoff_rpc()
 
-    def get_tao_reserve_rao(self) -> float:
-        """Get TAO reserve in RAO"""
-        return self._server.get_tao_reserve_rao_rpc()
-
-    def get_alpha_reserve_rao(self) -> float:
-        """Get ALPHA reserve in RAO"""
-        return self._server.get_alpha_reserve_rao_rpc()
+    def get_tao_per_alpha_price(self) -> float:
+        """Get the TAO-per-ALPHA spot price (bittensor v11's metagraph.price; replaces the old
+        tao_reserve_rao/alpha_reserve_rao pair, which only ever fed this same ratio to consumers)"""
+        return self._server.get_tao_per_alpha_price_rpc()
 
     def get_tao_to_usd_rate(self) -> float:
         """Get TAO to USD conversion rate"""
         return self._server.get_tao_to_usd_rate_rpc()
 
-    def set_tao_reserve_rao(self, tao_reserve_rao: float) -> None:
-        """
-        Set TAO reserve in RAO.
-
-        Args:
-            tao_reserve_rao: TAO reserve amount in RAO (1 RAO = 10^-9 TAO)
-        """
-        self._server.update_metagraph_rpc(tao_reserve_rao=tao_reserve_rao)
-
-    def set_alpha_reserve_rao(self, alpha_reserve_rao: float) -> None:
-        """
-        Set ALPHA reserve in RAO.
-
-        Args:
-            alpha_reserve_rao: ALPHA reserve amount in RAO (1 RAO = 10^-9 ALPHA)
-        """
-        self._server.update_metagraph_rpc(alpha_reserve_rao=alpha_reserve_rao)
+    def set_tao_per_alpha_price(self, tao_per_alpha_price: float) -> None:
+        """Set the TAO-per-ALPHA spot price."""
+        self._server.update_metagraph_rpc(tao_per_alpha_price=tao_per_alpha_price)
 
     def update_metagraph(self, neurons: list = None, uids: list = None, hotkeys: list = None,
                         block_at_registration: list = None, axons: list = None,
-                        emission: list = None, tao_reserve_rao: float = None,
-                        alpha_reserve_rao: float = None, tao_to_usd_rate: float = None,
+                        emission: list = None, tao_per_alpha_price: float = None,
+                        tao_to_usd_rate: float = None,
                         stake_weight: list = None, standard_miner_cutoff_block: int = None) -> None:
         """
         Atomically update multiple metagraph fields in a single RPC call.
@@ -140,8 +123,7 @@ class MetagraphClient(RPCClientBase):
             block_at_registration: List of block numbers (optional)
             axons: List of axons (optional)
             emission: List of emission values (optional)
-            tao_reserve_rao: TAO reserve in RAO (optional)
-            alpha_reserve_rao: ALPHA reserve in RAO (optional)
+            tao_per_alpha_price: TAO-per-ALPHA spot price (optional)
             tao_to_usd_rate: TAO to USD conversion rate (optional)
             stake_weight: Per-UID chain stake weight in tokens (optional; re-derives the validator axons)
             standard_miner_cutoff_block: This network's cutoff block, None while the standard miner rules
@@ -164,8 +146,7 @@ class MetagraphClient(RPCClientBase):
             block_at_registration=block_at_registration,
             axons=axons,
             emission=emission,
-            tao_reserve_rao=tao_reserve_rao,
-            alpha_reserve_rao=alpha_reserve_rao,
+            tao_per_alpha_price=tao_per_alpha_price,
             tao_to_usd_rate=tao_to_usd_rate,
             stake_weight=stake_weight,
             standard_miner_cutoff_block=standard_miner_cutoff_block
@@ -208,14 +189,9 @@ class MetagraphClient(RPCClientBase):
         return self.get_emission()
 
     @property
-    def tao_reserve_rao(self) -> float:
-        """Property accessor for TAO reserve in RAO."""
-        return self.get_tao_reserve_rao()
-
-    @property
-    def alpha_reserve_rao(self) -> float:
-        """Property accessor for ALPHA reserve in RAO."""
-        return self.get_alpha_reserve_rao()
+    def tao_per_alpha_price(self) -> float:
+        """Property accessor for the TAO-per-ALPHA spot price."""
+        return self.get_tao_per_alpha_price()
 
     @property
     def tao_to_usd_rate(self) -> float:
@@ -236,8 +212,7 @@ class MetagraphClient(RPCClientBase):
         - axons: Empty list
         - emission: All set to 1.0
         - stake_weight: All set to 0.0 (no validators), unless given
-        - tao_reserve_rao: 1_000_000_000_000 (1000 TAO)
-        - alpha_reserve_rao: 1_000_000_000_000 (1000 ALPHA)
+        - tao_per_alpha_price: 0.2 (equivalent to the old 1000 TAO / 5000 ALPHA default reserves)
         - tao_to_usd_rate: 100.0
         The standard miner cutoff block is None (rules off) unless given.
 
@@ -255,8 +230,7 @@ class MetagraphClient(RPCClientBase):
             block_at_registration=block_at_registration if block_at_registration is not None else [1000] * n,
             axons=[None] * n,
             emission=[1.0] * n,
-            tao_reserve_rao=1_000_000_000_000,  # 1000 TAO in RAO
-            alpha_reserve_rao=1_000_000_000_000,  # 1000 ALPHA in RAO
+            tao_per_alpha_price=0.2,
             tao_to_usd_rate=100.0,
             stake_weight=stake_weight if stake_weight is not None else [0.0] * n,
             standard_miner_cutoff_block=standard_miner_cutoff_block

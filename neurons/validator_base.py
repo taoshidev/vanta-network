@@ -1,17 +1,19 @@
 import argparse
-import asyncio
 import concurrent.futures
 import os
-from typing import Tuple
 
 import bittensor as bt
 import logging
 from shared_objects.log import logger
 logger.setLevel(logging.INFO)
 
-import template
-from time_util.time_util import timeme
+import vanta_protocol
+from vanta_protocol import GetPositionsRequest, GetPositionsResponse, SendSignalRequest, SendSignalResponse
+from shared_objects.bt_config import add_logging_args, add_subtensor_args, add_wallet_args, build_config
+from shared_objects.http_auth import AuthVerifier
+from shared_objects.http_server import HttpServer, add_http_server_args, build_app, register_handler
 from shared_objects.locks.subtensor_lock import get_subtensor_lock
+from shared_objects.net_utils import get_external_ip
 
 
 class ValidatorBase:
@@ -38,108 +40,45 @@ class ValidatorBase:
         # Dedicated thread pool for concurrent synchronous requests
         self._thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 
-        # --no-axon (serve_axon=False): this process does not serve the axon — the vanta-orders app
-        # does. Core-split runs with serve_axon=False; the default monolith and vanta-orders run with
-        # serve_axon=True. The orders app ALWAYS serves the axon (that is its whole job), even if
-        # --no-axon leaked into its args. self.axon stays None otherwise so guards can check it.
+        self.http_server = None
+        # --no-axon (serve_axon=False): this process does not serve the signed-request HTTP server —
+        # the vanta-orders app does. Core-split runs with serve_axon=False; the default monolith and
+        # vanta-orders run with serve_axon=True. The orders app ALWAYS serves it (that is its whole
+        # job), even if --no-axon leaked into its args. self.http_server stays None otherwise so
+        # guards can check it. (Flag name kept as --no-axon/serve_axon for operator continuity even
+        # though this no longer wires up a bt.Axon — see shared_objects/http_server/.)
         if getattr(self.config, 'serve_axon', True) or getattr(self.config, 'orders_app', False):
-            self.wire_axon()
+            self.wire_http_server()
         else:
-            self.axon = None
-            bt.logging.info("[INIT] --no-axon: axon not served here (runs in vanta-orders app)")
+            logger.info("[INIT] --no-axon: signed-request HTTP server not served here (runs in vanta-orders app)")
 
         # Each hotkey gets a unique identity (UID) in the network for differentiation.
-        # (Unconditional — only needs metagraph_client, which is available regardless of the axon.)
+        # (Unconditional — only needs metagraph_client, which is available regardless of the server.)
         my_subnet_uid = self.metagraph_client.get_hotkeys().index(self.wallet.hotkey.ss58_address)
         logger.info(f"Running validator on uid: {my_subnet_uid}")
 
-    def _receive_signal_sync(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
+    def _receive_signal_sync(self, request: SendSignalRequest, caller_hotkey: str) -> SendSignalResponse:
         """
         Abstract method - must be implemented by child class.
         Handles incoming trading signals from miners.
         """
         raise NotImplementedError("Child class must implement _receive_signal_sync()")
 
-    async def receive_signal(self, synapse: template.protocol.SendSignal) -> template.protocol.SendSignal:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._thread_pool, self._receive_signal_sync, synapse)
-
-    def _get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
+    def _get_positions(self, request: GetPositionsRequest, caller_hotkey: str) -> GetPositionsResponse:
         """
         Abstract method - must be implemented by child class.
         Handles position inspection requests from miners.
         """
         raise NotImplementedError("Child class must implement _get_positions()")
 
-    async def get_positions(self, synapse: template.protocol.GetPositions) -> template.protocol.GetPositions:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._thread_pool, self._get_positions, synapse)
-
-    async def receive_collateral_record(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._thread_pool, self._miner_account_client.receive_collateral_record, synapse)
-
-    async def receive_asset_selection(self, synapse: template.protocol.AssetSelection) -> template.protocol.AssetSelection:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._thread_pool, self._asset_selection_client.receive_asset_selection, synapse)
-
-    async def receive_subaccount_registration(self, synapse: template.protocol.SubaccountRegistration) -> template.protocol.SubaccountRegistration:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._thread_pool, self._entity_client.receive_subaccount_registration, synapse)
-
-    async def receive_standard_miner_opening(self, synapse: template.protocol.StandardMinerOpening) -> template.protocol.StandardMinerOpening:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._thread_pool, self._contract_client.receive_standard_miner_opening, synapse)
-
-    async def receive_standard_miner_record(self, synapse: template.protocol.StandardMinerRecord) -> template.protocol.StandardMinerRecord:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._thread_pool, self._miner_account_client.receive_standard_miner_record, synapse)
-
-    async def receive_size_locks(self, synapse: template.protocol.AccountSizeLocks) -> template.protocol.AccountSizeLocks:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._thread_pool, self._miner_account_client.receive_size_locks, synapse)
-
-    @timeme
-    def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
-        miner_hotkey = synapse.dendrite.hotkey
-        if not metagraph.has_hotkey(miner_hotkey):
-            logger.debug(
-                f"Blacklisting unrecognized hotkey {synapse.dendrite.hotkey}"
-            )
-            return True, synapse.dendrite.hotkey
-
-        logger.debug(
-            f"Not Blacklisting recognized hotkey {synapse.dendrite.hotkey}"
-        )
-        return False, synapse.dendrite.hotkey
-
-    def broadcast_blacklist_fn(self, synapse) -> Tuple[bool, str]:
-        """Blacklist for the validator broadcasts: only the mothership sends them, and the mothership takes none.
-
-        Refused here, before the request body is read, rather than left to each receiver's verify_broadcast_sender
-        (which still checks). The axon runs this on the claimed hotkey before verify_fn checks its signature, and
-        a request has to pass both.
-        """
-        from vali_objects.utils.vali_utils import ValiUtils
-        sender_hotkey = synapse.dendrite.hotkey
-        is_testnet = self.config.netuid in (116, 171)
-        if ValiUtils.is_mothership_hotkey(self.wallet.hotkey.ss58_address, is_testnet):
-            logger.warning(f"Blacklisting {synapse.name} from {sender_hotkey}: the mothership takes no broadcasts")
-            return True, sender_hotkey
-        if not ValiUtils.is_mothership_hotkey(sender_hotkey, is_testnet):
-            logger.warning(f"Blacklisting {synapse.name} from {sender_hotkey}: only the mothership broadcasts")
-            return True, sender_hotkey
-        return self.blacklist_fn(synapse, self.metagraph_client)
-
-    async def verify_fn(self, synapse) -> None:
-        """Refuse a request that carries no signature, then run the axon's own check.
-
-        Every bt.Dendrite signs its requests, so a legitimate sender always has one.
-        """
-        if synapse.dendrite is None or not synapse.dendrite.signature:
-            hotkey = synapse.dendrite.hotkey if synapse.dendrite is not None else None
-            raise Exception(f"Unsigned {synapse.name} request claiming hotkey {hotkey}")
-        await self.axon.default_verify(synapse)
+    def is_caller_authorized(self, caller_hotkey: str) -> None:
+        """Registered-hotkey authorization check (replaces bt.Axon's blacklist_fn), raising
+        shared_objects.http_auth.Forbidden if not registered. Default implementation calls
+        MetagraphClient over RPC — override this in a subclass (see neurons/validator.py's
+        Validator, which answers from an in-process cache) if that per-request RPC round-trip
+        matters for your throughput; every signed-request route pays this check once."""
+        from shared_objects.http_auth import require_registered_hotkey
+        require_registered_hotkey(caller_hotkey, self.metagraph_client)
 
     @staticmethod
     def get_config():
@@ -173,19 +112,20 @@ class ValidatorBase:
         parser.add_argument("--split-state", action='store_true', dest='split_state', default=False,
                             help="Run the order-write state servers in a separate vanta-state PM2 app "
                                  "instead of in-core. Requires run.sh to launch vanta-state.")
-        # vanta-orders split: when set, this process does NOT serve the axon or run the HL tracker —
-        # they run in the separate vanta-orders PM2 app (run_orders_server.py). Core passes this so a
-        # core restart doesn't drop order reception. Default True (serve_axon) = today's behavior
-        # (axon + HL in-process). Backward-safe polarity mirrors --no-spawn-api.
+        # vanta-orders split: when set, this process does NOT serve the signed-request HTTP server or
+        # run the HL tracker — they run in the separate vanta-orders PM2 app (run_orders_server.py).
+        # Core passes this so a core restart doesn't drop order reception. Default True (serve_axon) =
+        # today's behavior (HTTP server + HL in-process). Backward-safe polarity mirrors --no-spawn-api.
         parser.add_argument("--no-axon", action='store_false', dest='serve_axon', default=True,
-                            help="Do not serve the axon or run the HL tracker in this process "
-                                 "(they run in the vanta-orders PM2 app). Requires run.sh to launch it.")
-        # vanta-orders app role: this process IS the order-reception tier — it serves the axon + runs
-        # HL and is a pure RPC CLIENT of vanta-state (order-write servers) and core (metagraph,
+                            help="Do not serve the signed-request HTTP server or run the HL tracker in "
+                                 "this process (they run in the vanta-orders PM2 app). Requires run.sh "
+                                 "to launch it.")
+        # vanta-orders app role: this process IS the order-reception tier — it serves the HTTP server +
+        # runs HL and is a pure RPC CLIENT of vanta-state (order-write servers) and core (metagraph,
         # scoring). It starts NO RPC servers, runs NO PositionSyncer/weight loop. Set by
         # run_orders_server.py. Implies serve_axon=True. Default False = not the orders app.
         parser.add_argument("--orders-app", action='store_true', dest='orders_app', default=False,
-                            help="Run as the vanta-orders app (axon + HL + order path, client of "
+                            help="Run as the vanta-orders app (HTTP server + HL + order path, client of "
                                  "vanta-state/core; starts no servers). Set by run_orders_server.py.")
         # Wallet-less identity for the vanta-state app (run_state_server.py). Core ignores it (it has
         # a wallet); vanta-state passes the validator's ss58 so miner_account's ValidatorBroadcastBase
@@ -207,16 +147,11 @@ class ValidatorBase:
                                  "only (e.g. ws://10.0.0.5:9944). The public endpoints are used while it is unhealthy.")
 
         # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
-        bt.Subtensor.add_args(parser)
+        add_subtensor_args(parser)
         # Logging arguments (--logging.debug, --logging.trace, --logging.logging_dir)
-        parser.add_argument("--logging.debug", action="store_true", default=False,
-                            help="Turn on debugging information")
-        parser.add_argument("--logging.trace", action="store_true", default=False,
-                            help="Turn on trace level information")
-        parser.add_argument("--logging.logging_dir", type=str, default=os.path.expanduser("~/.bittensor/miners"),
-                            help="Logging default root directory.")
+        add_logging_args(parser)
         # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
-        bt.Wallet.add_args(parser)
+        add_wallet_args(parser)
 
         # Add Slack webhook arguments
         parser.add_argument(
@@ -231,11 +166,11 @@ class ValidatorBase:
             default=None,
             help="Slack webhook URL for error notifications (optional, defaults to general webhook if not provided)"
         )
-        # Adds axon specific arguments i.e. --axon.port ...
-        bt.Axon.add_args(parser)
+        # Adds signed-request HTTP server args i.e. --http.port ... (replaces bt.Axon.add_args)
+        add_http_server_args(parser)
         # Activating the parser to read any command-line inputs.
         # To print help message, run python3 template/miner.py --help
-        config = bt.Config(parser)
+        config = build_config(parser)
         if config.logging.debug:
             logger.setLevel(logging.DEBUG)
         if config.logging.trace:
@@ -254,130 +189,81 @@ class ValidatorBase:
         )
         return config
 
-    def wire_axon(self):
-        logger.info(f"setting port [{self.config.axon.port}]")
-        logger.info(f"setting external port [{self.config.axon.external_port}]")
-        self.axon = bt.Axon(
-            wallet=self.wallet, port=self.config.axon.port, external_port=self.config.axon.external_port
+    def wire_http_server(self):
+        """Builds and starts the signed-request FastAPI server, replacing bt.Axon.
+
+        Authentication (signature verification, dual-scheme: new btauth/1 + legacy
+        bittensor v10 bridge) runs as middleware (shared_objects/http_server/app.py);
+        authorization (registered-hotkey check, this subnet's blacklist_fn-equivalent)
+        runs per-route via shared_objects/http_server/routes.py's register_handler.
+        """
+        http_port = self.config.http_port
+        http_external_port = self.config.http_external_port or http_port
+        logger.info(f"setting http port [{http_port}]")
+        logger.info(f"setting http external port [{http_external_port}]")
+
+        verifier = AuthVerifier(
+            self_hotkey_ss58=self.wallet.hotkey.ss58_address,
+            legacy_enabled=getattr(self.config, 'legacy_auth_enabled', True),
+            initial_hotkeys=self.metagraph_client.get_hotkeys(),
         )
-        logger.info(f"Axon {self.axon}")
+        app = build_app(verifier, vanta_protocol.LEGACY_HASH_FIELDS)
 
-        # Attach determines which functions are called when servicing a request.
-        logger.info("Attaching forward function to axon.")
+        # Each business_fn already has the (request, caller_hotkey) -> response shape
+        # register_handler expects — no internal model, no request/response conversion.
+        route_business_fns = {
+            "SendSignal": self._receive_signal_sync,
+            "GetPositions": self._get_positions,
+            "CollateralRecord": self._miner_account_client.receive_collateral_record,
+            "AssetSelection": self._asset_selection_client.receive_asset_selection,
+            "SubaccountRegistration": self._entity_client.receive_subaccount_registration,
+            "EntityEndpointUpdate": self._entity_client.receive_entity_endpoint_update,
+            "StandardMinerOpening": self._contract_client.receive_standard_miner_opening,
+            "StandardMinerRecord": self._miner_account_client.receive_standard_miner_record,
+            "AccountSizeLocks": self._miner_account_client.receive_size_locks,
+        }
+        for message_name, business_fn in route_business_fns.items():
+            request_model, response_model = vanta_protocol.MESSAGE_TYPES[message_name]
+            register_handler(
+                app, message_name, request_model, response_model,
+                business_fn, self._thread_pool, self.is_caller_authorized,
+            )
 
-        def rs_blacklist_fn(synapse: template.protocol.SendSignal) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+        self.http_server = HttpServer(app, host=self.config.http_host, port=http_port)
+        self.http_server.start()
+        logger.info(f"Started signed-request HTTP server on {self.config.http_host}:{http_port}")
 
-        def gp_blacklist_fn(synapse: template.protocol.GetPositions) -> Tuple[bool, str]:
-            return self.blacklist_fn(synapse, self.metagraph_client)
+        self.auth_verifier = verifier
+        self._start_trusted_hotkey_refresh_loop()
 
-        # Validator broadcasts: mothership to the other validators only (see broadcast_blacklist_fn)
-        def cr_blacklist_fn(synapse: template.protocol.CollateralRecord) -> Tuple[bool, str]:
-            return self.broadcast_blacklist_fn(synapse)
-
-        def as_blacklist_fn(synapse: template.protocol.AssetSelection) -> Tuple[bool, str]:
-            return self.broadcast_blacklist_fn(synapse)
-
-        def sr_blacklist_fn(synapse: template.protocol.SubaccountRegistration) -> Tuple[bool, str]:
-            return self.broadcast_blacklist_fn(synapse)
-
-        def eeu_blacklist_fn(synapse: template.protocol.EntityEndpointUpdate) -> Tuple[bool, str]:
-            return self.broadcast_blacklist_fn(synapse)
-
-        def smo_blacklist_fn(synapse: template.protocol.StandardMinerOpening) -> Tuple[bool, str]:
-            return self.broadcast_blacklist_fn(synapse)
-
-        def smr_blacklist_fn(synapse: template.protocol.StandardMinerRecord) -> Tuple[bool, str]:
-            return self.broadcast_blacklist_fn(synapse)
-
-        def asl_blacklist_fn(synapse: template.protocol.AccountSizeLocks) -> Tuple[bool, str]:
-            return self.broadcast_blacklist_fn(synapse)
-
-        # The axon's verify needs a signature-less request refused (see verify_fn); attach checks each one is
-        # typed as its synapse and returns None
-        async def rs_verify_fn(synapse: template.protocol.SendSignal) -> None:
-            await self.verify_fn(synapse)
-
-        async def gp_verify_fn(synapse: template.protocol.GetPositions) -> None:
-            await self.verify_fn(synapse)
-
-        async def cr_verify_fn(synapse: template.protocol.CollateralRecord) -> None:
-            await self.verify_fn(synapse)
-
-        async def as_verify_fn(synapse: template.protocol.AssetSelection) -> None:
-            await self.verify_fn(synapse)
-
-        async def sr_verify_fn(synapse: template.protocol.SubaccountRegistration) -> None:
-            await self.verify_fn(synapse)
-
-        async def eeu_verify_fn(synapse: template.protocol.EntityEndpointUpdate) -> None:
-            await self.verify_fn(synapse)
-
-        async def smo_verify_fn(synapse: template.protocol.StandardMinerOpening) -> None:
-            await self.verify_fn(synapse)
-
-        async def smr_verify_fn(synapse: template.protocol.StandardMinerRecord) -> None:
-            await self.verify_fn(synapse)
-
-        async def asl_verify_fn(synapse: template.protocol.AccountSizeLocks) -> None:
-            await self.verify_fn(synapse)
-
-        self.axon.attach(
-            forward_fn=self.receive_signal,
-            blacklist_fn=rs_blacklist_fn,
-            verify_fn=rs_verify_fn
-        )
-        self.axon.attach(
-            forward_fn=self.get_positions,
-            blacklist_fn=gp_blacklist_fn,
-            verify_fn=gp_verify_fn
-        )
-        self.axon.attach(
-            forward_fn=self.receive_collateral_record,
-            blacklist_fn=cr_blacklist_fn,
-            verify_fn=cr_verify_fn
-        )
-        self.axon.attach(
-            forward_fn=self.receive_asset_selection,
-            blacklist_fn=as_blacklist_fn,
-            verify_fn=as_verify_fn
-        )
-        self.axon.attach(
-            forward_fn=self.receive_subaccount_registration,
-            blacklist_fn=sr_blacklist_fn,
-            verify_fn=sr_verify_fn
-        )
-        self.axon.attach(
-            forward_fn=self._entity_client.receive_entity_endpoint_synapse,
-            blacklist_fn=eeu_blacklist_fn,
-            verify_fn=eeu_verify_fn
-        )
-        self.axon.attach(
-            forward_fn=self.receive_standard_miner_opening,
-            blacklist_fn=smo_blacklist_fn,
-            verify_fn=smo_verify_fn
-        )
-        self.axon.attach(
-            forward_fn=self.receive_standard_miner_record,
-            blacklist_fn=smr_blacklist_fn,
-            verify_fn=smr_verify_fn
-        )
-        self.axon.attach(
-            forward_fn=self.receive_size_locks,
-            blacklist_fn=asl_blacklist_fn,
-            verify_fn=asl_verify_fn
-        )
-
-        # Serve passes the axon information to the network + netuid we are hosting on.
-        # This will auto-update if the axon port of external ip have changed.
-        logger.info(
-            f"Serving attached axons on network:"
-            f" {self.config.subtensor.chain_endpoint} with netuid: {self.config.netuid}"
-        )
-        # Use subtensor lock to prevent WebSocket concurrency errors with metagraph_updater thread
+        # Publish our IP:port on chain so other nodes can discover this server via the metagraph's
+        # per-neuron axon field (replaces axon.serve()). Use subtensor lock to prevent WebSocket
+        # concurrency errors with the metagraph_updater thread.
+        public_ip = get_external_ip()
+        logger.info(f"Publishing ServeAxon on network {self.config.subtensor.network} "
+                    f"netuid {self.config.netuid}: {public_ip}:{http_external_port}")
         with get_subtensor_lock():
-            self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor)
+            result = self.subtensor.execute(
+                bt.ServeAxon(netuid=self.config.netuid, ip=public_ip, port=http_external_port),
+                self.wallet,
+            )
+        if not result.success:
+            logger.error(f"ServeAxon failed: {result.error}")
 
-        # Starts the miner's axon, making it active on the network.
-        logger.info(f"Starting axon server on port: {self.config.axon.port}")
-        self.axon.start()
+    def _start_trusted_hotkey_refresh_loop(self, interval_s: float = 30.0):
+        """bittensor.http_auth.configure_verifier's trusted_sender_schemes mapping is
+        process-local, so each process that runs an HttpServer (core monolith or the
+        vanta-orders split) must periodically re-sync it against the metagraph itself —
+        a newly-registered hotkey otherwise can't be verified until this refreshes."""
+        import threading
+        import time
+
+        def _loop():
+            while True:
+                time.sleep(interval_s)
+                try:
+                    self.auth_verifier.refresh_trusted_hotkeys(self.metagraph_client.get_hotkeys())
+                except Exception as e:
+                    logger.warning(f"[http_server] failed to refresh trusted hotkeys: {e}")
+
+        threading.Thread(target=_loop, daemon=True, name="auth-trusted-hotkey-refresh").start()

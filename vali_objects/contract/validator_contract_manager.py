@@ -25,7 +25,7 @@ from vali_objects.validator_broadcast_base import ValidatorBroadcastBase
 from vali_objects.position_management.position_manager_client import PositionManagerClient
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
-import template.protocol
+import vanta_protocol
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger_client import PerfLedgerClient
 from vali_objects.miner_account.miner_account_client import MinerAccountClient
 from vali_objects.miner_account.account_size_lock import AccountSizeLock
@@ -664,10 +664,10 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                                                        **opening_drawdown_rules())
 
     def _broadcast_standard_miner_opening(self, hotkey: str, record: StandardMinerAccount) -> None:
-        def create_synapse():
-            return template.protocol.StandardMinerOpening(opening={"hotkey": hotkey, "record": record.to_dict()})
+        def create_request():
+            return vanta_protocol.BroadcastRequest(payload={"hotkey": hotkey, "record": record.to_dict()})
 
-        self._broadcast_to_validators(synapse_factory=create_synapse, broadcast_name="StandardMinerOpening",
+        self._broadcast_to_validators(request_factory=create_request, broadcast_name="StandardMinerOpening",
                                       context={"hotkey": hotkey})
 
     def receive_standard_miner_opening_update(self, opening_data: dict, sender_hotkey: str = None) -> bool:
@@ -679,7 +679,7 @@ class ValidatorContractManager(ValidatorBroadcastBase):
                 raise ValueError(f"Invalid account opening data: {data}")
             self.apply_standard_miner_opening(hotkey, StandardMinerAccount.from_dict(record_data))
 
-        return self._handle_incoming_broadcast(synapse_data=opening_data, sender_hotkey=sender_hotkey,
+        return self._handle_incoming_broadcast(request_data=opening_data, sender_hotkey=sender_hotkey,
                                                broadcast_name="StandardMinerOpening", update_callback=apply)
 
     def query_withdrawal_request(self, amount: float, miner_hotkey: str) -> Dict[str, Any]:
@@ -1257,28 +1257,28 @@ class ValidatorContractManager(ValidatorBroadcastBase):
 
     def _broadcast_collateral_record_update_to_validators(self, hotkey: str, collateral_record_dict: dict):
         """
-        Broadcast CollateralRecord synapse to other validators using shared broadcast base.
+        Broadcast CollateralRecord request to other validators using shared broadcast base.
 
         Args:
             hotkey: Miner's hotkey
             collateral_record_dict: CollateralRecord as dict with keys:
                 account_size, account_size_theta, update_time_ms, valid_date_timestamp
         """
-        def create_collateral_synapse():
-            """Factory function to create the CollateralRecord synapse."""
+        def create_collateral_request():
+            """Factory function to create the CollateralRecord request."""
             collateral_record_data = {
                 "hotkey": hotkey,
                 "account_size": collateral_record_dict["account_size"],
                 "account_size_theta": collateral_record_dict["account_size_theta"],
                 "update_time_ms": collateral_record_dict["update_time_ms"]
             }
-            return template.protocol.CollateralRecord(
-                collateral_record=collateral_record_data
+            return vanta_protocol.BroadcastRequest(
+                payload=collateral_record_data
             )
 
         # Use shared broadcast method from base class
         self._broadcast_to_validators(
-            synapse_factory=create_collateral_synapse,
+            request_factory=create_collateral_request,
             broadcast_name="CollateralRecord",
             context={"hotkey": hotkey}
         )

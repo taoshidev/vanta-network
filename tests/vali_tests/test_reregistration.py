@@ -510,12 +510,14 @@ class TestReregistration(TestBase):
 
         # Import for type checking
         from unittest.mock import Mock
-        import template
 
-        # Create mock synapse for signal
-        mock_synapse = Mock(spec=template.protocol.SendSignal)
-        mock_synapse.dendrite = Mock()
-        mock_synapse.dendrite.hotkey = self.REREGISTERED_MINER
+        # Create mock synapse for signal. Not spec'd to a vanta_protocol class: the old
+        # bt.Synapse-style mock combined request fields (caller_hotkey, miner_order_uuid) and
+        # response fields (successfully_processed, error_message) on one mutable object, which
+        # no longer exist together on any single class (SendSignalRequest / SendSignalResponse
+        # are now separate).
+        mock_synapse = Mock()
+        mock_synapse.caller_hotkey = self.REREGISTERED_MINER
         mock_synapse.miner_order_uuid = "test_uuid"
         mock_synapse.successfully_processed = True
         mock_synapse.error_message = ""
@@ -532,10 +534,10 @@ class TestReregistration(TestBase):
         self.assertTrue(self.elimination_client.is_hotkey_re_registered(self.REREGISTERED_MINER))
 
         # Test rejection logic directly (simulating should_fail_early check)
-        if self.elimination_client.is_hotkey_re_registered(mock_synapse.dendrite.hotkey):
+        if self.elimination_client.is_hotkey_re_registered(mock_synapse.caller_hotkey):
             mock_synapse.successfully_processed = False
             mock_synapse.error_message = (
-                f"This miner hotkey {mock_synapse.dendrite.hotkey} was previously de-registered "
+                f"This miner hotkey {mock_synapse.caller_hotkey} was previously de-registered "
                 f"and is not allowed to re-register. Re-registration is not permitted on this subnet."
             )
 
@@ -549,12 +551,11 @@ class TestReregistration(TestBase):
         # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         from unittest.mock import Mock
-        import template
 
-        # Create mock synapse
-        mock_synapse = Mock(spec=template.protocol.SendSignal)
-        mock_synapse.dendrite = Mock()
-        mock_synapse.dendrite.hotkey = self.NORMAL_MINER
+        # Create mock synapse (see test_validator_rejects_reregistered_orders for why it is
+        # not spec'd to a vanta_protocol class)
+        mock_synapse = Mock()
+        mock_synapse.caller_hotkey = self.NORMAL_MINER
         mock_synapse.successfully_processed = True
         mock_synapse.error_message = ""
 
@@ -562,7 +563,7 @@ class TestReregistration(TestBase):
         self.assertFalse(self.elimination_client.is_hotkey_re_registered(self.NORMAL_MINER))
 
         # Simulate the check (should pass)
-        if self.elimination_client.is_hotkey_re_registered(mock_synapse.dendrite.hotkey):
+        if self.elimination_client.is_hotkey_re_registered(mock_synapse.caller_hotkey):
             mock_synapse.successfully_processed = False
             mock_synapse.error_message = "Should not reach here"
 
@@ -575,12 +576,11 @@ class TestReregistration(TestBase):
         # No mocking needed - LivePriceFetcherClient with running_unit_tests=True handles test data
 
         from unittest.mock import Mock
-        import template
 
-        # Create mock synapse
-        mock_synapse = Mock(spec=template.protocol.SendSignal)
-        mock_synapse.dendrite = Mock()
-        mock_synapse.dendrite.hotkey = self.DEREGISTERED_MINER
+        # Create mock synapse (see test_validator_rejects_reregistered_orders for why it is
+        # not spec'd to a vanta_protocol class)
+        mock_synapse = Mock()
+        mock_synapse.caller_hotkey = self.DEREGISTERED_MINER
 
         # De-register the miner
         current_hotkeys = self.metagraph_client.get_hotkeys()

@@ -20,7 +20,7 @@ from typing import Dict, Optional
 from shared_objects.rpc.rpc_client_base import RPCClientBase
 from vali_objects.vali_config import ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
-import template.protocol
+import vanta_protocol
 
 
 class AssetSelectionClient(RPCClientBase):
@@ -134,7 +134,7 @@ class AssetSelectionClient(RPCClientBase):
 
     def receive_asset_selection_update(self, asset_selection_data: dict) -> bool:
         """
-        Process an incoming AssetSelection synapse and update miner asset selection.
+        Process an incoming AssetSelection update and update miner asset selection.
 
         Args:
             asset_selection_data: Dictionary containing hotkey, asset selection
@@ -146,20 +146,22 @@ class AssetSelectionClient(RPCClientBase):
 
     def receive_asset_selection(
         self,
-        synapse: template.protocol.AssetSelection
-    ) -> template.protocol.AssetSelection:
+        request: vanta_protocol.BroadcastRequest,
+        caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
         """
-        Receive asset selection synapse (for axon attachment).
+        Receive an AssetSelection broadcast from another validator.
 
-        This delegates to the server's RPC handler. Used by validator_base.py for axon attachment.
+        This delegates to the server's RPC handler. Used by validator_base.py's HTTP route wiring.
 
         Args:
-            synapse: AssetSelection synapse from another validator
+            request: BroadcastRequest from the sending validator
+            caller_hotkey: The sending validator's hotkey, verified by the auth layer
 
         Returns:
-            Updated synapse with success/error status
+            BroadcastResponse with success/error status
         """
-        return self._server.receive_asset_selection_rpc(synapse)
+        return self._server.receive_asset_selection_rpc(request, caller_hotkey)
 
     # ==================== Utility Methods ====================
 

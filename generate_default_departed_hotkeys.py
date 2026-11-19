@@ -50,8 +50,10 @@ def main():
         help='Output file path (default: data/default_departed_hotkeys.json)'
     )
 
-    config = bt.Config(parser)
-    args = config
+    # bt.Config no longer exists in bittensor v11 (no SDK argparse integration at all) - this
+    # script's flags (--netuid/--network/--output) were never bittensor's own conventions
+    # (no --subtensor.network/--wallet.name), so plain argparse.parse_args() is a drop-in swap.
+    args = parser.parse_args()
 
     print("=" * 80)
     print("GENERATE DEFAULT DEPARTED HOTKEYS FILE FROM HISTORICAL DATABASE")
@@ -136,7 +138,9 @@ def main():
         subtensor = bt.Subtensor(network=args.network)
         print(f"Connected to subtensor: {subtensor.network}")
 
-        metagraph = subtensor.metagraph(netuid=args.netuid)
+        # bt.Subtensor has no .metagraph() method in v11; fetch via the module-level
+        # bt.metagraph.fetch(view, netuid) function instead.
+        metagraph = bt.metagraph.fetch(subtensor, args.netuid)
         current_hotkeys = set(metagraph.hotkeys) if metagraph.hotkeys else set()
         print(f"✓ Loaded metagraph: {len(current_hotkeys)} hotkeys currently registered")
     except Exception as e:

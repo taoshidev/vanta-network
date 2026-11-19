@@ -9,9 +9,9 @@ from collections import defaultdict
 from typing import List, Set
 
 import bittensor as bt
-from bittensor import AxonInfo, NeuronInfo
 
-import template
+import vanta_protocol
+from shared_objects.http_client import HttpAuthClient
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePair
 from vali_objects.vali_config import ValiConfig
@@ -54,20 +54,21 @@ class P2PSyncer(ValidatorSyncBase):
         """Get metagraph client (forward compatibility - created internally)."""
         return self._metagraph_client
 
-    def receive_checkpoint(self, synapse: template.protocol.ValidatorCheckpoint) -> template.protocol.ValidatorCheckpoint:
+    def receive_checkpoint(self, request: vanta_protocol.ValidatorCheckpointRequest, caller_hotkey: str) -> vanta_protocol.ValidatorCheckpointResponse:
         """
         TODO: properly integrate with validator.py
         receive checkpoint request, and ensure that only requests received from valid validators are processed.
         """
-        sender_hotkey = synapse.dendrite.hotkey
+        sender_hotkey = caller_hotkey
+        response = vanta_protocol.ValidatorCheckpointResponse()
 
         # validator responds to poke from validator and attaches their checkpoint
         if sender_hotkey in [axon.hotkey for axon in self.get_validators()]:
-            synapse.validator_receive_hotkey = self.wallet.hotkey.ss58_address
+            response.validator_receive_hotkey = self.wallet.hotkey.ss58_address
 
             logger.info(f"Received checkpoint request poke from validator hotkey [{sender_hotkey}].")
-            if self.should_fail_early(synapse, SynapseMethod.CHECKPOINT):
-                return synapse
+            if self.should_fail_early(request, SynapseMethod.CHECKPOINT):
+                return response
 
             error_message = ""
             try:
@@ -95,7 +96,13 @@ class P2PSyncer(ValidatorSyncBase):
                     # only send a checkpoint if we are an up-to-date validator
                     timestamp = self.timestamp_manager.get_last_order_timestamp()
                     if TimeUtil.now_in_millis() - timestamp < 1000 * 60 * 60 * 10:  # validators with no orders processed in 10 hrs are considered stale
-                        synapse.checkpoint = self.encoded_checkpoint
+                        # NOTE: vanta_protocol.ValidatorCheckpointResponse has no `checkpoint`
+                        # field (only validator_receive_hotkey/successfully_processed/
+                        # error_message via Ack) — self.encoded_checkpoint cannot currently be
+                        # carried back on the response. Flagged upstream; see p2p_syncer.py diff
+                        # notes. Left unset here rather than assigning an undeclared pydantic
+                        # field (which raises ValueError).
+                        pass
                     else:
                         error_message = f"Validator is stale, no orders received in 10 hrs, last order timestamp {timestamp}, {round((TimeUtil.now_in_millis() - timestamp)/(1000 * 60 * 60))} hrs ago"
             except Exception as e:
@@ -103,17 +110,17 @@ class P2PSyncer(ValidatorSyncBase):
                 logger.error(traceback.format_exc())
 
             if error_message == "":
-                synapse.successfully_processed = True
+                response.successfully_processed = True
             else:
                 logger.error(error_message)
-                synapse.successfully_processed = False
-            synapse.error_message = error_message
+                response.successfully_processed = False
+            response.error_message = error_message
             logger.info(f"Sending checkpoint back to validator [{sender_hotkey}]")
         else:
             logger.info(f"Received a checkpoint poke from non validator [{sender_hotkey}]")
-            synapse.error_message = "Rejecting checkpoint poke from non validator"
-            synapse.successfully_processed = False
-        return synapse
+            response.error_message = "Rejecting checkpoint poke from non validator"
+            response.successfully_processed = False
+        return response
 
     async def send_checkpoint_requests(self):
         """
@@ -129,10 +136,13 @@ class P2PSyncer(ValidatorSyncBase):
 
         try:
             logger.info(f"Validator {self.wallet.hotkey.ss58_address} requesting checkpoints")
-            # create dendrite and transmit synapse
-            checkpoint_synapse = template.protocol.ValidatorCheckpoint()
-            async with bt.Dendrite(wallet=self.wallet) as dendrite:
-                validator_responses = await dendrite.aquery(axons=validator_axons,  synapse=checkpoint_synapse, timeout=60 * 5)
+            # create request and transmit via HttpAuthClient
+            checkpoint_request = vanta_protocol.ValidatorCheckpointRequest()
+            async with HttpAuthClient(self.wallet) as client:
+                validator_responses = await client.aquery(
+                    validator_axons, "ValidatorCheckpoint", checkpoint_request,
+                    vanta_protocol.ValidatorCheckpointResponse, timeout=60 * 5
+                )
 
             n_failures = 0
             n_successful_checkpoints = 0
@@ -143,7 +153,7 @@ class P2PSyncer(ValidatorSyncBase):
                 if neuron.validator_trust >= 0:
                     hotkey_to_v_trust[neuron.hotkey] = neuron.validator_trust
 
-            for i, response in enumerate(validator_responses):
+            for i, (target, response) in enumerate(zip(validator_axons, validator_responses)):
                 if response.successfully_processed:
                     # Decode from base64 and decompress back into json
                     decoded = base64.b64decode(response.checkpoint)
@@ -159,10 +169,10 @@ class P2PSyncer(ValidatorSyncBase):
                     n_failures += 1
                     if response.error_message:
                         logger.info(
-                            f"Checkpoint poke to axon [{i + 1}/{len(validator_responses)}] {response.axon.hotkey} errored: {response.error_message}")
+                            f"Checkpoint poke to axon [{i + 1}/{len(validator_responses)}] {target.hotkey} errored: {response.error_message}")
                     else:
                         logger.info(
-                            f"Checkpoint poke to axon [{i + 1}/{len(validator_responses)}] {response.axon.hotkey} failed with status code: {response.axon.status_code}")
+                            f"Checkpoint poke to axon [{i + 1}/{len(validator_responses)}] {target.hotkey} failed")
 
             logger.info(f"{n_successful_checkpoints} responses succeeded. {n_failures} responses failed")
 
@@ -625,21 +635,25 @@ class P2PSyncer(ValidatorSyncBase):
         median_order["trade_pair"] = trade_pair
         return Order(**median_order)
 
-    def get_validators(self, neurons: List[NeuronInfo]=None) -> List[AxonInfo]:
+    def get_validators(self, neurons: List = None) -> List:
         """
         get a list of all validators. defined as:
         stake > 1000 and validator_trust > 0.5
+
+        neurons here are the picklable SimpleNeuron shape (shared_objects.subtensor_ops.subtensor_ops) -
+        v11's bt.MetagraphNeuron has no .stake field (use .total_stake, a Balance), already converted
+        into a plain TAO-denominated float on SimpleNeuron.stake.
         """
         if self.is_testnet:
             return self.metagraph.get_axons()
         if neurons is None:
             neurons = self.metagraph.get_neurons()
         validator_axons = [n.axon_info for n in neurons
-                           if n.stake > bt.Balance(ValiConfig.STAKE_MIN)
+                           if n.stake > ValiConfig.STAKE_MIN
                            and n.axon_info.ip != ValiConfig.AXON_NO_IP]
         return validator_axons
 
-    def get_largest_staked_validators(self, top_n_validators: int, neurons: List[NeuronInfo]=None) -> List[AxonInfo]:
+    def get_largest_staked_validators(self, top_n_validators: int, neurons: List = None) -> List:
         """
         get a list of the trusted validators for checkpoint sending
         return top 20 neurons sorted by stake

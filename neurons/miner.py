@@ -2,7 +2,6 @@
 # Copyright (c) 2024 Yuma Rao
 # developer: Taoshidev
 # Copyright (c) 2024 Taoshi Inc
-import json
 import os
 import argparse
 import threading
@@ -11,14 +10,11 @@ import time
 import bittensor as bt
 import subprocess
 
-from miner_config import MinerConfig
 from miner_objects.dashboard import Dashboard
 from miner_objects.prop_net_order_placer import PropNetOrderPlacer
 from miner_objects.position_inspector import PositionInspector
 from shared_objects.slack_notifier import SlackNotifier
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode, NeuronContext
-from vali_objects.decoders.generalized_json_decoder import GeneralizedJSONDecoder
-from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
 from vanta_api.miner_api_manager import MinerAPIManager
 from vanta_api.entity_miner_api_manager import EntityMinerAPIManager
 import logging
@@ -38,7 +34,8 @@ class Miner:
         if running_unit_tests:
             self.wallet = self._create_mock_wallet()
         else:
-            self.wallet = bt.Wallet(config=self.config)
+            self.wallet = bt.Wallet(name=self.config.wallet.name, hotkey=self.config.wallet.hotkey,
+                                     path=self.config.wallet.path)
 
         # Initialize Slack notifier
         if running_unit_tests:
@@ -244,62 +241,20 @@ class Miner:
             self.slack_notifier.send_message(f"❌ {error_msg}", level="error")
             exit()
 
-    def load_signal_data(self, signal_file_path: str):
-        """Loads the signal data from a file."""
-        try:
-            data = ValiBkpUtils.get_file(signal_file_path)
-            return json.loads(data, cls=GeneralizedJSONDecoder)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode JSON from {signal_file_path}: {e}")
-            self.slack_notifier.send_message(
-                f"❌ Failed to decode signal file: {os.path.basename(signal_file_path)}\nError: {str(e)}",
-                level="error"
-            )
-            return None
-
-    def get_all_files_in_dir_no_duplicate_trade_pairs(self):
-        # If there are duplicate trade pairs, only the most recent signal for that trade pair will be sent this round.
-        all_files = ValiBkpUtils.get_all_files_in_dir(MinerConfig.get_miner_received_signals_dir())
-        signals_dict = {}
-        files_to_delete = []
-        for f_name in all_files:
-            try:
-                logger.info(f"Reading signal file {f_name}")
-                signal = self.load_signal_data(f_name)
-                if signal:
-                    trade_pair_id = signal['trade_pair']['trade_pair_id']
-                    time_of_signal_file = os.path.getmtime(f_name)
-                    if trade_pair_id not in signals_dict or signals_dict[trade_pair_id][2] < time_of_signal_file:
-                        signals_dict[trade_pair_id] = (signal, f_name, time_of_signal_file)
-                    # Always add to files_to_delete, even if this is a duplicate (older) signal
-                    files_to_delete.append(f_name)
-            except json.JSONDecodeError as e:
-                logger.error(f"Error decoding JSON from file {f_name}: {e}")
-
-        # Delete files to prevent duplicate reading and conflicts
-        for f_name in files_to_delete:
-            logger.info(f"Deleting signal file {f_name}")
-            os.remove(f_name)
-
-        # Return all signals as a list
-        return [x[0] for x in signals_dict.values()], [x[1] for x in signals_dict.values()]
 
     @staticmethod
     def get_config():
+        from shared_objects.bt_config import add_logging_args, add_subtensor_args, add_wallet_args, build_config
+
         parser = argparse.ArgumentParser()
         # Adds override arguments for network and netuid.
         parser.add_argument("--netuid", type=int, default=8, help="The chain subnet uid.")
         # Adds subtensor specific arguments i.e. --subtensor.chain_endpoint ... --subtensor.network ...
-        bt.Subtensor.add_args(parser)
+        add_subtensor_args(parser)
         # Logging arguments (--logging.debug, --logging.trace, --logging.logging_dir)
-        parser.add_argument("--logging.debug", action="store_true", default=False,
-                            help="Turn on debugging information")
-        parser.add_argument("--logging.trace", action="store_true", default=False,
-                            help="Turn on trace level information")
-        parser.add_argument("--logging.logging_dir", type=str, default=os.path.expanduser("~/.bittensor/miners"),
-                            help="Logging default root directory.")
+        add_logging_args(parser)
         # Adds wallet specific arguments i.e. --wallet.name ..., --wallet.hotkey ./. or --wallet.path ...
-        bt.Wallet.add_args(parser)
+        add_wallet_args(parser)
         # Adds an argument to allow setting write_failed_signal_logs from the command line
         parser.add_argument("--write_failed_signal_logs", type=bool, default=None,
                             help="Whether to write logs for failed signals. Default is True unless --subtensor.network is 'test'.")
@@ -349,7 +304,7 @@ class Miner:
         )
 
         # Parse the config (will take command-line arguments if provided)
-        config = bt.Config(parser)
+        config = build_config(parser)
         logger.setLevel(logging.INFO)
         if config.logging.debug:
             logger.setLevel(logging.DEBUG)
@@ -412,24 +367,19 @@ class Miner:
             logger.info("Starting miner dashboard.")
             self.start_dashboard_frontend()
 
-        logger.info("Waiting for signals...")
+        # Orders arrive exclusively via the REST server (self.api_manager/self.entity_api_manager,
+        # started in __init__ on their own daemon threads) — this loop just keeps the main thread
+        # alive to host the position inspector / dashboard threads and handle shutdown.
+        logger.info("Miner ready, serving orders via the REST API.")
         while True:
             try:
-                signals, signal_file_names = self.get_all_files_in_dir_no_duplicate_trade_pairs()
-                n_signals = len(signals)
-                self.prop_net_order_placer.send_signals(signals, signal_file_names)
-                if n_signals == 0:
-                    time.sleep(0.2)
+                time.sleep(1)
             # If someone intentionally stops the miner, it'll safely terminate operations.
             except KeyboardInterrupt:
                 self.slack_notifier.send_message("🛑 Miner shutting down (keyboard interrupt)", level="warning")
                 logger.info("Miner killed by keyboard interrupt.")
 
                 #self.slack_notifier.shutdown()
-
-                # Shutdown the order placer's thread pool
-                logger.info("Shutting down order placer thread pool...")
-                self.prop_net_order_placer.shutdown()
 
                 # Shutdown the API manager if running
                 if self.api_manager is not None:

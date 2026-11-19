@@ -1,6 +1,5 @@
 from collections import defaultdict
 
-import bittensor as bt
 import time
 import asyncio
 import json
@@ -9,7 +8,8 @@ import threading
 import os
 
 from miner_config import MinerConfig
-from template.protocol import GetPositions
+from shared_objects.http_client import HttpAuthClient
+from vanta_protocol import GetPositionsRequest, GetPositionsResponse
 from shared_objects.log import logger
 
 
@@ -64,8 +64,10 @@ class PositionInspector:
         remaining_validators_to_query = [v for v in validators if v.hotkey not in hotkey_to_positions]
 
         # Use async context manager for automatic cleanup
-        async with bt.Dendrite(wallet=self.wallet) as dendrite:
-            responses = await dendrite.aquery(remaining_validators_to_query, GetPositions(version=1), deserialize=True)
+        async with HttpAuthClient(self.wallet) as client:
+            responses = await client.aquery(
+                remaining_validators_to_query, "GetPositions", GetPositionsRequest(version=1), GetPositionsResponse
+            )
 
         ret = []
         for validator, response in zip(remaining_validators_to_query, responses):

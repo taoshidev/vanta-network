@@ -43,6 +43,8 @@ from shared_objects.slack_notifier import SlackNotifier  # noqa: E402
 from vali_objects.utils.vali_utils import ValiUtils  # noqa: E402
 from vali_objects.vali_config import ValiConfig  # noqa: E402
 from vanta_api.server_readiness import start_readiness_watchdog  # noqa: E402
+import logging
+from shared_objects.log import logger
 
 # Daemons for the vanta-state tier's servers. The core-tier daemons (perf_ledger, elimination,
 # challenge_period, debt_ledger, mdd_checker, core_outputs, miner_statistics, weight_calculator,
@@ -63,7 +65,7 @@ def main() -> int:
     # subtensor.*, slack, --validator-hotkey). Wallet args are parsed as STRINGS only — no wallet is
     # loaded here.
     config = ValidatorBase.get_config()
-    bt.logging.enable_info()
+    logger.setLevel(logging.INFO)
 
     is_mainnet = (config.netuid == 8)
     validator_hotkey = getattr(config, 'validator_hotkey', None)
@@ -71,7 +73,7 @@ def main() -> int:
         # Required: without it, miner_account's ValidatorBroadcastBase would fall back to loading a
         # wallet from config — defeating the wallet-less guarantee. Fail loud rather than silently
         # pull a keypair into vanta-state.
-        bt.logging.error("[vanta-state] --validator-hotkey <ss58> is required (wallet-less identity). Exiting.")
+        logger.error("[vanta-state] --validator-hotkey <ss58> is required (wallet-less identity). Exiting.")
         return 1
 
     alert_hotkey = validator_hotkey or f"vanta-state@{socket.gethostname()}"
@@ -84,13 +86,13 @@ def main() -> int:
     # Secrets are needed by live_price_fetcher (API keys). Same source as core.
     secrets = ValiUtils.get_secrets()
     if secrets is None:
-        bt.logging.warning("[vanta-state] No secrets found (validation/miner_secrets.json) — "
+        logger.warning("[vanta-state] No secrets found (validation/miner_secrets.json) — "
                            "live_price_fetcher may fail to start.")
 
     # webhook_url=None lets SlackNotifier fall back to the SLACK_WEBHOOK_URL env var.
     slack_notifier = SlackNotifier(hotkey=alert_hotkey, webhook_url=getattr(config, 'slack_webhook_url', None))
 
-    bt.logging.info(
+    logger.info(
         f"[vanta-state] Starting state tier: netuid={config.netuid} is_mainnet={is_mainnet} "
         f"validator_hotkey={validator_hotkey} shutdown_ns={os.environ.get('VANTA_SHUTDOWN_SHM_NAME')}"
     )
@@ -119,7 +121,7 @@ def main() -> int:
         if ShutdownCoordinator.is_shutdown():
             return
         signal.alarm(GRACEFUL_SHUTDOWN_DEADLINE_S)  # arm the backstop before anything can block
-        bt.logging.info(f"[vanta-state] Received signal {signum} — initiating graceful shutdown.")
+        logger.info(f"[vanta-state] Received signal {signum} — initiating graceful shutdown.")
         ShutdownCoordinator.signal_shutdown(f"vanta-state received signal {signum}")
 
     def _alarm_handler(_signum, _frame):
@@ -127,7 +129,7 @@ def main() -> int:
         # orchestrator lock. Leave via os._exit, not sys.exit: our server subprocesses ignore
         # SIGTERM, so multiprocessing's exit hook (terminate + join() with no timeout) would hang
         # on any survivor until PM2's SIGKILL orphaned it.
-        bt.logging.error("[vanta-state] Graceful shutdown exceeded deadline — killing server "
+        logger.error("[vanta-state] Graceful shutdown exceeded deadline — killing server "
                          "subprocesses and force-exiting.")
         ServerOrchestrator.force_kill_child_processes()
         ShutdownCoordinator.cleanup()
@@ -145,11 +147,11 @@ def main() -> int:
         # and this tier's next save would clobber the migrated file while migrations_completed.txt
         # marks it done forever. Core skips migrations under --split-state for this reason.
         from runnable.run_migrations import main as run_migrations
-        bt.logging.info("[vanta-state] Checking for pending migrations (state tier owns them under --split-state)...")
+        logger.info("[vanta-state] Checking for pending migrations (state tier owns them under --split-state)...")
         if not run_migrations():
-            bt.logging.error("[vanta-state] Migration failed. Starting state servers without executing migrations")
+            logger.error("[vanta-state] Migration failed. Starting state servers without executing migrations")
         else:
-            bt.logging.info("[vanta-state] Migrations completed successfully.")
+            logger.info("[vanta-state] Migrations completed successfully.")
         if ShutdownCoordinator.is_shutdown():
             return 0  # stopped during migrations; don't start servers just to tear them down
 
@@ -169,7 +171,7 @@ def main() -> int:
         if ShutdownCoordinator.is_shutdown():
             return 0
         orchestrator.start_server_daemons(STATE_DAEMONS)
-        bt.logging.success("[vanta-state] State servers up and daemons started. Blocking until signal.")
+        logger.info("[vanta-state] State servers up and daemons started. Blocking until signal.")
 
         # Alert via Slack if we never become healthy (our own listener bound + core reachable) within
         # the grace window. front door = position_manager RPC; core presence = subtensor_ops port.
@@ -187,8 +189,8 @@ def main() -> int:
             stop.wait(1.0)
         return 0
     except Exception as e:
-        bt.logging.error(f"[vanta-state] FATAL: {type(e).__name__}: {e}")
-        bt.logging.error(traceback.format_exc())
+        logger.error(f"[vanta-state] FATAL: {type(e).__name__}: {e}")
+        logger.error(traceback.format_exc())
         try:
             slack_notifier.send_message(f"🔴 vanta-state crashed: {type(e).__name__}: {e}", level="error")
         except Exception:
@@ -199,7 +201,7 @@ def main() -> int:
         try:
             orchestrator.shutdown_all_servers()  # isolated namespace — does not touch core
         except Exception as e:
-            bt.logging.warning(f"[vanta-state] error during shutdown: {e}")
+            logger.warning(f"[vanta-state] error during shutdown: {e}")
         # Unlink our OWN coordinator segment so it doesn't leak; safe because this app owns its namespace.
         ShutdownCoordinator.cleanup()
         signal.alarm(0)  # teardown finished in time; cancel the backstop

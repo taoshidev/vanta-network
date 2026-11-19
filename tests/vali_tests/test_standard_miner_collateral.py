@@ -157,7 +157,7 @@ class TestCloseAndReopenOnTheAccount(TestBase):
         return manager
 
     def _broadcast_records(self):
-        return [call.kwargs["synapse_factory"]().record["record"]
+        return [call.kwargs["request_factory"]().record["record"]
                 for call in self.mothership._broadcast_to_validators.call_args_list]
 
     def test_the_mothership_closes_and_reopens_and_broadcasts_each(self):
@@ -900,7 +900,7 @@ class TestWithdrawEndpoint(TestBase):
 
     def setUp(self):
         super().setUp()
-        from bittensor_wallet import Keypair
+        from bittensor.sp_core import Keypair
         from vanta_api.nonce_manager import NonceManager
         self.coldkey, self.hotkey = Keypair.create_from_uri("//Alice"), Keypair.create_from_uri("//Bob")
         server = object.__new__(ValidatorRestServer)

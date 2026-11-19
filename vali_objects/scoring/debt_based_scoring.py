@@ -1030,24 +1030,18 @@ class DebtBasedScoring:
         if alpha_amount == 0:
             return 0.0
 
-        # Get substrate reserves from shared metagraph
-        # Use safe helper to extract values from manager.Value() objects or plain numerics
-        tao_reserve_obj = getattr(metagraph_client, 'tao_reserve_rao', None)
-        alpha_reserve_obj = getattr(metagraph_client, 'alpha_reserve_rao', None)
+        # bittensor v11's metagraph no longer exposes raw pool reserves (metagraph.pool.tao_in/
+        # .alpha_in is gone) - only the derived spot ratio via metagraph.price. This conversion only
+        # ever needed the ratio (never the reserves' absolute magnitudes), so SubtensorOpsManager now
+        # feeds a single tao_per_alpha_price through the metagraph RPC layer instead of two RAO figures.
+        tao_per_alpha_obj = getattr(metagraph_client, 'tao_per_alpha_price', None)
+        alpha_to_tao_rate = DebtBasedScoring._safe_get_reserve_value(tao_per_alpha_obj)
 
-        tao_reserve_rao = DebtBasedScoring._safe_get_reserve_value(tao_reserve_obj)
-        alpha_reserve_rao = DebtBasedScoring._safe_get_reserve_value(alpha_reserve_obj)
-
-        if tao_reserve_rao == 0 or alpha_reserve_rao == 0:
+        if alpha_to_tao_rate == 0:
             logger.warning(
-                "Substrate reserve data not available for ALPHA→USD conversion. "
-                f"(TAO={tao_reserve_rao} RAO, ALPHA={alpha_reserve_rao} RAO)"
+                "tao_per_alpha_price not available for ALPHA→USD conversion."
             )
             return 0.0
-
-        # Calculate ALPHA→TAO conversion rate
-        # alpha_to_tao_rate = how much TAO per ALPHA
-        alpha_to_tao_rate = tao_reserve_rao / alpha_reserve_rao
 
         # Convert ALPHA to TAO
         tao_amount = alpha_amount * alpha_to_tao_rate
