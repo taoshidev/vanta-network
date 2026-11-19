@@ -4,19 +4,18 @@ bittensor == 11.3.2
 fastapi == 0.141.1
 uvicorn == 0.53.0
 httpx == 0.28.1
-scikit-learn == 1.5.0
-scipy == 1.13.0
-pandas == 2.2.2
+scipy == 1.16.1
+pandas == 2.3.3
 flask == 3.0.3
 waitress == 2.1.2
-matplotlib == 3.9.0
+matplotlib == 3.10.5
 sortedcontainers == 2.4.0
 pandas-market-calendars == 4.4.0
 google-cloud-storage == 2.17.0
-tiingo == 0.15.6
+tiingo == 0.16.1
 databento == 0.69.0
 requests==2.33.0
-setproctitle==1.3.4
+setproctitle==1.3.7
 holidays == 0.67
 Flask-Compress == 1.17
 google-cloud-secret-manager==2.21.1

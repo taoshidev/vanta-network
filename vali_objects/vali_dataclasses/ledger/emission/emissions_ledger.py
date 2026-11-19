@@ -37,7 +37,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import bittensor as bt
 import time
-import scalecodec
 
 from time_util.time_util import TimeUtil
 from vali_objects.price_fetcher.live_price_client import LivePriceFetcherClient
