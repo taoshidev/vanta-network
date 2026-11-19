@@ -9,6 +9,7 @@ import asyncio
 from dataclasses import dataclass
 from setproctitle import setproctitle
 
+import vanta_protocol
 from vali_objects.vali_config import ValiConfig, TradePair
 from shared_objects.cache_controller import CacheController
 from shared_objects.error_utils import ErrorUtils
@@ -20,24 +21,81 @@ from time_util.time_util import TimeUtil
 import bittensor as bt
 import logging
 from shared_objects.log import logger
+from miner_config import MinerConfig
 
 
-# Simple picklable data structures for unit testing (must be module-level to be picklable)
+# Simple picklable data structures - used both for unit-test mocks AND as the real
+# production neuron/axon shape sent over RPC (see _convert_neuron below). bittensor v11's
+# bt.MetagraphNeuron.axon is just an "ip:port" string or None, and has no validator_trust
+# field (only `trust`, present regardless of permit) - these wrappers restore the shape
+# every existing consumer (validator_broadcast_base.py, p2p_syncer.py, position_inspector.py,
+# prop_net_order_placer.py, metagraph_utils.py) already expects: axon_info.ip/.port/.hotkey,
+# neuron.validator_trust.
 @dataclass
 class SimpleAxonInfo:
-    """Simple picklable axon info for testing."""
+    """Simple picklable axon info."""
     ip: str
     port: int
+    hotkey: str = None
 
 
 @dataclass
 class SimpleNeuron:
-    """Simple picklable neuron for testing."""
+    """Simple picklable neuron."""
     uid: int
     hotkey: str
     incentive: float
     validator_trust: float
     axon_info: SimpleAxonInfo
+    coldkey: str = None
+    stake: float = 0.0  # TAO-denominated chain stake weight (bittensor's metagraph.total_stake)
+
+
+def _balance_to_tao_float(balance) -> float:
+    """bt.Balance is no longer float()-able directly (verified interactively in bittensor 11.3.2).
+    `.tao` is the safe conversion for a TAO/root-denominated Balance (verified: Balance.from_tao(5).tao == 5.0);
+    total_stake is a root-denominated aggregate (alpha_stake converted + tao_stake), so `.tao` is expected to work.
+    Falls back to raw rao/1e9 (unit-agnostic) if `.tao` ever raises on an unexpectedly alpha-denominated Balance."""
+    if balance is None:
+        return 0.0
+    try:
+        return float(balance.tao)
+    except Exception:
+        try:
+            return float(balance.rao) / 1e9
+        except Exception:
+            return 0.0
+
+
+def _convert_neuron(n) -> "SimpleNeuron":
+    """Convert a real bt.MetagraphNeuron (v11) into the picklable SimpleNeuron/SimpleAxonInfo shape
+    every consumer in this repo already expects (axon_info.ip/.port/.hotkey, neuron.validator_trust)."""
+    axon_str = getattr(n, 'axon', None)
+    if axon_str:
+        ip, _, port_str = axon_str.rpartition(':')
+        try:
+            port = int(port_str)
+        except (TypeError, ValueError):
+            port = 0
+        axon_info = SimpleAxonInfo(ip=ip or MinerConfig.AXON_NO_IP, port=port, hotkey=n.hotkey)
+    else:
+        # No served axon - represent the same way the old code represented one (AXON_NO_IP sentinel)
+        axon_info = SimpleAxonInfo(ip=MinerConfig.AXON_NO_IP, port=0, hotkey=n.hotkey)
+
+    # validator_trust no longer exists as its own chain field in v11 (only `trust`); this subnet
+    # doesn't rely on it for logic anyway (CLAUDE.md: Null consensus, one UID holds permit/trust) -
+    # it's log-only here, so trust-when-permitted (0 otherwise) reproduces the old semantics closely enough.
+    validator_trust = float(n.trust) if getattr(n, 'validator_permit', False) else 0.0
+
+    return SimpleNeuron(
+        uid=n.uid,
+        hotkey=n.hotkey,
+        incentive=float(getattr(n, 'incentive', 0.0) or 0.0),
+        validator_trust=validator_trust,
+        axon_info=axon_info,
+        coldkey=getattr(n, 'coldkey', None),
+        stake=_balance_to_tao_float(getattr(n, 'total_stake', None)),
+    )
 
 
 # ==================== Client for WeightSetter RPC ====================
@@ -53,19 +111,36 @@ class WeightFailureTracker:
         self.failure_patterns = {}  # Track unknown error patterns
         self.had_critical_failure = False
         
-    def classify_failure(self, err_msg):
-        """Classify failure based on production patterns"""
+    def classify_failure(self, err_msg, error_code=None):
+        """Classify failure based on production patterns.
+
+        error_code is bt.ExtrinsicResult.error.code when the v11 SDK classified the chain-level
+        failure (an bt.ErrorCode enum member); primary classification checks that first, falling
+        back to substring-matching err_msg for anything the SDK didn't classify, or that doesn't
+        cleanly map to an ErrorCode (old-style exception-message patterns, connection errors, etc.)
+        """
+        # Primary: classify by the SDK's own error code when available.
+        if error_code is not None:
+            code_name = getattr(error_code, "name", str(error_code))
+            if code_name in ("TOO_EARLY", "RATE_LIMITED"):
+                return "benign"
+            if code_name in ("INTERNAL", "POLICY_VIOLATION", "NOT_AUTHORIZED"):
+                return "critical"
+
         error_lower = err_msg.lower()
-        
+
         # BENIGN - Don't alert (expected behavior)
         if any(phrase in error_lower for phrase in [
             "no attempt made. perhaps it is too soon to commit weights",
             "too soon to commit weights",
             "too soon to commit",
+            "empty extrinsicresult",
             "empty response from set_weights",
+            "too_early",
+            "rate_limited",
         ]):
             return "benign"
-        
+
         # CRITICAL - Alert immediately (known problematic patterns)
         elif any(phrase in error_lower for phrase in [
             "maximum recursion depth exceeded",
@@ -73,7 +148,7 @@ class WeightFailureTracker:
             "subtensor returned: invalid transaction"
         ]):
             return "critical"
-        
+
         # UNKNOWN - Alert after pattern emerges
         else:
             return "unknown"
@@ -168,7 +243,7 @@ class SubtensorOpsManager(CacheController):
             self.subtensor = self._create_mock_subtensor()
         else:
             try:
-                self.subtensor = bt.Subtensor(config=self.config)
+                self.subtensor = self._build_subtensor()
             except (ConnectionRefusedError, ConnectionError, OSError) as e:
                 logger.error(f"Failed to create initial subtensor connection: {e}")
                 logger.warning("Will retry during first metagraph update loop iteration")
@@ -187,36 +262,10 @@ class SubtensorOpsManager(CacheController):
         else:
             self._live_price_client = None
             self._miner_account_client = None
-        # Round-robin on metagraph failure for known public networks.
-        # 'subvortex' was removed: it is absent from bittensor's NETWORKS and
-        # entrypoint-subvortex.opentensor.ai is NXDOMAIN, so rotating onto it
-        # guaranteed a wasted retry cycle. With a single network the rotation
-        # degenerates to a same-endpoint reconnect, which is the actual healing
-        # mechanism (the recreate block in update_metagraph).
-        self.round_robin_networks = ['finney']
-        self.round_robin_enabled = False
-        self.current_round_robin_index = 0
-        if self.config.subtensor.network in self.round_robin_networks:
-            # Guard: rotation rewrites chain_endpoint with the public
-            # entrypoint template. An operator who passed a CUSTOM
-            # --subtensor.chain_endpoint (e.g. a local node) keeps the default
-            # network name ('finney'), and rotation would clobber their
-            # endpoint irrecoverably on the first failure — so only enable
-            # rotation when the configured endpoint IS a default entrypoint.
-            configured_endpoint = getattr(self.config.subtensor, 'chain_endpoint', None)
-            default_endpoints = {None, ''} | {
-                f"wss://entrypoint-{n}.opentensor.ai:443" for n in self.round_robin_networks
-            }
-            if configured_endpoint in default_endpoints:
-                logger.info(f"Using round-robin metagraph for network {self.config.subtensor.network}. ")
-                self.round_robin_enabled = True
-                self.current_round_robin_index = self.round_robin_networks.index(self.config.subtensor.network)
-            else:
-                logger.info(
-                    f"Custom chain_endpoint configured ({configured_endpoint}); "
-                    f"round-robin rotation disabled to preserve it. Connection "
-                    f"recreation on failure remains active."
-                )
+        # Round-robin was already degenerate (a single-entry ['finney'] list, i.e. a same-endpoint
+        # reconnect) now removed entirely per the v11 migration - the exponential-backoff retry loop
+        # in run_update_loop() and the build-new-then-cleanup-old reconnect pattern in
+        # update_metagraph() are the real healing mechanism and are kept as-is.
 
         # Initialize likely validators and miners with empty dictionaries. This maps hotkey to timestamp.
         self.likely_validators = {}
@@ -234,7 +283,7 @@ class SubtensorOpsManager(CacheController):
         self.rpc_thread = None
 
         # Exponential backoff parameters
-        self.min_backoff = 10 if self.round_robin_enabled else 120
+        self.min_backoff = 120
         self.max_backoff = 43200  # 12 hours maximum (12 * 60 * 60)
         self.backoff_factor = 2  # Double the wait time on each retry
         self.current_backoff = self.min_backoff
@@ -281,15 +330,16 @@ class SubtensorOpsManager(CacheController):
 
         mock_subtensor.metagraph = Mock(side_effect=mock_metagraph_func)
 
-        # Mock set_weights method (for validators)
-        mock_response = Mock()
-        mock_response.success = True
-        mock_response.message = None
-        mock_subtensor.set_weights = Mock(return_value=mock_response)
+        # Mock execute() method (bt.Subtensor.execute(intent, wallet) - replaces v10's set_weights(); used by
+        # both ServeAxon (validator_base.py) and SetWeights (_set_weights_with_retry below))
+        mock_result = Mock()
+        mock_result.success = True
+        mock_result.error = None
+        mock_result.message = None
+        mock_subtensor.execute = Mock(return_value=mock_result)
 
-        # Mock substrate connection for cleanup
-        mock_subtensor.substrate = Mock()
-        mock_subtensor.substrate.close = Mock()
+        # mock_subtensor.close() needs no explicit setup - Mock() auto-creates it on access
+        # (v11's _cleanup_subtensor_connection calls .close() directly, no .substrate.close()).
 
         return mock_subtensor
 
@@ -319,13 +369,15 @@ class SubtensorOpsManager(CacheController):
         if neurons is None:
             neurons = []
             for i, hk in enumerate(hotkeys):
-                axon_info = SimpleAxonInfo(ip="192.168.1.1", port=8091)
+                axon_info = SimpleAxonInfo(ip="192.168.1.1", port=8091, hotkey=hk)
                 neuron = SimpleNeuron(
                     uid=i,
                     hotkey=hk,
                     incentive=0.1,
                     validator_trust=0.1 if i == 0 else 0.0,  # First one is validator
-                    axon_info=axon_info
+                    axon_info=axon_info,
+                    coldkey=hk,
+                    stake=2 * ValiConfig.STAKE_MIN if i == 0 else 0.0,
                 )
                 neurons.append(neuron)
 
@@ -408,16 +460,25 @@ class SubtensorOpsManager(CacheController):
             "consecutive_failures": self.consecutive_failures,
         }
 
-    def broadcast_to_validators_rpc(self, synapse, validator_axons_list):
+    def broadcast_to_validators_rpc(self, request, validator_axons_list, message_name=None):
         """
-        RPC method to broadcast a synapse to validators (called from ValidatorBroadcastBase).
+        RPC method to broadcast a request to validators (called from ValidatorBroadcastBase).
 
-        This method runs the broadcast using the SubtensorOpsManager's wallet and dendrite,
-        allowing processes without direct subtensor/wallet access to send broadcasts.
+        This method runs the broadcast using the SubtensorOpsManager's wallet and the
+        signed-request HTTP client, allowing processes without direct subtensor/wallet
+        access to send broadcasts.
 
         Args:
-            synapse: The synapse object to broadcast (already validated as picklable)
+            request: One of vanta_protocol's *Request models — SendSignalRequest/
+                GetPositionsRequest/ValidatorCheckpointRequest keep their own type, while
+                every other broadcast (CollateralRecord, AssetSelection, SubaccountRegistration,
+                EntityEndpointUpdate, StandardMinerOpening, StandardMinerRecord,
+                AccountSizeLocks) shares the generic BroadcastRequest shape — already
+                validated as picklable.
             validator_axons_list: List of axon_info objects to broadcast to
+            message_name: The MESSAGE_TYPES/HTTP-path key for this broadcast (e.g.
+                "CollateralRecord"). Required now that several message types share
+                BroadcastRequest, so the class name alone no longer identifies one.
 
         Returns:
             dict: {
@@ -436,32 +497,35 @@ class SubtensorOpsManager(CacheController):
                 logger.debug("[BROADCAST RPC] No validators to broadcast to")
                 return {"success": True, "success_count": 0, "total_count": 0, "errors": []}
 
-            # Validate synapse object
-            if not synapse or not hasattr(synapse, '__class__'):
-                raise ValueError("Invalid synapse object")
+            if not request or not hasattr(request, '__class__'):
+                raise ValueError("Invalid request object")
 
-            synapse_class_name = synapse.__class__.__name__
+            if not message_name:
+                raise ValueError("message_name is required to broadcast a BroadcastRequest")
 
             # Create wallet from config
-            wallet = bt.Wallet(config=self.config)
+            wallet = bt.Wallet(name=self.config.wallet.name, hotkey=self.config.wallet.hotkey, path=self.config.wallet.path)
 
             target_hotkeys = [a.hotkey for a in validator_axons_list]
-            logger.info(f"[BROADCAST RPC] Broadcasting {synapse_class_name} to {len(validator_axons_list)} validators: {target_hotkeys}")
+            logger.info(f"[BROADCAST RPC] Broadcasting {message_name} to {len(validator_axons_list)} validators: {target_hotkeys}")
+
+            _, response_cls = vanta_protocol.MESSAGE_TYPES[message_name]
 
             async def do_broadcast():
-                async with bt.Dendrite(wallet=wallet) as dendrite:
-                    responses = await dendrite.aquery(validator_axons_list, synapse)
+                from shared_objects.http_client import HttpAuthClient
+                async with HttpAuthClient(wallet) as client:
+                    responses = await client.aquery(validator_axons_list, message_name, request, response_cls)
 
                     success_count = 0
                     errors = []
                     successful_hotkeys = []
 
-                    for response in responses:
+                    for target, response in zip(validator_axons_list, responses):
                         if response.successfully_processed:
                             success_count += 1
-                            successful_hotkeys.append(response.axon.hotkey)
+                            successful_hotkeys.append(target.hotkey)
                         elif response.error_message:
-                            errors.append(f"{response.axon.hotkey}: {response.error_message}")
+                            errors.append(f"{target.hotkey}: {response.error_message}")
 
                     return success_count, errors, successful_hotkeys
 
@@ -505,12 +569,12 @@ class SubtensorOpsManager(CacheController):
             if self.running_unit_tests:
                 wallet = self._create_mock_wallet()
             else:
-                wallet = bt.Wallet(config=self.config)
+                wallet = bt.Wallet(name=self.config.wallet.name, hotkey=self.config.wallet.hotkey, path=self.config.wallet.path)
 
             logger.info(f"[RPC] Processing weight setting request for {len(uids)} UIDs")
 
             # Set weights with retry logic
-            success, error_msg = self._set_weights_with_retry(
+            success, error_msg, error_code = self._set_weights_with_retry(
                 netuid=netuid,
                 wallet=wallet,
                 uids=uids,
@@ -534,7 +598,7 @@ class SubtensorOpsManager(CacheController):
 
                 # Track failure and send alerts
                 if self.weight_failure_tracker:
-                    failure_type = self.weight_failure_tracker.classify_failure(error_msg)
+                    failure_type = self.weight_failure_tracker.classify_failure(error_msg, error_code)
                     self.weight_failure_tracker.track_failure(error_msg, failure_type)
 
                     if self.weight_failure_tracker.should_alert(failure_type, self.weight_failure_tracker.consecutive_failures):
@@ -555,15 +619,23 @@ class SubtensorOpsManager(CacheController):
     def _is_expired(self, timestamp):
         return (self._current_timestamp() - timestamp) > 86400  # 24 hours in seconds
     
+    def _build_subtensor(self) -> bt.Subtensor:
+        """bt.Subtensor.__init__ in v11 takes no `config=` kwarg (verified: network, policy,
+        fallback_endpoints, archive_endpoints, retry_forever, substrate only) and no `chain_endpoint=`
+        kwarg either - any ws://*/wss:// URL is accepted directly as `network` itself. So pass the
+        configured chain_endpoint as the network argument when set, else the configured network name."""
+        network = self.config.subtensor.chain_endpoint or self.config.subtensor.network
+        return bt.Subtensor(network=network)
+
     def _cleanup_subtensor_connection(self):
-        """Safely close substrate connection to prevent file descriptor leaks"""
+        """Safely close the subtensor connection to prevent file descriptor leaks.
+        bt.Subtensor.close() is the real method in v11 (no more .substrate.close() fallback needed)."""
         if hasattr(self, 'subtensor') and self.subtensor:
             try:
-                if hasattr(self.subtensor, 'substrate') and self.subtensor.substrate:
-                    logger.debug("Cleaning up substrate connection")
-                    self.subtensor.substrate.close()
+                logger.debug("Closing subtensor connection")
+                self.subtensor.close()
             except Exception as e:
-                logger.warning(f"Error during substrate cleanup: {e}")
+                logger.warning(f"Error during subtensor cleanup: {e}")
     
     def get_subtensor(self):
         """
@@ -631,14 +703,11 @@ class SubtensorOpsManager(CacheController):
                 self.update_metagraph()
                 # Reset backoff on successful update
                 if self.consecutive_failures > 0:
-                    rr_network = self.round_robin_networks[self.current_round_robin_index] if self.round_robin_enabled else "N/A"
                     logger.info(
-                        f"Metagraph update successful after {self.consecutive_failures} failures. Resetting backoff. "
-                        f"round_robin_enabled: {self.round_robin_enabled}. rr_network: {rr_network}")
+                        f"Metagraph update successful after {self.consecutive_failures} failures. Resetting backoff.")
                     if self.slack_notifier:
                         self.slack_notifier.send_message(
-                            f"✅ Metagraph update recovered after {self.consecutive_failures} consecutive failures."
-                            f" round_robin_enabled: {self.round_robin_enabled}, rr_network: {rr_network}",
+                            f"✅ Metagraph update recovered after {self.consecutive_failures} consecutive failures.",
                             level="info"
                         )
                 self.consecutive_failures = 0
@@ -651,10 +720,8 @@ class SubtensorOpsManager(CacheController):
                 self.current_backoff = min(self.current_backoff * self.backoff_factor, self.max_backoff)
 
                 # Log error with backoff information
-                rr_network = self.round_robin_networks[self.current_round_robin_index] if self.round_robin_enabled else "N/A"
                 error_msg = (f"Error during metagraph update (attempt #{self.consecutive_failures}): {e}. "
-                             f"Next retry in {self.current_backoff} seconds. round_robin_enabled: {self.round_robin_enabled}"
-                             f" rr_network {rr_network}\n")
+                             f"Next retry in {self.current_backoff} seconds.\n")
                 logger.error(error_msg)
                 logger.error(traceback.format_exc())
 
@@ -678,86 +745,47 @@ class SubtensorOpsManager(CacheController):
                 time.sleep(self.current_backoff)
 
     def _set_weights_with_retry(self, netuid, wallet, uids, weights, version_key):
-        """Set weights with round-robin retry using existing subtensor"""
+        """Set weights using the existing subtensor connection.
+
+        Returns: (success, error_msg, error_code) where error_code is the bt.ErrorCode the SDK
+        classified the failure as (or None, when it couldn't classify it / on a raised exception).
+        """
         # Check if subtensor is available before attempting weight setting
         if self.subtensor is None:
             error_msg = "Subtensor connection not available (initialization or reconnection in progress)"
             logger.error(error_msg)
-            return False, error_msg
+            return False, error_msg, None
 
-        max_retries = len(self.round_robin_networks) if self.round_robin_enabled else 1
+        max_retries = 1
 
         for attempt in range(max_retries):
             try:
                 with get_subtensor_lock():
-                    response = self.subtensor.set_weights(
-                        netuid=netuid,
-                        wallet=wallet,
-                        uids=uids,
-                        weights=weights,
-                        version_key=version_key
+                    result = self.subtensor.execute(
+                        bt.SetWeights(netuid=netuid, uids=uids, weights=weights, version_key=version_key),
+                        wallet,
                     )
 
-                success = response.success
-                if response.error is not None:
-                    error_msg = str(response.error)
-                elif response.message:
-                    error_msg = response.message
+                success = result.success
+                error_code = result.error.code if result.error is not None else None
+                if success:
+                    error_msg = None
+                elif result.error is not None:
+                    error_msg = f"{result.error.code}: {result.error.remediation}"
+                elif result.message:
+                    error_msg = result.message
                 else:
-                    try:
-                        response_details = vars(response)
-                    except TypeError:
-                        response_details = repr(response)
-                    error_msg = f"empty response from set_weights: {response_details}"
+                    error_msg = "empty ExtrinsicResult with success=False"
                 logger.info(f"Weight setting attempt {attempt + 1}: success={success}, error={error_msg}")
-                return success, error_msg
+                return success, error_msg, error_code
 
             except Exception as e:
+                # Genuine connection-level failures (timeouts, dropped sockets) can still raise;
+                # chain-level failures come back as success=False above, not an exception.
                 logger.warning(f"Weight setting failed (attempt {attempt + 1}): {e}")
-                # Let the metagraph updater handle round-robin switching to avoid potential race conditions and rate limit issues
-                #if self.round_robin_enabled and attempt < max_retries - 1:
-                #    logger.info("Switching to next network for weight setting retry")
-                #    self._switch_to_next_network()
-                #else:
-                #    return False, str(e)
 
-        return False, "All retry attempts failed"
-    
-    def _switch_to_next_network(self, cleanup_connection=True, create_new_subtensor=True):
-        """Switch to the next network in round-robin
-        
-        Args:
-            cleanup_connection (bool): Whether to cleanup existing subtensor connection
-            create_new_subtensor (bool): Whether to create new subtensor instance
-        """
-        if not self.round_robin_enabled:
-            return
-            
-        # Clean up existing connection if requested
-        if cleanup_connection:
-            self._cleanup_subtensor_connection()
-        
-        # Switch to next network
-        self.current_round_robin_index = (self.current_round_robin_index + 1) % len(self.round_robin_networks)
-        next_network = self.round_robin_networks[self.current_round_robin_index]
-        
-        logger.info(f"Switching to next network: {next_network}")
-        
-        # Update config
-        self.config.subtensor.network = next_network
-        self.config.subtensor.chain_endpoint = f"wss://entrypoint-{next_network}.opentensor.ai:443"
-        
-        # For dict-style access (used in update_metagraph)
-        if hasattr(self.config, '__getitem__'):
-            self.config['subtensor']['network'] = next_network
-        
-        # Create new subtensor connection if requested
-        if create_new_subtensor:
-            if self.running_unit_tests:
-                self.subtensor = self._create_mock_subtensor()
-            else:
-                self.subtensor = bt.Subtensor(config=self.config)
-    
+        return False, "All retry attempts failed", None
+
     def _send_weight_failure_alert(self, err_msg, failure_type, wallet):
         """Send contextual Slack alert for weight setting failure"""
         if not self.slack_notifier:
@@ -920,41 +948,42 @@ class SubtensorOpsManager(CacheController):
         """
         return hotkey in self._hotkeys_cache
 
-    def _get_substrate_reserves(self, metagraph_clone):
+    def _get_tao_per_alpha_price(self, metagraph_clone) -> float:
         """
-        Get TAO and ALPHA reserve balances from metagraph.pool.
-        Uses built-in metagraph.pool data (verified to be identical to direct substrate queries).
-        Fails fast - exceptions propagate to slack alert mechanism.
+        Get the TAO-per-ALPHA spot price for ALPHA->USD conversion.
 
-        Args:
-            metagraph_clone: Freshly synced metagraph with pool data
+        JUDGMENT CALL (v11 migration): bt.Metagraph no longer exposes raw pool reserves -
+        `metagraph.pool.tao_in`/`.alpha_in` is gone, replaced by `metagraph.price` (the ratio
+        tao_in/alpha_in directly). Grepping every downstream consumer of the old
+        tao_reserve_rao/alpha_reserve_rao pair (DebtBasedScoring._convert_alpha_to_usd is the only
+        one) showed they only ever compute `tao_reserve_rao / alpha_reserve_rao` - the RATIO, never
+        the absolute magnitudes - so this now returns that ratio directly instead of two RAO figures.
+        The RPC plumbing (metagraph_client/server, DebtBasedScoring) was updated to carry a single
+        `tao_per_alpha_price` field end-to-end rather than synthesizing fake reserve magnitudes.
 
-        Returns:
-            tuple: (tao_reserve_rao, alpha_reserve_rao)
+        Test mode keeps reading metagraph_clone.pool.tao_in/.alpha_in since the existing mocks
+        (_create_mock_subtensor/set_mock_metagraph_data) still set that shape.
+
+        Fails fast - exceptions propagate to the slack alert mechanism.
         """
-        # Extract reserve data from metagraph.pool
-        if not hasattr(metagraph_clone, 'pool') or not metagraph_clone.pool:
-            raise ValueError("metagraph.pool not available - cannot get reserve data")
+        if self.running_unit_tests:
+            if not hasattr(metagraph_clone, 'pool') or not metagraph_clone.pool:
+                raise ValueError("metagraph.pool not available - cannot get reserve data")
+            tao_in = metagraph_clone.pool.tao_in
+            alpha_in = metagraph_clone.pool.alpha_in
+            if not alpha_in:
+                raise ValueError("Alpha reserve is zero - cannot calculate conversion rate")
+            price = float(tao_in) / float(alpha_in)
+        else:
+            price = getattr(metagraph_clone, 'price', None)
+            if price is None:
+                raise ValueError("metagraph.price not available - cannot get tao/alpha conversion rate")
+            price = float(price)
+            if price <= 0:
+                raise ValueError(f"Invalid tao/alpha price from metagraph: {price}")
 
-        # Get reserves from pool (in tokens, need to convert to RAO)
-        tao_reserve_tokens = metagraph_clone.pool.tao_in
-        alpha_reserve_tokens = metagraph_clone.pool.alpha_in
-
-        # Convert to RAO (1 token = 1e9 RAO)
-        tao_reserve_rao = float(tao_reserve_tokens * 1e9)
-        alpha_reserve_rao = float(alpha_reserve_tokens * 1e9)
-
-        # Validate reserves
-        if alpha_reserve_rao == 0:
-            raise ValueError("Alpha reserve is zero - cannot calculate conversion rate")
-
-        logger.info(
-            f"Got reserves from metagraph.pool: TAO={tao_reserve_rao / 1e9:.2f} TAO "
-            f"({tao_reserve_rao:.0f} RAO), ALPHA={alpha_reserve_rao / 1e9:.2f} ALPHA "
-            f"({alpha_reserve_rao:.0f} RAO)"
-        )
-
-        return tao_reserve_rao, alpha_reserve_rao
+        logger.info(f"Got tao/alpha price from metagraph: {price:.6f} TAO/ALPHA")
+        return price
 
     def _get_tao_usd_rate(self):
         """
@@ -1016,23 +1045,27 @@ class SubtensorOpsManager(CacheController):
             logger.error(traceback.format_exc())
             return None
 
+    def _fetch_metagraph(self):
+        """bt.Subtensor has no .metagraph() method in v11 (confirmed via inspection) - fetch via the
+        module-level bt.metagraph.fetch(view, netuid) function instead. Test mode keeps calling the
+        mockable self.subtensor.metagraph(netuid) seam so existing mock setups
+        (_create_mock_subtensor/set_mock_metagraph_data) keep working unchanged."""
+        if self.running_unit_tests:
+            return self.subtensor.metagraph(self.config.netuid)
+        return bt.metagraph.fetch(self.subtensor, self.config.netuid)
+
     def update_metagraph(self):
         if not self.refresh_allowed(self.interval_wait_time_ms):
             return
 
         if self.consecutive_failures > 0:
-            if self.round_robin_enabled:
-                # Use modularized round-robin switching
-                logger.warning("Switching to next network in round-robin due to consecutive failures")
-                self._switch_to_next_network(cleanup_connection=False, create_new_subtensor=False)
-
             # Try to create new subtensor BEFORE cleaning up old one
             # This ensures we never leave self.subtensor in a broken state that breaks other components
             try:
                 if self.running_unit_tests:
                     new_subtensor = self._create_mock_subtensor()
                 else:
-                    new_subtensor = bt.Subtensor(config=self.config)
+                    new_subtensor = self._build_subtensor()
 
                 # Only cleanup old connection after new one successfully created (prevents file descriptor leak).
                 # Under the subtensor lock: weight-setter RPC threads hold it
@@ -1063,11 +1096,11 @@ class SubtensorOpsManager(CacheController):
 
         # Synchronize with weight setting operations to prevent WebSocket concurrency errors
         with get_subtensor_lock():
-            metagraph_clone = self.subtensor.metagraph(self.config.netuid)
+            metagraph_clone = self._fetch_metagraph()
 
         assert hasattr(metagraph_clone, 'hotkeys'), "Metagraph clone does not have hotkeys attribute"
         logger.info("Updating metagraph...")
-        # metagraph_clone.sync(subtensor=self.subtensor) The call to subtensor.metagraph() already syncs the metagraph.
+        # bt.metagraph.fetch() (v11) / subtensor.metagraph() (test mock) already syncs the metagraph.
         hotkeys_after = set(metagraph_clone.hotkeys)
         lost_hotkeys = hotkeys_before - hotkeys_after
         gained_hotkeys = hotkeys_after - hotkeys_before
@@ -1092,27 +1125,48 @@ class SubtensorOpsManager(CacheController):
                 )
             return  # Actually block the metagraph update
 
-        # Gather validator-specific data (reserves and TAO/USD price) if needed
-        tao_reserve_rao = None
-        alpha_reserve_rao = None
+        # v11's bt.Metagraph only carries per-neuron fields (no top-level .uids/.validator_permit/
+        # .total_stake/.block_at_registration/.emission/.axons) - derive everything from .neurons,
+        # converting each real bt.MetagraphNeuron into the SimpleNeuron/SimpleAxonInfo shape every
+        # consumer already expects. Test mode keeps the mocks' old top-level-list shape untouched
+        # (neurons there are already SimpleNeuron, built by _create_mock_subtensor/set_mock_metagraph_data).
+        if self.running_unit_tests:
+            converted_neurons = list(metagraph_clone.neurons)
+            uids = list(metagraph_clone.uids)
+            block_at_registration = list(metagraph_clone.block_at_registration)
+            emission = list(metagraph_clone.emission)
+        else:
+            converted_neurons = [_convert_neuron(n) for n in metagraph_clone.neurons]
+            uids = [n.uid for n in metagraph_clone.neurons]
+            block_at_registration = [n.block_at_registration for n in metagraph_clone.neurons]
+            emission = [_balance_to_tao_float(n.emission) for n in metagraph_clone.neurons]
+
+        # Gather validator-specific data (tao/alpha price and TAO/USD price) if needed
+        tao_per_alpha_price = None
         tao_to_usd_rate = None
 
-        if self.is_validator:  # Only validators need reserves/prices for weight calculation
-            tao_reserve_rao, alpha_reserve_rao = self._get_substrate_reserves(metagraph_clone)
+        if self.is_validator:  # Only validators need price data for weight calculation
+            tao_per_alpha_price = self._get_tao_per_alpha_price(metagraph_clone)
             tao_to_usd_rate = self._get_tao_usd_rate()
 
-        # Log validator hotkeys (those with validator_permit=True) and stake requirement
-        if hasattr(metagraph_clone, 'validator_permit') and hasattr(metagraph_clone, 'hotkeys'):
+        # Log validator hotkeys (those with validator_permit=True) - log-only per CLAUDE.md (Null
+        # consensus means only the weight setter holds the permit on this subnet)
+        if self.running_unit_tests:
             validator_hotkeys = [
                 metagraph_clone.hotkeys[i]
-                for i, permit in enumerate(metagraph_clone.validator_permit)
+                for i, permit in enumerate(getattr(metagraph_clone, 'validator_permit', []))
                 if permit
             ]
-            logger.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
+        else:
+            validator_hotkeys = [orig.hotkey for orig in metagraph_clone.neurons if orig.validator_permit]
+        logger.info(f"Validators with permit ({len(validator_hotkeys)}): {validator_hotkeys}")
 
         # The chain's per-UID stake weight (bittensor's metagraph.total_stake) identifies validators without the permit;
         # a failed subnet-state query leaves it empty, so the previous weights are kept rather than no validator at all
-        stake_weight = [float(s) for s in metagraph_clone.total_stake]
+        if self.running_unit_tests:
+            stake_weight = [float(s) for s in metagraph_clone.total_stake]
+        else:
+            stake_weight = [n.stake for n in converted_neurons]
         if len(stake_weight) != len(metagraph_clone.hotkeys):
             logger.warning(f"Stake weight has {len(stake_weight)} entries for {len(metagraph_clone.hotkeys)} hotkeys; "
                            f"keeping the previous stake weights until the next sync")
@@ -1128,15 +1182,19 @@ class SubtensorOpsManager(CacheController):
 
         # Single atomic RPC call to update all metagraph fields
         # Much faster than multiple calls - all fields updated together under one lock
+        if self.is_miner:
+            axons = [n.axon_info for n in converted_neurons] if not self.running_unit_tests \
+                else list(metagraph_clone.axons)
+        else:
+            axons = None
         self._metagraph_client.update_metagraph(
-            neurons=list(metagraph_clone.neurons),
-            uids=list(metagraph_clone.uids),
+            neurons=converted_neurons,
+            uids=uids,
             hotkeys=list(metagraph_clone.hotkeys),  # Server will update cached set
-            block_at_registration=list(metagraph_clone.block_at_registration),
-            axons=list(metagraph_clone.axons) if self.is_miner else None,
-            emission=list(metagraph_clone.emission),
-            tao_reserve_rao=tao_reserve_rao,
-            alpha_reserve_rao=alpha_reserve_rao,
+            block_at_registration=block_at_registration,
+            axons=axons,
+            emission=emission,
+            tao_per_alpha_price=tao_per_alpha_price,
             tao_to_usd_rate=tao_to_usd_rate,
             stake_weight=stake_weight,
             standard_miner_cutoff_block=cutoff_block

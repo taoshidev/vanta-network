@@ -20,7 +20,7 @@
 
 import re
 import os
-import codecs
+import json
 from os import path
 from io import open
 from setuptools import setup, find_packages
@@ -52,14 +52,9 @@ here = path.abspath(path.dirname(__file__))
 with open(path.join(here, "README.md"), encoding="utf-8") as f:
     long_description = f.read()
 
-# loading version from setup.py
-with codecs.open(
-    os.path.join(here, "template/__init__.py"), encoding="utf-8"
-) as init_file:
-    version_match = re.search(
-        r"^__version__ = ['\"]([^'\"]*)['\"]", init_file.read(), re.M
-    )
-    version_string = version_match.group(1)
+# loading version from meta/meta.json
+with open(path.join(here, "meta/meta.json"), encoding="utf-8") as meta_file:
+    version_string = json.load(meta_file)["subnet_version"]
 
 setup(
     name="taoshi-prop-net",

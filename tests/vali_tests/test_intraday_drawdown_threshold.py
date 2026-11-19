@@ -8,7 +8,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-from bittensor_wallet import Keypair
+from bittensor.sp_core import Keypair
 from flask import Flask
 
 from tests.vali_tests.test_challengeperiod_pro import (  # noqa: F401 - manager is a pytest fixture

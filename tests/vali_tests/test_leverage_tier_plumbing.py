@@ -27,7 +27,7 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from bittensor_wallet import Keypair
+from bittensor.sp_core import Keypair
 from flask import Flask
 
 from entity_management.entity_manager import EntityManager, SubaccountInfo

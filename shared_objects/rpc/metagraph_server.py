@@ -92,8 +92,7 @@ class MetagraphServer(RPCServerBase):
         self._validator_axons = []
         # hotkey -> registered after the standard miner cutoff block, also derived at update time
         self._registered_after_cutoff = {}
-        self._tao_reserve_rao = 0.0
-        self._alpha_reserve_rao = 0.0
+        self._tao_per_alpha_price = 0.0
         self._tao_to_usd_rate = 0.0
 
         # Cached hotkeys_set for O(1) has_hotkey() lookups
@@ -236,13 +235,9 @@ class MetagraphServer(RPCServerBase):
         """hotkey -> is_registered_after_cutoff_rpc for every hotkey of the last full sync"""
         return dict(self._registered_after_cutoff)
 
-    def get_tao_reserve_rao_rpc(self) -> float:
-        """Get TAO reserve in RAO (lock-free read)"""
-        return self._tao_reserve_rao
-
-    def get_alpha_reserve_rao_rpc(self) -> float:
-        """Get ALPHA reserve in RAO (lock-free read)"""
-        return self._alpha_reserve_rao
+    def get_tao_per_alpha_price_rpc(self) -> float:
+        """Get the TAO-per-ALPHA spot price (lock-free read)"""
+        return self._tao_per_alpha_price
 
     def get_tao_to_usd_rate_rpc(self) -> float:
         """Get TAO to USD conversion rate (lock-free read)"""
@@ -250,8 +245,8 @@ class MetagraphServer(RPCServerBase):
 
     def update_metagraph_rpc(self, neurons: list = None, uids: list = None, hotkeys: list = None,
                             block_at_registration: list = None, axons: list = None,
-                            emission: list = None, tao_reserve_rao: float = None,
-                            alpha_reserve_rao: float = None, tao_to_usd_rate: float = None,
+                            emission: list = None, tao_per_alpha_price: float = None,
+                            tao_to_usd_rate: float = None,
                             stake_weight: list = None, standard_miner_cutoff_block: int = None) -> None:
         """
         Atomically update multiple metagraph fields in a single RPC call (lock-free).
@@ -269,8 +264,7 @@ class MetagraphServer(RPCServerBase):
             block_at_registration: List of block numbers (optional)
             axons: List of axons (optional)
             emission: List of emission values (optional)
-            tao_reserve_rao: TAO reserve in RAO (optional)
-            alpha_reserve_rao: ALPHA reserve in RAO (optional)
+            tao_per_alpha_price: TAO-per-ALPHA spot price (optional)
             tao_to_usd_rate: TAO to USD conversion rate (optional)
             stake_weight: Per-UID chain stake weight in tokens (optional; re-derives the validator axons)
             standard_miner_cutoff_block: This network's cutoff block, None while the standard miner rules
@@ -284,8 +278,7 @@ class MetagraphServer(RPCServerBase):
         new_block_at_reg = list(block_at_registration) if block_at_registration is not None else self._block_at_registration
         new_axons = list(axons) if axons is not None else self._axons
         new_emission = list(emission) if emission is not None else self._emission
-        new_tao_reserve = float(tao_reserve_rao) if tao_reserve_rao is not None else self._tao_reserve_rao
-        new_alpha_reserve = float(alpha_reserve_rao) if alpha_reserve_rao is not None else self._alpha_reserve_rao
+        new_tao_per_alpha_price = float(tao_per_alpha_price) if tao_per_alpha_price is not None else self._tao_per_alpha_price
         new_tao_usd_rate = float(tao_to_usd_rate) if tao_to_usd_rate is not None else self._tao_to_usd_rate
         if stake_weight is not None:
             new_stake_weight = [float(s) for s in stake_weight]
@@ -312,11 +305,11 @@ class MetagraphServer(RPCServerBase):
         # Atomic tuple assignment - all fields updated in single bytecode operation!
         # This is thread-safe without locks due to Python's GIL and atomic tuple unpacking
         (self._neurons, self._uids, self._hotkeys, self._block_at_registration,
-         self._axons, self._emission, self._tao_reserve_rao, self._alpha_reserve_rao,
+         self._axons, self._emission, self._tao_per_alpha_price,
          self._tao_to_usd_rate, self._hotkeys_set, self._stake_weight, self._validator_axons,
          self._registered_after_cutoff) = (
             new_neurons, new_uids, new_hotkeys, new_block_at_reg,
-            new_axons, new_emission, new_tao_reserve, new_alpha_reserve,
+            new_axons, new_emission, new_tao_per_alpha_price,
             new_tao_usd_rate, new_hotkeys_set, new_stake_weight, new_validator_axons,
             new_registered_after
         )
@@ -400,14 +393,9 @@ class MetagraphServer(RPCServerBase):
         return self._emission
 
     @property
-    def tao_reserve_rao(self) -> float:
-        """Property accessor for TAO reserve in RAO."""
-        return self._tao_reserve_rao
-
-    @property
-    def alpha_reserve_rao(self) -> float:
-        """Property accessor for ALPHA reserve in RAO."""
-        return self._alpha_reserve_rao
+    def tao_per_alpha_price(self) -> float:
+        """Property accessor for the TAO-per-ALPHA spot price."""
+        return self._tao_per_alpha_price
 
     @property
     def tao_to_usd_rate(self) -> float:
@@ -428,8 +416,7 @@ class MetagraphServer(RPCServerBase):
         - axons: Empty list
         - emission: All set to 1.0
         - stake_weight: All set to 0.0 (no validators), unless given
-        - tao_reserve_rao: 1_000_000_000_000 (1000 TAO)
-        - alpha_reserve_rao: 1_000_000_000_000 (1000 ALPHA)
+        - tao_per_alpha_price: 0.2 (equivalent to the old 1000 TAO / 5000 ALPHA default reserves)
         - tao_to_usd_rate: 100.0
         The standard miner cutoff block is None (rules off) unless given.
 
@@ -447,8 +434,7 @@ class MetagraphServer(RPCServerBase):
             block_at_registration=block_at_registration if block_at_registration is not None else [1000] * n,
             axons=[None] * n,
             emission=[1.0] * n,
-            tao_reserve_rao=1_000_000_000_000,
-            alpha_reserve_rao=1_000_000_000_000,
+            tao_per_alpha_price=0.2,
             tao_to_usd_rate=100.0,
             stake_weight=stake_weight if stake_weight is not None else [0.0] * n,
             standard_miner_cutoff_block=standard_miner_cutoff_block

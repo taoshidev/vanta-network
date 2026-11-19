@@ -28,7 +28,7 @@ import unittest
 import uuid
 from unittest.mock import MagicMock, patch
 
-from bittensor_wallet import Keypair
+from bittensor.sp_core import Keypair
 from flask import Flask
 
 from entity_management.entity_utils import create_subaccount_dashboard

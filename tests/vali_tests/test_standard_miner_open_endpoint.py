@@ -8,7 +8,7 @@ import unittest
 import uuid
 from unittest.mock import MagicMock
 
-from bittensor_wallet import Keypair
+from bittensor.sp_core import Keypair
 from flask import Flask
 
 from time_util.time_util import TimeUtil

@@ -1,6 +1,5 @@
 from copy import deepcopy
 
-from bittensor import Balance
 
 from shared_objects.subtensor_ops.mock_metagraph import MockNeuron, MockAxonInfo, MockMetagraph
 from shared_objects.rpc.server_orchestrator import ServerOrchestrator, ServerMode
@@ -94,7 +93,7 @@ class TestPositions(TestBase):
             account_size=self.DEFAULT_ACCOUNT_SIZE,
         )
 
-        self.default_neuron = MockNeuron(axon_info=MockAxonInfo("0.0.0.0"), stake=Balance(0.0))
+        self.default_neuron = MockNeuron(axon_info=MockAxonInfo("0.0.0.0"), stake=0.0)
 
         self.default_open_position = Position(
             miner_hotkey=self.DEFAULT_MINER_HOTKEY,
@@ -127,18 +126,18 @@ class TestPositions(TestBase):
 
     def test_get_validators(self):
         neuron1 = deepcopy(self.default_neuron)
-        neuron1.stake = Balance(2000.0)
+        neuron1.stake = 2000.0
         neuron1.axon_info = MockAxonInfo(ip="test_ip1")
 
         neuron2 = deepcopy(self.default_neuron)
-        neuron2.stake = Balance(0.0)
+        neuron2.stake = 0.0
         neuron2.axon_info = MockAxonInfo(ip="test_ip2")
 
         neuron3 = deepcopy(self.default_neuron)
-        neuron3.stake = Balance(2000.0)
+        neuron3.stake = 2000.0
 
         neuron4 = deepcopy(self.default_neuron)
-        neuron4.stake = Balance(0.0)
+        neuron4.stake = 0.0
 
         self.neurons = [neuron1, neuron2, neuron3, neuron4]
         self.mock_metagraph = MockMetagraph([self.DEFAULT_MINER_HOTKEY], self.neurons)
@@ -148,25 +147,25 @@ class TestPositions(TestBase):
 
     def test_get_largest_staked_validators(self):
         neuron1 = deepcopy(self.default_neuron)
-        neuron1.stake = Balance(2000.0)
+        neuron1.stake = 2000.0
         neuron1.axon_info = MockAxonInfo(ip="test_ip1")
 
         neuron2 = deepcopy(self.default_neuron)
-        neuron2.stake = Balance(0.0)
+        neuron2.stake = 0.0
         neuron2.axon_info = MockAxonInfo(ip="test_ip2")
 
         neuron3 = deepcopy(self.default_neuron)
-        neuron3.stake = Balance(2000.0)
+        neuron3.stake = 2000.0
 
         neuron4 = deepcopy(self.default_neuron)
-        neuron4.stake = Balance(0.0)
+        neuron4.stake = 0.0
 
         neuron5 = deepcopy(self.default_neuron)
-        neuron5.stake = Balance(3000.0)
+        neuron5.stake = 3000.0
         neuron5.axon_info = MockAxonInfo(ip="test_ip5")
 
         neuron6 = deepcopy(self.default_neuron)
-        neuron6.stake = Balance(4000.0)
+        neuron6.stake = 4000.0
         neuron6.axon_info = MockAxonInfo(ip="test_ip6")
 
         self.neurons = [neuron1, neuron2, neuron3, neuron4, neuron5, neuron6]

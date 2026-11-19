@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from datetime import timezone, datetime, timedelta
 from typing import Dict, Optional, List, Any
 
-import template.protocol
+import vanta_protocol
 from entity_management.entity_utils import is_synthetic_hotkey
 from time_util.time_util import TimeUtil
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
@@ -866,10 +866,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
         return True
 
     def _broadcast_size_locks(self, locks: Dict[str, AccountSizeLock]) -> None:
-        def create_synapse():
-            return template.protocol.AccountSizeLocks(size_locks={hotkey: lock.to_dict() for hotkey, lock in locks.items()})
+        def create_request():
+            return vanta_protocol.BroadcastRequest(payload={hotkey: lock.to_dict() for hotkey, lock in locks.items()})
 
-        self._broadcast_to_validators(synapse_factory=create_synapse, broadcast_name="AccountSizeLocks",
+        self._broadcast_to_validators(request_factory=create_request, broadcast_name="AccountSizeLocks",
                                       context={"hotkeys": list(locks)})
 
     def receive_size_locks_update(self, locks_data: dict, sender_hotkey: str = None) -> bool:
@@ -889,7 +889,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                         account.size_lock = lock
                 self._save_accounts_to_disk()
 
-        return self._handle_incoming_broadcast(synapse_data=locks_data, sender_hotkey=sender_hotkey,
+        return self._handle_incoming_broadcast(request_data=locks_data, sender_hotkey=sender_hotkey,
                                                broadcast_name="AccountSizeLocks", update_callback=adopt)
 
     def _collateral_size(self, account: MinerAccount, timestamp_ms: Optional[int]) -> float:
@@ -957,7 +957,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
 
     def receive_collateral_record_update(self, collateral_record_data: dict, sender_hotkey: str = None) -> bool:
         """
-        Process an incoming CollateralRecord synapse and update accounts.
+        Process an incoming CollateralRecord broadcast and update accounts.
 
         Args:
             collateral_record_data: Dictionary containing hotkey, account_size, update_time_ms, valid_date_timestamp
@@ -971,7 +971,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
             if not self.verify_broadcast_sender(sender_hotkey, "CollateralRecord"):
                 return False
             with self._accounts_lock:
-                # Extract data from the synapse
+                # Extract data from the request
                 hotkey = collateral_record_data.get("hotkey")
                 account_size = collateral_record_data.get("account_size")
                 account_size_theta = collateral_record_data.get("account_size_theta")
@@ -1181,10 +1181,10 @@ class MinerAccountManager(ValidatorBroadcastBase):
         return True
 
     def _broadcast_standard_miner_record(self, hotkey: str, record: StandardMinerAccount) -> None:
-        def create_synapse():
-            return template.protocol.StandardMinerRecord(record={"hotkey": hotkey, "record": record.to_dict()})
+        def create_request():
+            return vanta_protocol.BroadcastRequest(payload={"hotkey": hotkey, "record": record.to_dict()})
 
-        self._broadcast_to_validators(synapse_factory=create_synapse, broadcast_name="StandardMinerRecord",
+        self._broadcast_to_validators(request_factory=create_request, broadcast_name="StandardMinerRecord",
                                       context={"hotkey": hotkey})
 
     def receive_standard_miner_record_update(self, record_data: dict, sender_hotkey: str = None) -> bool:
@@ -1207,7 +1207,7 @@ class MinerAccountManager(ValidatorBroadcastBase):
                     account.miner_bucket = MinerBucket.SUBACCOUNT_CHALLENGE
                 self._save_accounts_to_disk()
 
-        return self._handle_incoming_broadcast(synapse_data=record_data, sender_hotkey=sender_hotkey,
+        return self._handle_incoming_broadcast(request_data=record_data, sender_hotkey=sender_hotkey,
                                                broadcast_name="StandardMinerRecord", update_callback=adopt)
 
     def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:

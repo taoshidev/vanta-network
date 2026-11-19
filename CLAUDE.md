@@ -27,9 +27,6 @@ python neurons/miner.py --netuid 8 --wallet.name <wallet> --wallet.hotkey <miner
 # Validator (development mode)
 python neurons/validator.py --netuid 8 --wallet.name <wallet> --wallet.hotkey <default>
 
-# Signal reception server for miners
-./run_receive_signals_server.sh
-
 # Utility scripts in runnable/
 python runnable/check_validator_weights.py
 python runnable/daily_portfolio_returns.py
@@ -94,8 +91,7 @@ npm run preview  # Preview production build
   - `websocket_server.py` / `websocket_client.py` - Real-time WebSocket communication
   - `miner_api_manager.py`, `entity_miner_api_manager.py`, `validator_api_manager.py` - API key and authentication management
   - `nonce_manager.py` - Request nonce handling
-- **`mining/`** - Signal processing pipeline
-  - `received_signals/` - Incoming miner signals
+- **`mining/`** - Signal processing pipeline (signals arrive via the REST API, not files)
   - `processed_signals/` - Validated and processed signals
 - **`validation/`** - Validator state persistence
   - `miners/` - Per-miner performance and position data

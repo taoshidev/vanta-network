@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 
 from typing import Optional, Dict, List, Any
 
-import template.protocol
+import vanta_protocol
 from vali_objects.vali_config import TradePairCategory, ValiConfig, RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.enums.miner_bucket_enum import MinerBucket
@@ -193,43 +193,44 @@ class MinerAccountServer(RPCServerBase):
         """Reload account sizes from disk."""
         self._manager.re_init_account_sizes()
 
-    def receive_collateral_record_rpc(self, synapse: template.protocol.CollateralRecord) -> template.protocol.CollateralRecord:
+    def receive_collateral_record_rpc(
+        self, request: vanta_protocol.BroadcastRequest, caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
         """
-        Receive collateral record update synapse (for axon attachment).
+        Receive a CollateralRecord broadcast from another validator.
 
         This method is called when a CollateralRecord broadcast is received from another validator.
 
         Args:
-            synapse: CollateralRecord synapse from the sending validator
+            request: BroadcastRequest from the sending validator
+            caller_hotkey: The sending validator's hotkey, verified by the auth layer
 
         Returns:
-            Updated synapse with successfully_processed and error_message fields
+            BroadcastResponse with successfully_processed and error_message fields
         """
         try:
-            sender_hotkey = synapse.dendrite.hotkey
-            logger.info(f"Received collateral record update from validator hotkey [{sender_hotkey}].")
+            logger.info(f"Received collateral record update from validator hotkey [{caller_hotkey}].")
 
-            # Extract collateral record data from synapse
-            collateral_record_data = synapse.collateral_record
+            # Extract collateral record data from the request
+            collateral_record_data = request.payload
 
             # Process the update through the manager
-            success = self._manager.receive_collateral_record_update(collateral_record_data, sender_hotkey)
+            success = self._manager.receive_collateral_record_update(collateral_record_data, caller_hotkey)
 
             if success:
-                synapse.successfully_processed = True
-                synapse.error_message = ""
-                logger.info(f"Successfully processed CollateralRecord synapse from {sender_hotkey}")
+                logger.info(f"Successfully processed CollateralRecord request from {caller_hotkey}")
+                return vanta_protocol.BroadcastResponse(successfully_processed=True, error_message="")
             else:
-                synapse.successfully_processed = False
-                synapse.error_message = "Failed to process collateral record update"
-                logger.warning(f"Failed to process CollateralRecord synapse from {sender_hotkey}")
+                logger.warning(f"Failed to process CollateralRecord request from {caller_hotkey}")
+                return vanta_protocol.BroadcastResponse(
+                    successfully_processed=False, error_message="Failed to process collateral record update"
+                )
 
         except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing collateral record: {str(e)}"
             logger.error(f"Exception in receive_collateral_record: {e}")
-
-        return synapse
+            return vanta_protocol.BroadcastResponse(
+                successfully_processed=False, error_message=f"Error processing collateral record: {str(e)}"
+            )
 
     # ==================== MinerAccount Cache Methods ====================
 
@@ -312,20 +313,21 @@ class MinerAccountServer(RPCServerBase):
         return self._manager.reopen_standard_account(hotkey, reopened_at_ms)
 
     def receive_standard_miner_record_rpc(
-        self, synapse: template.protocol.StandardMinerRecord
-    ) -> template.protocol.StandardMinerRecord:
-        """Receive a StandardMinerRecord synapse (RPC method for the axon handler)."""
+        self, request: vanta_protocol.BroadcastRequest, caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
+        """Receive a StandardMinerRecord broadcast from another validator."""
         try:
-            sender_hotkey = synapse.dendrite.hotkey
-            logger.info(f"Received standard miner record from validator hotkey [{sender_hotkey}]")
-            success = self._manager.receive_standard_miner_record_update(synapse.record, sender_hotkey)
-            synapse.successfully_processed = success
-            synapse.error_message = "" if success else "Failed to process the standard miner record"
+            logger.info(f"Received standard miner record from validator hotkey [{caller_hotkey}]")
+            success = self._manager.receive_standard_miner_record_update(request.payload, caller_hotkey)
+            return vanta_protocol.BroadcastResponse(
+                successfully_processed=success,
+                error_message="" if success else "Failed to process the standard miner record",
+            )
         except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing the standard miner record: {e}"
             logger.error(f"Exception in receive_standard_miner_record: {e}")
-        return synapse
+            return vanta_protocol.BroadcastResponse(
+                successfully_processed=False, error_message=f"Error processing the standard miner record: {e}"
+            )
 
     def get_standard_account(self, hotkey: str) -> Optional[StandardMinerAccount]:
         """The record of the account a standard miner opened; None for every other hotkey."""
@@ -343,19 +345,22 @@ class MinerAccountServer(RPCServerBase):
         """Mark a locked account closed by its miner's withdrawal."""
         return self._manager.close_locked_account(hotkey, closed_at_ms)
 
-    def receive_size_locks_rpc(self, synapse: template.protocol.AccountSizeLocks) -> template.protocol.AccountSizeLocks:
-        """Receive an AccountSizeLocks synapse (RPC method for the axon handler)."""
+    def receive_size_locks_rpc(
+        self, request: vanta_protocol.BroadcastRequest, caller_hotkey: str
+    ) -> vanta_protocol.BroadcastResponse:
+        """Receive an AccountSizeLocks broadcast from another validator."""
         try:
-            sender_hotkey = synapse.dendrite.hotkey
-            logger.info(f"Received account size locks from validator hotkey [{sender_hotkey}]")
-            success = self._manager.receive_size_locks_update(synapse.size_locks, sender_hotkey)
-            synapse.successfully_processed = success
-            synapse.error_message = "" if success else "Failed to process the account size locks"
+            logger.info(f"Received account size locks from validator hotkey [{caller_hotkey}]")
+            success = self._manager.receive_size_locks_update(request.payload, caller_hotkey)
+            return vanta_protocol.BroadcastResponse(
+                successfully_processed=success,
+                error_message="" if success else "Failed to process the account size locks",
+            )
         except Exception as e:
-            synapse.successfully_processed = False
-            synapse.error_message = f"Error processing the account size locks: {e}"
             logger.error(f"Exception in receive_size_locks: {e}")
-        return synapse
+            return vanta_protocol.BroadcastResponse(
+                successfully_processed=False, error_message=f"Error processing the account size locks: {e}"
+            )
 
     def get_collateral_account_size(self, hotkey: str, timestamp_ms: Optional[int] = None) -> Optional[float]:
         """The size the collateral alone gives, lock or not; None for a hotkey without an account."""

@@ -14,7 +14,7 @@ import threading
 from typing import Dict
 
 
-import template.protocol
+import vanta_protocol
 from vali_objects.vali_config import RPCConnectionMode
 from vali_objects.enums.miner_asset_class_enum import MinerAssetClass
 from vali_objects.utils.vali_bkp_utils import ValiBkpUtils
@@ -155,21 +155,21 @@ class AssetSelectionManager(ValidatorBroadcastBase):
 
     def broadcast_asset_selection_to_validators(self, hotkey: str, asset_selection: MinerAssetClass):
         """
-        Broadcast AssetSelection synapse to other validators using shared broadcast base.
+        Broadcast an AssetSelection request to other validators using shared broadcast base.
 
         Args:
             hotkey: The miner's hotkey
             asset_selection: The MinerAssetClass enum value
         """
-        def create_synapse():
+        def create_request():
             asset_selection_data = {
                 "hotkey": hotkey,
                 "asset_selection": asset_selection.value if hasattr(asset_selection, 'value') else str(asset_selection)
             }
-            return template.protocol.AssetSelection(asset_selection=asset_selection_data)
+            return vanta_protocol.BroadcastRequest(payload=asset_selection_data)
 
         self._broadcast_to_validators(
-            synapse_factory=create_synapse,
+            request_factory=create_request,
             broadcast_name="AssetSelection",
             context={"hotkey": hotkey}
         )
@@ -377,7 +377,7 @@ class AssetSelectionManager(ValidatorBroadcastBase):
                 return False
 
             with self.asset_selection_lock:
-                # Extract data from the synapse
+                # Extract data from the broadcast
                 hotkey = asset_selection_data.get("hotkey")
                 asset_selection = asset_selection_data.get("asset_selection")
                 logger.info(f"[ASSET_MGR] Processing asset selection for miner {hotkey}")

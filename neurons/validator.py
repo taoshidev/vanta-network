@@ -13,15 +13,20 @@ from shared_objects.rpc.server_orchestrator import ServerOrchestrator, NeuronCon
 from entity_management.entity_utils import is_synthetic_hotkey
 
 
-import template
 import traceback
 import time
+import uuid
 import bittensor as bt
 
 from typing import Tuple
 from setproctitle import setproctitle
 from neurons.validator_base import ValidatorBase
-from template.protocol import SendSignal
+from vanta_protocol import (
+    GetPositionsRequest,
+    GetPositionsResponse,
+    SendSignalRequest,
+    SendSignalResponse,
+)
 from vali_objects.enums.execution_type_enum import ExecutionType
 from vali_objects.data_sync.auto_sync import PositionSyncer
 from vali_objects.data_sync.order_sync_state import OrderSyncState
@@ -172,7 +177,8 @@ class Validator(ValidatorBase):
         # Wallet holds cryptographic information, ensuring secure transactions and communication.
         logger.info("Initializing validator wallet...")
         wallet_start_time = time.time()
-        self.wallet = bt.Wallet(config=self.config)
+        self.wallet = bt.Wallet(name=self.config.wallet.name, hotkey=self.config.wallet.hotkey,
+                                 path=self.config.wallet.path)
         wallet_elapsed_s = time.time() - wallet_start_time
         logger.info(f"Validator wallet initialized in {wallet_elapsed_s:.2f}s")
 
@@ -255,7 +261,9 @@ class Validator(ValidatorBase):
         if self.orders_app:
             # subtensor_ops lives in core; build our own subtensor for the one-shot axon.serve, and
             # leave subtensor_ops_manager None so blacklist_fn uses the metagraph-fed hotkey cache.
-            self.subtensor = bt.Subtensor(config=self.config)
+            self.subtensor = bt.Subtensor(
+                network=self.config.subtensor.chain_endpoint or self.config.subtensor.network
+            )
             self.subtensor_ops_manager = None
             self._init_blacklist_hotkey_cache()
         else:
@@ -475,9 +483,9 @@ class Validator(ValidatorBase):
                 f"Hotkey: {self.wallet.hotkey.ss58_address}",
                 level="warning"
             )
-        if self.axon is not None:
-            logger.warning("Stopping axon...")
-            self.axon.stop()
+        # bt.Axon is gone (replaced by the signed-request HTTP server in shared_objects/http_server/,
+        # already-done prior migration) - self.axon was never set, this was dead/broken code left
+        # over from the old axon lifecycle.
         # SubtensorOpsServer and all RPC servers shut down automatically via ShutdownCoordinator:
         if self.api_thread:
             logger.warning("Stopping API manager...")
@@ -533,10 +541,15 @@ class Validator(ValidatorBase):
 
         self.check_shutdown()
 
-    def should_reject_synapse(self, sender_hotkey, synapse: template.protocol.SendSignal | template.protocol.GetPositions, method: SynapseMethod) -> bool:
+    def should_reject_synapse(self, sender_hotkey, response: SendSignalResponse | GetPositionsResponse, method: SynapseMethod, version: int = 0) -> bool:
+        """Mutates `response` (the outgoing *Response being built by the caller) in place and
+        reports whether the request should be rejected. `version` is only meaningful for
+        SynapseMethod.POSITION_INSPECTOR, and is the caller's GetPositionsRequest.version
+        (read off the request by the caller, since GetPositionsRequest/SendSignalRequest are
+        no longer the same mutable object as the response)."""
         if is_shutdown():
-            synapse.successfully_processed = False
-            synapse.error_message = "Validator is restarting due to update. Please try again later."
+            response.successfully_processed = False
+            response.error_message = "Validator is restarting due to update. Please try again later."
             return True
 
         if method == SynapseMethod.POSITION_INSPECTOR:
@@ -545,20 +558,20 @@ class Validator(ValidatorBase):
             allowed, wait_time = self.order_rate_limiter.is_allowed(sender_hotkey)
         else:
             msg = "Received synapse does not match one of expected methods for: receive_signal or get_positions"
-            synapse.successfully_processed = False
-            synapse.error_message = msg
+            response.successfully_processed = False
+            response.error_message = msg
             return True
 
         if not allowed:
             msg = f"Rate limited. Please wait {wait_time} seconds before sending another signal. {method.value}"
-            synapse.successfully_processed = False
-            synapse.error_message = msg
+            response.successfully_processed = False
+            response.error_message = msg
             return True
 
         if method == SynapseMethod.POSITION_INSPECTOR:
-            if synapse.version == 0:
-                synapse.successfully_processed = False
-                synapse.error_message = "Please use the latest miner script that makes PI opt-in with the flag --run-position-inspector"
+            if version == 0:
+                response.successfully_processed = False
+                response.error_message = "Please use the latest miner script that makes PI opt-in with the flag --run-position-inspector"
                 return True
             return False
 
@@ -591,46 +604,51 @@ class Validator(ValidatorBase):
         threading.Thread(target=_refresh_loop, daemon=True, name="blacklist-hotkey-cache").start()
 
     @timeme
-    def blacklist_fn(self, synapse, metagraph) -> Tuple[bool, str]:
-        """Blacklist unregistered hotkeys via a fast local set lookup — subtensor_ops_manager's
-        in-process cache in the monolith/core, or the metagraph-fed cache in the orders app."""
-        miner_hotkey = synapse.dendrite.hotkey
+    def is_caller_authorized(self, caller_hotkey: str) -> None:
+        """Overrides ValidatorBase.is_caller_authorized with a fast local set lookup —
+        subtensor_ops_manager's in-process cache in the monolith/core, or the metagraph-fed
+        cache in the orders app — instead of the base implementation's per-request RPC call
+        to MetagraphClient.has_hotkey(). Every signed-request route (shared_objects/http_server)
+        pays this check once, so avoiding an RPC round-trip here matters under concurrent
+        order load. Raises shared_objects.http_auth.Forbidden if unregistered."""
         if self.subtensor_ops_manager is not None:
-            is_registered = self.subtensor_ops_manager.is_hotkey_registered_cached(miner_hotkey)
+            is_registered = self.subtensor_ops_manager.is_hotkey_registered_cached(caller_hotkey)
         else:
             with self._blacklist_cache_lock:
-                is_registered = miner_hotkey in self._blacklist_hotkeys
+                is_registered = caller_hotkey in self._blacklist_hotkeys
 
         if not is_registered:
-            logger.debug(
-                f"Blacklisting unrecognized hotkey {miner_hotkey}"
-            )
-            return True, miner_hotkey
+            logger.debug(f"Rejecting unregistered hotkey {caller_hotkey}")
+            from shared_objects.http_auth import Forbidden
+            raise Forbidden(f"hotkey {caller_hotkey} is not registered on this subnet's metagraph")
 
-        logger.debug(
-            f"Not Blacklisting recognized hotkey {miner_hotkey}"
-        )
-        return False, miner_hotkey
+        logger.debug(f"Not rejecting registered hotkey {caller_hotkey}")
 
 
     # This is the core validator function to receive a signal
-    def _receive_signal_sync(self, synapse: template.protocol.SendSignal,
-                       ) -> template.protocol.SendSignal:
+    def _receive_signal_sync(self, request: SendSignalRequest, caller_hotkey: str) -> SendSignalResponse:
         # pull miner hotkey to reference in various activities
         now_ms = TimeUtil.now_in_millis()
         order = None
-        miner_hotkey = synapse.dendrite.hotkey
-        subaccount_id = synapse.subaccount_id
-        synapse.validator_hotkey = self.wallet.hotkey.ss58_address
-        miner_repo_version = synapse.repo_version
-        signal_dict = synapse.signal
-        order_uuid = SendSignal.parse_miner_uuid(synapse)
+        miner_hotkey = caller_hotkey
+        subaccount_id = request.subaccount_id
+        miner_repo_version = request.repo_version
+        signal_dict = request.signal
+        response = SendSignalResponse(validator_hotkey=self.wallet.hotkey.ss58_address)
+
+        # Inlined from the old template.protocol.SendSignal.parse_miner_uuid (that class is gone).
+        order_uuid = request.miner_order_uuid
+        assert isinstance(order_uuid, str), f"excepted string miner uuid but got {order_uuid}"
+        if not order_uuid:
+            logger.warning(f'miner_order_uuid is empty for miner_hotkey [{miner_hotkey}] miner_repo_version '
+                               f'[{miner_repo_version}]. Generating a new one.')
+            order_uuid = str(uuid.uuid4())
 
         if not miner_hotkey:
-            synapse.successfully_processed = False
-            synapse.error_message = "Missing miner hotkey"
-            synapse.should_retry = False
-            return synapse
+            response.successfully_processed = False
+            response.error_message = "Missing miner hotkey"
+            response.should_retry = False
+            return response
 
         # For entity miners: construct synthetic hotkey if subaccount_id provided
         if subaccount_id is not None:
@@ -639,25 +657,25 @@ class Validator(ValidatorBase):
 
         logger.info(f"received signal [{order_uuid}] [{signal_dict}] from miner_hotkey [{miner_hotkey}] using repo version [{miner_repo_version}].")
 
-        if self.should_reject_synapse(miner_hotkey, synapse, SynapseMethod.SIGNAL):
-            logger.info(f"Order rejected for {miner_hotkey}: {synapse.error_message}")
-            return synapse
+        if self.should_reject_synapse(miner_hotkey, response, SynapseMethod.SIGNAL):
+            logger.info(f"Order rejected for {miner_hotkey}: {response.error_message}")
+            return response
 
         # Advisory fast-path reject; the authoritative gate is begin_order() below.
         if self.order_sync.is_sync_waiting():
-            synapse.successfully_processed = False
-            synapse.should_retry = True
-            synapse.error_message = "Validator is syncing positions. Please try again shortly."
-            logger.info(f"Rejected order from {miner_hotkey}: {synapse.error_message}")
-            return synapse
+            response.successfully_processed = False
+            response.should_retry = True
+            response.error_message = "Validator is syncing positions. Please try again shortly."
+            logger.info(f"Rejected order from {miner_hotkey}: {response.error_message}")
+            return response
 
         try:
             signal = Signal.model_validate(signal_dict)
         except Exception as e:
-            synapse.successfully_processed = False
-            synapse.should_retry = False
-            synapse.error_message = f"Invalid signal payload: {e}"
-            return synapse
+            response.successfully_processed = False
+            response.should_retry = False
+            response.error_message = f"Invalid signal payload: {e}"
+            return response
 
         # exists() is an advisory local pre-filter; check_and_add below is the authoritative claim
         # (it also catches a lost-ack retry across a restart, when the local cache is cold).
@@ -666,11 +684,11 @@ class Validator(ValidatorBase):
             and signal.execution_type not in (ExecutionType.LIMIT_CANCEL, ExecutionType.LIMIT_EDIT, ExecutionType.FLAT_ALL)
         )
         if should_dedup and self.uuid_tracker.exists(order_uuid):
-            synapse.successfully_processed = False
-            synapse.should_retry = False
-            synapse.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
-            logger.error(synapse.error_message)
-            return synapse
+            response.successfully_processed = False
+            response.should_retry = False
+            response.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
+            logger.error(response.error_message)
+            return response
 
         ok, error_msg, resolved_tp = self.order_processor.validate(
             hotkey=miner_hotkey,
@@ -679,10 +697,10 @@ class Validator(ValidatorBase):
             order_type=signal.order_type,
         )
         if not ok:
-            synapse.successfully_processed = False
-            synapse.should_retry = False
-            synapse.error_message = error_msg
-            return synapse
+            response.successfully_processed = False
+            response.should_retry = False
+            response.error_message = error_msg
+            return response
 
         if resolved_tp is not None and resolved_tp != signal.trade_pair:
             signal = signal.model_copy(update={"trade_pair": resolved_tp})
@@ -692,11 +710,11 @@ class Validator(ValidatorBase):
         # the in-memory OrderSyncState never rejects (rejected=False) and relies on that check.
         with self.order_sync.begin_order() as _admission:
             if getattr(_admission, 'rejected', False):
-                synapse.successfully_processed = False
-                synapse.should_retry = True
-                synapse.error_message = "Validator is syncing positions. Please try again shortly."
+                response.successfully_processed = False
+                response.should_retry = True
+                response.error_message = "Validator is syncing positions. Please try again shortly."
                 logger.info(f"Rejected order from {miner_hotkey}: sync in progress")
-                return synapse
+                return response
 
             # error message to send back to miners in case of a problem so they can fix and resend
             error_message = ""
@@ -704,11 +722,11 @@ class Validator(ValidatorBase):
             # Claim the uuid BEFORE applying so a duplicate can't double-apply; released below if the
             # apply fails (so a transient-error retry can re-claim) or the result is non-trackable.
             if should_dedup and not self.uuid_tracker.check_and_add(order_uuid):
-                synapse.successfully_processed = False
-                synapse.should_retry = False
-                synapse.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
-                logger.error(synapse.error_message)
-                return synapse
+                response.successfully_processed = False
+                response.should_retry = False
+                response.error_message = f"Order with uuid [{order_uuid}] has already been processed. Please try again with a new order."
+                logger.error(response.error_message)
+                return response
             claimed = should_dedup
             try:
                 result = self.order_processor.process_vanta_signal(
@@ -718,8 +736,8 @@ class Validator(ValidatorBase):
                     now_ms=now_ms,
                 )
 
-                # Set synapse response (centralized - single line instead of 4)
-                synapse.order_json = result.get_response_json()
+                # Set response's order_json (centralized - single line instead of 4)
+                response.order_json = result.get_response_json()
 
                 # The claim was taken before we knew the result; drop it if this order isn't tracked,
                 # else promote it to permanent (a provisional claim expires after
@@ -745,21 +763,21 @@ class Validator(ValidatorBase):
                 logger.error(f"Error processing signal {miner_hotkey} {order_uuid} {e}")
 
             finally:
-                synapse.error_message = error_message
+                response.error_message = error_message
                 if error_message == "":
-                    synapse.successfully_processed = True
+                    response.successfully_processed = True
                 else:
                     logger.error(error_message)
-                    synapse.successfully_processed = False
+                    response.successfully_processed = False
                     # Transient infra failures (an RPC state server — incl. MarketOrderServer
                     # :50027 — bouncing during a deploy) must be RETRIED by the placer, not
                     # treated as a permanent rejection that loses the order. Business-logic
                     # rejections (SignalException etc.) stay should_retry=False.
-                    synapse.should_retry = ErrorUtils.is_transient_rpc_error(order_exc)
+                    response.should_retry = ErrorUtils.is_transient_rpc_error(order_exc)
 
                 # TODO Review overlap with serving in market order manager
                 # Best-effort: the entity server lives in CORE — during a core restart this call
-                # raising inside `finally` would REPLACE the fully-crafted success synapse with an
+                # raising inside `finally` would REPLACE the fully-crafted success response with an
                 # axon error, and the still-claimed uuid would turn the miner's retry into a hard
                 # duplicate rejection for an order that is live on their account.
                 if is_synthetic_hotkey(miner_hotkey):
@@ -771,43 +789,42 @@ class Validator(ValidatorBase):
                         )
 
                 processing_time_ms = TimeUtil.now_in_millis() - now_ms
-                logger.info(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {synapse.error_message}. "
+                logger.info(f"Sending ack back to miner [{miner_hotkey}]. Synapse Message: {response.error_message}. "
                                    f"Process time {processing_time_ms}ms. order {order}")
 
                 # Context manager auto-decrements counter and notifies waiters on exit
 
-        return synapse
+        return response
 
-    def _get_positions(self, synapse: template.protocol.GetPositions,
-                      ) -> template.protocol.GetPositions:
-        miner_hotkey = synapse.dendrite.hotkey
-        if self.should_reject_synapse(miner_hotkey, synapse, SynapseMethod.POSITION_INSPECTOR):
-            return synapse
+    def _get_positions(self, request: GetPositionsRequest, caller_hotkey: str) -> GetPositionsResponse:
+        miner_hotkey = caller_hotkey
+        response = GetPositionsResponse()
+        if self.should_reject_synapse(miner_hotkey, response, SynapseMethod.POSITION_INSPECTOR, version=request.version):
+            return response
         t0 = time.time()
         error_message = ""
         n_positions_sent = 0
-        hotkey = None
+        hotkey = miner_hotkey
         try:
-            hotkey = synapse.dendrite.hotkey
             # Return the last n positions using PositionManagerClient
             positions = self.position_manager_client.get_positions_for_one_hotkey(hotkey, only_open_positions=True)
-            synapse.positions = [position.to_dict() for position in positions]
-            n_positions_sent = len(synapse.positions)
+            response.positions = [position.to_dict() for position in positions]
+            n_positions_sent = len(response.positions)
         except Exception as e:
             error_message = f"Error in GetPositions for [{miner_hotkey}] with error [{e}]. Perhaps the position was being written to disk at the same time."
             logger.error(traceback.format_exc())
 
         if error_message == "":
-            synapse.successfully_processed = True
+            response.successfully_processed = True
         else:
             logger.error(error_message)
-            synapse.successfully_processed = False
-        synapse.error_message = error_message
+            response.successfully_processed = False
+        response.error_message = error_message
         msg = f"Sending {n_positions_sent} positions back to miner: {hotkey} in {round(time.time() - t0, 3)} seconds."
-        if synapse.error_message:
-            msg += f" Error: {synapse.error_message}"
+        if response.error_message:
+            msg += f" Error: {response.error_message}"
         logger.info(msg)
-        return synapse
+        return response
 
 # This is the main function, which runs the miner.
 if __name__ == "__main__":
