@@ -159,7 +159,9 @@ class TestTheBucketsListed(TestBase):
 
 class TestAWeekOfWeights(TestBase):
     """_compute_miner_weights day by day through a week: a standard miner owed 700 for the week that closed is paid
-    700 over the seven days, the legacy miner takes everything else, and nothing is paid twice."""
+    700 over the seven days, the legacy miner takes everything else, and nothing is paid twice. The standard
+    miner's weeks come from its payout table (EntityManager.payout_rows_for_payee), the legacy miner's from
+    generate_payout_settlements."""
 
     E_DAILY = 10_000.0
     WEEK = TimeUtil.ms_at_start_of_week(1_700_000_000_000)
@@ -180,7 +182,13 @@ class TestAWeekOfWeights(TestBase):
         c._debt_ledger_client.get_all_debt_ledgers.return_value = {
             hotkey: DebtLedger(hotkey, [DebtCheckpoint(timestamp_ms=self.WEEK, challenge_period_status=bucket.value)])
             for hotkey, bucket in ((STANDARD, MinerBucket.SUBACCOUNT_FUNDED), (LEGACY, MinerBucket.MAINCOMP))}
-        c._debt_ledger_client.get_all_settled_segments.return_value = {}
+        c._entity_client = MagicMock()
+        c._entity_client.payout_rows_for_payee.side_effect = lambda hotkey, through_ms: {
+            'rows': [{'start_ms': settlement.start_ms, 'payout': settlement.payout_penalized}
+                     for settlement in self.settlements.get(hotkey, []) if settlement.end_ms <= through_ms],
+            'first_earning_week_ms': min((settlement.start_ms for settlement in self.settlements.get(hotkey, [])),
+                                         default=None),
+            'collateral_factor_by_week': {}, 'missing': []}
         c._miner_account_client.get_standard_accounts.return_value = {STANDARD: StandardMinerAccount(
             opened_at_ms=self.WEEK, opening_leverage_tier=2, asset_class="crypto", account_size=50_000.0,
             locked_theta=70.0, opening_price_usd=7.857)}
@@ -222,7 +230,8 @@ class TestAWeekOfWeights(TestBase):
         self.E_DAILY = e_daily or self.E_DAILY
         now_ms = self.WEEK + day * DAY_MS + 60 * 60 * 1000
         with patch.object(TimeUtil, "now_in_millis", return_value=now_ms), \
-                patch.object(DebtBasedScoring, "generate_payout_settlements", return_value=self.settlements), \
+                patch.object(DebtBasedScoring, "generate_payout_settlements",
+                             side_effect=lambda hotkeys, **_: {hotkey: self.settlements[hotkey] for hotkey in hotkeys}), \
                 patch.object(DebtBasedScoring, "_estimate_alpha_emissions_until_target",
                              side_effect=lambda metagraph_client, days_until_target, **kwargs: self.E_DAILY * days_until_target), \
                 patch.object(DebtBasedScoring, "_convert_alpha_to_usd", side_effect=lambda alpha_amount, **kwargs: alpha_amount), \

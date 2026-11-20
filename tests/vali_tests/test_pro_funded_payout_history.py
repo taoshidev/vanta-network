@@ -788,3 +788,47 @@ def test_wiping_a_debt_ledger_leaves_the_owed_weeks_and_the_start_alone(scenario
     by_week = lambda table: {r['start_ms']: r['payout'] for r in table['rows']}
     assert by_week(after) == by_week(before) == {W(0): 200.0, W(1): 500.0, W(2): 100.0}
     assert after['first_earning_week_ms'] == before['first_earning_week_ms'] == W(0)
+
+
+# ── A standard miner: the same segments, paid to its own hotkey ───────────────
+
+@pytest.fixture
+def standard_miner(scenario):
+    """The scenario's hotkey as a standard miner: a real hotkey with a 100K account inside a 500K pro account,
+    its Grow multiplier 1.0, paid to itself rather than an entity."""
+    from vali_objects.miner_account.standard_miner import StandardMinerAccount
+    s = scenario
+    record = StandardMinerAccount(opened_at_ms=MON - WEEK, opening_leverage_tier=2, asset_class="crypto",
+                                  account_size=100_000.0, locked_theta=70.0, opening_price_usd=7.857,
+                                  pro_account_size=500_000.0, trading_account_size=500_000.0, payout_scale=1.0)
+    s.cpm._miner_account_client.get_standard_account.return_value = record
+    s.cpm._entity_client.get_payout_scale.side_effect = AssertionError("a standard miner's scale is on its record")
+    s.em.get_entity_data = lambda _hk: None
+    with patch("vali_objects.challenge_period.challengeperiod_manager.is_synthetic_hotkey", return_value=False):
+        yield s
+
+
+def test_a_standard_miner_is_paid_per_segment_like_a_subaccount(standard_miner):
+    """Its Grow segment is pinned at the scale on its record, PRO_FUNDED starts from zero, a soft breach withholds
+    its week until a clean one: the payout table the weights read holds the same weeks as a subaccount's."""
+    from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
+    s = standard_miner
+    pro_funded_from_week_1(s)
+    s.trade(W(1, 1), W(1, 2), 500.0)
+    s.trade(W(2, 1), W(2, 2), 100.0)
+    s.run_until(W(3, 0.5), breach_days=(W(1, 3),))
+
+    grow = s.segment(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MON)
+    assert grow.payout_scale == pytest.approx(SCALE) and grow.payout_record['payout_usd'] == pytest.approx(200.0)
+    table = s.em.payout_rows_for_payee(HK, W(3))
+    assert [(r['start_ms'], r['payout']) for r in table['rows']] == [(W(0), 200.0), (W(1), 0.0), (W(2), 600.0)]
+    assert table['collateral_factor_by_week'] == {}
+
+    # E28 / E34 for a standard miner: what it is owed is the table, and a raised closed week reaches the overflow
+    emissions = [SimpleNamespace(chunk_start_ms=W(0), chunk_emissions_usd=0.0),
+                 SimpleNamespace(chunk_start_ms=W(1, 1), chunk_emissions_usd=200.0)]
+    before = DebtBasedScoring.payout_table_target(table, emissions, W(3))
+    assert (before['owed_current_week'], before['overflow'], before['target']) == (600.0, 0.0, 600.0)
+    assert s.cpm.admin_set_payout_override(HK, W(1), W(1), 250.0, now_ms=W(3, 0.5))[0]
+    after = DebtBasedScoring.payout_table_target(s.em.payout_rows_for_payee(HK, W(3)), emissions, W(3))
+    assert (after['overflow'], after['target']) == (250.0, 850.0)
