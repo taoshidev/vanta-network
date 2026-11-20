@@ -22,7 +22,7 @@ def get_subtensor_lock():
         
         with get_subtensor_lock():
             # Perform subtensor operation
-            metagraph_clone = bt.metagraph.fetch(subtensor, netuid)
+            metagraph_clone = subtensor.subnets.metagraph(netuid)
             # or
             subtensor.execute(bt.SetWeights(...), wallet)
     """
