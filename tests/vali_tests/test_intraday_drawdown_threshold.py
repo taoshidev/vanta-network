@@ -30,7 +30,6 @@ from vali_objects.vali_config import ValiConfig
 SUBACCOUNT_BUCKETS = (
     MinerBucket.SUBACCOUNT_CHALLENGE,
     MinerBucket.SUBACCOUNT_FUNDED,
-    MinerBucket.PRO_CHALLENGE_TRANSITION,
     MinerBucket.PRO_CHALLENGE_DIRECT,
     MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
     MinerBucket.PRO_FUNDED,
@@ -110,11 +109,10 @@ def test_the_chosen_threshold_carries_through_every_promotion_until_pro_funded(m
                              drawdown_criteria=DrawdownCriteria.STATIC, intraday_drawdown_threshold=0.03)
     pro_default = ValiConfig.PRO_FUNDED_INTRADAY_DRAWDOWN_THRESHOLD
     for offset, (bucket, expected) in enumerate(((MinerBucket.SUBACCOUNT_FUNDED, 0.03),
-                                                 (MinerBucket.PRO_CHALLENGE_TRANSITION, 0.03),
                                                  (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 0.03),
                                                  (MinerBucket.PRO_FUNDED, pro_default),
                                                  (MinerBucket.ELIMINATED, pro_default))):
-        manager.set_miner_bucket(HOTKEY, bucket, NOW_MS - (3 - offset) * DAILY_MS)
+        manager.set_miner_bucket(HOTKEY, bucket, NOW_MS - (2 - offset) * DAILY_MS)
         assert manager.miner_states[HOTKEY].current_bucket == bucket
         assert manager.miner_states[HOTKEY].intraday_drawdown_threshold == expected
 

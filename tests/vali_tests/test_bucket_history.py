@@ -151,6 +151,19 @@ def test_segments_follow_the_bucket_entries_and_account_switches():
     assert [r.account_start_ms for r in runs] == [T0, T1, T3, T3]  # PRO_FUNDED keeps the pro account
 
 
+def test_a_stored_transition_reads_as_part_of_the_funded_segment():
+    """The retired PRO_CHALLENGE_TRANSITION parses as SUBACCOUNT_FUNDED, in entries and in segment summaries."""
+    runs = segment_runs([
+        BucketEntry.from_dict({"bucket": "SUBACCOUNT_FUNDED", "start_time_ms": T1}),
+        BucketEntry.from_dict({"bucket": "PRO_CHALLENGE_TRANSITION", "start_time_ms": T2}),
+        BucketEntry(MinerBucket.PRO_CHALLENGE_FROM_STANDARD, T2 + 1),
+    ])
+    assert [(r.bucket, r.start_ms, r.end_ms) for r in runs] == [
+        ("SUBACCOUNT_FUNDED", T1, T2 + 1), ("PRO_CHALLENGE_FROM_STANDARD", T2 + 1, None)]
+    legacy = BucketSegment.from_dict({"hotkey": HOTKEY, "bucket": "PRO_CHALLENGE_TRANSITION", "start_ms": T2})
+    assert legacy.bucket == "SUBACCOUNT_FUNDED"
+
+
 def test_reverted_entries_are_skipped():
     runs = segment_runs([
         BucketEntry(MinerBucket.PRO_FUNDED, T0),
@@ -210,7 +223,7 @@ def test_pro_funded_keeps_the_account_and_its_positions(manager):
 
 @pytest.mark.parametrize("source, target, closes", [
     (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, True),        # account switch
-    (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION, True),    # keeps the account
+    (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, True), # account switch
     (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED, True),       # keeps the account
     (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA, True),            # earning to earning
     (MinerBucket.PRO_FUNDED, MinerBucket.ELIMINATED, False),                        # forfeits instead

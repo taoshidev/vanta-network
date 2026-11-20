@@ -754,7 +754,7 @@ class EntityManager(ValidatorBroadcastBase):
 
             # Pro buckets start on the pro account: record the sizes, switch to the pro size, charge the fee.
             # Not broadcast here: peers hear about the subaccount once, below, after it is fully registered.
-            if initial_bucket.is_pro_track:
+            if initial_bucket.is_pro:
                 sized, size_message = self.apply_bucket_account_size(
                     synthetic_hotkey, initial_bucket, pro_account_size, broadcast=False
                 )
@@ -1059,10 +1059,9 @@ class EntityManager(ValidatorBroadcastBase):
         """
         Point a subaccount at the account size its target bucket trades.
 
-        Entering the pro track snapshots the standard size and records the granted pro size.
-        PRO_CHALLENGE_TRANSITION keeps trading the standard account, so only the sizes are
-        recorded; every other pro bucket switches the live account size to the pro size and, when that
-        changes the account size, charges the promotion fee (ValiConfig.promotion_fee_theta at the
+        Entering the pro track snapshots the standard size and records the granted pro size. Every pro
+        bucket switches the live account size to the pro size and, when that changes the account size,
+        charges the promotion fee (ValiConfig.promotion_fee_theta at the
         subaccount's daily loss limit). Re-applying the size an account already trades charges nothing.
         Returning to a standard bucket restores the standard size.
 
@@ -1085,7 +1084,7 @@ class EntityManager(ValidatorBroadcastBase):
             explicit size. A size recorded on an earlier pro journey, which a move back to a standard
             bucket keeps, is never reused: a re-offer needs a size again.
           * A move within the pro track uses the explicit size when one is sent (the entity re-setting
-            it, e.g. promoting out of PRO_CHALLENGE_TRANSITION), else the size recorded when the
+            it), else the size recorded when the
             subaccount entered the track (the organic promotions send none). With neither, it is rejected.
           * A standard bucket never records a pro size; an explicit one is ignored.
 
@@ -1116,7 +1115,7 @@ class EntityManager(ValidatorBroadcastBase):
         promotion_fee_theta = 0.0
         # Where the pro size came from ("explicit" or "recorded"), for the log; None for standard buckets
         pro_size_source = None
-        if target_bucket.is_pro_track:
+        if target_bucket.is_pro:
             if pro_account_size is not None:
                 pro_size_source = "explicit"
             elif subaccount.account_type == AccountType.PRO.value and subaccount.pro_account_size is not None:
@@ -1138,11 +1137,10 @@ class EntityManager(ValidatorBroadcastBase):
             standard_account_size = standard_size_floor
             account_type = AccountType.PRO.value
 
-            # TRANSITION winds down the standard account, so it keeps the standard size
-            target_size = pro_account_size if target_bucket.is_pro else standard_account_size
+            target_size = pro_account_size
 
-            # The grant is charged when a pro size goes live, i.e. when the account size actually changes
-            # (never in TRANSITION). Re-applying the size an account already trades, as an admin move within
+            # The grant is charged when a pro size goes live, i.e. when the account size actually changes.
+            # Re-applying the size an account already trades, as an admin move within
             # the pro track does, charges nothing even if the fee formula has changed since it paid. Only
             # the increase over the fee already assessed is billed, and the charge floors at zero: a size
             # already paid for is free rather than crediting theta back. Collateral-exempt subaccounts

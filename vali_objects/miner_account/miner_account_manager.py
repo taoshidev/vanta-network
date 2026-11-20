@@ -103,6 +103,11 @@ class MinerAccount:
             self.collateral_records = []
 
     @property
+    def is_pro_bucket(self) -> bool:
+        """True when the account trades the pro account."""
+        return bool(self.miner_bucket and self.miner_bucket.is_pro)
+
+    @property
     def balance(self) -> float:
         """Current balance = account_size + total_realized_pnl + total_dividend_income - total_fees_paid."""
         return self.get_account_size() + self.total_realized_pnl + self.total_dividend_income - self.total_fees_paid

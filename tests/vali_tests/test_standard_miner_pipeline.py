@@ -55,11 +55,8 @@ def account(hotkey=HOTKEY, standard_account=None, hl_address=None) -> MinerAccou
 class TestBucketSizing(TestBase):
     """The record after each bucket move, with no fee."""
 
-    def test_the_pro_track_records_the_size_given_and_trades_it_past_the_transition(self):
-        granted = bucket_sizing(record(), MinerBucket.PRO_CHALLENGE_TRANSITION, PRO_SIZE)
-        self.assertEqual((granted.pro_account_size, granted.trading_account_size, granted.size_traded),
-                         (PRO_SIZE, None, SIZE))
-        live = bucket_sizing(granted, MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+    def test_the_pro_track_records_the_size_given_and_trades_it(self):
+        live = bucket_sizing(record(), MinerBucket.PRO_CHALLENGE_FROM_STANDARD, PRO_SIZE)
         self.assertEqual((live.pro_account_size, live.trading_account_size, live.size_traded),
                          (PRO_SIZE, PRO_SIZE, PRO_SIZE))
         self.assertEqual(bucket_sizing(live, MinerBucket.PRO_FUNDED), live)
@@ -67,17 +64,15 @@ class TestBucketSizing(TestBase):
         self.assertEqual((back.pro_account_size, back.trading_account_size, back.size_traded), (PRO_SIZE, None, SIZE))
         self.assertEqual(bucket_sizing(record(), MinerBucket.SUBACCOUNT_FUNDED), record())
         # A size given on a later hop replaces the recorded one
-        self.assertEqual(bucket_sizing(granted, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 5 * SIZE).trading_account_size,
-                         5 * SIZE)
+        self.assertEqual(bucket_sizing(live, MinerBucket.PRO_FUNDED, 5 * SIZE).trading_account_size, 5 * SIZE)
 
     def test_what_the_pro_track_refuses(self):
-        for bucket in (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-                       MinerBucket.PRO_FUNDED):
+        for bucket in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED):
             with self.subTest(bucket=bucket), self.assertRaises(SizingRejected):
                 bucket_sizing(record(), bucket)  # no pro size granted yet
         for size in (SIZE, 1.5 * SIZE, 0.0, -1.0, True, "150000", float("nan"), ValiConfig.MAX_PRO_ACCOUNT_SIZE + 1):
             with self.subTest(size=size), self.assertRaises(SizingRejected):
-                bucket_sizing(record(), MinerBucket.PRO_CHALLENGE_TRANSITION, size)
+                bucket_sizing(record(), MinerBucket.PRO_CHALLENGE_FROM_STANDARD, size)
 
 
 class TestPipelineOnARealHotkey(TestBase):
@@ -120,7 +115,6 @@ class TestPipelineOnARealHotkey(TestBase):
 
     def test_the_daily_loss_is_measured_from_the_balance_in_the_standard_buckets(self):
         for bucket, expected in ((MinerBucket.SUBACCOUNT_CHALLENGE, True), (MinerBucket.SUBACCOUNT_FUNDED, True),
-                                 (MinerBucket.PRO_CHALLENGE_TRANSITION, True),
                                  (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, False), (MinerBucket.PRO_FUNDED, False)):
             with self.subTest(bucket=bucket):
                 self._in(HOTKEY, bucket)
@@ -172,9 +166,9 @@ class TestPipelineOnARealHotkey(TestBase):
         self.manager._mothership = None  # the answer is read once, so forget the peer's
         self.assertTrue(self.manager._move_to_auto_promotion(
             HOTKEY, account(standard_account=record()), stats, ("steady_track", 5), NOW_MS))
-        self.assertEqual(self._bucket(HOTKEY), MinerBucket.PRO_CHALLENGE_TRANSITION)
-        self.assertEqual(self.records[HOTKEY],
-                         record(pro_account_size=5 * SIZE, payout_scale=ValiConfig.grow_payout_multiplier(5)))
+        self.assertEqual(self._bucket(HOTKEY), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        self.assertEqual(self.records[HOTKEY], record(pro_account_size=5 * SIZE, trading_account_size=5 * SIZE,
+                                                      payout_scale=ValiConfig.grow_payout_multiplier(5)))
         self.assertEqual(state.auto_promotion.pro_account_size, 5 * SIZE)
         self.entity.apply_bucket_account_size.assert_not_called()
         self.entity.snapshot_bucket_account_size.assert_not_called()
@@ -185,8 +179,8 @@ class TestPipelineOnARealHotkey(TestBase):
         self.manager._mothership = None
         self.assertTrue(self.manager._move_to_auto_promotion(
             OTHER, account(OTHER, standard_account=self.records[OTHER]), stats, ("fast_track", 3), NOW_MS))
-        self.assertEqual(self._bucket(OTHER), MinerBucket.PRO_CHALLENGE_TRANSITION)
-        self.assertEqual(self.records[OTHER], record(pro_account_size=PRO_SIZE))
+        self.assertEqual(self._bucket(OTHER), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
+        self.assertEqual(self.records[OTHER], record(pro_account_size=PRO_SIZE, trading_account_size=PRO_SIZE))
 
     def test_the_mothership_fixes_the_multiplier_of_the_multiple_it_grants(self):
         stats = AutoPromotionStats(calmar=2.0, daily_consistency=0.3, max_drawdown=0.97, trading_days=60)
@@ -200,10 +194,10 @@ class TestPipelineOnARealHotkey(TestBase):
                 self.assertEqual((self.records[hotkey].pro_account_size, self.records[hotkey].payout_scale),
                                  (multiple * SIZE, ValiConfig.grow_payout_multiplier(multiple)))
 
-    def test_leaving_the_transition_trades_the_pro_size_on_all_markets(self):
+    def test_the_hop_onto_the_pro_account_trades_the_pro_size_on_all_markets(self):
         self.records[HOTKEY] = record(pro_account_size=PRO_SIZE)
-        self._in(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS - 10 * ValiConfig.DAILY_MS)
-        self.manager.promote_hotkeys({HOTKEY: MinerBucket.PRO_CHALLENGE_TRANSITION}, NOW_MS)
+        self._in(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS - 10 * ValiConfig.DAILY_MS)
+        self.manager.admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, NOW_MS)
         self.assertEqual(self._bucket(HOTKEY), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
         self.assertEqual(self.records[HOTKEY], record(pro_account_size=PRO_SIZE, trading_account_size=PRO_SIZE))
         self.manager._asset_selection_client.process_asset_selection_request.assert_called_once_with(
@@ -217,11 +211,11 @@ class TestPipelineOnARealHotkey(TestBase):
 
     def test_a_failure_before_the_positions_are_closed_leaves_the_record_and_the_tier_alone(self):
         self.records[HOTKEY] = record(pro_account_size=PRO_SIZE)
-        self._in(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION, NOW_MS - 10 * ValiConfig.DAILY_MS)
+        self._in(HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, NOW_MS - 10 * ValiConfig.DAILY_MS)
         self._in(OTHER, MinerBucket.SUBACCOUNT_CHALLENGE)
         self.records[OTHER] = record()
         self.manager._position_client.close_all_positions.side_effect = RuntimeError("position server unavailable")
-        for hotkey, bucket in ((HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION), (OTHER, MinerBucket.SUBACCOUNT_CHALLENGE)):
+        for hotkey, bucket in ((HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD), (OTHER, MinerBucket.SUBACCOUNT_CHALLENGE)):
             # The failure is logged and the miner left for the next refresh, not raised into the refresh
             with self.subTest(hotkey=hotkey):
                 self.assertFalse(self.manager.promote_hotkeys({hotkey: bucket}, NOW_MS))
@@ -263,9 +257,9 @@ class TestPipelineOnARealHotkey(TestBase):
         self.assertTrue(self.manager.admin_set_bucket(LEGACY, MinerBucket.PRO_FUNDED, NOW_MS)[0])
         self.accounts.set_standard_account.assert_not_called()
 
-    def test_a_standard_miner_may_enter_the_transition_and_a_failed_move_restores_its_record(self):
+    def test_a_standard_miner_may_take_the_pro_hop_and_a_failed_move_restores_its_record(self):
         self._in(HOTKEY, MinerBucket.SUBACCOUNT_FUNDED)
-        self.assertEqual(self.manager.can_admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION), (True, ""))
+        self.assertEqual(self.manager.can_admin_set_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD), (True, ""))
         with patch.object(self.manager, "admin_set_bucket", return_value=(False, "refused")):
             moved, _ = self.manager.promote_subaccount(HOTKEY, NOW_MS, PRO_SIZE, from_bucket=MinerBucket.SUBACCOUNT_FUNDED)
         self.assertFalse(moved)
@@ -462,14 +456,7 @@ class TestPipelineThroughTheServers(TestBase):
 
         moved, message = self.challenge_period_client.promote_subaccount(NEW, now_ms, pro_account_size=250_000.0)
         self.assertTrue(moved, message)
-        self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.PRO_CHALLENGE_TRANSITION)
-        self.assertEqual(self.account_client.get_standard_account(NEW).pro_account_size, 250_000.0)
-        self.assertAlmostEqual(self.account_client.get_miner_account_size(NEW), 50_000.0)
-        # All markets from the opening on, whatever was selected before it
-        self.assertEqual(self.asset_selection_client.get_asset_selection(NEW), MinerAssetClass.ALL_MARKETS)
-
-        moved, message = self.challenge_period_client.admin_set_bucket(NEW, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, now_ms)
-        self.assertTrue(moved, message)
+        self.assertEqual(self.challenge_period_client.get_miner_bucket(NEW), MinerBucket.PRO_CHALLENGE_FROM_STANDARD)
         live = self.account_client.get_standard_account(NEW)
         self.assertEqual((live.pro_account_size, live.trading_account_size), (250_000.0, 250_000.0))
         self.assertAlmostEqual(self.account_client.get_miner_account_size(NEW), 250_000.0)

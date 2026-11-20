@@ -1451,15 +1451,11 @@ class EntityMinerRestServer(MinerRestServer):
         POST /entity/subaccount/promote, which verifies the signature, that the coldkey owns the
         entity hotkey on chain, and that the subaccount belongs to that hotkey. The validator picks
         the target bucket from the subaccount's current one and allows only these hops:
-          SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT
-          SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
-          PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
+          SUBACCOUNT_CHALLENGE -> PRO_CHALLENGE_DIRECT
+          SUBACCOUNT_FUNDED    -> PRO_CHALLENGE_FROM_STANDARD
         Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FROM_STANDARD)
-        are refused the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_TRANSITION hop, and a Hyperliquid-linked one
-        both hops onto the pro track (one already on it moves on). A subaccount the network
-        promoted automatically may take the PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
-        hop early, on the pro size the network granted and free of the promotion fee: a request that
-        sends a pro_account_size for it is refused.
+        are refused the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_FROM_STANDARD hop, and a Hyperliquid-linked one
+        both hops onto the pro track (one already on it moves on).
 
         pro_account_size is the pro size the entity is buying: any amount up to $1,000,000 that is at
         least twice the subaccount's own standard account size. Send one the first time a subaccount
@@ -1468,11 +1464,9 @@ class EntityMinerRestServer(MinerRestServer):
         pro size / PRO_REG_CPT minus standard size / STD_REG_CPT, both at the subaccount's daily loss
         limit, so a pro size of exactly twice the standard size is charged nothing.
 
-        Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
-        PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
-        restarts the ledgers, so neither can be undone. Promoting into PRO_CHALLENGE_TRANSITION keeps
-        trading the standard account and wipes nothing: positions, limit orders and ledgers all carry
-        on, and only the resting orders that could open or increase a position are cancelled.
+        Both hops switch accounts: promoting into PRO_CHALLENGE_DIRECT or PRO_CHALLENGE_FROM_STANDARD
+        closes every open position, cancels every pending limit order and restarts the ledgers, so
+        neither can be undone.
         """
         import requests as http_requests
 

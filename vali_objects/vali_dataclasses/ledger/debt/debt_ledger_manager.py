@@ -978,7 +978,7 @@ class DebtLedgerManager():
 
             logger.info(f"Aggregating debt ledgers for {len(all_entities)} entities")
 
-            _earning_statuses = {b.value for b in MinerBucket if b.is_subaccount_earning}
+            _earning_statuses = {status for b in MinerBucket if b.is_subaccount_earning for status in b.statuses}
 
             # Get frozen perf ledgers and convert to debt ledgers grouped by entity
             # Manually conver them to debt ledger checkpoints to reuse realized hwm gated emissions

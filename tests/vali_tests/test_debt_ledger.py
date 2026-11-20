@@ -665,7 +665,7 @@ class TestDebtLedgers(TestBase):
         try:
             self.assertTrue(self.debt_ledger_client.record_settled_segment(
                 hotkey, week_start_ms, week_start_ms, promotion_ms,
-                MinerBucket.PRO_CHALLENGE_TRANSITION.value, 1843.20, 1843.20, 1.0, 1.0,
+                "PRO_CHALLENGE_TRANSITION", 1843.20, 1843.20, 1.0, 1.0,
             ))
 
             self.debt_ledger_client.delete_debt_ledger(hotkey)
@@ -673,7 +673,7 @@ class TestDebtLedgers(TestBase):
             segments = self.debt_ledger_client.get_settled_segments(hotkey)
             self.assertEqual(len(segments), 1)
             self.assertEqual(segments[0].payout_usd, 1843.20)
-            self.assertEqual(segments[0].bucket, MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+            self.assertEqual(segments[0].bucket, "PRO_CHALLENGE_TRANSITION")
         finally:
             self.debt_ledger_client.remove_settled_segment(hotkey, promotion_ms)
             _clear_seal_ledger()
@@ -841,7 +841,7 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
             week_start_ms=week_0_start,
             segment_start_ms=week_0_start,
             segment_end_ms=week_0_start + MS_IN_WEEK // 2,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket="PRO_CHALLENGE_TRANSITION",
             payout_usd=1000.0,
             gross_payout_usd=1000.0,
             weekly_penalty=1.0,
@@ -1288,7 +1288,7 @@ class TestSettledSegment(TestBase):
             week_start_ms=self.week_start_ms,
             segment_start_ms=self.week_start_ms,
             segment_end_ms=self.promotion_ms,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket="PRO_CHALLENGE_TRANSITION",
             payout_usd=payout_usd,
             gross_payout_usd=payout_usd,
             weekly_penalty=1.0,
@@ -1299,7 +1299,7 @@ class TestSettledSegment(TestBase):
         self.assertTrue(self._settle(self.ledger))
         segment = self.ledger.get_settled(self.HOTKEY)[0]
         self.assertEqual(segment.payout_usd, 1843.20)
-        self.assertEqual(segment.bucket, MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertEqual(segment.bucket, "PRO_CHALLENGE_TRANSITION")
         self.assertEqual(segment.segment_end_ms, self.promotion_ms)
 
     def test_resettling_the_same_switch_never_double_pays(self):
@@ -1372,7 +1372,7 @@ class TestSettledSegment(TestBase):
             week_start_ms=self.week_start_ms,
             segment_start_ms=self.week_start_ms,
             segment_end_ms=self.promotion_ms,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket="PRO_CHALLENGE_TRANSITION",
             payout_usd=1843.20,
             gross_payout_usd=1843.20,
             weekly_penalty=1.0,

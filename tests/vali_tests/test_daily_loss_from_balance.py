@@ -1,5 +1,5 @@
 """
-Standard subaccounts in SUBACCOUNT_CHALLENGE, SUBACCOUNT_FUNDED and PRO_CHALLENGE_TRANSITION measure the
+Standard subaccounts in SUBACCOUNT_CHALLENGE and SUBACCOUNT_FUNDED measure the
 daily loss limit (intraday drawdown) from the day-open balance instead of the day-open equity, under both
 drawdown criteria. HL-linked and Instant Funded subaccounts, pro buckets and regular miners keep the
 day-open equity.
@@ -28,15 +28,13 @@ from vali_objects.miner_account.miner_account_manager import CollateralRecord, M
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint, PerfLedger
 
-BALANCE_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                   MinerBucket.PRO_CHALLENGE_TRANSITION)
+BALANCE_BUCKETS = (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED)
 EQUITY_BUCKETS = (MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
                   MinerBucket.PRO_FUNDED, MinerBucket.CHALLENGE, MinerBucket.MAINCOMP)
 CRITERIA = (DrawdownCriteria.TRAILING, DrawdownCriteria.STATIC)
 INTRADAY_REASON = {
     MinerBucket.SUBACCOUNT_CHALLENGE: EliminationReason.FAILED_CHALLENGE_PERIOD_INTRADAY_DRAWDOWN,
     MinerBucket.SUBACCOUNT_FUNDED: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
-    MinerBucket.PRO_CHALLENGE_TRANSITION: EliminationReason.FAILED_FUNDED_PERIOD_INTRADAY_DRAWDOWN,
 }
 LIMIT = 0.05
 HL_ADDRESS = "0x" + "c" * 40
@@ -226,10 +224,7 @@ def test_an_overnight_gain_loosens_the_day(manager, bucket, criteria):
     _seed(manager, bucket, criteria)
     _refresh_cache(manager, _account(OPEN_BALANCE * (1 - 0.04), OPEN_EQUITY_GAIN))
     _run_refresh(manager, HOTKEY, now_ms=NOW)
-    # A surviving transition is moved straight on: it is zero-length
-    survived = (MinerBucket.PRO_CHALLENGE_FROM_STANDARD if bucket == MinerBucket.PRO_CHALLENGE_TRANSITION
-                else bucket)
-    assert manager.get_miner_bucket(HOTKEY) == survived
+    assert manager.get_miner_bucket(HOTKEY) == bucket
 
 
 @pytest.mark.parametrize("open_equity,eliminated", [(OPEN_EQUITY_GAIN, False), (OPEN_EQUITY_LOSS, True)])

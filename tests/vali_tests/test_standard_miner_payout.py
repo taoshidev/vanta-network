@@ -33,8 +33,8 @@ SIZE = 50_000.0
 PRO_SIZE = 125_000.0
 GROW_MULTIPLIER = 1.5
 GROW_SCALE = GROW_MULTIPLIER * SIZE / PRO_SIZE  # 0.6
-GROW, PRO, TRANSITION = (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED,
-                         MinerBucket.PRO_CHALLENGE_TRANSITION)
+# FUNDED is the standard funded account the hop onto the pro account winds down
+GROW, PRO, FUNDED = (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_FUNDED, MinerBucket.SUBACCOUNT_FUNDED)
 OPENING = dict(opened_at_ms=NOW_MS - 30 * ValiConfig.DAILY_MS, opening_leverage_tier=2, asset_class="crypto",
                account_size=SIZE, locked_theta=70.0, opening_price_usd=7.857)
 
@@ -67,7 +67,7 @@ def perf_ledger(unrealized_by_checkpoint=(), first_ms=WEEK + CP) -> PerfLedger:
         for index, unrealized in enumerate(unrealized_by_checkpoint)])
 
 
-def settled(week_start_ms, payout_usd, gross_payout_usd=None, end_ms=None, bucket=TRANSITION) -> SettledSegment:
+def settled(week_start_ms, payout_usd, gross_payout_usd=None, end_ms=None, bucket=FUNDED) -> SettledSegment:
     return SettledSegment(week_start_ms=week_start_ms, segment_start_ms=week_start_ms,
                           segment_end_ms=end_ms or week_start_ms + 3 * HOUR, bucket=bucket.value,
                           payout_usd=payout_usd, gross_payout_usd=gross_payout_usd or payout_usd,
@@ -234,25 +234,25 @@ class TestSettlingAtTheSwitch(TestBase):
             order(self.last_week + 6 * HOUR, 100.0), order(self.week_start + 6 * HOUR, 50.0))
         self.manager._perf_ledger_client.get_perf_ledger_for_hotkey.side_effect = lambda hotkey: {hotkey: perf_ledger()}
         # A ledger opened by the switch into the funded bucket last week
-        self.manager._debt_ledger_client.get_ledger.return_value = debt_ledger([TRANSITION] * 28, self.last_week + CP)
+        self.manager._debt_ledger_client.get_ledger.return_value = debt_ledger([FUNDED] * 28, self.last_week + CP)
         self.manager._debt_ledger_client.get_settled_segments.return_value = []
         self.manager._debt_ledger_client.get_sealed_weeks_for.return_value = {}
         self.manager._debt_ledger_client.record_settled_segment.return_value = True
         self.settle = self.manager._debt_ledger_client.record_settled_segment
 
-    def _leave_the_transition(self, hotkey=HOTKEY, switched=True):
-        self.manager.set_miner_bucket(hotkey, TRANSITION, NOW_MS - 10 * ValiConfig.DAILY_MS)
-        self.manager.promote_hotkeys({hotkey: TRANSITION}, NOW_MS)
-        self.assertEqual(self.manager.miner_states[hotkey].current_bucket, GROW if switched else TRANSITION)
+    def _leave_funded(self, hotkey=HOTKEY, switched=True):
+        self.manager.set_miner_bucket(hotkey, FUNDED, NOW_MS - 10 * ValiConfig.DAILY_MS)
+        self.manager.admin_set_bucket(hotkey, GROW, NOW_MS)
+        self.assertEqual(self.manager.miner_states[hotkey].current_bucket, GROW if switched else FUNDED)
 
     def _pinned(self):
         return [(c.args[1], c.args[4], c.args[5], c.args[6], c.args[8]) for c in self.settle.call_args_list]
 
     def test_every_week_still_being_paid_is_settled_before_the_ledgers_go(self):
-        self._leave_the_transition()
+        self._leave_funded()
         # Last week, paid out this week, and this week, both unscaled: the transition is paid on the standard size
-        self.assertEqual(self._pinned(), [(self.last_week, TRANSITION.value, 100.0, 100.0, 1.0),
-                                          (self.week_start, TRANSITION.value, 50.0, 50.0, 1.0)])
+        self.assertEqual(self._pinned(), [(self.last_week, FUNDED.value, 100.0, 100.0, 1.0),
+                                          (self.week_start, FUNDED.value, 50.0, 50.0, 1.0)])
         self.assertTrue(all(c.args[3] == NOW_MS for c in self.settle.call_args_list))
         self.entity.settle_wound_down_segment.assert_not_called()
         self.manager._debt_ledger_client.delete_debt_ledger.assert_called_once_with(HOTKEY)
@@ -261,40 +261,40 @@ class TestSettlingAtTheSwitch(TestBase):
     def test_a_week_already_pinned_by_an_earlier_attempt_is_skipped(self):
         self.manager._debt_ledger_client.get_settled_segments.return_value = [
             settled(self.last_week, 100.0, end_ms=self.last_week + HOUR)]
-        self._leave_the_transition()
-        self.assertEqual(self._pinned(), [(self.week_start, TRANSITION.value, 50.0, 50.0, 1.0)])
+        self._leave_funded()
+        self.assertEqual(self._pinned(), [(self.week_start, FUNDED.value, 50.0, 50.0, 1.0)])
 
     def test_what_an_earlier_switch_settled_is_not_pinned_again_under_another_bucket(self):
         # A move out of the funded bucket settled up to Wednesday last week and then failed; the promotion later
         # settles only what was traded after it
         self.manager._debt_ledger_client.get_settled_segments.return_value = [
             settled(self.last_week, 100.0, end_ms=self.last_week + 2 * ValiConfig.DAILY_MS, bucket=MinerBucket.SUBACCOUNT_FUNDED)]
-        self._leave_the_transition()
-        self.assertEqual(self._pinned(), [(self.week_start, TRANSITION.value, 50.0, 50.0, 1.0)])
+        self._leave_funded()
+        self.assertEqual(self._pinned(), [(self.week_start, FUNDED.value, 50.0, 50.0, 1.0)])
 
     def test_a_ledger_without_an_earning_checkpoint_pins_nothing(self):
         self.manager._debt_ledger_client.get_ledger.return_value = debt_ledger(
             [MinerBucket.SUBACCOUNT_CHALLENGE] * 28, self.last_week + CP)
-        self._leave_the_transition()
+        self._leave_funded()
         self.settle.assert_not_called()
 
     def test_a_missing_ledger_on_an_account_that_traded_for_days_holds_the_switch(self):
         self.manager._debt_ledger_client.get_ledger.return_value = None
-        self._leave_the_transition(switched=False)
+        self._leave_funded(switched=False)
         self.settle.assert_not_called()
 
     def test_nothing_is_settled_for_weeks_that_earned_nothing(self):
         self.manager._position_client.get_positions_for_one_hotkey.return_value = positions(
             order(self.week_start + 6 * HOUR, -100.0))
-        self._leave_the_transition()
+        self._leave_funded()
         self.settle.assert_not_called()
 
     def test_an_account_too_young_for_a_checkpoint_is_settled_on_its_positions(self):
         self.manager._debt_ledger_client.get_ledger.return_value = None
         self.manager._position_client.get_positions_for_one_hotkey.return_value = positions(
             order(NOW_MS - 5 * HOUR, 100.0), order(NOW_MS - 2 * HOUR, 50.0))
-        self._leave_the_transition()
-        self.assertEqual(self._pinned(), [(self.week_start, TRANSITION.value, 150.0, 150.0, 1.0)])
+        self._leave_funded()
+        self.assertEqual(self._pinned(), [(self.week_start, FUNDED.value, 150.0, 150.0, 1.0)])
         # Leaving the pro challenge itself, its earnings are priced at the multiplier
         self.settle.reset_mock()
         self.records[HOTKEY] = record(pro_account_size=PRO_SIZE, trading_account_size=PRO_SIZE)
@@ -312,15 +312,15 @@ class TestSettlingAtTheSwitch(TestBase):
                     self.manager._position_client.get_positions_for_one_hotkey.side_effect = RuntimeError("position server down")
                 else:
                     self.settle.return_value = False
-                self._leave_the_transition(switched=False)
+                self._leave_funded(switched=False)
                 self.accounts.set_standard_account.assert_not_called()
                 self.manager._debt_ledger_client.delete_debt_ledger.assert_not_called()
                 self.assertEqual(self.records[HOTKEY], record(pro_account_size=PRO_SIZE))
 
     def test_a_subaccount_still_settles_through_its_entity(self):
-        self.manager.set_miner_bucket(SUBACCOUNT, TRANSITION, NOW_MS - 10 * ValiConfig.DAILY_MS)
-        self.manager.promote_hotkeys({SUBACCOUNT: TRANSITION}, NOW_MS)
-        self.entity.settle_wound_down_segment.assert_called_once_with(SUBACCOUNT, TRANSITION.value, NOW_MS)
+        self.manager.set_miner_bucket(SUBACCOUNT, FUNDED, NOW_MS - 10 * ValiConfig.DAILY_MS)
+        self.manager.admin_set_bucket(SUBACCOUNT, GROW, NOW_MS)
+        self.entity.settle_wound_down_segment.assert_called_once_with(SUBACCOUNT, FUNDED.value, NOW_MS)
         self.settle.assert_not_called()
 
     def _moved_out_by_an_admin(self, from_bucket, ledger):
@@ -357,7 +357,7 @@ class TestSettlingAtTheSwitch(TestBase):
 
     def test_an_unreadable_seal_ledger_holds_the_switch(self):
         self.manager._debt_ledger_client.get_sealed_weeks_for.side_effect = RuntimeError("ledger server down")
-        self._leave_the_transition(switched=False)
+        self._leave_funded(switched=False)
         self.settle.assert_not_called()
 
 
@@ -412,10 +412,10 @@ class TestThroughTheServers(TestBase):
 
     def test_a_real_hotkey_records_and_reads_back_its_settled_segments_and_records(self):
         self.assertTrue(self.debt_ledger_client.record_settled_segment(
-            HOTKEY, WEEK, WEEK, WEEK + 3 * HOUR, TRANSITION.value, 80.0, 100.0, 1.0, GROW_SCALE))
+            HOTKEY, WEEK, WEEK, WEEK + 3 * HOUR, FUNDED.value, 80.0, 100.0, 1.0, GROW_SCALE))
         # A retried switch writes the same week once
         self.assertFalse(self.debt_ledger_client.record_settled_segment(
-            HOTKEY, WEEK, WEEK, WEEK + 4 * HOUR, TRANSITION.value, 80.0, 100.0, 1.0, GROW_SCALE))
+            HOTKEY, WEEK, WEEK, WEEK + 4 * HOUR, FUNDED.value, 80.0, 100.0, 1.0, GROW_SCALE))
         segments = self.debt_ledger_client.get_settled_segments(HOTKEY)
         self.assertEqual([(s.week_start_ms, s.payout_usd, s.gross_payout_usd) for s in segments], [(WEEK, 80.0, 100.0)])
         self.assertEqual(self.debt_ledger_client.get_all_settled_segments(), {HOTKEY: segments})

@@ -225,7 +225,7 @@ def bucket_sizing(record: StandardMinerAccount, target_bucket: MinerBucket,
                   pro_account_size=None, payout_scale=None) -> StandardMinerAccount:
     """The record after a move into target_bucket, sized as EntityManager.apply_bucket_account_size sizes a
     subaccount, no fee. A standard bucket keeps any granted pro size; the first pro size given fixes payout_scale."""
-    if not target_bucket.is_pro_track:
+    if not target_bucket.is_pro:
         return replace(record, trading_account_size=None)
     if pro_account_size is not None:
         error = pro_account_size_error(pro_account_size, record.account_size)
@@ -238,5 +238,4 @@ def bucket_sizing(record: StandardMinerAccount, target_bucket: MinerBucket,
         pro_account_size = record.pro_account_size
     else:
         raise SizingRejected("A pro account size is required to enter the pro track")
-    return replace(record, pro_account_size=pro_account_size,
-                   trading_account_size=pro_account_size if target_bucket.is_pro else None)
+    return replace(record, pro_account_size=pro_account_size, trading_account_size=pro_account_size)

@@ -43,8 +43,7 @@ from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint
 HL_ADDRESS = "0x" + "d" * 40
 DAYS = 60
 REALIZED_USD = 7_000.0  # 7% on the account
-PRO_BUCKETS = (MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-               MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
+PRO_BUCKETS = (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
 
 
 def _account(hotkey: str = HOTKEY, hl_address: str | None = None,

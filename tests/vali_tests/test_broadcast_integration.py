@@ -306,7 +306,7 @@ class TestBroadcastIntegration(TestBase):
         with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", subaccount_info.created_at_ms):
             snapshot = mothership_manager.snapshot_bucket_account_size(hotkey)
             self.assertTrue(mothership_manager.apply_bucket_account_size(
-                hotkey, MinerBucket.PRO_CHALLENGE_TRANSITION, 150_000.0, payout_scale=1.3)[0])
+                hotkey, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 150_000.0, payout_scale=1.3)[0])
         self.assertEqual(broadcast(mothership_manager.get_subaccount_info_for_synthetic(hotkey)).payout_scale, 1.3)
         self.assertTrue(mothership_manager.restore_bucket_account_size(hotkey, snapshot)[0])
         self.assertIsNone(broadcast(mothership_manager.get_subaccount_info_for_synthetic(hotkey)).payout_scale)

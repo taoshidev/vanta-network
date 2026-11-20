@@ -2420,8 +2420,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Correct an entity subaccount's account size, in any bucket.
         Requires tier 500 access.
 
-        On the pro track this sets pro_account_size (and the live account size outside
-        PRO_CHALLENGE_TRANSITION), charging only the promotion fee above what was already assessed:
+        On the pro track this sets pro_account_size and the live account size, charging only the promotion fee above what was already assessed:
         100k standard -> 300k pro -> 500k pro pays for the 200k increase, not the full 400k.
         Off the pro track it sets the standard account size.
 
@@ -2460,7 +2459,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                 return jsonify({'error': f'Subaccount {hotkey} not found'}), 404
 
             bucket = self._challenge_period_client.get_miner_bucket(hotkey)
-            if bucket is not None and bucket.is_pro_track:
+            if bucket is not None and bucket.is_pro:
                 # Re-applying the current bucket resizes in place; the fee charged is the new size's
                 # fee minus pro_fee_theta already assessed
                 success, message = self._entity_client.apply_bucket_account_size(hotkey, bucket, account_size)
@@ -3277,18 +3276,14 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         """
         Promote a subaccount one step up the pro track on the entity's own signed request.
 
-        The only moves allowed are the three hops in MinerBucket.promotion_target:
-          SUBACCOUNT_CHALLENGE     -> PRO_CHALLENGE_DIRECT
-          SUBACCOUNT_FUNDED        -> PRO_CHALLENGE_TRANSITION
-          PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
+        The only moves allowed are the two hops in MinerBucket.promotion_target:
+          SUBACCOUNT_CHALLENGE -> PRO_CHALLENGE_DIRECT
+          SUBACCOUNT_FUNDED    -> PRO_CHALLENGE_FROM_STANDARD
 
         Instant Funded subaccounts (created into SUBACCOUNT_FUNDED or PRO_CHALLENGE_FROM_STANDARD)
-        cannot take the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_TRANSITION hop. One created into
+        cannot take the SUBACCOUNT_FUNDED -> PRO_CHALLENGE_FROM_STANDARD hop. One created into
         PRO_CHALLENGE_FROM_STANDARD still reaches PRO_FUNDED by passing its challenge. A Hyperliquid-linked
-        subaccount takes neither hop onto the pro track; one already on it moves on. A subaccount the
-        network promoted automatically may take the PRO_CHALLENGE_TRANSITION -> PRO_CHALLENGE_FROM_STANDARD
-        hop early, on the pro size the network granted and free of the promotion fee: a request that
-        sends a pro_account_size for it is rejected.
+        subaccount takes neither hop onto the pro track; one already on it moves on.
 
         Requires a tier 200 API key.
         Ownership is proven via entity coldkey
@@ -3298,11 +3293,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         size. The promotion fee is ValiConfig.promotion_fee_theta at the subaccount's daily loss limit; the
         request fails when the entity's collateral cannot cover it and it is needed.
 
-        Only the two hops onto a pro account switch accounts: promoting into PRO_CHALLENGE_DIRECT or
-        PRO_CHALLENGE_FROM_STANDARD closes every open position, cancels every pending limit order and
-        restarts the ledgers against the pro size, so neither is reversible. The hop into
-        PRO_CHALLENGE_TRANSITION closes every open position and cancels every pending limit order on the
-        standard account; the next refresh moves it on to PRO_CHALLENGE_FROM_STANDARD.
+        Both hops switch accounts: promoting into PRO_CHALLENGE_DIRECT or PRO_CHALLENGE_FROM_STANDARD
+        closes every open position, cancels every pending limit order and restarts the ledgers against
+        the pro size, so neither is reversible.
 
         Example:
         curl -X POST http://localhost:48888/entity/subaccount/promote \\

@@ -1527,7 +1527,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             week_start_ms=week_0_start,
             segment_start_ms=week_0_start,
             segment_end_ms=week_0_start + MS_IN_WEEK // 2,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket="PRO_CHALLENGE_TRANSITION",
             payout_usd=1843.20,
             gross_payout_usd=1843.20,
             weekly_penalty=1.0,
@@ -1543,7 +1543,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
         rows = result['weekly_settlements']
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0]['settled_segment'])
-        self.assertEqual(rows[0]['bucket'], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertEqual(rows[0]['bucket'], "PRO_CHALLENGE_TRANSITION")
 
     def test_a_settled_segment_pays_when_the_promotion_left_no_perf_ledger(self):
         """The switch archives the positions, and the perf ledger goes with them. The settled
@@ -1553,7 +1553,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             week_start_ms=week_0_start,
             segment_start_ms=week_0_start,
             segment_end_ms=week_0_start + MS_IN_WEEK // 2,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket="PRO_CHALLENGE_TRANSITION",
             payout_usd=1843.20,
             gross_payout_usd=1843.20,
             weekly_penalty=1.0,
@@ -1573,13 +1573,13 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
     def test_no_debt_ledger_prices_weeks_at_the_current_bucket(self):
         """Without a debt ledger every segment takes the current bucket, so the payout scale applies
         only in PRO_CHALLENGE_FROM_STANDARD. The live scale is below 1.0 in every pro bucket, so
-        applying it regardless of bucket would underpay PRO_CHALLENGE_TRANSITION and PRO_FUNDED."""
+        applying it regardless of bucket would underpay SUBACCOUNT_FUNDED and PRO_FUNDED."""
         unscaled = self._payout_result(has_debt_ledger=False, current_bucket=MinerBucket.PRO_FUNDED,
                                        payout_scale=1.0)['payout']
         self.assertGreater(unscaled, 0)
         for bucket, expected in (
             (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, 0.5 * unscaled),
-            (MinerBucket.PRO_CHALLENGE_TRANSITION, unscaled),
+            (MinerBucket.SUBACCOUNT_FUNDED, unscaled),
             (MinerBucket.PRO_FUNDED, unscaled),
         ):
             with self.subTest(bucket=bucket):
@@ -1600,7 +1600,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             week_start_ms=week_0_start,
             segment_start_ms=week_0_start,
             segment_end_ms=week_0_start + MS_IN_WEEK // 2,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket="PRO_CHALLENGE_TRANSITION",
             payout_usd=1843.20,
             gross_payout_usd=1843.20,
             weekly_penalty=1.0,
@@ -1636,7 +1636,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
                   for i in range(cells)]
         checkpoints = [DebtCheckpoint(
             timestamp_ms=monday + (i + 1) * self.CP_DURATION_MS,
-            challenge_period_status=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            challenge_period_status="PRO_CHALLENGE_TRANSITION",
         ) for i in range(cells)]
 
         recorded = {}
@@ -1660,10 +1660,10 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
                 SimpleNamespace(orders=orders, fee_history=[], unrealized_pnl=0.0)])
 
         self.assertTrue(manager.settle_wound_down_segment(
-            self.SUBACCOUNT_HOTKEY, MinerBucket.PRO_CHALLENGE_TRANSITION.value, now))
+            self.SUBACCOUNT_HOTKEY, "PRO_CHALLENGE_TRANSITION", now))
         self.assertEqual(recorded['payout_usd'], 100.0 * cells)   # NOT scaled by 0.4
         self.assertEqual(recorded['scale'], 1.0)
-        self.assertEqual(recorded['bucket'], MinerBucket.PRO_CHALLENGE_TRANSITION.value)
+        self.assertEqual(recorded['bucket'], "PRO_CHALLENGE_TRANSITION")
 
     def test_no_settled_segment_leaves_the_weekly_windows_untouched(self):
         """The promotion handling must be inert for every account that never promoted."""
@@ -1684,7 +1684,7 @@ class TestSubaccountPayoutWeeklyPenalty(TestBase):
             week_start_ms=week_0_start,
             segment_start_ms=week_0_start,
             segment_end_ms=switch_ms,
-            bucket=MinerBucket.PRO_CHALLENGE_TRANSITION.value,
+            bucket="PRO_CHALLENGE_TRANSITION",
             payout_usd=1843.20,
             gross_payout_usd=1843.20,
             weekly_penalty=1.0,

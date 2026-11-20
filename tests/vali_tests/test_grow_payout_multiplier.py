@@ -31,7 +31,7 @@ from vali_objects.enums.miner_bucket_enum import MinerBucket
 from vali_objects.miner_account.standard_miner import PipelineAccountInfo, bucket_sizing
 from vali_objects.vali_config import RPCConnectionMode, ValiConfig
 
-TRANSITION = MinerBucket.PRO_CHALLENGE_TRANSITION
+GRANT = MinerBucket.PRO_CHALLENGE_FROM_STANDARD  # the hop onto the pro track
 GROW = MinerBucket.PRO_CHALLENGE_FROM_STANDARD
 LOWEST = min(ValiConfig.AUTO_PROMOTION_PAYOUT_MULTIPLIERS.values())
 
@@ -89,7 +89,7 @@ def test_a_subaccount_is_on_the_rules_from_its_networks_start():
 
 def test_the_first_grant_fixes_the_multiplier_and_the_moves_after_it_keep_it(entity_manager, on_the_rules):
     hotkey = _add_standard(entity_manager)
-    assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
+    assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
     assert _info(entity_manager, hotkey).payout_scale == 1.3
 
     assert entity_manager.apply_bucket_account_size(hotkey, GROW, payout_scale=2.0)[0]
@@ -103,7 +103,7 @@ def test_the_first_grant_fixes_the_multiplier_and_the_moves_after_it_keep_it(ent
 def test_a_subaccount_off_the_rules_keeps_the_old_multiplier(entity_manager, start_ms):
     hotkey = _add_standard(entity_manager)
     with _starting(start_ms):
-        assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
+        assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
     assert _info(entity_manager, hotkey).payout_scale is None
     assert entity_manager.get_payout_scale(hotkey) == pytest.approx(ValiConfig.PRO_TRANSITION_PAYOUT_MULTIPLIER / 3)
 
@@ -111,7 +111,7 @@ def test_a_subaccount_off_the_rules_keeps_the_old_multiplier(entity_manager, sta
 def test_any_first_grant_fixes_one_the_lowest_unless_one_is_given(entity_manager, on_the_rules):
     """An operator's grant names no multiplier, and the direct pro challenge never reads the one it fixes."""
     unpriced = _add_standard(entity_manager, subaccount_id=0)
-    assert entity_manager.apply_bucket_account_size(unpriced, TRANSITION, 3 * STANDARD_SIZE)[0]
+    assert entity_manager.apply_bucket_account_size(unpriced, GRANT, 3 * STANDARD_SIZE)[0]
     direct = _add_standard(entity_manager, subaccount_id=1)
     assert entity_manager.apply_bucket_account_size(direct, MinerBucket.PRO_CHALLENGE_DIRECT, 3 * STANDARD_SIZE)[0]
     # Moved into the transition without a pro size, then sized on the hop into Grow
@@ -134,11 +134,11 @@ def test_a_validator_reads_its_own_networks_switch(entity_manager):
     entity_manager.is_testnet = True
     mainnet_start = _add_standard(entity_manager, subaccount_id=0)
     with _starting(CREATED_MS), patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", None):
-        assert entity_manager.apply_bucket_account_size(mainnet_start, TRANSITION, 3 * STANDARD_SIZE)[0]
+        assert entity_manager.apply_bucket_account_size(mainnet_start, GRANT, 3 * STANDARD_SIZE)[0]
     testnet_start = _add_standard(entity_manager, subaccount_id=1)
     with patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS", None), \
             patch.object(ValiConfig, "SUBACCOUNT_PROMOTION_RULES_START_MS_TESTNET", CREATED_MS):
-        assert entity_manager.apply_bucket_account_size(testnet_start, TRANSITION, 3 * STANDARD_SIZE)[0]
+        assert entity_manager.apply_bucket_account_size(testnet_start, GRANT, 3 * STANDARD_SIZE)[0]
     assert _info(entity_manager, mainnet_start).payout_scale is None
     assert _info(entity_manager, testnet_start).payout_scale == LOWEST
 
@@ -146,14 +146,14 @@ def test_a_validator_reads_its_own_networks_switch(entity_manager):
 def test_a_multiplier_already_set_is_never_replaced(entity_manager, on_the_rules):
     hotkey = _add_standard(entity_manager)
     _info(entity_manager, hotkey).payout_scale = ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER
-    assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
+    assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
     assert _info(entity_manager, hotkey).payout_scale == ValiConfig.GROW_DIRECT_CREATION_PAYOUT_MULTIPLIER
 
 
 def test_a_rolled_back_promotion_takes_its_multiplier_back(entity_manager, on_the_rules):
     hotkey = _add_standard(entity_manager)
     snapshot = entity_manager.snapshot_bucket_account_size(hotkey)
-    assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
+    assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
     assert entity_manager.restore_bucket_account_size(hotkey, snapshot)[0]
     assert _info(entity_manager, hotkey).payout_scale is None
 
@@ -162,7 +162,7 @@ def test_the_multiplier_travels_with_the_pro_sizing(entity_manager, on_the_rules
     hotkey = _add_standard(entity_manager)
     peer = _info(entity_manager, hotkey).model_copy()
     standard = peer.model_copy()
-    assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
+    assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
     promoted = _info(entity_manager, hotkey)
 
     assert EntityManager.adopt_pro_sizing(peer, promoted)  # a checkpoint fills a peer that missed the broadcast
@@ -173,7 +173,7 @@ def test_the_multiplier_travels_with_the_pro_sizing(entity_manager, on_the_rules
 
 def test_a_sync_fills_a_missing_multiplier_on_a_pro_record_and_never_replaces_one(entity_manager, on_the_rules):
     hotkey = _add_standard(entity_manager)
-    assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
+    assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
     promoted = _info(entity_manager, hotkey)
     missing = promoted.model_copy(update={"payout_scale": None})
     assert EntityManager.adopt_pro_sizing(missing, promoted)
@@ -186,15 +186,15 @@ def test_a_sync_fills_a_missing_multiplier_on_a_pro_record_and_never_replaces_on
 
 def test_a_promotion_after_a_move_back_keeps_the_first_multiplier(entity_manager, on_the_rules):
     hotkey = _add_standard(entity_manager)
-    assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
+    assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
     assert entity_manager.apply_bucket_account_size(hotkey, MinerBucket.SUBACCOUNT_FUNDED)[0]
-    assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 10 * STANDARD_SIZE, payout_scale=2.0)[0]
+    assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 10 * STANDARD_SIZE, payout_scale=2.0)[0]
     assert _info(entity_manager, hotkey).payout_scale == 1.3
 
 
 def test_the_payloads_report_the_multiplier(entity_manager, on_the_rules):
     hotkey = _add_standard(entity_manager)
-    assert entity_manager.apply_bucket_account_size(hotkey, TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
+    assert entity_manager.apply_bucket_account_size(hotkey, GRANT, 3 * STANDARD_SIZE, payout_scale=1.3)[0]
     assert entity_manager.get_subaccount_dashboard(hotkey)["payout_scale"] == 1.3
     assert entity_manager.get_subaccount_dashboard_data(hotkey)["subaccount_info"]["payout_scale"] == 1.3
 
@@ -223,9 +223,9 @@ def test_a_multiplier_reaches_the_entity_manager_through_the_client_and_server()
     server._manager = MagicMock()
     client = EntityClient(connection_mode=RPCConnectionMode.LOCAL, running_unit_tests=True)
     client.set_direct_server(server)
-    client.apply_bucket_account_size("entity_alpha_0", TRANSITION, 3 * STANDARD_SIZE, payout_scale=1.5)
+    client.apply_bucket_account_size("entity_alpha_0", GRANT, 3 * STANDARD_SIZE, payout_scale=1.5)
     server._manager.apply_bucket_account_size.assert_called_once_with(
-        "entity_alpha_0", TRANSITION, 3 * STANDARD_SIZE, waive_promotion_fee=False, payout_scale=1.5)
+        "entity_alpha_0", GRANT, 3 * STANDARD_SIZE, waive_promotion_fee=False, payout_scale=1.5)
 
 
 # ── The promotions, through a real entity manager ─────────────────────────────
@@ -281,7 +281,6 @@ def test_an_entitys_own_promotion_fixes_the_lowest_multiplier_whatever_the_size(
     hop_manager.set_miner_bucket(hotkey, MinerBucket.SUBACCOUNT_FUNDED, NOW_MS - DAILY_MS)
     with _starting(start_ms):
         assert hop_manager.promote_subaccount(hotkey, NOW_MS, 10 * STANDARD_SIZE)[0]
-        assert hop_manager.promote_subaccount(hotkey, NOW_MS + DAILY_MS)[0]
     assert hop_manager.miner_states[hotkey].current_bucket == GROW
     assert _info(entity_manager, hotkey).payout_scale == expected
 
@@ -289,9 +288,9 @@ def test_an_entitys_own_promotion_fixes_the_lowest_multiplier_whatever_the_size(
 # ── A standard miner's record ─────────────────────────────────────────────────
 
 def test_a_standard_miners_first_pro_size_fixes_its_multiplier():
-    granted = bucket_sizing(record(), TRANSITION, 3 * SIZE, payout_scale=1.3)
+    granted = bucket_sizing(record(), GRANT, 3 * SIZE, payout_scale=1.3)
     assert granted.payout_scale == 1.3
-    assert bucket_sizing(record(), TRANSITION, 3 * SIZE).payout_scale == LOWEST
+    assert bucket_sizing(record(), GRANT, 3 * SIZE).payout_scale == LOWEST
     assert bucket_sizing(granted, GROW).payout_scale == 1.3
     assert bucket_sizing(granted, GROW, 5 * SIZE, payout_scale=1.5).payout_scale == 1.3
     assert bucket_sizing(granted, MinerBucket.SUBACCOUNT_FUNDED).payout_scale == 1.3

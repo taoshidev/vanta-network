@@ -338,10 +338,7 @@ class DebtLedger:
     @staticmethod
     def _bucket_from_status(challenge_period_status: str) -> MinerBucket:
         """Convert a stored status string to a MinerBucket, tolerating unknown/legacy values."""
-        try:
-            return MinerBucket(challenge_period_status)
-        except ValueError:
-            return MinerBucket.UNKNOWN
+        return MinerBucket.from_status(challenge_period_status)
 
     def checkpoint_bucket(self, cp: DebtCheckpoint) -> MinerBucket:
         """The bucket this checkpoint was stamped with."""

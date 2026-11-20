@@ -17,15 +17,34 @@ class MinerBucket(Enum):
     SUBACCOUNT_FUNDED = "SUBACCOUNT_FUNDED"
     SUBACCOUNT_ALPHA = "SUBACCOUNT_ALPHA"
     # Pro account buckets
-    PRO_CHALLENGE_TRANSITION = "PRO_CHALLENGE_TRANSITION"
     PRO_CHALLENGE_FROM_STANDARD = "PRO_CHALLENGE_FROM_STANDARD"
     PRO_CHALLENGE_DIRECT = "PRO_CHALLENGE_DIRECT"
     PRO_FUNDED = "PRO_FUNDED"
 
+    @classmethod
+    def _missing_(cls, value):
+        """Parse the retired bucket names."""
+        if value in LEGACY_BUCKET_NAMES:
+            return cls(LEGACY_BUCKET_NAMES[value])
+        return None
+
+    @classmethod
+    def from_status(cls, status: str | None) -> "MinerBucket":
+        """Parse a stored status string, tolerating unknown values."""
+        try:
+            return cls(status)
+        except ValueError:
+            return cls.UNKNOWN
+
+    @property
+    def statuses(self) -> set[str]:
+        """Every status string this bucket may have been stored as, retired names included."""
+        return {self.value, *(name for name, value in LEGACY_BUCKET_NAMES.items() if value == self.value)}
+
     def intraday_drawdown_threshold(self, time_ms: int | None = None) -> float:
         """
         Returns the intraday drawdown threshold for this bucket from ValiConfig.
-        For SUBACCOUNT_FUNDED and PRO_CHALLENGE_TRANSITION, time_ms is the miner's
+        For SUBACCOUNT_FUNDED, time_ms is the miner's
         SUBACCOUNT_CHALLENGE registration timestamp and determines which versioned threshold
         applies. Pro buckets are not versioned - they have no legacy tier.
         """
@@ -38,8 +57,7 @@ class MinerBucket(Enum):
         if self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.CHALLENGE):
             return ValiConfig.CHALLENGE_INTRADAY_DRAWDOWN_THRESHOLD
 
-        # TRANSITION is still trading the standard funded account, so it keeps funded rules
-        if self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION):
+        if self == MinerBucket.SUBACCOUNT_FUNDED:
             if time_ms is not None and time_ms < ValiConfig.FUNDED_V0_CUTOFF_MS:
                 return ValiConfig.FUNDED_INTRADAY_DRAWDOWN_THRESHOLD_V0
             if time_ms is not None and time_ms < ValiConfig.FUNDED_V1_CUTOFF_MS:
@@ -54,7 +72,7 @@ class MinerBucket(Enum):
     def eod_drawdown_threshold(self, time_ms: int | None = None) -> float:
         """
         Returns the intraday drawdown threshold for this bucket from ValiConfig.
-        For SUBACCOUNT_FUNDED and PRO_CHALLENGE_TRANSITION, time_ms is the miner's
+        For SUBACCOUNT_FUNDED, time_ms is the miner's
         SUBACCOUNT_CHALLENGE registration timestamp and determines which versioned threshold
         applies.
         """
@@ -67,7 +85,7 @@ class MinerBucket(Enum):
         if self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.CHALLENGE):
             return ValiConfig.CHALLENGE_EOD_DRAWDOWN_THRESHOLD
 
-        if self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION):
+        if self == MinerBucket.SUBACCOUNT_FUNDED:
             if time_ms is not None and time_ms < ValiConfig.FUNDED_V0_CUTOFF_MS:
                 return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD_V0
             return ValiConfig.FUNDED_EOD_DRAWDOWN_THRESHOLD
@@ -84,20 +102,14 @@ class MinerBucket(Enum):
     @property
     def is_subaccount(self) -> bool:
         return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.SUBACCOUNT_ALPHA,
-                        MinerBucket.PRO_CHALLENGE_TRANSITION, MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
-                        MinerBucket.PRO_CHALLENGE_DIRECT, MinerBucket.PRO_FUNDED)
-
-    @property
-    def is_pro(self) -> bool:
-        """True for buckets trading the pro account. Excludes TRANSITION, which is still on the
-        standard account and so keeps standard fees, leverage, and permitted trade pairs."""
-        return self in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT,
+                        MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT,
                         MinerBucket.PRO_FUNDED)
 
     @property
-    def is_pro_track(self) -> bool:
-        """True for every bucket on the pro journey, including the transition week."""
-        return self.is_pro or self == MinerBucket.PRO_CHALLENGE_TRANSITION
+    def is_pro(self) -> bool:
+        """True for buckets trading the pro account, the whole pro track."""
+        return self in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT,
+                        MinerBucket.PRO_FUNDED)
 
     @property
     def calmar_threshold(self) -> float | None:
@@ -133,8 +145,7 @@ class MinerBucket(Enum):
         """True for the standard buckets whose daily loss limit is measured from the day-open balance
         instead of the day-open equity, for subaccounts created through SUBACCOUNT_CHALLENGE that are
         not HL-linked."""
-        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED,
-                        MinerBucket.PRO_CHALLENGE_TRANSITION)
+        return self in (MinerBucket.SUBACCOUNT_CHALLENGE, MinerBucket.SUBACCOUNT_FUNDED)
 
     @property
     def payout_scale_applies(self) -> bool:
@@ -150,7 +161,7 @@ class MinerBucket(Enum):
     @property
     def is_subaccount_funded(self) -> bool:
         """True for either subaccount track's funded buckets."""
-        return self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_FUNDED, MinerBucket.PRO_CHALLENGE_TRANSITION)
+        return self in (MinerBucket.SUBACCOUNT_FUNDED, MinerBucket.PRO_FUNDED)
 
     @property
     def is_subaccount_earning(self) -> bool:
@@ -169,8 +180,6 @@ class MinerBucket(Enum):
             return MinerBucket.MAINCOMP
         elif self == MinerBucket.SUBACCOUNT_CHALLENGE:
             return MinerBucket.SUBACCOUNT_FUNDED
-        elif self == MinerBucket.PRO_CHALLENGE_TRANSITION:
-            return MinerBucket.PRO_CHALLENGE_FROM_STANDARD
         elif self in (MinerBucket.PRO_CHALLENGE_FROM_STANDARD, MinerBucket.PRO_CHALLENGE_DIRECT):
             return MinerBucket.PRO_FUNDED
         # TODO determine if we need alpha or keep subaccounts as funded
@@ -182,14 +191,12 @@ class MinerBucket(Enum):
     def promotion_target(self) -> "MinerBucket | None":
         """Where a miner may promote itself with its own signed request (POST /entity/subaccount/promote).
 
-        These three hops onto the pro track are the only self-service bucket moves on the network;
+        These two hops onto the pro track are the only self-service bucket moves on the network;
         every other bucket returns None and cannot be promoted this way.
         """
         if self == MinerBucket.SUBACCOUNT_CHALLENGE:
             return MinerBucket.PRO_CHALLENGE_DIRECT
         elif self == MinerBucket.SUBACCOUNT_FUNDED:
-            return MinerBucket.PRO_CHALLENGE_TRANSITION
-        elif self == MinerBucket.PRO_CHALLENGE_TRANSITION:
             return MinerBucket.PRO_CHALLENGE_FROM_STANDARD
         return None
 
@@ -233,7 +240,6 @@ class MinerBucket(Enum):
                 MinerBucket.SUBACCOUNT_CHALLENGE,
                 MinerBucket.SUBACCOUNT_FUNDED,
                 MinerBucket.SUBACCOUNT_ALPHA,
-                MinerBucket.PRO_CHALLENGE_TRANSITION,
                 MinerBucket.PRO_CHALLENGE_FROM_STANDARD,
                 MinerBucket.PRO_CHALLENGE_DIRECT,
                 MinerBucket.PRO_FUNDED
@@ -247,6 +253,11 @@ class MinerBucket(Enum):
                 and self != from_bucket
                 and self != MinerBucket.ELIMINATED)
 
+
+# Retired bucket names, mapped to the bucket value they parse as. PRO_CHALLENGE_TRANSITION was a wind-down on
+# the standard funded account before the single SUBACCOUNT_FUNDED -> PRO_CHALLENGE_FROM_STANDARD hop.
+LEGACY_TRANSITION_BUCKET = "PRO_CHALLENGE_TRANSITION"
+LEGACY_BUCKET_NAMES = {LEGACY_TRANSITION_BUCKET: "SUBACCOUNT_FUNDED"}
 
 # The buckets of a regular miner on the existing rules (a standard miner reaches PLAGIARISM too, known by its record)
 EXISTING_RULES_BUCKETS = (MinerBucket.CHALLENGE, MinerBucket.MAINCOMP, MinerBucket.PROBATION, MinerBucket.PLAGIARISM)
@@ -277,12 +288,10 @@ class BucketEntry:
 
     @classmethod
     def from_dict(cls, d: dict) -> 'BucketEntry':
-        """Create from dict for deserialization."""
+        """Create from dict for deserialization. Retired bucket names map to their bucket."""
         bucket = d.get('bucket', MinerBucket.UNKNOWN)
-        if isinstance(bucket, str):
-            bucket = MinerBucket(bucket)
         return cls(
-            bucket=bucket,
+            bucket=MinerBucket(bucket) if isinstance(bucket, str) else bucket,
             start_time_ms=d.get('start_time_ms') or d.get('bucket_start_time', 0),
             reverted_ms=d.get('reverted_ms'),
         )
