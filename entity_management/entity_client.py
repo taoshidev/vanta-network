@@ -270,6 +270,15 @@ class EntityClient(RPCClientBase):
         """Settle this payout week's earnings before an account switch wipes the account."""
         return self._server.settle_wound_down_segment_rpc(synthetic_hotkey, from_bucket, promotion_ms)
 
+    def calculate_segment_payout_record(self, hotkey: str, segment: dict, positions: list,
+                                        end_ms: int) -> Optional[dict]:
+        """What a bucket segment leaving an earning bucket is owed, pinned on it as its payout record."""
+        return self._server.calculate_segment_payout_record_rpc(hotkey, segment, positions, end_ms)
+
+    def calculate_segment_closed_weeks(self, hotkey: str, segment: dict, now_ms: int) -> Optional[list]:
+        """Settlement rows of the live segment's payout weeks that closed since its last frozen one."""
+        return self._server.calculate_segment_closed_weeks_rpc(hotkey, segment, now_ms)
+
     def get_hl_subaccount_limits_data(self, hl_address: str) -> Optional[dict]:
         """
         Get lightweight limits data for an HL subaccount.

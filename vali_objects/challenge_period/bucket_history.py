@@ -11,6 +11,10 @@ state has moved on.
   * `segment_runs` - derives the segments a miner's bucket entries describe. The bucket entries
     are the source of truth, so a validator that only follows another validator's record
     (sync_challenge_period_data) derives the same segments.
+  * Payouts - an earning segment's settlement rows are frozen onto it as each payout week closes
+    (closed_weeks), and what it is owed is pinned when it leaves the earning bucket (payout_record),
+    so the history paid out is never recomputed. An admin may set any segment-week's payout
+    (payout_overrides), kept beside the computed rows so no recompute erases it.
   * `BucketHistoryStore` - holds the summaries, persists them, and reads and writes the files of
     each segment directory (ValiBkpUtils.get_bucket_segment_dir):
 
@@ -71,6 +75,16 @@ class BucketSegment:
     end_equity: Optional[float] = None
     final_drawdown: Optional[dict] = None
     final_pro_stats: Optional[dict] = None
+    # Payout scale of the segment, fixed by its first stats row so a later resize cannot reprice it
+    payout_scale: Optional[float] = None
+    # What the segment was owed when it left an earning bucket (EntityManager.calculate_segment_payout_record):
+    # {computed_ms, end_ms, payout_usd, gross_payout_usd, settlements, amended_ms}
+    payout_record: Optional[dict] = None
+    # Settlement rows of the payout weeks that closed while the segment was live, oldest first
+    # (EntityManager.calculate_segment_closed_weeks), dollars included
+    closed_weeks: Optional[List[dict]] = None
+    # Admin payout per payout week: {week_start_ms (str in JSON): {payout_usd, set_ms, note}}
+    payout_overrides: Optional[Dict[str, dict]] = None
 
     @property
     def key(self) -> tuple:
@@ -339,7 +353,9 @@ class BucketHistoryStore:
 
     @staticmethod
     def _on_reopen(segment: BucketSegment) -> None:
-        """Undo what closing the segment recorded."""
+        """Undo what closing the segment recorded: the move that pinned its payout record never
+        happened. Its overrides stay, as an admin's decision."""
+        segment.payout_record = None
 
     def save_segment(self, segment: BucketSegment) -> None:
         self.save_to_disk([segment.hotkey])

@@ -113,6 +113,30 @@ class ChallengePeriodClient(RPCClientBase):
         """A miner's bucket segment summaries, oldest first, without reverted ones."""
         return self._server.get_bucket_segments_rpc(hotkey)
 
+    def get_payout_records(self, hotkey: str) -> list[dict]:
+        """The payout records pinned on a miner's bucket segments."""
+        return self._server.get_payout_records_rpc(hotkey)
+
+    def admin_update_payout_record(self, hotkey: str, segment_start_ms: int, remove: bool = False,
+                                   recompute: bool = False) -> Tuple[bool, str, dict | None]:
+        """Remove or recompute a segment's payout record. Returns (success, message, record)."""
+        return self._server.admin_update_payout_record_rpc(hotkey, segment_start_ms, remove, recompute)
+
+    def admin_drop_closed_weeks(self, hotkey: str, week_starts_ms: list[int] | None = None) -> Tuple[bool, str, list[int]]:
+        """Unfreeze closed payout weeks (None: all of them). Returns (success, message, dropped week starts)."""
+        return self._server.admin_drop_closed_weeks_rpc(hotkey, week_starts_ms)
+
+    def admin_set_payout_override(self, hotkey: str, segment_start_ms: int, week_start_ms: int,
+                                  payout_usd: float | None = None, clear: bool = False,
+                                  note: str | None = None) -> Tuple[bool, str, dict | None]:
+        """Set or clear one segment-week's payout. Returns (success, message, the segment's overrides)."""
+        return self._server.admin_set_payout_override_rpc(hotkey, segment_start_ms, week_start_ms, payout_usd,
+                                                          clear, note)
+
+    def get_payout_overrides(self, hotkey: str) -> list[dict]:
+        """The payout overrides of a miner's segments."""
+        return self._server.get_payout_overrides_rpc(hotkey)
+
     def get_drawdown_snapshot_fields(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
         """Per-hotkey drawdown fields stamped onto account snapshots."""
         return self._server.get_drawdown_snapshot_fields_rpc(hotkeys)

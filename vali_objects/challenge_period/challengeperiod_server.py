@@ -210,6 +210,24 @@ class ChallengePeriodServer(RPCServerBase):
     def get_bucket_segments_rpc(self, hotkey: str) -> list[dict]:
         return self._manager.get_bucket_segments(hotkey)
 
+    def get_payout_records_rpc(self, hotkey: str) -> list[dict]:
+        return self._manager.get_payout_records(hotkey)
+
+    def admin_update_payout_record_rpc(self, hotkey: str, segment_start_ms: int, remove: bool = False,
+                                       recompute: bool = False) -> Tuple[bool, str, dict | None]:
+        return self._manager.admin_update_payout_record(hotkey, segment_start_ms, remove, recompute)
+
+    def admin_drop_closed_weeks_rpc(self, hotkey: str, week_starts_ms: list[int] | None = None) -> Tuple[bool, str, list[int]]:
+        return self._manager.admin_drop_closed_weeks(hotkey, week_starts_ms)
+
+    def admin_set_payout_override_rpc(self, hotkey: str, segment_start_ms: int, week_start_ms: int,
+                                      payout_usd: float | None = None, clear: bool = False,
+                                      note: str | None = None) -> Tuple[bool, str, dict | None]:
+        return self._manager.admin_set_payout_override(hotkey, segment_start_ms, week_start_ms, payout_usd, clear, note)
+
+    def get_payout_overrides_rpc(self, hotkey: str) -> list[dict]:
+        return self._manager.get_payout_overrides(hotkey)
+
     def get_drawdown_snapshot_fields_rpc(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
         return self._manager.get_drawdown_snapshot_fields(hotkeys)
 

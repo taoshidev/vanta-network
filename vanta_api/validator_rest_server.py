@@ -380,6 +380,10 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/admin/settled-segment/<hotkey>", methods=["POST"])(self.correct_settled_segment)
         self.app.route("/admin/eliminate/<hotkey>", methods=["POST"])(self.eliminate_hotkey)
         self.app.route("/admin/reset/<hotkey>", methods=["POST"])(self.reset_hotkey)
+        self.app.route("/admin/payout-record/<hotkey>", methods=["GET"])(self.get_payout_records)
+        self.app.route("/admin/payout-record/<hotkey>", methods=["POST"])(self.update_payout_record)
+        self.app.route("/admin/payout-override/<hotkey>", methods=["GET"])(self.get_payout_overrides)
+        self.app.route("/admin/payout-override/<hotkey>", methods=["POST"])(self.set_payout_override)
         self.app.route("/admin/force-deposit/<hotkey>", methods=["POST"])(self.force_deposit)
         self.app.route("/admin/refresh-account-size/<hotkey>", methods=["POST"])(self.refresh_account_size)
         self.app.route("/admin/reset-snapshot/<hotkey>", methods=["POST"])(self.reset_account_snapshot)
@@ -2080,6 +2084,9 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         Optional JSON body:
           account_size: float -- USD account size (subaccounts only)
           move_to_funded: bool -- move a SUBACCOUNT_CHALLENGE miner to SUBACCOUNT_FUNDED (default false)
+          recompute_weeks: list[int] | "all" -- closed payout weeks (Monday 00:00 UTC ms) to unfreeze
+                           so they are computed again, each with every later frozen week of its
+                           segment. Without it the frozen weeks are kept as they were paid.
 
         Example:
         curl -X POST http://localhost:48888/admin/reset/<hotkey> \\
@@ -2100,6 +2107,17 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             move_to_funded = False
         elif not isinstance(move_to_funded, bool):
             return jsonify({'error': f'move_to_funded must be a boolean, got "{move_to_funded}"'}), 400
+        recompute_weeks = data.get('recompute_weeks')
+        if recompute_weeks == 'all':
+            recompute_weeks = None
+            drop_closed_weeks = True
+        elif recompute_weeks is None:
+            drop_closed_weeks = False
+        elif (isinstance(recompute_weeks, list) and recompute_weeks
+              and all(isinstance(week, int) and not isinstance(week, bool) for week in recompute_weeks)):
+            drop_closed_weeks = True
+        else:
+            return jsonify({'error': 'recompute_weeks must be "all" or a non-empty list of integer week starts'}), 400
         is_subaccount = is_synthetic_hotkey(hotkey)
         if account_size is not None:
             try:
@@ -2171,10 +2189,158 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
                     return jsonify({'error': f'Reset succeeded but failed to update account size for {hotkey}: {message}'}), 500
                 result['account_size'] = account_size
 
+            if drop_closed_weeks:
+                success, message, dropped = self._challenge_period_client.admin_drop_closed_weeks(hotkey, recompute_weeks)
+                if not success:
+                    return jsonify({'error': f'Reset succeeded but no closed weeks were unfrozen: {message}'}), 400
+                result['recomputed_weeks'] = dropped
+
             return jsonify({'status': 'success', **result})
         except Exception as e:
             logger.error(f"Error resetting hotkey {hotkey}: {e}")
             logger.error(traceback.format_exc())
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def get_payout_records(self, hotkey: str):
+        """
+        List the payout records pinned on a miner's bucket segments. A record is written when a
+        segment leaves an earning bucket, and the payout paths pay it instead of recomputing it.
+        Requires tier 500 access.
+
+        Example:
+        curl "http://localhost:48888/admin/payout-record/<hotkey>" -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Payout record endpoint requires tier 500 access'}), 403
+        try:
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'payout_records': self._challenge_period_client.get_payout_records(hotkey),
+            }), 200
+        except Exception as e:
+            logger.error(f"Error reading payout records for {hotkey}: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def update_payout_record(self, hotkey: str):
+        """
+        Remove or recompute one segment's payout record. Requires tier 500 access.
+        To correct an amount, set a payout override (POST /admin/payout-override/<hotkey>).
+
+        Query params:
+          segment_start_ms: start of the bucket segment holding the record (required)
+          remove=true:      drop the record; the segment is no longer paid from it
+          recompute=true:   rebuild the record from the positions in the segment directory
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/payout-record/<hotkey>?segment_start_ms=1700000000000&recompute=true" \\
+          -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Payout record endpoint requires tier 500 access'}), 403
+
+        try:
+            segment_start_ms = int(request.args.get('segment_start_ms'))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'segment_start_ms is required and must be an integer'}), 400
+        remove = request.args.get('remove', '').lower() == 'true'
+        recompute = request.args.get('recompute', '').lower() == 'true'
+        if remove == recompute:
+            return jsonify({'error': 'pass exactly one of remove=true or recompute=true'}), 400
+
+        try:
+            success, message, record = self._challenge_period_client.admin_update_payout_record(
+                hotkey, segment_start_ms, remove, recompute)
+            if not success:
+                return jsonify({'error': message}), 400
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'segment_start_ms': segment_start_ms,
+                'payout_record': record,
+                'message': message,
+            }), 200
+        except Exception as e:
+            logger.error(f"Error updating the payout record for {hotkey}: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def get_payout_overrides(self, hotkey: str):
+        """
+        List the payout overrides of a miner's bucket segments. Requires tier 500 access.
+
+        Example:
+        curl "http://localhost:48888/admin/payout-override/<hotkey>" -H "Authorization: Bearer YOUR_API_KEY"
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Payout override endpoint requires tier 500 access'}), 403
+        try:
+            return jsonify({
+                'status': 'success',
+                'hotkey': hotkey,
+                'payout_overrides': self._challenge_period_client.get_payout_overrides(hotkey),
+            }), 200
+        except Exception as e:
+            logger.error(f"Error reading payout overrides for {hotkey}: {e}")
+            return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+    def set_payout_override(self, hotkey: str):
+        """
+        Set or clear the payout of one segment-week, open or closed. It replaces that week's computed
+        payout only: balance, high-water mark and escrow carry on as computed, so paying a withheld
+        week does not release its escrow. Requires tier 500 access.
+
+        JSON body:
+          segment_start_ms: start of the bucket segment (required)
+          week_start_ms:    Monday 00:00 UTC of the week, inside the segment (required)
+          payout_usd:       the week's payout, finite and >= 0; or
+          clear: true       drop the override, so the computed payout applies again
+          note:             optional free text
+
+        Example:
+        curl -X POST "http://localhost:48888/admin/payout-override/<hotkey>" \\
+          -H "Authorization: Bearer YOUR_API_KEY" -H "Content-Type: application/json" \\
+          -d '{"segment_start_ms": 1700000000000, "week_start_ms": 1700438400000, "payout_usd": 1234.56}'
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self.can_access_tier(api_key, 500):
+            return jsonify({'error': 'Payout override endpoint requires tier 500 access'}), 403
+
+        data = request.get_json(silent=True) or {}
+        segment_start_ms, week_start_ms = data.get('segment_start_ms'), data.get('week_start_ms')
+        for name, value in (('segment_start_ms', segment_start_ms), ('week_start_ms', week_start_ms)):
+            if isinstance(value, bool) or not isinstance(value, int):
+                return jsonify({'error': f'{name} is required and must be an integer'}), 400
+        payout_usd, clear, note = data.get('payout_usd'), data.get('clear', False), data.get('note')
+        if not isinstance(clear, bool):
+            return jsonify({'error': 'clear must be a boolean'}), 400
+        if clear == (payout_usd is not None):
+            return jsonify({'error': 'pass exactly one of payout_usd or clear=true'}), 400
+        if payout_usd is not None and (isinstance(payout_usd, bool) or not isinstance(payout_usd, (int, float))
+                                       or not math.isfinite(payout_usd) or payout_usd < 0):
+            return jsonify({'error': 'payout_usd must be a finite number >= 0'}), 400
+        if note is not None and not isinstance(note, str):
+            return jsonify({'error': 'note must be a string'}), 400
+
+        try:
+            success, message, overrides = self._challenge_period_client.admin_set_payout_override(
+                hotkey, segment_start_ms, week_start_ms, payout_usd, clear, note)
+            if not success:
+                return jsonify({'error': message}), 400
+            return jsonify({'status': 'success', 'hotkey': hotkey, 'segment_start_ms': segment_start_ms,
+                            'payout_overrides': overrides, 'message': message}), 200
+        except Exception as e:
+            logger.error(f"Error setting a payout override for {hotkey}: {e}")
             return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
     def update_drawdown_criteria(self):

@@ -436,6 +436,8 @@ class ChallengePeriodManager(CacheController):
     AUTO_PROMOTION_FAST_TRACK_HOLD_MS = 3 * 60 * 1000
     # A returns-target promotion must likewise pass on every refresh for this long
     PROMOTION_HOLD_MS = 3 * 60 * 1000
+    # How often a payout week that has ended but is not final yet is retried for freezing
+    CLOSED_WEEKS_RETRY_MS = 60 * 60 * 1000
 
     def __init__(
         self,
@@ -508,6 +510,9 @@ class ChallengePeriodManager(CacheController):
         # One lock per miner, held across a promotion of it (an auto-promotion's from its decision on)
         self._promotion_locks: dict[str, threading.RLock] = {}
         self._promotion_locks_guard = threading.Lock()
+        # Closed payout weeks: the week each live segment is frozen through, and the last attempt per miner
+        self._closed_weeks_checked: dict[str, int] = {}
+        self._closed_weeks_attempt_ms: dict[str, int] = {}
 
         logger.info(f"[CP_MANAGER] ChallengePeriodManager initialized with {len(self.miner_states)} state data")
 
@@ -578,6 +583,8 @@ class ChallengePeriodManager(CacheController):
         timer.lap("latch_soft_breaches")
         self._record_bucket_stats(evaluation_hotkeys, current_time_ms)
         timer.lap("bucket_stats")
+        self._freeze_closed_weeks(evaluation_hotkeys, current_time_ms)
+        timer.lap("closed_weeks")
         self._refresh_rank_cache(rank_hotkeys, ledgers, rank_positions, accounts, asset_selections, current_time_ms)
         timer.lap("rank_cache")
 
@@ -881,6 +888,11 @@ class ChallengePeriodManager(CacheController):
         # Keep the closed positions and final stats of the account in its bucket segment before
         # anything below archives or resets them
         self._record_wound_down_account(hotkey, current_time_ms)
+        # Pin what the earning segment being left is owed; without it the move waits for the next refresh
+        if not self._record_segment_payout(hotkey, current_time_ms):
+            logger.error(f"[CHALLENGE] {hotkey} bucket change to {target_bucket.value} ABORTED - its payout record "
+                         f"could not be calculated; the positions are closed and the move is retried")
+            return False
         # Track payout information already gathered before promotion since account will be wound down
         from_bucket = self.miner_states[hotkey].current_bucket
         if is_synthetic_hotkey(hotkey) and from_bucket.is_subaccount_earning:
@@ -928,6 +940,10 @@ class ChallengePeriodManager(CacheController):
             return self._switch_account(hotkey, target, current_time_ms)
         if target.closes_positions_from(self.miner_states[hotkey].current_bucket):
             self._close_out_account(hotkey, current_time_ms)
+            if not self._record_segment_payout(hotkey, current_time_ms):
+                logger.error(f"[CHALLENGE] {hotkey} bucket change to {target.value} ABORTED - its payout record "
+                             f"could not be calculated; the positions are closed and the move is retried")
+                return False
         return True
 
     def promote_hotkeys(self, promotions: dict[str, MinerBucket], current_time_ms: int) -> bool:
@@ -1247,7 +1263,7 @@ class ChallengePeriodManager(CacheController):
         state = self.miner_states[hotkey]
         logger.info(f"[CHALLENGE] admin moving to {bucket.value}: {state}")
 
-        if bucket.switches_account and not self._switch_account(hotkey, bucket, current_time_ms):
+        if bucket.switches_account and not self._leave_bucket(hotkey, bucket, current_time_ms):
             return False, f"{hotkey} account size update failed, bucket unchanged"
 
         # PRO_FUNDED keeps the account, so it never runs the switch that sizes one. An organic
@@ -1269,8 +1285,8 @@ class ChallengePeriodManager(CacheController):
                 return False, f"{hotkey} account size update failed, bucket unchanged: {message}"
 
         # Every move into or out of an earning bucket starts flat
-        if not bucket.switches_account and bucket.closes_positions_from(state.current_bucket):
-            self._close_out_account(hotkey, current_time_ms)
+        if not bucket.switches_account and not self._leave_bucket(hotkey, bucket, current_time_ms):
+            return False, f"{hotkey} payout record could not be calculated, bucket unchanged"
 
         with self._buckets_lock:
             state.add_bucket_entry(bucket, current_time_ms)
@@ -1945,6 +1961,14 @@ class ChallengePeriodManager(CacheController):
             segment = self._bucket_history.get_live_segment(hotkey)
             if state is None or segment is None:
                 continue
+            if segment.payout_scale is None and self._pays_through_segments(hotkey):
+                # Captured here rather than when the segment opens: a segment can open inside an
+                # entity server call (subaccount creation), which must not be called back into
+                try:
+                    segment.payout_scale = self._payout_scale_now(hotkey)
+                    self._bucket_history.save_segment(segment)
+                except Exception as e:
+                    logger.warning(f"[BUCKET_HISTORY] could not read the payout scale of {hotkey}: {e}")
             pro_stats = state.pro_stats
             try:
                 self._bucket_history.append_stats_row(segment, {
@@ -2009,6 +2033,191 @@ class ChallengePeriodManager(CacheController):
     def get_bucket_segments(self, hotkey: str) -> list[dict]:
         """A miner's segment summaries, oldest first, without reverted ones."""
         return [s.to_dict() for s in self._bucket_history.get_segments(hotkey) if s.reverted_ms is None]
+
+    # ==================== Segment payouts ====================
+
+    def _pays_through_segments(self, hotkey: str) -> bool:
+        """Subaccounts and standard miners are paid segment by segment; regular miners on the existing rules are not."""
+        if is_synthetic_hotkey(hotkey):
+            return True
+        try:
+            return self._standard_account(hotkey) is not None
+        except Exception as e:
+            logger.warning(f"[BUCKET_HISTORY] could not read the record of {hotkey}: {e}")
+            return False
+
+    def _payout_scale_now(self, hotkey: str) -> float:
+        """The account's payout scale as it stands: a subaccount's from its entity, a standard miner's from its record."""
+        if is_synthetic_hotkey(hotkey):
+            return self._entity_client.get_payout_scale(hotkey)
+        info = PipelineAccountInfo.from_standard_miner(self._standard_account(hotkey))
+        return pro_payout_scale(info.standard_account_size, info.pro_account_size, info.payout_scale)
+
+    def _record_segment_payout(self, hotkey: str, current_time_ms: int) -> bool:
+        """Pin what the earning segment being left is owed, once its positions are closed. The
+        payout paths read the record from now on instead of recomputing the segment. False only
+        when a record is due and could not be calculated: the move must wait for a retry."""
+        state = self.miner_states.get(hotkey)
+        if (not self._bucket_history.enabled or state is None or not state.current_bucket.is_subaccount_earning
+                or not self._pays_through_segments(hotkey)):
+            return True
+        try:
+            segment = self._live_segment(hotkey, current_time_ms)
+            if segment is None:
+                logger.error(f"[BUCKET_HISTORY] {hotkey} has no live segment to pin a payout record on")
+                return False
+            if segment.payout_scale is None:
+                segment.payout_scale = self._payout_scale_now(hotkey)
+            live = self._position_client.get_positions_for_one_hotkey(hotkey)
+            if self._bucket_history.write_positions(segment, live):
+                positions = self._bucket_history.read_positions(segment)
+            else:
+                positions = [p.to_dict() for p in live]
+            return self._store_payout_record(segment, positions, current_time_ms)
+        except Exception as e:
+            logger.error(f"[BUCKET_HISTORY] could not record the payout of {hotkey}: {e}", exc_info=True)
+            return False
+
+    def _store_payout_record(self, segment: BucketSegment, positions: list[dict], end_ms: int) -> bool:
+        record = self._entity_client.calculate_segment_payout_record(
+            segment.hotkey, segment.to_dict(), positions, end_ms)
+        if not isinstance(record, dict):
+            logger.error(f"[BUCKET_HISTORY] no payout record could be calculated for {segment.hotkey} {segment.dir_name}")
+            return False
+        segment.payout_record = record
+        self._bucket_history.save_segment(segment)
+        logger.info(f"[BUCKET_HISTORY] payout record for {segment.hotkey} {segment.dir_name}: "
+                    f"${record.get('payout_usd', 0.0):.2f}")
+        return True
+
+    def _freeze_closed_weeks(self, hotkeys: list[str], current_time_ms: int) -> None:
+        """Freeze the settlement of each payout week a live earning segment has closed, once the
+        week is final. A week not final yet is retried every CLOSED_WEEKS_RETRY_MS."""
+        if not self._bucket_history.enabled:
+            return
+        week_start_ms = TimeUtil.ms_at_start_of_week(current_time_ms)
+        for hotkey in hotkeys:
+            state = self.miner_states.get(hotkey)
+            if (state is None or not state.current_bucket.is_subaccount_earning
+                    or self._closed_weeks_checked.get(hotkey, 0) >= week_start_ms
+                    or current_time_ms - self._closed_weeks_attempt_ms.get(hotkey, 0) < self.CLOSED_WEEKS_RETRY_MS
+                    or not self._pays_through_segments(hotkey)):
+                continue
+            segment = self._bucket_history.get_live_segment(hotkey)
+            if segment is None:
+                continue
+            self._closed_weeks_attempt_ms[hotkey] = current_time_ms
+            try:
+                if segment.payout_scale is None:
+                    segment.payout_scale = self._payout_scale_now(hotkey)
+                rows = self._entity_client.calculate_segment_closed_weeks(hotkey, segment.to_dict(), current_time_ms)
+            except Exception as e:
+                logger.error(f"[BUCKET_HISTORY] could not calculate the closed weeks of {hotkey}: {e}")
+                continue
+            if not isinstance(rows, list):
+                continue
+            self._closed_weeks_checked[hotkey] = week_start_ms
+            if rows:
+                segment.closed_weeks = (segment.closed_weeks or []) + rows
+                self._bucket_history.save_segment(segment)
+                logger.info(f"[BUCKET_HISTORY] froze {len(rows)} closed payout week rows of {hotkey} "
+                            f"{segment.dir_name} through {rows[-1]['end_ms']}")
+
+    def get_payout_records(self, hotkey: str) -> list[dict]:
+        return [{"bucket": s.bucket, "start_ms": s.start_ms, "end_ms": s.end_ms, "payout_record": s.payout_record}
+                for s in self._bucket_history.get_segments(hotkey)
+                if s.reverted_ms is None and s.payout_record is not None]
+
+    def admin_update_payout_record(self, hotkey: str, segment_start_ms: int, remove: bool = False,
+                                   recompute: bool = False) -> Tuple[bool, str, dict | None]:
+        """Drop a segment's payout record, or rebuild it from the positions in its segment directory.
+        An admin corrects an amount with a payout override instead (admin_set_payout_override)."""
+        if remove == recompute:
+            return False, "exactly one of remove or recompute is required", None
+        segment = self._bucket_history.get_segment(hotkey, segment_start_ms)
+        if segment is None or segment.reverted_ms is not None:
+            return False, f"{hotkey} has no segment starting at {segment_start_ms}", None
+        if remove:
+            segment.payout_record = None
+        else:
+            if segment.end_ms is None or not MinerBucket.from_status(segment.bucket).is_subaccount_earning:
+                return False, f"{segment.dir_name} is not a closed earning segment", None
+            if not self._store_payout_record(segment, self._bucket_history.read_positions(segment), segment.end_ms):
+                return False, f"payout record for {segment.dir_name} could not be calculated", None
+        logger.warning(f"[BUCKET_HISTORY] {hotkey} {segment.dir_name} payout record manually "
+                       f"{'removed' if remove else 'recomputed'}: {segment.payout_record}")
+        self._bucket_history.save_segment(segment)
+        return True, f"payout record for {segment.dir_name} updated", segment.payout_record
+
+    def admin_drop_closed_weeks(self, hotkey: str, week_starts_ms: list[int] | None = None) -> Tuple[bool, str, list[int]]:
+        """Unfreeze closed payout weeks, given by their Monday 00:00 UTC (None: every one), so they
+        are computed again. Each frozen week resumes from the one before it, so every later frozen
+        week of the same segment goes too. The live segment's are frozen again on the next refresh;
+        a payout record already pinned keeps its rows until it is recomputed. Overrides stay.
+        Returns (success, message, the week starts dropped)."""
+        segments = [s for s in self._bucket_history.get_segments(hotkey) if s.reverted_ms is None]
+        if not segments:
+            return False, f"{hotkey} has no bucket segments", []
+        wanted = None if week_starts_ms is None else set(week_starts_ms)
+        dropped = []
+        for segment in segments:
+            rows = segment.closed_weeks or []
+            cut = next((i for i, row in enumerate(rows)
+                        if wanted is None or TimeUtil.ms_at_start_of_week(row['start_ms']) in wanted), None)
+            if cut is None:
+                continue
+            dropped += [row['start_ms'] for row in rows[cut:]]
+            segment.closed_weeks = rows[:cut] or None
+        if not dropped:
+            return False, f"{hotkey} has no frozen weeks matching {week_starts_ms}", []
+        self._closed_weeks_checked.pop(hotkey, None)
+        self._closed_weeks_attempt_ms.pop(hotkey, None)
+        self._bucket_history.save_to_disk([hotkey])
+        logger.warning(f"[BUCKET_HISTORY] {hotkey} closed payout weeks manually unfrozen: {dropped}")
+        return True, f"unfroze {len(dropped)} closed payout week rows of {hotkey}", dropped
+
+    def admin_set_payout_override(self, hotkey: str, segment_start_ms: int, week_start_ms: int,
+                                  payout_usd: float | None = None, clear: bool = False, note: str | None = None,
+                                  now_ms: int | None = None) -> Tuple[bool, str, dict | None]:
+        """Set (or clear) the payout of one segment-week. It replaces that row's computed payout only;
+        balance, high-water mark and escrow carry on as computed. Returns (success, message, overrides)."""
+        now_ms = now_ms if now_ms is not None else TimeUtil.now_in_millis()
+        if clear == (payout_usd is not None):
+            return False, "exactly one of payout_usd or clear is required", None
+        if payout_usd is not None and (isinstance(payout_usd, bool) or not isinstance(payout_usd, (int, float))
+                                       or not math.isfinite(payout_usd) or payout_usd < 0):
+            return False, "payout_usd must be a finite number >= 0", None
+        if week_start_ms != TimeUtil.ms_at_start_of_week(week_start_ms):
+            return False, f"week_start_ms must be Monday 00:00 UTC; got {week_start_ms}", None
+        segment = self._bucket_history.get_segment(hotkey, segment_start_ms)
+        if segment is None:
+            return False, f"{hotkey} has no segment starting at {segment_start_ms}", None
+        if segment.reverted_ms is not None:
+            return False, f"{segment.dir_name} was reverted", None
+        if not MinerBucket.from_status(segment.bucket).is_subaccount_earning:
+            return False, f"{segment.dir_name} is not an earning segment", None
+        if not (TimeUtil.ms_at_start_of_week(segment.start_ms) <= week_start_ms
+                and (segment.end_ms is None or week_start_ms < segment.end_ms)):
+            return False, f"the week of {week_start_ms} is outside {segment.dir_name}", None
+        if week_start_ms > now_ms:
+            return False, f"the week of {week_start_ms} has not started", None
+        overrides = dict(segment.payout_overrides or {})
+        before = overrides.get(str(week_start_ms))
+        if clear:
+            overrides.pop(str(week_start_ms), None)
+        else:
+            overrides[str(week_start_ms)] = {"payout_usd": float(payout_usd), "set_ms": now_ms, "note": note}
+        segment.payout_overrides = overrides or None
+        self._bucket_history.save_segment(segment)
+        logger.warning(f"[BUCKET_HISTORY] {hotkey} {segment.dir_name} payout override for week {week_start_ms}: "
+                       f"{before} -> {overrides.get(str(week_start_ms))}")
+        return True, f"payout override for week {week_start_ms} of {segment.dir_name} updated", segment.payout_overrides
+
+    def get_payout_overrides(self, hotkey: str) -> list[dict]:
+        """The overrides of every earning segment that has any, without reverted segments."""
+        return [{"bucket": s.bucket, "start_ms": s.start_ms, "end_ms": s.end_ms, "payout_overrides": s.payout_overrides}
+                for s in self._bucket_history.get_segments(hotkey)
+                if s.reverted_ms is None and s.payout_overrides]
 
     def sync_bucket_history(self, checkpoint_dict: dict) -> dict:
         return self._bucket_history.sync_from_checkpoint(checkpoint_dict)

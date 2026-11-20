@@ -61,6 +61,7 @@ from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
 from vali_objects.utils.limit_order.limit_order_client import LimitOrderClient
 from vali_objects.enums.miner_bucket_enum import MinerBucket
+from vali_objects.vali_dataclasses.position import Position
 from time_util.time_util import MS_IN_24_HOURS, TimeUtil
 from vanta_api.websocket_notifier import WebSocketNotifierClient
 from shared_objects.log import logger
@@ -2205,6 +2206,233 @@ class EntityManager(ValidatorBroadcastBase):
 
         except Exception as e:
             logger.error(f"[ENTITY_MANAGER] Error calculating payout for {synthetic_hotkey}: {e}")
+            return None
+
+    # ==================== Bucket segment payouts ====================
+
+    def _payout_perf_ledger(self, hotkey: str, miner_bucket: Optional[MinerBucket] = None):
+        _perf_ledger = self._perf_ledger_client.get_perf_ledger_for_hotkey(hotkey)
+        perf_ledger = _perf_ledger.get(hotkey) if _perf_ledger else None
+        if not perf_ledger and miner_bucket is not None and miner_bucket == MinerBucket.ELIMINATED:
+            # Perf ledgers for eliminated funded/alpha subaccounts get moved to frozen storage.
+            frozen_ledgers = self._perf_ledger_client.get_frozen_ledgers()
+            perf_ledger = frozen_ledgers.get(hotkey) if frozen_ledgers else None
+        return perf_ledger
+
+    def _segment_scale(self, hotkey: str, segment: dict) -> float:
+        """The payout scale the segment opened with, so a resize cannot reprice it."""
+        scale = segment.get('payout_scale')
+        if scale is not None:
+            return scale
+        return self.get_payout_scale(hotkey) if is_synthetic_hotkey(hotkey) else 1.0
+
+    @staticmethod
+    def _segment_positions(positions, segment: dict) -> list:
+        """The positions a segment traded: those opened at or after its start (none spans two
+        earning segments, MinerBucket.closes_positions_from)."""
+        positions = [Position(**p) if isinstance(p, dict) else p for p in positions]
+        return [p for p in positions if p.open_ms >= segment['start_ms']]
+
+    def _settle_segment(self, hotkey: str, segment: dict, positions: list, end_ms: int,
+                        realtime: bool, debt_ledger, perf_ledger,
+                        instant_cuts_ms: List[int] = (),
+                        resume: Optional[dict] = None) -> Optional[Tuple[List[dict], float]]:
+        """Weekly settlement rows for one earning segment, from its own positions, up to end_ms.
+
+        The balance, payout high water mark and escrow start at zero at the segment start, so
+        nothing earned before it is paid here; resume, the last frozen row, starts them from its
+        state instead and settles only what comes after it. Rows split at each Monday. Returns
+        (rows, deferred_balance), or None when the unrealized PnL at a row end cannot be determined.
+
+        instant_cuts_ms also split rows. A row from the start of a cut's week (or the cut before it)
+        up to the cut was paid by that instant payout: it is settled unpenalized, since a breach
+        later in the week cannot withhold money already paid, and reported in instant_paid.
+        """
+        instant_cuts_ms = sorted(instant_cuts_ms)
+        bucket = MinerBucket.from_status(segment['bucket'])
+        if segment.get('end_ms') is not None:
+            end_ms = min(end_ms, segment['end_ms'])
+        scale = self._segment_scale(hotkey, segment)
+        week_context = debt_ledger.weekly_payout_context(scale) if debt_ledger else {}
+        default_week = WeeklyPayoutContext(payout_scale=scale)
+
+        settle_from = resume['end_ms'] if resume else segment['start_ms']
+        running_balance = resume['eow_balance'] if resume else 0.0
+        payout_hwm = resume['payout_hwm'] if resume else 0.0
+        deferred_balance = resume['deferred_balance'] if resume else 0.0
+        orders = sorted((o for p in positions for o in p.orders if settle_from <= o.processed_ms < end_ms),
+                        key=lambda o: o.processed_ms)
+        fees = sorted((f for p in positions for f in p.fee_history if settle_from <= f.time_ms < end_ms),
+                      key=lambda f: f.time_ms)
+        if not orders and not resume:
+            return [], 0.0
+        realtime_unrealized = sum(p.unrealized_pnl for p in positions)
+        snapshots = read_all_snapshots(hotkey, running_unit_tests=self.running_unit_tests)
+
+        rows = []
+        row_start = settle_from if resume else max(settle_from, TimeUtil.ms_at_start_of_week(orders[0].processed_ms))
+        idx_order, idx_fee, idx_snap = 0, 0, 0
+        while row_start < end_ms:
+            row_end = min(TimeUtil.ms_at_start_of_week(row_start) + MS_IN_24_HOURS * 7, end_ms)
+            next_cut = next((c for c in instant_cuts_ms if c > row_start), None)
+            if next_cut is not None and next_cut < row_end:
+                row_end = next_cut
+            instant = (next_cut is not None and row_end <= next_cut
+                       and TimeUtil.ms_at_start_of_week(next_cut) <= row_start)
+
+            row_orders = []
+            while idx_order < len(orders) and orders[idx_order].processed_ms < row_end:
+                running_balance += orders[idx_order].realized_pnl
+                if orders[idx_order].realized_pnl != 0:
+                    row_orders.append(orders[idx_order])
+                idx_order += 1
+            while idx_fee < len(fees) and fees[idx_fee].time_ms < row_end:
+                running_balance -= fees[idx_fee].amount
+                idx_fee += 1
+
+            if realtime and row_end == end_ms:
+                unrealized_pnl = realtime_unrealized
+            elif row_end == next_cut:
+                # An instant payout is only taken with every position closed
+                unrealized_pnl = 0.0
+            else:
+                # Prefer the account snapshot (equity - balance) nearest the row end; fall back to
+                # the perf ledger checkpoint. row_end only increases, so idx_snap never rewinds.
+                snap_lo, snap_hi = row_end - DEFAULT_TOLERANCE_MS, row_end + DEFAULT_TOLERANCE_MS
+                while idx_snap < len(snapshots) and snapshots[idx_snap].snapshot_ms < snap_lo:
+                    idx_snap += 1
+                snapshot = None
+                best_delta = DEFAULT_TOLERANCE_MS + 1
+                j = idx_snap
+                while j < len(snapshots) and snapshots[j].snapshot_ms <= snap_hi:
+                    delta = abs(snapshots[j].snapshot_ms - row_end)
+                    if delta < best_delta:
+                        snapshot = snapshots[j]
+                        best_delta = delta
+                    j += 1
+                if snapshot is not None:
+                    unrealized_pnl = snapshot.equity - snapshot.balance
+                elif perf_ledger:
+                    cp = perf_ledger.get_checkpoint_at_time(row_end, ValiConfig.TARGET_CHECKPOINT_DURATION_MS)
+                    unrealized_pnl = cp.unrealized_pnl if cp else 0.0
+                    logger.warning(
+                        f"[ENTITY_MANAGER] No account snapshot found near end_time={row_end} for "
+                        f"{hotkey}; falling back to perf ledger checkpoint for unrealized PnL"
+                    )
+                else:
+                    logger.warning(
+                        f"[ENTITY_MANAGER] No account snapshot or perf ledger near "
+                        f"end_time={row_end} for {hotkey}; cannot determine unrealized PnL"
+                    )
+                    return None
+
+            week = week_context.get(TimeUtil.ms_at_start_of_week(row_start), default_week)
+            # Unrealized losses count against the payable balance, unrealized gains do not.
+            # The high water mark advances on gross terms.
+            payable = min(running_balance, running_balance + unrealized_pnl)
+            gross_payout = max(0.0, payable - payout_hwm)
+            payout_hwm = max(payout_hwm, payable)
+            row_scale = scale if bucket.payout_scale_applies else 1.0
+            penalty = week.weekly_penalty if bucket.soft_breach_applies and not instant else 1.0
+            owed = gross_payout * row_scale
+            earned = owed * penalty
+            released, deferred_balance, forfeited = apply_deferral(
+                deferred_balance,
+                owed - earned,
+                track=week.track,
+                week_penalty=1.0 if instant else week.weekly_penalty,
+            )
+            rows.append({
+                'start_ms': row_start,
+                'end_ms': row_end,
+                'bucket': bucket.value,
+                'payout_record': False,
+                'eow_balance': running_balance,
+                'eow_unrealized': unrealized_pnl,
+                'payout_hwm': payout_hwm,
+                'frozen_ms': None,
+                'gross_payout': gross_payout,
+                'payout': earned + released,
+                'instant_paid': earned + released if instant else 0.0,
+                'deferred': owed - earned,
+                'deferred_released': released,
+                'deferred_forfeited': forfeited,
+                'deferred_balance': deferred_balance,
+                'weekly_penalty': penalty,
+                'payout_scale': row_scale,
+                'orders': [o.to_python_dict() for o in row_orders],
+            })
+            row_start = row_end
+
+        return rows, deferred_balance
+
+    def calculate_segment_payout_record(
+        self, hotkey: str, segment: dict, positions: list, end_ms: int
+    ) -> Optional[dict]:
+        """What a segment leaving an earning bucket is owed, from its own positions (closed by now).
+
+        The weeks it froze while live are kept as they are; only what follows the last one is
+        settled. Escrow still held is forfeited: the bucket it moves to does not hold it. Never
+        raises; returns None when the record cannot be calculated.
+        """
+        try:
+            frozen = [dict(row) for row in segment.get('closed_weeks') or []]
+            positions = self._segment_positions(positions, segment)
+            settled = self._settle_segment(
+                hotkey, {**segment, 'end_ms': end_ms}, positions, end_ms, True,
+                self._debt_ledger_client.get_ledger(hotkey), self._payout_perf_ledger(hotkey),
+                resume=frozen[-1] if frozen else None)
+            if settled is None:
+                return None
+            tail, deferred_balance = settled
+            rows = frozen + tail
+            if rows and deferred_balance:
+                rows[-1]['deferred_forfeited'] += deferred_balance
+                rows[-1]['deferred_balance'] = 0.0
+            for row in rows:
+                row['orders'] = []
+                row['payout_record'] = True
+            return {
+                'computed_ms': TimeUtil.now_in_millis(),
+                'end_ms': end_ms,
+                'payout_usd': sum(row['payout'] for row in rows),
+                'gross_payout_usd': sum(row['gross_payout'] for row in rows),
+                'settlements': rows,
+                'amended_ms': None,
+            }
+        except Exception as e:
+            logger.error(f"[ENTITY_MANAGER] Error calculating the payout record for {hotkey}: {e}")
+            return None
+
+    def calculate_segment_closed_weeks(self, hotkey: str, segment: dict, now_ms: int) -> Optional[List[dict]]:
+        """Settlement rows of the live segment's payout weeks that closed since its last frozen one,
+        resuming from that row's state. Frozen rows keep their dollars: nothing restates them later.
+
+        A week is closed once the debt ledger holds the checkpoint ending it, so its weekly penalty
+        is final. Returns [] when every closed week is already frozen (or has nothing to settle),
+        and None when the week that just ended is not final yet or cannot be settled, to be retried.
+        """
+        try:
+            week_start_ms = TimeUtil.ms_at_start_of_week(now_ms)
+            debt_ledger = self._debt_ledger_client.get_ledger(hotkey)
+            if not debt_ledger or not debt_ledger.checkpoints \
+                    or debt_ledger.checkpoints[-1].timestamp_ms < week_start_ms:
+                return None
+            frozen = segment.get('closed_weeks') or []
+            frozen_through_ms = frozen[-1]['end_ms'] if frozen else segment['start_ms']
+            if week_start_ms <= frozen_through_ms:
+                return []
+            positions = self._segment_positions(
+                self._position_client.get_positions_for_one_hotkey(hotkey, sort_positions=True), segment)
+            settled = self._settle_segment(hotkey, segment, positions, week_start_ms, False,
+                                           debt_ledger, self._payout_perf_ledger(hotkey),
+                                           resume=frozen[-1] if frozen else None)
+            if settled is None:
+                return None
+            frozen_ms = TimeUtil.now_in_millis()
+            return [{**row, 'orders': [], 'frozen_ms': frozen_ms} for row in settled[0]]
+        except Exception as e:
+            logger.error(f"[ENTITY_MANAGER] Error calculating the closed weeks of {hotkey}: {e}")
             return None
 
     def settle_wound_down_segment(
