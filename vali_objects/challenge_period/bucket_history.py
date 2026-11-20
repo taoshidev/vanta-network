@@ -85,6 +85,9 @@ class BucketSegment:
     closed_weeks: Optional[List[dict]] = None
     # Admin payout per payout week: {week_start_ms (str in JSON): {payout_usd, set_ms, note}}
     payout_overrides: Optional[Dict[str, dict]] = None
+    # Terms of the weeks sealed before the weekly seal ledger was migrated:
+    # {week_start_ms (str): {weekly_penalty, payout_scale, track}}, applied when the week is settled
+    sealed_weeks: Optional[Dict[str, dict]] = None
 
     @property
     def key(self) -> tuple:
@@ -164,6 +167,8 @@ class BucketHistoryStore:
         # Disabled stores accept every call and persist nothing (backtesting)
         self.enabled = enabled
         self.segments: Dict[str, List[BucketSegment]] = {}
+        # Settled segments of the migrated weekly seal ledger that matched no segment, kept for an admin
+        self.unmatched_settlements: Dict[str, List[dict]] = {}
         # (hotkey, bucket, start_ms) -> UTC day of the segment's last stats row, read lazily
         self._last_stats_day: Dict[tuple, Optional[int]] = {}
         self._lock = threading.RLock()
@@ -208,6 +213,7 @@ class BucketHistoryStore:
                 "format_version": "1.0",
                 "last_update_ms": TimeUtil.now_in_millis(),
                 "segments": self.to_checkpoint_dict(),
+                "unmatched_settlements": self.unmatched_settlements,
             })
 
     def load_from_disk(self) -> int:
@@ -226,6 +232,7 @@ class BucketHistoryStore:
                 hotkey: sorted((BucketSegment.from_dict(s) for s in segments), key=lambda s: s.start_ms)
                 for hotkey, segments in (data.get("segments") or {}).items()
             }
+            self.unmatched_settlements = data.get("unmatched_settlements") or {}
         total = sum(len(s) for s in self.segments.values())
         logger.info(f"[BUCKET_HISTORY] Loaded {total} bucket segments across {len(self.segments)} hotkeys")
         return total
@@ -277,6 +284,7 @@ class BucketHistoryStore:
         with self._lock:
             hotkeys = list(self.segments)
             self.segments = {}
+            self.unmatched_settlements = {}
             self._last_stats_day = {}
             for hotkey in hotkeys:
                 shutil.rmtree(ValiBkpUtils.get_bucket_history_dir(hotkey, self.running_unit_tests), ignore_errors=True)

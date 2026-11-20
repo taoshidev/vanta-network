@@ -113,6 +113,14 @@ class ChallengePeriodClient(RPCClientBase):
         """A miner's bucket segment summaries, oldest first, without reverted ones."""
         return self._server.get_bucket_segments_rpc(hotkey)
 
+    def migrate_weekly_seals(self, seals: dict) -> dict:
+        """Carry a checkpoint's weekly_seals (from a validator on the old release) into bucket history."""
+        return self._server.migrate_weekly_seals_rpc(seals)
+
+    def get_unmatched_settlements(self, hotkey: str) -> list[dict]:
+        """Settled segments of the migrated seal ledger that matched no bucket segment."""
+        return self._server.get_unmatched_settlements_rpc(hotkey)
+
     def get_payout_records(self, hotkey: str) -> list[dict]:
         """The payout records pinned on a miner's bucket segments."""
         return self._server.get_payout_records_rpc(hotkey)

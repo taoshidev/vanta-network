@@ -117,11 +117,6 @@ class DebtLedgerManager():
             validator_hotkey=validator_hotkey
         )
 
-        # Survives every ledger rebuild and every ledger deletion; it is what makes a closed payout
-        # week reproduce the same paid/withheld decision no matter what else is recomputed.
-        # Built lazily by the property below so a partially constructed manager still works.
-        self._weekly_seal_ledger = None
-
         self.slack_notifier = SlackNotifier(webhook_url=slack_webhook_url, hotkey=validator_hotkey)
         self.running_unit_tests = running_unit_tests
         self.is_mainnet = is_mainnet
@@ -179,7 +174,6 @@ class DebtLedgerManager():
             logger.error(f"[DEBT_LEDGER] Cannot delete ledger for {hotkey}: only an account on the standard account "
                          f"pipeline (a subaccount or a standard miner) can have its ledgers deleted")
             return False
-        # NOTE: weekly_seal_ledger is deliberately untouched.
         self.penalty_ledger_manager.delete_penalty_ledger(hotkey)
         if hotkey in self.debt_ledgers:
             del self.debt_ledgers[hotkey]
@@ -195,118 +189,6 @@ class DebtLedgerManager():
         except Exception as e:
             logger.warning(f"[DEBT_LEDGER] Could not read the account of {hotkey}: {e}")
             return False
-
-    @property
-    def weekly_seal_ledger(self):
-        """The settled-week record, built on first use.
-
-        Lazy so a manager assembled without __init__ (unit tests, one-off tooling) still reaches a
-        working seal ledger rather than an AttributeError in the middle of aggregation.
-        """
-        existing = getattr(self, '_weekly_seal_ledger', None)
-        if existing is None:
-            from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import WeeklySealLedger
-            existing = WeeklySealLedger(running_unit_tests=getattr(self, 'running_unit_tests', False))
-            self._weekly_seal_ledger = existing
-        return existing
-
-    def _seal_closed_weeks(self, subaccount_ledgers: list, subaccount_payout_scale: dict) -> None:
-        """Pin the classification of every payout week that has closed.
-
-        The context is computed fresh here on purpose: `seal` refuses to overwrite a week that is
-        already settled and logs when the fresh values disagree, which is how a rebuild that would
-        have rewritten history announces itself instead of doing it silently.
-        """
-        current_week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
-        newly_sealed = 0
-        for synthetic_hotkey, ledger in subaccount_ledgers:
-            context = ledger.weekly_payout_context(subaccount_payout_scale.get(synthetic_hotkey, 1.0))
-            for week_start_ms, week in context.items():
-                if week_start_ms >= current_week_start_ms:
-                    continue
-                if self.weekly_seal_ledger.seal(
-                    synthetic_hotkey,
-                    week_start_ms,
-                    weekly_penalty=week.weekly_penalty,
-                    payout_scale=week.payout_scale,
-                    track=week.track.name,
-                    first_earning_ms=week.first_earning_ms,
-                ):
-                    newly_sealed += 1
-
-        if newly_sealed:
-            self.weekly_seal_ledger.save_to_disk()
-            logger.info(f"[DEBT_LEDGER] Sealed {newly_sealed} newly closed payout weeks")
-
-    def get_sealed_weeks(self, hotkey: str) -> dict:
-        """Sealed payout weeks for one hotkey, keyed by Monday 00:00 UTC."""
-        return self.weekly_seal_ledger.get_sealed(hotkey)
-
-    def unseal_week(self, hotkey: str, week_start_ms: int) -> bool:
-        """Drop one sealed week so the next build reseals it. Deliberate corrections only."""
-        return self.weekly_seal_ledger.unseal(hotkey, week_start_ms)
-
-    def record_settled_segment(
-        self,
-        hotkey: str,
-        week_start_ms: int,
-        segment_start_ms: int,
-        segment_end_ms: int,
-        bucket: str,
-        payout_usd: float,
-        gross_payout_usd: float,
-        weekly_penalty: float,
-        payout_scale: float,
-    ) -> bool:
-        """Pin a payout settled early by an account switch.
-
-        Write-once on (hotkey, week_start_ms, bucket) so a retried switch cannot settle the same
-        week twice.
-        """
-        return self.weekly_seal_ledger.record_settled(
-            hotkey,
-            week_start_ms=week_start_ms,
-            segment_start_ms=segment_start_ms,
-            segment_end_ms=segment_end_ms,
-            bucket=bucket,
-            payout_usd=payout_usd,
-            gross_payout_usd=gross_payout_usd,
-            weekly_penalty=weekly_penalty,
-            payout_scale=payout_scale,
-        )
-
-    def get_settled_segments(self, hotkey: str) -> list:
-        """Segments settled early for one hotkey, oldest first."""
-        return self.weekly_seal_ledger.get_settled(hotkey)
-
-    def get_all_settled_segments(self) -> Dict[str, list]:
-        """Every hotkey's settled segments, oldest first."""
-        return self.weekly_seal_ledger.get_all_settled()
-
-    def get_sealed_weeks_for(self, hotkeys: List[str]) -> Dict[str, dict]:
-        """The sealed weeks of each of hotkeys that has any, keyed by Monday 00:00 UTC."""
-        return self.weekly_seal_ledger.get_sealed_for(hotkeys)
-
-    def amend_settled_segment(self, hotkey: str, segment_end_ms: int, payout_usd: float) -> bool:
-        """Correct a settled segment's amount. Deliberate corrections only."""
-        return self.weekly_seal_ledger.amend_settled(hotkey, segment_end_ms, payout_usd)
-
-    def remove_settled_segment(self, hotkey: str, segment_end_ms: int) -> bool:
-        """Drop a settled segment entirely. Deliberate corrections only."""
-        return self.weekly_seal_ledger.remove_settled(hotkey, segment_end_ms)
-
-    def get_weekly_seals_checkpoint_dict(self) -> dict:
-        """Every sealed week and settled segment, JSON-ready, for the validator checkpoint."""
-        return self.weekly_seal_ledger.to_checkpoint_dict()
-
-    def sync_weekly_seals(self, weekly_seals_dict: dict) -> dict:
-        """Merge the checkpoint's seal records so validators agree on what was sealed."""
-        return self.weekly_seal_ledger.sync_from_checkpoint(weekly_seals_dict)
-
-    def clear_weekly_seals_for_test(self) -> bool:
-        """Drop every seal record, in memory and on disk. Unit tests only."""
-        self.weekly_seal_ledger.clear_for_test()
-        return True
 
     def get_dashboard(self, hotkey: str, checkpoints_time_ms: int) -> dict | None:
         dashboard: dict | None = None

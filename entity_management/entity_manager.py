@@ -55,7 +55,7 @@ from vali_objects.enums.account_type_enum import AccountType
 from vali_objects.enums.drawdown_criteria_enum import DrawdownCriteria
 from vali_objects.statistics.miner_statistics_client import MinerStatisticsClient
 from vali_objects.position_management.position_manager_client import PositionManagerClient
-from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import WeeklyPayoutContext, apply_deferral
+from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import WeeklyPayoutContext, WeekTrack, apply_deferral
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_client import DebtLedgerClient
 from vali_objects.contract.contract_client import ContractClient
 from vali_objects.utils.asset_selection.asset_selection_client import AssetSelectionClient
@@ -2019,19 +2019,36 @@ class EntityManager(ValidatorBroadcastBase):
                 row['segment_start_ms'] = segment['start_ms']
                 if row['payout_record'] or row.get('frozen_ms') is not None:
                     row['instant_paid'] = 0.0  # pinned without the cuts: netted below
-            rows = self._apply_overrides(rows, segment.get('payout_overrides') or {})
+            rows = self._apply_overrides(rows, segment.get('payout_overrides') or {}, segment, end_ms)
             pinned_cuts = [c for c in cuts if c[0] not in live_cut_ms]
             all_rows += self._net_instant_payouts(rows, segment, pinned_cuts)
         return sorted(all_rows, key=lambda w: (w['start_ms'], w['end_ms'])), deferred_balance
 
     @staticmethod
-    def _apply_overrides(rows: List[dict], overrides: dict) -> List[dict]:
+    def _apply_overrides(rows: List[dict], overrides: dict, segment: Optional[dict] = None,
+                         end_ms: Optional[int] = None) -> List[dict]:
         """Report computed, override and effective on every row; payout becomes the effective value.
 
         An override is a segment-week's payout before instant payouts are netted. It replaces the
         week's computed payout only: the carried balance, high-water mark and escrow are untouched.
         Rows a week was split into at instant payouts keep what was paid at the cut, and the last
-        row of the week takes the rest of the override."""
+        row of the week takes the rest of the override. An overridden week the segment has no row for
+        (e.g. a closed segment that froze nothing) gets one of its own."""
+        if segment is not None:
+            present = {TimeUtil.ms_at_start_of_week(row['start_ms']) for row in rows}
+            for week_key in overrides:
+                week_ms = int(week_key)
+                row_start = max(week_ms, segment['start_ms'])
+                row_end = min(week_ms + MS_IN_24_HOURS * 7, *(t for t in (segment.get('end_ms'), end_ms) if t is not None))
+                if week_ms in present or row_start >= row_end:
+                    continue
+                rows.append({'start_ms': row_start, 'end_ms': row_end, 'bucket': segment['bucket'],
+                             'segment_start_ms': segment['start_ms'], 'payout_record': False, 'frozen_ms': None,
+                             'eow_balance': 0.0, 'eow_unrealized': 0.0, 'payout_hwm': 0.0, 'gross_payout': 0.0,
+                             'payout': 0.0, 'instant_paid': 0.0, 'deferred': 0.0, 'deferred_released': 0.0,
+                             'deferred_forfeited': 0.0, 'deferred_balance': 0.0, 'weekly_penalty': 1.0,
+                             'payout_scale': 1.0, 'orders': []})
+            rows.sort(key=lambda row: (row['start_ms'], row['end_ms']))
         by_week: Dict[int, List[dict]] = {}
         for row in rows:
             row['computed'] = row['payout']
@@ -2168,10 +2185,10 @@ class EntityManager(ValidatorBroadcastBase):
 
     @staticmethod
     def _segment_positions(positions, segment: dict) -> list:
-        """The positions a segment traded: those opened at or after its start (none spans two
-        earning segments, MinerBucket.closes_positions_from)."""
-        positions = [Position(**p) if isinstance(p, dict) else p for p in positions]
-        return [p for p in positions if p.open_ms >= segment['start_ms']]
+        """The positions a segment is settled from. Their orders and fees count by time, inside the segment:
+        no position opened since the bucket moves closed positions spans two earning segments
+        (MinerBucket.closes_positions_from), and one from before that is split where the segment ends."""
+        return [Position(**p) if isinstance(p, dict) else p for p in positions]
 
     def _settle_segment(self, hotkey: str, segment: dict, positions: list, end_ms: int,
                         realtime: bool, debt_ledger, perf_ledger,
@@ -2194,6 +2211,12 @@ class EntityManager(ValidatorBroadcastBase):
             end_ms = min(end_ms, segment['end_ms'])
         scale = self._segment_scale(hotkey, segment)
         week_context = debt_ledger.weekly_payout_context(scale) if debt_ledger else {}
+        # Weeks sealed before the weekly seal ledger was migrated keep the terms they were sealed with
+        for week_ms, seal in (segment.get('sealed_weeks') or {}).items():
+            week = week_context.setdefault(int(week_ms), WeeklyPayoutContext(payout_scale=scale))
+            week.weekly_penalty = seal['weekly_penalty']
+            week.payout_scale = seal['payout_scale']
+            week.track = WeekTrack[seal['track']]
         default_week = WeeklyPayoutContext(payout_scale=scale)
 
         settle_from = resume['end_ms'] if resume else segment['start_ms']
@@ -2307,9 +2330,11 @@ class EntityManager(ValidatorBroadcastBase):
         return rows, deferred_balance
 
     def calculate_segment_payout_record(
-        self, hotkey: str, segment: dict, positions: list, end_ms: int
+        self, hotkey: str, segment: dict, positions: list, end_ms: int, realtime: bool = True
     ) -> Optional[dict]:
-        """What a segment leaving an earning bucket is owed, from its own positions (closed by now).
+        """What a segment leaving an earning bucket is owed, from its own positions (closed by now, so the
+        last row's unrealized PnL is theirs; realtime=False reads it from the snapshots instead, for a
+        segment that ended in the past).
 
         The weeks it froze while live are kept as they are; only what follows the last one is
         settled. Escrow still held is forfeited: the bucket it moves to does not hold it. Never
@@ -2319,7 +2344,7 @@ class EntityManager(ValidatorBroadcastBase):
             frozen = [dict(row) for row in segment.get('closed_weeks') or []]
             positions = self._segment_positions(positions, segment)
             settled = self._settle_segment(
-                hotkey, {**segment, 'end_ms': end_ms}, positions, end_ms, True,
+                hotkey, {**segment, 'end_ms': end_ms}, positions, end_ms, realtime,
                 self._debt_ledger_client.get_ledger(hotkey), self._payout_perf_ledger(hotkey),
                 resume=frozen[-1] if frozen else None)
             if settled is None:

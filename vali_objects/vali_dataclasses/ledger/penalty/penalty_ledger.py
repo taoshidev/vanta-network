@@ -736,15 +736,6 @@ class PenaltyLedgerManager:
         return MinerBucket.from_status(challenge_period_status)
 
     @staticmethod
-    def _week_is_closed(checkpoint_ms: int, now_ms: int) -> bool:
-        """True when this checkpoint belongs to a payout week that has already ended.
-
-        A checkpoint stamped exactly at Monday 00:00 covers the 12 hours *ending* then, so it
-        belongs to the week that just closed - hence the -1, matching DebtLedger.weekly_payout_context.
-        """
-        return TimeUtil.ms_at_start_of_week(checkpoint_ms - 1) < TimeUtil.ms_at_start_of_week(now_ms)
-
-    @staticmethod
     def _carry_forward_penalty(
         penalty_ledger: 'PenaltyLedger', penalty_name: str, miner_hotkey: str, checkpoint_ms: int
     ) -> float:
@@ -808,9 +799,6 @@ class PenaltyLedgerManager:
         """
         # Create separate candidate ledgers for full rebuild (don't clear old ledgers yet)
         new_penalty_ledgers = {} if not delta_update else None
-        # One anchor for the whole build, so a rebuild that straddles a Monday boundary classifies
-        # every checkpoint against the same "current week"
-        build_time_ms = TimeUtil.now_in_millis()
 
         if not delta_update:
             logger.info("[PENALTY_LEDGER] Full rebuild mode: building new ledgers while preserving old ones")
@@ -945,11 +933,6 @@ class PenaltyLedgerManager:
 
                 checkpoint_bucket = self._bucket_from_status(challenge_period_status)
 
-                # A closed payout week has already been settled. Carry its weekly penalties forward
-                sealed_weekly = None
-                if old_checkpoint is not None and self._week_is_closed(checkpoint_ms, build_time_ms):
-                    sealed_weekly = old_checkpoint
-
                 # Calculate each penalty
                 penalties = {}
                 total_penalty = 1.0
@@ -960,14 +943,6 @@ class PenaltyLedgerManager:
 
                     if penalty_config.buckets is not None and checkpoint_bucket not in penalty_config.buckets:
                         penalties[penalty_name] = penalty_value
-                        continue
-
-                    if (sealed_weekly is not None
-                            and penalty_config.application_scope == PenaltyApplicationScope.WEEKLY):
-                        # Copied for the audit trail only. The week's weekly_penalty is restored
-                        # wholesale below rather than re-multiplied from these, because the latch
-                        # has no named penalty behind it.
-                        penalties[penalty_name] = getattr(sealed_weekly, f"{penalty_name}_penalty", 1.0)
                         continue
 
                     try:
@@ -1022,10 +997,8 @@ class PenaltyLedgerManager:
                     else:
                         total_penalty *= penalty_value
 
-                if sealed_weekly is not None:
-                    # A closed week is settled
-                    weekly_penalty = sealed_weekly.weekly_penalty
-                elif checkpoint_bucket.soft_breach_applies:
+                # A closed week's payout is frozen on its bucket segment, so only open weeks are decided here
+                if checkpoint_bucket.soft_breach_applies:
                     week_start_ms = TimeUtil.ms_at_start_of_week(checkpoint_ms - 1)
                     week_breached = bool(miner_breach_weeks.get(week_start_ms))
                     if weekly_penalty < 1.0 and not week_breached:

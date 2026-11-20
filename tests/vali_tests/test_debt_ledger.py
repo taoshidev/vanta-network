@@ -28,25 +28,11 @@ from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger, WeekTrack, apply_deferral
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger_manager import DebtLedgerManager
 from vali_objects.scoring.debt_based_scoring import DebtBasedScoring
-from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import (
-    SealedWeek, SettledSegment, WeeklySealLedger,
-)
 import logging
 import os
 from shared_objects.log import logger
 
 logger.setLevel(logging.INFO)
-
-
-def _clear_seal_ledger():
-    """Drop the on-disk seal ledger so each test starts with nothing settled.
-
-    The seal ledger deliberately outlives every other ledger, including across process restarts,
-    so a test that seals a week would otherwise pin that decision for every later test and run.
-    """
-    path = WeeklySealLedger(running_unit_tests=True)._get_path()
-    if os.path.exists(path):
-        os.remove(path)
 
 
 class TestDebtLedgers(TestBase):
@@ -652,33 +638,6 @@ class TestDebtLedgers(TestBase):
         logger.info("Production integration smoke test completed successfully")
         logger.info("="*80)
 
-    def test_settled_segments_survive_deleting_the_debt_ledger(self):
-        """The wipe _switch_account runs: the debt and penalty ledgers go, the settled money stays.
-
-        Exercises the real RPC path the promotion uses, so a settled segment is proven to outlive
-        the delete that happens moments after it is written.
-        """
-        _clear_seal_ledger()
-        hotkey = "wounddown_1"
-        week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
-        promotion_ms = week_start_ms + MS_IN_WEEK // 2
-        try:
-            self.assertTrue(self.debt_ledger_client.record_settled_segment(
-                hotkey, week_start_ms, week_start_ms, promotion_ms,
-                "PRO_CHALLENGE_TRANSITION", 1843.20, 1843.20, 1.0, 1.0,
-            ))
-
-            self.debt_ledger_client.delete_debt_ledger(hotkey)
-
-            segments = self.debt_ledger_client.get_settled_segments(hotkey)
-            self.assertEqual(len(segments), 1)
-            self.assertEqual(segments[0].payout_usd, 1843.20)
-            self.assertEqual(segments[0].bucket, "PRO_CHALLENGE_TRANSITION")
-        finally:
-            self.debt_ledger_client.remove_settled_segment(hotkey, promotion_ms)
-            _clear_seal_ledger()
-
-
 class TestApplyDeferral(TestBase):
     """One payout week of escrow bookkeeping: every dollar is released, carried, or forfeited."""
 
@@ -721,7 +680,6 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
 
     def setUp(self):
         super().setUp()
-        _clear_seal_ledger()
 
     def _build_manager(self, subaccount_ledger):
         """Bare manager with only the collaborators aggregate_entity_debt_ledgers touches."""
@@ -782,202 +740,3 @@ class TestEntityWeeklyPenaltyAggregation(TestBase):
         self.assertAlmostEqual(week_0, 140.0)
         self.assertAlmostEqual(week_1, 140.0)
 
-class TestWeeklySealLedger(TestBase):
-    """A closed payout week is settled money: rebuilding the ledgers must not move it between
-    paid and withheld, and deleting the ledgers must not lose the record that it was settled."""
-
-    HOTKEY = "entity_1"
-
-    def setUp(self):
-        super().setUp()
-        _clear_seal_ledger()
-        self.week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis()) - MS_IN_WEEK
-        self.ledger = WeeklySealLedger(running_unit_tests=True)
-
-    def tearDown(self):
-        _clear_seal_ledger()
-        super().tearDown()
-
-    def _seal(self, ledger, weekly_penalty=1.0, payout_scale=1.0, track='ON_TRACK'):
-        return ledger.seal(
-            self.HOTKEY, self.week_start_ms,
-            weekly_penalty=weekly_penalty, payout_scale=payout_scale, track=track,
-        )
-
-    def test_first_seal_records_the_week(self):
-        self.assertTrue(self._seal(self.ledger, weekly_penalty=0.0))
-        sealed = self.ledger.get_sealed(self.HOTKEY)[self.week_start_ms]
-        self.assertEqual(sealed.weekly_penalty, 0.0)
-        self.assertEqual(sealed.track, 'ON_TRACK')
-
-    def test_a_disagreeing_rebuild_never_overwrites_the_sealed_week(self):
-        """The whole point: a later build computing a different verdict keeps the settled one."""
-        self._seal(self.ledger, weekly_penalty=0.0)
-        # A rebuild against a worse ratcheted drawdown / a resized account now says "clean"
-        self.assertFalse(self._seal(self.ledger, weekly_penalty=1.0, payout_scale=0.2))
-        sealed = self.ledger.get_sealed(self.HOTKEY)[self.week_start_ms]
-        self.assertEqual(sealed.weekly_penalty, 0.0)
-        self.assertEqual(sealed.payout_scale, 1.0)
-
-    def test_sealed_weeks_survive_losing_every_other_ledger(self):
-        """delete_debt_ledger drops the debt and penalty ledgers; the seals outlive that."""
-        self._seal(self.ledger, weekly_penalty=0.0)
-        self.ledger.save_to_disk()
-
-        reloaded = WeeklySealLedger(running_unit_tests=True)
-        self.assertEqual(reloaded.get_sealed(self.HOTKEY)[self.week_start_ms].weekly_penalty, 0.0)
-
-    def test_unseal_allows_a_deliberate_correction(self):
-        self._seal(self.ledger, weekly_penalty=0.0)
-        self.assertTrue(self.ledger.unseal(self.HOTKEY, self.week_start_ms))
-        self.assertEqual(self.ledger.get_sealed(self.HOTKEY), {})
-        # Now a rebuild is free to record a new verdict
-        self.assertTrue(self._seal(self.ledger, weekly_penalty=1.0))
-
-    def test_unseal_of_an_unknown_week_is_a_no_op(self):
-        self.assertFalse(self.ledger.unseal(self.HOTKEY, self.week_start_ms))
-
-    def test_weekly_payout_context_replays_the_sealed_verdict(self):
-        """A breached ledger still reads as paid when the week was sealed clean, and vice versa."""
-        cp_duration = ValiConfig.TARGET_CHECKPOINT_DURATION_MS
-        checkpoints = [
-            DebtCheckpoint(
-                timestamp_ms=self.week_start_ms + (i + 1) * cp_duration,
-                challenge_period_status=MinerBucket.PRO_FUNDED.value,
-                weekly_penalty=0.0,
-            )
-            for i in range(MS_IN_WEEK // cp_duration)
-        ]
-        debt_ledger = DebtLedger(self.HOTKEY, checkpoints=checkpoints)
-
-        recomputed = debt_ledger.weekly_payout_context()
-        self.assertEqual(recomputed[self.week_start_ms].weekly_penalty, 0.0)
-
-        sealed = {self.week_start_ms: SealedWeek(
-            week_start_ms=self.week_start_ms, weekly_penalty=1.0, payout_scale=1.0,
-            track='ON_TRACK', first_earning_ms=None, sealed_ms=0,
-        )}
-        replayed = debt_ledger.weekly_payout_context(sealed=sealed)
-        self.assertEqual(replayed[self.week_start_ms].weekly_penalty, 1.0)
-        self.assertIs(replayed[self.week_start_ms].track, WeekTrack.ON_TRACK)
-
-
-class TestSettledSegment(TestBase):
-    """A subaccount promoted mid-week traded part of that week on the account the promotion wipes.
-
-    The switch archives its positions and deletes its perf, debt and penalty ledgers, so nothing
-    can recompute what it earned. The settled segment is the only surviving record of that money,
-    which makes surviving a rebuild the whole point of it.
-    """
-
-    HOTKEY = "settledsub_1"
-
-    def setUp(self):
-        super().setUp()
-        _clear_seal_ledger()
-        self.week_start_ms = TimeUtil.ms_at_start_of_week(TimeUtil.now_in_millis())
-        self.promotion_ms = self.week_start_ms + MS_IN_WEEK // 2
-        self.ledger = WeeklySealLedger(running_unit_tests=True)
-
-    def tearDown(self):
-        _clear_seal_ledger()
-        super().tearDown()
-
-    def _settle(self, ledger, payout_usd=1843.20):
-        return ledger.record_settled(
-            self.HOTKEY,
-            week_start_ms=self.week_start_ms,
-            segment_start_ms=self.week_start_ms,
-            segment_end_ms=self.promotion_ms,
-            bucket="PRO_CHALLENGE_TRANSITION",
-            payout_usd=payout_usd,
-            gross_payout_usd=payout_usd,
-            weekly_penalty=1.0,
-            payout_scale=1.0,
-        )
-
-    def test_a_settled_segment_records_the_wound_down_week(self):
-        self.assertTrue(self._settle(self.ledger))
-        segment = self.ledger.get_settled(self.HOTKEY)[0]
-        self.assertEqual(segment.payout_usd, 1843.20)
-        self.assertEqual(segment.bucket, "PRO_CHALLENGE_TRANSITION")
-        self.assertEqual(segment.segment_end_ms, self.promotion_ms)
-
-    def test_resettling_the_same_switch_never_double_pays(self):
-        """A retried promotion must not settle the same stretch twice."""
-        self._settle(self.ledger, payout_usd=1843.20)
-        self.assertFalse(self._settle(self.ledger, payout_usd=9999.99))
-        segments = self.ledger.get_settled(self.HOTKEY)
-        self.assertEqual(len(segments), 1)
-        self.assertEqual(segments[0].payout_usd, 1843.20)
-
-    def test_a_retried_switch_settles_the_week_once(self):
-        """A switch that fails after settling is retried with a fresh timestamp. The week and
-        bucket are already settled, so the retry must not file the same dollars again."""
-        self._settle(self.ledger)
-        self.promotion_ms += 30_000
-        self.assertFalse(self._settle(self.ledger))
-        segments = self.ledger.get_settled(self.HOTKEY)
-        self.assertEqual(len(segments), 1)
-        self.assertEqual(segments[0].payout_usd, 1843.20)
-
-    def test_settled_segments_survive_a_reload(self):
-        """The rebuild case: every other ledger is regenerated, this one is replayed from disk."""
-        self._settle(self.ledger)
-        reloaded = WeeklySealLedger(running_unit_tests=True)
-        self.assertEqual(reloaded.get_settled(self.HOTKEY)[0].payout_usd, 1843.20)
-
-    def test_a_seal_file_written_before_settled_segments_still_loads(self):
-        """Format 1.0 has no `settled` key; it must load as a ledger with no segments."""
-        import gzip
-        import json
-        path = self.ledger._get_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with gzip.open(path, 'wt', encoding='utf-8') as f:
-            json.dump({
-                "format_version": "1.0",
-                "last_update_ms": TimeUtil.now_in_millis(),
-                "sealed": {self.HOTKEY: {str(self.week_start_ms): SealedWeek(
-                    week_start_ms=self.week_start_ms, weekly_penalty=1.0, payout_scale=1.0,
-                    track='ON_TRACK', first_earning_ms=None, sealed_ms=0,
-                ).to_dict()}},
-            }, f)
-
-        reloaded = WeeklySealLedger(running_unit_tests=True)
-        self.assertEqual(reloaded.get_settled(self.HOTKEY), [])
-        self.assertEqual(reloaded.get_sealed(self.HOTKEY)[self.week_start_ms].weekly_penalty, 1.0)
-        # A segment recorded onto it upgrades the file rather than tripping over the old shape
-        self.assertTrue(self._settle(reloaded))
-        self.assertEqual(
-            WeeklySealLedger(running_unit_tests=True).get_settled(self.HOTKEY)[0].payout_usd, 1843.20
-        )
-
-    def test_amend_and_remove_allow_a_deliberate_correction(self):
-        """Nothing recomputes these records, so the tier-500 door is the only way to fix one."""
-        self._settle(self.ledger)
-        self.assertTrue(self.ledger.amend_settled(self.HOTKEY, self.promotion_ms, 500.0))
-        amended = self.ledger.get_settled(self.HOTKEY)[0]
-        self.assertEqual(amended.payout_usd, 500.0)
-        self.assertIsNotNone(amended.amended_ms)
-        # The correction is on disk, not just in memory
-        self.assertEqual(
-            WeeklySealLedger(running_unit_tests=True).get_settled(self.HOTKEY)[0].payout_usd, 500.0
-        )
-
-        self.assertTrue(self.ledger.remove_settled(self.HOTKEY, self.promotion_ms))
-        self.assertEqual(self.ledger.get_settled(self.HOTKEY), [])
-        self.assertFalse(self.ledger.remove_settled(self.HOTKEY, self.promotion_ms))
-
-    def test_a_segment_round_trips_through_serialization(self):
-        segment = SettledSegment(
-            week_start_ms=self.week_start_ms,
-            segment_start_ms=self.week_start_ms,
-            segment_end_ms=self.promotion_ms,
-            bucket="PRO_CHALLENGE_TRANSITION",
-            payout_usd=1843.20,
-            gross_payout_usd=1843.20,
-            weekly_penalty=1.0,
-            payout_scale=1.0,
-            recorded_ms=123,
-        )
-        self.assertEqual(SettledSegment.from_dict(segment.to_dict()), segment)

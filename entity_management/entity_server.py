@@ -309,8 +309,8 @@ class EntityServer(RPCServerBase):
         return self._manager.get_payout_scale(synthetic_hotkey)
 
     def calculate_segment_payout_record_rpc(self, hotkey: str, segment: dict, positions: list,
-                                            end_ms: int) -> Optional[dict]:
-        return self._manager.calculate_segment_payout_record(hotkey, segment, positions, end_ms)
+                                            end_ms: int, realtime: bool = True) -> Optional[dict]:
+        return self._manager.calculate_segment_payout_record(hotkey, segment, positions, end_ms, realtime)
 
     def calculate_segment_closed_weeks_rpc(self, hotkey: str, segment: dict, now_ms: int) -> Optional[list]:
         return self._manager.calculate_segment_closed_weeks(hotkey, segment, now_ms)

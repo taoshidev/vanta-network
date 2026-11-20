@@ -210,6 +210,12 @@ class ChallengePeriodServer(RPCServerBase):
     def get_bucket_segments_rpc(self, hotkey: str) -> list[dict]:
         return self._manager.get_bucket_segments(hotkey)
 
+    def migrate_weekly_seals_rpc(self, seals: dict) -> dict:
+        return self._manager.migrate_weekly_seals(seals)
+
+    def get_unmatched_settlements_rpc(self, hotkey: str) -> list[dict]:
+        return self._manager.get_unmatched_settlements(hotkey)
+
     def get_payout_records_rpc(self, hotkey: str) -> list[dict]:
         return self._manager.get_payout_records(hotkey)
 

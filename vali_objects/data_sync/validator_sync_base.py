@@ -257,16 +257,13 @@ class ValidatorSyncBase():
                 logger.info(f"Syncing {len(asset_selections_data)} miner asset selection records from auto sync")
                 self._asset_selection_client.sync_miner_asset_selection_data(asset_selections_data)
 
-        # Sync weekly seal records so every validator agrees on what was sealed. The checkpoint
-        # wins on records both sides hold; records only this validator has are kept.
+        # A checkpoint from a validator on the release before bucket history still carries the weekly seal
+        # ledger: its records are migrated into the segments the challenge period sync above reconciled
         weekly_seals_data = candidate_data.get('weekly_seals', {})
         if weekly_seals_data and not shadow_mode:
-            seal_stats = self._debt_ledger_client.sync_weekly_seals(weekly_seals_data)
-            logger.info(f"Synced weekly seal records from auto sync: {seal_stats}")
-            self.global_stats['weekly_seals_added'] = seal_stats.get('sealed_added', 0)
-            self.global_stats['weekly_seals_replaced'] = seal_stats.get('sealed_replaced', 0)
-            self.global_stats['settled_segments_added'] = seal_stats.get('settled_added', 0)
-            self.global_stats['settled_segments_replaced'] = seal_stats.get('settled_replaced', 0)
+            seal_stats = self._challenge_period_client.migrate_weekly_seals(weekly_seals_data)
+            logger.info(f"Migrated weekly seal records from auto sync: {seal_stats}")
+            self.global_stats['weekly_seal_records_migrated'] = seal_stats.get('records', 0)
 
         # Sync penalty, emissions and debt ledgers
         if not shadow_mode and not self.is_mothership:

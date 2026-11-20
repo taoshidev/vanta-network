@@ -344,9 +344,7 @@ class DebtLedger:
         """The bucket this checkpoint was stamped with."""
         return self._bucket_from_status(cp.challenge_period_status)
 
-    def weekly_payout_context(
-        self, payout_scale: float = 1.0, sealed: Optional[dict] = None
-    ) -> Dict[int, WeeklyPayoutContext]:
+    def weekly_payout_context(self, payout_scale: float = 1.0) -> Dict[int, WeeklyPayoutContext]:
         """Summarize this ledger one payout week at a time, keyed by Monday 00:00 UTC.
 
         A checkpoint stamped exactly at Monday 00:00 covers the 12 hours *ending* then, so it
@@ -355,9 +353,6 @@ class DebtLedger:
         Args:
             payout_scale: the account's payout multiplier * standard_account_size /
                 pro_account_size (entity_utils.pro_payout_scale), ungated
-            sealed: week_start_ms -> SealedWeek from WeeklySealLedger. A sealed week is settled
-                money and is returned verbatim instead of being recomputed, so rebuilding the
-                ledgers cannot move a week between paid and withheld, or reprice it.
 
         Returns:
             week_start_ms -> WeeklyPayoutContext, for every week with at least one checkpoint
@@ -376,16 +371,6 @@ class DebtLedger:
             week.track = WeekTrack.ON_TRACK if bucket.soft_breach_applies else WeekTrack.OFF_TRACK
             if week.first_earning_ms is None and bucket.is_subaccount_earning:
                 week.first_earning_ms = cp.timestamp_ms
-
-        for week_start_ms, seal in (sealed or {}).items():
-            week = context.get(week_start_ms)
-            if week is None:
-                continue
-            week.weekly_penalty = seal.weekly_penalty
-            week.payout_scale = seal.payout_scale
-            week.track = WeekTrack[seal.track]
-            if seal.first_earning_ms is not None:
-                week.first_earning_ms = seal.first_earning_ms
 
         return context
 

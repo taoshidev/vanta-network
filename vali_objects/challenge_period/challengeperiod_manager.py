@@ -10,6 +10,7 @@ This follows the same pattern as EliminationManager.
 """
 from dataclasses import asdict, dataclass, field, fields, replace
 import math
+import os
 from typing import Tuple
 
 from shared_objects.log import logger
@@ -554,6 +555,7 @@ class ChallengePeriodManager(CacheController):
 
         self._current_iteration_epoch = iteration_epoch
         state_changed |= self._finish_legacy_transitions(current_time_ms)
+        self._migrate_weekly_seal_file(current_time_ms)
 
         evaluation_hotkeys = [hotkey for hotkey, state in self.miner_states.items() if state.current_bucket.is_active]
         rank_hotkeys = [hotkey for hotkey, state in self.miner_states.items() if state.current_bucket.is_rank_based]
@@ -2017,9 +2019,10 @@ class ChallengePeriodManager(CacheController):
             logger.error(f"[BUCKET_HISTORY] could not record the payout of {hotkey}: {e}", exc_info=True)
             return False
 
-    def _store_payout_record(self, segment: BucketSegment, positions: list[dict], end_ms: int) -> bool:
+    def _store_payout_record(self, segment: BucketSegment, positions: list[dict], end_ms: int,
+                             realtime: bool = True) -> bool:
         record = self._entity_client.calculate_segment_payout_record(
-            segment.hotkey, segment.to_dict(), positions, end_ms)
+            segment.hotkey, segment.to_dict(), positions, end_ms, realtime)
         if not isinstance(record, dict):
             logger.error(f"[BUCKET_HISTORY] no payout record could be calculated for {segment.hotkey} {segment.dir_name}")
             return False
@@ -2157,6 +2160,159 @@ class ChallengePeriodManager(CacheController):
         return [{"bucket": s.bucket, "start_ms": s.start_ms, "end_ms": s.end_ms, "payout_overrides": s.payout_overrides}
                 for s in self._bucket_history.get_segments(hotkey)
                 if s.reverted_ms is None and s.payout_overrides]
+
+    # ==================== Weekly seal ledger migration ====================
+
+    def _migrate_weekly_seal_file(self, current_time_ms: int) -> None:
+        """Migrate the retired weekly seal ledger file once, then rename it so a rollback still has it (M7).
+        A file that cannot be read is left in place and retried, never dropped."""
+        if not self._bucket_history.enabled:
+            return
+        path = ValiBkpUtils.get_weekly_seal_ledger_file_location(running_unit_tests=self.running_unit_tests)
+        if not os.path.exists(path):
+            return
+        try:
+            data = ValiBkpUtils.read_compressed_json(path)
+            stats = self.migrate_weekly_seals(data, current_time_ms, compute_missing_records=True)
+            os.replace(path, path + ".migrated")
+            logger.warning(f"[BUCKET_HISTORY] migrated the weekly seal ledger into bucket history: {stats}")
+        except Exception as e:
+            logger.error(f"[BUCKET_HISTORY] weekly seal ledger migration failed, retrying next refresh: {e}",
+                         exc_info=True)
+
+    def migrate_weekly_seals(self, seals: dict, current_time_ms: int | None = None,
+                             compute_missing_records: bool = False) -> dict:
+        """Carry the weekly seal ledger's records into bucket history (the file, or the weekly_seals of a
+        checkpoint from a validator on the old release). Idempotent: a segment keeps a record it has.
+
+          M1. Settled segments, grouped by (bucket, segment_end_ms), become the payout record of the segment of
+              that bucket ending at segment_end_ms, one row per week. A group with no such segment is kept aside.
+          M2. Sealed weeks are pinned on the earning segments they fall in, so freezing them later keeps the terms
+              they were sealed with, and give a segment without a payout scale the scale of its earliest one.
+          M3. compute_missing_records: an earning segment that ended before this release without a record or a
+              settled segment (and not by elimination) gets a record computed now from the live account by order
+              time, when that account is the one still trading.
+        """
+        now_ms = current_time_ms if current_time_ms is not None else TimeUtil.now_in_millis()
+        stats = {'records': 0, 'unmatched': 0, 'sealed_weeks': 0, 'computed_records': 0, 'not_computed': 0}
+        if not isinstance(seals, dict) or not self._bucket_history.enabled:
+            return stats
+        changed = set()
+        self._reconcile_bucket_history(list(self.miner_states), now_ms)
+
+        for hotkey, settled in (seals.get('settled') or {}).items():
+            groups: dict[tuple, list] = {}
+            for raw in settled or []:
+                bucket = MinerBucket.from_status(raw.get('bucket')).value
+                groups.setdefault((bucket, int(raw['segment_end_ms'])), []).append(raw)
+            segments = [s for s in self._bucket_history.get_segments(hotkey) if s.reverted_ms is None]
+            for (bucket, end_ms), group in groups.items():
+                segment = next((s for s in segments if s.bucket == bucket and s.end_ms == end_ms), None)
+                if segment is None:
+                    unmatched = self._bucket_history.unmatched_settlements.setdefault(hotkey, [])
+                    for raw in group:
+                        if raw not in unmatched:
+                            unmatched.append(raw)
+                    stats['unmatched'] += 1
+                    changed.add(hotkey)
+                    logger.error(f"[BUCKET_HISTORY] settled segments of {hotkey} ({bucket} ending {end_ms}) match no "
+                                 f"segment; kept aside for an admin: {group}")
+                    continue
+                if segment.payout_record is not None:
+                    continue
+                segment.payout_record = self._record_from_settlements(group, bucket, end_ms)
+                stats['records'] += 1
+                changed.add(hotkey)
+
+        for hotkey, weeks in (seals.get('sealed') or {}).items():
+            segments = [s for s in self._bucket_history.get_segments(hotkey)
+                        if s.reverted_ms is None and MinerBucket.from_status(s.bucket).is_subaccount_earning]
+            for week_key, seal in sorted((weeks or {}).items(), key=lambda kv: int(kv[0])):
+                week_ms = int(week_key)
+                terms = {'weekly_penalty': float(seal['weekly_penalty']), 'payout_scale': float(seal['payout_scale']),
+                         'track': seal.get('track') or 'NO_DATA'}
+                for segment in segments:
+                    if not (TimeUtil.ms_at_start_of_week(segment.start_ms) <= week_ms
+                            and (segment.end_ms is None or week_ms < segment.end_ms)):
+                        continue
+                    sealed = dict(segment.sealed_weeks or {})
+                    if str(week_ms) not in sealed:
+                        sealed[str(week_ms)] = terms
+                        segment.sealed_weeks = sealed
+                        stats['sealed_weeks'] += 1
+                        changed.add(hotkey)
+                    if segment.payout_scale is None:
+                        segment.payout_scale = terms['payout_scale']
+                        changed.add(hotkey)
+
+        if compute_missing_records:
+            for hotkey in list(self.miner_states):
+                if is_synthetic_hotkey(hotkey) or self._pays_through_segments(hotkey):
+                    stats_key = self._compute_missing_records(hotkey, now_ms)
+                    stats['computed_records'] += stats_key[0]
+                    stats['not_computed'] += stats_key[1]
+                    if stats_key[0]:
+                        changed.add(hotkey)
+
+        if changed:
+            self._bucket_history.save_to_disk(changed)
+        return stats
+
+    @staticmethod
+    def _record_from_settlements(group: list[dict], bucket: str, end_ms: int) -> dict:
+        """A payout record from the settled segments of one wound-down account, one row per week."""
+        rows = []
+        for raw in sorted(group, key=lambda r: r['week_start_ms']):
+            week_ms = int(raw['week_start_ms'])
+            rows.append({
+                'start_ms': week_ms, 'end_ms': min(week_ms + 7 * ValiConfig.DAILY_MS, end_ms), 'bucket': bucket,
+                'payout_record': True, 'frozen_ms': None, 'eow_balance': 0.0, 'eow_unrealized': 0.0,
+                'payout_hwm': 0.0, 'gross_payout': float(raw['gross_payout_usd']), 'payout': float(raw['payout_usd']),
+                'instant_paid': 0.0, 'deferred': 0.0, 'deferred_released': 0.0, 'deferred_forfeited': 0.0,
+                'deferred_balance': 0.0, 'weekly_penalty': float(raw['weekly_penalty']),
+                'payout_scale': float(raw['payout_scale']), 'orders': [], 'migrated': True,
+            })
+        amended = [raw.get('amended_ms') for raw in group if raw.get('amended_ms') is not None]
+        return {
+            'computed_ms': max(int(raw.get('recorded_ms') or 0) for raw in group),
+            'end_ms': end_ms,
+            'payout_usd': sum(row['payout'] for row in rows),
+            'gross_payout_usd': sum(row['gross_payout'] for row in rows),
+            'settlements': rows,
+            'amended_ms': max(amended) if amended else None,
+        }
+
+    def _compute_missing_records(self, hotkey: str, now_ms: int) -> tuple[int, int]:
+        """M3 for one hotkey. Returns (records computed, segments that could not be)."""
+        segments = [s for s in self._bucket_history.get_segments(hotkey) if s.reverted_ms is None]
+        live = self._bucket_history.get_live_segment(hotkey)
+        computed = failed = 0
+        for index, segment in enumerate(segments):
+            following = segments[index + 1] if index + 1 < len(segments) else None
+            if (segment.end_ms is None or segment.payout_record is not None
+                    or not MinerBucket.from_status(segment.bucket).is_subaccount_earning
+                    or following is None or following.bucket == MinerBucket.ELIMINATED.value):
+                continue
+            if live is None or live.account_start_ms != segment.account_start_ms:
+                failed += 1
+                logger.error(f"[BUCKET_HISTORY] {hotkey} {segment.dir_name} ended before the migration without a "
+                             f"record, and its account is no longer the live one; set its weeks by payout override")
+                continue
+            try:
+                if segment.payout_scale is None:
+                    segment.payout_scale = self._payout_scale_now(hotkey)
+                positions = [p.to_dict() for p in self._position_client.get_positions_for_one_hotkey(hotkey)]
+                if self._store_payout_record(segment, positions, segment.end_ms, realtime=False):
+                    computed += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                failed += 1
+                logger.error(f"[BUCKET_HISTORY] could not compute the record of {hotkey} {segment.dir_name}: {e}")
+        return computed, failed
+
+    def get_unmatched_settlements(self, hotkey: str) -> list[dict]:
+        return list(self._bucket_history.unmatched_settlements.get(hotkey, []))
 
     def sync_bucket_history(self, checkpoint_dict: dict) -> dict:
         return self._bucket_history.sync_from_checkpoint(checkpoint_dict)

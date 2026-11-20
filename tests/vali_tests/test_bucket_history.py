@@ -482,7 +482,7 @@ def subaccount(manager):
     the record pays 10 per position it was handed."""
     calls = []
 
-    def _record(hotkey, segment, positions, end_ms):
+    def _record(hotkey, segment, positions, end_ms, realtime=True):
         calls.append((segment["bucket"], sorted(p["position_uuid"] for p in positions), end_ms))
         payout = 10.0 * len(positions)
         return {"computed_ms": end_ms, "end_ms": end_ms, "payout_usd": payout, "gross_payout_usd": payout,
@@ -750,6 +750,7 @@ def _admin_server():
 def payout_rest():
     server = _admin_server()
     server._challenge_period_client.get_payout_records.return_value = [{"start_ms": T1}]
+    server._challenge_period_client.get_unmatched_settlements.return_value = []
     server._challenge_period_client.admin_update_payout_record.return_value = (True, "updated", {})
     server._challenge_period_client.get_payout_overrides.return_value = [{"start_ms": T1}]
     server._challenge_period_client.admin_set_payout_override.return_value = (True, "updated", {})
@@ -1006,3 +1007,157 @@ def test_rest_payout_balance_reports_the_table_and_the_comparison():
     assert (body["owed_current_week"], body["target"]) == (10.0, 10.0)
     assert body["weeks"][0]["week_start_ms"] == WEEK
     assert body["debt_ledger_method"] == {"target": 0.0, "owed_current_week": 0.0, "overflow": 0.0}
+
+
+# ── Migrating the weekly seal ledger (M1, M2, M3, M6, M7) ─────────────────────
+
+def _settled(week_ms, end_ms, bucket, payout, gross=None, penalty=1.0, scale=1.0):
+    return {"week_start_ms": week_ms, "segment_start_ms": week_ms, "segment_end_ms": end_ms, "bucket": bucket,
+            "payout_usd": payout, "gross_payout_usd": gross if gross is not None else payout,
+            "weekly_penalty": penalty, "payout_scale": scale, "recorded_ms": end_ms, "amended_ms": None}
+
+
+def _sealed(week_ms, penalty, scale=1.0, track="ON_TRACK"):
+    return {"week_start_ms": week_ms, "weekly_penalty": penalty, "payout_scale": scale, "track": track,
+            "first_earning_ms": None, "sealed_ms": week_ms}
+
+
+@pytest.fixture
+def seal_fixture(subaccount):
+    """A subaccount wound down out of the retired transition, then a standard miner (a real hotkey) whose
+    settled weeks span two accounts, as the seal file on main holds them."""
+    manager, _ = subaccount
+    standard = "standard_miner_hk"
+    manager.sync_challenge_period_data({
+        HOTKEY: {"entries": [{"bucket": "SUBACCOUNT_FUNDED", "start_time_ms": MON},
+                             {"bucket": "PRO_CHALLENGE_TRANSITION", "start_time_ms": MON + 3 * DAILY_MS},
+                             {"bucket": "PRO_CHALLENGE_FROM_STANDARD", "start_time_ms": MON + 3 * DAILY_MS + 1},
+                             {"bucket": "PRO_FUNDED", "start_time_ms": MON + 2 * WK}]},
+        standard: {"entries": [{"bucket": "SUBACCOUNT_FUNDED", "start_time_ms": MON - WK},
+                               {"bucket": "PRO_CHALLENGE_FROM_STANDARD", "start_time_ms": MON + DAILY_MS}]},
+    })
+    seals = {
+        "settled": {
+            HOTKEY: [_settled(MON, MON + 3 * DAILY_MS + 1, "PRO_CHALLENGE_TRANSITION", 80.0, 100.0)],
+            standard: [_settled(MON - WK, MON + DAILY_MS, "SUBACCOUNT_FUNDED", 40.0),
+                       _settled(MON, MON + DAILY_MS, "SUBACCOUNT_FUNDED", 10.0),
+                       _settled(MON - 2 * WK, MON - WK, "SUBACCOUNT_CHALLENGE", 5.0)],  # no such segment
+        },
+        "sealed": {HOTKEY: {str(MON + 2 * WK): _sealed(MON + 2 * WK, 0.0, scale=0.3)}},
+    }
+    return manager, standard, seals
+
+
+def test_settled_segments_become_the_records_of_the_segments_they_wound_down(seal_fixture):
+    """M1: grouped by (bucket, segment_end_ms), one row per week; the retired transition name reads as funded."""
+    manager, standard, seals = seal_fixture
+    stats = manager.migrate_weekly_seals(seals, MON + 3 * WK)
+    assert (stats["records"], stats["unmatched"]) == (2, 1)
+
+    funded = manager._bucket_history.get_segment(HOTKEY, MON, "SUBACCOUNT_FUNDED")
+    record = funded.payout_record
+    assert (record["end_ms"], record["payout_usd"], record["gross_payout_usd"]) == (MON + 3 * DAILY_MS + 1, 80.0, 100.0)
+    assert [(r["start_ms"], r["end_ms"], r["payout"]) for r in record["settlements"]] == [
+        (MON, MON + 3 * DAILY_MS + 1, 80.0)]
+    standard_funded = manager._bucket_history.get_segment(standard, MON - WK, "SUBACCOUNT_FUNDED")
+    assert [(r["start_ms"], r["end_ms"], r["payout"]) for r in standard_funded.payout_record["settlements"]] == [
+        (MON - WK, MON, 40.0), (MON, MON + DAILY_MS, 10.0)]
+    assert manager.get_unmatched_settlements(standard)[0]["bucket"] == "SUBACCOUNT_CHALLENGE"
+
+    # Idempotent: a second intake (a checkpoint from a peer still on the old release) changes nothing
+    again = manager.migrate_weekly_seals(seals, MON + 3 * WK)
+    assert again["records"] == 0 and len(manager.get_unmatched_settlements(standard)) == 1
+    assert manager._bucket_history.get_segment(HOTKEY, MON, "SUBACCOUNT_FUNDED").payout_record == record
+
+
+def test_sealed_weeks_are_pinned_on_the_segments_they_fall_in(seal_fixture):
+    """M2: the live PRO_FUNDED segment keeps the sealed week's terms for when it freezes, and takes its scale."""
+    manager, _, seals = seal_fixture
+    manager.migrate_weekly_seals(seals, MON + 3 * WK)
+    pro_funded = manager._bucket_history.get_live_segment(HOTKEY)
+    assert pro_funded.bucket == "PRO_FUNDED"
+    assert pro_funded.sealed_weeks == {str(MON + 2 * WK): {"weekly_penalty": 0.0, "payout_scale": 0.3,
+                                                           "track": "ON_TRACK"}}
+    assert pro_funded.payout_scale == 0.3
+
+
+def test_a_sealed_week_is_settled_on_its_sealed_terms():
+    """M2 at settlement: the ledger now reads the week clean, but it was sealed withheld."""
+    positions = [_closed("a", MON + DAILY_MS, MON + 2 * DAILY_MS, 100.0)]
+    em = _entity(positions, _ledger(MinerBucket.PRO_FUNDED, MON, MON + WK + DAILY_MS))
+    segment = {"hotkey": HOTKEY, "bucket": "PRO_FUNDED", "start_ms": MON, "end_ms": None,
+               "sealed_weeks": {str(MON): {"weekly_penalty": 0.0, "payout_scale": 1.0, "track": "ON_TRACK"}}}
+    rows = em.calculate_segment_closed_weeks(HOTKEY, segment, MON + WK + DAILY_MS)
+    assert [(r["payout"], r["deferred"]) for r in rows] == [(0.0, 100.0)]
+
+
+def test_a_position_spanning_an_old_boundary_is_paid_exactly_once():
+    """M3: before every earning boundary closed positions, a pro challenge passed with a position open. Settled by
+    order time, the record of the challenge pays what was realized before the promotion and PRO_FUNDED the rest."""
+    promoted_ms = MON + 3 * DAILY_MS
+    spanning = _closed("span", MON + DAILY_MS, MON + 5 * DAILY_MS, 100.0)
+    spanning.orders.insert(1, Order(order_type=OrderType.LONG, leverage=0.5, price=1.0, processed_ms=MON + 2 * DAILY_MS,
+                                    order_uuid="span-partial", trade_pair=TradePair.EURUSD, realized_pnl=30.0))
+    em = _entity([spanning], _ledger(MinerBucket.PRO_FUNDED, MON, MON + WK + DAILY_MS), scale=1.0)
+    challenge = {"hotkey": HOTKEY, "bucket": "PRO_CHALLENGE_FROM_STANDARD", "start_ms": MON, "end_ms": promoted_ms,
+                 "payout_scale": 1.0}
+    record = em.calculate_segment_payout_record(HOTKEY, challenge, [spanning], promoted_ms, realtime=False)
+    funded = {"hotkey": HOTKEY, "bucket": "PRO_FUNDED", "start_ms": promoted_ms, "end_ms": None}
+    rows = em.calculate_segment_closed_weeks(HOTKEY, funded, MON + WK + DAILY_MS)
+    assert record["payout_usd"] == 30.0
+    assert [r["payout"] for r in rows] == [100.0]  # realized after the promotion, never the 30 again
+
+
+def test_a_stint_that_ended_before_the_migration_gets_a_record_from_its_live_account(subaccount):
+    """M3 through the manager: computed from the live positions by order time, as of when the stint ended."""
+    manager, calls = subaccount
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_CHALLENGE_FROM_STANDARD, T1)
+    manager.set_miner_bucket(HOTKEY, MinerBucket.PRO_FUNDED, T2)  # no record: pre-#979, without a switch
+    manager.set_miner_bucket("eliminated_hk", MinerBucket.PRO_FUNDED, T1)
+    manager.set_miner_bucket("eliminated_hk", MinerBucket.ELIMINATED, T2)
+    manager._position_client.add(_position("challenge_trade", T1 + 1, T1 + 2))
+
+    stats = manager.migrate_weekly_seals({"sealed": {}, "settled": {}}, T3, compute_missing_records=True)
+
+    assert stats["computed_records"] == 1
+    assert calls == [("PRO_CHALLENGE_FROM_STANDARD", ["challenge_trade"], T2)]
+    assert manager._entity_client.calculate_segment_payout_record.call_args.args[4] is False  # not realtime
+    assert manager._bucket_history.get_segment("eliminated_hk", T1).payout_record is None  # E10 still holds
+
+
+def test_the_seal_file_is_migrated_once_and_kept_for_a_rollback(seal_fixture):
+    """M7: renamed, never deleted; the next refresh finds nothing left to migrate."""
+    manager, standard, seals = seal_fixture
+    path = ValiBkpUtils.get_weekly_seal_ledger_file_location(running_unit_tests=True)
+    ValiBkpUtils.write_compressed_json(path, {"format_version": "1.1", **seals})
+    try:
+        manager._migrate_weekly_seal_file(MON + 3 * WK)
+        assert not os.path.exists(path) and os.path.exists(path + ".migrated")
+        assert manager._bucket_history.get_segment(HOTKEY, MON, "SUBACCOUNT_FUNDED").payout_record is not None
+        manager._migrate_weekly_seal_file(MON + 3 * WK)  # nothing to do
+    finally:
+        for leftover in (path, path + ".migrated"):
+            if os.path.exists(leftover):
+                os.remove(leftover)
+
+
+def test_an_unreadable_seal_file_is_left_in_place(manager):
+    path = ValiBkpUtils.get_weekly_seal_ledger_file_location(running_unit_tests=True)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"not gzip")
+    try:
+        manager._migrate_weekly_seal_file(T1)
+        assert os.path.exists(path) and not os.path.exists(path + ".migrated")
+    finally:
+        os.remove(path)
+
+
+def test_an_override_on_a_week_without_a_row_is_still_paid():
+    """E28 for a closed segment without a record that froze nothing: the override brings its own row."""
+    em = _entity([], _ledger(MinerBucket.PRO_FUNDED, MON, MON + 2 * WK))
+    segment = {"bucket": "PRO_FUNDED", "start_ms": MON + DAILY_MS, "end_ms": MON + WK + DAILY_MS,
+               "payout_overrides": {str(MON + WK): {"payout_usd": 75.0, "set_ms": 1, "note": None}}}
+    rows = em._apply_overrides([], segment["payout_overrides"], segment, MON + 2 * WK)
+    assert [(r["start_ms"], r["end_ms"], r["computed"], r["effective"]) for r in rows] == [
+        (MON + WK, MON + WK + DAILY_MS, 0.0, 75.0)]

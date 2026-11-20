@@ -18,7 +18,6 @@ from tests.vali_tests.base_objects.test_base import TestBase
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger
-from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SettledSegment
 from time_util.time_util import MS_IN_WEEK, TimeUtil
 from entity_management.entity_utils import is_synthetic_hotkey, parse_synthetic_hotkey
 from vali_objects.enums.miner_bucket_enum import MinerBucket

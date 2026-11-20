@@ -1,7 +1,6 @@
 """
 The payout accounting of a standard miner: the weight calculator tells it apart by its record and pays it from its
-bucket segments' payout table, as a subaccount (test_pro_funded_payout_history). The seal ledger it was paid through
-before still records and reads back, for the migration.
+bucket segments' payout table, as a subaccount (test_pro_funded_payout_history).
 """
 import contextlib
 from types import SimpleNamespace
@@ -19,7 +18,6 @@ from vali_objects.scoring.weight_calculator_manager import WeightCalculatorManag
 from vali_objects.utils.vali_utils import ValiUtils
 from vali_objects.vali_config import ValiConfig
 from vali_objects.vali_dataclasses.ledger.debt.debt_ledger import DebtCheckpoint, DebtLedger
-from vali_objects.vali_dataclasses.ledger.debt.weekly_seal_ledger import SealedWeek, SettledSegment
 from vali_objects.vali_dataclasses.ledger.perf.perf_ledger import PerfCheckpoint, PerfLedger
 
 HOTKEY = "standard_miner_hotkey"
@@ -67,13 +65,6 @@ def perf_ledger(unrealized_by_checkpoint=(), first_ms=WEEK + CP) -> PerfLedger:
         for index, unrealized in enumerate(unrealized_by_checkpoint)])
 
 
-def settled(week_start_ms, payout_usd, gross_payout_usd=None, end_ms=None, bucket=FUNDED) -> SettledSegment:
-    return SettledSegment(week_start_ms=week_start_ms, segment_start_ms=week_start_ms,
-                          segment_end_ms=end_ms or week_start_ms + 3 * HOUR, bucket=bucket.value,
-                          payout_usd=payout_usd, gross_payout_usd=gross_payout_usd or payout_usd,
-                          weekly_penalty=1.0, payout_scale=GROW_SCALE, recorded_ms=NOW_MS)
-
-
 def payouts(settlements):
     return [(s.start_ms, round(s.payout_raw, 6), round(s.payout_penalized, 6)) for s in settlements]
 
@@ -88,42 +79,3 @@ class TestWeightCalculatorInputs(TestBase):
             HOTKEY: record(pro_account_size=PRO_SIZE), "other": record()}
         self.assertEqual(calculator._standard_miners_among([HOTKEY, LEGACY]), {HOTKEY})
         self.assertEqual(calculator._standard_miners_among([LEGACY]), set())
-
-
-class TestThroughTheServers(TestBase):
-
-    @classmethod
-    def setUpClass(cls):
-        cls.orchestrator = ServerOrchestrator.get_instance()
-        secrets = ValiUtils.get_secrets(running_unit_tests=True)
-        cls.orchestrator.start_all_servers(mode=ServerMode.TESTING, secrets=secrets)
-        cls.account_client = cls.orchestrator.get_client('miner_account')
-        cls.debt_ledger_client = cls.orchestrator.get_client('debt_ledger')
-
-    def setUp(self):
-        super().setUp()
-        self.orchestrator.clear_all_test_data()
-        self.debt_ledger_client.clear_weekly_seals_for_test()
-
-    def tearDown(self):
-        self.debt_ledger_client.clear_weekly_seals_for_test()
-        self.orchestrator.clear_all_test_data()
-        super().tearDown()
-
-    def test_a_real_hotkey_records_and_reads_back_its_settled_segments_and_records(self):
-        self.assertTrue(self.debt_ledger_client.record_settled_segment(
-            HOTKEY, WEEK, WEEK, WEEK + 3 * HOUR, FUNDED.value, 80.0, 100.0, 1.0, GROW_SCALE))
-        # A retried switch writes the same week once
-        self.assertFalse(self.debt_ledger_client.record_settled_segment(
-            HOTKEY, WEEK, WEEK, WEEK + 4 * HOUR, FUNDED.value, 80.0, 100.0, 1.0, GROW_SCALE))
-        segments = self.debt_ledger_client.get_settled_segments(HOTKEY)
-        self.assertEqual([(s.week_start_ms, s.payout_usd, s.gross_payout_usd) for s in segments], [(WEEK, 80.0, 100.0)])
-        self.assertEqual(self.debt_ledger_client.get_all_settled_segments(), {HOTKEY: segments})
-        self.account_client.open_standard_account(HOTKEY, record())
-        self.assertEqual(self.account_client.get_standard_accounts(), {HOTKEY: record()})
-        # The sealed weeks of the hotkeys asked for, through the servers
-        sealed = SealedWeek(week_start_ms=WEEK, weekly_penalty=0.0, payout_scale=GROW_SCALE, track="ON_TRACK",
-                            first_earning_ms=WEEK + CP, sealed_ms=WEEK + MS_IN_WEEK)
-        self.assertEqual(self.debt_ledger_client.get_sealed_weeks_for([HOTKEY, "other"]), {})
-        self.debt_ledger_client.sync_weekly_seals({"sealed": {HOTKEY: {str(WEEK): sealed.to_dict()}}, "settled": {}})
-        self.assertEqual(self.debt_ledger_client.get_sealed_weeks_for([HOTKEY, "other"]), {HOTKEY: {WEEK: sealed}})

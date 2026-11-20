@@ -265,9 +265,9 @@ class EntityClient(RPCClientBase):
         return self._server.get_payout_scale_rpc(synthetic_hotkey)
 
     def calculate_segment_payout_record(self, hotkey: str, segment: dict, positions: list,
-                                        end_ms: int) -> Optional[dict]:
+                                        end_ms: int, realtime: bool = True) -> Optional[dict]:
         """What a bucket segment leaving an earning bucket is owed, pinned on it as its payout record."""
-        return self._server.calculate_segment_payout_record_rpc(hotkey, segment, positions, end_ms)
+        return self._server.calculate_segment_payout_record_rpc(hotkey, segment, positions, end_ms, realtime)
 
     def calculate_segment_closed_weeks(self, hotkey: str, segment: dict, now_ms: int) -> Optional[list]:
         """Settlement rows of the live segment's payout weeks that closed since its last frozen one."""
