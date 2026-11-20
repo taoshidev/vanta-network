@@ -163,6 +163,16 @@ class ValidatorSyncBase():
         if limit_orders_data:
             self._limit_order_client.sync_limit_orders(limit_orders_data)
 
+        # Bucket segment summaries before the challenge period, so the segments its bucket entries
+        # describe are already known when it reconciles them. The checkpoint wins on segments both
+        # sides hold; segments only this validator has are kept.
+        bucket_history_data = candidate_data.get('bucket_history', {})
+        if bucket_history_data and not shadow_mode:
+            history_stats = self._challenge_period_client.sync_bucket_history(bucket_history_data)
+            logger.info(f"Synced bucket history from auto sync: {history_stats}")
+            self.global_stats['bucket_segments_added'] = history_stats.get('segments_added', 0)
+            self.global_stats['bucket_segments_replaced'] = history_stats.get('segments_replaced', 0)
+
         challengeperiod_data = candidate_data.get('challengeperiod', {})
         if challengeperiod_data and not shadow_mode:  # Only in autosync as of now.
             self._challenge_period_client.sync_challenge_period_data(challengeperiod_data)

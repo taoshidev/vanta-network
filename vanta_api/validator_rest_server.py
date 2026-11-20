@@ -348,6 +348,7 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
         self.app.route("/debt-ledger/<minerid>", methods=["GET"])(self.get_miner_debt_ledger)
         self.app.route("/perf-ledger/<minerid>", methods=["GET"])(self.get_perf_ledger)
         self.app.route("/account-snapshots/<minerid>", methods=["GET"])(self.get_account_snapshots)
+        self.app.route("/bucket-statistics/<minerid>", methods=["GET"])(self.get_bucket_statistics)
         self.app.route("/debt-ledger", methods=["GET"])(self.get_debt_ledger)
         self.app.route("/penalty-ledger/<minerid>", methods=["GET"])(self.get_penalty_ledger)
 
@@ -730,6 +731,61 @@ class ValidatorRestServer(BaseRestServer, RPCServerBase):
             'count': len(snapshots),
             'snapshots': [s.to_dict() for s in snapshots],
         })
+
+    BUCKET_STATISTICS_SECTIONS = ("summary", "positions", "snapshots", "stats")
+
+    def get_bucket_statistics(self, minerid):
+        """A miner's statistics per bucket stint, oldest first.
+
+        Query params:
+            bucket: only segments of this bucket
+            start_ms: only the segment that started at this time
+            include: comma list of summary, positions, snapshots, stats (default summary)
+            limit: keep the last N snapshot and stats rows (default and cap as /account-snapshots)
+        """
+        api_key = self._get_api_key_safe()
+        if not self.is_valid_api_key(api_key):
+            return jsonify({'error': 'Unauthorized access'}), 401
+        if not self._challenge_period_client:
+            return jsonify({'error': 'Challenge period data not available'}), 503
+
+        bucket = request.args.get('bucket')
+        if bucket:
+            try:
+                MinerBucket(bucket)
+            except ValueError:
+                return jsonify({'error': f'Unknown bucket {bucket}'}), 400
+
+        start_ms = request.args.get('start_ms')
+        if start_ms is not None:
+            try:
+                start_ms = int(start_ms)
+            except (TypeError, ValueError):
+                return jsonify({'error': 'start_ms must be an integer'}), 400
+
+        include = [part.strip() for part in request.args.get('include', 'summary').split(',') if part.strip()]
+        unknown = [part for part in include if part not in self.BUCKET_STATISTICS_SECTIONS]
+        if unknown or not include:
+            return jsonify({'error': f'include must be a comma list of {", ".join(self.BUCKET_STATISTICS_SECTIONS)}'}), 400
+
+        try:
+            limit = int(request.args.get('limit', DEFAULT_SNAPSHOT_LIMIT))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'limit must be an integer'}), 400
+        if limit < 1:
+            return jsonify({'error': 'limit must be >= 1'}), 400
+        limit = min(limit, MAX_SNAPSHOT_LIMIT)
+
+        try:
+            data = self._challenge_period_client.get_bucket_statistics(
+                minerid, bucket=bucket, start_ms=start_ms, include=include, limit=limit)
+        except Exception as e:
+            logger.error(f"Error retrieving bucket statistics for {minerid}: {e}")
+            return jsonify({'error': 'Internal server error retrieving bucket statistics'}), 500
+
+        if not data or not data.get('segments'):
+            return jsonify({'error': f'No bucket statistics found for miner {minerid}'}), 404
+        return self._jsonify_with_custom_encoder(data)
 
     def get_debt_ledger(self):
         api_key = self._get_api_key_safe()

@@ -197,6 +197,22 @@ class ChallengePeriodServer(RPCServerBase):
     def get_bucket_history_rpc(self, hotkey: str) -> list[dict] | None:
         return self._manager.get_bucket_history(hotkey)
 
+    def get_bucket_statistics_rpc(self, hotkey: str, bucket: str | None = None, start_ms: int | None = None,
+                                  include: list[str] | None = None, limit: int | None = None) -> dict | None:
+        return self._manager.get_bucket_statistics(hotkey, bucket, start_ms, include, limit)
+
+    def get_bucket_history_checkpoint_dict_rpc(self) -> dict:
+        return self._manager.get_bucket_history_checkpoint_dict()
+
+    def sync_bucket_history_rpc(self, checkpoint_dict: dict) -> dict:
+        return self._manager.sync_bucket_history(checkpoint_dict)
+
+    def get_bucket_segments_rpc(self, hotkey: str) -> list[dict]:
+        return self._manager.get_bucket_segments(hotkey)
+
+    def get_drawdown_snapshot_fields_rpc(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
+        return self._manager.get_drawdown_snapshot_fields(hotkeys)
+
     def get_drawdown_stats_rpc(self, hotkey: str) -> dict | None:
         return self._manager.get_drawdown_stats(hotkey)
 
@@ -223,3 +239,5 @@ class ChallengePeriodServer(RPCServerBase):
         assert self.running_unit_tests, "clear_test_state_rpc should only be called in unit tests"
         with self._manager._buckets_lock:
             self._manager.miner_states.clear()
+        if self._manager._bucket_history.enabled:
+            self._manager._bucket_history.clear_for_test()

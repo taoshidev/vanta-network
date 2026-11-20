@@ -96,6 +96,27 @@ class ChallengePeriodClient(RPCClientBase):
     def get_bucket_history(self, hotkey) -> list[dict] | None:
         return self._server.get_bucket_history_rpc(hotkey)
 
+    def get_bucket_statistics(self, hotkey: str, bucket: str | None = None, start_ms: int | None = None,
+                              include: list[str] | None = None, limit: int | None = None) -> dict | None:
+        """A miner's bucket segments with the sections asked for (summary, positions, snapshots, stats)."""
+        return self._server.get_bucket_statistics_rpc(hotkey, bucket, start_ms, include, limit)
+
+    def get_bucket_history_checkpoint_dict(self) -> dict:
+        """Bucket segment summaries for the validator checkpoint."""
+        return self._server.get_bucket_history_checkpoint_dict_rpc()
+
+    def sync_bucket_history(self, checkpoint_dict: dict) -> dict:
+        """Merge bucket segment summaries from a validator checkpoint."""
+        return self._server.sync_bucket_history_rpc(checkpoint_dict)
+
+    def get_bucket_segments(self, hotkey: str) -> list[dict]:
+        """A miner's bucket segment summaries, oldest first, without reverted ones."""
+        return self._server.get_bucket_segments_rpc(hotkey)
+
+    def get_drawdown_snapshot_fields(self, hotkeys: list[str] | None = None) -> dict[str, dict]:
+        """Per-hotkey drawdown fields stamped onto account snapshots."""
+        return self._server.get_drawdown_snapshot_fields_rpc(hotkeys)
+
     def set_miner_bucket(
         self,
         hotkey: str,
